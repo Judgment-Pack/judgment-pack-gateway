@@ -87,32 +87,17 @@ func TestStoreVectors(t *testing.T) {
 	sort.Strings(names)
 	passed := 0
 	for _, name := range names {
-		var vec struct {
-			Name      string            `json:"name"`
-			Authority string            `json:"authority"`
-			Files     map[string]string `json:"files"`
-			Registry  string            `json:"registry"`
-			Expected  struct {
-				OK       bool             `json:"ok"`
-				Findings []map[string]any `json:"findings"`
-			} `json:"expected"`
-		}
+		// One materializer, shared with `gateway conform`. This test used to
+		// carry its own copy, and the two silently disagreed the moment the
+		// vector schema grew a field only one of them knew about.
+		var vec storeVector
 		readJSON(t, name, &vec)
 
-		root := t.TempDir()
-		for rel, body := range vec.Files {
-			path := filepath.Join(root, filepath.FromSlash(rel))
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-				t.Fatal(err)
-			}
-		}
-		registryPath := filepath.Join(t.TempDir(), "registry.jsonl")
-		if err := os.WriteFile(registryPath, []byte(vec.Registry), 0o644); err != nil {
+		tmp, root, registryPath, err := materializeVector(vec)
+		if err != nil {
 			t.Fatal(err)
 		}
+		defer os.RemoveAll(tmp)
 
 		rep, err := verifyWithRegistry(root, registryPath, vec.Authority, publicKey)
 		if err != nil {

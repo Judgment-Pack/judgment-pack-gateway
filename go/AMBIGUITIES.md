@@ -1,4 +1,49 @@
-# Ambiguities found building a second implementation
+# How this specification got written: ambiguities found by a second implementation
+
+**Status: closed. Every item below has been resolved in `SPEC.md`, and this file
+is kept as the record of how it happened, not as an open list.**
+
+This is the report from a clean-room second implementation of the format, written
+from `SPEC.md`, `CONTRACT.md` and `corpus/` alone by an author barred from reading
+the reference implementation of the day. It found that most of the format was not
+in its specification at all. `SPEC.md` §1 exists because of this document.
+
+Two of its findings were live disagreements between two running implementations —
+duplicate member names, and seals naming a foreign `keyId` — which no corpus vector
+covered and which no single implementation could have noticed. One of them, the
+seal `keyId` rule, was a case of the specification being wrong and the clean-room
+implementation being right to follow it literally.
+
+The reference it was written against has since been retired; the gateway is now
+one Go binary. That makes this file the strongest surviving argument for the
+corpus being frozen: with a single implementation, nothing plays the role this
+exercise played, so the vectors have to be normative data rather than regenerated
+output.
+
+## Disposition
+
+| # | Finding | Resolved in |
+|---|---|---|
+| 0 | `SPEC.md` did not contain the format it was normative for | **§1** (canonical form, receipt schema, `keyId`, store layout, statuses) |
+| 1 | What a receipt signature covers — security-relevant | §1.2, with the rationale stated |
+| 2 | Duplicate member names | §1.1 (refused) + vector |
+| 3 | Escapes the corpus did not reach | §1.1 + four vectors |
+| 4 | `-0` | §1.1 |
+| 5 | `key-mismatch` / `unsupported-version` unnamed and untestable | §1.4 + two vectors |
+| 6 | One status per receipt; check order; `misfiled` is two bindings | §1.4 |
+| 7 | A broken sequence suppresses the chain check | §1.4 |
+| 8 | What "store count" counts | §4, with the disguise consequence stated |
+| 9 | Duplicate seals for one session | §4 (first wins) |
+| 10 | Seal loading and the `keyId` | §4 + vector; the implementation was amended |
+| 11 | Missing and empty inputs | §4.1 + two vectors |
+| 12 | §3a token rule at verification time | §4.1 |
+| 13 | Finding order; the consequential `sequence-broken` | §1.4 and `corpus/README.md` |
+| — | Two places the corpus was more specific than the document | §1.4 |
+| — | Two vectors describing version 1 mechanics | corrected |
+
+The original report follows, unedited.
+
+---
 
 This records every place where `SPEC.md` did not determine behaviour and this Go
 implementation had to make a judgment call. It is written from `SPEC.md`,

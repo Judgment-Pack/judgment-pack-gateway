@@ -230,6 +230,28 @@ The verifier must obtain the registry from the gateway (the key holder), **not**
 the untrusted store. That is the whole point: the anchor's authority comes from being
 outside the store's reach and sealed under a key the store's holder does not have.
 
+### 4.1 Absent and empty inputs
+
+A verifier asked to check something that is partly not there still **produces a
+verdict**; it does not refuse. Non-zero exit is reserved for being unable to reach
+a verdict at all.
+
+| Situation | Reading |
+|---|---|
+| no `<root>/receipts` directory | zero sessions — every sealed session is then `sealed-session-missing` |
+| the registry file does not exist | no seals load — every session in the store is then `unregistered-session` |
+| a session directory holding no receipts | a session with count 0, judged against its seal like any other |
+
+Each of these fails **closed**: an absent anchor cannot make a store verify, it can
+only fail to excuse one. A store that is genuinely empty against an empty registry
+verifies, because there is nothing it contradicts.
+
+A verifier does **not** re-apply §3a's token rule to the directory names it
+enumerates. Directory enumeration cannot yield `.`, `..` or a path separator, so
+the escape §3a exists to prevent cannot arise on the read path; a name outside the
+token rule is evidence the store was not written by a conforming gateway, but it is
+not itself a finding.
+
 ## 5. Trust boundary and honest bounds
 
 - The gateway holds **one protected signing identity** (an Ed25519 seed). It lives

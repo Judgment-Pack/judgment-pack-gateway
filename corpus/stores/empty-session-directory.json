@@ -1,0 +1,19 @@
+{
+  "name": "empty-session-directory",
+  "note": "A session directory holding no receipts at all. It is still a session with count 0 and is judged against its seal like any other; unsealed here, so it is unregistered.",
+  "authority": "gateway:corpus",
+  "files": {},
+  "registry": "",
+  "emptySessions": [
+    "s1"
+  ],
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "status": "unregistered-session"
+      }
+    ]
+  }
+}
