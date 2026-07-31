@@ -51,6 +51,24 @@ line. Sealing a session that is already sealed is **refused** — a session's
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback.
 
+## 2a. Session identifiers
+
+A session id names a directory under the store, and a verifier discovers sessions by
+**enumerating** that directory. The id is caller-supplied and the caller sits outside
+the trust boundary, so it is constrained to a flat token:
+
+```
+[A-Za-z0-9._-]{1,128}          (and never "." or "..")
+```
+
+Anything else — an absolute path, a `..` segment, a nested path — is refused
+(`400` over HTTP) before any source runs. This is load-bearing, not hygiene: an id
+that escaped the receipts root would produce **genuinely attested, gateway-signed
+receipts that verification could never enumerate**, so `/verify` would answer `ok`
+for a store missing sessions the gateway had itself signed — silently voiding §3's
+coverage guarantee. The store enforces the same rule on write, so the guarantee does
+not rest on the HTTP layer alone.
+
 ## 3. Registry-anchored verification
 
 `verify_with_registry(verify_store, store_root, key, registry_path, authority)`:
@@ -102,7 +120,7 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}`. No receipt is accepted from the caller. |
+| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}`. No receipt is accepted from the caller. `session` must be a flat token (§2a) or the call is refused `400` before the source runs. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. |

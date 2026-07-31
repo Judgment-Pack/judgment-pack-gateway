@@ -20,7 +20,7 @@ Standard library only.
 import json
 import os
 
-from attest import canon, require_key
+from attest import canon, require_key, require_session
 import hashlib
 import hmac
 
@@ -44,6 +44,7 @@ class Registry:
         """Seal a closed session's final receipt count. Append-only: sealing a
         session that is already sealed is refused, so a session's count cannot be
         re-sealed to a smaller value."""
+        require_session(session_id)
         for record in self._read():
             if record.get("sessionId") == session_id:
                 raise ValueError("session already sealed: %s" % session_id)
