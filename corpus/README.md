@@ -1,99 +1,118 @@
 # Conformance corpus
 
 Frozen vectors that any implementation of this gateway's attestation format must
-reproduce. The corpus is **the arbiter** — not tests belonging to the Python
+reproduce. The corpus is **the arbiter** — not tests belonging to an
 implementation, but a third thing every implementation answers to, including the
-reference.
-
-Run it:
+one in this repository.
 
 ```
-python3 conformance.py                    # the Python reference
-python3 conformance.py --impl "./gateway" # any implementation (process contract in conformance.py)
+cd go && go build -o gateway .
+./gateway conform                     # this implementation
+./gateway conform --impl ./other      # any implementation (contract below)
 ```
 
-## Why this exists
+## The corpus is frozen, and that now matters more than it did
 
-Without frozen vectors, two implementations mean two private definitions of "valid
-receipt" — strictly worse than one, because the disagreement is invisible. The
-hazard is concentrated in canonicalization, since `canon` is what gets signed: two
-implementations that canonicalize differently disagree about *every* receipt, and
-neither reports an error, because each is internally consistent.
+These vectors are **hand-maintained normative data**. They are not regenerated
+from the implementation that reads them, and there is deliberately no generator in
+this repository any more.
 
-These are not hypothetical. `test_conformance.py` demonstrates that the corpus
-catches all four of these, each of which is the *default* behaviour of some
-standard library:
+That constraint used to be a nicety and is now load-bearing. This repository had
+two implementations — a Python reference and a clean-room Go one — and the corpus
+was generated from the Python. With the Python retired, a generator would
+regenerate expectations from the *only* implementation, which makes the corpus a
+mirror of that code rather than a check on it: drift would be dutifully recorded
+as the new correct answer, and every vector would still pass.
+
+So: **changing a vector is a specification change.** It needs the same
+justification as changing `SPEC.md`, and the two should move together. If a vector
+looks wrong, the question is whether `SPEC.md` is wrong — not whether the code
+disagrees with it.
+
+The standing this data has comes from history rather than from authority: an
+implementation written from `SPEC.md` and these vectors alone, by an author barred
+from reading the reference, converged on all of them. What it could *not* derive
+from `SPEC.md`, and had to reconstruct from these files instead, is recorded in
+[`../go/AMBIGUITIES.md`](../go/AMBIGUITIES.md) — and is why `SPEC.md` §1 exists.
+
+## The corpus has teeth, and that is tested
+
+A conformance suite everything passes proves nothing, so
+[`../go/teeth_test.go`](../go/teeth_test.go) checks the other direction: each of
+these defects must be **caught**. Every one is the *default* behaviour of some
+standard library.
 
 | Divergence | Where it comes from |
 |---|---|
 | `<` `>` `&` escaped to `<…` | Go's `encoding/json` does this by default |
-| non-ASCII escaped to `é` | Python's `json.dumps` defaults to `ensure_ascii=True` |
-| member names ordered by UTF-16 code unit | RFC 8785 says so — and the judgment-pack runtime's own `internal/jcs` does it |
+| non-ASCII escaped to `café` | many encoders default to ASCII-only output |
+| member names ordered by UTF-16 code unit | RFC 8785 — and the judgment-pack runtime's own `internal/jcs` |
 | per-receipt checks pass, registry anchor ignored | the exact gap this gateway exists to close |
 
-The third is worth dwelling on: a Go author implementing this would very
-reasonably reach for an existing JCS package. That package orders by UTF-16 code
-unit, this format orders by code point, and the two disagree on any member name
-outside the BMP. One vector catches it; no amount of code review would.
+The third is worth dwelling on: an implementer would very reasonably reach for an
+existing JCS package. It orders by UTF-16 code unit, this format orders by code
+point, and the two disagree on any member name outside the BMP. One vector catches
+it; no amount of code review would.
 
 ## What is in it
 
-**`canon.json`** — 25 vectors mapping a value to its exact canonical bytes.
-Inputs are carried as JSON *text*, not as parsed JSON, deliberately: a vector has
-to distinguish the integer `1` from the number `1.0`, and express a lone
+**`canon.json`** — 30 vectors mapping a value to its exact canonical bytes. Inputs
+are carried as JSON *text*, not parsed JSON, deliberately: a vector has to
+distinguish the integer `1` from the number `1.0`, and to express a lone
 surrogate, and neither survives being written into a document each language
 re-parses with its own defaults. Accepting vectors carry `expectedHex`; refusing
 vectors carry `reject: true`.
 
-**`stores/*.json`** — 14 vectors, each a complete store (a `path → text` map plus
-the registry text) and its expected `(ok, findings)`. There is one per status the
-implementation can emit, and `tools/generate_corpus.py` **fails the build** if a
-case does not actually exercise the status it is named for. That guard exists
-because the first draft of this corpus shipped an `artifact-mismatch` case whose
-mutation was a silent no-op: it asserted the happy path while claiming to test
-tampering.
-
-**`TEST-PUBLIC-KEY`** — what verification consumes, and the only key the runner
-reads. **`TEST-SEED`** — published solely so these vectors can be regenerated; no
-verifier needs it, and `conformance.py` never reads it. Read either
-**whitespace-stripped**:
-a checkout that converts line endings would otherwise leave a `\r` inside the key,
-and then every signature in the corpus fails for a reason that looks exactly like a
-format disagreement. This is not hypothetical — it is how this corpus first failed
-on Windows CI. `.gitattributes` marks `corpus/**` as non-text so the fixtures are
-never converted in the first place. Receipts are signed, so conformance vectors
-cannot exist without a key; crypto RFCs publish test vectors with their keys for the
-same reason. It signs nothing real and must never be used by a deployment.
+**`stores/*.json`** — 17 vectors, each a complete store (a `path → text` map plus
+the registry text) and its expected `(ok, findings)`. There is one per status an
+implementation can emit. Two of them, `key-mismatch` and `unsupported-version`,
+exist because a second implementation pointed out that those statuses were
+unspecified *and* untestable — the claim of one vector per status had quietly
+become false.
 
 **`ed25519-vectors.json`** — signature vectors generated by the `cryptography`
-package, an independent vetted implementation that is *not* a dependency of this
-repo. They are how that implementation's verdict reaches CI, which has no
-`cryptography` installed, so `ed25519.py` is never checked against itself.
+Python package, an independent vetted implementation that is a dependency of
+nothing here. They are how that implementation's verdict travels to a machine that
+does not have it, so the signature layer is never checked against itself.
+
+**`TEST-PUBLIC-KEY`** — what verification consumes, and the only key the runner
+reads. **`TEST-SEED`** — published solely so a maintainer can construct new
+vectors deliberately; no verifier needs it, and `conform` never reads it.
+
+Read either **whitespace-stripped**: a checkout that converts line endings would
+otherwise leave a `\r` inside the key, and then every signature in the corpus
+fails for a reason that looks exactly like a format disagreement. That is not
+hypothetical — it is how this corpus first failed on Windows CI. `.gitattributes`
+marks `corpus/**` non-text so the fixtures are never converted in the first place.
+
+Receipts are signed, so conformance vectors cannot exist without a key; crypto
+RFCs publish test vectors with their keys for the same reason. It signs nothing
+real and must never be used by a deployment.
+
+## The process contract
+
+`--impl CMD` drives any implementation, in any language, with no dependency on
+this one:
+
+- `CMD canon` — stdin: one JSON document (the *text*). stdout: the canonical
+  bytes, exactly, no trailing newline. Exit 0 if inside the domain, non-zero if
+  refused.
+- `CMD verify <store-root> <registry-path> <authority>` — stdin: the 32-byte
+  Ed25519 **public** key, raw bytes, never a secret. stdout:
+  `{"ok": bool, "findings": [...]}`. Exit 0 whenever a verdict was produced; a
+  *failing* verdict is still exit 0.
+
+Findings are compared as a **multiset**: order is not normative.
 
 ## Ambiguities this corpus surfaced
 
-Recorded rather than silently pinned. Each is a question `SPEC.md` should answer.
+Recorded rather than silently pinned. Both are now stated in `SPEC.md`, but the
+history is kept, because it is the argument for writing specifications down.
 
-1. **Findings order is not normative.** `conformance.py` compares findings as a
-   multiset. The reference emits per-session findings in *filename string* order,
-   so a session with ten or more receipts would report `0, 1, 10, 2, …`. An
-   implementation sorting numerically is not wrong; the spec simply does not say.
+1. **Findings order is not normative.** Compared as a multiset. An implementation
+   emitting per-session findings in filename-string order reports `0, 1, 10, 2, …`
+   for a session with ten or more receipts; one sorting numerically is not wrong.
 2. **A failing receipt produces a second, consequential finding.** A receipt that
-   fails verification is excluded from the chain reconstruction, so one bad
-   receipt also yields `sequence-broken` — visible in the `authority-mismatch`
-   vector, which reports both. The corpus pins current behaviour. Whether that
-   second finding is *required* of an implementation, or an artifact of how the
-   reference reconstructs the chain, is unresolved.
-
-## How the expectations were produced
-
-Generated by the Python reference (`tools/generate_corpus.py`), then read against
-`SPEC.md` by hand. So the corpus pins **the reference's current behaviour**, not
-an independently derived truth.
-
-That matters for how you read a disagreement: when a second implementation
-disagrees, it is not automatically the second implementation being wrong. It is a
-question about the specification that someone has to answer — which is the entire
-point. In this project's own precedent, building a second implementation of the
-derivation rule surfaced three genuine spec ambiguities that a single
-implementation had hidden, and agreement came only after each was pinned.
+   fails is excluded from the chain reconstruction, so a failure at `callIndex` 0
+   also yields `sequence-broken`, while the same defect later in the session does
+   not. That second finding is informative about *position*, not about the defect.

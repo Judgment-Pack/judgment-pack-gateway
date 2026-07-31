@@ -172,8 +172,7 @@ The context prefix domain-separates a seal signature from a receipt signature
 
 Checking a seal needs only the **public** key — see §5.
 
-The registry ([`registry.py`](registry.py)) is an append-only file, one seal per
-line. Sealing a session that is already sealed is **refused** — a session's
+The registry is an append-only file, one seal per line. Sealing a session that is already sealed is **refused** — a session's
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback.
 
@@ -282,14 +281,17 @@ core's boundary: **proof of the bytes, not proof of their truth.**
 ## 7. Conformance
 
 An implementation of this specification is checked against the frozen vectors in
-[`corpus/`](corpus/README.md), not against the reference's source. Two families:
+[`corpus/`](corpus/README.md), never against another implementation's source. The
+corpus is **frozen**: hand-maintained normative data, not output regenerated from
+whichever implementation exists. Changing a vector is a specification change and
+needs the same justification as changing this document. Two families:
 **canon vectors** (a value → its exact canonical bytes, or a refusal) and **store
 vectors** (a complete store and registry → the expected `(ok, findings)`), with one
 store vector per status this document names.
 
-`conformance.py` runs them, and defines a small process contract so an
-implementation in any language can answer to the corpus without depending on the
-reference. Findings are compared as a multiset: **order is not normative.**
+`gateway conform` runs them, and `--impl CMD` drives any other implementation
+through a small process contract, so an implementation in any language can answer
+to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.**
 
 Two questions this specification does not yet settle, surfaced by building the
 corpus and recorded in [`corpus/README.md`](corpus/README.md): the order of

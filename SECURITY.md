@@ -51,13 +51,12 @@ channel that does not depend on the party being audited. Nothing in this reposit
 channel; a receipt carries a `keyId`, never a key, precisely so that an implementation cannot
 accidentally trust the key a store hands it.
 
-**The signature implementation is reference arithmetic, not production crypto.** `ed25519.py` is
-pure-Python Ed25519 on big integers: **not constant time**, and it must not hold a key that matters.
-It exists so the reference can specify and demonstrate signed receipts while staying
-standard-library-only. A deployment signs with a vetted implementation — Go's standard library has
-`crypto/ed25519`, which is one more reason the deployable belongs in Go. Correctness is checked
-against RFC 8032's published vector and against vectors frozen from the `cryptography` package, so
-the arithmetic answers to an independent implementation rather than to itself.
+**Signing uses Go's standard library `crypto/ed25519`** — vetted and constant-time. An earlier
+revision carried a hand-written pure-Python Ed25519 that was explicitly *not* constant time and was
+documented as unfit to hold a real key. Retiring the Python removed that caveat rather than
+mitigating it, which is the largest security improvement in this repository's history.
+`corpus/ed25519-vectors.json` still checks the signature layer against vectors produced by an
+independent implementation.
 
 **A seed and a public key are both 32 bytes**, so no length check distinguishes them. Passing one
 where the other belongs is not refused — it silently becomes a *different identity*, whose receipts

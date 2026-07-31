@@ -3,12 +3,17 @@ package main
 // A second, clean-room implementation of the judgment-pack gateway attestation
 // format (receipt version 2), derived from SPEC.md and corpus/ alone.
 //
-// Two subcommands, per CONTRACT.md:
+// Subcommands:
 //
 //	gateway canon                                    < value.json
 //	gateway verify <store-root> <registry> <auth>    < publickey.raw
+//	gateway conform [--impl CMD] [--corpus DIR]
+//	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--port N]
+//	gateway keygen [seedfile]
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -18,7 +23,7 @@ import (
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | gateway verify <store-root> <registry-path> <authority>")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | keygen")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -26,6 +31,12 @@ func main() {
 		os.Exit(cmdCanon())
 	case "verify":
 		os.Exit(cmdVerify(os.Args[2:]))
+	case "conform":
+		os.Exit(cmdConform(os.Args[2:]))
+	case "serve":
+		os.Exit(cmdServe(os.Args[2:]))
+	case "keygen":
+		os.Exit(cmdKeygen(os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)
@@ -104,4 +115,78 @@ func readPublicKey(raw []byte) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("expected 32 raw bytes, got %d", len(raw))
+}
+
+// cmdKeygen writes a fresh 32-byte Ed25519 seed and reports the public key it
+// implies, so an operator can pin that key out of band -- which SPEC.md §5 says
+// is the only way the signature means anything.
+func cmdKeygen(args []string) int {
+	path := "gateway.seed"
+	if len(args) > 0 {
+		path = args[0]
+	}
+	seed := make([]byte, seedBytes)
+	if _, err := rand.Read(seed); err != nil {
+		fmt.Fprintln(os.Stderr, "generate seed:", err)
+		return 1
+	}
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(seed)+"\n"), 0o600); err != nil {
+		fmt.Fprintln(os.Stderr, "write seed:", err)
+		return 1
+	}
+	public := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	fmt.Printf("seed written to %s (keep it secret)\npublicKey %s\nkeyId     %s\n",
+		path, hex.EncodeToString(public), keyIDFor(public))
+	return 0
+}
+
+func cmdServe(args []string) int {
+	if len(args) < 4 {
+		fmt.Fprintln(os.Stderr,
+			"usage: gateway serve <store> <seedfile> <authority> <registry> "+
+				"[--source NAME=CMD ...] [--port N]")
+		return 2
+	}
+	storeRoot, seedPath, authority, registryPath := args[0], args[1], args[2], args[3]
+	raw, err := os.ReadFile(seedPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "read seed:", err)
+		return 1
+	}
+	seed := []byte(strings.TrimSpace(string(raw)))
+	if len(seed) == 2*seedBytes {
+		if decoded, err := hex.DecodeString(string(seed)); err == nil {
+			seed = decoded
+		}
+	}
+
+	sources := map[string][]string{}
+	port := "8787"
+	rest := args[4:]
+	for i := 0; i < len(rest); i++ {
+		switch {
+		case rest[i] == "--source" && i+1 < len(rest):
+			name, command, found := strings.Cut(rest[i+1], "=")
+			if !found {
+				fmt.Fprintln(os.Stderr, "--source expects NAME=CMD")
+				return 2
+			}
+			sources[name] = strings.Fields(command)
+			i++
+		case rest[i] == "--port" && i+1 < len(rest):
+			port = rest[i+1]
+			i++
+		}
+	}
+
+	service, err := newGatewayService(storeRoot, seed, authority, registryPath, sources)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	if err := service.listenAndServe("127.0.0.1:" + port); err != nil {
+		fmt.Fprintln(os.Stderr, "serve:", err)
+		return 1
+	}
+	return 0
 }

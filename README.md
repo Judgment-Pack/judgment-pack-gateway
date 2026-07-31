@@ -32,19 +32,24 @@ The registry is the reason the gateway exists. The inline attestation core prove
 each receipt; it left two residuals it structurally could not catch on its own,
 because both need an anchor *outside* the store. The gateway is that anchor. See
 [`SPEC.md`](SPEC.md) for the seal contract and the exact findings, and
-[`test_gateway.py`](test_gateway.py) for the demonstration — including the contrast
-that the inline verify *passes* the same replayed and truncated stores the
-registry-anchored verify rejects.
+[`go/service_test.go`](go/service_test.go) for the demonstration — including the
+contrast that per-receipt verification *passes* the same replayed and truncated
+stores the registry-anchored verification rejects.
 
 ## Run it
 
-Reference service, standard library only, binds localhost.
+One Go binary, standard library only, binds localhost.
 
 ```
-head -c 32 /dev/urandom > gateway.seed          # the protected identity (Ed25519 seed)
-python3 gateway.py ./store gateway.seed gateway:demo ./registry.jsonl \
-    --source screening='python3 my_source.py' --port 8787
+cd go && go build -o gateway .
+
+./gateway keygen gateway.seed      # prints the public key and key id to pin
+./gateway serve ./store gateway.seed gateway:demo ./registry.jsonl \
+    --source screening='./my_source' --port 8787
 ```
+
+`keygen` prints the public key precisely because it has to be pinned **out of
+band** — see Honest bounds.
 
 ```
 curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","arguments":{"subject":"acme"}}'
@@ -59,7 +64,7 @@ result on stdout. The gateway attaches no transport of its own; it attests whate
 bytes a source returns — **proof of the bytes, not proof of their truth.**
 
 ```
-python3 -m unittest discover -v
+cd go && go test ./... && ./gateway conform     # the frozen corpus is the arbiter
 ```
 
 ## Honest bounds
@@ -73,9 +78,9 @@ Stated plainly because the whole line is about being exact where proof stops:
 - **Verification needs only the public key**, so checking grants no power to forge.
   But the public key must be pinned out of band: fetching it from the gateway you
   are auditing proves consistency, not authenticity.
-- `ed25519.py` is **reference arithmetic, not constant time**, and must not hold a
-  real key. It is checked against RFC 8032's vector and against an independent
-  implementation, but a deployment should sign with a vetted library.
+- Signing uses Go's standard library `crypto/ed25519` — vetted and constant time.
+  (An earlier revision carried hand-written pure-Python Ed25519 that was neither;
+  retiring it removed the caveat rather than mitigating it.)
 - The registry closes replay and rollback **relative to a verifier that trusts the
   gateway's registry over the store**. It does not defend a compromised gateway: key
   disclosure forges everything.
