@@ -23,17 +23,20 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import attest
+import ed25519
 import registry
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 CORPUS = os.path.join(ROOT, "corpus")
 
-# A deliberately published test key. Receipts are keyed, so conformance vectors
+# A deliberately published test SEED. Receipts are signed, so conformance vectors
 # cannot exist without one -- the same reason crypto RFCs ship test vectors with
-# their keys. It signs nothing real and must never be used by a deployment.
-TEST_KEY = b"judgment-pack-gateway-corpus-test-key-0001"
+# their keys. Its public half is what a verifier uses; the seed is published only
+# so the vectors can be regenerated. It signs nothing real.
+TEST_SEED = b"judgment-pack-gateway-corpus-see"   # exactly 32 bytes
 AUTHORITY = "gateway:corpus"
+PUBLIC_KEY = ed25519.public_key(TEST_SEED)
 
 
 # ---------------------------------------------------------------- canon vectors
@@ -110,8 +113,8 @@ def build_reference_store(sessions):
     root = tempfile.mkdtemp()
     store_root = os.path.join(root, "store")
     registry_path = os.path.join(root, "registry.jsonl")
-    store = attest.Store(store_root, TEST_KEY, AUTHORITY)
-    reg = registry.Registry(registry_path, TEST_KEY)
+    store = attest.Store(store_root, TEST_SEED, AUTHORITY)
+    reg = registry.Registry(registry_path, TEST_SEED)
     for session_id, count in sessions:
         prev = None
         for index in range(count):
@@ -119,12 +122,12 @@ def build_reference_store(sessions):
             result_digest = store.retain(payload)
             core = {
                 "receiptVersion": attest.RECEIPT_VERSION, "sessionId": session_id,
-                "callIndex": index, "prevHmac": prev, "source": "corpus",
+                "callIndex": index, "prevSignature": prev, "source": "corpus",
                 "argumentsDigest": store.keyed_digest("args", attest.canon({"i": index})),
                 "resultDigest": result_digest, "servedAt": "2026-07-31T00:00:00Z",
                 "authority": AUTHORITY,
             }
-            prev = store.stamp(core)["hmac"]
+            prev = store.stamp(core)["signature"]
         reg.seal(session_id, count, "2026-07-31T00:00:01Z")
     files = {}
     for base, _dirs, names in os.walk(store_root):
@@ -159,7 +162,7 @@ def verdict(files, registry_text):
     root, store_root, registry_path = materialize(files, registry_text)
     try:
         ok, findings = registry.verify_with_registry(
-            attest.verify_store, store_root, TEST_KEY, registry_path, AUTHORITY)
+            attest.verify_store, store_root, PUBLIC_KEY, registry_path, AUTHORITY)
     finally:
         shutil.rmtree(root, ignore_errors=True)
     return ok, findings
@@ -187,23 +190,26 @@ def mutate(name):
         # Three correctly chained receipts, but the seal records two. Every
         # per-receipt check passes; only the registry sees the surplus.
         sealed_at = "2026-07-31T00:00:01Z"
+        key_identifier = attest.key_id(PUBLIC_KEY)
+        signature = ed25519.sign(
+            TEST_SEED, registry._seal_body("s1", 2, sealed_at, key_identifier))
         record = {
             "sessionId": "s1", "finalCount": 2, "sealedAt": sealed_at,
-            "hmac": registry._seal_hmac(TEST_KEY, "s1", 2, sealed_at),
+            "keyId": key_identifier,
+            "signature": binascii.hexlify(signature).decode("ascii"),
         }
         return files, attest.canon(record).decode() + "\n"
 
     def break_chain(files, reg):
-        # Receipt 1's prevHmac is re-pointed and the receipt is RE-KEYED, so it
-        # verifies on its own terms. Only the chain reconstruction catches it.
-        import hashlib
-        import hmac as hmaclib
+        # Receipt 1's prevSignature is re-pointed and the receipt is RE-SIGNED, so
+        # it verifies on its own terms. Only the chain reconstruction catches it.
         files = dict(files)
         path = receipt_path(files, "s1", 1)
         stored = json.loads(files[path])
-        core = {k: v for k, v in stored.items() if k != "hmac"}
-        core["prevHmac"] = "f" * 64
-        core["hmac"] = hmaclib.new(TEST_KEY, attest.canon(core), hashlib.sha256).hexdigest()
+        core = {k: v for k, v in stored.items() if k != "signature"}
+        core["prevSignature"] = "f" * 128
+        core["signature"] = binascii.hexlify(
+            ed25519.sign(TEST_SEED, attest.RECEIPT_CONTEXT + attest.canon(core))).decode("ascii")
         files[path] = attest.canon(core).decode() + "\n"
         return files, reg
 
@@ -227,7 +233,7 @@ def mutate(name):
         files = dict(files)
         path = receipt_path(files, "s1", 1)
         stored = json.loads(files[path])
-        stored["servedAt"] = "2099-01-01T00:00:00Z"   # hmac now covers the old value
+        stored["servedAt"] = "2099-01-01T00:00:00Z"   # signature covers the old value
         files[path] = attest.canon(stored).decode() + "\n"
         return files, reg
 
@@ -235,10 +241,10 @@ def mutate(name):
         files = dict(files)
         path = receipt_path(files, "s1", 0)
         stored = json.loads(files[path])
-        core = {k: v for k, v in stored.items() if k != "hmac"}
+        core = {k: v for k, v in stored.items() if k != "signature"}
         core["authority"] = "gateway:not-the-expected-one"
-        import hashlib, hmac as hmaclib
-        core["hmac"] = hmaclib.new(TEST_KEY, attest.canon(core), hashlib.sha256).hexdigest()
+        core["signature"] = binascii.hexlify(
+            ed25519.sign(TEST_SEED, attest.RECEIPT_CONTEXT + attest.canon(core))).decode("ascii")
         files[path] = attest.canon(core).decode() + "\n"
         return files, reg
 
@@ -259,8 +265,10 @@ def mutate(name):
         return files, reg
 
     def forged_seal(files, reg):
-        forged = json.dumps({"sessionId": "s1", "finalCount": 3,
-                             "sealedAt": "t", "hmac": "0" * 64},
+        # Right session, right count, right key id -- but no valid signature,
+        # because producing one needs the seed.
+        forged = json.dumps({"sessionId": "s1", "finalCount": 3, "sealedAt": "t",
+                             "keyId": attest.key_id(PUBLIC_KEY), "signature": "0" * 128},
                             sort_keys=True, separators=(",", ":"))
         return files, forged + "\n"
 
@@ -274,7 +282,7 @@ def mutate(name):
         "unregistered-session": drop_seal,
         "artifact-mismatch": tamper_artifact,
         "artifact-missing": remove_artifact,
-        "hmac-mismatch": tamper_receipt_field,
+        "signature-mismatch": tamper_receipt_field,
         "authority-mismatch": wrong_authority,
         "misfiled": misfile,
         "sequence-broken": break_sequence,
@@ -297,10 +305,11 @@ CASES = [
      "replay into a fresh store looks like. Per-receipt verification passes."),
     ("artifact-mismatch", [("s1", 2)], "A retained artifact's bytes are altered."),
     ("artifact-missing", [("s1", 2)], "A receipt's artifact is absent from the store."),
-    ("hmac-mismatch", [("s1", 2)],
-     "A receipt field is edited without re-keying, so the stored hmac no longer covers it."),
+    ("signature-mismatch", [("s1", 2)],
+     "A receipt field is edited without re-signing, so the signature no longer covers it."),
     ("authority-mismatch", [("s1", 2)],
-     "A receipt validly keyed under a DIFFERENT authority label. The hmac verifies; "
+     "A receipt validly signed but carrying a DIFFERENT authority label. The signature "
+     "verifies; "
      "the expected-authority check is what rejects it."),
     ("misfiled", [("s1", 3)],
      "A valid receipt moved to a filename that disagrees with its callIndex."),
@@ -355,7 +364,16 @@ def store_vectors():
 
 
 def main():
-    os.makedirs(os.path.join(CORPUS, "stores"), exist_ok=True)
+    stores_dir = os.path.join(CORPUS, "stores")
+    os.makedirs(stores_dir, exist_ok=True)
+    # Prune cases this generator no longer produces. Without this, a renamed case
+    # leaves its predecessor behind as a vector nothing regenerates -- which is
+    # how a stale receipt-version-1 store survived the move to signatures.
+    expected_files = {"%s.json" % name for name, _sessions, _note in CASES}
+    for stale in sorted(set(os.listdir(stores_dir)) - expected_files):
+        if stale.endswith(".json"):
+            os.remove(os.path.join(stores_dir, stale))
+            print("pruned stale vector: %s" % stale)
     with open(os.path.join(CORPUS, "canon.json"), "w") as handle:
         json.dump({"key": None, "vectors": canon_vectors()}, handle, indent=2, sort_keys=False)
         handle.write("\n")
@@ -363,8 +381,12 @@ def main():
         with open(os.path.join(CORPUS, "stores", "%s.json" % case["name"]), "w") as handle:
             json.dump(case, handle, indent=2, sort_keys=False)
             handle.write("\n")
-    with open(os.path.join(CORPUS, "TEST-KEY"), "w") as handle:
-        handle.write(TEST_KEY.decode("ascii") + "\n")
+    # The PUBLIC key is what verification consumes; the seed is published only so
+    # these vectors can be regenerated. A verifier never needs it.
+    with open(os.path.join(CORPUS, "TEST-PUBLIC-KEY"), "w") as handle:
+        handle.write(binascii.hexlify(PUBLIC_KEY).decode("ascii") + "\n")
+    with open(os.path.join(CORPUS, "TEST-SEED"), "w") as handle:
+        handle.write(binascii.hexlify(TEST_SEED).decode("ascii") + "\n")
     print("canon vectors : %d" % len(canon_vectors()))
     print("store vectors : %d" % len(CASES))
 

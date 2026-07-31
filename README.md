@@ -15,16 +15,17 @@ the model cannot forge, and to say exactly where that proof stops.
 ## What it does
 
 - **Acquire.** A caller asks the gateway to acquire a result from a configured
-  source. The gateway runs the source, content-addresses the result, and issues an
-  HMAC receipt over its canonical form under the gateway's identity, chained to the
-  session's prior receipts. The caller **cannot supply a receipt** — the gateway
-  produces every one. This is what takes the model out of the proof path: an agent
-  can assert anything, but it cannot manufacture the gateway's HMAC.
+  source. The gateway runs the source, content-addresses the result, and **signs**
+  its canonical form under the gateway's Ed25519 identity, chained to the session's
+  prior receipts. The caller **cannot supply a receipt** — the gateway produces every
+  one. This is what takes the model out of the proof path: an agent can assert
+  anything, but it cannot manufacture the gateway's signature.
 - **Seal.** When a session closes, the gateway seals its final receipt count in an
   append-only registry under the same key.
 - **Verify.** A verifier fetches the registry from the gateway (not from the store)
-  and checks the store against it. Per-receipt integrity comes from the attestation
-  format; the seal adds what a store cannot attest about itself — that a whole
+  and checks the store against it **using only the public key** — checking grants no
+  power to forge. Per-receipt integrity comes from the signatures; the seal adds what
+  a store cannot attest about itself — that a whole
   session was **replayed** into it, or that a session's **tail was rolled back**.
 
 The registry is the reason the gateway exists. The inline attestation core proved
@@ -40,8 +41,8 @@ registry-anchored verify rejects.
 Reference service, standard library only, binds localhost.
 
 ```
-head -c 32 /dev/urandom > gateway.key           # the protected identity
-python3 gateway.py ./store gateway.key gateway:demo ./registry.jsonl \
+head -c 32 /dev/urandom > gateway.seed          # the protected identity (Ed25519 seed)
+python3 gateway.py ./store gateway.seed gateway:demo ./registry.jsonl \
     --source screening='python3 my_source.py' --port 8787
 ```
 
@@ -50,6 +51,7 @@ curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","argumen
 curl -s localhost:8787/seal    -d '{"session":"s1"}'
 curl -s localhost:8787/verify
 curl -s localhost:8787/registry            # the anchor a verifier fetches from the key holder
+curl -s localhost:8787/publickey           # the public key -- all a verifier needs
 ```
 
 A source is any command that reads the canonical arguments on stdin and writes a JSON
@@ -64,10 +66,16 @@ python3 -m unittest discover -v
 
 Stated plainly because the whole line is about being exact where proof stops:
 
-- An HMAC receipt (and a seal) is a **keyed integrity proof under a caller-configured
-  authority** — not an asymmetric signature, and not proof that a genuinely-named
-  source produced the bytes. The recorded source/authority is an operator label, not
-  an authenticated origin.
+- A receipt (and a seal) is an **Ed25519 signature under an operator-configured
+  authority label** — proof of byte-lineage to the key holder, not proof that a
+  genuinely-named source produced the bytes. The recorded source/authority is a
+  label, not an authenticated origin.
+- **Verification needs only the public key**, so checking grants no power to forge.
+  But the public key must be pinned out of band: fetching it from the gateway you
+  are auditing proves consistency, not authenticity.
+- `ed25519.py` is **reference arithmetic, not constant time**, and must not hold a
+  real key. It is checked against RFC 8032's vector and against an independent
+  implementation, but a deployment should sign with a vetted library.
 - The registry closes replay and rollback **relative to a verifier that trusts the
   gateway's registry over the store**. It does not defend a compromised gateway: key
   disclosure forges everything.

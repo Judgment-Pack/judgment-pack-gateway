@@ -1,5 +1,5 @@
 """Sealed session registry — the external anchor the gateway holds that closes
-the two residuals the inline attestation verify cannot catch on its own:
+the two residuals the per-receipt verification cannot catch on its own:
 
   - whole-session replay: a genuine past session (or a genuine prefix of one)
     copied verbatim into a fresh store is internally consistent and passes
@@ -7,37 +7,46 @@ the two residuals the inline attestation verify cannot catch on its own:
   - final-tail rollback: deleting the last k receipts of a session leaves a
     shorter, still-chained prefix that also passes.
 
-Both need an anchor *outside* the store on which sessions exist and how many
-receipts each holds. The gateway owns that anchor: as it attests, it seals each
-session's final count under its protected key. A verifier obtains the seals from
-the gateway (not from the untrusted store) and checks the store against them, so
-a replayed or truncated store is caught because its sessions are unsealed or its
-counts disagree — and an attacker cannot forge a seal without the key.
+Both need an anchor *outside* the store recording which sessions exist and how
+many receipts each holds. The gateway owns that anchor: as it attests, it seals
+each session's final count under its signing key. A verifier obtains the seals
+from the gateway (not from the untrusted store) and checks the store against
+them, so a replayed or truncated store is caught because its sessions are
+unsealed or its counts disagree.
+
+Seals are Ed25519-signed, like receipts, so checking one needs only the PUBLIC
+key: an attacker cannot forge a seal, and a verifier gains no power to forge by
+being able to check.
 
 Standard library only.
 """
 
+import binascii
 import json
 import os
 
-from attest import canon, require_key, require_session
-import hashlib
-import hmac
+import ed25519
+from attest import (SEAL_CONTEXT, AttestationError, canon, key_id, require_public_key,
+                    require_seed, require_session)
 
 
-def _seal_hmac(key, session_id, final_count, sealed_at):
-    body = canon({"sessionId": session_id, "finalCount": final_count, "sealedAt": sealed_at})
-    return hmac.new(key, b"seal:" + body, hashlib.sha256).hexdigest()
+def _seal_body(session_id, final_count, sealed_at, key_identifier):
+    return SEAL_CONTEXT + canon({
+        "sessionId": session_id, "finalCount": final_count,
+        "sealedAt": sealed_at, "keyId": key_identifier,
+    })
 
 
 class Registry:
     """The gateway's append-only seal log. One sealed record per closed session:
-    the session id, the final receipt count, when it was sealed, and an HMAC over
-    those under the gateway's key."""
+    the session id, the final receipt count, when it was sealed, the key that
+    sealed it, and a signature over those."""
 
-    def __init__(self, path, key):
+    def __init__(self, path, seed):
         self.path = path
-        self.key = require_key(key)
+        self.seed = require_seed(seed)
+        self.public_key = ed25519.public_key(self.seed)
+        self.key_id = key_id(self.public_key)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
 
     def seal(self, session_id, final_count, sealed_at):
@@ -48,11 +57,14 @@ class Registry:
         for record in self._read():
             if record.get("sessionId") == session_id:
                 raise ValueError("session already sealed: %s" % session_id)
+        signature = ed25519.sign(
+            self.seed, _seal_body(session_id, final_count, sealed_at, self.key_id))
         record = {
             "sessionId": session_id,
             "finalCount": final_count,
             "sealedAt": sealed_at,
-            "hmac": _seal_hmac(self.key, session_id, final_count, sealed_at),
+            "keyId": self.key_id,
+            "signature": binascii.hexlify(signature).decode("ascii"),
         }
         with open(self.path, "ab") as handle:
             handle.write(canon(record) + b"\n")
@@ -75,11 +87,12 @@ class Registry:
         return records
 
 
-def load_seals(path, key):
-    """Return {sessionId: finalCount} for every seal whose HMAC verifies. A seal
-    with a bad or forged HMAC is dropped (it did not come from the key holder),
-    so a store cannot be excused by a forged registry."""
-    require_key(key)
+def load_seals(path, public_key):
+    """Return {sessionId: finalCount} for every seal whose signature verifies under
+    `public_key`. A seal that does not verify is DROPPED -- it did not come from the
+    key holder -- so a store cannot be excused by a forged registry."""
+    require_public_key(public_key)
+    expected_key_id = key_id(public_key)
     seals = {}
     if not os.path.exists(path):
         return seals
@@ -90,10 +103,15 @@ def load_seals(path, key):
                 continue
             try:
                 record = json.loads(line.decode("utf-8"))
-                expected = _seal_hmac(key, record["sessionId"], record["finalCount"], record["sealedAt"])
-                if hmac.compare_digest(expected, record.get("hmac", "")):
+                if record.get("keyId") != expected_key_id:
+                    continue
+                body = _seal_body(record["sessionId"], record["finalCount"],
+                                  record["sealedAt"], record["keyId"])
+                signature = binascii.unhexlify(record["signature"])
+                if ed25519.verify(public_key, body, signature):
                     seals[record["sessionId"]] = record["finalCount"]
-            except (ValueError, KeyError, TypeError):
+            except (ValueError, KeyError, TypeError, binascii.Error,
+                    ed25519.SignatureError, AttestationError):
                 continue
     return seals
 
@@ -105,17 +123,18 @@ def _session_count(store_root, session_id):
     return len([n for n in os.listdir(session_dir) if n.endswith(".json")])
 
 
-def verify_with_registry(verify_store, store_root, key, registry_path, expected_authority=None):
-    """Full gateway verification: the inline per-receipt verification, plus the
-    registry anchor. Returns (ok, findings). Findings add:
+def verify_with_registry(verify_store, store_root, public_key, registry_path,
+                         expected_authority=None):
+    """Full gateway verification: the per-receipt verification, plus the registry
+    anchor. Needs only the PUBLIC key. Returns (ok, findings). Findings add:
       - unregistered-session : a session in the store the registry did not seal
         (whole-session replay, or a session forged without the key)
       - tail-rollback        : fewer receipts in the store than the seal records
       - count-exceeds-seal   : more receipts than the seal records
       - sealed-session-missing : a sealed session absent from the store
     """
-    ok, findings = verify_store(store_root, key, expected_authority)
-    seals = load_seals(registry_path, key)
+    ok, findings = verify_store(store_root, public_key, expected_authority)
+    seals = load_seals(registry_path, public_key)
     receipts_root = os.path.join(store_root, "receipts")
     store_sessions = set()
     if os.path.isdir(receipts_root):

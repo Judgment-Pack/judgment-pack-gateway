@@ -38,10 +38,31 @@ more importantly, what it does not.
 everything — every receipt, every seal, retroactively. There is no defence against a compromised
 gateway, and none is claimed.
 
-**Verification is symmetric.** A receipt and a seal are HMACs, so verifying one requires the same key
-that mints one: anyone who can verify can also forge. The verifier must therefore be a party the
-operator already trusts with the key. Separating those two roles needs asymmetric signatures, which
-this reference does not implement.
+**Verification is asymmetric** (receipt version 2). Receipts and seals are Ed25519 signatures, so
+checking one requires only the **public** key. A verifier gains no power to forge by being able to
+verify, and needs no trust relationship with the operator beyond holding the right public key. This
+replaced an HMAC format in which anyone who could verify could also forge; that format is gone rather
+than deprecated, so the symmetric caveat does not survive in a legacy path.
+
+**But the public key itself must arrive out of band.** Fetching a gateway's public key from that same
+gateway and then verifying its store proves *internal consistency*, not authenticity — an impostor
+serves its own key and its own store, and both agree. The public key has to be pinned through a
+channel that does not depend on the party being audited. Nothing in this repository establishes that
+channel; a receipt carries a `keyId`, never a key, precisely so that an implementation cannot
+accidentally trust the key a store hands it.
+
+**The signature implementation is reference arithmetic, not production crypto.** `ed25519.py` is
+pure-Python Ed25519 on big integers: **not constant time**, and it must not hold a key that matters.
+It exists so the reference can specify and demonstrate signed receipts while staying
+standard-library-only. A deployment signs with a vetted implementation — Go's standard library has
+`crypto/ed25519`, which is one more reason the deployable belongs in Go. Correctness is checked
+against RFC 8032's published vector and against vectors frozen from the `cryptography` package, so
+the arithmetic answers to an independent implementation rather than to itself.
+
+**A seed and a public key are both 32 bytes**, so no length check distinguishes them. Passing one
+where the other belongs is not refused — it silently becomes a *different identity*, whose receipts
+fail verification with `key-mismatch`. The gateway prints its `keyId` on startup so an operator can
+confirm which identity is live.
 
 **An attestation is not an authentication of the source.** A receipt proves the bytes the gateway
 retained are the bytes it attested, under a *caller-configured authority label*. It does not prove
