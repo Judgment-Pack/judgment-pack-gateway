@@ -53,7 +53,12 @@ because the first draft of this corpus shipped an `artifact-mismatch` case whose
 mutation was a silent no-op: it asserted the happy path while claiming to test
 tampering.
 
-**`TEST-KEY`** — a deliberately published key. Receipts are keyed, so conformance
+**`TEST-KEY`** — a deliberately published key. Read it **whitespace-stripped**:
+a checkout that converts line endings would otherwise leave a `\r` inside the key,
+and then every HMAC in the corpus fails for a reason that looks exactly like a
+format disagreement. This is not hypothetical — it is how this corpus first failed
+on Windows CI. `.gitattributes` marks `corpus/**` as non-text so the fixtures are
+never converted in the first place. Receipts are keyed, so conformance
 vectors cannot exist without one; crypto RFCs publish test vectors with their keys
 for the same reason. It signs nothing real and must never be used by a deployment.
 

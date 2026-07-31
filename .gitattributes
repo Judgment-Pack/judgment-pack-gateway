@@ -1,0 +1,3 @@
+# Corpus vectors are byte-exact fixtures. A line-ending conversion silently
+# invalidates every HMAC in them, so they are never treated as convertible text.
+corpus/** -text
