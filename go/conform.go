@@ -40,7 +40,10 @@ type storeVector struct {
 	Authority string            `json:"authority"`
 	Files     map[string]string `json:"files"`
 	Registry  string            `json:"registry"`
-	Expected  struct {
+	// Optional, for cases the files map cannot express (SPEC.md §4.1).
+	AbsentRegistry bool     `json:"absentRegistry"`
+	EmptySessions  []string `json:"emptySessions"`
+	Expected       struct {
 		OK       bool             `json:"ok"`
 		Findings []map[string]any `json:"findings"`
 	} `json:"expected"`
@@ -151,7 +154,17 @@ func materializeVector(vector storeVector) (root, storeRoot, registryPath string
 			return "", "", "", err
 		}
 	}
+	for _, name := range vector.EmptySessions {
+		if err := os.MkdirAll(filepath.Join(storeRoot, "receipts", name), 0o755); err != nil {
+			return "", "", "", err
+		}
+	}
 	registryPath = filepath.Join(root, "registry.jsonl")
+	if vector.AbsentRegistry {
+		// Deliberately not created: a MISSING registry is a different input from
+		// an empty one, and only one of them was previously covered.
+		return root, storeRoot, registryPath, nil
+	}
 	if err := os.WriteFile(registryPath, []byte(vector.Registry), 0o600); err != nil {
 		return "", "", "", err
 	}
