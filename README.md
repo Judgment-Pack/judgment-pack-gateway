@@ -1,0 +1,97 @@
+# judgment-pack-gateway
+
+The **open reference gateway** for judgment-pack: a small hosted service that
+attests the inputs a pack is judged on, under one protected signing identity, and
+seals each session so a verifier can catch replay and rollback.
+
+It is the *hosted deployment shape* of the trustworthy-input-acquisition research
+line ([judgment-pack-evaluator-experiments](https://github.com/Judgment-Pack/judgment-pack-evaluator-experiments),
+ADR-0002). That line asked a narrow question — **where do a pack's inputs come from,
+and what makes them trustworthy?** — and answered it with a ceiling stated up front:
+you can prove *byte-lineage*, not truth. A judgment is only as trustworthy as the
+bytes it was computed over, so the honest goal is to put those bytes on a proof path
+the model cannot forge, and to say exactly where that proof stops.
+
+## What it does
+
+- **Acquire.** A caller asks the gateway to acquire a result from a configured
+  source. The gateway runs the source, content-addresses the result, and issues an
+  HMAC receipt over its canonical form under the gateway's identity, chained to the
+  session's prior receipts. The caller **cannot supply a receipt** — the gateway
+  produces every one. This is what takes the model out of the proof path: an agent
+  can assert anything, but it cannot manufacture the gateway's HMAC.
+- **Seal.** When a session closes, the gateway seals its final receipt count in an
+  append-only registry under the same key.
+- **Verify.** A verifier fetches the registry from the gateway (not from the store)
+  and checks the store against it. Per-receipt integrity comes from the attestation
+  format; the seal adds what a store cannot attest about itself — that a whole
+  session was **replayed** into it, or that a session's **tail was rolled back**.
+
+The registry is the reason the gateway exists. The inline attestation core proved
+each receipt; it left two residuals it structurally could not catch on its own,
+because both need an anchor *outside* the store. The gateway is that anchor. See
+[`SPEC.md`](SPEC.md) for the seal contract and the exact findings, and
+[`test_gateway.py`](test_gateway.py) for the demonstration — including the contrast
+that the inline verify *passes* the same replayed and truncated stores the
+registry-anchored verify rejects.
+
+## Run it
+
+Reference service, standard library only, binds localhost.
+
+```
+head -c 32 /dev/urandom > gateway.key           # the protected identity
+python3 gateway.py ./store gateway.key gateway:demo ./registry.jsonl \
+    --source screening='python3 my_source.py' --port 8787
+```
+
+```
+curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","arguments":{"subject":"acme"}}'
+curl -s localhost:8787/seal    -d '{"session":"s1"}'
+curl -s localhost:8787/verify
+curl -s localhost:8787/registry            # the anchor a verifier fetches from the key holder
+```
+
+A source is any command that reads the canonical arguments on stdin and writes a JSON
+result on stdout. The gateway attaches no transport of its own; it attests whatever
+bytes a source returns — **proof of the bytes, not proof of their truth.**
+
+```
+python3 -m unittest discover -v
+```
+
+## Honest bounds
+
+Stated plainly because the whole line is about being exact where proof stops:
+
+- An HMAC receipt (and a seal) is a **keyed integrity proof under a caller-configured
+  authority** — not an asymmetric signature, and not proof that a genuinely-named
+  source produced the bytes. The recorded source/authority is an operator label, not
+  an authenticated origin.
+- The registry closes replay and rollback **relative to a verifier that trusts the
+  gateway's registry over the store**. It does not defend a compromised gateway: key
+  disclosure forges everything.
+- This is a **single-identity, single-operator reference**, localhost, no authn on
+  the HTTP surface, no HA. It is for self-hosting a trust root and demonstrating the
+  mechanism — not a hardened public deployment.
+
+## Why this repo is open
+
+The format, the registry contract, and the verifier are all here and inspectable, on
+purpose: **an attestation nobody can verify is worth nothing.** Verifiability is a
+property of the ecosystem, not of one operator, so the parts a third party needs to
+check a receipt or a seal without trusting the operator — the receipt format,
+canonicalization, the seal contract, and `verify_with_registry` — are open and stay
+open. That is the mandatory-open core.
+
+A *managed* operation of this same mechanism — a credentialed, multi-tenant, highly
+available, multi-source hosted service with a durable trust root — is a separate
+concern and a reasonable commercial one. The open/commercial line is drawn at
+verifiability, not at operation: anyone may verify; running the trust root at scale
+for others is the hosted product. Nothing in a paid deployment may make a receipt
+verifiable *only* through that operator; if it did, it would not be a judgment-pack
+attestation.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE).
