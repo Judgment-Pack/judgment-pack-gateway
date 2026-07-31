@@ -1,0 +1,148 @@
+{
+  "key": null,
+  "vectors": [
+    {
+      "note": "empty object",
+      "inputJson": "{}",
+      "expectedHex": "7b7d",
+      "expectedUtf8": "{}"
+    },
+    {
+      "note": "empty array",
+      "inputJson": "[]",
+      "expectedHex": "5b5d",
+      "expectedUtf8": "[]"
+    },
+    {
+      "note": "member names sort by code point",
+      "inputJson": "{\"b\":1,\"a\":2}",
+      "expectedHex": "7b2261223a322c2262223a317d",
+      "expectedUtf8": "{\"a\":2,\"b\":1}"
+    },
+    {
+      "note": "sorting is recursive",
+      "inputJson": "{\"z\":{\"b\":1,\"a\":2},\"a\":[{\"d\":1,\"c\":2}]}",
+      "expectedHex": "7b2261223a5b7b2263223a322c2264223a317d5d2c227a223a7b2261223a322c2262223a317d7d",
+      "expectedUtf8": "{\"a\":[{\"c\":2,\"d\":1}],\"z\":{\"a\":2,\"b\":1}}"
+    },
+    {
+      "note": "array order is preserved, never sorted",
+      "inputJson": "{\"a\":[3,1,2]}",
+      "expectedHex": "7b2261223a5b332c312c325d7d",
+      "expectedUtf8": "{\"a\":[3,1,2]}"
+    },
+    {
+      "note": "the empty string is a legal member name",
+      "inputJson": "{\"\":1}",
+      "expectedHex": "7b22223a317d",
+      "expectedUtf8": "{\"\":1}"
+    },
+    {
+      "note": "non-ASCII is raw UTF-8, never \\u-escaped (a serializer defaulting to ASCII output fails here)",
+      "inputJson": "{\"k\":\"caf\\u00e9\"}",
+      "expectedHex": "7b226b223a22636166c3a9227d",
+      "expectedUtf8": "{\"k\":\"caf\u00e9\"}"
+    },
+    {
+      "note": "< > & are raw, never HTML-escaped (Go's encoding/json escapes these by default and fails here)",
+      "inputJson": "{\"k\":\"<a>&b</a>\"}",
+      "expectedHex": "7b226b223a223c613e26623c2f613e227d",
+      "expectedUtf8": "{\"k\":\"<a>&b</a>\"}"
+    },
+    {
+      "note": "a non-BMP member name sorts by CODE POINT, not by UTF-16 code unit (a UTF-16-ordered canonicalizer emits these two in the other order)",
+      "inputJson": "{\"\\ud83d\\ude00\":1,\"\\ufffd\":2}",
+      "expectedHex": "7b22efbfbd223a322c22f09f9880223a317d",
+      "expectedUtf8": "{\"\ufffd\":2,\"\ud83d\ude00\":1}"
+    },
+    {
+      "note": "a non-BMP string value is raw UTF-8, not a surrogate pair",
+      "inputJson": "{\"k\":\"\\ud83d\\ude00\"}",
+      "expectedHex": "7b226b223a22f09f9880227d",
+      "expectedUtf8": "{\"k\":\"\ud83d\ude00\"}"
+    },
+    {
+      "note": "the solidus is not escaped",
+      "inputJson": "{\"k\":\"a/b\"}",
+      "expectedHex": "7b226b223a22612f62227d",
+      "expectedUtf8": "{\"k\":\"a/b\"}"
+    },
+    {
+      "note": "the standard short escapes",
+      "inputJson": "{\"k\":\"nl\\ntab\\tquote\\\"backslash\\\\\"}",
+      "expectedHex": "7b226b223a226e6c5c6e7461625c7471756f74655c226261636b736c6173685c5c227d",
+      "expectedUtf8": "{\"k\":\"nl\\ntab\\tquote\\\"backslash\\\\\"}"
+    },
+    {
+      "note": "control characters take the \\u form",
+      "inputJson": "{\"k\":\"\\u0001\"}",
+      "expectedHex": "7b226b223a225c7530303031227d",
+      "expectedUtf8": "{\"k\":\"\\u0001\"}"
+    },
+    {
+      "note": "zero, and a negative integer",
+      "inputJson": "{\"a\":0,\"b\":-1}",
+      "expectedHex": "7b2261223a302c2262223a2d317d",
+      "expectedUtf8": "{\"a\":0,\"b\":-1}"
+    },
+    {
+      "note": "the largest integer in the domain",
+      "inputJson": "{\"n\":9007199254740991}",
+      "expectedHex": "7b226e223a393030373139393235343734303939317d",
+      "expectedUtf8": "{\"n\":9007199254740991}"
+    },
+    {
+      "note": "the smallest integer in the domain",
+      "inputJson": "{\"n\":-9007199254740991}",
+      "expectedHex": "7b226e223a2d393030373139393235343734303939317d",
+      "expectedUtf8": "{\"n\":-9007199254740991}"
+    },
+    {
+      "note": "booleans and null are in the domain",
+      "inputJson": "{\"a\":true,\"b\":false,\"c\":null}",
+      "expectedHex": "7b2261223a747275652c2262223a66616c73652c2263223a6e756c6c7d",
+      "expectedUtf8": "{\"a\":true,\"b\":false,\"c\":null}"
+    },
+    {
+      "note": "a bare string is a legal top-level value",
+      "inputJson": "\"hello\"",
+      "expectedHex": "2268656c6c6f22",
+      "expectedUtf8": "\"hello\""
+    },
+    {
+      "note": "a non-integer number is outside the domain",
+      "inputJson": "{\"n\":1.5}",
+      "reject": true
+    },
+    {
+      "note": "an integer-valued FLOAT literal is still outside the domain",
+      "inputJson": "{\"n\":1.0}",
+      "reject": true
+    },
+    {
+      "note": "exponent notation is a float literal, so it is outside the domain",
+      "inputJson": "{\"n\":1e2}",
+      "reject": true
+    },
+    {
+      "note": "an integer above the safe range",
+      "inputJson": "{\"n\":9007199254740992}",
+      "reject": true
+    },
+    {
+      "note": "an integer below the safe range",
+      "inputJson": "{\"n\":-9007199254740992}",
+      "reject": true
+    },
+    {
+      "note": "a lone high surrogate is not encodable",
+      "inputJson": "{\"k\":\"\\ud800\"}",
+      "reject": true
+    },
+    {
+      "note": "a lone low surrogate is not encodable",
+      "inputJson": "{\"k\":\"\\udc00\"}",
+      "reject": true
+    }
+  ]
+}

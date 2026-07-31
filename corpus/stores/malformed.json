@@ -1,0 +1,27 @@
+{
+  "name": "malformed",
+  "note": "A receipt that is not JSON.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:508fa753ca9fe496dc79160782477f6e2582580e1821b667a81198d0212189e6\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"hmac\":\"7c31dd0653725cf5a1b8baa208a9691426dd12bbeb32196185a6d9a2c5011403\",\"prevHmac\":null,\"receiptVersion\":\"1\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{not json"
+  },
+  "registry": "{\"finalCount\":2,\"hmac\":\"dcfbbec5a83e6694a26bd31a536236784ef0ad60a495e41fa789f978dbb56724\",\"sealedAt\":\"2026-07-31T00:00:01Z\",\"sessionId\":\"s1\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "file": "1.json",
+        "status": "malformed"
+      }
+    ]
+  }
+}
