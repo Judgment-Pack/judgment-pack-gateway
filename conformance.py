@@ -16,7 +16,7 @@ THE PROCESS CONTRACT an implementation must satisfy, given `--impl CMD`:
       exit  : 0 if the value is in the canon domain, non-zero if it is refused
 
   CMD verify <store-root> <registry-path> <authority>
-      stdin : the key, raw bytes
+      stdin : the 32-byte Ed25519 PUBLIC key, raw bytes (never a secret)
       stdout: {"ok": <bool>, "findings": [{"sessionId":..,"callIndex":..,"status":..}, ..]}
       exit  : 0 when it produced a verdict (a FAILED verdict is still exit 0);
               non-zero only if it could not produce one at all
@@ -39,12 +39,16 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 CORPUS = os.path.join(HERE, "corpus")
 
 
-def _key():
-    # .strip(), not .rstrip(b"\n"): a checkout that converts line endings would
-    # otherwise leave a \r inside the key, and every HMAC in the corpus would
-    # fail for a reason that looks like a format disagreement.
-    with open(os.path.join(CORPUS, "TEST-KEY"), "rb") as handle:
-        return handle.read().strip()
+def _public_key():
+    """The PUBLIC key, and nothing else. That this function never reads a secret
+    is the property receipt version 2 exists to provide: running the corpus does
+    not hand the runner the power to forge what it checks.
+
+    .strip() rather than rstrip(b"\n") because a checkout that converts line
+    endings would otherwise leave a \r inside the key, and every signature in the
+    corpus would fail for a reason that looks like a format disagreement."""
+    with open(os.path.join(CORPUS, "TEST-PUBLIC-KEY"), "rb") as handle:
+        return binascii.unhexlify(handle.read().strip())
 
 
 def _materialize(case):
@@ -128,7 +132,7 @@ def run(implementation):
             failures.append("canon %r: expected %r, produced %r (%s)"
                             % (vector["inputJson"], expected, produced, vector["note"]))
 
-    key = _key()
+    key = _public_key()
     store_cases = sorted(glob.glob(os.path.join(CORPUS, "stores", "*.json")))
     for path in store_cases:
         with open(path) as handle:

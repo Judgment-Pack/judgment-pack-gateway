@@ -16,6 +16,7 @@ development, demonstration, and self-hosting a trust root -- not a hardened
 public deployment.
 """
 
+import binascii
 import json
 import os
 import subprocess
@@ -30,12 +31,15 @@ import registry
 class Gateway:
     """Holds the protected identity and the per-session attestation state."""
 
-    def __init__(self, store_root, key, authority, registry_path, sources):
-        self.store = attest.Store(store_root, key, authority)
+    def __init__(self, store_root, seed, authority, registry_path, sources):
+        self.store = attest.Store(store_root, seed, authority)
         self.store_root = store_root
-        self.key = key
+        self.seed = attest.require_seed(seed)
+        # The public half is derived and published; the seed never leaves.
+        self.public_key = self.store.public_key
+        self.key_id = self.store.key_id
         self.authority = authority
-        self.registry = registry.Registry(registry_path, key)
+        self.registry = registry.Registry(registry_path, seed)
         self.registry_path = registry_path
         self.sources = dict(sources)  # source name -> argv that reads args JSON on stdin, emits result JSON
         self._sessions = {}           # session id -> {"index": int, "prev": str|None, "sealed": bool}
@@ -64,17 +68,18 @@ class Gateway:
             result_digest = self.store.retain(attest.canon(result))
             core = {
                 "receiptVersion": attest.RECEIPT_VERSION, "sessionId": session_id,
-                "callIndex": index, "prevHmac": prev, "source": source,
+                "callIndex": index, "prevSignature": prev, "source": source,
                 "argumentsDigest": self.store.keyed_digest("args", attest.canon(arguments)),
                 "resultDigest": result_digest, "servedAt": attest.now(),
                 "authority": self.authority,
             }
             stored = self.store.stamp(core)
             state["index"] = index + 1
-            state["prev"] = stored["hmac"]
+            state["prev"] = stored["signature"]
         return {"result": result, "receipt": {
             "sessionId": session_id, "callIndex": index, "resultDigest": result_digest,
-            "authority": self.authority}}
+            "authority": self.authority, "keyId": self.key_id,
+            "signature": stored["signature"]}}
 
     def seal(self, session_id):
         attest.require_session(session_id)
@@ -88,8 +93,16 @@ class Gateway:
 
     def verify(self):
         ok, findings = registry.verify_with_registry(
-            attest.verify_store, self.store_root, self.key, self.registry_path, self.authority)
+            attest.verify_store, self.store_root, self.public_key, self.registry_path,
+            self.authority)
         return {"ok": ok, "findings": findings}
+
+    def public_key_document(self):
+        """What a verifier fetches so it can check this gateway's receipts without
+        being able to produce any. Publishing it is the point of signing."""
+        return {"algorithm": "ed25519", "keyId": self.key_id,
+                "publicKey": binascii.hexlify(self.public_key).decode("ascii"),
+                "authority": self.authority}
 
     def registry_bytes(self):
         if not os.path.exists(self.registry_path):
@@ -120,6 +133,8 @@ def _handler(gateway):
                     self._send(200, gateway.verify())
                 elif self.path == "/registry":
                     self._send(200, gateway.registry_bytes())
+                elif self.path == "/publickey":
+                    self._send(200, gateway.public_key_document())
                 else:
                     self._send(404, {"error": "not found"})
             except Exception as error:  # noqa: BLE001 -- reference service, report and continue
@@ -154,12 +169,14 @@ def serve(host, port, gateway):
 def main(argv):
     if len(argv) < 5:
         sys.stderr.write(
-            "usage: gateway.py <store> <keyfile> <authority> <registry> "
+            "usage: gateway.py <store> <seedfile> <authority> <registry> "
             "[--source NAME=CMD ...] [--port N]\n")
         return 2
     store_root, key_path, authority, registry_path = argv[1:5]
     with open(key_path, "rb") as handle:
-        key = handle.read()
+        seed = handle.read().strip()
+    if len(seed) == 64:                      # a hex-encoded seed is accepted too
+        seed = binascii.unhexlify(seed)
     sources, port = {}, 8787
     rest = argv[5:]
     i = 0
@@ -173,9 +190,10 @@ def main(argv):
             i += 2
         else:
             i += 1
-    gw = Gateway(store_root, key, authority, registry_path, sources)
+    gw = Gateway(store_root, seed, authority, registry_path, sources)
     server = serve("127.0.0.1", port, gw)
-    sys.stderr.write("gateway on http://127.0.0.1:%d (authority %s)\n" % (port, authority))
+    sys.stderr.write("gateway on http://127.0.0.1:%d (authority %s, key %s)\n"
+                     % (port, authority, gw.key_id))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -1,12 +1,12 @@
 {
-  "name": "malformed",
-  "note": "A receipt that is not JSON.",
+  "name": "signature-mismatch",
+  "note": "A receipt field is edited without re-signing, so the signature no longer covers it.",
   "authority": "gateway:corpus",
   "files": {
     "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
     "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
     "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:fab115d81199f3eb681db3e8c6162d350fad4bb9fd4546b7bd39b8c2e803ac66\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"source\":\"corpus\"}\n",
-    "receipts/s1/1.json": "{not json"
+    "receipts/s1/1.json": "{\"argumentsDigest\":\"hmac-sha256:b32b6d1ee01cc569ecd54595c323ed19687683caf3c64c769c2ab49ee7c5a1c4\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2099-01-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"9ee172fb79a771bff36e430a545c2fbdab24a763942f98d99fce1ee1cd6a8669df203971653a4565c5352ad1908ba7c8ed72c943f5baa0149e3e06f6bbf3ff09\",\"source\":\"corpus\"}\n"
   },
   "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-07-31T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"87c5508b48f99d292896fd02293d8b386f4bc4afba4f252e1311444b2760965d0afe426e43fcebb192733fb38a9707ded3b79e096ca0d8149733a3003acd7c0a\"}\n",
   "expected": {
@@ -19,8 +19,8 @@
       },
       {
         "sessionId": "s1",
-        "file": "1.json",
-        "status": "malformed"
+        "callIndex": 1,
+        "status": "signature-mismatch"
       }
     ]
   }

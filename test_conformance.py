@@ -7,7 +7,11 @@ CAUGHT by the corpus. Each divergence below is one a competent author would
 plausibly ship, because it is the default behaviour of a standard library.
 """
 
+import binascii
 import json
+import os
+import shutil
+import tempfile
 import unittest
 
 import attest
@@ -21,6 +25,81 @@ class ReferenceAgreesWithCorpus(unittest.TestCase):
         self.assertEqual(failures, [], "reference disagrees with its own corpus")
         self.assertGreaterEqual(canon_count, 20)
         self.assertGreaterEqual(store_count, 12)
+
+
+class PublicVerificationIsGenuine(unittest.TestCase):
+    """Receipt version 2 exists so that checking does not require the power to
+    forge. These tests assert that property directly rather than trusting it."""
+
+    def test_the_corpus_ships_no_secret_to_its_verifier(self):
+        # conformance.py reads the PUBLIC key file. The seed is published only so
+        # the vectors can be regenerated, and nothing in the verify path reads it.
+        source = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "conformance.py")).read()
+        self.assertIn("TEST-PUBLIC-KEY", source)
+        self.assertNotIn("TEST-SEED", source)
+
+    def test_verification_uses_only_the_public_key(self):
+        public = binascii.unhexlify(
+            open(os.path.join(conformance.CORPUS, "TEST-PUBLIC-KEY")).read().strip())
+        self.assertEqual(len(public), 32)
+        case = json.load(open(os.path.join(conformance.CORPUS, "stores", "valid-sealed.json")))
+        root, store_root, registry_path = conformance._materialize(case)
+        try:
+            ok, findings = registry.verify_with_registry(
+                attest.verify_store, store_root, public, registry_path, case["authority"])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+        self.assertTrue(ok, findings)
+
+    def test_holding_the_public_key_grants_no_power_to_sign(self):
+        # An Ed25519 seed and a public key are BOTH 32 bytes, so no length check
+        # can tell them apart -- misusing one as the other is not refused, it is
+        # simply a different identity. The property that matters is the
+        # consequence: receipts produced that way do not verify under the real
+        # public key, because they carry a different key id.
+        public = binascii.unhexlify(
+            open(os.path.join(conformance.CORPUS, "TEST-PUBLIC-KEY")).read().strip())
+        root = tempfile.mkdtemp()
+        try:
+            misused = attest.Store(os.path.join(root, "store"), public, "gateway:corpus")
+            self.assertNotEqual(misused.key_id, attest.key_id(public),
+                                "using a public key as a seed must not reproduce its identity")
+            payload = attest.canon({"n": 1})
+            misused.stamp({"receiptVersion": attest.RECEIPT_VERSION, "sessionId": "s1",
+                           "callIndex": 0, "prevSignature": None, "source": "s",
+                           "argumentsDigest": "x", "resultDigest": misused.retain(payload),
+                           "servedAt": "t", "authority": "gateway:corpus"})
+            ok, findings = attest.verify_store(os.path.join(root, "store"), public,
+                                               "gateway:corpus")
+            self.assertFalse(ok)
+            self.assertTrue(any(f["status"] == "key-mismatch" for f in findings), findings)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_a_forger_without_the_seed_cannot_pass_verification(self):
+        public = binascii.unhexlify(
+            open(os.path.join(conformance.CORPUS, "TEST-PUBLIC-KEY")).read().strip())
+        attacker_seed = b"an-attacker-seed-of-32-bytes!!!!"
+        self.assertEqual(len(attacker_seed), 32)
+        root = tempfile.mkdtemp()
+        try:
+            # A complete, internally perfect store -- signed by the wrong key.
+            store = attest.Store(os.path.join(root, "store"), attacker_seed, "gateway:corpus")
+            reg = registry.Registry(os.path.join(root, "reg.jsonl"), attacker_seed)
+            payload = attest.canon({"forged": True})
+            store.stamp({"receiptVersion": attest.RECEIPT_VERSION, "sessionId": "s1",
+                         "callIndex": 0, "prevSignature": None, "source": "s",
+                         "argumentsDigest": "x", "resultDigest": store.retain(payload),
+                         "servedAt": "t", "authority": "gateway:corpus"})
+            reg.seal("s1", 1, "t")
+            ok, findings = registry.verify_with_registry(
+                attest.verify_store, os.path.join(root, "store"), public,
+                os.path.join(root, "reg.jsonl"), "gateway:corpus")
+            self.assertFalse(ok, "a forgery under a different key verified")
+            self.assertTrue(any(f["status"] == "key-mismatch" for f in findings), findings)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
 
 
 class _Divergent(conformance.Reference):
