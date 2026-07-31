@@ -68,6 +68,15 @@ CANON_ACCEPT = [
     ("the smallest integer in the domain", '{"n":-9007199254740991}'),
     ("booleans and null are in the domain", '{"a":true,"b":false,"c":null}'),
     ("a bare string is a legal top-level value", '"hello"'),
+    # Previously unpinned: a clean-room implementation had to guess each of these,
+    # and recorded them as ambiguities. They are now stated in SPEC.md 1.1 and
+    # fixed here, so a third implementation cannot guess differently in silence.
+    ("the short escapes for backspace, formfeed and carriage return",
+     '{"k":"\\b\\f\\r"}'),
+    ("hex in a \\u escape is LOWERCASE", '{"k":"\\u001f"}'),
+    ("DEL (U+007F) is emitted raw, not escaped", '{"k":"\\u007f"}'),
+    ("U+2028 and U+2029 are emitted raw (some JSON writers escape them)",
+     '{"k":"\\u2028\\u2029"}'),
 ]
 
 CANON_REJECT = [
@@ -79,14 +88,16 @@ CANON_REJECT = [
     ("an integer below the safe range", '{"n":-9007199254740992}'),
     ("a lone high surrogate is not encodable", '{"k":"\\ud800"}'),
     ("a lone low surrogate is not encodable", '{"k":"\\udc00"}'),
+    ("a duplicate member name is refused: last-wins and first-wins are both "
+     "defensible, they disagree, and the disagreement is silent",
+     '{"a":1,"a":2}'),
 ]
 
 
 def canon_vectors():
     vectors = []
     for note, source in CANON_ACCEPT:
-        value = json.loads(source)
-        encoded = attest.canon(value)
+        encoded = attest.canon(attest.loads(source))
         vectors.append({
             "note": note,
             "inputJson": source,
@@ -94,9 +105,8 @@ def canon_vectors():
             "expectedUtf8": encoded.decode("utf-8"),
         })
     for note, source in CANON_REJECT:
-        value = json.loads(source)
         try:
-            attest.canon(value)
+            attest.canon(attest.loads(source))
         except attest.AttestationError:
             pass
         else:
@@ -200,6 +210,30 @@ def mutate(name):
         }
         return files, attest.canon(record).decode() + "\n"
 
+    def wrong_key_id(files, reg):
+        # A receipt whose keyId names a different key, RE-SIGNED so the signature
+        # itself is valid. Only the key-id check catches it. Without this vector
+        # the status has no name an implementation could match.
+        files = dict(files)
+        path = receipt_path(files, "s1", 0)
+        core = {k: v for k, v in json.loads(files[path]).items() if k != "signature"}
+        core["keyId"] = "0" * 32
+        core["signature"] = binascii.hexlify(
+            ed25519.sign(TEST_SEED, attest.RECEIPT_CONTEXT + attest.canon(core))).decode("ascii")
+        files[path] = attest.canon(core).decode() + "\n"
+        return files, reg
+
+    def wrong_version(files, reg):
+        # A receipt declaring version 1, RE-SIGNED so nothing else is wrong.
+        files = dict(files)
+        path = receipt_path(files, "s1", 0)
+        core = {k: v for k, v in json.loads(files[path]).items() if k != "signature"}
+        core["receiptVersion"] = "1"
+        core["signature"] = binascii.hexlify(
+            ed25519.sign(TEST_SEED, attest.RECEIPT_CONTEXT + attest.canon(core))).decode("ascii")
+        files[path] = attest.canon(core).decode() + "\n"
+        return files, reg
+
     def break_chain(files, reg):
         # Receipt 1's prevSignature is re-pointed and the receipt is RE-SIGNED, so
         # it verifies on its own terms. Only the chain reconstruction catches it.
@@ -264,6 +298,22 @@ def mutate(name):
         files[receipt_path(files, "s1", 1)] = "{not json"
         return files, reg
 
+    def foreign_key_seal(files, reg):
+        # A seal validly SIGNED by the real key but naming a foreign keyId. The
+        # keyId sits inside the signed payload, so the signature verifies; only a
+        # verifier that also checks the keyId rejects it. SPEC.md step 2 said
+        # "signature" and nothing else, and the clean-room implementation followed
+        # that literally -- so the two implementations disagreed here with no
+        # vector to catch it.
+        sealed_at = "2026-07-31T00:00:01Z"
+        foreign = "f" * 32
+        signature = ed25519.sign(
+            TEST_SEED, registry._seal_body("s1", 2, sealed_at, foreign))
+        record = {"sessionId": "s1", "finalCount": 2, "sealedAt": sealed_at,
+                  "keyId": foreign,
+                  "signature": binascii.hexlify(signature).decode("ascii")}
+        return files, attest.canon(record).decode() + "\n"
+
     def forged_seal(files, reg):
         # Right session, right count, right key id -- but no valid signature,
         # because producing one needs the seed.
@@ -291,6 +341,9 @@ def mutate(name):
         "sealed-session-missing": delete_sealed_session,
         "count-exceeds-seal": count_exceeds_seal,
         "chain-broken": break_chain,
+        "key-mismatch": wrong_key_id,
+        "unsupported-version": wrong_version,
+        "seal-with-foreign-key-id-is-dropped": foreign_key_seal,
     }[name]
 
 
@@ -316,15 +369,26 @@ CASES = [
     ("sequence-broken", [("s1", 3)], "A gap in the callIndex sequence."),
     ("malformed", [("s1", 2)], "A receipt that is not JSON."),
     ("forged-seal-is-dropped", [("s1", 3)],
-     "A seal for the right session and count whose hmac was not produced by the key. "
-     "It must be DROPPED, leaving the session unregistered -- not honoured."),
+     "A seal for the right session and count whose SIGNATURE was not produced by "
+     "the key. It must be DROPPED, leaving the session unregistered -- not honoured."),
     ("sealed-session-missing", [("s1", 2), ("s2", 2)],
      "A sealed session deleted from the store entirely."),
     ("count-exceeds-seal", [("s1", 3)],
      "Three correctly chained receipts against a seal recording two. Every "
      "per-receipt check passes; only the registry sees the surplus."),
+    ("key-mismatch", [("s1", 2)],
+     "A receipt naming a different keyId, re-signed so its signature is valid. "
+     "Only the key-id check rejects it -- without which a forger could sign with "
+     "their own key and label it as anyone's."),
+    ("unsupported-version", [("s1", 2)],
+     "A receipt declaring receiptVersion 1, re-signed so nothing else is wrong. "
+     "Version 1 is not accepted here."),
+    ("seal-with-foreign-key-id-is-dropped", [("s1", 2)],
+     "A seal validly signed by the real key but naming a FOREIGN keyId. The keyId "
+     "is inside the signed payload, so the signature verifies -- only a verifier "
+     "that also checks the keyId drops it, leaving the session unregistered."),
     ("chain-broken", [("s1", 3)],
-     "A receipt whose prevHmac is re-pointed and which is then RE-KEYED, so it "
+     "A receipt whose prevSignature is re-pointed and which is then RE-SIGNED, so it "
      "verifies on its own terms. Only the chain reconstruction catches it."),
 ]
 
@@ -336,7 +400,7 @@ def store_vectors():
         files, reg = mutate(name)(files, reg)
         ok, findings = verdict(files, reg)
         observed = {finding["status"] for finding in findings}
-        if name == "forged-seal-is-dropped":
+        if name in ("forged-seal-is-dropped", "seal-with-foreign-key-id-is-dropped"):
             expected_status = "unregistered-session"   # the forged seal is discarded
         elif name == "valid-sealed":
             expected_status = "ok"

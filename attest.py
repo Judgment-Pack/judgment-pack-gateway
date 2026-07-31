@@ -81,6 +81,29 @@ def canon(value):
     ).encode("utf-8")
 
 
+def _reject_duplicates(pairs):
+    seen = {}
+    for name, value in pairs:
+        if name in seen:
+            raise AttestationError("duplicate member name: %r" % name)
+        seen[name] = value
+    return seen
+
+
+def loads(text):
+    """Parse JSON text, REFUSING duplicate member names.
+
+    A document that two conforming parsers read as two different values has no
+    place in a format whose entire purpose is that two parties agree on which
+    bytes were signed: last-wins and first-wins are both defensible, they
+    disagree, and the disagreement is silent. Found by a clean-room second
+    implementation refusing duplicates while this one accepted them -- a live
+    divergence no corpus vector covered."""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8")
+    return json.loads(text, object_pairs_hook=_reject_duplicates)
+
+
 def digest(data):
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
@@ -236,7 +259,7 @@ def verify_store(store_root, public_key, expected_authority=None):
                 continue
             try:
                 with open(os.path.join(session_dir, name), "rb") as handle:
-                    stored = json.loads(handle.read().decode("utf-8"))
+                    stored = loads(handle.read())
                 if not isinstance(stored, dict):
                     raise ValueError("not an object")
                 status = _verify_one(stored, public_key, store_root, session_id, name,

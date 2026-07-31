@@ -110,6 +110,30 @@
       "expectedUtf8": "\"hello\""
     },
     {
+      "note": "the short escapes for backspace, formfeed and carriage return",
+      "inputJson": "{\"k\":\"\\b\\f\\r\"}",
+      "expectedHex": "7b226b223a225c625c665c72227d",
+      "expectedUtf8": "{\"k\":\"\\b\\f\\r\"}"
+    },
+    {
+      "note": "hex in a \\u escape is LOWERCASE",
+      "inputJson": "{\"k\":\"\\u001f\"}",
+      "expectedHex": "7b226b223a225c7530303166227d",
+      "expectedUtf8": "{\"k\":\"\\u001f\"}"
+    },
+    {
+      "note": "DEL (U+007F) is emitted raw, not escaped",
+      "inputJson": "{\"k\":\"\\u007f\"}",
+      "expectedHex": "7b226b223a227f227d",
+      "expectedUtf8": "{\"k\":\"\u007f\"}"
+    },
+    {
+      "note": "U+2028 and U+2029 are emitted raw (some JSON writers escape them)",
+      "inputJson": "{\"k\":\"\\u2028\\u2029\"}",
+      "expectedHex": "7b226b223a22e280a8e280a9227d",
+      "expectedUtf8": "{\"k\":\"\u2028\u2029\"}"
+    },
+    {
       "note": "a non-integer number is outside the domain",
       "inputJson": "{\"n\":1.5}",
       "reject": true
@@ -142,6 +166,11 @@
     {
       "note": "a lone low surrogate is not encodable",
       "inputJson": "{\"k\":\"\\udc00\"}",
+      "reject": true
+    },
+    {
+      "note": "a duplicate member name is refused: last-wins and first-wins are both defensible, they disagree, and the disagreement is silent",
+      "inputJson": "{\"a\":1,\"a\":2}",
       "reject": true
     }
   ]

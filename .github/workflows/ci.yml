@@ -37,3 +37,31 @@ jobs:
         run: python -m unittest discover -v
       - name: Confirm the gateway imports without third-party packages
         run: python -c "import gateway, registry, attest; print(gateway.__name__)"
+
+  agreement:
+    name: two implementations agree
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.26"
+      - name: Build the Go implementation
+        working-directory: go
+        run: go build -buildvcs=false -o gateway .
+      - name: Go tests
+        working-directory: go
+        run: go test ./...
+      - name: The Python reference agrees with the corpus
+        run: python conformance.py
+      # The agreement test proper. The Go implementation was written clean-room
+      # from SPEC.md and the corpus by an author who never read the Python; this
+      # step is what keeps the two from drifting apart afterwards.
+      - name: The clean-room Go implementation agrees with the corpus
+        run: python conformance.py --impl ./go/gateway

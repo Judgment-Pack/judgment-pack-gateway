@@ -1,0 +1,31 @@
+{
+  "name": "seal-with-foreign-key-id-is-dropped",
+  "note": "A seal validly signed by the real key but naming a FOREIGN keyId. The keyId is inside the signed payload, so the signature verifies -- only a verifier that also checks the keyId drops it, leaving the session unregistered.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:fab115d81199f3eb681db3e8c6162d350fad4bb9fd4546b7bd39b8c2e803ac66\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"argumentsDigest\":\"hmac-sha256:b32b6d1ee01cc569ecd54595c323ed19687683caf3c64c769c2ab49ee7c5a1c4\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"9ee172fb79a771bff36e430a545c2fbdab24a763942f98d99fce1ee1cd6a8669df203971653a4565c5352ad1908ba7c8ed72c943f5baa0149e3e06f6bbf3ff09\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ffffffffffffffffffffffffffffffff\",\"sealedAt\":\"2026-07-31T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"ddd5f02851f9c92cafedbcbd944702611fab330f40dd7f713723d50c3d24dedcdc1e05ec253f77e6d4572511ffd3aa15c53c19b09176973a234407b51ede3208\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": 1,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "status": "unregistered-session"
+      }
+    ]
+  }
+}
