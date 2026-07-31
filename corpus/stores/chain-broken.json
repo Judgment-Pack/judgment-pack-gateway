@@ -1,6 +1,6 @@
 {
   "name": "chain-broken",
-  "note": "A receipt whose prevHmac is re-pointed and which is then RE-KEYED, so it verifies on its own terms. Only the chain reconstruction catches it.",
+  "note": "A receipt whose prevSignature is re-pointed and which is then RE-SIGNED, so it verifies on its own terms. Only the chain reconstruction catches it.",
   "authority": "gateway:corpus",
   "files": {
     "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",

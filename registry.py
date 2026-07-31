@@ -26,8 +26,8 @@ import json
 import os
 
 import ed25519
-from attest import (SEAL_CONTEXT, AttestationError, canon, key_id, require_public_key,
-                    require_seed, require_session)
+from attest import (SEAL_CONTEXT, AttestationError, canon, key_id, loads,
+                    require_public_key, require_seed, require_session)
 
 
 def _seal_body(session_id, final_count, sealed_at, key_identifier):
@@ -102,7 +102,7 @@ def load_seals(path, public_key):
             if not line:
                 continue
             try:
-                record = json.loads(line.decode("utf-8"))
+                record = loads(line)
                 if record.get("keyId") != expected_key_id:
                     continue
                 body = _seal_body(record["sessionId"], record["finalCount"],

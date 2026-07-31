@@ -2,3 +2,4 @@ __pycache__/
 *.pyc
 store/
 *.key
+go/gateway

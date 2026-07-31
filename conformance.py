@@ -78,7 +78,7 @@ class Reference:
     def canon(self, source):
         import attest
         try:
-            return attest.canon(json.loads(source))
+            return attest.canon(attest.loads(source))
         except attest.AttestationError:
             return None
 
