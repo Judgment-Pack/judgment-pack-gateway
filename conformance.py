@@ -40,8 +40,11 @@ CORPUS = os.path.join(HERE, "corpus")
 
 
 def _key():
+    # .strip(), not .rstrip(b"\n"): a checkout that converts line endings would
+    # otherwise leave a \r inside the key, and every HMAC in the corpus would
+    # fail for a reason that looks like a format disagreement.
     with open(os.path.join(CORPUS, "TEST-KEY"), "rb") as handle:
-        return handle.read().rstrip(b"\n")
+        return handle.read().strip()
 
 
 def _materialize(case):
@@ -51,13 +54,13 @@ def _materialize(case):
     for path, text in case["files"].items():
         full = os.path.join(store_root, path.replace("/", os.sep))
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as handle:
-            handle.write(text)
+        with open(full, "wb") as handle:          # bytes: never newline-translated
+            handle.write(text.encode("utf-8"))
     for required in ("receipts", "artifacts"):
         os.makedirs(os.path.join(store_root, required), exist_ok=True)
     registry_path = os.path.join(root, "registry.jsonl")
-    with open(registry_path, "w") as handle:
-        handle.write(case["registry"])
+    with open(registry_path, "wb") as handle:
+        handle.write(case["registry"].encode("utf-8"))
     return root, store_root, registry_path
 
 

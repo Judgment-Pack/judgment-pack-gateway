@@ -145,13 +145,13 @@ def materialize(files, registry_text):
     for path, text in files.items():
         full = os.path.join(store_root, path.replace("/", os.sep))
         os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w") as handle:
-            handle.write(text)
+        with open(full, "wb") as handle:
+            handle.write(text.encode("utf-8"))
     os.makedirs(os.path.join(store_root, "receipts"), exist_ok=True)
     os.makedirs(os.path.join(store_root, "artifacts"), exist_ok=True)
     registry_path = os.path.join(root, "registry.jsonl")
-    with open(registry_path, "w") as handle:
-        handle.write(registry_text)
+    with open(registry_path, "wb") as handle:
+        handle.write(registry_text.encode("utf-8"))
     return root, store_root, registry_path
 
 
