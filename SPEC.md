@@ -129,3 +129,25 @@ A `source` is an operator-configured subprocess that reads the canonical argumen
 stdin and emits a JSON result on stdout. The gateway attaches no transport of its own
 — it attests whatever bytes a configured source returns, which is exactly the inline
 core's boundary: **proof of the bytes, not proof of their truth.**
+
+## 6. Conformance
+
+An implementation of this specification is checked against the frozen vectors in
+[`corpus/`](corpus/README.md), not against the reference's source. Two families:
+**canon vectors** (a value → its exact canonical bytes, or a refusal) and **store
+vectors** (a complete store and registry → the expected `(ok, findings)`), with one
+store vector per status this document names.
+
+`conformance.py` runs them, and defines a small process contract so an
+implementation in any language can answer to the corpus without depending on the
+reference. Findings are compared as a multiset: **order is not normative.**
+
+Two questions this specification does not yet settle, surfaced by building the
+corpus and recorded in [`corpus/README.md`](corpus/README.md): the order of
+findings, and whether a receipt that fails verification is *required* to also
+produce the `sequence-broken` that follows from its exclusion from the chain
+reconstruction. An implementation that differs on either is not thereby
+non-conforming; the specification is what needs to improve.
+
+The vectors are keyed under a published test key (`corpus/TEST-KEY`), which signs
+nothing real and must never be used by a deployment.

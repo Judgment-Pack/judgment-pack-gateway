@@ -1,0 +1,38 @@
+{
+  "name": "unregistered-session",
+  "note": "A genuine, correctly chained session with no seal -- what a whole-session replay into a fresh store looks like. Per-receipt verification passes.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifacts/9dd7b8b169dccbb3345667c1bd0a45ca0309510165682a7e8b3bf9001d7dc563": "{\"n\":2,\"session\":\"s1\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:508fa753ca9fe496dc79160782477f6e2582580e1821b667a81198d0212189e6\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"hmac\":\"7c31dd0653725cf5a1b8baa208a9691426dd12bbeb32196185a6d9a2c5011403\",\"prevHmac\":null,\"receiptVersion\":\"1\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"argumentsDigest\":\"hmac-sha256:89a154cceef6e632233eb80fb5697130d208f58e2a95eafab1500ccf0b334411\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"hmac\":\"e7e8ab49761b333e654d960d242f162379b72b3280904de9e693a9a523b71d44\",\"prevHmac\":\"7c31dd0653725cf5a1b8baa208a9691426dd12bbeb32196185a6d9a2c5011403\",\"receiptVersion\":\"1\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"source\":\"corpus\"}\n",
+    "receipts/s1/2.json": "{\"argumentsDigest\":\"hmac-sha256:729c471a6b7792b5c88b01bd94a4c9553b816223c0713f97a34d14fc1a455624\",\"authority\":\"gateway:corpus\",\"callIndex\":2,\"hmac\":\"f9dfe6718f2f019bf0a4f508025c9a34bc94444b61fb4e6cabd849b2b70d5523\",\"prevHmac\":\"e7e8ab49761b333e654d960d242f162379b72b3280904de9e693a9a523b71d44\",\"receiptVersion\":\"1\",\"resultDigest\":\"sha256:9dd7b8b169dccbb3345667c1bd0a45ca0309510165682a7e8b3bf9001d7dc563\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": 1,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": 2,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "status": "unregistered-session"
+      }
+    ]
+  }
+}
