@@ -24,6 +24,11 @@ RECEIPT_VERSION = "1"
 MIN_KEY_BYTES = 32
 _SAFE_INT_MAX = (1 << 53) - 1
 _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+# A session id becomes a directory name under the store. It is caller-supplied and
+# the caller is outside the trust boundary, so it is constrained to a flat token:
+# anything else could steer signed writes out of the store, where `verify` -- which
+# enumerates the store -- would never see them.
+_SESSION_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class AttestationError(Exception):
@@ -79,6 +84,20 @@ def require_key(key):
     if len(key) < MIN_KEY_BYTES:
         raise AttestationError("attestation key must be at least %d bytes" % MIN_KEY_BYTES)
     return key
+
+
+def require_session(session_id):
+    """A session id must be a flat token. It names a directory under the store, and
+    a verifier discovers sessions by enumerating that directory -- so a value that
+    escapes it (an absolute path, a `..` segment, a nested path) would produce
+    genuinely attested receipts that `verify` can never find, silently voiding the
+    registry's coverage guarantee."""
+    if not isinstance(session_id, str) or not _SESSION_RE.match(session_id):
+        raise AttestationError(
+            "session id must match %s" % _SESSION_RE.pattern)
+    if session_id in (".", ".."):
+        raise AttestationError("session id must not be a path segment")
+    return session_id
 
 
 def now():
@@ -144,7 +163,12 @@ class Store:
         return result_digest
 
     def stamp(self, receipt_core):
-        session_dir = os.path.join(self.root, "receipts", receipt_core["sessionId"])
+        receipts_root = os.path.join(self.root, "receipts")
+        session_dir = os.path.join(receipts_root, require_session(receipt_core["sessionId"]))
+        # Defence in depth: never write a receipt outside the enumerated root, even
+        # if the token check above is ever loosened.
+        if os.path.dirname(os.path.realpath(session_dir)) != os.path.realpath(receipts_root):
+            raise AttestationError("session directory escapes the receipt store")
         os.makedirs(session_dir, exist_ok=True)
         mac = hmac.new(self.key, canon(receipt_core), hashlib.sha256).hexdigest()
         stored = dict(receipt_core, hmac=mac)

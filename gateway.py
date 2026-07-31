@@ -46,6 +46,7 @@ class Gateway:
         chain and retain it, and return the result plus a receipt summary. The
         gateway -- not the caller -- produces the receipt; the caller cannot
         supply one."""
+        attest.require_session(session_id)  # reject before running anything
         if source not in self.sources:
             raise KeyError("unknown source: %s" % source)
         completed = subprocess.run(
@@ -76,6 +77,7 @@ class Gateway:
             "authority": self.authority}}
 
     def seal(self, session_id):
+        attest.require_session(session_id)
         with self._lock:
             state = self._sessions.get(session_id)
             if state is None:
@@ -133,7 +135,7 @@ def _handler(gateway):
                     self._send(200, gateway.seal(body["session"]))
                 else:
                     self._send(404, {"error": "not found"})
-            except (KeyError, RuntimeError, ValueError) as error:
+            except (KeyError, RuntimeError, ValueError, attest.AttestationError) as error:
                 self._send(400, {"error": str(error)})
             except Exception as error:  # noqa: BLE001
                 self._send(500, {"error": str(error)})

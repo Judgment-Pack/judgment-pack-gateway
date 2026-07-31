@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 
 import attest
@@ -107,6 +108,55 @@ class RegistryClosesResiduals(unittest.TestCase):
             self.reg.seal("sess-a", 1, "t")  # append-only: no shrinking a seal
 
 
+class SessionIdIsNotAPath(unittest.TestCase):
+    """A session id names a directory under the store, and `verify` discovers
+    sessions by enumerating that directory. A caller-supplied value that escaped it
+    produced genuinely attested receipts that verify could never see -- so `verify`
+    reported ok on a store missing sessions the gateway had signed."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.store_root = os.path.join(self.dir, "store")
+        self.store = attest.Store(self.store_root, KEY, AUTHORITY)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _core(self, session_id):
+        return {"receiptVersion": "1", "sessionId": session_id, "callIndex": 0,
+                "prevHmac": None, "source": "s", "argumentsDigest": "x", "resultDigest": "y",
+                "servedAt": "t", "authority": AUTHORITY}
+
+    def test_absolute_path_session_is_refused(self):
+        escaped = os.path.join(self.dir, "ESCAPED")
+        with self.assertRaises(attest.AttestationError):
+            self.store.stamp(self._core(escaped))
+        self.assertFalse(os.path.exists(escaped))
+
+    def test_parent_traversal_session_is_refused(self):
+        with self.assertRaises(attest.AttestationError):
+            self.store.stamp(self._core("../../TRAVERSED"))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "TRAVERSED")))
+
+    def test_nested_and_dot_sessions_are_refused(self):
+        for bad in ("a/b", ".", "..", "", "x" * 129, "sess id", "sess\x00"):
+            with self.assertRaises(attest.AttestationError):
+                self.store.stamp(self._core(bad))
+
+    def test_ordinary_session_ids_still_work(self):
+        # Fully-formed receipts, so this asserts the hardening rejects nothing
+        # legitimate rather than merely that stamping did not raise.
+        for good in ("s1", "sess-a", "run_2026.07.30", "A" * 128):
+            _stamp_session(self.store, good, 2)
+        ok, findings = attest.verify_store(self.store_root, KEY, AUTHORITY)
+        self.assertTrue(ok, findings)
+
+    def test_registry_refuses_to_seal_an_escaping_session(self):
+        reg = registry.Registry(os.path.join(self.dir, "r.jsonl"), KEY)
+        with self.assertRaises(attest.AttestationError):
+            reg.seal("../../ESCAPED", 1, "t")
+
+
 # A trivial source: echoes back a fixed screening record, ignoring stdin.
 SOURCE = r"""
 import sys, json
@@ -155,6 +205,22 @@ class HttpRoundTrip(unittest.TestCase):
         # The gateway produced the receipts; nothing the client sent is trusted
         # as proof -- there is no facts/receipt field in the acquire request.
         self.assertNotIn("acme", json.dumps(a0["receipt"]))
+
+    def test_escaping_session_is_rejected_over_http_and_writes_nothing(self):
+        outside = os.path.join(self.dir, "ESCAPED")
+        for bad in (outside, "../../TRAVERSED", "a/b"):
+            req = urllib.request.Request(
+                "http://127.0.0.1:%d/acquire" % self.port,
+                data=json.dumps({"session": bad, "source": "screening",
+                                 "arguments": {"q": "x"}}).encode(), method="POST")
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(req, timeout=10)
+            self.assertEqual(caught.exception.code, 400)  # a refusal, not a crash
+        self.assertFalse(os.path.exists(outside))
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "TRAVERSED")))
+        # And the store still verifies as empty rather than silently "ok" while
+        # holding signed receipts somewhere else.
+        self.assertEqual(os.listdir(os.path.join(self.dir, "store", "receipts")), [])
 
 
 if __name__ == "__main__":
