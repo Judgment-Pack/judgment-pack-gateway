@@ -28,6 +28,9 @@ belongs to rather than in whichever file is nearest:
 - `conformance_test.go` — the corpus vectors
 - `service_test.go` — the HTTP surface's ordinary behaviour
 - `probes_test.go` — malformed, hostile and boundary input
+- `ceremony_test.go` — SPEC.md §5a's consumer ceremony, executable: each step a
+  consumer performs between a verdict and acting on the bytes, refusal legs
+  included
 - `teeth_test.go` — the properties the format exists to have, tested by trying to
   violate them
 

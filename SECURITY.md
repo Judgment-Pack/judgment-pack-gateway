@@ -71,7 +71,7 @@ or misleading source response yields a valid receipt.
 **The caller is outside the trust boundary.** A client supplies a session id, a source name, and
 arguments — never a receipt. The gateway produces every receipt, which is what keeps a model or agent
 structurally out of the proof path: a caller can assert anything, but it cannot manufacture the
-gateway's HMAC.
+gateway's signature.
 
 Because the caller is untrusted, its inputs are constrained where they reach the filesystem. A session
 id names a directory under the store and a verifier **discovers** sessions by enumerating that

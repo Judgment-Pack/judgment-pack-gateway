@@ -54,10 +54,15 @@ band** — see Honest bounds.
 ```
 curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","arguments":{"subject":"acme"}}'
 curl -s localhost:8787/seal    -d '{"session":"s1"}'
-curl -s localhost:8787/verify
+curl -s localhost:8787/verify              # the gateway grading itself -- a diagnostic, not evidence (SPEC.md §5a.3)
 curl -s localhost:8787/registry            # the anchor a verifier fetches from the key holder
-curl -s localhost:8787/publickey           # the public key -- all a verifier needs
+curl -s localhost:8787/publickey           # consistency only: a real verifier uses the key pinned from keygen, never this
 ```
+
+A consumer does not stop at those endpoints: it runs `gateway verify` itself, over
+a store it holds, under the key it pinned from `keygen`'s output, then binds the
+receipt and re-digests the artifact before using a byte — the normative sequence
+is [SPEC.md §5a](SPEC.md), executable in `go/ceremony_test.go`.
 
 A source is any command that reads the canonical arguments on stdin and writes a JSON
 result on stdout. The gateway attaches no transport of its own; it attests whatever
