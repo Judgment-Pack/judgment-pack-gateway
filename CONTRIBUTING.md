@@ -74,6 +74,16 @@ sessions still seal, and the guarantee is gone.
 Vulnerabilities go to the process in [SECURITY.md](SECURITY.md), not to a public
 issue or pull request.
 
+## Tags
+
+A tag (`v0.1.0`, …) names a reviewed state of this repository — the binary,
+the specification, and the corpus that arbitrates between them — so a
+consumer pinning the gateway by digest can name the tagged state its digest
+was built from, instead of a moving branch or a local checkout. Tags are
+never moved or reused. `receiptVersion` is the *format's* version and moves
+independently: a tag names a snapshot of everything, the format version
+names what a verifier accepts.
+
 ## Scope
 
 This repository stays one Go binary and its specification. The gateway serves,

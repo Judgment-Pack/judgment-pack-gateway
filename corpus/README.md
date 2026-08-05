@@ -89,6 +89,17 @@ Receipts are signed, so conformance vectors cannot exist without a key; crypto
 RFCs publish test vectors with their keys for the same reason. It signs nothing
 real and must never be used by a deployment.
 
+## What the corpus covers, and what it does not
+
+The corpus is the arbiter of the **format**: canonicalization and
+verification, the two layers where a second implementation silently drifting
+would void every receipt. It deliberately does not exercise the HTTP
+reference surface — an implementation could return a response shape SPEC.md
+§6 forbids and still pass every vector here (issue #15 records this). That
+trade holds while the Go binary is the only server; a second independent
+implementation of the HTTP surface is the reopening condition for an
+acquire/response vector class.
+
 ## The process contract
 
 `--impl CMD` drives any implementation, in any language, with no dependency on
