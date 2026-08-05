@@ -299,14 +299,18 @@ is not a store to selectively believe. A consumer MAY instead apply a deliberate
 session it acts on:
 
 - its own findings are all `ok`, and at least one finding names the session — a
-  session with no findings is absent, not clean;
+  session with no findings holds no accepted receipt (it is absent, or validly
+  sealed at count zero, which §4.1 permits) and there is nothing in it to act on;
 - it is registered: no `unregistered-session` finding names it;
 - its seal holds: no `tail-rollback`, `count-exceeds-seal`, or
   `sealed-session-missing` finding names it;
 - its chain holds: no `sequence-broken` or `chain-broken` finding names it.
 
 Session-scoping is a choice with a name, made deliberately in the consumer's code or
-configuration. Silence means store-wide.
+configuration. Silence means store-wide. The list above leans on an invariant of
+this verifier's report: **every finding carries `sessionId` and `status`.** A
+verifier extended with a store-level finding that names no session must extend this
+list with it, or the scoped check goes blind to it.
 
 **5a.2 The verdict is the JSON, never the exit code.** Per §4.1 a verifier that
 reached a verdict exits `0` whether the verdict is good or bad; non-zero is reserved
@@ -318,15 +322,33 @@ itself. A consumer runs the verifier itself, over a store it holds, with the
 registry fetched from the key holder, under a public key pinned **out of band**
 (§5) — never the key the same store or gateway handed it.
 
-**5a.4 The artifact is re-digested before use.** `gateway verify` re-digests every
-artifact while verifying and returns none of them, so the bytes a consumer later
-reads — from `artifacts/<digest>` or anywhere else — are re-digested against the
-receipt's `resultDigest` before any use. Bytes nobody re-checked are bytes nobody
-attested.
+**5a.4 The artifact selector is bound to an accepted receipt, then the bytes are
+re-digested.** `gateway verify` re-digests every artifact while verifying and
+returns none of them — and returns no receipt either, so a `resultDigest` a
+consumer picked up elsewhere selects nothing trustworthy by itself: a receipt file
+read *after* verification can have been replaced, and an orphan file under
+`artifacts/` is invisible to verification entirely. Before any use of bytes, a
+consumer therefore establishes **both** halves:
 
-The ceremony, in order: **acquire → seal → verify under a pinned key → re-digest →
-use.** `go/ceremony_test.go` walks it executably against this implementation,
-refusal legs included.
+1. **Binding**: the `resultDigest` comes from a receipt the consumer itself
+   checked — either read from the exact store snapshot its verifier run audited
+   *and* signature-checked under the pinned key (§1.2's coverage rule), or the
+   complete acquire response receipt (§6) signature-checked the same way — and
+   that receipt's `(sessionId, callIndex)` appears among the verifier's `ok`
+   findings, so the checked receipt is a member of the verified store rather
+   than a look-alike.
+2. **Re-digest**: the bytes actually loaded re-digest to that receipt's
+   `resultDigest`, whose hex is validated as exactly 64 lowercase hex characters
+   before it is ever used in a path.
+
+Bytes nobody re-checked are bytes nobody attested, and a digest no accepted
+receipt covers selects nothing.
+
+The consumer's ceremony, in order: **obtain the snapshot → verify under a pinned
+key → bind the receipt → re-digest → use.** Acquiring and sealing are the
+*producer's* steps and precede it; an offline consumer of an already-sealed store
+starts at the snapshot. `go/ceremony_test.go` walks both executably against this
+implementation, refusal legs included.
 
 What follows the ceremony is out of scope here: turning verified bytes into a claim
 by a checkable rule is a derivation rule's job — specified in the
