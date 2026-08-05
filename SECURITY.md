@@ -82,6 +82,15 @@ never enumerate — `/verify` would answer `ok` for a store missing sessions the
 silently voiding the coverage guarantee in [`SPEC.md` §3](SPEC.md). Treat any input that can steer
 where the gateway writes as a vulnerability in this class, not as a configuration mistake.
 
+**The arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
+keyed digest of the canonical arguments, with no per-receipt salt. The keying stops a party that only
+holds receipts from brute-forcing a small argument space; it does not stop a party that can also
+invoke `/acquire` under the same key, which — since the acquire response carries the complete
+receipt — is every caller: such a party can recover another caller's low-entropy arguments by
+submitting candidates and comparing digests. Treat arguments as non-secret against the gateway's
+caller set. A salted commitment would close this and is a receipt-format change, out of scope for
+version 2.
+
 **Sources are operator-configured subprocesses.** The gateway executes what the operator configures
 and attests whatever bytes come back. It attaches no transport, authentication, or schema of its own.
 Configuring an untrusted command is equivalent to running it.

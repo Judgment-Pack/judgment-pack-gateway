@@ -393,21 +393,32 @@ func TestAcquireResponseReceiptVerifiesAlone(t *testing.T) {
 		t.Skip("needs /bin/sh")
 	}
 	service, server := testService(t)
-	code, first := post(t, server, "/acquire",
-		`{"session":"alone-1","source":"screening","arguments":{"q":"solo"}}`)
-	if code != http.StatusOK {
-		t.Fatalf("acquire failed: %d %v", code, first)
-	}
-	receipt := first["receipt"].(map[string]any)
-
-	// The canonical form of the response receipt is exactly the stored bytes.
-	whole, err := json.Marshal(receipt)
+	resp, err := http.Post(server.URL+"/acquire", "application/json",
+		strings.NewReader(`{"session":"alone-1","source":"screening","arguments":{"q":"solo"}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	canonical, err := canonText(whole)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("acquire failed: %d", resp.StatusCode)
+	}
+	// The receipt is captured as the raw bytes the wire carried, so §1.1's
+	// rules are applied to what was actually received — a wire regression
+	// emitting a float literal or a duplicate member is refused here rather
+	// than silently normalized by a map decode.
+	var envelope struct {
+		Receipt json.RawMessage `json:"receipt"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := canonText(envelope.Receipt)
 	if err != nil {
 		t.Fatalf("the response receipt must canonicalize per §1.1: %v", err)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(canonical, &receipt); err != nil {
+		t.Fatal(err)
 	}
 	stored, err := os.ReadFile(filepath.Join(service.store.root, "receipts", "alone-1", "0.json"))
 	if err != nil {

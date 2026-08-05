@@ -73,7 +73,7 @@ A receipt is a canonical JSON object. Every member is required.
 | `callIndex` | integer, `0`-based, contiguous within a session |
 | `prevSignature` | the previous receipt's `signature`; `null` at `callIndex` 0 |
 | `source` | operator-configured source name |
-| `argumentsDigest` | `"hmac-sha256:" + hex`, keyed and therefore **opaque to a public verifier** (§5) |
+| `argumentsDigest` | `"hmac-sha256:" + hex`, keyed and therefore **opaque to a public verifier** — but deterministic per arguments under one key, so argument *equality* across receipts is observable to any party able to invoke `/acquire` (§5) |
 | `resultDigest` | `"sha256:" + 64 lowercase hex` over the retained artifact bytes |
 | `servedAt` | timestamp string |
 | `authority` | operator-configured authority label |
