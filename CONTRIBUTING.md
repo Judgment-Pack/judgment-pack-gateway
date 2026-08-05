@@ -30,6 +30,9 @@ belongs to rather than in whichever file is nearest:
 - `probes_test.go` — malformed, hostile and boundary input
 - `teeth_test.go` — the properties the format exists to have, tested by trying to
   violate them
+- `ceremony_test.go` — SPEC.md §5a's consumer ceremony, executable: each step a
+  consumer performs between a verdict and acting on the bytes, refusal legs
+  included
 
 A change to canonicalization, signing, sealing or verification wants a test in the
 last group, written as an attack rather than as an example. "It still works" is not

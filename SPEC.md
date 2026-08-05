@@ -283,6 +283,56 @@ not itself a finding.
   self-hosting a trust root and for demonstrating the mechanism, not a hardened
   public deployment.
 
+## 5a. Consuming an attestation
+
+Everything above specifies how receipts are produced and verified. This section is
+normative for the **consumer**: what a verdict means, and every step between holding
+one and acting on the bytes. Each rule below was re-derived independently by early
+consumers — and the first was answered two opposite ways by two consumers of the
+same spec — which is why they are written down.
+
+**5a.1 The verdict is store-wide, and fails closed.** A consumer's verdict is the
+`ok` of its own verifier run (§4). `ok: false` — from any finding, in any session —
+withholds **every** session in the store: a store that failed verification anywhere
+is not a store to selectively believe. A consumer MAY instead apply a deliberate
+**session-scoped** verdict, and then all of the following must hold for the one
+session it acts on:
+
+- its own findings are all `ok`, and at least one finding names the session — a
+  session with no findings is absent, not clean;
+- it is registered: no `unregistered-session` finding names it;
+- its seal holds: no `tail-rollback`, `count-exceeds-seal`, or
+  `sealed-session-missing` finding names it;
+- its chain holds: no `sequence-broken` or `chain-broken` finding names it.
+
+Session-scoping is a choice with a name, made deliberately in the consumer's code or
+configuration. Silence means store-wide.
+
+**5a.2 The verdict is the JSON, never the exit code.** Per §4.1 a verifier that
+reached a verdict exits `0` whether the verdict is good or bad; non-zero is reserved
+for reaching no verdict at all. A consumer gating on exit status alone accepts a
+store that failed verification. Read `ok` and `findings`.
+
+**5a.3 `GET /verify` is not evidence.** That endpoint is the audited party grading
+itself. A consumer runs the verifier itself, over a store it holds, with the
+registry fetched from the key holder, under a public key pinned **out of band**
+(§5) — never the key the same store or gateway handed it.
+
+**5a.4 The artifact is re-digested before use.** `gateway verify` re-digests every
+artifact while verifying and returns none of them, so the bytes a consumer later
+reads — from `artifacts/<digest>` or anywhere else — are re-digested against the
+receipt's `resultDigest` before any use. Bytes nobody re-checked are bytes nobody
+attested.
+
+The ceremony, in order: **acquire → seal → verify under a pinned key → re-digest →
+use.** `go/ceremony_test.go` walks it executably against this implementation,
+refusal legs included.
+
+What follows the ceremony is out of scope here: turning verified bytes into a claim
+by a checkable rule is a derivation rule's job — specified in the
+`judgment-pack-evaluator-experiments` repository (`derivation-rule/`) — and
+byte-lineage never becomes truth on the way through (§5).
+
 ## 6. HTTP surface (reference)
 
 Localhost, JSON, standard library only.
