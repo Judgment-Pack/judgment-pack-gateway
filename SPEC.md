@@ -73,7 +73,7 @@ A receipt is a canonical JSON object. Every member is required.
 | `callIndex` | integer, `0`-based, contiguous within a session |
 | `prevSignature` | the previous receipt's `signature`; `null` at `callIndex` 0 |
 | `source` | operator-configured source name |
-| `argumentsDigest` | `"hmac-sha256:" + hex`, keyed and therefore **opaque to a public verifier** (§5) |
+| `argumentsDigest` | `"hmac-sha256:" + hex`, keyed and therefore **opaque to a public verifier** — but deterministic per arguments under one key, so argument *equality* across receipts is observable to any party able to invoke `/acquire` (§5) |
 | `resultDigest` | `"sha256:" + 64 lowercase hex` over the retained artifact bytes |
 | `servedAt` | timestamp string |
 | `authority` | operator-configured authority label |
@@ -289,7 +289,7 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs. |
+| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}`, where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies §1.2's coverage rule. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. |

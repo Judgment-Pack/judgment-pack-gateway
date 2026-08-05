@@ -12,6 +12,7 @@ package main
 // only thing left standing between this code and silent format drift.
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -192,5 +193,72 @@ func TestOrderingVectorDiscriminatesCodePointFromUTF16(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no member-ordering vector in the corpus")
+	}
+}
+
+// A receipt signature covers everything except the signature member, so an
+// appended unsigned member invalidates it. An implementation that instead
+// verified a fixed list of the known members would accept the smuggled member
+// — the exact attack SPEC.md §1.2 calls security-relevant — and this is the
+// asserted form of that attack.
+func TestAppendedUnsignedMemberInvalidatesTheReceipt(t *testing.T) {
+	st, _, _, _ := testStore(t)
+	core := newObject()
+	core.set("receiptVersion", vString(receiptVersion))
+	core.set("sessionId", vString("teeth-append"))
+	core.set("callIndex", vInt(0))
+	core.set("prevSignature", vNull{})
+	core.set("source", vString("s"))
+	core.set("argumentsDigest", vString("hmac-sha256:"+strings.Repeat("0", 64)))
+	core.set("resultDigest", vString("sha256:"+strings.Repeat("0", 64)))
+	core.set("servedAt", vString("t"))
+	core.set("authority", vString("gateway:test"))
+	stored, signatureHex, err := st.stamp(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, err := hex.DecodeString(signatureHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned := func(smuggle bool) []byte {
+		o := newObject()
+		for _, name := range stored.names {
+			if name == "signature" {
+				continue
+			}
+			v, _ := stored.get(name)
+			o.set(name, v)
+		}
+		if smuggle {
+			o.set("smuggled", vString("x"))
+		}
+		return append([]byte(receiptContext), canon(o)...)
+	}
+	if !ed25519.Verify(st.publicKey, unsigned(false), sig) {
+		t.Fatal("the untampered receipt must verify")
+	}
+	if ed25519.Verify(st.publicKey, unsigned(true), sig) {
+		t.Fatal("an appended unsigned member must invalidate the signature")
+	}
+}
+
+// An internally constructed callIndex outside §1.1's integer domain is refused
+// at the stamp, not signed: the gateway never signs bytes its own canonical
+// form would refuse to parse.
+func TestStampRefusesACallIndexOutsideTheCanonicalDomain(t *testing.T) {
+	st, _, _, _ := testStore(t)
+	core := newObject()
+	core.set("receiptVersion", vString(receiptVersion))
+	core.set("sessionId", vString("teeth-domain"))
+	core.set("callIndex", vInt(9007199254740992))
+	core.set("prevSignature", vNull{})
+	core.set("source", vString("s"))
+	core.set("argumentsDigest", vString("hmac-sha256:"+strings.Repeat("0", 64)))
+	core.set("resultDigest", vString("sha256:"+strings.Repeat("0", 64)))
+	core.set("servedAt", vString("t"))
+	core.set("authority", vString("gateway:test"))
+	if _, _, err := st.stamp(core); err == nil {
+		t.Fatal("a callIndex beyond 2^53-1 must be refused, not signed")
 	}
 }

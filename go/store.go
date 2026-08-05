@@ -33,10 +33,15 @@ func requireSession(sessionID string) error {
 
 // argumentsKey derives the key for the arguments commitment from the signing
 // seed. Arguments are committed to with a keyed digest rather than a plain hash
-// so a third party cannot brute-force a small argument space out of a receipt.
-// The consequence is deliberate and stated in SPEC.md §1.2: a public verifier
-// cannot recompute this value, and does not need to, because the signature
-// covers it.
+// so a party that only *holds* receipts cannot brute-force a small argument
+// space out of one. The keying does not protect against a party that can also
+// *invoke* /acquire under the same key — the digest is deterministic per
+// arguments, so such a party can test candidates by equality — and since the
+// acquire response carries the full receipt, that party is every caller.
+// Arguments are therefore non-secret against the gateway's caller set;
+// SECURITY.md states the bound. The other consequence is deliberate and stated
+// in SPEC.md §1.2: a public verifier cannot recompute this value, and does not
+// need to, because the signature covers it.
 func argumentsKey(seed []byte) []byte {
 	sum := sha256.Sum256(append([]byte("judgment-pack-gateway/arguments-key/2:"), seed...))
 	return sum[:]
@@ -169,6 +174,12 @@ func (s *store) stamp(core *vObject) (*vObject, string, error) {
 	index, ok := indexValue.(vInt)
 	if !ok {
 		return nil, "", errors.New("callIndex is not an integer")
+	}
+	// The canonical domain is ±(2⁵³−1) (SPEC.md §1.1). The parser enforces it
+	// for incoming text; an internally constructed integer must be held to the
+	// same bound, or the gateway would sign bytes its own format refuses.
+	if int64(index) > maxSafeInteger || int64(index) < minSafeInteger {
+		return nil, "", errors.New("callIndex is outside the canonical integer domain")
 	}
 
 	core.set("keyId", vString(s.keyID))

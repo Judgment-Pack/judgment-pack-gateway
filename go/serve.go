@@ -126,11 +126,10 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	core.set("servedAt", vString(nowStamp()))
 	core.set("authority", vString(g.authority))
 
-	_, signature, err := g.store.stamp(core)
+	stored, signature, err := g.store.stamp(core)
 	if err != nil {
 		return nil, err
 	}
-	index := state.index
 	state.index++
 	state.prev = signature
 
@@ -138,12 +137,18 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	if err := json.Unmarshal(canon(result), &resultOut); err != nil {
 		return nil, err
 	}
+	// The receipt in the response is the stored receipt, whole: the same
+	// members written under receipts/<session>/<index>.json, so the caller
+	// holds everything the signature covers and can check it without reaching
+	// into the store. The response body is ordinary JSON, not canon bytes; a
+	// checking caller canonicalizes per §1.1 first (SPEC.md §6).
+	var receiptOut any
+	if err := json.Unmarshal(canon(stored), &receiptOut); err != nil {
+		return nil, err
+	}
 	return map[string]any{
-		"result": resultOut,
-		"receipt": map[string]any{
-			"sessionId": sessionID, "callIndex": index, "resultDigest": resultDigest,
-			"authority": g.authority, "keyId": g.keyID, "signature": signature,
-		},
+		"result":  resultOut,
+		"receipt": receiptOut,
 	}, nil
 }
 

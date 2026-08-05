@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -287,6 +288,22 @@ func TestAcquireSealVerifyRoundTrip(t *testing.T) {
 	if receipt["keyId"] != service.keyID {
 		t.Fatal("receipt does not name the gateway's key")
 	}
+	// The response receipt is the complete stored object: every member the
+	// signature covers, keyId and signature beside them (SPEC.md §6).
+	for _, member := range []string{
+		"receiptVersion", "sessionId", "callIndex", "prevSignature", "source",
+		"argumentsDigest", "resultDigest", "servedAt", "authority", "keyId", "signature",
+	} {
+		if _, present := receipt[member]; !present {
+			t.Fatalf("the response receipt must carry %q; got %v", member, receipt)
+		}
+	}
+	if len(receipt) != 11 {
+		t.Fatalf("the response receipt carries the receipt's members and nothing else: %v", receipt)
+	}
+	if receipt["prevSignature"] != nil {
+		t.Fatalf("the first receipt of a session chains from null: %v", receipt["prevSignature"])
+	}
 	// The caller supplied no receipt and cannot: nothing it sent appears as proof.
 	encoded, _ := json.Marshal(receipt)
 	if bytes.Contains(encoded, []byte("acme")) {
@@ -364,5 +381,91 @@ func TestEscapingSessionIsRejectedOverHTTP(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("a refused session still wrote receipts: %v", entries)
+	}
+}
+
+// The acquire response is evidence on its own: the receipt it carries is the
+// complete signed object, byte-equivalent under §1.1 to the one the store
+// holds, so a caller can check the signature it was handed without reaching
+// into the store — and a tampered member fails that check.
+func TestAcquireResponseReceiptVerifiesAlone(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("needs /bin/sh")
+	}
+	service, server := testService(t)
+	resp, err := http.Post(server.URL+"/acquire", "application/json",
+		strings.NewReader(`{"session":"alone-1","source":"screening","arguments":{"q":"solo"}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("acquire failed: %d", resp.StatusCode)
+	}
+	// The receipt is captured as the raw bytes the wire carried, so §1.1's
+	// rules are applied to what was actually received — a wire regression
+	// emitting a float literal or a duplicate member is refused here rather
+	// than silently normalized by a map decode.
+	var envelope struct {
+		Receipt json.RawMessage `json:"receipt"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := canonText(envelope.Receipt)
+	if err != nil {
+		t.Fatalf("the response receipt must canonicalize per §1.1: %v", err)
+	}
+	var receipt map[string]any
+	if err := json.Unmarshal(canonical, &receipt); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := os.ReadFile(filepath.Join(service.store.root, "receipts", "alone-1", "0.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(canonical, bytes.TrimSuffix(stored, []byte("\n"))) {
+		t.Fatalf("the response receipt and the stored receipt must be one object:\nresponse %s\nstored   %s", canonical, stored)
+	}
+
+	// The signature checks from the response alone, under §1.2's coverage rule:
+	// canon of the receipt with signature removed and every other member kept.
+	signature, _ := receipt["signature"].(string)
+	sig, err := hex.DecodeString(signature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned := map[string]any{}
+	for member, value := range receipt {
+		if member != "signature" {
+			unsigned[member] = value
+		}
+	}
+	unsignedText, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsignedCanon, err := canonText(unsignedText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	public := ed25519.PublicKey(mustPublic(t))
+	if !ed25519.Verify(public, append([]byte(receiptContext), unsignedCanon...), sig) {
+		t.Fatal("the signature must verify over the response receipt's own members")
+	}
+
+	// One flipped member and the same check fails: the signature covers what
+	// the caller was handed, not a shape of it.
+	unsigned["source"] = "somewhere-else"
+	tamperedText, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tamperedCanon, err := canonText(tamperedText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ed25519.Verify(public, append([]byte(receiptContext), tamperedCanon...), sig) {
+		t.Fatal("a tampered member must fail the check")
 	}
 }
