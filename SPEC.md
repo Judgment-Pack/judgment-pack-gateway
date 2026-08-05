@@ -289,7 +289,7 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs. |
+| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}`, where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies §1.2's coverage rule. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. |
