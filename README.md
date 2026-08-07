@@ -28,6 +28,32 @@ the model cannot forge, and to say exactly where that proof stops.
   a store cannot attest about itself — that a whole
   session was **replayed** into it, or that a session's **tail was rolled back**.
 
+```mermaid
+flowchart TD
+  subgraph Producer["Producer side"]
+    S["Configured source"] -->|canonical arguments| A["Gateway acquire and sign"]
+    A -->|receipt| ST["Store"]
+    A -->|seal| R["Registry"]
+  end
+
+  subgraph Consumer["Consumer side"]
+    OB["Obtain snapshot"] --> FR["Fetch registry from key holder"]
+    K["Out-of-band pinned key"] --> V["Verify locally"]
+    FR --> V
+    V --> B["Bind accepted receipt"]
+    B --> D["Re-digest artifact"]
+    D --> U["Use result"]
+  end
+
+  R -.-> FR
+  GW["/verify: diagnostic convenience"] -. not the consumer boundary .-> V
+  PK["/publickey: consistency only"] -. not trusted key distribution .-> V
+```
+
+The executable form of the consumer flow is
+[SPEC.md §5a](SPEC.md#5a-consuming-an-attestation) and
+[go/ceremony_test.go](go/ceremony_test.go).
+
 The registry is the reason the gateway exists. The inline attestation core proved
 each receipt; it left two residuals it structurally could not catch on its own,
 because both need an anchor *outside* the store. The gateway is that anchor. See
