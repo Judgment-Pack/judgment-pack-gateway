@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,17 @@ import (
 )
 
 var testSeed = []byte("judgment-pack-gateway-test-seed!") // exactly 32 bytes
+
+const envSourceHelper = "GATEWAY_TEST_SOURCE_HELPER"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(envSourceHelper) == "1" {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		fmt.Print(`{"checkedSuccessfully":true,"status":"not_found"}`)
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 func testStore(t *testing.T) (*store, *registryWriter, string, string) {
 	t.Helper()
@@ -239,16 +251,12 @@ func TestSessionIdIsNotAPath(t *testing.T) {
 
 func testService(t *testing.T) (*gatewayService, *httptest.Server) {
 	t.Helper()
+	t.Setenv(envSourceHelper, "1")
 	root := t.TempDir()
-	source := filepath.Join(root, "source.sh")
-	script := "#!/bin/sh\ncat > /dev/null\nprintf '%s' '{\"checkedSuccessfully\":true,\"status\":\"not_found\"}'\n"
-	if err := os.WriteFile(source, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
 	service, err := newGatewayService(
 		filepath.Join(root, "store"), testSeed, "gateway:test",
 		filepath.Join(root, "registry.jsonl"),
-		map[string][]string{"screening": {"/bin/sh", source}})
+		map[string][]string{"screening": {os.Args[0]}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,9 +278,6 @@ func post(t *testing.T, server *httptest.Server, path, body string) (int, map[st
 }
 
 func TestAcquireSealVerifyRoundTrip(t *testing.T) {
-	if _, err := os.Stat("/bin/sh"); err != nil {
-		t.Skip("needs /bin/sh")
-	}
 	service, server := testService(t)
 
 	code, first := post(t, server, "/acquire",
@@ -330,9 +335,6 @@ func TestAcquireSealVerifyRoundTrip(t *testing.T) {
 // A third party fetches the public key and checks everything with it -- holding
 // no secret, and therefore unable to produce any receipt it just verified.
 func TestThirdPartyVerifiesWithThePublicKeyAlone(t *testing.T) {
-	if _, err := os.Stat("/bin/sh"); err != nil {
-		t.Skip("needs /bin/sh")
-	}
 	service, server := testService(t)
 	post(t, server, "/acquire", `{"session":"s1","source":"screening","arguments":{"q":"acme"}}`)
 	post(t, server, "/seal", `{"session":"s1"}`)
@@ -365,9 +367,6 @@ func TestThirdPartyVerifiesWithThePublicKeyAlone(t *testing.T) {
 }
 
 func TestEscapingSessionIsRejectedOverHTTP(t *testing.T) {
-	if _, err := os.Stat("/bin/sh"); err != nil {
-		t.Skip("needs /bin/sh")
-	}
 	service, server := testService(t)
 	for _, bad := range []string{"../../TRAVERSED", "a/b", "/tmp/ESCAPED"} {
 		body := fmt.Sprintf(`{"session":%q,"source":"screening","arguments":{}}`, bad)
@@ -389,9 +388,6 @@ func TestEscapingSessionIsRejectedOverHTTP(t *testing.T) {
 // holds, so a caller can check the signature it was handed without reaching
 // into the store — and a tampered member fails that check.
 func TestAcquireResponseReceiptVerifiesAlone(t *testing.T) {
-	if _, err := os.Stat("/bin/sh"); err != nil {
-		t.Skip("needs /bin/sh")
-	}
 	service, server := testService(t)
 	resp, err := http.Post(server.URL+"/acquire", "application/json",
 		strings.NewReader(`{"session":"alone-1","source":"screening","arguments":{"q":"solo"}}`))
