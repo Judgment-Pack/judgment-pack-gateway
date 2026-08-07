@@ -32,8 +32,9 @@ the model cannot forge, and to say exactly where that proof stops.
 flowchart TD
   subgraph Producer["Producer side"]
     S["Configured source"] -->|canonical arguments| A["Gateway acquire and sign"]
-    A -->|receipt| ST["Store"]
-    A -->|seal| R["Registry"]
+    A -->|receipt / artifact| ST["Retain receipt/artifact"]
+    ST -->|final count| SE["Seal final count"]
+    SE -->|seal| R["Registry"]
   end
 
   subgraph Consumer["Consumer side"]
@@ -45,6 +46,7 @@ flowchart TD
     D --> U["Use result"]
   end
 
+  ST -.->|snapshot| OB
   R -.-> FR
   GW["/verify: diagnostic convenience"] -. not the consumer boundary .-> V
   PK["/publickey: consistency only"] -. not trusted key distribution .-> V
