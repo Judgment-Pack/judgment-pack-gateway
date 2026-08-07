@@ -50,6 +50,15 @@ func TestParseServeOptions(t *testing.T) {
 			wantErr: "--source command must not be empty",
 		},
 		{
+			name: "duplicate source name",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source", "screen=echo hi",
+				"--source", "screen=/bin/sh",
+			},
+			wantErr: `duplicate source "screen"`,
+		},
+		{
 			name:    "unexpected positional argument",
 			args:    []string{"store", "seed", "authority", "registry", "extra"},
 			wantErr: `unexpected argument "extra"`,
@@ -149,6 +158,14 @@ func TestCmdServeRejectsMalformedOptions(t *testing.T) {
 		{name: "source no equals", args: []string{"store", "seed", "authority", "registry", "--source", "cmd"}},
 		{name: "empty source name", args: []string{"store", "seed", "authority", "registry", "--source", "=cmd"}},
 		{name: "empty source command", args: []string{"store", "seed", "authority", "registry", "--source", "name="}},
+		{
+			name: "duplicate source name",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source", "screen=echo hi",
+				"--source", "screen=/bin/sh",
+			},
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := cmdServe(tt.args); got != 2 {
