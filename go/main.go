@@ -140,11 +140,60 @@ func cmdKeygen(args []string) int {
 	return 0
 }
 
-func cmdServe(args []string) int {
+type serveOptions struct {
+	sources map[string][]string
+	port    string
+}
+
+func parseServeOptions(args []string) (serveOptions, string, bool) {
 	if len(args) < 4 {
-		fmt.Fprintln(os.Stderr,
-			"usage: gateway serve <store> <seedfile> <authority> <registry> "+
-				"[--source NAME=CMD ...] [--port N]")
+		return serveOptions{}, "usage: gateway serve <store> <seedfile> <authority> <registry> " +
+			"[--source NAME=CMD ...] [--port N]", false
+	}
+
+	opts := serveOptions{
+		sources: map[string][]string{},
+		port:    "8787",
+	}
+	rest := args[4:]
+	for i := 0; i < len(rest); i++ {
+		switch {
+		case rest[i] == "--source":
+			if i+1 >= len(rest) {
+				return opts, "--source requires a following NAME=CMD value", false
+			}
+			name, command, found := strings.Cut(rest[i+1], "=")
+			if !found {
+				return opts, "--source expects NAME=CMD", false
+			}
+			if strings.TrimSpace(name) == "" {
+				return opts, "--source name must not be empty", false
+			}
+			argv := strings.Fields(command)
+			if len(argv) == 0 {
+				return opts, "--source command must not be empty", false
+			}
+			opts.sources[name] = argv
+			i++
+		case rest[i] == "--port":
+			if i+1 >= len(rest) {
+				return opts, "--port requires a following value", false
+			}
+			opts.port = rest[i+1]
+			i++
+		case strings.HasPrefix(rest[i], "--"):
+			return opts, fmt.Sprintf("unknown option %q", rest[i]), false
+		default:
+			return opts, fmt.Sprintf("unexpected argument %q", rest[i]), false
+		}
+	}
+	return opts, "", true
+}
+
+func cmdServe(args []string) int {
+	opts, msg, ok := parseServeOptions(args)
+	if !ok {
+		fmt.Fprintln(os.Stderr, msg)
 		return 2
 	}
 	storeRoot, seedPath, authority, registryPath := args[0], args[1], args[2], args[3]
@@ -160,31 +209,12 @@ func cmdServe(args []string) int {
 		}
 	}
 
-	sources := map[string][]string{}
-	port := "8787"
-	rest := args[4:]
-	for i := 0; i < len(rest); i++ {
-		switch {
-		case rest[i] == "--source" && i+1 < len(rest):
-			name, command, found := strings.Cut(rest[i+1], "=")
-			if !found {
-				fmt.Fprintln(os.Stderr, "--source expects NAME=CMD")
-				return 2
-			}
-			sources[name] = strings.Fields(command)
-			i++
-		case rest[i] == "--port" && i+1 < len(rest):
-			port = rest[i+1]
-			i++
-		}
-	}
-
-	service, err := newGatewayService(storeRoot, seed, authority, registryPath, sources)
+	service, err := newGatewayService(storeRoot, seed, authority, registryPath, opts.sources)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	if err := service.listenAndServe("127.0.0.1:" + port); err != nil {
+	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
 	}
