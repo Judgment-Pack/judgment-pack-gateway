@@ -55,6 +55,36 @@ func TestParseServeOptions(t *testing.T) {
 			wantErr: `unexpected argument "extra"`,
 		},
 		{
+			name: "required arguments only",
+			args: []string{"store", "seed", "authority", "registry"},
+			wantOptions: serveOptions{
+				sources: map[string][]string{},
+				port:    "8787",
+			},
+		},
+		{
+			name: "port only",
+			args: []string{"store", "seed", "authority", "registry", "--port", "9000"},
+			wantOptions: serveOptions{
+				sources: map[string][]string{},
+				port:    "9000",
+			},
+		},
+		{
+			name: "port before source",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--port", "9000",
+				"--source", "screening=echo ok",
+			},
+			wantOptions: serveOptions{
+				sources: map[string][]string{
+					"screening": {"echo", "ok"},
+				},
+				port: "9000",
+			},
+		},
+		{
 			name: "valid repeated sources and port",
 			args: []string{
 				"store", "seed", "authority", "registry",
