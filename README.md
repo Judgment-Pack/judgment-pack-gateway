@@ -44,6 +44,26 @@ One Go binary, standard library only, binds localhost.
 cd go && go build -o gateway .
 
 ./gateway keygen gateway.seed      # prints the public key and key id to pin
+```
+
+The `serve` command below references `./my_source`. Create it first in a POSIX/WSL shell:
+
+```sh
+cat > my_source <<'EOF'
+#!/bin/sh
+# Consume the canonical arguments supplied on stdin, then emit one JSON result.
+cat >/dev/null
+printf '%s\n' '{"synthetic":true,"subject":"acme"}'
+EOF
+chmod +x my_source
+```
+
+The fixture is synthetic: it demonstrates the source-command interface only, and its
+output is not evidence that a real screening occurred. On native Windows, replace it
+with any executable that reads the canonical arguments on stdin and writes one JSON
+result object to stdout.
+
+```
 ./gateway serve ./store gateway.seed gateway:demo ./registry.jsonl \
     --source screening='./my_source' --port 8787
 ```
