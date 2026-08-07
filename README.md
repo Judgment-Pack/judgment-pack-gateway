@@ -31,7 +31,7 @@ the model cannot forge, and to say exactly where that proof stops.
 ```mermaid
 flowchart TD
   subgraph Producer["Producer side"]
-    S["Configured source"] -->|canonical arguments| A["Gateway acquire and sign"]
+    S["Configured source"] -->|result bytes| A["Gateway acquire and sign"]
     A -->|receipt / artifact| ST["Retain receipt/artifact"]
     ST -->|final count| SE["Seal final count"]
     SE -->|seal| R["Registry"]
