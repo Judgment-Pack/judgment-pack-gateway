@@ -169,6 +169,9 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			if strings.TrimSpace(name) == "" {
 				return opts, "--source name must not be empty", false
 			}
+			if _, exists := opts.sources[name]; exists {
+				return opts, fmt.Sprintf("duplicate source %q", name), false
+			}
 			argv := strings.Fields(command)
 			if len(argv) == 0 {
 				return opts, "--source command must not be empty", false
