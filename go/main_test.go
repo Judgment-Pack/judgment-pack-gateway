@@ -35,6 +35,71 @@ func TestParseServeOptions(t *testing.T) {
 			wantErr: "--port requires",
 		},
 		{
+			name:    "duplicate port option",
+			args:    []string{"store", "seed", "authority", "registry", "--port", "8787", "--port", "9000"},
+			wantErr: "duplicate --port option",
+		},
+		{
+			name:    "port is a service name",
+			args:    []string{"store", "seed", "authority", "registry", "--port", "http"},
+			wantErr: "is not a number between 1 and 65535",
+		},
+		{
+			name:    "port carries a host",
+			args:    []string{"store", "seed", "authority", "registry", "--port", "localhost:9000"},
+			wantErr: "is not a number between 1 and 65535",
+		},
+		{
+			// "-1" is not "--"-prefixed, so it is consumed as the --port value
+			// and rejected by validatePort rather than as an unknown option --
+			// which gives the operator the message about the port, not about a
+			// flag they did not write.
+			name:    "port is negative",
+			args:    []string{"store", "seed", "authority", "registry", "--port", "-1"},
+			wantErr: "is not a number between 1 and 65535",
+		},
+		{
+			name:    "port is above the range",
+			args:    []string{"store", "seed", "authority", "registry", "--port", "65536"},
+			wantErr: "is not a number between 1 and 65535",
+		},
+		{
+			name:    "port zero asks the kernel to choose",
+			args:    []string{"store", "seed", "authority", "registry", "--port", "0"},
+			wantErr: "is not a number between 1 and 65535",
+		},
+		{
+			name:    "port is empty",
+			args:    []string{"store", "seed", "authority", "registry", "--port", ""},
+			wantErr: "--port must not be empty",
+		},
+		{
+			name:    "port has surrounding space",
+			args:    []string{"store", "seed", "authority", "registry", "--port", " 8787"},
+			wantErr: "is not a number between 1 and 65535",
+		},
+		{
+			name:    "port has a sign",
+			args:    []string{"store", "seed", "authority", "registry", "--port", "+8787"},
+			wantErr: "is not a number between 1 and 65535",
+		},
+		{
+			name: "port at the top of the range is accepted",
+			args: []string{"store", "seed", "authority", "registry", "--port", "65535"},
+			wantOptions: serveOptions{
+				sources: map[string][]string{},
+				port:    "65535",
+			},
+		},
+		{
+			name: "port at the bottom of the range is accepted",
+			args: []string{"store", "seed", "authority", "registry", "--port", "1"},
+			wantOptions: serveOptions{
+				sources: map[string][]string{},
+				port:    "1",
+			},
+		},
+		{
 			name:    "source value without equals",
 			args:    []string{"store", "seed", "authority", "registry", "--source", "cmd"},
 			wantErr: "--source expects NAME=CMD",
