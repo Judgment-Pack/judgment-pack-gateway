@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -145,6 +146,27 @@ type serveOptions struct {
 	port    string
 }
 
+// validatePort accepts exactly what a TCP port may be on the command line: a
+// decimal number in 1-65535. It deliberately does not accept a service name
+// ("http"), a host:port pair, a leading "+", surrounding space, or 0 — 0 asks
+// the kernel for an arbitrary free port, which makes the printed address wrong
+// and is never what an operator naming a port meant.
+func validatePort(value string) (string, bool) {
+	if value == "" {
+		return "--port must not be empty", false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return fmt.Sprintf("--port %q is not a number between 1 and 65535", value), false
+		}
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil || number < 1 || number > 65535 {
+		return fmt.Sprintf("--port %q is not a number between 1 and 65535", value), false
+	}
+	return "", true
+}
+
 func parseServeOptions(args []string) (serveOptions, string, bool) {
 	if len(args) < 4 {
 		return serveOptions{}, "usage: gateway serve <store> <seedfile> <authority> <registry> " +
@@ -156,6 +178,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 		port:    "8787",
 	}
 	rest := args[4:]
+	portSeen := false
 	for i := 0; i < len(rest); i++ {
 		switch {
 		case rest[i] == "--source":
@@ -182,7 +205,23 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			if i+1 >= len(rest) {
 				return opts, "--port requires a following value", false
 			}
+			// `--port` is a singleton. Accepting it twice and keeping the last
+			// value starts the gateway on a port the command line also names
+			// somewhere else, which is exactly the ambiguity `--source` already
+			// refuses a duplicate for.
+			if portSeen {
+				return opts, "duplicate --port option", false
+			}
+			// Validated here rather than at `net.Listen`, because by then
+			// `cmdServe` has read the signing seed and `newGatewayService` may
+			// have created store, receipt, artifact and registry directories. A
+			// malformed command line must fail as usage, before any file or
+			// network side effect.
+			if msg, ok := validatePort(rest[i+1]); !ok {
+				return opts, msg, false
+			}
 			opts.port = rest[i+1]
+			portSeen = true
 			i++
 		case strings.HasPrefix(rest[i], "--"):
 			return opts, fmt.Sprintf("unknown option %q", rest[i]), false
