@@ -383,6 +383,92 @@ func TestEscapingSessionIsRejectedOverHTTP(t *testing.T) {
 	}
 }
 
+func TestJSONBodiesRejectTrailingValuesAndAllowWhitespace(t *testing.T) {
+	tests := []struct {
+		name        string
+		path        string
+		body        string
+		setup       func(*testing.T, *gatewayService, *httptest.Server)
+		wantCode    int
+		wantMessage string
+		checkState  func(*testing.T, *gatewayService)
+	}{
+		{
+			name:        "acquire rejects a second object",
+			path:        "/acquire",
+			body:        `{"session":"trailing-acquire","source":"screening","arguments":{}} {"extra":true}`,
+			wantCode:    http.StatusBadRequest,
+			wantMessage: "exactly one JSON value",
+			checkState: func(t *testing.T, service *gatewayService) {
+				entries, err := os.ReadDir(filepath.Join(service.storeRoot, "receipts"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(entries) != 0 {
+					t.Fatalf("rejected acquire wrote receipts: %v", entries)
+				}
+			},
+		},
+		{
+			name: "seal rejects a second value",
+			path: "/seal",
+			body: `{"session":"trailing-seal"} null`,
+			setup: func(t *testing.T, _ *gatewayService, server *httptest.Server) {
+				if code, _ := post(t, server, "/acquire", `{"session":"trailing-seal","source":"screening","arguments":{}}`); code != http.StatusOK {
+					t.Fatalf("setup acquire failed: %d", code)
+				}
+			},
+			wantCode:    http.StatusBadRequest,
+			wantMessage: "exactly one JSON value",
+			checkState: func(t *testing.T, service *gatewayService) {
+				data, err := os.ReadFile(service.regPath)
+				if err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+				if len(bytes.TrimSpace(data)) != 0 {
+					t.Fatalf("rejected seal changed the registry: %s", data)
+				}
+			},
+		},
+		{
+			name:     "acquire allows trailing whitespace",
+			path:     "/acquire",
+			body:     "{\"session\":\"whitespace-acquire\",\"source\":\"screening\",\"arguments\":{}} \t\r\n",
+			wantCode: http.StatusOK,
+		},
+		{
+			name: "seal allows trailing whitespace",
+			path: "/seal",
+			body: "{\"session\":\"whitespace-seal\"}\n\t",
+			setup: func(t *testing.T, _ *gatewayService, server *httptest.Server) {
+				if code, _ := post(t, server, "/acquire", `{"session":"whitespace-seal","source":"screening","arguments":{}}`); code != http.StatusOK {
+					t.Fatalf("setup acquire failed: %d", code)
+				}
+			},
+			wantCode: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service, server := testService(t)
+			if tt.setup != nil {
+				tt.setup(t, service, server)
+			}
+			code, response := post(t, server, tt.path, tt.body)
+			if code != tt.wantCode {
+				t.Fatalf("unexpected status: got %d, want %d (%v)", code, tt.wantCode, response)
+			}
+			if tt.wantMessage != "" && !strings.Contains(fmt.Sprint(response["error"]), tt.wantMessage) {
+				t.Fatalf("unexpected error: %v", response)
+			}
+			if tt.checkState != nil {
+				tt.checkState(t, service)
+			}
+		})
+	}
+}
+
 // The acquire response is evidence on its own: the receipt it carries is the
 // complete signed object, byte-equivalent under §1.1 to the one the store
 // holds, so a caller can check the signature it was handed without reaching

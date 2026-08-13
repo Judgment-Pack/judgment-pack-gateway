@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -64,6 +65,22 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 // badRequest marks errors that are the caller's fault, so the handler can answer 400
 // rather than 500.
 type badRequest struct{ error }
+
+func decodeSingleJSON(r io.Reader, dst any) error {
+	decoder := json.NewDecoder(r)
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return errors.New("request body must contain exactly one JSON value")
+		}
+		return fmt.Errorf("request body contains trailing content: %w", err)
+	}
+	return nil
+}
 
 func (g *gatewayService) acquire(sessionID, source string, arguments value) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
@@ -229,7 +246,7 @@ func (g *gatewayService) handler() http.Handler {
 			Source    string          `json:"source"`
 			Arguments json.RawMessage `json:"arguments"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := decodeSingleJSON(r.Body, &body); err != nil {
 			fail(w, badRequest{err})
 			return
 		}
@@ -258,7 +275,7 @@ func (g *gatewayService) handler() http.Handler {
 		var body struct {
 			Session string `json:"session"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		if err := decodeSingleJSON(r.Body, &body); err != nil {
 			fail(w, badRequest{err})
 			return
 		}
