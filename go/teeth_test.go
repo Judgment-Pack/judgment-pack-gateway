@@ -262,3 +262,116 @@ func TestStampRefusesACallIndexOutsideTheCanonicalDomain(t *testing.T) {
 		t.Fatal("a callIndex beyond 2^53-1 must be refused, not signed")
 	}
 }
+
+// SPEC §1.4 fixes ONE finding per receipt, at the first failure in a stated
+// order. A verifier that reports a later status for a receipt carrying two
+// defects is not merely less helpful — it makes the diagnostic depend on its
+// own internal ordering, so two conforming implementations disagree about a
+// byte-identical receipt. These vectors are built with overlapping defects on
+// purpose, because a single-defect suite cannot see an ordering error at all.
+func TestReceiptFirstFailureOrderFollowsTheSpec(t *testing.T) {
+	st, _, storeRoot, _ := testStore(t)
+
+	// A receipt that verifies, to mutate from. It is deliberately misfiled
+	// nowhere and its artifact is absent, so every case below stops before
+	// those checks and isolates orders 1 through 4.
+	core := newObject()
+	core.set("receiptVersion", vString(receiptVersion))
+	core.set("sessionId", vString("teeth-order"))
+	core.set("callIndex", vInt(0))
+	core.set("prevSignature", vNull{})
+	core.set("source", vString("s"))
+	core.set("argumentsDigest", vString("hmac-sha256:"+strings.Repeat("0", 64)))
+	core.set("resultDigest", vString("sha256:"+strings.Repeat("0", 64)))
+	core.set("servedAt", vString("t"))
+	core.set("authority", vString("gateway:test"))
+	// Stamped once: the store is append-only, so re-stamping the same
+	// (session, callIndex) is refused. Every case mutates a copy.
+	base, _, err := st.stamp(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(mutate func(o *vObject)) []byte {
+		clone := newObject()
+		for _, name := range base.names {
+			v, _ := base.get(name)
+			clone.set(name, v)
+		}
+		if mutate != nil {
+			mutate(clone)
+		}
+		return canon(clone)
+	}
+
+	// A syntactically perfect Ed25519 signature that is simply not the right
+	// one: 128 lowercase hex characters, so order 1 has nothing to say.
+	wrongSignature := strings.Repeat("ab", ed25519.SignatureSize)
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(o *vObject)
+		want   string
+		why    string
+	}{
+		{
+			name:   "non-hex signature and an unsupported version",
+			mutate: func(o *vObject) { o.set("signature", vString("zz")); o.set("receiptVersion", vString("1")) },
+			want:   "malformed",
+			why:    "order 1 (lexical) precedes order 2 (unsupported-version)",
+		},
+		{
+			name: "wrong key id and a signature that does not verify",
+			mutate: func(o *vObject) {
+				o.set("keyId", vString(strings.Repeat("f", 32)))
+				o.set("signature", vString(wrongSignature))
+			},
+			want: "key-mismatch",
+			why:  "order 3 (key-mismatch) precedes order 4 (signature-mismatch)",
+		},
+		{
+			name:   "uppercase resultDigest hex",
+			mutate: func(o *vObject) { o.set("resultDigest", vString("sha256:"+strings.Repeat("A", 64))) },
+			want:   "malformed",
+			why:    "SPEC 1.2 requires 64 LOWERCASE hex; encoding/hex would accept this",
+		},
+		{
+			name:   "well-formed signature bytes that do not verify",
+			mutate: func(o *vObject) { o.set("signature", vString(wrongSignature)) },
+			want:   "signature-mismatch",
+			why:    "correct length and lexically hex, so not malformed",
+		},
+		{
+			name:   "hex signature of the wrong length",
+			mutate: func(o *vObject) { o.set("signature", vString("abcd")) },
+			want:   "signature-mismatch",
+			why:    "lexically hex, so order 1 passes; it cannot verify, which is order 4",
+		},
+		{
+			name:   "odd-length signature is not hex at all",
+			mutate: func(o *vObject) { o.set("signature", vString("abc")) },
+			want:   "malformed",
+			why:    "an odd number of hex characters is not a hex encoding",
+		},
+		{
+			name:   "unsupported version alone",
+			mutate: func(o *vObject) { o.set("receiptVersion", vString("1")) },
+			want:   "unsupported-version",
+			why:    "order 2, with nothing lexical to report first",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, status := checkReceipt(build(tt.mutate), storeRoot, "teeth-order", "0.json",
+				"gateway:test", st.publicKey, st.keyID)
+			if status != tt.want {
+				t.Fatalf("status = %q, want %q -- %s", status, tt.want, tt.why)
+			}
+		})
+	}
+
+	// The unmutated receipt must reach past every status above, so the table is
+	// discriminating rather than reporting an early failure for all of them.
+	if _, status := checkReceipt(build(nil), storeRoot, "teeth-order", "0.json",
+		"gateway:test", st.publicKey, st.keyID); status != "artifact-missing" {
+		t.Fatalf("the untampered receipt reports %q; the table above would be vacuous", status)
+	}
+}
