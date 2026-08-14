@@ -401,9 +401,12 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) ([]
 }
 
 // checkReceipt runs the per-receipt checks in the order SPEC.md §1 lists them:
-// signature, key id, location binding, then the result re-digest. The first
-// failure is the receipt's status; a receipt reports one status, not a list.
-// A nil receipt means the file never became a receipt at all.
+// SPEC 1.4's normative order, exactly: lexical form (order 1), then
+// unsupported-version, key-mismatch, signature-mismatch, misfiled,
+// authority-mismatch, artifact-missing, artifact-mismatch. The first failure is
+// the receipt's status; a receipt reports one status, not a list. A nil receipt
+// means the file never became a receipt at all, which includes a receipt that
+// parsed but failed order 1.
 func checkReceipt(data []byte, storeRoot, sessionID, fileName, authority string, publicKey []byte, expectedKeyID string) (*receipt, string) {
 	v, err := parseJSON(data)
 	if err != nil {
@@ -417,27 +420,38 @@ func checkReceipt(data []byte, storeRoot, sessionID, fileName, authority string,
 	if err != nil {
 		return nil, "malformed"
 	}
+	// SPEC 1.4 order 1: every LEXICAL requirement, settled before the version,
+	// the key id, or any cryptographic work. SPEC 1.2 fixes both forms --
+	// resultDigest is "sha256:" + 64 lowercase hex, signature is Ed25519 in hex.
+	// encoding/hex accepts uppercase, so lowercase is checked explicitly rather
+	// than inferred from a successful decode.
 	digestHex, ok := strings.CutPrefix(r.resultDigest, "sha256:")
-	if !ok || len(digestHex) != 64 {
+	if !ok || !isLowerHexOfLen(digestHex, 64) {
 		return nil, "malformed"
 	}
-	if _, err := hex.DecodeString(digestHex); err != nil {
+	// A signature containing non-hex characters is malformed, not a mismatch:
+	// nothing about it is a failed cryptographic check.
+	if _, err := hex.DecodeString(r.signature); err != nil {
 		return nil, "malformed"
 	}
 
 	if r.version != receiptVersion {
 		return r, "unsupported-version"
 	}
-
+	// key-mismatch precedes signature-mismatch (SPEC 1.4 orders 3 then 4), so a
+	// receipt carrying both defects reports the earlier one. Verifying first
+	// reported the later one and made the diagnostic depend on our own order.
+	if subtle.ConstantTimeCompare([]byte(r.keyID), []byte(expectedKeyID)) != 1 {
+		return r, "key-mismatch"
+	}
+	// Well-formed hex of the wrong length is NOT malformed: it is a signature
+	// that cannot verify, which is order 4.
 	sig, err := hex.DecodeString(r.signature)
 	if err != nil || len(sig) != ed25519.SignatureSize {
 		return r, "signature-mismatch"
 	}
 	if !ed25519.Verify(publicKey, r.signingInput(), sig) {
 		return r, "signature-mismatch"
-	}
-	if subtle.ConstantTimeCompare([]byte(r.keyID), []byte(expectedKeyID)) != 1 {
-		return r, "key-mismatch"
 	}
 	// Location binding: the receipt has to sit where it says it does, so a
 	// valid receipt cannot be moved within or between sessions.
@@ -460,4 +474,19 @@ func checkReceipt(data []byte, storeRoot, sessionID, fileName, authority string,
 		return r, "artifact-mismatch"
 	}
 	return r, "ok"
+}
+
+// isLowerHexOfLen reports whether s is exactly n lowercase hexadecimal
+// characters. encoding/hex accepts uppercase and SPEC 1.2 does not, so a
+// successful decode is not sufficient evidence of the stated form.
+func isLowerHexOfLen(s string, n int) bool {
+	if len(s) != n {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
