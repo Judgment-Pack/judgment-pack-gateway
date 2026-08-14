@@ -67,6 +67,23 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 // rather than 500.
 type badRequest struct{ error }
 
+// maxRequestBody bounds what /acquire and /seal will read before deciding
+// anything. /seal carries one session id; /acquire carries a session id, a
+// source name, and a caller-supplied `arguments` value, so /acquire is the one
+// with a real payload and sets the number. One mebibyte is far above any
+// argument object this gateway is meant to serve and far below a body worth
+// buffering from an unauthenticated caller -- and there IS no authentication
+// here, so the only thing standing between a request and this process's memory
+// is this limit. listenAndServe already bounds header delivery with
+// ReadHeaderTimeout; this is the same concern for the body.
+const maxRequestBody = 1 << 20
+
+// limitBody caps r.Body in place. http.MaxBytesReader needs the ResponseWriter
+// to signal the client properly, so it can only be applied inside a handler.
+func limitBody(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+}
+
 func decodeSingleJSON(r io.Reader, dst any) error {
 	decoder := json.NewDecoder(r)
 	if err := decoder.Decode(dst); err != nil {
@@ -295,6 +312,7 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 			return
 		}
+		limitBody(w, r)
 		var body struct {
 			Session   string          `json:"session"`
 			Source    string          `json:"source"`
@@ -326,6 +344,7 @@ func (g *gatewayService) handler() http.Handler {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 			return
 		}
+		limitBody(w, r)
 		var body struct {
 			Session string `json:"session"`
 		}

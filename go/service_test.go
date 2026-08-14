@@ -757,3 +757,126 @@ func TestConcurrentAcquisitionsKeepContiguousIndices(t *testing.T) {
 		}
 	}
 }
+
+// --- request body bounds (issue #40) ---------------------------------------
+
+// countingReader streams a VALID, enormous JSON object and reports how much of
+// it the server consumed.
+//
+// Valid is load-bearing and was learned the hard way: an earlier version of
+// this test streamed raw filler, which is not JSON at its first byte, so the
+// decoder stopped immediately whether or not a limit existed. The test passed
+// against the unbounded gateway — precisely the "rejects it, but only after
+// reading all of it" trap this test exists to catch, reproduced inside the
+// test itself. A body the decoder is willing to keep reading is the only kind
+// that can distinguish the two.
+type countingReader struct {
+	prefix    []byte
+	remaining int64
+	suffix    []byte
+	read      int64
+}
+
+func newCountingBody(total int64) *countingReader {
+	prefix := []byte(`{"session":"`)
+	suffix := []byte(`"}`)
+	return &countingReader{
+		prefix:    prefix,
+		remaining: total - int64(len(prefix)) - int64(len(suffix)),
+		suffix:    suffix,
+	}
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	take := func(src []byte) (int, []byte) {
+		n := copy(p, src)
+		c.read += int64(n)
+		return n, src[n:]
+	}
+	if len(c.prefix) > 0 {
+		n, rest := take(c.prefix)
+		c.prefix = rest
+		return n, nil
+	}
+	if c.remaining > 0 {
+		n := int64(len(p))
+		if n > c.remaining {
+			n = c.remaining
+		}
+		for i := int64(0); i < n; i++ {
+			p[i] = 'a'
+		}
+		c.remaining -= n
+		c.read += n
+		return int(n), nil
+	}
+	if len(c.suffix) > 0 {
+		n, rest := take(c.suffix)
+		c.suffix = rest
+		return n, nil
+	}
+	return 0, io.EOF
+}
+
+func TestOversizedRequestBodyIsRefusedWithoutBufferingIt(t *testing.T) {
+	service, _ := testService(t)
+	handler := service.handler()
+
+	for _, path := range []string{"/acquire", "/seal"} {
+		t.Run(path, func(t *testing.T) {
+			// Twenty times the limit, streamed rather than materialized, so the
+			// test itself does not allocate what it is checking nobody reads.
+			body := newCountingBody(20 * maxRequestBody)
+			req := httptest.NewRequest(http.MethodPost, path, body)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+			}
+			// Some slack for buffering inside net/http and the JSON decoder;
+			// the assertion that matters is that it is bounded, not that it is
+			// exact.
+			if limit := int64(maxRequestBody) + 64*1024; body.read > limit {
+				t.Fatalf("server read %d bytes of a %d-byte body; the limit is %d, so "+
+					"it buffered past the bound instead of refusing at it",
+					body.read, 20*maxRequestBody, maxRequestBody)
+			}
+		})
+	}
+}
+
+func TestBodyAtOrBelowTheLimitIsUnaffected(t *testing.T) {
+	service, server := testService(t)
+	_ = service
+
+	// Padding the arguments object to just under the limit must still work, and
+	// must still produce a receipt: the bound is a ceiling, not a new rejection
+	// path for ordinary requests.
+	pad := strings.Repeat("x", maxRequestBody-4096)
+	payload := fmt.Sprintf(`{"session":"bounded","source":"screening","arguments":{"pad":%q}}`, pad)
+	if len(payload) >= maxRequestBody {
+		t.Fatalf("test payload %d bytes is not below the %d-byte limit", len(payload), maxRequestBody)
+	}
+	resp, err := http.Post(server.URL+"/acquire", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, raw)
+	}
+
+	// And trailing whitespace still parses, so #37's contract is untouched.
+	resp2, err := http.Post(server.URL+"/seal", "application/json",
+		strings.NewReader(`{"session":"bounded"}`+"\n\n  "))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp2.Body)
+		t.Fatalf("seal status = %d, want 200: %s", resp2.StatusCode, raw)
+	}
+}
