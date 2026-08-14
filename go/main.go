@@ -15,6 +15,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -131,14 +132,76 @@ func cmdKeygen(args []string) int {
 		fmt.Fprintln(os.Stderr, "generate seed:", err)
 		return 1
 	}
-	if err := os.WriteFile(path, []byte(hex.EncodeToString(seed)+"\n"), 0o600); err != nil {
+	if err := writeNewSeed(path, []byte(hex.EncodeToString(seed)+"\n")); err != nil {
 		fmt.Fprintln(os.Stderr, "write seed:", err)
 		return 1
 	}
-	public := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	// Derived from the bytes that were persisted, not from the bytes we meant
+	// to persist. A short write or a filesystem that lied would otherwise print
+	// a public key the operator pins out of band for a seed that is not there.
+	persisted, err := readSeedFile(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "verify written seed:", err)
+		return 1
+	}
+	public := ed25519.NewKeyFromSeed(persisted).Public().(ed25519.PublicKey)
 	fmt.Printf("seed written to %s (keep it secret)\npublicKey %s\nkeyId     %s\n",
 		path, hex.EncodeToString(public), keyIDFor(public))
 	return 0
+}
+
+// writeNewSeed creates path exclusively. O_EXCL is the whole point and a
+// check-then-write would not do: between a stat and a write, a rerun or a
+// planted symlink decides which identity the gateway keeps. O_CREATE|O_EXCL
+// also refuses a symlink outright rather than following it, so an existing
+// path -- regular file, directory, or link -- is left untouched and the
+// operator is told, instead of silently rotating the key every receipt and
+// seal already produced was signed under.
+func writeNewSeed(path string, encoded []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := file.Write(encoded); err != nil {
+		file.Close()
+		os.Remove(path) // best effort: do not leave a partial seed behind
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		file.Close()
+		os.Remove(path)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		os.Remove(path)
+		return err
+	}
+	return nil
+}
+
+// readSeedFile reads back exactly what keygen persists: 64 lowercase hex
+// characters and one newline, decoding to a 32-byte Ed25519 seed.
+func readSeedFile(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSuffix(string(raw), "\n")
+	if len(text) != hex.EncodedLen(seedBytes) {
+		return nil, fmt.Errorf("expected %d hex characters, got %d",
+			hex.EncodedLen(seedBytes), len(text))
+	}
+	if text != strings.ToLower(text) {
+		return nil, errors.New("seed must be lowercase hexadecimal")
+	}
+	seed, err := hex.DecodeString(text)
+	if err != nil {
+		return nil, err
+	}
+	if len(seed) != seedBytes {
+		return nil, fmt.Errorf("expected %d seed bytes, got %d", seedBytes, len(seed))
+	}
+	return seed, nil
 }
 
 type serveOptions struct {

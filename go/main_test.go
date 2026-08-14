@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/hex"
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -238,4 +242,118 @@ func TestCmdServeRejectsMalformedOptions(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestKeygenCreatesANewSeed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gateway.seed")
+	if code := cmdKeygen([]string{path}); code != 0 {
+		t.Fatalf("cmdKeygen() = %d, want 0", code)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read seed: %v", err)
+	}
+	text, ok := strings.CutSuffix(string(raw), "\n")
+	if !ok {
+		t.Fatalf("seed file does not end in exactly one newline: %q", raw)
+	}
+	if len(text) != 64 {
+		t.Fatalf("seed = %d characters, want 64", len(text))
+	}
+	if text != strings.ToLower(text) {
+		t.Fatalf("seed is not lowercase hexadecimal: %q", text)
+	}
+	seed, err := hex.DecodeString(text)
+	if err != nil {
+		t.Fatalf("decode seed: %v", err)
+	}
+	if len(seed) != seedBytes {
+		t.Fatalf("seed decodes to %d bytes, want %d", len(seed), seedBytes)
+	}
+
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat seed: %v", err)
+		}
+		if mode := info.Mode().Perm(); mode&0o077 != 0 {
+			t.Fatalf("seed mode = %04o, want no group or world access", mode)
+		}
+	}
+}
+
+// The point of the issue: a rerun must not silently rotate the signing identity
+// that every already-issued receipt and seal was produced under.
+func TestKeygenRefusesToReplaceAnExistingPath(t *testing.T) {
+	t.Run("regular file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "gateway.seed")
+		original := []byte("do not touch me\n")
+		if err := os.WriteFile(path, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if code := cmdKeygen([]string{path}); code == 0 {
+			t.Fatal("cmdKeygen() = 0, want non-zero for an existing file")
+		}
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(after, original) {
+			t.Fatalf("existing seed changed: %q -> %q", original, after)
+		}
+	})
+
+	// Recorded from a mutation check: this subtest passes under the previous
+	// os.WriteFile implementation too, because that already failed with EISDIR.
+	// It is kept because the issue names it and because it pins the behaviour
+	// against a future change that would create through a path, but it does not
+	// on its own demonstrate the fix -- the regular-file and symlink subtests
+	// are the two that fail without exclusive creation.
+	t.Run("directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "gateway.seed")
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if code := cmdKeygen([]string{path}); code == 0 {
+			t.Fatal("cmdKeygen() = 0, want non-zero for an existing directory")
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() {
+			t.Fatal("the directory was replaced")
+		}
+	})
+
+	t.Run("symlink is not followed", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "real-secret")
+		original := []byte("the operator's actual seed\n")
+		if err := os.WriteFile(target, original, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "gateway.seed")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlinks unavailable here: %v", err)
+		}
+		if code := cmdKeygen([]string{link}); code == 0 {
+			t.Fatal("cmdKeygen() = 0, want non-zero for an existing symlink")
+		}
+		after, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(after, original) {
+			t.Fatalf("the symlink was followed and its target overwritten: %q -> %q", original, after)
+		}
+		info, err := os.Lstat(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Fatal("the symlink itself was replaced by a regular file")
+		}
+	})
 }
