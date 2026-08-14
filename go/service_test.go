@@ -16,19 +16,87 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 var testSeed = []byte("judgment-pack-gateway-test-seed!") // exactly 32 bytes
 
 const envSourceHelper = "GATEWAY_TEST_SOURCE_HELPER"
 
+// Barrier channels for the admission tests. The helper announces that it has
+// STARTED and then blocks until it is let go, so a test can hold a source
+// mid-flight without asserting anything about timing.
+const (
+	envSourceReady = "GATEWAY_TEST_SOURCE_READY"
+	envSourceWait  = "GATEWAY_TEST_SOURCE_WAIT"
+	envSourceFail  = "GATEWAY_TEST_SOURCE_FAIL"
+)
+
 func TestMain(m *testing.M) {
 	if os.Getenv(envSourceHelper) == "1" {
 		_, _ = io.Copy(io.Discard, os.Stdin)
+		if ready := os.Getenv(envSourceReady); ready != "" {
+			_ = os.WriteFile(ready, []byte("started\n"), 0o600)
+		}
+		if wait := os.Getenv(envSourceWait); wait != "" {
+			for {
+				if _, err := os.Stat(wait); err == nil {
+					break
+				}
+				time.Sleep(time.Millisecond)
+			}
+		}
+		if os.Getenv(envSourceFail) == "1" {
+			fmt.Fprintln(os.Stderr, "source refused")
+			os.Exit(1)
+		}
 		fmt.Print(`{"checkedSuccessfully":true,"status":"not_found"}`)
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// waitForFile blocks until path exists. It fails the test rather than returning
+// on a deadline, so a barrier that never opens is reported as the bug it is
+// instead of silently becoming a race.
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("barrier never opened: %s", path)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func openBarrier(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("go\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func registryLines(t *testing.T, path string) int {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return 0
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(bytes.Split(bytes.TrimSpace(raw), []byte("\n"))) - boolToInt(len(bytes.TrimSpace(raw)) == 0)
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func testStore(t *testing.T) (*store, *registryWriter, string, string) {
@@ -549,5 +617,143 @@ func TestAcquireResponseReceiptVerifiesAlone(t *testing.T) {
 	}
 	if ed25519.Verify(public, append([]byte(receiptContext), tamperedCanon...), sig) {
 		t.Fatal("a tampered member must fail the check")
+	}
+}
+
+// --- admission (issue #36) -------------------------------------------------
+//
+// Admission has to be linearized with sealing BEFORE a source runs. Sources are
+// slow, cost money, and can have operator-visible side effects, so "this
+// session is sealed" must be decided against the state as it is when the
+// request arrives -- not as it will be when a subprocess finishes.
+
+func TestAcquireAfterSealDoesNotStartTheSource(t *testing.T) {
+	service, _ := testService(t)
+	if _, err := service.acquire("race-sealed", "screening", vString("x")); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if _, err := service.sealSession("race-sealed"); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+
+	// From here the source must never run. It announces itself by creating this
+	// file, so "was it started" is a side effect rather than an inference.
+	started := filepath.Join(t.TempDir(), "source-started")
+	t.Setenv(envSourceReady, started)
+
+	if _, err := service.acquire("race-sealed", "screening", vString("x")); err == nil {
+		t.Fatal("acquire on a sealed session must be refused")
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source ran for an acquisition on a sealed session")
+	}
+}
+
+func TestSealRefusesWhileAnAcquisitionIsInFlight(t *testing.T) {
+	service, _ := testService(t)
+
+	// One receipt first, so the session already EXISTS. Without this the test
+	// passes against the unfixed gateway for the wrong reason: there, a session
+	// is not created until its source completes, so the seal below fails with
+	// "no such session" rather than because work is in flight. Found by
+	// mutation-checking this test against the original code.
+	if _, err := service.acquire("race-inflight", "screening", vString("x")); err != nil {
+		t.Fatalf("seed acquire: %v", err)
+	}
+
+	dir := t.TempDir()
+	started, release := filepath.Join(dir, "started"), filepath.Join(dir, "release")
+	t.Setenv(envSourceReady, started)
+	t.Setenv(envSourceWait, release)
+
+	done := make(chan error, 1)
+	go func() { _, err := service.acquire("race-inflight", "screening", vString("x")); done <- err }()
+	waitForFile(t, started) // the source is now running and cannot finish
+
+	before := registryLines(t, service.regPath)
+	if _, err := service.sealSession("race-inflight"); err == nil {
+		t.Fatal("seal must refuse while an admitted acquisition is in flight")
+	}
+	if after := registryLines(t, service.regPath); after != before {
+		t.Fatalf("a refused seal wrote %d registry record(s)", after-before)
+	}
+
+	openBarrier(t, release)
+	if err := <-done; err != nil {
+		t.Fatalf("in-flight acquire: %v", err)
+	}
+
+	// Once the work it was waiting for has landed, the same seal succeeds and
+	// counts that receipt -- the refusal is a retry, not a rejection.
+	t.Setenv(envSourceWait, "")
+	out, err := service.sealSession("race-inflight")
+	if err != nil {
+		t.Fatalf("seal after the acquisition finished: %v", err)
+	}
+	if count, ok := out["finalCount"].(float64); !ok || int(count) != 2 {
+		t.Fatalf("finalCount = %v, want 2 (the seed receipt and the in-flight one)",
+			out["finalCount"])
+	}
+}
+
+// The hazard admitting early introduces: a session created for an acquisition
+// whose source then FAILED would be left behind, and could be sealed as a real
+// zero-receipt session that verifies.
+//
+// Recorded from a mutation check: this test also passes against the UNFIXED
+// gateway, which never created the session in the first place. It does not
+// demonstrate the fix -- it guards the new admission path against
+// reintroducing the phantom, which is a regression this change could plausibly
+// cause and nothing else would catch.
+func TestFailedSourceLeavesNoSealablePhantomSession(t *testing.T) {
+	service, _ := testService(t)
+	t.Setenv(envSourceFail, "1")
+
+	if _, err := service.acquire("race-phantom", "screening", vString("x")); err == nil {
+		t.Fatal("a failing source must fail the acquisition")
+	}
+	if _, err := service.sealSession("race-phantom"); err == nil {
+		t.Fatal("a session whose only acquisition failed must not be sealable")
+	}
+	service.mu.Lock()
+	_, present := service.sessions["race-phantom"]
+	service.mu.Unlock()
+	if present {
+		t.Fatal("the failed acquisition left a session behind")
+	}
+	if lines := registryLines(t, service.regPath); lines != 0 {
+		t.Fatalf("registry has %d record(s) after a failed source", lines)
+	}
+}
+
+// Independent sessions must not serialize, and concurrent successes on one
+// session must still receive contiguous indices in completion order.
+func TestConcurrentAcquisitionsKeepContiguousIndices(t *testing.T) {
+	service, _ := testService(t)
+	const n = 6
+	done := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func() { _, err := service.acquire("race-parallel", "screening", vString("x")); done <- err }()
+	}
+	for i := 0; i < n; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("concurrent acquire: %v", err)
+		}
+	}
+	service.mu.Lock()
+	state := service.sessions["race-parallel"]
+	index, inFlight := state.index, state.inFlight
+	service.mu.Unlock()
+	if index != n {
+		t.Fatalf("index = %d, want %d", index, n)
+	}
+	if inFlight != 0 {
+		t.Fatalf("inFlight = %d after every acquisition finished, want 0", inFlight)
+	}
+	for i := 0; i < n; i++ {
+		if _, err := os.Stat(filepath.Join(service.storeRoot, "receipts", "race-parallel",
+			fmt.Sprintf("%d.json", i))); err != nil {
+			t.Fatalf("receipt %d missing: %v", i, err)
+		}
 	}
 }
