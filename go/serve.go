@@ -26,9 +26,10 @@ import (
 )
 
 type sessionState struct {
-	index  int64
-	prev   string
-	sealed bool
+	index    int64
+	prev     string
+	sealed   bool
+	inFlight int // admitted acquisitions whose source has not finished
 }
 
 type gatewayService struct {
@@ -92,6 +93,17 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	}
 	canonicalArgs := canon(arguments)
 
+	// Admission happens BEFORE the source exists. Sources are slow, cost money
+	// and can have operator-visible side effects, so "sealed" has to be decided
+	// against the session state as it is now, not as it will be when a
+	// subprocess finishes. Every path out of here releases the reservation; the
+	// deferred release is registered before the mutex is taken again below, so
+	// it runs after that unlock rather than deadlocking on it.
+	if err := g.admit(sessionID); err != nil {
+		return nil, err
+	}
+	defer g.release(sessionID)
+
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
@@ -112,14 +124,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	state, seen := g.sessions[sessionID]
-	if !seen {
-		state = &sessionState{}
-		g.sessions[sessionID] = state
-	}
-	if state.sealed {
-		return nil, badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
-	}
+	// The session exists because admission created it, and it cannot have been
+	// sealed since: sealing refuses while an acquisition is in flight.
+	state := g.sessions[sessionID]
 
 	resultDigest, err := g.store.retain(canon(result))
 	if err != nil {
@@ -169,6 +176,44 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	}, nil
 }
 
+// admit reserves an acquisition against a session, refusing a sealed one before
+// any source is constructed or started.
+func (g *gatewayService) admit(sessionID string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, seen := g.sessions[sessionID]
+	if !seen {
+		state = &sessionState{}
+		g.sessions[sessionID] = state
+	}
+	if state.sealed {
+		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
+	}
+	state.inFlight++
+	return nil
+}
+
+// release drops the reservation admit took.
+//
+// A session that admission created and that never produced a receipt is removed
+// again. Before this change a session only entered the map once it had one, so
+// leaving an empty one behind would let a caller seal a session whose only
+// acquisition FAILED -- a zero-receipt phantom that verifies as a real sealed
+// session. That is the hazard admitting early introduces, and the reason this
+// is not simply a counter decrement.
+func (g *gatewayService) release(sessionID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	state, seen := g.sessions[sessionID]
+	if !seen {
+		return
+	}
+	state.inFlight--
+	if state.inFlight <= 0 && state.index == 0 && !state.sealed {
+		delete(g.sessions, sessionID)
+	}
+}
+
 func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err}
@@ -178,6 +223,15 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	state, seen := g.sessions[sessionID]
 	if !seen {
 		return nil, badRequest{fmt.Errorf("no such session: %s", sessionID)}
+	}
+	// A seal must not overtake work the gateway already admitted, or that
+	// receipt would exist in the store while the sealed finalCount says it does
+	// not. Refusing is the registered policy: the caller retries once the
+	// in-flight acquisitions finish, and no registry record is written here.
+	if state.inFlight > 0 {
+		return nil, badRequest{fmt.Errorf(
+			"session has %d acquisition(s) in flight, retry after they finish: %s",
+			state.inFlight, sessionID)}
 	}
 	record, err := g.registry.seal(sessionID, state.index, nowStamp())
 	if err != nil {
