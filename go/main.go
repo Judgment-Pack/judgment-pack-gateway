@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -261,6 +262,9 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			argv := strings.Fields(command)
 			if len(argv) == 0 {
 				return opts, "--source command must not be empty", false
+			}
+			if _, err := exec.LookPath(argv[0]); err != nil {
+				return opts, fmt.Sprintf("--source %q command %q cannot be resolved", name, argv[0]), false
 			}
 			opts.sources[name] = argv
 			i++
