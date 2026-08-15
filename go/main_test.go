@@ -122,8 +122,8 @@ func TestParseServeOptions(t *testing.T) {
 			name: "duplicate source name",
 			args: []string{
 				"store", "seed", "authority", "registry",
-				"--source", "screen=echo hi",
-				"--source", "screen=/bin/sh",
+				"--source", "screen=go version",
+				"--source", "screen=go",
 			},
 			wantErr: `duplicate source "screen"`,
 		},
@@ -153,11 +153,11 @@ func TestParseServeOptions(t *testing.T) {
 			args: []string{
 				"store", "seed", "authority", "registry",
 				"--port", "9000",
-				"--source", "screening=echo ok",
+				"--source", "screening=go version",
 			},
 			wantOptions: serveOptions{
 				sources: map[string][]string{
-					"screening": {"echo", "ok"},
+					"screening": {"go", "version"},
 				},
 				port: "9000",
 			},
@@ -166,14 +166,14 @@ func TestParseServeOptions(t *testing.T) {
 			name: "valid repeated sources and port",
 			args: []string{
 				"store", "seed", "authority", "registry",
-				"--source", "screen=/bin/sh",
-				"--source", "quote=echo hi",
+				"--source", "screen=go",
+				"--source", "quote=go version",
 				"--port", "9000",
 			},
 			wantOptions: serveOptions{
 				sources: map[string][]string{
-					"screen": {"/bin/sh"},
-					"quote":  {"echo", "hi"},
+					"screen": {"go"},
+					"quote":  {"go", "version"},
 				},
 				port: "9000",
 			},
@@ -231,8 +231,8 @@ func TestCmdServeRejectsMalformedOptions(t *testing.T) {
 			name: "duplicate source name",
 			args: []string{
 				"store", "seed", "authority", "registry",
-				"--source", "screen=echo hi",
-				"--source", "screen=/bin/sh",
+				"--source", "screen=go version",
+				"--source", "screen=go",
 			},
 		},
 	} {
@@ -356,4 +356,42 @@ func TestKeygenRefusesToReplaceAnExistingPath(t *testing.T) {
 			t.Fatal("the symlink itself was replaced by a regular file")
 		}
 	})
+}
+
+func TestSourceCommandResolution(t *testing.T) {
+	null, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = null
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		null.Close()
+	})
+
+	tests := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{
+			name: "resolves",
+			args: []string{"store", "seed", "authority", "registry", "--source", "echo=go version"},
+			want: 1, // fails later trying to read the seed file since "seed" does not exist
+		},
+		{
+			name: "does not resolve",
+			args: []string{"store", "seed", "authority", "registry", "--source", "missing=this-command-does-not-exist ok"},
+			want: 2, // parseServeOptions fails, returning 2
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := cmdServe(tt.args); got != tt.want {
+				t.Fatalf("cmdServe() = %d, want %d", got, tt.want)
+			}
+		})
+	}
 }
