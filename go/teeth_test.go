@@ -13,6 +13,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -373,5 +374,85 @@ func TestReceiptFirstFailureOrderFollowsTheSpec(t *testing.T) {
 	if _, status := checkReceipt(build(nil), storeRoot, "teeth-order", "0.json",
 		"gateway:test", st.publicKey, st.keyID); status != "artifact-missing" {
 		t.Fatalf("the untampered receipt reports %q; the table above would be vacuous", status)
+	}
+}
+
+// TestKeyIDForProperties pins the property invariants of keyIDFor:
+// exact 32 characters, lowercase hex alphabet, determinism, prefix match against
+// an independently computed SHA-256 digest, and collision resistance across distinct keys.
+func TestKeyIDForProperties(t *testing.T) {
+	cases := []struct {
+		name string
+		key  []byte
+	}{
+		{
+			name: "32-byte ed25519 public key",
+			key:  []byte("0123456789abcdef0123456789abcdef"),
+		},
+		{
+			name: "all zeros 32 bytes",
+			key:  make([]byte, ed25519.PublicKeySize),
+		},
+		{
+			name: "arbitrary 64 bytes",
+			key:  []byte("arbitrary-length-key-bytes-for-digest-testing-purpose-longer-than-32"),
+		},
+		{
+			name: "single byte",
+			key:  []byte{0x42},
+		},
+		{
+			name: "empty key",
+			key:  []byte{},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			id1 := keyIDFor(tc.key)
+			id2 := keyIDFor(tc.key)
+
+			// 1. Determinism
+			if id1 != id2 {
+				t.Fatalf("keyIDFor is not deterministic: %q != %q", id1, id2)
+			}
+
+			// 2. Length: exactly 32 hex characters (128 bits)
+			if len(id1) != 32 {
+				t.Fatalf("len(keyIDFor) = %d, want 32", len(id1))
+			}
+
+			// 3. Alphabet: all lowercase hex characters [0-9a-f]
+			for i, r := range id1 {
+				if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+					t.Fatalf("keyIDFor[%d] = %q is not lowercase hex (full id: %q)", i, r, id1)
+				}
+			}
+
+			// 4. Prefix relationship against an independently computed digest
+			fullDigest := sha256.Sum256(tc.key)
+			fullHex := hex.EncodeToString(fullDigest[:])
+			if !strings.HasPrefix(fullHex, id1) {
+				t.Fatalf("keyIDFor(%q) = %q is not a prefix of independent full digest %q", tc.key, id1, fullHex)
+			}
+			if id1 != fullHex[:32] {
+				t.Fatalf("keyIDFor(%q) = %q, want fullHex[:32] %q", tc.key, id1, fullHex[:32])
+			}
+		})
+	}
+
+	// 5. Collision resistance / distinct keys produce different IDs
+	distinctKeys := [][]byte{
+		[]byte("key-alpha-1234567890123456789012"),
+		[]byte("key-beta--1234567890123456789012"),
+		[]byte("key-gamma-1234567890123456789012"),
+	}
+	seenIDs := make(map[string][]byte)
+	for _, key := range distinctKeys {
+		id := keyIDFor(key)
+		if existingKey, exists := seenIDs[id]; exists {
+			t.Fatalf("collision detected for distinct keys: keyIDFor(%q) == keyIDFor(%q) == %q", key, existingKey, id)
+		}
+		seenIDs[id] = key
 	}
 }
