@@ -395,3 +395,110 @@ func TestSourceCommandResolution(t *testing.T) {
 		})
 	}
 }
+
+func TestCmdCanon(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		wantCode   int
+		wantStdout string
+		checkRe    bool
+	}{
+		{
+			name:       "valid object",
+			input:      `{"b": 2, "a": 1}`,
+			wantCode:   0,
+			wantStdout: `{"a":1,"b":2}`,
+		},
+		{
+			name:       "key ordering and escaping",
+			input:      `{"z": "foo\nbar", "a": 1, "c": "\u003c"}`,
+			wantCode:   0,
+			wantStdout: `{"a":1,"c":"<","z":"foo\nbar"}`,
+			checkRe:    true,
+		},
+		{
+			name:       "malformed JSON",
+			input:      `{bad}`,
+			wantCode:   1,
+			wantStdout: "",
+		},
+		{
+			name:       "empty input",
+			input:      "",
+			wantCode:   1,
+			wantStdout: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotCode, gotStdout := runCmdCanon(t, tt.input)
+			if gotCode != tt.wantCode {
+				t.Fatalf("cmdCanon() = %d, want %d", gotCode, tt.wantCode)
+			}
+			if gotStdout != tt.wantStdout {
+				t.Fatalf("stdout = %q, want %q", gotStdout, tt.wantStdout)
+			}
+			if tt.wantCode == 0 && strings.HasSuffix(gotStdout, "\n") {
+				t.Fatal("stdout has trailing newline")
+			}
+			if tt.checkRe {
+				gotCode2, gotStdout2 := runCmdCanon(t, gotStdout)
+				if gotCode2 != 0 {
+					t.Fatalf("second cmdCanon() = %d, want 0", gotCode2)
+				}
+				if gotStdout2 != gotStdout {
+					t.Fatalf("second run output %q does not match first run output %q", gotStdout2, gotStdout)
+				}
+			}
+		})
+	}
+}
+
+func runCmdCanon(t *testing.T, input string) (int, string) {
+	t.Helper()
+
+	inF, err := os.CreateTemp(t.TempDir(), "stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer inF.Close()
+	if _, err := inF.Write([]byte(input)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inF.Seek(0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	outF, err := os.CreateTemp(t.TempDir(), "stdout")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outF.Close()
+
+	errF, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer errF.Close()
+
+	oldStdin, oldStdout, oldStderr := os.Stdin, os.Stdout, os.Stderr
+	defer func() {
+		os.Stdin = oldStdin
+		os.Stdout = oldStdout
+		os.Stderr = oldStderr
+	}()
+	os.Stdin = inF
+	os.Stdout = outF
+	os.Stderr = errF
+
+	code := cmdCanon()
+
+	outBytes, err := os.ReadFile(outF.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	return code, string(outBytes)
+}
