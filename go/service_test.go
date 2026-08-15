@@ -32,19 +32,56 @@ const (
 	envSourceFail  = "GATEWAY_TEST_SOURCE_FAIL"
 )
 
+// A barrier named in the ARGUMENTS rather than the environment. Every helper
+// this process starts inherits the same environment, so an environment-named
+// barrier holds all of them at once and cannot express "hold session A while
+// session B keeps working". Arguments differ per acquisition, so they can.
+const barrierArgPrefix = "barrier:"
+
+const (
+	startedFile = "started"
+	releaseFile = "release"
+)
+
+// barrierArg builds the arguments value that puts one acquisition's source
+// behind the barrier in dir.
+func barrierArg(dir string) value { return vString(barrierArgPrefix + dir) }
+
+// barrierDir reports the barrier directory a canonical arguments value names,
+// if it names one. An ordinary arguments value does not, and its source runs
+// straight through.
+func barrierDir(arguments []byte) (string, bool) {
+	var s string
+	if err := json.Unmarshal(arguments, &s); err != nil {
+		return "", false
+	}
+	return strings.CutPrefix(s, barrierArgPrefix)
+}
+
+// awaitFile blocks until path exists. It runs inside the helper process, where
+// there is no *testing.T to fail; a helper that is never released is killed by
+// the gateway's own subprocess timeout.
+func awaitFile(path string) {
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestMain(m *testing.M) {
 	if os.Getenv(envSourceHelper) == "1" {
-		_, _ = io.Copy(io.Discard, os.Stdin)
+		arguments, _ := io.ReadAll(os.Stdin)
 		if ready := os.Getenv(envSourceReady); ready != "" {
 			_ = os.WriteFile(ready, []byte("started\n"), 0o600)
 		}
+		if dir, ok := barrierDir(arguments); ok {
+			_ = os.WriteFile(filepath.Join(dir, startedFile), []byte("started\n"), 0o600)
+			awaitFile(filepath.Join(dir, releaseFile))
+		}
 		if wait := os.Getenv(envSourceWait); wait != "" {
-			for {
-				if _, err := os.Stat(wait); err == nil {
-					break
-				}
-				time.Sleep(time.Millisecond)
-			}
+			awaitFile(wait)
 		}
 		if os.Getenv(envSourceFail) == "1" {
 			fmt.Fprintln(os.Stderr, "source refused")
@@ -755,6 +792,59 @@ func TestConcurrentAcquisitionsKeepContiguousIndices(t *testing.T) {
 			fmt.Sprintf("%d.json", i))); err != nil {
 			t.Fatalf("receipt %d missing: %v", i, err)
 		}
+	}
+
+	// Contiguous indices are necessary but not sufficient: the prevSignature
+	// chain has to be sound too, and only verification checks that. Interleaved
+	// stamping would produce n well-named files whose chain forks. The session
+	// is deliberately left unsealed, so unregistered-session is expected here
+	// and a broken chain or sequence is not.
+	_, counts := statuses(t, service.storeRoot, service.regPath)
+	if counts["chain-broken"] != 0 || counts["sequence-broken"] != 0 {
+		t.Fatalf("chain-broken=%d sequence-broken=%d, want 0 and 0",
+			counts["chain-broken"], counts["sequence-broken"])
+	}
+	if counts["ok"] != n {
+		t.Fatalf("%d receipts verify, want %d", counts["ok"], n)
+	}
+}
+
+// The converse of the in-flight seal refusal: holding one session must not hold
+// the gateway. The mutex is taken to admit and released before the source runs,
+// so an unrelated session can acquire AND seal while another's source is stuck.
+//
+// The barrier is named in session A's arguments, not in the environment, because
+// every helper subprocess inherits the same environment -- an environment-named
+// barrier would hold B's source alongside A's and the test could not tell a
+// serialized gateway from a working one.
+//
+// Recorded from a mutation check: this test passes against the pre-#36 gateway
+// too, which also released the mutex around the subprocess. It does not
+// demonstrate that change; it pins the property the change had to preserve, and
+// it fails if the critical section is ever widened to span a source.
+func TestBlockedSourceDoesNotBlockAnIndependentSession(t *testing.T) {
+	service, _ := testService(t)
+
+	dir := t.TempDir()
+	done := make(chan error, 1)
+	go func() { _, err := service.acquire("race-indep-a", "screening", barrierArg(dir)); done <- err }()
+	waitForFile(t, filepath.Join(dir, startedFile)) // A's source is running and cannot finish
+
+	if _, err := service.acquire("race-indep-b", "screening", vString("x")); err != nil {
+		t.Fatalf("session B could not acquire while session A's source was blocked: %v", err)
+	}
+	out, err := service.sealSession("race-indep-b")
+	if err != nil {
+		t.Fatalf("session B could not seal while session A's source was blocked: %v", err)
+	}
+	if count, ok := out["finalCount"].(float64); !ok || int(count) != 1 {
+		t.Fatalf("session B finalCount = %v, want 1", out["finalCount"])
+	}
+
+	// A is untouched by B's traffic and still completes once released.
+	openBarrier(t, filepath.Join(dir, releaseFile))
+	if err := <-done; err != nil {
+		t.Fatalf("session A acquire: %v", err)
 	}
 }
 
