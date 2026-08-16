@@ -12,6 +12,7 @@ package main
 // only thing left standing between this code and silent format drift.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
@@ -454,5 +455,91 @@ func TestKeyIDForProperties(t *testing.T) {
 			t.Fatalf("collision detected for distinct keys: keyIDFor(%q) == keyIDFor(%q) == %q", key, existingKey, id)
 		}
 		seenIDs[id] = key
+	}
+}
+
+func TestStoreAppendOnlyRefusesOverwrite(t *testing.T) {
+	s, _, root, _ := testStore(t)
+
+	sessionID := "test-session-append-only"
+	receiptCore := func(index int64, prev value) *vObject {
+		core := newObject()
+		core.set("receiptVersion", vString(receiptVersion))
+		core.set("sessionId", vString(sessionID))
+		core.set("callIndex", vInt(index))
+		core.set("prevSignature", prev)
+		core.set("source", vString("s"))
+		core.set("argumentsDigest", vString("hmac-sha256:"+strings.Repeat("0", 64)))
+		core.set("resultDigest", vString("sha256:"+strings.Repeat("1", 64)))
+		core.set("servedAt", vString("2026-08-16T00:00:00Z"))
+		core.set("authority", vString("gateway:test"))
+		return core
+	}
+	core := receiptCore(0, vNull{})
+
+	_, sig, err := s.stamp(core)
+	if err != nil {
+		t.Fatalf("first stamp failed: %v", err)
+	}
+	if sig == "" {
+		t.Fatal("stamp returned empty signature")
+	}
+
+	receiptPath := filepath.Join(root, "receipts", sessionID, "0.json")
+	originalBytes, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatalf("read original receipt at %s: %v", receiptPath, err)
+	}
+
+	// 1. Attempting to stamp again with the same callIndex in the same session must fail
+	duplicateCore := receiptCore(0, vNull{})
+	duplicateCore.set("resultDigest", vString("sha256:"+strings.Repeat("2", 64)))
+	_, _, err = s.stamp(duplicateCore)
+	if err == nil {
+		t.Fatal("expected second stamp with duplicate callIndex to fail, but it succeeded")
+	}
+	if !strings.Contains(err.Error(), "receipt already exists (append-only)") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+
+	// 2. Verify original receipt content is untouched and unmodified
+	currentBytes, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatalf("read receipt after failed stamp: %v", err)
+	}
+	if !bytes.Equal(originalBytes, currentBytes) {
+		t.Fatalf("receipt file content altered after failed overwrite: got %s, want %s", currentBytes, originalBytes)
+	}
+
+	// 3. A refused stamp must not leave a temporary or partial file behind
+	entries, err := os.ReadDir(filepath.Dir(receiptPath))
+	if err != nil {
+		t.Fatalf("read session directory after failed stamp: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "0.json" {
+		t.Fatalf("session directory after failed stamp = %v, want only 0.json", entries)
+	}
+
+	// 4. The next callIndex in the same session must still be accepted
+	if _, _, err := s.stamp(receiptCore(1, vString(sig))); err != nil {
+		t.Fatalf("stamp at next callIndex failed: %v", err)
+	}
+
+	// 5. Direct write with exclusive=true must also refuse to overwrite
+	err = s.write(receiptPath, []byte("tampered content"), true)
+	if err == nil {
+		t.Fatal("expected write with exclusive=true on existing file to fail, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "receipt already exists (append-only)") {
+		t.Fatalf("unexpected write error message: %v", err)
+	}
+
+	// 6. Verify file content remains exactly identical to original bytes
+	afterWriteBytes, err := os.ReadFile(receiptPath)
+	if err != nil {
+		t.Fatalf("read receipt after direct write attempt: %v", err)
+	}
+	if !bytes.Equal(originalBytes, afterWriteBytes) {
+		t.Fatalf("receipt content overwritten: got %s, want %s", afterWriteBytes, originalBytes)
 	}
 }
