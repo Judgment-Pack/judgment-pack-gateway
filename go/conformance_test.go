@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -194,4 +196,42 @@ func mustHex(t *testing.T, s string) []byte {
 		t.Fatalf("bad hex %q: %v", s, err)
 	}
 	return b
+}
+
+func TestREADMEVectorCounts(t *testing.T) {
+	readme := readFile(t, corpusPath("README.md"))
+
+	canonRe := regexp.MustCompile(`\*\*` + "`" + `canon\.json` + "`" + `\*\* — (\d+) vectors`)
+	storesRe := regexp.MustCompile(`\*\*` + "`" + `stores/\*\.json` + "`" + `\*\* — (\d+) vectors`)
+
+	canonMatch := canonRe.FindStringSubmatch(readme)
+	if canonMatch == nil {
+		t.Fatal("README.md missing expected sentence for canon.json vectors count")
+	}
+	statedCanon, _ := strconv.Atoi(canonMatch[1])
+
+	storesMatch := storesRe.FindStringSubmatch(readme)
+	if storesMatch == nil {
+		t.Fatal("README.md missing expected sentence for stores/*.json vectors count")
+	}
+	statedStores, _ := strconv.Atoi(storesMatch[1])
+
+	var canonDoc struct {
+		Vectors []any `json:"vectors"`
+	}
+	readJSON(t, corpusPath("canon.json"), &canonDoc)
+	actualCanon := len(canonDoc.Vectors)
+
+	storeFiles, err := filepath.Glob(corpusPath("stores", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	actualStores := len(storeFiles)
+
+	if statedCanon != actualCanon {
+		t.Errorf("README.md states %d canon vectors, but there are actually %d in canon.json", statedCanon, actualCanon)
+	}
+	if statedStores != actualStores {
+		t.Errorf("README.md states %d store vectors, but there are actually %d in stores/*.json", statedStores, actualStores)
+	}
 }
