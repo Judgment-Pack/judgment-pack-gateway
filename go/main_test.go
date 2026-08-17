@@ -510,6 +510,9 @@ func TestReadPublicKey(t *testing.T) {
 	}
 	lowerHex := hex.EncodeToString(reference)
 
+	withLF := append([]byte{}, reference...)
+	withLF[31] = '\n'
+
 	tests := []struct {
 		name    string
 		raw     []byte
@@ -527,6 +530,11 @@ func TestReadPublicKey(t *testing.T) {
 			want: reference,
 		},
 		{
+			name: "32 bytes ending with LF plus trailing newline (TrimSpace eats LF)",
+			raw:  append(append([]byte{}, withLF...), '\n'),
+			wantErr: "expected 32 raw bytes, got 33",
+		},
+		{
 			name: "64 lowercase hex characters",
 			raw:  []byte(lowerHex),
 			want: reference,
@@ -540,6 +548,11 @@ func TestReadPublicKey(t *testing.T) {
 			name: "corpus file shape: 64 hex characters and a newline",
 			raw:  []byte(lowerHex + "\n"),
 			want: reference,
+		},
+		{
+			name: "66 hex characters (even, decodes to 33 bytes)",
+			raw:  []byte(lowerHex + "00"),
+			wantErr: "expected 32 raw bytes, got 66",
 		},
 		{
 			name:    "31 bytes",
