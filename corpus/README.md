@@ -63,7 +63,7 @@ surrogate, and neither survives being written into a document each language
 re-parses with its own defaults. Accepting vectors carry `expectedHex`; refusing
 vectors carry `reject: true`.
 
-**`stores/*.json`** — 17 vectors, each a complete store (a `path → text` map plus
+**`stores/*.json`** — 19 vectors, each a complete store (a `path → text` map plus
 the registry text) and its expected `(ok, findings)`. There is one per status an
 implementation can emit. Two of them, `key-mismatch` and `unsupported-version`,
 exist because a second implementation pointed out that those statuses were
