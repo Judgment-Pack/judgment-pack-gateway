@@ -974,7 +974,7 @@ func TestBodyAtOrBelowTheLimitIsUnaffected(t *testing.T) {
 func TestVerifyMissingReceiptsRoot(t *testing.T) {
 	// the corpus materializer structurally creates the receipts and artifacts directories for every vector, so the frozen corpus cannot express a missing receipts root.
 
-	t.Run("Scenario 1", func(t *testing.T) {
+	t.Run("missing receipts root", func(t *testing.T) {
 		st, reg, storeRoot, registryPath := testStore(t)
 		stampSession(t, st, "sess-a", 2)
 		if _, err := reg.seal("sess-a", 2, "t"); err != nil {
@@ -989,14 +989,19 @@ func TestVerifyMissingReceiptsRoot(t *testing.T) {
 		}
 	})
 
-	t.Run("Scenario 2", func(t *testing.T) {
+	t.Run("non-existent store root", func(t *testing.T) {
 		_, _, storeRoot, registryPath := testStore(t)
 		missingRoot := filepath.Join(storeRoot, "does-not-exist")
-		ok, _ := statuses(t, missingRoot, registryPath)
-		_ = ok
+		ok, findings := statuses(t, missingRoot, registryPath)
+		if !ok {
+			t.Errorf("expected ok=true, got ok=%v", ok)
+		}
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings, got %v", findings)
+		}
 	})
 
-	t.Run("Scenario 3", func(t *testing.T) {
+	t.Run("empty store", func(t *testing.T) {
 		_, _, storeRoot, registryPath := testStore(t)
 		ok, counts := statuses(t, storeRoot, registryPath)
 		if !ok || len(counts) > 0 {
