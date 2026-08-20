@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -259,9 +258,6 @@ func TestUnreadableReceiptsRootRefusesVerdict(t *testing.T) {
 
 	rep, err := verifyWithRegistry(root, regPath, "gateway:corpus", pub)
 	if err == nil {
-		if runtime.GOOS == "windows" {
-			t.Skip("Windows os.ReadDir on a file returns ERROR_PATH_NOT_FOUND, causing os.IsNotExist to swallow the error. Skipping to expose verify.go bug.")
-		}
 		t.Fatalf("expected an error when receipts root is unreadable, got a clean verdict")
 	}
 

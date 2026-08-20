@@ -21,6 +21,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -584,4 +585,39 @@ func TestStoreAppendOnlyRefusesOverwrite(t *testing.T) {
 	if !bytes.Equal(originalBytes, afterWriteBytes) {
 		t.Fatalf("receipt content overwritten: got %s, want %s", afterWriteBytes, originalBytes)
 	}
+}
+
+func TestUnreadableReceiptsPermissionsRefusal(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Getuid() == 0 {
+		t.Skip("permission fixtures are platform-bound and bypassed by root")
+	}
+
+	t.Run("receipts directory is unreadable", func(t *testing.T) {
+		_, _, storeRoot, _ := testStore(t)
+		receiptsPath := filepath.Join(storeRoot, "receipts")
+
+		if err := os.Chmod(receiptsPath, 0o111); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(receiptsPath, 0o755)
+
+		_, err := listSessions(storeRoot)
+		if err == nil {
+			t.Fatal("verifier should refuse (return error) when receipts is unreadable")
+		}
+	})
+
+	t.Run("storeRoot is unreadable", func(t *testing.T) {
+		_, _, storeRoot, _ := testStore(t)
+
+		if err := os.Chmod(storeRoot, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(storeRoot, 0o755)
+
+		_, err := listSessions(storeRoot)
+		if err == nil {
+			t.Fatal("verifier should refuse (return error) when storeRoot is unreadable")
+		}
+	})
 }

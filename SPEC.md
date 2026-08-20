@@ -238,7 +238,8 @@ a verdict at all.
 
 | Situation | Reading |
 |---|---|
-| no `<root>/receipts` directory | zero sessions — every sealed session is then `sealed-session-missing` |
+| `<root>/receipts` does not exist | zero sessions — every sealed session is then `sealed-session-missing` |
+| `<root>/receipts` exists but is not a directory | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 | the registry file does not exist | no seals load — every session in the store is then `unregistered-session` |
 | a session directory holding no receipts | a session with count 0, judged against its seal like any other |
 
