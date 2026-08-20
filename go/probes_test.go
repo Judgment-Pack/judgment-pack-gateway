@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -236,4 +237,39 @@ func sealLineKeyID(t *testing.T, priv ed25519.PrivateKey, session string, count 
 	}
 	out, _ := json.Marshal(obj)
 	return string(out) + "\n"
+}
+
+func TestUnreadableReceiptsRootRefusesVerdict(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "store")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Create a regular file named 'receipts' where a directory is expected.
+	if err := os.WriteFile(filepath.Join(root, "receipts"), []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+	if err := os.WriteFile(regPath, []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pubRaw, _ := os.ReadFile("../corpus/TEST-PUBLIC-KEY")
+	pub, _ := hex.DecodeString(strings.TrimSpace(string(pubRaw)))
+
+	rep, err := verifyWithRegistry(root, regPath, "gateway:corpus", pub)
+	if err == nil {
+		if runtime.GOOS == "windows" {
+			t.Skip("Windows os.ReadDir on a file returns ERROR_PATH_NOT_FOUND, causing os.IsNotExist to swallow the error. Skipping to expose verify.go bug.")
+		}
+		t.Fatalf("expected an error when receipts root is unreadable, got a clean verdict")
+	}
+
+	if !strings.Contains(err.Error(), "receipts") {
+		t.Errorf("expected error to mention 'receipts', got: %v", err)
+	}
+
+	if rep != nil && rep.OK {
+		t.Errorf("expected no clean verdict, got ok: true")
+	}
 }

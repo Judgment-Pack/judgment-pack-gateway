@@ -970,3 +970,42 @@ func TestBodyAtOrBelowTheLimitIsUnaffected(t *testing.T) {
 		t.Fatalf("seal status = %d, want 200: %s", resp2.StatusCode, raw)
 	}
 }
+
+func TestVerifyMissingReceiptsRoot(t *testing.T) {
+	// the corpus materializer structurally creates the receipts and artifacts directories for every vector, so the frozen corpus cannot express a missing receipts root.
+
+	t.Run("missing receipts root", func(t *testing.T) {
+		st, reg, storeRoot, registryPath := testStore(t)
+		stampSession(t, st, "sess-a", 2)
+		if _, err := reg.seal("sess-a", 2, "t"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.RemoveAll(filepath.Join(storeRoot, "receipts")); err != nil {
+			t.Fatal(err)
+		}
+		ok, counts := statuses(t, storeRoot, registryPath)
+		if ok || counts["sealed-session-missing"] != 1 {
+			t.Fatalf("deleted receipts root not caught: ok=%v %v", ok, counts)
+		}
+	})
+
+	t.Run("non-existent store root", func(t *testing.T) {
+		_, _, storeRoot, registryPath := testStore(t)
+		missingRoot := filepath.Join(storeRoot, "does-not-exist")
+		ok, findings := statuses(t, missingRoot, registryPath)
+		if !ok {
+			t.Errorf("expected ok=true, got ok=%v", ok)
+		}
+		if len(findings) != 0 {
+			t.Errorf("expected 0 findings, got %v", findings)
+		}
+	})
+
+	t.Run("empty store", func(t *testing.T) {
+		_, _, storeRoot, registryPath := testStore(t)
+		ok, counts := statuses(t, storeRoot, registryPath)
+		if !ok || len(counts) > 0 {
+			t.Fatalf("empty store failed verification: ok=%v %v", ok, counts)
+		}
+	})
+}
