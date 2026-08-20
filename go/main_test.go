@@ -502,3 +502,110 @@ func runCmdCanon(t *testing.T, input string) (int, string) {
 
 	return code, string(outBytes)
 }
+
+func TestReadPublicKey(t *testing.T) {
+	reference, err := hex.DecodeString("fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b") // uses exact bytes
+	if err != nil {
+		t.Fatalf("decode reference key: %v", err)
+	}
+	lowerHex := hex.EncodeToString(reference)
+
+	withLF := append([]byte{}, reference...)
+	withLF[31] = '\n'
+
+	tests := []struct {
+		name    string
+		raw     []byte
+		want    []byte
+		wantErr string
+	}{
+		{
+			name: "32 raw bytes",
+			raw:  reference,
+			want: reference,
+		},
+		{
+			name: "32 bytes with a trailing newline",
+			raw:  append(append([]byte{}, reference...), '\n'),
+			want: reference,
+		},
+		{
+			name:    "32 bytes ending with LF plus trailing newline (TrimSpace eats LF)",
+			raw:     append(append([]byte{}, withLF...), '\n'),
+			wantErr: "expected 32 raw bytes, got 33",
+		},
+		{
+			name: "64 lowercase hex characters",
+			raw:  []byte(lowerHex),
+			want: reference,
+		},
+		{
+			// hex.DecodeString is case-insensitive; SPEC.md demands lowercase
+			// wherever it governs hex, so this tolerance is readPublicKey's own
+			name: "64 uppercase hex characters",
+			raw:  []byte(strings.ToUpper(lowerHex)),
+			want: reference,
+		},
+		{
+			name: "corpus file shape: 64 hex characters and a newline",
+			raw:  []byte(lowerHex + "\n"),
+			want: reference,
+		},
+		{
+			name:    "66 hex characters (even, decodes to 33 bytes)",
+			raw:     []byte(lowerHex + "00"),
+			wantErr: "expected 32 raw bytes, got 66",
+		},
+		{
+			name:    "31 bytes",
+			raw:     reference[:31],
+			wantErr: "expected 32 raw bytes, got 31",
+		},
+		{
+			name:    "33 bytes",
+			raw:     append(append([]byte{}, reference...), 'x'),
+			wantErr: "expected 32 raw bytes, got 33",
+		},
+		{
+			name:    "63 hex characters",
+			raw:     []byte(lowerHex[:63]),
+			wantErr: "expected 32 raw bytes, got 63",
+		},
+		{
+			name:    "65 hex characters",
+			raw:     []byte(lowerHex + "0"),
+			wantErr: "expected 32 raw bytes, got 65",
+		},
+		{
+			name:    "64 characters that are not hex",
+			raw:     bytes.Repeat([]byte("g"), 64),
+			wantErr: "expected 32 raw bytes, got 64",
+		},
+		{
+			name:    "empty input",
+			raw:     []byte{},
+			wantErr: "expected 32 raw bytes, got 0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readPublicKey(tt.raw)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("readPublicKey() accepted %d bytes, want error", len(tt.raw))
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("readPublicKey() error = %q, want containing %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readPublicKey() error = %v, want none", err)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("readPublicKey() = %x, want %x", got, tt.want)
+			}
+		})
+	}
+}
