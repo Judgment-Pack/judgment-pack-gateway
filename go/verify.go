@@ -305,8 +305,8 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 }
 
 // listSessions enumerates the session directories under the store's receipts
-// root (SPEC.md §2a: a session id names a directory and a verifier discovers
-// sessions by enumerating). A store with no receipts root simply has none.
+// root (SPEC.md §3a: a session id names a directory and a verifier discovers
+// sessions by enumerating). A store with no receipts root simply has none; a receipts path that exists but is not a directory is a refusal, not zero sessions.
 func listSessions(storeRoot string) ([]string, error) {
 	receiptsPath := filepath.Join(storeRoot, "receipts")
 	info, err := os.Stat(receiptsPath)
