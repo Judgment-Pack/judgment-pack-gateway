@@ -1009,3 +1009,157 @@ func TestVerifyMissingReceiptsRoot(t *testing.T) {
 		}
 	})
 }
+
+// --- /registry endpoint (issue #53) ----------------------------------------
+func TestRegistryEndpointServesRawBytes(t *testing.T) {
+	t.Run("empty before any seal", func(t *testing.T) {
+		service, server := testService(t)
+
+		resp, err := http.Get(server.URL + "/registry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(body) != 0 {
+			t.Fatalf("body = %d bytes, want 0 (empty body for absent registry)", len(body))
+		}
+
+		if _, err := os.Stat(service.regPath); err == nil {
+			t.Fatal("registry file should not exist before any seal")
+		}
+	})
+
+	t.Run("byte-identical to file after seals", func(t *testing.T) {
+		service, server := testService(t)
+
+		// accquire 2 sessions
+		if code, _ := post(t, server, "/acquire",
+			`{"session":"reg-a","source":"screening","arguments":{}}`); code != http.StatusOK {
+			t.Fatalf("acquire reg-a: %d", code)
+		}
+		if code, _ := post(t, server, "/acquire",
+			`{"session":"reg-b","source":"screening","arguments":{}}`); code != http.StatusOK {
+			t.Fatalf("acquire reg-b: %d", code)
+		}
+
+		// Seal both sessions.
+		if code, _ := post(t, server, "/seal", `{"session":"reg-a"}`); code != http.StatusOK {
+			t.Fatalf("seal reg-a: %d", code)
+		}
+		if code, _ := post(t, server, "/seal", `{"session":"reg-b"}`); code != http.StatusOK {
+			t.Fatalf("seal reg-b: %d", code)
+		}
+
+		// Fetch /registry and read the file directly.
+		resp, err := http.Get(server.URL + "/registry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		wire, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		disk, err := os.ReadFile(service.regPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if !bytes.Equal(wire, disk) {
+			t.Fatalf("/registry response is not byte-identical to the file on disk:\nwire: %s\ndisk: %s", wire, disk)
+		}
+	})
+
+	t.Run("each line is canonical", func(t *testing.T) {
+		service, server := testService(t)
+		_ = service
+
+		post(t, server, "/acquire", `{"session":"canon-a","source":"screening","arguments":{}}`)
+		post(t, server, "/acquire", `{"session":"canon-b","source":"screening","arguments":{}}`)
+		post(t, server, "/seal", `{"session":"canon-a"}`)
+		post(t, server, "/seal", `{"session":"canon-b"}`)
+
+		resp, err := http.Get(server.URL + "/registry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		wire, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		lines := bytes.Split(bytes.TrimSpace(wire), []byte("\n"))
+		if len(lines) != 2 {
+			t.Fatalf("expected 2 seal lines, got %d", len(lines))
+		}
+		for i, line := range lines {
+			// Must parse.
+			if _, err := parseJSON(line); err != nil {
+				t.Fatalf("line %d: parse failed: %v", i, err)
+			}
+			// Must equal its own canonical form.
+			reCanon, err := canonText(line)
+			if err != nil {
+				t.Fatalf("line %d: canonicalize failed: %v", i, err)
+			}
+			if !bytes.Equal(line, reCanon) {
+				t.Fatalf("line %d is not canonical:\ngot:  %s\nwant: %s", i, line, reCanon)
+			}
+		}
+	})
+
+	t.Run("loadSeals loads both sessions", func(t *testing.T) {
+		service, server := testService(t)
+		_ = service
+
+		// Seal two sessions.
+		post(t, server, "/acquire", `{"session":"load-a","source":"screening","arguments":{}}`)
+		post(t, server, "/acquire", `{"session":"load-b","source":"screening","arguments":{}}`)
+		post(t, server, "/seal", `{"session":"load-a"}`)
+		post(t, server, "/seal", `{"session":"load-b"}`)
+
+		resp, err := http.Get(server.URL + "/registry")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		wire, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		tmp := filepath.Join(t.TempDir(), "served-registry.jsonl")
+		if err := os.WriteFile(tmp, wire, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		public := []byte(mustPublic(t))
+		seals, _, err := loadSeals(tmp, public)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Both sessions must be present.
+		if len(seals) != 2 {
+			t.Fatalf("loadSeals loaded %d seal(s), want 2", len(seals))
+		}
+		for _, want := range []string{"load-a", "load-b"} {
+			if _, ok := seals[want]; !ok {
+				t.Fatalf("loadSeals missing session %q", want)
+			}
+		}
+	})
+}
