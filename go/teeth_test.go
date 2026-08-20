@@ -18,6 +18,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"sort"
@@ -130,6 +131,47 @@ func TestCorpusCatchesAVerifierThatIgnoresTheRegistry(t *testing.T) {
 			t.Fatalf("corpus did not catch a verifier ignoring the registry (%s):\n%s",
 				missed, joined)
 		}
+	}
+}
+
+func TestSessionCountIncludesOnlyJSONFiles(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		removeTail  bool
+		replacement string
+		wantOK      bool
+		want        map[string]int
+	}{
+		{"stray non-receipt file", false, ".DS_Store", true, map[string]int{"ok": 3}},
+		{"deleted tail receipt", true, "", false, map[string]int{"ok": 2, "tail-rollback": 1}},
+		{"junk JSON replaces tail receipt", true, "2.json", false, map[string]int{"ok": 2, "malformed": 1}},
+		{"junk text replaces tail receipt", true, "2.txt", false, map[string]int{"ok": 2, "tail-rollback": 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, reg, storeRoot, registryPath := testStore(t)
+			const sessionID = "teeth-file-count"
+			stampSession(t, st, sessionID, 3)
+			if _, err := reg.seal(sessionID, 3, "t"); err != nil {
+				t.Fatal(err)
+			}
+
+			sessionDir := filepath.Join(storeRoot, "receipts", sessionID)
+			if tc.removeTail {
+				if err := os.Remove(filepath.Join(sessionDir, "2.json")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.replacement != "" {
+				if err := os.WriteFile(filepath.Join(sessionDir, tc.replacement), []byte("junk"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			ok, got := statuses(t, storeRoot, registryPath)
+			if ok != tc.wantOK || !maps.Equal(got, tc.want) {
+				t.Fatalf("verify = (ok=%v, statuses=%v), want (ok=%v, statuses=%v)", ok, got, tc.wantOK, tc.want)
+			}
+		})
 	}
 }
 
