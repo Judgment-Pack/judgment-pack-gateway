@@ -540,6 +540,8 @@ func TestReadPublicKey(t *testing.T) {
 			want: reference,
 		},
 		{
+			// hex.DecodeString is case-insensitive; SPEC.md demands lowercase
+			// wherever it governs hex, so this tolerance is readPublicKey's own
 			name: "64 uppercase hex characters",
 			raw:  []byte(strings.ToUpper(lowerHex)),
 			want: reference,
