@@ -530,8 +530,8 @@ func TestReadPublicKey(t *testing.T) {
 			want: reference,
 		},
 		{
-			name: "32 bytes ending with LF plus trailing newline (TrimSpace eats LF)",
-			raw:  append(append([]byte{}, withLF...), '\n'),
+			name:    "32 bytes ending with LF plus trailing newline (TrimSpace eats LF)",
+			raw:     append(append([]byte{}, withLF...), '\n'),
 			wantErr: "expected 32 raw bytes, got 33",
 		},
 		{
@@ -550,8 +550,8 @@ func TestReadPublicKey(t *testing.T) {
 			want: reference,
 		},
 		{
-			name: "66 hex characters (even, decodes to 33 bytes)",
-			raw:  []byte(lowerHex + "00"),
+			name:    "66 hex characters (even, decodes to 33 bytes)",
+			raw:     []byte(lowerHex + "00"),
 			wantErr: "expected 32 raw bytes, got 66",
 		},
 		{
