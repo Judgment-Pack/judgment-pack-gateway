@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -692,5 +693,51 @@ func TestArgumentsDigest(t *testing.T) {
 	expected := "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
 	if d1 != expected {
 		t.Fatalf("argumentsDigest = %q, recomputed = %q — digest does not reproduce from construction", d1, expected)
+	}
+}
+
+func TestArgumentsDigestChangesWithSeed(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	seed1 := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") // 32 bytes
+	seed2 := []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") // 32 bytes
+
+	root1 := t.TempDir()
+	service1, err := newGatewayService(
+		filepath.Join(root1, "store"), seed1, "gateway:test",
+		filepath.Join(root1, "registry.jsonl"),
+		map[string][]string{"screening": {os.Args[0]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server1 := httptest.NewServer(service1.handler())
+	defer server1.Close()
+
+	root2 := t.TempDir()
+	service2, err := newGatewayService(
+		filepath.Join(root2, "store"), seed2, "gateway:test",
+		filepath.Join(root2, "registry.jsonl"),
+		map[string][]string{"screening": {os.Args[0]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server2 := httptest.NewServer(service2.handler())
+	defer server2.Close()
+
+	args := `{"session":"seed-test","source":"screening","arguments":{"q":"test"}}`
+
+	code1, resp1 := post(t, server1, "/acquire", args)
+	if code1 != http.StatusOK {
+		t.Fatalf("first acquire failed: %d %v", code1, resp1)
+	}
+	d1 := resp1["receipt"].(map[string]any)["argumentsDigest"].(string)
+
+	code2, resp2 := post(t, server2, "/acquire", args)
+	if code2 != http.StatusOK {
+		t.Fatalf("second acquire failed: %d %v", code2, resp2)
+	}
+	d2 := resp2["receipt"].(map[string]any)["argumentsDigest"].(string)
+
+	if d1 == d2 {
+		t.Fatalf("argumentsDigest did not change when seed changed: %q == %q", d1, d2)
 	}
 }
