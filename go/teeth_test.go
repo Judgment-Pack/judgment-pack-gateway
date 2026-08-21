@@ -621,3 +621,164 @@ func TestUnreadableReceiptsPermissionsRefusal(t *testing.T) {
 		}
 	})
 }
+
+func TestLoadSealDropShapes(t *testing.T) {
+	st, _, _, _ := testStore(t)
+	priv := st.private
+	pub := st.publicKey
+	session := "drop-shapes"
+	kid := keyIDFor(pub)
+
+	for _, tt := range []struct {
+		name     string
+		lines    string
+		wantSeal int // number of seals expected to load
+		wantCID  int64
+		why      string
+	}{
+		{
+			name:  "not JSON at all",
+			lines: "this is not json\n",
+			why:   "parseJSON fails; dropped before any member is read",
+		},
+		{
+			name:  "array instead of object",
+			lines: `[1,2,3]` + "\n",
+			why:   "parseJSON succeeds but the result is not *vObject; dropped",
+		},
+		{
+			name: "missing member (sealedAt dropped)",
+			lines: func() string {
+				// Build a seal line manually without sealedAt.
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"keyId":      kid,
+					"signature":  "00",
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "the ok1…ok5 gate drops it before the signature check",
+		},
+		{
+			name: "finalCount is a string",
+			lines: func() string {
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": "five",
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  "00",
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "countV.(vInt) fails; string is not an integer",
+		},
+		{
+			// json.Marshal would write 3, not 3.0, so we write raw JSON.
+			name:  "finalCount is a float literal",
+			lines: `{"sessionId":"` + session + `","finalCount":3.0,"sealedAt":"t","keyId":"` + kid + `","signature":"00"}` + "\n",
+			why:   "parseJSON rejects float; never reaches the seal checks",
+		},
+		{
+			// json.Marshal deduplicates map keys, so we write raw JSON.
+			name:  "duplicate member name",
+			lines: `{"sessionId":"` + session + `","sessionId":"` + session + `","finalCount":5,"sealedAt":"t","keyId":"` + kid + `","signature":"00"}` + "\n",
+			why:   "parseJSON rejects duplicate names (canon.go:254); never reaches the seal checks",
+		},
+		{
+			name:     "negative finalCount with correct signature",
+			lines:    sealLine(t, priv, session, -1),
+			wantSeal: 0,
+			why:      "correctly signed but count < 0; isolates the count check",
+		},
+		{
+			name: "signature is valid hex but wrong length (4 chars)",
+			lines: func() string {
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  "abcd",
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "hex.DecodeString succeeds but len(sig) != ed25519.SignatureSize",
+		},
+		{
+			name: "signature is not hex at all",
+			lines: func() string {
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  "not-hex-at-all!!!",
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "hex.DecodeString fails; dropped at the decode check",
+		},
+
+		// must NOT drop
+		{
+			name:     "correctly signed seal loads",
+			lines:    sealLine(t, priv, session, 5),
+			wantSeal: 1,
+			wantCID:  5,
+			why:      "discriminating: the table is not vacuous — a valid seal does load",
+		},
+		{
+			name:     "blank and whitespace lines beside a good seal",
+			lines:    "\n   \n	\n" + sealLine(t, priv, session, 5) + "\n\n  \n",
+			wantSeal: 1,
+			wantCID:  5,
+			why:      "blank/whitespace lines must not disturb a valid seal",
+		},
+
+		// two loadable seals for one session
+		{
+			name:     "tie-break: first wins (5 then 3)",
+			lines:    sealLine(t, priv, session, 5) + sealLine(t, priv, session, 3),
+			wantSeal: 1,
+			wantCID:  5,
+			why:      "SPEC.md §4 step 2: the first wins; second seal for same session is dropped",
+		},
+		{
+			name:     "tie-break: first wins (3 then 5)",
+			lines:    sealLine(t, priv, session, 3) + sealLine(t, priv, session, 5),
+			wantSeal: 1,
+			wantCID:  3,
+			why:      "both orders must agree: the first line's count wins",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+			if err := os.WriteFile(regPath, []byte(tt.lines), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			seals, _, err := loadSeals(regPath, pub)
+			if err != nil {
+				t.Fatalf("loadSeals returned error: %v", err)
+			}
+
+			if len(seals) != tt.wantSeal {
+				t.Fatalf("loadSeals loaded %d seal(s), want %d — %s", len(seals), tt.wantSeal, tt.why)
+			}
+
+			if tt.wantSeal == 1 && tt.wantCID != 0 {
+				for _, s := range seals {
+					if s.finalCount != tt.wantCID {
+						t.Fatalf("got finalCount=%d, want %d — %s", s.finalCount, tt.wantCID, tt.why)
+					}
+				}
+			}
+		})
+	}
+}
