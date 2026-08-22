@@ -237,6 +237,15 @@ func memberString(obj *vObject, name string) (string, bool) {
 // --- verification ---------------------------------------------------------
 
 func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []byte) (*report, error) {
+	// SPEC.md §4.1: A store root that exists but is not a directory is an unreadable evidence container (refusal).
+	if info, err := os.Stat(storeRoot); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("store root is not a directory: %s", storeRoot)
+	}
+
 	if len(publicKey) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("public key must be %d bytes", ed25519.PublicKeySize)
 	}

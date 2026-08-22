@@ -782,3 +782,62 @@ func TestLoadSealDropShapes(t *testing.T) {
 		})
 	}
 }
+
+func TestStoreRootShapes(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+	if err := os.WriteFile(regPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var dummyKey [ed25519.PublicKeySize]byte
+
+	t.Run("missing root falls through", func(t *testing.T) {
+		priv := ed25519.NewKeyFromSeed(testSeed)
+		regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+		if err := os.WriteFile(regPath, []byte(sealLine(t, priv, "ghost", 3)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		storeRoot := filepath.Join(t.TempDir(), "does-not-exist")
+		rep, err := verifyWithRegistry(storeRoot, regPath, "gateway:test", priv.Public().(ed25519.PublicKey))
+		if err != nil {
+			t.Fatalf("missing root must still grade, got error: %v", err)
+		}
+		if rep.OK {
+			t.Fatal("missing root with a sealed registry graded ok: true")
+		}
+
+		// exactly one sealed-session-missing for the ghost session
+		if len(rep.Findings) != 1 || rep.Findings[0]["status"] != "sealed-session-missing" {
+			t.Fatalf("expected one sealed-session-missing finding, got: %v", rep.Findings)
+		}
+	})
+
+	t.Run("regular file root refuses", func(t *testing.T) {
+		storeRoot := filepath.Join(t.TempDir(), "regular-file")
+		if err := os.WriteFile(storeRoot, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := verifyWithRegistry(storeRoot, regPath, "test", dummyKey[:])
+		if err == nil || !strings.Contains(err.Error(), "store root is not a directory") {
+			t.Fatalf("expected 'store root is not a directory' error, got: %v", err)
+		}
+	})
+
+	t.Run("unreadable directory root refuses", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Getuid() == 0 {
+			t.Skip("permission fixtures are platform-bound and bypassed by root")
+		}
+		storeRoot := filepath.Join(t.TempDir(), "unreadable-dir")
+		if err := os.Mkdir(storeRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(storeRoot, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(storeRoot, 0o755)
+
+		_, err := verifyWithRegistry(storeRoot, regPath, "test", dummyKey[:])
+		if err == nil {
+			t.Fatal("verifyWithRegistry should return error for unreadable directory root")
+		}
+	})
+}

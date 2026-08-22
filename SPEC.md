@@ -238,6 +238,7 @@ a verdict at all.
 
 | Situation | Reading |
 |---|---|
+| `<root>` exists but is not a directory | no verdict — the verifier refuses (non-zero exit); the evidence container is present and unreadable, not absent |
 | `<root>/receipts` does not exist | zero sessions — every sealed session is then `sealed-session-missing` |
 | `<root>/receipts` exists but is not a directory | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 | `<root>/receipts` is a directory that cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
