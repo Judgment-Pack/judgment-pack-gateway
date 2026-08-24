@@ -649,12 +649,13 @@ func TestLoadSealDropShapes(t *testing.T) {
 		{
 			name: "missing member (sealedAt dropped)",
 			lines: func() string {
-				// Build a seal line manually without sealedAt.
+				// We sign an empty sealedAt because if missing, a string member query yields "".
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "", kid))
 				obj := map[string]any{
 					"sessionId":  session,
 					"finalCount": 5,
 					"keyId":      kid,
-					"signature":  "00",
+					"signature":  hex.EncodeToString(sig),
 				}
 				out, _ := json.Marshal(obj)
 				return string(out) + "\n"
@@ -664,12 +665,14 @@ func TestLoadSealDropShapes(t *testing.T) {
 		{
 			name: "finalCount is a string",
 			lines: func() string {
+				// We sign count 0 because a failed type assertion yields the zero value.
+				sig := ed25519.Sign(priv, sealSigningInput(session, 0, "t", kid))
 				obj := map[string]any{
 					"sessionId":  session,
 					"finalCount": "five",
 					"sealedAt":   "t",
 					"keyId":      kid,
-					"signature":  "00",
+					"signature":  hex.EncodeToString(sig),
 				}
 				out, _ := json.Marshal(obj)
 				return string(out) + "\n"
@@ -678,15 +681,23 @@ func TestLoadSealDropShapes(t *testing.T) {
 		},
 		{
 			// json.Marshal would write 3, not 3.0, so we write raw JSON.
-			name:  "finalCount is a float literal",
-			lines: `{"sessionId":"` + session + `","finalCount":3.0,"sealedAt":"t","keyId":"` + kid + `","signature":"00"}` + "\n",
-			why:   "parseJSON rejects float; never reaches the seal checks",
+			name: "finalCount is a float literal",
+			lines: func() string {
+				// We sign count 3 since the parsed float matches this value.
+				sig := ed25519.Sign(priv, sealSigningInput(session, 3, "t", kid))
+				return `{"sessionId":"` + session + `","finalCount":3.0,"sealedAt":"t","keyId":"` + kid + `","signature":"` + hex.EncodeToString(sig) + `"}` + "\n"
+			}(),
+			why: "parseJSON rejects float; never reaches the seal checks",
 		},
 		{
 			// json.Marshal deduplicates map keys, so we write raw JSON.
-			name:  "duplicate member name",
-			lines: `{"sessionId":"` + session + `","sessionId":"` + session + `","finalCount":5,"sealedAt":"t","keyId":"` + kid + `","signature":"00"}` + "\n",
-			why:   "parseJSON rejects duplicate names (canon.go:254); never reaches the seal checks",
+			name: "duplicate member name",
+			lines: func() string {
+				// We sign count 5 because that is the valid count in the JSON.
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "t", kid))
+				return `{"sessionId":"` + session + `","sessionId":"` + session + `","finalCount":5,"sealedAt":"t","keyId":"` + kid + `","signature":"` + hex.EncodeToString(sig) + `"}` + "\n"
+			}(),
+			why: "parseJSON rejects duplicate names (canon.go:254); never reaches the seal checks",
 		},
 		{
 			name:     "negative finalCount with correct signature",
@@ -697,32 +708,59 @@ func TestLoadSealDropShapes(t *testing.T) {
 		{
 			name: "signature is valid hex but wrong length (4 chars)",
 			lines: func() string {
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "t", kid))
 				obj := map[string]any{
 					"sessionId":  session,
 					"finalCount": 5,
 					"sealedAt":   "t",
 					"keyId":      kid,
-					"signature":  "abcd",
+					"signature":  hex.EncodeToString(sig)[:4],
 				}
 				out, _ := json.Marshal(obj)
 				return string(out) + "\n"
 			}(),
+			// This leg is provably unholdable because Go's ed25519.Verify naturally rejects wrong-size signatures.
 			why: "hex.DecodeString succeeds but len(sig) != ed25519.SignatureSize",
 		},
 		{
-			name: "signature is not hex at all",
+			name: "signature has decode error",
+			lines: func() string {
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "t", kid))
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  hex.EncodeToString(sig) + "ZZ",
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "hex.DecodeString fails because of non-hex chars; dropped at the decode check",
+		},
+		{
+			name: "Foreign keyId",
+			lines: func() string {
+				_, dummyPriv, _ := ed25519.GenerateKey(nil)
+				foreignKid := keyIDFor(dummyPriv.Public().(ed25519.PublicKey))
+				return sealLineKeyID(t, priv, session, 5, foreignKid)
+			}(),
+			why: "signed by correct key but names a foreign keyId",
+		},
+		{
+			name: "Wrong signature",
 			lines: func() string {
 				obj := map[string]any{
 					"sessionId":  session,
 					"finalCount": 5,
 					"sealedAt":   "t",
 					"keyId":      kid,
-					"signature":  "not-hex-at-all!!!",
+					"signature":  strings.Repeat("0", 128),
 				}
 				out, _ := json.Marshal(obj)
 				return string(out) + "\n"
 			}(),
-			why: "hex.DecodeString fails; dropped at the decode check",
+			why: "signature is well-formed but fails verification",
 		},
 
 		// must NOT drop
@@ -732,6 +770,13 @@ func TestLoadSealDropShapes(t *testing.T) {
 			wantSeal: 1,
 			wantCID:  5,
 			why:      "discriminating: the table is not vacuous — a valid seal does load",
+		},
+		{
+			name:     "zero-count seal loads",
+			lines:    sealLine(t, priv, session, 0),
+			wantSeal: 1,
+			wantCID:  0,
+			why:      "0 is a valid finalCount",
 		},
 		{
 			name:     "blank and whitespace lines beside a good seal",
@@ -772,11 +817,9 @@ func TestLoadSealDropShapes(t *testing.T) {
 				t.Fatalf("loadSeals loaded %d seal(s), want %d — %s", len(seals), tt.wantSeal, tt.why)
 			}
 
-			if tt.wantSeal == 1 && tt.wantCID != 0 {
-				for _, s := range seals {
-					if s.finalCount != tt.wantCID {
-						t.Fatalf("got finalCount=%d, want %d — %s", s.finalCount, tt.wantCID, tt.why)
-					}
+			for _, s := range seals {
+				if s.finalCount != tt.wantCID {
+					t.Fatalf("got finalCount=%d, want %d — %s", s.finalCount, tt.wantCID, tt.why)
 				}
 			}
 		})
