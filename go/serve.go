@@ -370,8 +370,11 @@ func (g *gatewayService) handler() http.Handler {
 	})
 
 	mux.HandleFunc("/registry", func(w http.ResponseWriter, r *http.Request) {
-		data, err := os.ReadFile(g.regPath)
-		if err != nil && !os.IsNotExist(err) {
+		// The same classifier the verifier uses: an absent registry serves the
+		// empty body an external verifier reads as "no seals", and a registry
+		// that is present and unreachable must not be served as that.
+		data, _, err := readRegistryBytes(g.regPath)
+		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}

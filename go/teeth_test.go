@@ -19,6 +19,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -881,6 +883,129 @@ func TestStoreRootShapes(t *testing.T) {
 		_, err := verifyWithRegistry(storeRoot, regPath, "test", dummyKey[:])
 		if err == nil {
 			t.Fatal("verifyWithRegistry should return error for unreadable directory root")
+		}
+	})
+}
+
+// TestRegistryPathShapes pins the third instance of the OS-split verdict class,
+// at the anchor. A registry the platform cannot reach must never be read as a
+// registry that is not there: the first grades every session
+// `unregistered-session` from evidence nobody looked at, the second is a fact
+// about the store.
+func TestRegistryPathShapes(t *testing.T) {
+	t.Run("missing registry grades unregistered-session", func(t *testing.T) {
+		// A store holding a stamped session is what makes the GRADE assertable.
+		// An empty store can still tell a refusal from a verdict — the call
+		// either errors or does not — but it grades ok: true with no findings
+		// whether or not seals loaded, so it cannot pin what the grade should
+		// be, which is the half a fail-open gets wrong.
+		st, _, storeRoot, _ := testStore(t)
+		stampSession(t, st, "s1", 2)
+		regPath := filepath.Join(t.TempDir(), "registry.jsonl") // never written
+
+		ok, counts := statuses(t, storeRoot, regPath)
+		if ok {
+			t.Fatalf("a stamped session against a missing registry graded ok: true (%v)", counts)
+		}
+		if counts["unregistered-session"] != 1 || counts["ok"] != 2 || len(counts) != 2 {
+			t.Fatalf("expected one unregistered-session over two ok receipts, got: %v", counts)
+		}
+	})
+
+	// No skips below: these are the legs that prove the fix on Windows, where the
+	// error for a non-directory path component is ERROR_PATH_NOT_FOUND at any
+	// depth and os.IsNotExist reports it as an absent registry.
+	//
+	// The depths are separate rows because they fail differently: the direct
+	// parent is caught by statting the parent, while a file ANCESTOR is not —
+	// Windows answers not-exist for the intermediate directory too, so a
+	// parent-only check reports absence and grades. Only the downward walk sees
+	// the file.
+	for _, tt := range []struct {
+		name string
+		// suffix is joined onto a path that is a regular file to build the
+		// registry path.
+		suffix []string
+	}{
+		{name: "registry parent is a regular file refuses", suffix: []string{"registry.jsonl"}},
+		{name: "registry ancestor is a regular file refuses", suffix: []string{"missing", "registry.jsonl"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Same store as the row above, so the rows differ only in the
+			// registry path: the missing one grades, these refuse.
+			st, _, storeRoot, _ := testStore(t)
+			stampSession(t, st, "s1", 2)
+			file := filepath.Join(t.TempDir(), "regular-file")
+			if err := os.WriteFile(file, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			regPath := filepath.Join(append([]string{file}, tt.suffix...)...)
+
+			_, err := verifyWithRegistry(storeRoot, regPath, "gateway:test", st.publicKey)
+			if err == nil {
+				t.Fatal("an unreachable registry graded instead of refusing")
+			}
+			// The refusal must name the component the specification names, not
+			// whatever the platform happened to call the failure.
+			want := "registry parent path component is not a directory: " + file
+			if err.Error() != want {
+				t.Fatalf("got %q, want %q", err.Error(), want)
+			}
+		})
+	}
+
+	// The /registry endpoint hands the anchor to verifiers that never touch this
+	// filesystem, so it must classify the registry path the same way the verifier
+	// does. Serving 200 with an empty body for a registry that is present and
+	// unreachable would tell every one of them "no seals" — the same fail-open,
+	// one process further out. Socket-free: the handler is exercised directly.
+	t.Run("registry endpoint refuses an unreachable registry", func(t *testing.T) {
+		root := t.TempDir()
+		regDir := filepath.Join(root, "anchor")
+		if err := os.Mkdir(regDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		regPath := filepath.Join(regDir, "registry.jsonl")
+		service, err := newGatewayService(
+			filepath.Join(root, "store"), testSeed, "gateway:test", regPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := service.handler()
+
+		// Swap the registry's directory for a regular file AFTER construction,
+		// the way a running gateway's storage can be replaced under it.
+		if err := os.RemoveAll(regDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(regDir, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/registry", nil))
+		if rec.Code == http.StatusOK {
+			t.Fatalf("/registry served %d with body %q for an unreachable registry; "+
+				"an external verifier reads that as an empty anchor", rec.Code, rec.Body.String())
+		}
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+		}
+		// The status alone cannot show the endpoint and the verifier agree: on
+		// POSIX the pre-fix ReadFile also errors here, and it is Windows where
+		// the two answers diverge. Pinning the message pins the classifier, so
+		// an endpoint that goes back to reading the path its own way fails this
+		// row on every platform rather than only in Windows CI.
+		var body struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding %q: %v", rec.Body.String(), err)
+		}
+		want := "registry parent path component is not a directory: " + regDir
+		if body.Error != want {
+			t.Fatalf("/registry answered %q; want %q — the endpoint is not using the "+
+				"classifier the verifier uses", body.Error, want)
 		}
 	})
 }
