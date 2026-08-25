@@ -991,5 +991,21 @@ func TestRegistryPathShapes(t *testing.T) {
 		if rec.Code != http.StatusInternalServerError {
 			t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
 		}
+		// The status alone cannot show the endpoint and the verifier agree: on
+		// POSIX the pre-fix ReadFile also errors here, and it is Windows where
+		// the two answers diverge. Pinning the message pins the classifier, so
+		// an endpoint that goes back to reading the path its own way fails this
+		// row on every platform rather than only in Windows CI.
+		var body struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding %q: %v", rec.Body.String(), err)
+		}
+		want := "registry parent path component is not a directory: " + regDir
+		if body.Error != want {
+			t.Fatalf("/registry answered %q; want %q — the endpoint is not using the "+
+				"classifier the verifier uses", body.Error, want)
+		}
 	})
 }
