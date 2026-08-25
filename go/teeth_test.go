@@ -884,3 +884,47 @@ func TestStoreRootShapes(t *testing.T) {
 		}
 	})
 }
+
+// TestRegistryPathShapes pins the third instance of the OS-split verdict class,
+// at the anchor. A registry the platform cannot reach must never be read as a
+// registry that is not there: the first grades every session
+// `unregistered-session` from evidence nobody looked at, the second is a fact
+// about the store.
+func TestRegistryPathShapes(t *testing.T) {
+	t.Run("missing registry grades unregistered-session", func(t *testing.T) {
+		// A store holding a stamped session is the discriminating fixture: an
+		// empty store grades ok: true with or without seals, so it cannot tell
+		// a registry that failed to load from one that loaded nothing.
+		st, _, storeRoot, _ := testStore(t)
+		stampSession(t, st, "s1", 2)
+		regPath := filepath.Join(t.TempDir(), "registry.jsonl") // never written
+
+		ok, counts := statuses(t, storeRoot, regPath)
+		if ok {
+			t.Fatalf("a stamped session against a missing registry graded ok: true (%v)", counts)
+		}
+		if counts["unregistered-session"] != 1 || counts["ok"] != 2 || len(counts) != 2 {
+			t.Fatalf("expected one unregistered-session over two ok receipts, got: %v", counts)
+		}
+	})
+
+	// No skip: this is the leg that proves the fix on Windows, where the pre-fix
+	// os.ReadFile error for a non-directory path component is ERROR_PATH_NOT_FOUND
+	// and os.IsNotExist reports it as an absent registry.
+	t.Run("registry parent is a regular file refuses", func(t *testing.T) {
+		// Same store as the row above, so the two rows differ only in the
+		// registry path: the missing one grades, this one refuses.
+		st, _, storeRoot, _ := testStore(t)
+		stampSession(t, st, "s1", 2)
+		parent := filepath.Join(t.TempDir(), "regular-file")
+		if err := os.WriteFile(parent, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		regPath := filepath.Join(parent, "registry.jsonl")
+
+		_, err := verifyWithRegistry(storeRoot, regPath, "gateway:test", st.publicKey)
+		if err == nil || !strings.Contains(err.Error(), "registry parent is not a directory") {
+			t.Fatalf("expected 'registry parent is not a directory' error, got: %v", err)
+		}
+	})
+}

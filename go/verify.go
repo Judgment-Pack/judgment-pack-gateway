@@ -163,15 +163,35 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 // loadSeals reads the append-only registry and drops any seal whose keyId is not
 // the verifier's own or whose signature does not verify under the public key. A malformed line is
 // likewise not a seal, so it is dropped too.
+//
+// SPEC.md §4.1: only ENOENT of the registry path itself is an absent registry. A
+// registry path that exists but cannot be read, or whose parent is not a
+// directory, is a present and unreachable anchor, so the verifier refuses rather
+// than grading every session `unregistered-session`. The parent is stated
+// directly because reading absence out of the error alone is a platform decision:
+// Windows maps a non-directory path component to ERROR_PATH_NOT_FOUND, which
+// os.IsNotExist reports as absence.
 func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error) {
 	seals := map[string]seal{}
 	var order []string
 
-	data, err := os.ReadFile(path)
-	if err != nil {
+	parent := filepath.Dir(path)
+	if info, err := os.Stat(parent); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, nil, err
+		}
+	} else if !info.IsDir() {
+		return nil, nil, fmt.Errorf("registry parent is not a directory: %s", parent)
+	}
+	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			return seals, order, nil
 		}
+		return nil, nil, err
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
 		return nil, nil, err
 	}
 	for _, line := range strings.Split(string(data), "\n") {
