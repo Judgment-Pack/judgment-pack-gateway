@@ -14,6 +14,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -1008,4 +1010,120 @@ func TestRegistryPathShapes(t *testing.T) {
 				"classifier the verifier uses", body.Error, want)
 		}
 	})
+}
+
+func TestArgumentsDigest(t *testing.T) {
+	_, server := testService(t)
+
+	// 1. Format: "hmac-sha256:" + exactly 64 lowercase hex characters
+	getArgumentsDigest := func(body map[string]any) string {
+		t.Helper()
+		receipt, ok := body["receipt"].(map[string]any)
+		if !ok {
+			t.Fatal("response has no receipt")
+		}
+		d, ok := receipt["argumentsDigest"].(string)
+		if !ok {
+			t.Fatal("receipt has no argumentsDigest")
+		}
+		return d
+	}
+
+	digestPattern := regexp.MustCompile(`^hmac-sha256:[0-9a-f]{64}$`)
+
+	code, resp := post(t, server, "/acquire",
+		`{"session":"args-fmt","source":"screening","arguments":{"q":"alpha"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, resp)
+	}
+	d1 := getArgumentsDigest(resp)
+	if !digestPattern.MatchString(d1) {
+		t.Fatalf("argumentsDigest = %q, want hmac-sha256: + 64 lowercase hex", d1)
+	}
+
+	// 2. Same arguments in different sessions produce the same digest
+	code, resp2 := post(t, server, "/acquire",
+		`{"session":"args-det-2","source":"screening","arguments":{"q":"alpha"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, resp2)
+	}
+	d2 := getArgumentsDigest(resp2)
+	if d1 != d2 {
+		t.Fatalf("same arguments in different sessions produced different digests: %q vs %q", d1, d2)
+	}
+
+	// 3. Different arguments produce a different digest
+	code, resp3 := post(t, server, "/acquire",
+		`{"session":"args-diff","source":"screening","arguments":{"q":"bravo"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, resp3)
+	}
+	d3 := getArgumentsDigest(resp3)
+	if d1 == d3 {
+		t.Fatalf("different arguments produced the same digest: %q", d1)
+	}
+
+	// 4. The digest is NOT the plain SHA-256 of the canonical arguments
+	obj := &vObject{byName: map[string]value{"q": vString("alpha")},
+		names: []string{"q"}}
+	canonicalArgs := canon(obj)
+	hash := sha256.Sum256(canonicalArgs)
+	hexOnly := strings.TrimPrefix(d1, "hmac-sha256:")
+	if hexOnly == hex.EncodeToString(hash[:]) {
+		t.Fatalf("the hex portion of argumentsDigest matches plain SHA-256 — keyed commitment is broken")
+	}
+
+	// 5. Recomputing HMAC under argumentsKey reproduces the digest exactly
+	mac := hmac.New(sha256.New, argumentsKey(testSeed))
+	mac.Write(append([]byte("args:"), canonicalArgs...))
+	expected := "hmac-sha256:" + hex.EncodeToString(mac.Sum(nil))
+	if d1 != expected {
+		t.Fatalf("argumentsDigest = %q, recomputed = %q — digest does not reproduce from construction", d1, expected)
+	}
+}
+
+func TestArgumentsDigestChangesWithSeed(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	seed1 := []byte("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") // 32 bytes
+	seed2 := []byte("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") // 32 bytes
+
+	root1 := t.TempDir()
+	service1, err := newGatewayService(
+		filepath.Join(root1, "store"), seed1, "gateway:test",
+		filepath.Join(root1, "registry.jsonl"),
+		map[string][]string{"screening": {os.Args[0]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server1 := httptest.NewServer(service1.handler())
+	defer server1.Close()
+
+	root2 := t.TempDir()
+	service2, err := newGatewayService(
+		filepath.Join(root2, "store"), seed2, "gateway:test",
+		filepath.Join(root2, "registry.jsonl"),
+		map[string][]string{"screening": {os.Args[0]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server2 := httptest.NewServer(service2.handler())
+	defer server2.Close()
+
+	args := `{"session":"seed-test","source":"screening","arguments":{"q":"test"}}`
+
+	code1, resp1 := post(t, server1, "/acquire", args)
+	if code1 != http.StatusOK {
+		t.Fatalf("first acquire failed: %d %v", code1, resp1)
+	}
+	d1 := resp1["receipt"].(map[string]any)["argumentsDigest"].(string)
+
+	code2, resp2 := post(t, server2, "/acquire", args)
+	if code2 != http.StatusOK {
+		t.Fatalf("second acquire failed: %d %v", code2, resp2)
+	}
+	d2 := resp2["receipt"].(map[string]any)["argumentsDigest"].(string)
+
+	if d1 == d2 {
+		t.Fatalf("argumentsDigest did not change when seed changed: %q == %q", d1, d2)
+	}
 }
