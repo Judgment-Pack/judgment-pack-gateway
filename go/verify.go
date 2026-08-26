@@ -160,19 +160,87 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 	return append([]byte(sealContext), canon(covered)...)
 }
 
+// registryContainerReachable checks the directories that must exist above the
+// registry file, walking them from the filesystem root downward so that every
+// stat is taken against a parent already known to be a directory. At each step
+// the only outcomes are an existing directory, an existing non-directory (a
+// refusal, naming the component), and a component that is not there at all (the
+// registry is then genuinely absent, and the caller's stat of the file says so).
+//
+// Walking downward is what keeps the classification off the platform's error
+// mapping. Statting the registry path — or only its immediate parent — cannot do
+// it: Windows answers ERROR_PATH_NOT_FOUND for any non-directory path component,
+// at any depth, and os.IsNotExist reports that as absence.
+func registryContainerReachable(path string) error {
+	var dirs []string
+	for dir := filepath.Dir(path); ; {
+		dirs = append(dirs, dir)
+		up := filepath.Dir(dir)
+		if up == dir {
+			break
+		}
+		dir = up
+	}
+	// dirs runs deepest-first, so walk it in reverse to start at the root.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		info, err := os.Stat(dirs[i])
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Nothing exists from here down, so neither does the registry.
+				return nil
+			}
+			return err
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("registry parent path component is not a directory: %s", dirs[i])
+		}
+	}
+	return nil
+}
+
+// readRegistryBytes returns the registry's raw bytes and whether the registry is
+// there at all. It is the one place that decides what an unreadable registry
+// path means, so the verifier and the /registry endpoint cannot answer
+// differently.
+//
+// SPEC.md §4.1: only a registry file that is genuinely not there is absent. A
+// registry path that exists but cannot be read, or that has an existing parent
+// path component which is not a directory, is a present and unreachable anchor —
+// the caller must refuse rather than treat the anchor as empty.
+func readRegistryBytes(path string) ([]byte, bool, error) {
+	if err := registryContainerReachable(path); err != nil {
+		return nil, false, err
+	}
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	return data, true, nil
+}
+
 // loadSeals reads the append-only registry and drops any seal whose keyId is not
 // the verifier's own or whose signature does not verify under the public key. A malformed line is
 // likewise not a seal, so it is dropped too.
+//
+// An absent registry loads no seals, which grades every session in the store
+// `unregistered-session`. A registry that is present and unreachable is not
+// absent: readRegistryBytes tells the two apart, and this refuses on the second.
 func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error) {
 	seals := map[string]seal{}
 	var order []string
 
-	data, err := os.ReadFile(path)
+	data, present, err := readRegistryBytes(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return seals, order, nil
-		}
 		return nil, nil, err
+	}
+	if !present {
+		return seals, order, nil
 	}
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "" {
@@ -237,6 +305,15 @@ func memberString(obj *vObject, name string) (string, bool) {
 // --- verification ---------------------------------------------------------
 
 func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []byte) (*report, error) {
+	// SPEC.md §4.1: A store root that exists but is not a directory is an unreadable evidence container (refusal).
+	if info, err := os.Stat(storeRoot); err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+	} else if !info.IsDir() {
+		return nil, fmt.Errorf("store root is not a directory: %s", storeRoot)
+	}
+
 	if len(publicKey) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("public key must be %d bytes", ed25519.PublicKeySize)
 	}

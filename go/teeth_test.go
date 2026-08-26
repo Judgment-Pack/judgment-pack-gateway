@@ -626,6 +626,392 @@ func TestUnreadableReceiptsPermissionsRefusal(t *testing.T) {
 	})
 }
 
+func TestLoadSealDropShapes(t *testing.T) {
+	st, _, _, _ := testStore(t)
+	priv := st.private
+	pub := st.publicKey
+	session := "drop-shapes"
+	kid := keyIDFor(pub)
+
+	for _, tt := range []struct {
+		name     string
+		lines    string
+		wantSeal int // number of seals expected to load
+		wantCID  int64
+		why      string
+	}{
+		{
+			name:  "not JSON at all",
+			lines: "this is not json\n",
+			why:   "parseJSON fails; dropped before any member is read",
+		},
+		{
+			name:  "array instead of object",
+			lines: `[1,2,3]` + "\n",
+			why:   "parseJSON succeeds but the result is not *vObject; dropped",
+		},
+		{
+			name: "missing member (sealedAt dropped)",
+			lines: func() string {
+				// We sign an empty sealedAt because if missing, a string member query yields "".
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "", kid))
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"keyId":      kid,
+					"signature":  hex.EncodeToString(sig),
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "the ok1…ok5 gate drops it before the signature check",
+		},
+		{
+			name: "finalCount is a string",
+			lines: func() string {
+				// We sign count 0 because a failed type assertion yields the zero value.
+				sig := ed25519.Sign(priv, sealSigningInput(session, 0, "t", kid))
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": "five",
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  hex.EncodeToString(sig),
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "countV.(vInt) fails; string is not an integer",
+		},
+		{
+			// json.Marshal would write 3, not 3.0, so we write raw JSON.
+			name: "finalCount is a float literal",
+			lines: func() string {
+				// We sign count 3 since the parsed float matches this value.
+				sig := ed25519.Sign(priv, sealSigningInput(session, 3, "t", kid))
+				return `{"sessionId":"` + session + `","finalCount":3.0,"sealedAt":"t","keyId":"` + kid + `","signature":"` + hex.EncodeToString(sig) + `"}` + "\n"
+			}(),
+			why: "parseJSON rejects float; never reaches the seal checks",
+		},
+		{
+			// json.Marshal deduplicates map keys, so we write raw JSON.
+			name: "duplicate member name",
+			lines: func() string {
+				// We sign count 5 because that is the valid count in the JSON.
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "t", kid))
+				return `{"sessionId":"` + session + `","sessionId":"` + session + `","finalCount":5,"sealedAt":"t","keyId":"` + kid + `","signature":"` + hex.EncodeToString(sig) + `"}` + "\n"
+			}(),
+			why: "parseJSON rejects duplicate names (canon.go:254); never reaches the seal checks",
+		},
+		{
+			name:     "negative finalCount with correct signature",
+			lines:    sealLine(t, priv, session, -1),
+			wantSeal: 0,
+			why:      "correctly signed but count < 0; isolates the count check",
+		},
+		{
+			name: "signature is valid hex but wrong length (4 chars)",
+			lines: func() string {
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "t", kid))
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  hex.EncodeToString(sig)[:4],
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			// This leg is provably unholdable because Go's ed25519.Verify naturally rejects wrong-size signatures.
+			why: "hex.DecodeString succeeds but len(sig) != ed25519.SignatureSize",
+		},
+		{
+			name: "signature has decode error",
+			lines: func() string {
+				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "t", kid))
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  hex.EncodeToString(sig) + "ZZ",
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "hex.DecodeString fails because of non-hex chars; dropped at the decode check",
+		},
+		{
+			name: "Foreign keyId",
+			lines: func() string {
+				_, dummyPriv, _ := ed25519.GenerateKey(nil)
+				foreignKid := keyIDFor(dummyPriv.Public().(ed25519.PublicKey))
+				return sealLineKeyID(t, priv, session, 5, foreignKid)
+			}(),
+			why: "signed by correct key but names a foreign keyId",
+		},
+		{
+			name: "Wrong signature",
+			lines: func() string {
+				obj := map[string]any{
+					"sessionId":  session,
+					"finalCount": 5,
+					"sealedAt":   "t",
+					"keyId":      kid,
+					"signature":  strings.Repeat("0", 128),
+				}
+				out, _ := json.Marshal(obj)
+				return string(out) + "\n"
+			}(),
+			why: "signature is well-formed but fails verification",
+		},
+
+		// must NOT drop
+		{
+			name:     "correctly signed seal loads",
+			lines:    sealLine(t, priv, session, 5),
+			wantSeal: 1,
+			wantCID:  5,
+			why:      "discriminating: the table is not vacuous — a valid seal does load",
+		},
+		{
+			name:     "zero-count seal loads",
+			lines:    sealLine(t, priv, session, 0),
+			wantSeal: 1,
+			wantCID:  0,
+			why:      "0 is a valid finalCount",
+		},
+		{
+			name:     "blank and whitespace lines beside a good seal",
+			lines:    "\n   \n	\n" + sealLine(t, priv, session, 5) + "\n\n  \n",
+			wantSeal: 1,
+			wantCID:  5,
+			why:      "blank/whitespace lines must not disturb a valid seal",
+		},
+
+		// two loadable seals for one session
+		{
+			name:     "tie-break: first wins (5 then 3)",
+			lines:    sealLine(t, priv, session, 5) + sealLine(t, priv, session, 3),
+			wantSeal: 1,
+			wantCID:  5,
+			why:      "SPEC.md §4 step 2: the first wins; second seal for same session is dropped",
+		},
+		{
+			name:     "tie-break: first wins (3 then 5)",
+			lines:    sealLine(t, priv, session, 3) + sealLine(t, priv, session, 5),
+			wantSeal: 1,
+			wantCID:  3,
+			why:      "both orders must agree: the first line's count wins",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+			if err := os.WriteFile(regPath, []byte(tt.lines), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			seals, _, err := loadSeals(regPath, pub)
+			if err != nil {
+				t.Fatalf("loadSeals returned error: %v", err)
+			}
+
+			if len(seals) != tt.wantSeal {
+				t.Fatalf("loadSeals loaded %d seal(s), want %d — %s", len(seals), tt.wantSeal, tt.why)
+			}
+
+			for _, s := range seals {
+				if s.finalCount != tt.wantCID {
+					t.Fatalf("got finalCount=%d, want %d — %s", s.finalCount, tt.wantCID, tt.why)
+				}
+			}
+		})
+	}
+}
+
+func TestStoreRootShapes(t *testing.T) {
+	regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+	if err := os.WriteFile(regPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var dummyKey [ed25519.PublicKeySize]byte
+
+	t.Run("missing root falls through", func(t *testing.T) {
+		priv := ed25519.NewKeyFromSeed(testSeed)
+		regPath := filepath.Join(t.TempDir(), "registry.jsonl")
+		if err := os.WriteFile(regPath, []byte(sealLine(t, priv, "ghost", 3)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		storeRoot := filepath.Join(t.TempDir(), "does-not-exist")
+		rep, err := verifyWithRegistry(storeRoot, regPath, "gateway:test", priv.Public().(ed25519.PublicKey))
+		if err != nil {
+			t.Fatalf("missing root must still grade, got error: %v", err)
+		}
+		if rep.OK {
+			t.Fatal("missing root with a sealed registry graded ok: true")
+		}
+
+		// exactly one sealed-session-missing for the ghost session
+		if len(rep.Findings) != 1 || rep.Findings[0]["status"] != "sealed-session-missing" {
+			t.Fatalf("expected one sealed-session-missing finding, got: %v", rep.Findings)
+		}
+	})
+
+	t.Run("regular file root refuses", func(t *testing.T) {
+		storeRoot := filepath.Join(t.TempDir(), "regular-file")
+		if err := os.WriteFile(storeRoot, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, err := verifyWithRegistry(storeRoot, regPath, "test", dummyKey[:])
+		if err == nil || !strings.Contains(err.Error(), "store root is not a directory") {
+			t.Fatalf("expected 'store root is not a directory' error, got: %v", err)
+		}
+	})
+
+	t.Run("unreadable directory root refuses", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Getuid() == 0 {
+			t.Skip("permission fixtures are platform-bound and bypassed by root")
+		}
+		storeRoot := filepath.Join(t.TempDir(), "unreadable-dir")
+		if err := os.Mkdir(storeRoot, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(storeRoot, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(storeRoot, 0o755)
+
+		_, err := verifyWithRegistry(storeRoot, regPath, "test", dummyKey[:])
+		if err == nil {
+			t.Fatal("verifyWithRegistry should return error for unreadable directory root")
+		}
+	})
+}
+
+// TestRegistryPathShapes pins the third instance of the OS-split verdict class,
+// at the anchor. A registry the platform cannot reach must never be read as a
+// registry that is not there: the first grades every session
+// `unregistered-session` from evidence nobody looked at, the second is a fact
+// about the store.
+func TestRegistryPathShapes(t *testing.T) {
+	t.Run("missing registry grades unregistered-session", func(t *testing.T) {
+		// A store holding a stamped session is what makes the GRADE assertable.
+		// An empty store can still tell a refusal from a verdict — the call
+		// either errors or does not — but it grades ok: true with no findings
+		// whether or not seals loaded, so it cannot pin what the grade should
+		// be, which is the half a fail-open gets wrong.
+		st, _, storeRoot, _ := testStore(t)
+		stampSession(t, st, "s1", 2)
+		regPath := filepath.Join(t.TempDir(), "registry.jsonl") // never written
+
+		ok, counts := statuses(t, storeRoot, regPath)
+		if ok {
+			t.Fatalf("a stamped session against a missing registry graded ok: true (%v)", counts)
+		}
+		if counts["unregistered-session"] != 1 || counts["ok"] != 2 || len(counts) != 2 {
+			t.Fatalf("expected one unregistered-session over two ok receipts, got: %v", counts)
+		}
+	})
+
+	// No skips below: these are the legs that prove the fix on Windows, where the
+	// error for a non-directory path component is ERROR_PATH_NOT_FOUND at any
+	// depth and os.IsNotExist reports it as an absent registry.
+	//
+	// The depths are separate rows because they fail differently: the direct
+	// parent is caught by statting the parent, while a file ANCESTOR is not —
+	// Windows answers not-exist for the intermediate directory too, so a
+	// parent-only check reports absence and grades. Only the downward walk sees
+	// the file.
+	for _, tt := range []struct {
+		name string
+		// suffix is joined onto a path that is a regular file to build the
+		// registry path.
+		suffix []string
+	}{
+		{name: "registry parent is a regular file refuses", suffix: []string{"registry.jsonl"}},
+		{name: "registry ancestor is a regular file refuses", suffix: []string{"missing", "registry.jsonl"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Same store as the row above, so the rows differ only in the
+			// registry path: the missing one grades, these refuse.
+			st, _, storeRoot, _ := testStore(t)
+			stampSession(t, st, "s1", 2)
+			file := filepath.Join(t.TempDir(), "regular-file")
+			if err := os.WriteFile(file, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			regPath := filepath.Join(append([]string{file}, tt.suffix...)...)
+
+			_, err := verifyWithRegistry(storeRoot, regPath, "gateway:test", st.publicKey)
+			if err == nil {
+				t.Fatal("an unreachable registry graded instead of refusing")
+			}
+			// The refusal must name the component the specification names, not
+			// whatever the platform happened to call the failure.
+			want := "registry parent path component is not a directory: " + file
+			if err.Error() != want {
+				t.Fatalf("got %q, want %q", err.Error(), want)
+			}
+		})
+	}
+
+	// The /registry endpoint hands the anchor to verifiers that never touch this
+	// filesystem, so it must classify the registry path the same way the verifier
+	// does. Serving 200 with an empty body for a registry that is present and
+	// unreachable would tell every one of them "no seals" — the same fail-open,
+	// one process further out. Socket-free: the handler is exercised directly.
+	t.Run("registry endpoint refuses an unreachable registry", func(t *testing.T) {
+		root := t.TempDir()
+		regDir := filepath.Join(root, "anchor")
+		if err := os.Mkdir(regDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		regPath := filepath.Join(regDir, "registry.jsonl")
+		service, err := newGatewayService(
+			filepath.Join(root, "store"), testSeed, "gateway:test", regPath, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler := service.handler()
+
+		// Swap the registry's directory for a regular file AFTER construction,
+		// the way a running gateway's storage can be replaced under it.
+		if err := os.RemoveAll(regDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(regDir, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/registry", nil))
+		if rec.Code == http.StatusOK {
+			t.Fatalf("/registry served %d with body %q for an unreachable registry; "+
+				"an external verifier reads that as an empty anchor", rec.Code, rec.Body.String())
+		}
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+		}
+		// The status alone cannot show the endpoint and the verifier agree: on
+		// POSIX the pre-fix ReadFile also errors here, and it is Windows where
+		// the two answers diverge. Pinning the message pins the classifier, so
+		// an endpoint that goes back to reading the path its own way fails this
+		// row on every platform rather than only in Windows CI.
+		var body struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decoding %q: %v", rec.Body.String(), err)
+		}
+		want := "registry parent path component is not a directory: " + regDir
+		if body.Error != want {
+			t.Fatalf("/registry answered %q; want %q — the endpoint is not using the "+
+				"classifier the verifier uses", body.Error, want)
+		}
+	})
+}
+
 func TestArgumentsDigest(t *testing.T) {
 	_, server := testService(t)
 
