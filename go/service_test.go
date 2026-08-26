@@ -1272,3 +1272,61 @@ func TestRegistryEndpointServesRawBytes(t *testing.T) {
 		}
 	})
 }
+
+func TestMethodContractForStateChangingRoutes(t *testing.T) {
+	tests := []struct {
+		method string
+		route  string
+		body   string
+		name   string
+	}{
+		{http.MethodGet, "/acquire", "", "GET /acquire nil body"},
+		{http.MethodPut, "/acquire", "", "PUT /acquire nil body"},
+		{http.MethodDelete, "/acquire", "", "DELETE /acquire nil body"},
+		{http.MethodGet, "/seal", "", "GET /seal nil body"},
+		{http.MethodPut, "/seal", "", "PUT /seal nil body"},
+		{http.MethodDelete, "/seal", "", "DELETE /seal nil body"},
+		// The load-bearing rows that make the side-effect assertions active
+		{http.MethodGet, "/acquire", `{"session":"test-session","source":"screening"}`, "GET /acquire valid body"},
+		{http.MethodGet, "/seal", `{"session":"test-session"}`, "GET /seal valid body"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := testService(t)
+			storeRoot := svc.storeRoot
+			regPath := svc.regPath
+
+			var reqBody io.Reader
+			if tc.body != "" {
+				reqBody = strings.NewReader(tc.body)
+			}
+			req := httptest.NewRequest(tc.method, tc.route, reqBody)
+			rr := httptest.NewRecorder()
+
+			svc.handler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusNotFound {
+				t.Errorf("Code = %d, want %d", rr.Code, http.StatusNotFound)
+			}
+
+			body := strings.TrimSpace(rr.Body.String())
+			if body != `{"error":"not found"}` {
+				t.Errorf("Body = %q, want %q", body, `{"error":"not found"}`)
+			}
+
+			entries, err := os.ReadDir(filepath.Join(storeRoot, "receipts"))
+			if err != nil {
+				t.Errorf("ReadDir error = %v, want nil", err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("len(entries) = %d, want 0", len(entries))
+			}
+
+			_, err = os.Stat(regPath)
+			if err == nil || !os.IsNotExist(err) {
+				t.Errorf("Stat error = %v, want IsNotExist", err)
+			}
+		})
+	}
+}
