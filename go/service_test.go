@@ -471,6 +471,7 @@ func TestThirdPartyVerifiesWithThePublicKeyAlone(t *testing.T) {
 	}
 }
 
+// TestAcquireRefusesNonCanonicalArguments asserts that POST /acquire refuses payloads outside the canonical domain (SPEC.md §1.1) before starting the source subprocess or writing to the store.
 func TestAcquireRefusesNonCanonicalArguments(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -482,49 +483,49 @@ func TestAcquireRefusesNonCanonicalArguments(t *testing.T) {
 		{
 			name:      "outside canonical domain",
 			arguments: `1.0`,
-			wantCode:  400,
-			wantErr:   "outside the canonical domain",
+			wantCode:  http.StatusBadRequest,
+			wantErr:   "non-integer number",
 			wantRun:   false,
 		},
 		{
 			name:      "exponent notation",
 			arguments: `{"n":1e2}`,
-			wantCode:  400,
+			wantCode:  http.StatusBadRequest,
 			wantErr:   "exponent notation",
 			wantRun:   false,
 		},
 		{
 			name:      "safe-integer range",
 			arguments: `{"n":9007199254740992}`,
-			wantCode:  400,
+			wantCode:  http.StatusBadRequest,
 			wantErr:   "safe-integer range",
 			wantRun:   false,
 		},
 		{
 			name:      "lone surrogate",
 			arguments: `{"k":"\ud800"}`,
-			wantCode:  400,
+			wantCode:  http.StatusBadRequest,
 			wantErr:   "lone surrogate",
 			wantRun:   false,
 		},
 		{
 			name:      "duplicate member name",
 			arguments: `{"a":1,"a":2}`,
-			wantCode:  400,
+			wantCode:  http.StatusBadRequest,
 			wantErr:   "duplicate member name",
 			wantRun:   false,
 		},
 		{
 			name:      "control - valid arguments",
 			arguments: `{"q":"acme"}`,
-			wantCode:  200,
+			wantCode:  http.StatusOK,
 			wantErr:   "",
 			wantRun:   true,
 		},
 		{
 			name:      "control - omitted arguments",
 			arguments: ``,
-			wantCode:  200,
+			wantCode:  http.StatusOK,
 			wantErr:   "",
 			wantRun:   true,
 		},
@@ -562,12 +563,18 @@ func TestAcquireRefusesNonCanonicalArguments(t *testing.T) {
 				}
 			}
 
-			receipts, err := os.ReadDir(filepath.Join(svc.storeRoot, "receipts"))
-			if err != nil && !os.IsNotExist(err) {
-				t.Fatal(err)
+			entries, err := os.ReadDir(filepath.Join(svc.storeRoot, "receipts"))
+			if err != nil {
+				t.Fatalf("ReadDir failed: %v", err)
 			}
-			if !tc.wantRun && len(receipts) != 0 {
-				t.Errorf("expected no receipts on aborted run, got %d", len(receipts))
+			if tc.wantRun {
+				if len(entries) != 1 {
+					t.Errorf("expected 1 receipt, got %d", len(entries))
+				}
+			} else {
+				if len(entries) != 0 {
+					t.Errorf("expected 0 receipts, got %d", len(entries))
+				}
 			}
 		})
 	}
