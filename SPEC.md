@@ -238,6 +238,7 @@ a verdict at all.
 
 | Situation | Reading |
 |---|---|
+| `<root>` does not exist | zero sessions and no artifacts — judged against the registry like any other store, so every sealed session is `sealed-session-missing` |
 | `<root>` exists but is not a directory | no verdict — the verifier refuses (non-zero exit); the evidence container is present and unreadable, not absent |
 | `<root>/receipts` does not exist | zero sessions — every sealed session is then `sealed-session-missing` |
 | `<root>/receipts` exists but is not a directory | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
