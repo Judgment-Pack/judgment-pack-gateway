@@ -471,6 +471,115 @@ func TestThirdPartyVerifiesWithThePublicKeyAlone(t *testing.T) {
 	}
 }
 
+// TestAcquireRefusesNonCanonicalArguments asserts that POST /acquire refuses payloads outside the canonical domain (SPEC.md §1.1) before starting the source subprocess or writing to the store.
+func TestAcquireRefusesNonCanonicalArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		arguments string
+		wantCode  int
+		wantErr   string
+		wantRun   bool
+	}{
+		{
+			name:      "outside canonical domain",
+			arguments: `1.0`,
+			wantCode:  http.StatusBadRequest,
+			wantErr:   "non-integer number",
+			wantRun:   false,
+		},
+		{
+			name:      "exponent notation",
+			arguments: `{"n":1e2}`,
+			wantCode:  http.StatusBadRequest,
+			wantErr:   "exponent notation",
+			wantRun:   false,
+		},
+		{
+			name:      "safe-integer range",
+			arguments: `{"n":9007199254740992}`,
+			wantCode:  http.StatusBadRequest,
+			wantErr:   "safe-integer range",
+			wantRun:   false,
+		},
+		{
+			name:      "lone surrogate",
+			arguments: `{"k":"\ud800"}`,
+			wantCode:  http.StatusBadRequest,
+			wantErr:   "lone surrogate",
+			wantRun:   false,
+		},
+		{
+			name:      "duplicate member name",
+			arguments: `{"a":1,"a":2}`,
+			wantCode:  http.StatusBadRequest,
+			wantErr:   "duplicate member name",
+			wantRun:   false,
+		},
+		{
+			name:      "control - valid arguments",
+			arguments: `{"q":"acme"}`,
+			wantCode:  http.StatusOK,
+			wantErr:   "",
+			wantRun:   true,
+		},
+		{
+			name:      "control - omitted arguments",
+			arguments: ``,
+			wantCode:  http.StatusOK,
+			wantErr:   "",
+			wantRun:   true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, server := testService(t)
+			marker := filepath.Join(t.TempDir(), "ran")
+			t.Setenv(envSourceReady, marker)
+
+			var requestBody string
+			if tc.arguments != "" {
+				requestBody = fmt.Sprintf(`{"session":"session-123","source":"screening","arguments":%s}`, tc.arguments)
+			} else {
+				requestBody = `{"session":"session-123","source":"screening"}`
+			}
+
+			statusCode, respBody := post(t, server, "/acquire", requestBody)
+
+			if statusCode != tc.wantCode {
+				t.Errorf("got status %d, want %d", statusCode, tc.wantCode)
+			}
+
+			if tc.wantErr != "" && !strings.Contains(fmt.Sprint(respBody), tc.wantErr) {
+				t.Errorf("got body %v, want it to contain %q", respBody, tc.wantErr)
+			}
+
+			_, err := os.Stat(marker)
+			if tc.wantRun {
+				if err != nil {
+					t.Errorf("expected script to run, but marker file check failed: %v", err)
+				}
+			} else {
+				if !os.IsNotExist(err) {
+					t.Errorf("expected script NOT to run, but marker file exists (or other err: %v)", err)
+				}
+			}
+
+			entries, err := os.ReadDir(filepath.Join(svc.storeRoot, "receipts"))
+			if err != nil {
+				t.Fatalf("ReadDir failed: %v", err)
+			}
+			if tc.wantRun {
+				if len(entries) != 1 {
+					t.Errorf("expected 1 receipt, got %d", len(entries))
+				}
+			} else {
+				if len(entries) != 0 {
+					t.Errorf("expected 0 receipts, got %d", len(entries))
+				}
+			}
+		})
+	}
+}
+
 func TestEscapingSessionIsRejectedOverHTTP(t *testing.T) {
 	service, server := testService(t)
 	for _, bad := range []string{"../../TRAVERSED", "a/b", "/tmp/ESCAPED"} {
@@ -1162,4 +1271,62 @@ func TestRegistryEndpointServesRawBytes(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestMethodContractForStateChangingRoutes(t *testing.T) {
+	tests := []struct {
+		method string
+		route  string
+		body   string
+		name   string
+	}{
+		{http.MethodGet, "/acquire", "", "GET /acquire nil body"},
+		{http.MethodPut, "/acquire", "", "PUT /acquire nil body"},
+		{http.MethodDelete, "/acquire", "", "DELETE /acquire nil body"},
+		{http.MethodGet, "/seal", "", "GET /seal nil body"},
+		{http.MethodPut, "/seal", "", "PUT /seal nil body"},
+		{http.MethodDelete, "/seal", "", "DELETE /seal nil body"},
+		// The load-bearing rows that make the side-effect assertions active
+		{http.MethodGet, "/acquire", `{"session":"test-session","source":"screening"}`, "GET /acquire valid body"},
+		{http.MethodGet, "/seal", `{"session":"test-session"}`, "GET /seal valid body"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _ := testService(t)
+			storeRoot := svc.storeRoot
+			regPath := svc.regPath
+
+			var reqBody io.Reader
+			if tc.body != "" {
+				reqBody = strings.NewReader(tc.body)
+			}
+			req := httptest.NewRequest(tc.method, tc.route, reqBody)
+			rr := httptest.NewRecorder()
+
+			svc.handler().ServeHTTP(rr, req)
+
+			if rr.Code != http.StatusNotFound {
+				t.Errorf("Code = %d, want %d", rr.Code, http.StatusNotFound)
+			}
+
+			body := strings.TrimSpace(rr.Body.String())
+			if body != `{"error":"not found"}` {
+				t.Errorf("Body = %q, want %q", body, `{"error":"not found"}`)
+			}
+
+			entries, err := os.ReadDir(filepath.Join(storeRoot, "receipts"))
+			if err != nil {
+				t.Errorf("ReadDir error = %v, want nil", err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("len(entries) = %d, want 0", len(entries))
+			}
+
+			_, err = os.Stat(regPath)
+			if err == nil || !os.IsNotExist(err) {
+				t.Errorf("Stat error = %v, want IsNotExist", err)
+			}
+		})
+	}
 }
