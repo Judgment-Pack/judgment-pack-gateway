@@ -1080,6 +1080,12 @@ func TestArgumentsDigest(t *testing.T) {
 	if d1 != expected {
 		t.Fatalf("argumentsDigest = %q, recomputed = %q — digest does not reproduce from construction", d1, expected)
 	}
+
+	// 6. The derivation itself is pinned with a byte-literal digest
+	const pinnedDigest = "hmac-sha256:877dcd76b5c1748c3508592122aad72a2f89276b4980ad18b5e8f6842d4a2add"
+	if d1 != pinnedDigest {
+		t.Fatalf("argumentsDigest = %q, want byte-literal %q — derivation drifted", d1, pinnedDigest)
+	}
 }
 
 func TestArgumentsDigestChangesWithSeed(t *testing.T) {
