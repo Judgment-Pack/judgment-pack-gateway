@@ -908,3 +908,19 @@ func TestLoadSeedIsExactAndBounded(t *testing.T) {
 		t.Fatalf("an oversized seed file must be refused by size: %v", err)
 	}
 }
+
+// An inherited anchor marker makes an ordinary invocation refuse to run.
+func TestStrayAnchorMarkerIsRefused(t *testing.T) {
+	stderr := captureStderr(t)
+	t.Setenv(envGroupAnchor, "1")
+	if !refuseStrayAnchorMarker() {
+		t.Fatal("the marker must be refused")
+	}
+	if out := stderr(); !strings.Contains(out, envGroupAnchor) {
+		t.Fatalf("the refusal must name the marker; stderr was %q", out)
+	}
+	t.Setenv(envGroupAnchor, "")
+	if refuseStrayAnchorMarker() {
+		t.Fatal("an ordinary environment must not be refused")
+	}
+}

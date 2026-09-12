@@ -366,3 +366,90 @@ func TestFIFOSeedIsRefusedWithoutBlocking(t *testing.T) {
 		t.Fatal("opening a FIFO seed blocked")
 	}
 }
+
+// The anchor mode needs the marker, the argument, and a pipe on stdin, all
+// three. With the marker alone an invocation does not become an anchor; with
+// the marker and the argument but no pipe it fails at once; with all three
+// it holds until the pipe closes.
+func TestAnchorModeNeedsMarkerArgumentAndPipe(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(args []string, stdin func(*exec.Cmd)) (exited chan error, cmd *exec.Cmd) {
+		cmd = exec.Command(self, args...)
+		cmd.Env = []string{envGroupAnchor + "=1", "PATH=" + os.Getenv("PATH")}
+		stdin(cmd)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		exited = make(chan error, 1)
+		go func() { exited <- cmd.Wait() }()
+		return exited, cmd
+	}
+	// Marker alone: an ordinary (test) invocation, which refuses to run tests
+	// with no matching name and exits promptly rather than reading stdin.
+	pipeReader, pipeWriter, _ := os.Pipe()
+	defer pipeWriter.Close()
+	exited, _ := run([]string{"-test.run=^$"}, func(c *exec.Cmd) { c.Stdin = pipeReader })
+	select {
+	case <-exited:
+	case <-time.After(15 * time.Second):
+		t.Fatal("with the marker alone the process waited on stdin; it acted as an anchor")
+	}
+	// Marker and argument, stdin not a pipe: refused at once.
+	devnull, _ := os.Open(os.DevNull)
+	defer devnull.Close()
+	exited, cmd := run([]string{anchorArg}, func(c *exec.Cmd) { c.Stdin = devnull })
+	select {
+	case <-exited:
+		if cmd.ProcessState.ExitCode() != 2 {
+			t.Fatalf("an anchor without a pipe must exit 2, exited %d", cmd.ProcessState.ExitCode())
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("an anchor without a pipe did not exit")
+	}
+	// All three: holds until the pipe closes.
+	r2, w2, _ := os.Pipe()
+	exited, _ = run([]string{anchorArg}, func(c *exec.Cmd) { c.Stdin = r2 })
+	select {
+	case <-exited:
+		t.Fatal("an anchor exited before its pipe closed")
+	case <-time.After(500 * time.Millisecond):
+	}
+	w2.Close()
+	select {
+	case <-exited:
+	case <-time.After(15 * time.Second):
+		t.Fatal("an anchor did not exit when its pipe closed")
+	}
+}
+
+// The three capabilities are read from the effective set, and each absence
+// is named.
+func TestMissingCapabilitiesAreNamed(t *testing.T) {
+	all := "Name:\tgateway\nCapEff:\t000001ffffffffff\nCapBnd:\t0\n"
+	if missing := missingCapabilitiesIn(all); len(missing) != 0 {
+		t.Fatalf("a full effective set must lack nothing, got %v", missing)
+	}
+	none := "CapEff:\t0000000000000000\n"
+	if missing := missingCapabilitiesIn(none); len(missing) != 3 {
+		t.Fatalf("an empty effective set lacks all three, got %v", missing)
+	}
+	// SETUID (bit 7) and SETGID (bit 6) held, KILL (bit 5) dropped; bit 9 is
+	// set too, so a check reading the wrong bit for KILL would see it held.
+	noKill := "CapEff:\t00000000000002c0\n"
+	missing := missingCapabilitiesIn(noKill)
+	if len(missing) != 1 || missing[0] != "CAP_KILL" {
+		t.Fatalf("dropping CAP_KILL must be named alone, got %v", missing)
+	}
+	// Only KILL (bit 5) held: exactly the other two are missing, in order.
+	onlyKill := "CapEff:\t0000000000000020\n"
+	missing = missingCapabilitiesIn(onlyKill)
+	if len(missing) != 2 || missing[0] != "CAP_SETGID" || missing[1] != "CAP_SETUID" {
+		t.Fatalf("holding only CAP_KILL must name the other two, got %v", missing)
+	}
+	if missing := missingCapabilitiesIn("no such line\n"); missing != nil {
+		t.Fatalf("without a CapEff line nothing can be said, got %v", missing)
+	}
+}

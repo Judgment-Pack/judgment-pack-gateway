@@ -19,6 +19,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -1496,7 +1497,7 @@ func TestBoundedBufferRetainsAtMostItsLimit(t *testing.T) {
 func TestShutdownCancelsAnInFlightSource(t *testing.T) {
 	service, _ := testService(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	service.ctx = ctx
+	service.bindLifetime(ctx)
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
 	t.Setenv(envSourceReady, started)
@@ -1544,13 +1545,13 @@ func TestStderrFloodIsTruncated(t *testing.T) {
 func TestShutdownAnswersInFlightRequestsBeforeReturning(t *testing.T) {
 	service, _ := testService(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	service.ctx = ctx
+	service.bindLifetime(ctx)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	served := make(chan error, 1)
-	go func() { served <- service.serveOn(ctx, listener) }()
+	go func() { served <- service.serveOn(listener) }()
 
 	dir := t.TempDir()
 	started := filepath.Join(dir, "started")
@@ -1598,5 +1599,102 @@ func TestShutdownAnswersInFlightRequestsBeforeReturning(t *testing.T) {
 	}
 	if _, sealErr := service.sealSession("shutdown-http"); sealErr == nil {
 		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
+	}
+}
+
+// When Serve itself fails -- the listener taken away under it -- the sources
+// in flight are still ended and their handlers still answer before serveOn
+// returns, carrying the serve error. Without that, the process would exit
+// with a source running and a handler mid-flight. The request goes over HTTP
+// because that is what Shutdown waits for: a handler, not a bare call.
+func TestServeFailureStillEndsSourcesInFlight(t *testing.T) {
+	service, _ := testService(t)
+	service.bindLifetime(context.Background())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- service.serveOn(listener) }()
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv(envSourceReady, started)
+	t.Setenv(envSourceWait, filepath.Join(dir, "never-released"))
+	type answer struct {
+		code int
+		err  error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		resp, err := http.Post("http://"+listener.Addr().String()+"/acquire", "application/json",
+			strings.NewReader(`{"session":"serve-failure","source":"screening","arguments":{"q":"x"}}`))
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		resp.Body.Close()
+		answered <- answer{code: resp.StatusCode}
+	}()
+	waitForFile(t, started)
+	// Take the listener away: Serve returns an error that is not ErrServerClosed.
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-served:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("serveOn must return the serve error, got %v", err)
+		}
+	case <-time.After(service.waitDelay + 20*time.Second):
+		t.Fatal("serveOn did not return after the listener failed")
+	}
+	select {
+	case a := <-answered:
+		if a.err != nil || a.code != http.StatusBadRequest {
+			t.Fatalf("the in-flight request must be answered with the refusal, got %d %v", a.code, a.err)
+		}
+	default:
+		t.Fatal("serveOn returned while a request was still in flight")
+	}
+	if _, sealErr := service.sealSession("serve-failure"); sealErr == nil {
+		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
+	}
+}
+
+// A request that is still open when the grace expires is aborted rather than
+// kept forever, and serveOn says so. The client here sends headers and a
+// partial body and then stalls, which is what a body read timeout longer
+// than the grace lets through to Shutdown.
+func TestGraceExpiryAbortsAStalledRequest(t *testing.T) {
+	service, _ := testService(t)
+	service.waitDelay = time.Second // grace of eleven seconds
+	ctx, cancel := context.WithCancel(context.Background())
+	service.bindLifetime(ctx)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- service.serveOn(listener) }()
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// Headers complete, body incomplete, then silence.
+	if _, err := conn.Write([]byte("POST /acquire HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"session\":")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-served:
+		if err == nil || !strings.Contains(err.Error(), "aborted") {
+			t.Fatalf("serveOn must report the aborted request, got %v", err)
+		}
+	case <-time.After(40 * time.Second):
+		t.Fatal("serveOn did not return; the stalled request held it")
 	}
 }

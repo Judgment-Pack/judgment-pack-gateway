@@ -15,21 +15,25 @@ import (
 	"os/exec"
 	"os/user"
 	"strconv"
+	"strings"
 	"syscall"
 )
 
-// envGroupAnchor marks the anchor process. It is set by startAnchor alone,
-// on an otherwise empty environment, and read by init below before main or
-// any test runs, so the same executable serves as its own anchor.
-const envGroupAnchor = "GATEWAY_INTERNAL_GROUP_ANCHOR"
-
+// The anchor mode of this executable: selected by the marker variable AND the
+// argument together (serve.go), before main or any test runs. Its stdin must
+// be a pipe -- the one startAnchor holds -- or it exits at once with a
+// failure: an anchor is never started any other way, and a process that
+// merely inherited the marker must not sit consuming a terminal.
 func init() {
-	if os.Getenv(envGroupAnchor) == "1" {
-		// Hold the group open until the gateway closes this pipe or kills
-		// the group. Nothing else happens in this process.
-		_, _ = io.Copy(io.Discard, os.Stdin)
-		os.Exit(0)
+	if os.Getenv(envGroupAnchor) != "1" || len(os.Args) < 2 || os.Args[1] != anchorArg {
+		return
 	}
+	info, err := os.Stdin.Stat()
+	if err != nil || info.Mode()&os.ModeNamedPipe == 0 {
+		os.Exit(2)
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
 }
 
 // sourceGroup is the process group a source runs in. Its leader is not the
@@ -43,12 +47,20 @@ type sourceGroup struct {
 	stdin  io.Closer
 }
 
+// startAnchor runs this executable's own image where the kernel exposes it
+// (/proc/self/exe names the running image even after the file was replaced
+// or removed); elsewhere the executable's path is re-opened, so replacing or
+// removing the binary while the gateway runs breaks the next acquisition or
+// runs the replacement, and SECURITY.md says to restart the gateway instead.
 func startAnchor() (*sourceGroup, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return nil, err
+	self := "/proc/self/exe"
+	if _, err := os.Stat(self); err != nil {
+		self, err = os.Executable()
+		if err != nil {
+			return nil, err
+		}
 	}
-	anchor := exec.Command(self)
+	anchor := exec.Command(self, anchorArg)
 	anchor.Env = []string{envGroupAnchor + "=1"}
 	anchor.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := anchor.StdinPipe()
@@ -149,11 +161,62 @@ func requireUserSwitching(sources map[string]sourceSpec) error {
 		if os.Geteuid() != 0 {
 			return fmt.Errorf("--source-user %s=%s: switching to another user requires the gateway to run as root", name, spec.user)
 		}
+		if missing := missingCapabilities(); len(missing) > 0 {
+			return fmt.Errorf("--source-user %s=%s: this process lacks %s; it could start the source as that user but not stop it, or not start it at all", name, spec.user, strings.Join(missing, ", "))
+		}
 		if _, err := lookupCredential(spec.user); err != nil {
 			return fmt.Errorf("--source-user %s: %w", name, err)
 		}
 	}
 	return nil
+}
+
+// The Linux capabilities a gateway needs to run a source as another user and
+// to stop it afterwards. Root ordinarily holds all three; a container that
+// drops them leaves a root process that can switch but cannot kill, or the
+// reverse, and a kill of the group that reaches the anchor alone reports
+// success while the source survives. Where /proc/self/status is absent the
+// effective uid is the only check there is.
+var requiredCapabilities = []struct {
+	bit  uint
+	name string
+}{
+	{5, "CAP_KILL"},
+	{6, "CAP_SETGID"},
+	{7, "CAP_SETUID"},
+}
+
+func missingCapabilities() []string {
+	status, err := os.ReadFile("/proc/self/status")
+	if err != nil {
+		return nil
+	}
+	return missingCapabilitiesIn(string(status))
+}
+
+func missingCapabilitiesIn(status string) []string {
+	var effective uint64
+	found := false
+	for _, line := range strings.Split(status, "\n") {
+		if value, ok := strings.CutPrefix(line, "CapEff:"); ok {
+			parsed, err := strconv.ParseUint(strings.TrimSpace(value), 16, 64)
+			if err != nil {
+				return nil
+			}
+			effective, found = parsed, true
+			break
+		}
+	}
+	if !found {
+		return nil
+	}
+	var missing []string
+	for _, capability := range requiredCapabilities {
+		if effective&(1<<capability.bit) == 0 {
+			missing = append(missing, capability.name)
+		}
+	}
+	return missing
 }
 
 var (

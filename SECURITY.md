@@ -115,7 +115,16 @@ os/exec still watches. A descendant that has left the group is not reached: it g
 for its pipe, not the acquisition. On Windows there is no process group; the direct child is
 killed and any descendant gets the same bounded wait. The gateway carries its own interrupt to
 every source in flight, because a source in its own group no longer receives the terminal's, and
-it answers every request in flight before it exits. **`--source-user`** runs a source as another OS
+it answers every request in flight before it exits — or, if a request is still open when the
+grace (the pipe wait plus ten seconds) expires, aborts it and exits non-zero saying so. The anchor
+is this executable's own running image where the kernel exposes it (`/proc/self/exe`); elsewhere
+the executable's path is re-opened for each acquisition, so replacing or removing the binary
+while the gateway runs is not supported — stop and restart it. The anchor mode is selected by an
+internal marker variable and an argument together and requires a pipe on stdin; an ordinary
+invocation that inherits the marker refuses to run rather than silently succeed. On Linux a root
+gateway asked to run a source as another user must hold `CAP_SETUID`, `CAP_SETGID` and
+`CAP_KILL`, and refuses to start without them: a process that can switch but cannot kill could
+start the source and never stop it. **`--source-user`** runs a source as another OS
 user where the platform has one, with that user's own supplementary groups and none of the
 gateway's, and `serve` refuses to start rather than fall back to running the source as the signer
 when it cannot switch; a root process stripped of the capability to switch passes the startup

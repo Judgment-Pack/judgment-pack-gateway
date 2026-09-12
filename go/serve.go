@@ -75,7 +75,8 @@ type gatewayService struct {
 	// so shutting the service down cancels every source in flight; a source
 	// in its own process group would otherwise outlive the gateway that
 	// started it, since it no longer shares the terminal's signals.
-	ctx context.Context
+	ctx    context.Context
+	cancel context.CancelFunc
 	// waitDelay bounds how long, after a source's context is cancelled or
 	// the source has exited, the gateway keeps waiting for its stdout and
 	// stderr to reach end of file. A descendant that escaped the source's
@@ -96,14 +97,33 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	if err != nil {
 		return nil, err
 	}
-	return &gatewayService{
+	g := &gatewayService{
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
 		sources: sources, maxSourceOutput: defaultMaxSourceOutput,
-		ctx: context.Background(), waitDelay: sourceWaitDelay,
-		sessions: map[string]*sessionState{},
-	}, nil
+		waitDelay: sourceWaitDelay,
+		sessions:  map[string]*sessionState{},
+	}
+	g.bindLifetime(context.Background())
+	return g, nil
 }
+
+// bindLifetime makes the service's lifetime end when parent ends, and gives
+// the service its own way to end it: serveOn cancels it on every exit path,
+// so a source in flight is killed whichever way serving stopped.
+func (g *gatewayService) bindLifetime(parent context.Context) {
+	g.ctx, g.cancel = context.WithCancel(parent)
+}
+
+// envGroupAnchor and anchorArg together select the anchor mode of this
+// executable (spawn_unix.go). Both are required: an inherited variable alone
+// must not turn an ordinary invocation into a process that swallows stdin
+// and exits successfully, and main refuses to run at all with the variable
+// set, so a stray marker is an error rather than a silent success.
+const (
+	envGroupAnchor = "GATEWAY_INTERNAL_GROUP_ANCHOR"
+	anchorArg      = "_group-anchor"
+)
 
 // sourceEnvironment builds the environment a source is started with: the
 // declared entries, resolved, and PATH copied from this process unless the
@@ -552,36 +572,47 @@ func (g *gatewayService) handler() http.Handler {
 // listenAndServe binds localhost only. This reference has no authentication and
 // no access control; it is for self-hosting a trust root and demonstrating the
 // mechanism, not a hardened public deployment.
-func (g *gatewayService) listenAndServe(ctx context.Context, address string) error {
+func (g *gatewayService) listenAndServe(address string) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "gateway on http://%s (authority %s, key %s)\n",
 		listener.Addr(), g.authority, g.keyID)
-	return g.serveOn(ctx, listener)
+	return g.serveOn(listener)
 }
 
-// serveOn serves until ctx ends -- the signal context cmdServe builds -- then
-// stops accepting, waits for every request in flight to be answered, and only
-// then returns, so the process does not exit under a handler. Every source in
-// flight was started under a context derived from g.ctx, which cmdServe makes
-// the same one, so each ends within the pipe wait; the grace allows for that
-// and for the answer to be written.
-func (g *gatewayService) serveOn(ctx context.Context, listener net.Listener) error {
-	server := &http.Server{Handler: g.handler(), ReadHeaderTimeout: 10 * time.Second}
+// serveOn serves until the service's lifetime ends -- the signal context
+// cmdServe bound -- or until Serve fails. Either way it ends the lifetime,
+// which kills every source in flight, then waits for every request in flight
+// to be answered before it returns, so the process never exits under a
+// handler. The grace allows for a source's pipe wait and for the answer to be
+// written; a request still open when the grace expires is aborted, and the
+// error returned says so.
+func (g *gatewayService) serveOn(listener net.Listener) error {
+	server := &http.Server{
+		Handler:           g.handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	}
 	shutdown := make(chan error, 1)
 	go func() {
-		<-ctx.Done()
-		grace, cancel := context.WithTimeout(context.Background(), g.waitDelay+10*time.Second)
+		<-g.ctx.Done()
+		grace := g.waitDelay + 10*time.Second
+		graceCtx, cancel := context.WithTimeout(context.Background(), grace)
 		defer cancel()
-		shutdown <- server.Shutdown(grace)
+		err := server.Shutdown(graceCtx)
+		if err != nil {
+			_ = server.Close()
+			err = fmt.Errorf("shutdown: the %s grace expired with requests still open, and they were aborted: %w", grace, err)
+		}
+		shutdown <- err
 	}()
-	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
-		return err
+	serveErr := server.Serve(listener)
+	g.cancel()
+	shutdownErr := <-shutdown
+	if !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
 	}
-	if err := <-shutdown; err != nil {
-		return fmt.Errorf("shutdown: %w", err)
-	}
-	return nil
+	return shutdownErr
 }

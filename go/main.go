@@ -28,6 +28,9 @@ import (
 )
 
 func main() {
+	if refuseStrayAnchorMarker() {
+		os.Exit(2)
+	}
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | keygen")
 		os.Exit(2)
@@ -47,6 +50,20 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)
 	}
+}
+
+// refuseStrayAnchorMarker reports, and says why, when the internal anchor
+// marker is present in the environment of an ordinary invocation. The anchor
+// mode itself has already been taken by the init hook in spawn_unix.go, which
+// requires the marker and the argument together; reaching main with the
+// marker means the argument was absent, and refusing here keeps an inherited
+// variable from turning a verify or a conform into a silent success.
+func refuseStrayAnchorMarker() bool {
+	if os.Getenv(envGroupAnchor) != "1" {
+		return false
+	}
+	fmt.Fprintf(os.Stderr, "refusing to run: %s is set, and it is an internal marker this process sets only for its own anchor\n", envGroupAnchor)
+	return true
 }
 
 func cmdCanon() int {
@@ -457,8 +474,8 @@ func cmdServe(args []string) int {
 	// source in flight through the service's context.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	service.ctx = ctx
-	if err := service.listenAndServe(ctx, "127.0.0.1:"+opts.port); err != nil {
+	service.bindLifetime(ctx)
+	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
 	}
