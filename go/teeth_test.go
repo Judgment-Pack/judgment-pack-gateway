@@ -13,6 +13,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -1363,26 +1364,66 @@ func TestOverflowingSourceIsKilled(t *testing.T) {
 }
 
 // expectHolder arranges for the helper's grandchild to be killed when the
-// test ends, whether or not the gateway reached it. A test must not leave a
-// process holding the test binary open: Windows refuses to delete it, and
-// `go test` then fails after every test passed.
-func expectHolder(t *testing.T) {
+// test ends, whether or not the gateway reached it, and returns a function
+// that reports the grandchild's pid and fails the test if it never started --
+// a holder test that ran without a holder tested nothing. A test must not
+// leave a process holding the test binary open: Windows refuses to delete it,
+// and `go test` then fails after every test passed, so the cleanup kills the
+// grandchild and waits until it is gone.
+func expectHolder(t *testing.T) func() int {
 	t.Helper()
 	pidFile := filepath.Join(t.TempDir(), "holder.pid")
 	t.Setenv(envSourceHolderPid, pidFile)
-	t.Cleanup(func() {
+	readPid := func() (int, bool) {
 		raw, err := os.ReadFile(pidFile)
 		if err != nil {
-			return
+			return 0, false
 		}
 		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		return pid, err == nil
+	}
+	t.Cleanup(func() {
+		pid, ok := readPid()
+		if !ok {
+			return
+		}
+		proc, err := os.FindProcess(pid)
 		if err != nil {
 			return
 		}
-		if proc, err := os.FindProcess(pid); err == nil {
-			_ = proc.Kill()
+		_ = proc.Kill()
+		_, _ = proc.Wait() // waits on Windows; not a child on Unix, returns at once
+		if !awaitGone(pid, 5*time.Second) {
+			t.Errorf("holder %d is still running after cleanup", pid)
 		}
 	})
+	return func() int {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if pid, ok := readPid(); ok {
+				return pid
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the holder grandchild never recorded its pid; the test ran without a descendant")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// awaitGone reports whether pid stops existing within the deadline.
+func awaitGone(pid int, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
+		if processGone(pid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // A source that leaves a descendant holding its stdout cannot strand the
@@ -1391,8 +1432,17 @@ func expectHolder(t *testing.T) {
 // returns, five seconds later. Either way the descendant does not decide.
 func TestDescendantHoldingThePipeCannotStrandTheAcquisition(t *testing.T) {
 	service, _ := testService(t)
-	expectHolder(t)
+	holderPid := expectHolder(t)
 	service.maxSourceOutput = 1024
+	// On Unix the pipe wait is set long so that only the group kill can make
+	// the acquisition return under the limit; process startup and scheduling
+	// then have ten seconds of room, and the alternative would take twenty.
+	limit := 10 * time.Second
+	if runtime.GOOS == "windows" {
+		limit = service.waitDelay + 10*time.Second
+	} else {
+		service.waitDelay = 20 * time.Second
+	}
 	t.Setenv(envSourceBig, "4096")
 	t.Setenv(envSourceHolder, "1")
 	started := time.Now()
@@ -1401,15 +1451,69 @@ func TestDescendantHoldingThePipeCannotStrandTheAcquisition(t *testing.T) {
 	if err == nil {
 		t.Fatal("an overflowing source with a descendant on its pipe must fail the acquisition")
 	}
-	limit := 3 * time.Second // the group kill, not the pipe wait, must be what returns
-	if runtime.GOOS == "windows" {
-		limit = sourceWaitDelay + 10*time.Second
-	}
+	holderPid()
 	if elapsed > limit {
 		t.Fatalf("the acquisition was held by a descendant; acquire took %s, limit %s", elapsed, limit)
 	}
 	if _, sealErr := service.sealSession("hold-1"); sealErr == nil {
 		t.Fatal("a session whose only acquisition failed must not be sealable")
+	}
+}
+
+// The bounded buffers bound memory, not only the verdict: past the limit
+// nothing more is retained, however much is written.
+func TestBoundedBufferRetainsAtMostItsLimit(t *testing.T) {
+	buf := &boundedBuffer{limit: 4096}
+	chunk := bytes.Repeat([]byte("x"), 1<<20)
+	for i := 0; i < 8; i++ {
+		if n, err := buf.Write(chunk); n != len(chunk) || err != nil {
+			t.Fatalf("Write returned (%d, %v); it must never fail", n, err)
+		}
+	}
+	if buf.buf.Len() != 4096 {
+		t.Fatalf("retained %d bytes, want exactly the limit", buf.buf.Len())
+	}
+	if !buf.overflowed {
+		t.Fatal("overflow was not recorded")
+	}
+	calls := 0
+	stopping := &boundedBuffer{limit: 8, stop: func() { calls++ }}
+	stopping.Write([]byte("0123456789"))
+	stopping.Write([]byte("0123456789"))
+	if calls != 1 {
+		t.Fatalf("stop must be called exactly once, was called %d times", calls)
+	}
+}
+
+// Shutting the service down cancels a source in flight rather than leaving
+// it running past the gateway. The source is held at a barrier so it is
+// certainly running when the service's context ends.
+func TestShutdownCancelsAnInFlightSource(t *testing.T) {
+	service, _ := testService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	service.ctx = ctx
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv(envSourceReady, started)
+	t.Setenv(envSourceWait, filepath.Join(dir, "never-released"))
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.acquire("shutdown-1", "screening", vString("x"))
+		result <- err
+	}()
+	waitForFile(t, started)
+	cancel()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("a source cancelled by shutdown must fail the acquisition")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("shutdown did not end the in-flight acquisition")
+	}
+	if _, sealErr := service.sealSession("shutdown-1"); sealErr == nil {
+		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
 	}
 }
 

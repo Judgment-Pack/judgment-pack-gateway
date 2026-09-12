@@ -146,20 +146,49 @@ func openSeed(path string) ([]byte, error) {
 		}
 		return nil, err
 	}
-	return io.ReadAll(io.LimitReader(file, 4096))
+	return io.ReadAll(io.LimitReader(file, maxSeedFileBytes+1))
 }
 
 // markInheritedCloseOnExec marks every descriptor above the standard three
 // close-on-exec. Descriptors the gateway opens itself already are; ones its
 // launcher left open -- a seed passed as `3<gateway.seed`, say -- are not, and
 // without this they would reach every source regardless of user or mode.
+//
+// Where the kernel lists the open descriptors, they are marked exactly. Where
+// it does not, every number up to the hard limit is tried, because a
+// descriptor can exist above a soft limit that was lowered after it was
+// opened; the hard limit is capped so an unlimited one does not become a
+// million system calls at startup.
 func markInheritedCloseOnExec() {
-	limit := uint64(65536)
+	if entries, err := os.ReadDir("/proc/self/fd"); err == nil {
+		for _, entry := range entries {
+			if fd, err := strconv.Atoi(entry.Name()); err == nil && fd > 2 {
+				syscall.CloseOnExec(fd)
+			}
+		}
+		return
+	}
+	limit := uint64(1 << 20)
 	var rlimit syscall.Rlimit
-	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err == nil && rlimit.Cur < limit {
-		limit = rlimit.Cur
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err == nil {
+		highest := rlimit.Max
+		if rlimit.Cur > highest {
+			highest = rlimit.Cur
+		}
+		if highest < limit {
+			limit = highest
+		}
 	}
 	for fd := 3; uint64(fd) < limit; fd++ {
 		syscall.CloseOnExec(fd)
+	}
+}
+
+// reapSourceGroup kills whatever remains of a source's process group after
+// Wait has returned. Errors are not reported: the group is usually already
+// gone, and there is nothing to do about one that is not.
+func reapSourceGroup(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }

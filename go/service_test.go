@@ -52,13 +52,18 @@ const (
 	// holder the gateway did not reach. A process left holding the test
 	// binary open makes `go test` unable to delete it on Windows.
 	envSourceHolderPid = "GATEWAY_TEST_SOURCE_HOLDER_PID"
+	// With holder: the parent exits at once without writing (quiet), and the
+	// grandchild waits the stated milliseconds before writing (delay) -- the
+	// overflow then arrives after the direct child has already exited.
+	envSourceQuiet = "GATEWAY_TEST_SOURCE_QUIET"
+	envSourceDelay = "GATEWAY_TEST_SOURCE_DELAY_MS"
 )
 
 // helperEnv is the environment declared for the test source. The gateway no
 // longer hands a source its own environment (ADR-0001), so every variable the
 // helper reads is declared here by name and copied at spawn time -- which is
 // what keeps t.Setenv working between acquisitions.
-var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid}
+var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid, envSourceQuiet, envSourceDelay}
 
 // A barrier named in the ARGUMENTS rather than the environment. Every helper
 // this process starts inherits the same environment, so an environment-named
@@ -100,6 +105,11 @@ func awaitFile(path string) {
 
 func TestMain(m *testing.M) {
 	if os.Getenv(envSourceHelper) == "1" {
+		// A holder's grandchild records its own pid first, before anything
+		// else can happen to it, so the test can always find it.
+		if pidFile := os.Getenv(envSourceHolderPid); pidFile != "" && os.Getenv(envSourceHold) == "1" {
+			_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600)
+		}
 		arguments, _ := io.ReadAll(os.Stdin)
 		if ready := os.Getenv(envSourceReady); ready != "" {
 			_ = os.WriteFile(ready, []byte("started\n"), 0o600)
@@ -138,18 +148,35 @@ func TestMain(m *testing.M) {
 			if os.Getenv(envSourceHolder) == "1" {
 				// A descendant that inherits stdout and outlives this process.
 				// Its environment is built explicitly so it does not itself
-				// become a holder.
+				// become a holder; it records its own pid at startup.
 				grandchild := exec.Command(os.Args[0])
-				grandchild.Env = []string{envSourceHelper + "=1", envSourceBig + "=" + size, envSourceHold + "=1", "PATH=" + os.Getenv("PATH")}
+				grandchild.Env = []string{
+					envSourceHelper + "=1", envSourceBig + "=" + size, envSourceHold + "=1",
+					envSourceHolderPid + "=" + os.Getenv(envSourceHolderPid),
+					envSourceDelay + "=" + os.Getenv(envSourceDelay),
+					"PATH=" + os.Getenv("PATH"),
+				}
 				grandchild.Stdout = os.Stdout
 				if os.Getenv(envSourceEscape) == "1" {
 					detachFromProcessGroup(grandchild)
 				}
+				// Both record the pid: the parent as soon as it knows it, since
+				// the group kill can reach the grandchild before it runs a
+				// line; the grandchild as its first act, in case the parent is
+				// gone. The parent's write precedes its own output, so nothing
+				// the gateway does can race it.
 				if err := grandchild.Start(); err == nil {
 					if pidFile := os.Getenv(envSourceHolderPid); pidFile != "" {
 						_ = os.WriteFile(pidFile, []byte(strconv.Itoa(grandchild.Process.Pid)), 0o600)
 					}
 				}
+				if os.Getenv(envSourceQuiet) == "1" {
+					os.Exit(0)
+				}
+			}
+			if ms := os.Getenv(envSourceDelay); ms != "" {
+				d, _ := strconv.Atoi(ms)
+				time.Sleep(time.Duration(d) * time.Millisecond)
 			}
 			fmt.Print(`{"pad":"`)
 			os.Stdout.Write(bytes.Repeat([]byte("x"), n))

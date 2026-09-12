@@ -12,6 +12,7 @@ package main
 //	gateway keygen [seedfile]
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -20,8 +21,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 func main() {
@@ -151,19 +154,25 @@ func cmdKeygen(args []string) int {
 	return 0
 }
 
-// writeNewSeed creates path exclusively. O_EXCL is the whole point and a
-// check-then-write would not do: between a stat and a write, a rerun or a
-// planted symlink decides which identity the gateway keeps. O_CREATE|O_EXCL
-// also refuses a symlink outright rather than following it, so an existing
-// path -- regular file, directory, or link -- is left untouched and the
-// operator is told, instead of silently rotating the key every receipt and
-// seal already produced was signed under.
+// closeInheritedDescriptors is what cmdServe calls before anything is opened.
+// It is a variable so a test can observe that startup makes the call.
+var closeInheritedDescriptors = markInheritedCloseOnExec
+
+// maxSeedFileBytes bounds what loadSeed will read. A seed file is sixty-five
+// bytes; the bound is generous to whitespace and refuses anything that is
+// plainly not a seed file rather than reading its first page and ignoring
+// the rest.
+const maxSeedFileBytes = 4096
+
 // loadSeed opens, judges and reads the seed file through one descriptor
 // (openSeed), then accepts either the hex form keygen writes or 32 raw bytes.
 func loadSeed(path string) ([]byte, error) {
 	raw, err := openSeed(path)
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > maxSeedFileBytes {
+		return nil, fmt.Errorf("seed file is larger than a seed file can be (more than %d bytes)", maxSeedFileBytes)
 	}
 	seed := []byte(strings.TrimSpace(string(raw)))
 	if len(seed) == 2*seedBytes {
@@ -185,6 +194,13 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	return service, nil
 }
 
+// writeNewSeed creates path exclusively. O_EXCL is the whole point and a
+// check-then-write would not do: between a stat and a write, a rerun or a
+// planted symlink decides which identity the gateway keeps. O_CREATE|O_EXCL
+// also refuses a symlink outright rather than following it, so an existing
+// path -- regular file, directory, or link -- is left untouched and the
+// operator is told, instead of silently rotating the key every receipt and
+// seal already produced was signed under.
 func writeNewSeed(path string, encoded []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -416,7 +432,7 @@ func cmdServe(args []string) int {
 	// Nothing a launcher left open may reach a source, whatever user or mode
 	// protects the file behind it. Marked before the seed is opened, so the
 	// seed's own descriptor is never in question either.
-	markInheritedCloseOnExec()
+	closeInheritedDescriptors()
 	// Both refusals happen before newGatewayService creates a store, a
 	// registry, or anything else on disk: a configuration under which a source
 	// could read the seed, or would run as the signer when told not to, fails
@@ -436,7 +452,13 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
+	// Sources run in their own process groups, so the terminal's interrupt
+	// no longer reaches them; the gateway's does, and it is carried to every
+	// source in flight through the service's context.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	service.ctx = ctx
+	if err := service.listenAndServe(ctx, "127.0.0.1:"+opts.port); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
 	}

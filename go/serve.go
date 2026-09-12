@@ -71,6 +71,16 @@ type gatewayService struct {
 	keyID           string
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
+	// ctx is the service's lifetime. Every source's context derives from it,
+	// so shutting the service down cancels every source in flight; a source
+	// in its own process group would otherwise outlive the gateway that
+	// started it, since it no longer shares the terminal's signals.
+	ctx context.Context
+	// waitDelay bounds how long, after a source's context is cancelled or
+	// the source has exited, the gateway keeps waiting for its stdout and
+	// stderr to reach end of file. A descendant that escaped the source's
+	// process group and holds a pipe would otherwise hold the acquisition.
+	waitDelay time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
@@ -90,6 +100,7 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
 		sources: sources, maxSourceOutput: defaultMaxSourceOutput,
+		ctx: context.Background(), waitDelay: sourceWaitDelay,
 		sessions: map[string]*sessionState{},
 	}, nil
 }
@@ -232,7 +243,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	}
 	defer g.release(sessionID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, spec.argv[0], spec.argv[1:]...)
 	cmd.Stdin = bytes.NewReader(canonicalArgs)
@@ -244,7 +255,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	if err := prepareSourceProcess(cmd, spec.user); err != nil {
 		return nil, fmt.Errorf("source %s: %w", source, err)
 	}
-	cmd.WaitDelay = sourceWaitDelay
+	cmd.WaitDelay = g.waitDelay
 	// stdout is bounded and its overflow kills the source; stderr is bounded
 	// and simply truncated, because only its first line is ever reported and
 	// a chatty source is not a failed one.
@@ -259,6 +270,12 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 		return nil, fmt.Errorf("source could not be started: %v", err)
 	}
 	waitErr := cmd.Wait()
+	// Whatever Wait returned, nothing of the source's process group survives
+	// the acquisition. os/exec stops watching the context once the direct
+	// child has exited, so an overflow written by a descendant after that
+	// cancels a context nobody acts on; the bounded wait then returns, and
+	// this is what kills the descendant.
+	reapSourceGroup(cmd)
 	if stdout.overflowed {
 		// Whether the kill landed first or the source exited on its own, the
 		// output is not the output it produced.
@@ -531,13 +548,27 @@ func (g *gatewayService) handler() http.Handler {
 
 // listenAndServe binds localhost only. This reference has no authentication and
 // no access control; it is for self-hosting a trust root and demonstrating the
-// mechanism, not a hardened public deployment.
-func (g *gatewayService) listenAndServe(address string) error {
+// mechanism, not a hardened public deployment. It serves until ctx ends --
+// the signal context cmdServe builds -- then stops accepting, lets in-flight
+// requests finish briefly, and returns; every source in flight was started
+// under a context derived from g.ctx, which cmdServe makes the same one, so
+// they are killed rather than left running past the gateway.
+func (g *gatewayService) listenAndServe(ctx context.Context, address string) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stderr, "gateway on http://%s (authority %s, key %s)\n",
 		listener.Addr(), g.authority, g.keyID)
-	return (&http.Server{Handler: g.handler(), ReadHeaderTimeout: 10 * time.Second}).Serve(listener)
+	server := &http.Server{Handler: g.handler(), ReadHeaderTimeout: 10 * time.Second}
+	go func() {
+		<-ctx.Done()
+		grace, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = server.Shutdown(grace)
+	}()
+	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return nil
 }

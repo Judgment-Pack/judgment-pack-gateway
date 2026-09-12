@@ -104,20 +104,31 @@ name form is for passing a path through, not a secret: a credential placed in th
 environment is in the signer's memory whatever is declared, and this design does not cover that
 configuration — give a source a path to a file its own identity can read.
 
-**A source runs in its own process group**, so cancelling it — on the thirty-second timeout or on
-overflow — kills the source and every descendant it left holding a pipe, and the wait for its
-pipes to close is bounded after that. **`--source-user`** runs a source as another OS user where
-the platform has one, with that user's own supplementary groups and none of the gateway's, and
-`serve` refuses to start rather than fall back to running the source as the signer when it cannot
-switch; a root process stripped of the capability to switch passes the startup check and fails at
-its first acquisition, where the operating system's reason is reported. **A source's output is
-bounded** (`--source-max-output`, one mebibyte by default): a source that crosses it is killed, its
-acquisition fails, and nothing it wrote is retained. **The seed is opened once and judged as the
-file that was opened** — a regular file, owned by the gateway's own user, readable by nobody else —
-before it is read through that same descriptor, so the file checked is the file loaded; on Unix a
-seed that fails is refused at startup with the `chmod` to run, and Windows carries no equivalent
-check and says so. **Descriptors the launcher left open are marked close-on-exec at startup**, so a
-seed passed as `3<gateway.seed` reaches no source whatever user or mode protects the file.
+**On Unix a source runs in its own process group**, so cancelling it — on the thirty-second timeout,
+on overflow, or on the gateway's own shutdown — kills the source and every descendant still in
+that group, and the group is killed again after the source is waited for, since an overflow a
+descendant writes after the source has exited cancels nothing os/exec still watches. A descendant
+that has left the group is not reached: it gets a bounded wait for its pipe, not the acquisition.
+On Windows there is no process group; the direct child is killed and any descendant gets the same
+bounded wait. The gateway carries its own interrupt to every source in flight, because a source in
+its own group no longer receives the terminal's. **`--source-user`** runs a source as another OS
+user where the platform has one, with that user's own supplementary groups and none of the
+gateway's, and `serve` refuses to start rather than fall back to running the source as the signer
+when it cannot switch; a root process stripped of the capability to switch passes the startup
+check and fails at its first acquisition, where the operating system's reason is reported. **A
+source's stdout is bounded** (`--source-max-output`, one mebibyte by default) and its stderr is
+bounded and truncated: a source that crosses the stdout bound is killed, its acquisition fails, and
+nothing it wrote is retained. **The seed is opened once and judged as the file that was opened** —
+a regular file, on Unix also owned by the gateway's own user and readable by nobody else — before
+it is read through that same descriptor, so the file checked is the file loaded, and a file larger
+than a seed file can be is refused rather than read in part. A Unix seed that fails is refused at
+startup with the `chmod` to run. What owner and mode do not see: an access-control list that
+grants another user read access, which macOS honours before the mode bits; an operator who grants
+one has opened the seed, and nothing here notices. Windows checks that the seed is a regular file
+and says the rest is the filesystem's. **On Unix, descriptors the launcher left open are marked
+close-on-exec at startup**, enumerated exactly where the kernel lists them and swept up to the hard
+limit elsewhere, so a seed passed as `3<gateway.seed` reaches no source whatever user or mode
+protects the file; os/exec on Windows hands a child only the handles it is told to.
 
 What none of this gives: a source that runs as the gateway's own user, because no `--source-user`
 was given, can read what that user can read, including the seed; and a gateway that runs as root,

@@ -175,7 +175,7 @@ func detachFromProcessGroup(cmd *exec.Cmd) {
 // acquisition, and it must.
 func TestEscapedDescendantCannotStrandTheAcquisition(t *testing.T) {
 	service, _ := testService(t)
-	expectHolder(t)
+	holderPid := expectHolder(t)
 	service.maxSourceOutput = 1024
 	t.Setenv(envSourceBig, "4096")
 	t.Setenv(envSourceHolder, "1")
@@ -186,7 +186,103 @@ func TestEscapedDescendantCannotStrandTheAcquisition(t *testing.T) {
 	if err == nil {
 		t.Fatal("an overflowing source must fail the acquisition")
 	}
-	if elapsed > sourceWaitDelay+10*time.Second {
+	holderPid()
+	if elapsed > service.waitDelay+10*time.Second {
 		t.Fatalf("an escaped descendant stranded the acquisition; acquire took %s", elapsed)
+	}
+}
+
+// processGone reports whether no process with pid exists.
+func processGone(pid int) bool {
+	return syscall.Kill(pid, 0) == syscall.ESRCH
+}
+
+// An overflow that arrives after the direct child has exited cancels a
+// context os/exec no longer watches, so nothing kills the descendant that
+// wrote it. The bounded wait returns the acquisition; reaping the group after
+// Wait is what kills the descendant, and this is the test that would fail
+// without it.
+func TestOverflowAfterTheChildExitedStillKillsTheGroup(t *testing.T) {
+	service, _ := testService(t)
+	holderPid := expectHolder(t)
+	service.maxSourceOutput = 1024
+	service.waitDelay = 3 * time.Second
+	t.Setenv(envSourceBig, "4096")
+	t.Setenv(envSourceHolder, "1")
+	t.Setenv(envSourceQuiet, "1")
+	t.Setenv(envSourceDelay, "500")
+	_, err := service.acquire("late-1", "screening", vString("x"))
+	if err == nil {
+		t.Fatal("a late overflow from a descendant must fail the acquisition")
+	}
+	pid := holderPid()
+	if !awaitGone(pid, 3*time.Second) {
+		t.Fatalf("descendant %d survived the acquisition; the group was not reaped", pid)
+	}
+}
+
+// A descriptor numbered high -- above the old fixed sweep, where the soft
+// limit allows -- is marked too.
+func TestHighInheritedDescriptorDoesNotReachASource(t *testing.T) {
+	var rlimit syscall.Rlimit
+	if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rlimit); err != nil {
+		t.Fatal(err)
+	}
+	high := uint64(70000)
+	if rlimit.Cur <= high {
+		high = rlimit.Cur - 1
+	}
+	if high < 1000 {
+		t.Skip("descriptor limit too low to place a high descriptor")
+	}
+	file, err := os.Create(filepath.Join(t.TempDir(), "launcher-opened"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	dup, _, errno := syscall.Syscall(syscall.SYS_FCNTL, file.Fd(), syscall.F_DUPFD, uintptr(high))
+	if errno != 0 {
+		t.Fatal(errno)
+	}
+	defer syscall.Close(int(dup))
+	// F_DUPFD leaves close-on-exec clear, as a launcher's descriptor would be.
+	service, _ := testService(t)
+	t.Setenv(envSourceFdProbe, strconv.Itoa(int(dup)))
+	out, err := service.acquire("fd-high-1", "screening", vString("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := out["result"].(map[string]any)["open"].(bool); !open {
+		t.Fatalf("the hazard did not reproduce for descriptor %d", dup)
+	}
+	markInheritedCloseOnExec()
+	out, err = service.acquire("fd-high-2", "screening", vString("x"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := out["result"].(map[string]any)["open"].(bool); open {
+		t.Fatalf("descriptor %d reached the source after startup marking", dup)
+	}
+}
+
+// A FIFO at the seed path is refused, and refused promptly: the open must
+// not block waiting for a writer that never comes.
+func TestFIFOSeedIsRefusedWithoutBlocking(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "seed.fifo")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() {
+		_, err := loadSeed(path)
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "regular file") {
+			t.Fatalf("a FIFO must be refused as not a regular file: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("opening a FIFO seed blocked")
 	}
 }

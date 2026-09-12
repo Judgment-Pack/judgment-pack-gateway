@@ -862,3 +862,49 @@ func TestLoadSeedReadsWhatKeygenWrote(t *testing.T) {
 		t.Fatal("a missing seed must be an error")
 	}
 }
+
+// Startup marks inherited descriptors before it opens anything: the call is
+// made even when the seed is missing, which is the earliest refusal.
+func TestStartupMarksInheritedDescriptors(t *testing.T) {
+	stderr := captureStderr(t)
+	_ = stderr
+	called := false
+	previous := closeInheritedDescriptors
+	closeInheritedDescriptors = func() { called = true }
+	t.Cleanup(func() { closeInheritedDescriptors = previous })
+	dir := t.TempDir()
+	args := []string{filepath.Join(dir, "store"), filepath.Join(dir, "missing.seed"), "gateway:test", filepath.Join(dir, "registry.jsonl")}
+	if got := cmdServe(args); got != 1 {
+		t.Fatalf("cmdServe() = %d, want 1", got)
+	}
+	if !called {
+		t.Fatal("startup did not mark inherited descriptors before opening the seed")
+	}
+}
+
+// loadSeed returns exactly the bytes the file encodes, and refuses a file
+// that is not the size of a seed file however its first bytes read.
+func TestLoadSeedIsExactAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	want := bytes.Repeat([]byte{0xab}, seedBytes)
+	path := filepath.Join(dir, "known.seed")
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(want)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadSeed(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("loaded %x, want %x", got, want)
+	}
+	oversized := filepath.Join(dir, "oversized.seed")
+	body := append([]byte(hex.EncodeToString(want)), bytes.Repeat([]byte(" "), maxSeedFileBytes)...)
+	body = append(body, []byte("trailing garbage")...)
+	if err := os.WriteFile(oversized, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSeed(oversized); err == nil || !strings.Contains(err.Error(), "larger than a seed file") {
+		t.Fatalf("an oversized seed file must be refused by size: %v", err)
+	}
+}

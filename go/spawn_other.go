@@ -47,7 +47,11 @@ func openSeed(path string) ([]byte, error) {
 		return nil, errors.New("seed must be a regular file")
 	}
 	fmt.Fprintln(os.Stderr, "note: seed file ownership and permissions are not checked on this platform; protect it with the filesystem's own access control")
-	return io.ReadAll(io.LimitReader(file, 4096))
+	return io.ReadAll(io.LimitReader(file, maxSeedFileBytes+1))
 }
 
 func markInheritedCloseOnExec() {}
+
+// Without process groups there is nothing beyond the direct child to reap;
+// os/exec has already killed that on cancellation.
+func reapSourceGroup(cmd *exec.Cmd) {}
