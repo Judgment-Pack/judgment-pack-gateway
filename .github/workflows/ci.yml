@@ -51,3 +51,42 @@ jobs:
         run: |
           if [ -f go.sum ]; then echo "go.sum exists: a dependency crept in"; exit 1; fi
           go list -deps . | grep -v '^gateway$' | grep -vE '^(internal/|[a-z]+(/|$))' && exit 1 || true
+      # The process boundary is the security claim (docs/adr/0001): the module
+      # that holds the seed is never linked to the module that holds platform
+      # credentials. The adapters module's import path has no dot, so the
+      # filter above would let it through; these lines refuse it by name, and
+      # refuse the go.mod directives that would make such an import resolve.
+      - name: The core never imports the adapters module
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          go list -deps . | grep -E '^adapters(/|$)' && { echo "the core imports the adapters module"; exit 1; } || true
+          grep -nE '^\s*(require|replace|exclude)\b' go.mod && { echo "go.mod declares a dependency, replacement, or exclusion"; exit 1; } || true
+
+  adapters:
+    name: adapters · Go 1.26
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: adapters
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.26"
+      - name: Formatting is canonical
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - name: Vet
+        run: go vet ./...
+      - name: Tests
+        run: go test ./...
+      - name: Build
+        run: go build -buildvcs=false ./...
+      # The mirror of the core's rule: an adapter may take dependencies the core
+      # never will, but it may never reach the signer, and no replace directive
+      # may make the core resolvable from here.
+      - name: The adapters module never imports the core
+        run: |
+          go list -deps ./... | grep -E '^gateway(/|$)' && { echo "an adapter imports the core module"; exit 1; } || true
+          grep -nE '^\s*replace\b' go.mod && { echo "go.mod carries a replace directive"; exit 1; } || true
