@@ -205,8 +205,13 @@ whose salt the acquire response returns; and `pageItems` is computed by the
 gateway over the items of the result it attests. An acquisition record of any
 adapter shape is therefore the adapter's testimony under the gateway's
 signature: what a compromised adapter can do is misreport its acquisition, as
-it can misreport its bytes; it cannot sign, and the receipt names the source
-it was configured as.
+it can misreport its bytes, and the receipt names the source it was configured
+as. What it cannot do is sign — provided it cannot read the seed, which is the
+separation SECURITY.md describes and the operator establishes: an adapter run
+as the signer's own identity can read what the signer can, as any source can.
+Only `statement` is committed; what an adapter writes into `endpoint`,
+`snapshot`, `peerIdentity`, `upstreamToken` or the result itself is in the
+receipt or the artifact in the clear.
 
 **`action`** — present when `kind` is `"action"`. An action receipt records that
 an executor was asked to perform something, by which authenticated identity,
@@ -625,7 +630,10 @@ object whose members are exactly `acquisition`, `result` and, optionally, `page`
   `observedAt`, each of the type and form §1.2a states for the receipt member of
   that name, except that `statement` is the statement text itself — the query,
   resource path or tool call — as a string, or `null`; `adapter` carries exactly
-  `name`, `version` and `digest`. It carries neither `shape` nor `pageItems`. (A
+  `name`, `version` and `digest`; and `observedAt` is of the form
+  `YYYY-MM-DDThh:mm:ssZ` — UTC, whole seconds, the form `servedAt` takes — which
+  is what this gateway accepts from an adapter, beyond the string a verifier
+  checks for. It carries neither `shape` nor `pageItems`. (A
   verifier tolerates a member it does not know at any depth, since a signed one is
   the signer's own; the signer, reading an envelope, tolerates nothing it did not
   ask for.)

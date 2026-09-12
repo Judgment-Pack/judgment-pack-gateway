@@ -1028,6 +1028,19 @@ func TestParseSourceShape(t *testing.T) {
 	if !ok || opts.sources["screening"].shape != "airbyte" {
 		t.Fatalf("shape not applied: ok=%v msg=%q %+v", ok, msg, opts.sources)
 	}
+	// Declaration order is free: the shape may precede the source it names,
+	// and it keeps the source's user and environment beside it.
+	opts, msg, ok = parseServeOptions([]string{
+		"store", "seed", "authority", "registry",
+		"--source-shape", "screening=mcp", "--source-user", "screening=someone",
+		"--source-env", "screening=FOO=bar", "--source", "screening=go",
+	})
+	if !ok {
+		t.Fatal(msg)
+	}
+	if spec := opts.sources["screening"]; spec.shape != "mcp" || spec.user != "someone" || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {
+		t.Fatalf("shape before source, or beside user and env, not applied: %+v", spec)
+	}
 	for _, tc := range []struct {
 		name  string
 		extra []string
@@ -1052,7 +1065,7 @@ func TestBuildServiceAppliesTheSourceShape(t *testing.T) {
 	dir := t.TempDir()
 	args := []string{
 		filepath.Join(dir, "store"), "seed", "gateway:test", filepath.Join(dir, "registry.jsonl"),
-		"--source", "screening=go", "--source-shape", "screening=mcp",
+		"--source", "screening=go", "--source-shape", "screening=mcp", "--source-env", "screening=FOO=bar",
 	}
 	opts, msg, ok := parseServeOptions(args)
 	if !ok {
@@ -1062,7 +1075,7 @@ func TestBuildServiceAppliesTheSourceShape(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if service.sources["screening"].shape != "mcp" {
-		t.Fatalf("shape did not reach the service: %+v", service.sources["screening"])
+	if spec := service.sources["screening"]; spec.shape != "mcp" || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {
+		t.Fatalf("shape, or the environment beside it, did not reach the service: %+v", spec)
 	}
 }

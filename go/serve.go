@@ -100,6 +100,14 @@ type gatewayService struct {
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
 	sources map[string]sourceSpec) (*gatewayService, error) {
+	// A shape is one of §1.2a's or nothing: a receipt minted under any other
+	// would be malformed to every verifier, so it is refused here, whatever
+	// built the configuration.
+	for name, spec := range sources {
+		if spec.shape != "" && !adapterShapes[spec.shape] {
+			return nil, fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
+		}
+	}
 	st, err := newStore(storeRoot, seed, authority)
 	if err != nil {
 		return nil, err
@@ -373,6 +381,18 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 		}
 		result = adapterEnvelope.result
 	}
+	// The response carries the result as ordinary JSON. A result the
+	// response cannot carry -- nested deeper than encoding/json will decode
+	// -- is refused here, before anything is retained or minted, so no
+	// receipt is ever stamped for an acquisition the caller cannot receive.
+	var resultOut any
+	if err := json.Unmarshal(canon(result), &resultOut); err != nil {
+		return nil, fmt.Errorf("source %s: the result cannot be returned: %v", source, err)
+	}
+	// An artifact is content-addressed and may be shared by receipts, so
+	// a failure after this point leaves it in place rather than removing
+	// what another receipt may cite; nothing cites it until a receipt is
+	// stamped.
 	resultDigest, err := g.store.retain(canon(result))
 	if err != nil {
 		return nil, err
@@ -430,10 +450,6 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	state.index++
 	state.prev = signature
 
-	var resultOut any
-	if err := json.Unmarshal(canon(result), &resultOut); err != nil {
-		return nil, err
-	}
 	// The receipt in the response is the stored receipt, whole: the same
 	// members written under receipts/<session>/<index>.json, so the caller
 	// holds everything the signature covers and can check it without reaching

@@ -92,8 +92,8 @@ that exchange, and exclusivity to the caller is not something the reference prov
 retained artifact itself discloses is the source's affair. `--receipt-version 2` keeps the
 version 2 form for a consumer not yet updated, and with it the oracle described next.
 
-**A version 3 acquisition record names the source by the digest of the file the command's first
-word resolved to**, resolved once and read before anything is started. It is that file at that
+**For the `"command"` shape, a version 3 acquisition record names the source by the digest of the
+file the command's first word resolved to**, resolved once and read before anything is started. It is that file at that
 moment: a replacement between the read and the start is not detected, and a file that is not a
 regular file is refused rather than opened. A directly executed script is digested as the script;
 `python3 fetch.py` is digested as the interpreter, and the script, like every further argument of
@@ -106,10 +106,18 @@ token, adapter identity and observation time in the receipt are what the adapter
 envelope, held to their stated forms and otherwise taken on its word; the shape, the statement
 commitment and the page-item digests are the gateway's own. A compromised adapter can
 therefore misreport its acquisition exactly as it can misreport its bytes, and the receipt
-attributes both to the source it was configured as; what it cannot do is sign, and a bare
+attributes both to the source it was configured as. What it cannot do is sign — provided it
+cannot read the seed: that is the separation the paragraphs above describe, it is the
+operator's to establish with `--source-user` today, and declaring a shape establishes none of
+it; an adapter run as the signer's own identity can read the seed, as any source can. A bare
 command cannot make its output read as an adapter's record, because the shape is declared by
-the operator and never by the source. The adapter binary itself is not named in the receipt;
-it is attributable through the engine release that shipped it (ADR-0002 records this as open).
+the operator and never by the source. Only the statement is committed: what an adapter writes
+into the endpoint, the snapshot, the peer identity, the upstream token or the result itself is
+in the receipt or the artifact in the clear. The adapter binary itself is not named in the
+receipt, and nothing in the receipt binds the source name to a program: attributing an
+adapter-shape receipt to the program that produced it takes the operator's own record of what
+was configured as that source, until the engine configuration and its release make that record
+(ADR-0002 records this as open).
 
 **Version 2's arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
 keyed digest of the canonical arguments, with no per-receipt salt. The keying stops a party that only

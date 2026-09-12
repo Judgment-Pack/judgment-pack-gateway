@@ -21,7 +21,8 @@ channel, and which of them the signer takes on the adapter's word.
 - One request, one result: the contract ADR-0001 chose, and the one every existing source
   already satisfies.
 - The signer decides what is signed. An adapter must not be able to choose its own `shape`,
-  store a statement in the clear, or assert digests of items the signer itself holds.
+  have the `statement` member stored in the clear, or assert digests of items the signer
+  itself holds.
 - Byte-lineage, not truth: the record may be the adapter's testimony, but the receipt must
   say so, and a compromised adapter must remain unable to sign.
 
@@ -60,7 +61,12 @@ members come from" states the division:
   ADR-0001 keep meaning what they say.
 - Good, because the receipt states its own epistemics: an adapter-shape record is the
   adapter's testimony under the signature, and SECURITY.md says what that adapter can do
-  (misreport) and cannot (sign).
+  (misreport) and cannot (sign — provided the operator gave it an identity that cannot read
+  the seed, which nothing in this change enforces; an adapter run as the signer can read the
+  seed, as any source can, and the engine configuration is where that refusal belongs).
+- Bad, because only `statement` is committed: an adapter that repeats its query in
+  `endpoint`, `snapshot` or the result has put it in the receipt or the artifact in the
+  clear, and the text says so rather than promising otherwise.
 - Bad, because the adapter binary the gateway spawned is not itself named in the receipt:
   `adapter` is what the adapter reports (a connector image, for the `airbyte` shape), and
   the spawned program is attributable only through the source name and the engine release

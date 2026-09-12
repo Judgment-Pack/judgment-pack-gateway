@@ -2132,6 +2132,15 @@ func TestAdapterEnvelopeIsRecordedAsReported(t *testing.T) {
 			t.Fatalf("%s recorded as %v, reported %v", name, acquisition[name], reported[name])
 		}
 	}
+	// Exactly §1.2a's members and nothing beside them -- no salt, no text.
+	for _, name := range []string{"adapter", "shape", "endpoint", "statement", "snapshot", "peerIdentity", "schema", "upstreamToken", "pageItems", "observedAt"} {
+		if _, present := acquisition[name]; !present {
+			t.Fatalf("acquisition lacks %q: %v", name, acquisition)
+		}
+	}
+	if len(acquisition) != 10 {
+		t.Fatalf("acquisition carries a member §1.2a does not name: %v", acquisition)
+	}
 	// The statement is committed, not stored, and the salt comes back.
 	statement, _ := acquisition["statement"].(string)
 	saltHex, _ := first["salts"].(map[string]any)["statement"].(string)
@@ -2185,7 +2194,8 @@ func TestAdapterEnvelopeWithoutStatementOrPageAndTheCommandContrast(t *testing.T
 	if code != http.StatusOK {
 		t.Fatalf("acquire failed: %d %v", code, first)
 	}
-	acq := first["receipt"].(map[string]any)["acquisition"].(map[string]any)
+	receiptIn := first["receipt"].(map[string]any)
+	acq := receiptIn["acquisition"].(map[string]any)
 	if acq["shape"] != "mcp" || acq["statement"] != nil {
 		t.Fatalf("a null statement stays null under the configured shape: %v", acq)
 	}
@@ -2194,6 +2204,13 @@ func TestAdapterEnvelopeWithoutStatementOrPageAndTheCommandContrast(t *testing.T
 	}
 	if _, present := first["salts"].(map[string]any)["statement"]; present {
 		t.Fatal("a null statement has no salt")
+	}
+	// The inner result is what is attested and returned, page or not.
+	if receiptIn["resultDigest"] != envelopeDigest(`{"content":"live"}`) {
+		t.Fatalf("resultDigest must be over the inner result: %v", receiptIn["resultDigest"])
+	}
+	if !reflect.DeepEqual(first["result"], map[string]any{"content": "live"}) {
+		t.Fatalf("the response result is the inner result: %v", first["result"])
 	}
 	// The bare command writes the same text and is attested whole.
 	code, whole := post(t, server, "/acquire", `{"session":"env-2","source":"screening","arguments":{}}`)
@@ -2219,7 +2236,7 @@ func TestAdapterEnvelopeWithoutStatementOrPageAndTheCommandContrast(t *testing.T
 // Every departure from the envelope contract fails the acquisition, with
 // nothing minted or retained, and the session stays usable.
 func TestAdapterEnvelopeRefusals(t *testing.T) {
-	_, server := shapedService(t, "http")
+	service, server := shapedService(t, "http")
 	cases := []struct {
 		name   string
 		mutate func(env, acq map[string]any)
@@ -2259,12 +2276,39 @@ func TestAdapterEnvelopeRefusals(t *testing.T) {
 			t.Fatalf("must be refused as not an envelope: %d %v", code, body)
 		}
 	})
+	// Nothing was retained or minted by any refusal, and the session is
+	// neither reserved nor advanced: the next acquisition is index 0 and the
+	// session seals.
+	if files := regularFilesUnder(t, service.storeRoot); files != 0 {
+		t.Fatalf("a refused acquisition left %d file(s) in the store", files)
+	}
 	env, _ := goodEnvelope()
 	t.Setenv(envSourceEnvelope, envelopeText(t, env))
 	code, first := post(t, server, "/acquire", `{"session":"env-3","source":"history","arguments":{}}`)
 	if code != http.StatusOK || first["receipt"].(map[string]any)["callIndex"] != float64(0) {
 		t.Fatalf("no refusal minted anything: the session's first receipt is index 0: %d %v", code, first)
 	}
+	if code, body := post(t, server, "/seal", `{"session":"env-3"}`); code != http.StatusOK {
+		t.Fatalf("the session must seal after refusals: %d %v", code, body)
+	}
+}
+
+func regularFilesUnder(t *testing.T, root string) int {
+	t.Helper()
+	files := 0
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() {
+			files++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return files
 }
 
 // An adapter source has nowhere to put its acquisition in a version 2
@@ -2275,8 +2319,163 @@ func TestAdapterSourceNeedsVersion3(t *testing.T) {
 	service.receiptVersion = receiptVersion
 	env, _ := goodEnvelope()
 	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	// The helper marks this file once it is running: the refusal must come
+	// before any source is started.
+	started := filepath.Join(t.TempDir(), "started")
+	t.Setenv(envSourceReady, started)
 	code, body := post(t, server, "/acquire", `{"session":"env-4","source":"history","arguments":{}}`)
 	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "needs receipt version 3") {
 		t.Fatalf("an adapter source under version 2 must be refused: %d %v", code, body)
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source was started before the version guard refused it")
+	}
+	if files := regularFilesUnder(t, service.storeRoot); files != 0 {
+		t.Fatalf("the refusal left %d file(s) in the store", files)
+	}
+}
+
+// A shape outside §1.2a's is refused when the service is built, whatever
+// built the configuration, since a receipt minted under it would be
+// malformed to every verifier.
+func TestUnknownShapeIsRefusedInProcess(t *testing.T) {
+	root := t.TempDir()
+	_, err := newGatewayService(
+		filepath.Join(root, "store"), testSeed, "gateway:test", filepath.Join(root, "registry.jsonl"),
+		map[string]sourceSpec{"history": {argv: []string{os.Args[0]}, shape: "ftp"}})
+	if err == nil || !strings.Contains(err.Error(), `unknown adapter shape "ftp"`) {
+		t.Fatalf("an unknown shape must be refused at construction: %v", err)
+	}
+}
+
+// The statement commitment is salted per receipt, canonicalizes the text
+// per §1.1 before committing, and leaves neither salt nor text anywhere the
+// gateway writes.
+func TestAdapterStatementCommitmentIsSaltedCanonicalAndUnretained(t *testing.T) {
+	service, server := shapedService(t, "mcp")
+	env, acquisition := goodEnvelope()
+	// A quote, a backslash, a tab, a control character, a non-ASCII rune and
+	// a non-BMP one: §1.1 escapes the first four and emits the rest raw.
+	text := "SELECT \"a\\b\"\t\u0001 caf\u00e9 \U0001F600"
+	acquisition["statement"] = text
+	delete(env, "page")
+	env["result"] = map[string]any{"rows": 1}
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	_, first := post(t, server, "/acquire", `{"session":"stmt-1","source":"history","arguments":{}}`)
+	_, second := post(t, server, "/acquire", `{"session":"stmt-1","source":"history","arguments":{}}`)
+	c1 := first["receipt"].(map[string]any)["acquisition"].(map[string]any)["statement"].(string)
+	c2 := second["receipt"].(map[string]any)["acquisition"].(map[string]any)["statement"].(string)
+	s1 := first["salts"].(map[string]any)["statement"].(string)
+	s2 := second["salts"].(map[string]any)["statement"].(string)
+	if c1 == c2 || s1 == s2 {
+		t.Fatal("the same statement committed twice under one salt")
+	}
+	salt, err := hex.DecodeString(s1)
+	if err != nil || len(salt) != 32 {
+		t.Fatalf("salts.statement must be 32 bytes of hex: %q", s1)
+	}
+	canonical := "\"SELECT \\\"a\\\\b\\\"\\t\\u0001 caf\u00e9 \U0001F600\""
+	h := sha256.New()
+	h.Write(salt)
+	h.Write([]byte("statement:"))
+	h.Write([]byte(canonical))
+	if want := "sha256:" + hex.EncodeToString(h.Sum(nil)); c1 != want {
+		t.Fatalf("the commitment is not over the canonical string: %s vs %s", c1, want)
+	}
+	if code, body := post(t, server, "/seal", `{"session":"stmt-1"}`); code != http.StatusOK {
+		t.Fatalf("seal failed: %d %v", code, body)
+	}
+	raw, _ := hex.DecodeString(s2)
+	forbidden := [][]byte{[]byte(s1), salt, []byte(s2), raw, []byte(`SELECT `), []byte("caf\u00e9")}
+	check := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, needle := range forbidden {
+			if bytes.Contains(data, needle) {
+				t.Fatalf("%s retains %q", path, needle)
+			}
+		}
+	}
+	err = filepath.WalkDir(service.storeRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() {
+			check(path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(service.regPath)
+}
+
+// Page boundaries: an empty page carries an empty pageItems; primitive items
+// are digested as their canonical forms; an array without page is one result.
+func TestAdapterPageBoundaries(t *testing.T) {
+	_, server := shapedService(t, "airbyte")
+	run := func(session string, result any, page bool) (map[string]any, map[string]any) {
+		t.Helper()
+		env, _ := goodEnvelope()
+		env["result"] = result
+		if page {
+			env["page"] = true
+		} else {
+			delete(env, "page")
+		}
+		t.Setenv(envSourceEnvelope, envelopeText(t, env))
+		code, first := post(t, server, "/acquire", `{"session":"`+session+`","source":"history","arguments":{}}`)
+		if code != http.StatusOK {
+			t.Fatalf("acquire failed: %d %v", code, first)
+		}
+		receipt := first["receipt"].(map[string]any)
+		return receipt, receipt["acquisition"].(map[string]any)
+	}
+	receipt, acq := run("page-empty", []any{}, true)
+	if items, ok := acq["pageItems"].([]any); !ok || len(items) != 0 {
+		t.Fatalf("an empty page carries an empty pageItems: %v", acq["pageItems"])
+	}
+	if receipt["resultDigest"] != envelopeDigest(`[]`) {
+		t.Fatalf("an empty page's result is the empty array: %v", receipt["resultDigest"])
+	}
+	_, acq = run("page-primitive", []any{1, "a", nil, true}, true)
+	want := []string{envelopeDigest(`1`), envelopeDigest(`"a"`), envelopeDigest(`null`), envelopeDigest(`true`)}
+	items, _ := acq["pageItems"].([]any)
+	if len(items) != 4 {
+		t.Fatalf("pageItems %v", items)
+	}
+	for i := range want {
+		if items[i] != want[i] {
+			t.Fatalf("pageItems[%d] = %v, want %s", i, items[i], want[i])
+		}
+	}
+	receipt, acq = run("array-no-page", []any{1, 2}, false)
+	if _, present := acq["pageItems"]; present {
+		t.Fatal("an array without page is one result, not a page")
+	}
+	if receipt["resultDigest"] != envelopeDigest(`[1,2]`) {
+		t.Fatalf("resultDigest must be over the array: %v", receipt["resultDigest"])
+	}
+}
+
+// A result the response cannot carry -- nested deeper than encoding/json
+// decodes -- is refused before anything is retained or minted.
+func TestResultTheResponseCannotCarryIsRefusedBeforeAnythingPersists(t *testing.T) {
+	service, server := testService(t)
+	t.Setenv(envSourceEnvelope, strings.Repeat("[", 10001)+strings.Repeat("]", 10001))
+	code, body := post(t, server, "/acquire", `{"session":"deep-1","source":"screening","arguments":{}}`)
+	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "cannot be returned") {
+		t.Fatalf("a result the response cannot carry must be refused: %d %v", code, body)
+	}
+	if files := regularFilesUnder(t, service.storeRoot); files != 0 {
+		t.Fatalf("the refusal left %d file(s) in the store: nothing may persist for an acquisition the caller cannot receive", files)
+	}
+	t.Setenv(envSourceEnvelope, `{"ok":true}`)
+	code, first := post(t, server, "/acquire", `{"session":"deep-1","source":"screening","arguments":{}}`)
+	if code != http.StatusOK || first["receipt"].(map[string]any)["callIndex"] != float64(0) {
+		t.Fatalf("the session must be usable at index 0 after the refusal: %d %v", code, first)
 	}
 }
