@@ -165,9 +165,27 @@ func canonText(text []byte) ([]byte, error) {
 
 // --- parser ---------------------------------------------------------------
 
+// maxNesting bounds how deep the parser descends: the same ten thousand
+// levels encoding/json decodes, so nothing this parser accepts is refused
+// on the way back out, and a source cannot make the reference recurse
+// through half a million levels of brackets inside its output bound
+// (SPEC.md §5). A document deeper than this is refused as unparseable.
+const maxNesting = 10000
+
 type parser struct {
-	data []byte
-	pos  int
+	data  []byte
+	pos   int
+	depth int
+}
+
+// descend enters a nested value, refusing the level past maxNesting before
+// any recursion happens.
+func (p *parser) descend() error {
+	if p.depth >= maxNesting {
+		return fmt.Errorf("nesting deeper than %d levels at %d", maxNesting, p.pos)
+	}
+	p.depth++
+	return nil
 }
 
 func parseJSON(data []byte) (value, error) {
@@ -201,9 +219,19 @@ func (p *parser) parseValue() (value, error) {
 	}
 	switch c := p.data[p.pos]; {
 	case c == '{':
-		return p.parseObject()
+		if err := p.descend(); err != nil {
+			return nil, err
+		}
+		v, err := p.parseObject()
+		p.depth--
+		return v, err
 	case c == '[':
-		return p.parseArray()
+		if err := p.descend(); err != nil {
+			return nil, err
+		}
+		v, err := p.parseArray()
+		p.depth--
+		return v, err
 	case c == '"':
 		s, err := p.parseString()
 		if err != nil {

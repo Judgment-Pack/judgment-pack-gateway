@@ -512,6 +512,12 @@ not itself a finding.
   that the action was right. Version 3's commitments close version 2's equality
   oracle for every party but the caller, who holds the salt, and open nothing
   to a party holding the store.
+- The reference parses nothing nested deeper than **ten thousand levels** — the
+  bound `encoding/json` applies on the way out — and refuses a deeper document as
+  unparseable before it descends, so a source cannot make the gateway recurse
+  through its whole output bound in brackets. A document inside the canon domain
+  but past this bound is a divergence this reference accepts: no receipt, seal or
+  argument the gateway produces comes near it.
 
 ## 5a. Consuming an attestation
 

@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -79,6 +80,9 @@ type gatewayService struct {
 	keyID           string
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
+	// started counts the sources this service has started; a test reads it
+	// to prove that a refusal came before any source ran.
+	started atomic.Int64
 	// receiptVersion is what acquire mints: "3" unless the operator asked
 	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
 	receiptVersion string
@@ -331,6 +335,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// at all -- the command gone, or the user switch refused by the kernel --
 	// is reported as that, with the operating system's own reason, rather
 	// than as an empty "source failed".
+	g.started.Add(1)
 	if err := cmd.Start(); err != nil {
 		group.reap()
 		return nil, fmt.Errorf("source could not be started: %v", err)

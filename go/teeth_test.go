@@ -2330,6 +2330,11 @@ func TestAdapterSourceNeedsVersion3(t *testing.T) {
 	if _, err := os.Stat(started); err == nil {
 		t.Fatal("the source was started before the version guard refused it")
 	}
+	// The marker proves the source did not get as far as reading stdin; the
+	// counter proves it was never started at all.
+	if n := service.started.Load(); n != 0 {
+		t.Fatalf("the version guard must refuse before any source is started; %d started", n)
+	}
 	if files := regularFilesUnder(t, service.storeRoot); files != 0 {
 		t.Fatalf("the refusal left %d file(s) in the store", files)
 	}
@@ -2369,6 +2374,11 @@ func TestAdapterStatementCommitmentIsSaltedCanonicalAndUnretained(t *testing.T) 
 	s2 := second["salts"].(map[string]any)["statement"].(string)
 	if c1 == c2 || s1 == s2 {
 		t.Fatal("the same statement committed twice under one salt")
+	}
+	// The salts of one receipt are independent (§1.2a): revealing one value
+	// must not open the other commitment to guessing.
+	if s1 == first["salts"].(map[string]any)["args"].(string) || s2 == second["salts"].(map[string]any)["args"].(string) {
+		t.Fatal("a receipt's statement salt is its arguments salt")
 	}
 	salt, err := hex.DecodeString(s1)
 	if err != nil || len(salt) != 32 {
@@ -2461,14 +2471,38 @@ func TestAdapterPageBoundaries(t *testing.T) {
 	}
 }
 
-// A result the response cannot carry -- nested deeper than encoding/json
-// decodes -- is refused before anything is retained or minted.
-func TestResultTheResponseCannotCarryIsRefusedBeforeAnythingPersists(t *testing.T) {
+// The canonical parser refuses the level past its bound before it descends,
+// so a source cannot make the gateway recurse through its whole output bound
+// in brackets; the level at the bound is parsed.
+func TestParserBoundsNestingBeforeDescending(t *testing.T) {
+	deep := strings.Repeat("[", maxNesting+1) + strings.Repeat("]", maxNesting+1)
+	if _, err := parseJSON([]byte(deep)); err == nil || !strings.Contains(err.Error(), "nesting deeper than") {
+		t.Fatalf("a document one level past the bound must be refused as nesting: %v", err)
+	}
+	atBound := strings.Repeat("[", maxNesting) + strings.Repeat("]", maxNesting)
+	if _, err := parseJSON([]byte(atBound)); err != nil {
+		t.Fatalf("a document at the bound is parsed: %v", err)
+	}
+	objects := strings.Repeat(`{"a":`, 1000) + "1" + strings.Repeat("}", 1000)
+	if _, err := parseJSON([]byte(objects)); err != nil {
+		t.Fatalf("ordinary nesting is parsed: %v", err)
+	}
+	// What the parser accepts, the response can carry: the bound is
+	// encoding/json's, so nothing is refused only on the way out.
+	var out any
+	if err := json.Unmarshal([]byte(atBound), &out); err != nil {
+		t.Fatalf("encoding/json must decode what the parser accepts: %v", err)
+	}
+}
+
+// A result nested past the bound is refused at parse, before anything is
+// retained or minted, and the session stays usable.
+func TestDeepNestingIsRefusedAtParseBeforeAnythingPersists(t *testing.T) {
 	service, server := testService(t)
-	t.Setenv(envSourceEnvelope, strings.Repeat("[", 10001)+strings.Repeat("]", 10001))
+	t.Setenv(envSourceEnvelope, strings.Repeat("[", maxNesting+1)+strings.Repeat("]", maxNesting+1))
 	code, body := post(t, server, "/acquire", `{"session":"deep-1","source":"screening","arguments":{}}`)
-	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "cannot be returned") {
-		t.Fatalf("a result the response cannot carry must be refused: %d %v", code, body)
+	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "nesting deeper than") {
+		t.Fatalf("a result past the nesting bound must be refused by the parser: %d %v", code, body)
 	}
 	if files := regularFilesUnder(t, service.storeRoot); files != 0 {
 		t.Fatalf("the refusal left %d file(s) in the store: nothing may persist for an acquisition the caller cannot receive", files)
