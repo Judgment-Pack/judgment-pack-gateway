@@ -206,8 +206,23 @@ func readSeedFile(path string) ([]byte, error) {
 }
 
 type serveOptions struct {
-	sources map[string][]string
-	port    string
+	sources         map[string]sourceSpec
+	port            string
+	maxSourceOutput int64
+}
+
+// validateEnvKey accepts what an environment variable name can be on the
+// command line: non-empty, no "=", no NUL. Everything else is refused as
+// usage, because a name that cannot be set is a declaration that would be
+// silently dropped.
+func validateEnvKey(key string) (string, bool) {
+	switch {
+	case key == "":
+		return "--source-env expects NAME=KEY or NAME=KEY=VALUE", false
+	case strings.ContainsRune(key, 0):
+		return "--source-env key must not contain NUL", false
+	}
+	return "", true
 }
 
 // validatePort accepts exactly what a TCP port may be on the command line: a
@@ -234,17 +249,66 @@ func validatePort(value string) (string, bool) {
 func parseServeOptions(args []string) (serveOptions, string, bool) {
 	if len(args) < 4 {
 		return serveOptions{}, "usage: gateway serve <store> <seedfile> <authority> <registry> " +
-			"[--source NAME=CMD ...] [--port N]", false
+			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
+			"[--source-max-output BYTES] [--port N]", false
 	}
 
 	opts := serveOptions{
-		sources: map[string][]string{},
-		port:    "8787",
+		sources:         map[string]sourceSpec{},
+		port:            "8787",
+		maxSourceOutput: defaultMaxSourceOutput,
 	}
+	// --source-env and --source-user name a source that may be declared
+	// later on the same command line, so they are collected here and bound
+	// once every --source is known.
+	pendingEnv := map[string][]string{}
+	pendingUser := map[string]string{}
 	rest := args[4:]
 	portSeen := false
+	maxOutputSeen := false
 	for i := 0; i < len(rest); i++ {
 		switch {
+		case rest[i] == "--source-env":
+			if i+1 >= len(rest) {
+				return opts, "--source-env requires a following NAME=KEY[=VALUE] value", false
+			}
+			name, entry, found := strings.Cut(rest[i+1], "=")
+			if !found || strings.TrimSpace(name) == "" {
+				return opts, "--source-env expects NAME=KEY or NAME=KEY=VALUE", false
+			}
+			key, _, _ := strings.Cut(entry, "=")
+			if msg, ok := validateEnvKey(key); !ok {
+				return opts, msg, false
+			}
+			pendingEnv[name] = append(pendingEnv[name], entry)
+			i++
+		case rest[i] == "--source-user":
+			if i+1 >= len(rest) {
+				return opts, "--source-user requires a following NAME=USER value", false
+			}
+			name, account, found := strings.Cut(rest[i+1], "=")
+			if !found || strings.TrimSpace(name) == "" || strings.TrimSpace(account) == "" {
+				return opts, "--source-user expects NAME=USER", false
+			}
+			if _, exists := pendingUser[name]; exists {
+				return opts, fmt.Sprintf("duplicate --source-user for %q", name), false
+			}
+			pendingUser[name] = account
+			i++
+		case rest[i] == "--source-max-output":
+			if i+1 >= len(rest) {
+				return opts, "--source-max-output requires a following value", false
+			}
+			if maxOutputSeen {
+				return opts, "duplicate --source-max-output option", false
+			}
+			number, err := strconv.ParseInt(rest[i+1], 10, 64)
+			if err != nil || number < 1 {
+				return opts, fmt.Sprintf("--source-max-output %q is not a positive number of bytes", rest[i+1]), false
+			}
+			opts.maxSourceOutput = number
+			maxOutputSeen = true
+			i++
 		case rest[i] == "--source":
 			if i+1 >= len(rest) {
 				return opts, "--source requires a following NAME=CMD value", false
@@ -266,7 +330,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			if _, err := exec.LookPath(argv[0]); err != nil {
 				return opts, fmt.Sprintf("--source %q command %q cannot be resolved", name, argv[0]), false
 			}
-			opts.sources[name] = argv
+			opts.sources[name] = sourceSpec{argv: argv}
 			i++
 		case rest[i] == "--port":
 			if i+1 >= len(rest) {
@@ -296,6 +360,22 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			return opts, fmt.Sprintf("unexpected argument %q", rest[i]), false
 		}
 	}
+	for name, env := range pendingEnv {
+		spec, declared := opts.sources[name]
+		if !declared {
+			return opts, fmt.Sprintf("--source-env names undeclared source %q", name), false
+		}
+		spec.env = append(spec.env, env...)
+		opts.sources[name] = spec
+	}
+	for name, account := range pendingUser {
+		spec, declared := opts.sources[name]
+		if !declared {
+			return opts, fmt.Sprintf("--source-user names undeclared source %q", name), false
+		}
+		spec.user = account
+		opts.sources[name] = spec
+	}
 	return opts, "", true
 }
 
@@ -317,12 +397,25 @@ func cmdServe(args []string) int {
 			seed = decoded
 		}
 	}
+	// Both refusals happen before newGatewayService creates a store, a
+	// registry, or anything else on disk: a configuration under which a source
+	// could read the seed, or would run as the signer when told not to, fails
+	// as a configuration, with nothing to clean up.
+	if err := checkSeedPermissions(seedPath); err != nil {
+		fmt.Fprintln(os.Stderr, "seed:", err)
+		return 1
+	}
+	if err := requireUserSwitching(opts.sources); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 
 	service, err := newGatewayService(storeRoot, seed, authority, registryPath, opts.sources)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	service.maxSourceOutput = opts.maxSourceOutput
 	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1

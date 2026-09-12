@@ -1122,7 +1122,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	service1, err := newGatewayService(
 		filepath.Join(root1, "store"), seed1, "gateway:test",
 		filepath.Join(root1, "registry.jsonl"),
-		map[string][]string{"screening": {os.Args[0]}})
+		map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1133,7 +1133,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	service2, err := newGatewayService(
 		filepath.Join(root2, "store"), seed2, "gateway:test",
 		filepath.Join(root2, "registry.jsonl"),
-		map[string][]string{"screening": {os.Args[0]}})
+		map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}})
 	if err != nil {
 		t.Fatal(err)
 	}

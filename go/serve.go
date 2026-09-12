@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,22 +33,50 @@ type sessionState struct {
 	inFlight int // admitted acquisitions whose source has not finished
 }
 
+// sourceSpec is what the operator declared for one source: the command, the
+// environment it is started with, and optionally the OS user it runs as.
+//
+// The environment is the whole of the separation between this process and a
+// source (ADR-0001, determination 2). A source started with the gateway's own
+// environment would see every variable the operator gave the gateway, so a
+// credential placed there for one source would reach the signer's memory and
+// every other source. So a source gets exactly what was declared for it:
+// `KEY=VALUE` sets a variable; a bare `KEY` copies that one variable from the
+// gateway's environment at spawn time, so a path can be passed through by
+// name without the gateway ever holding what is behind it. PATH is copied
+// unless declared, because a source that cannot find `/bin/sh` is not a
+// source, and PATH carries no secret.
+type sourceSpec struct {
+	argv []string
+	env  []string
+	user string
+}
+
+// defaultMaxSourceOutput bounds what a source may write on stdout before the
+// acquisition fails and the source is killed. One mebibyte matches
+// maxRequestBody: the same order of magnitude as anything this gateway is
+// meant to attest, and far below what a runaway source could otherwise grow
+// this process by. Before this bound existed a source's output was read into
+// memory without limit.
+const defaultMaxSourceOutput int64 = 1 << 20
+
 type gatewayService struct {
-	store     *store
-	registry  *registryWriter
-	storeRoot string
-	regPath   string
-	authority string
-	publicKey ed25519.PublicKey
-	keyID     string
-	sources   map[string][]string
+	store           *store
+	registry        *registryWriter
+	storeRoot       string
+	regPath         string
+	authority       string
+	publicKey       ed25519.PublicKey
+	keyID           string
+	sources         map[string]sourceSpec
+	maxSourceOutput int64
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
 }
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
-	sources map[string][]string) (*gatewayService, error) {
+	sources map[string]sourceSpec) (*gatewayService, error) {
 	st, err := newStore(storeRoot, seed, authority)
 	if err != nil {
 		return nil, err
@@ -59,8 +88,70 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	return &gatewayService{
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
-		sources: sources, sessions: map[string]*sessionState{},
+		sources: sources, maxSourceOutput: defaultMaxSourceOutput,
+		sessions: map[string]*sessionState{},
 	}, nil
+}
+
+// sourceEnvironment builds the environment a source is started with: the
+// declared entries, resolved, and PATH copied from this process unless the
+// operator declared one. A bare key that this process does not have is
+// omitted rather than set empty, so a source can tell "not passed" from
+// "passed empty".
+func sourceEnvironment(spec sourceSpec) []string {
+	env := make([]string, 0, len(spec.env)+1)
+	pathDeclared := false
+	for _, entry := range spec.env {
+		if key, _, found := strings.Cut(entry, "="); found {
+			if key == "PATH" {
+				pathDeclared = true
+			}
+			env = append(env, entry)
+			continue
+		}
+		if entry == "PATH" {
+			pathDeclared = true
+		}
+		if value, present := os.LookupEnv(entry); present {
+			env = append(env, entry+"="+value)
+		}
+	}
+	if !pathDeclared {
+		if path, present := os.LookupEnv("PATH"); present {
+			env = append(env, "PATH="+path)
+		}
+	}
+	return env
+}
+
+// boundedBuffer keeps at most limit bytes of what is written to it. The first
+// write that would cross the limit records the overflow and calls stop once,
+// which the caller wires to the source's context so the source is killed
+// rather than left writing into a pipe nobody drains. Writes never fail: a
+// writer that errored would make os/exec stop draining while the process is
+// still alive, and a full pipe would then hold it until the timeout.
+type boundedBuffer struct {
+	limit      int64
+	buf        bytes.Buffer
+	overflowed bool
+	stop       func()
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	room := b.limit - int64(b.buf.Len())
+	if int64(len(p)) > room {
+		if room > 0 {
+			b.buf.Write(p[:room])
+		}
+		if !b.overflowed {
+			b.overflowed = true
+			if b.stop != nil {
+				b.stop()
+			}
+		}
+		return len(p), nil
+	}
+	return b.buf.Write(p)
 }
 
 // badRequest marks errors that are the caller's fault, so the handler can answer 400
@@ -104,7 +195,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
-	argv, known := g.sources[source]
+	spec, known := g.sources[source]
 	if !known {
 		return nil, badRequest{fmt.Errorf("unknown source: %s", source)}
 	}
@@ -123,18 +214,38 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(ctx, spec.argv[0], spec.argv[1:]...)
 	cmd.Stdin = bytes.NewReader(canonicalArgs)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	// The declared environment and nothing else (sourceSpec). An explicit
+	// slice is what stops os/exec from handing the child this process's
+	// environment; an empty declaration is an empty environment, not an
+	// inherited one.
+	cmd.Env = sourceEnvironment(spec)
+	if err := applySourceUser(cmd, spec.user); err != nil {
+		return nil, fmt.Errorf("source %s: %w", source, err)
+	}
+	// stdout is bounded and its overflow kills the source; stderr is bounded
+	// and simply truncated, because only its first line is ever reported and
+	// a chatty source is not a failed one.
+	stdout := &boundedBuffer{limit: g.maxSourceOutput, stop: cancel}
+	stderr := &boundedBuffer{limit: 4096}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
 	if err := cmd.Run(); err != nil {
-		trimmed := stderr.String()
+		if stdout.overflowed {
+			return nil, fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
+		}
+		trimmed := stderr.buf.String()
 		if len(trimmed) > 200 {
 			trimmed = trimmed[:200]
 		}
 		return nil, fmt.Errorf("source failed: %s", trimmed)
 	}
-	result, err := parseJSON(stdout.Bytes())
+	if stdout.overflowed {
+		// The source exited on its own before the kill landed; its output is
+		// still not the output it produced.
+		return nil, fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
+	}
+	result, err := parseJSON(stdout.buf.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("source did not return a canonical JSON value: %w", err)
 	}

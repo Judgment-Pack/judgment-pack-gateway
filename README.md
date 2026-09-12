@@ -116,6 +116,16 @@ A source is any command that reads the canonical arguments on stdin and writes a
 result on stdout. The gateway attaches no transport of its own; it attests whatever
 bytes a source returns — **proof of the bytes, not proof of their truth.**
 
+A source is started with the environment declared for it and nothing else, so a
+credential the gateway's process holds never reaches a source and a source's never
+reaches the signer. `--source-env NAME=KEY=VALUE` sets a variable for source `NAME`;
+`--source-env NAME=KEY` copies that one variable from the gateway's environment at
+spawn time; `PATH` is copied unless declared. `--source-user NAME=USER` runs a source
+as another OS user (Unix; requires root, refused otherwise rather than run as the
+signer). `--source-max-output BYTES` bounds what a source may write (one mebibyte by
+default); past it the source is killed and the acquisition fails. `serve` refuses a seed
+file that group or other can read, and says which `chmod` to run.
+
 ```
 cd go && go test ./... && ./gateway conform     # the frozen corpus is the arbiter
 ```

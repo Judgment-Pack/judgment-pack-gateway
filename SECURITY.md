@@ -95,6 +95,22 @@ version 2.
 and attests whatever bytes come back. It attaches no transport, authentication, or schema of its own.
 Configuring an untrusted command is equivalent to running it.
 
+**A source is started with the environment declared for it and nothing else.** `--source-env`
+sets a variable or copies one by name from the gateway's environment at spawn time; `PATH` is
+copied unless declared, because it carries no secret and a source that cannot find a shell is not
+a source. Nothing else the gateway's environment holds reaches a source, and a credential placed
+in the gateway's environment for one source is therefore a mistake this design does not cover:
+give a source a path to a file its own identity can read. `--source-user` runs a source as another
+OS user where the platform has one, and `serve` refuses to start rather than fall back to running
+the source as the signer when it cannot switch. A source's output is bounded
+(`--source-max-output`, one mebibyte by default) and a source that crosses it is killed and its
+acquisition fails; nothing it wrote is retained. **A seed file readable by group or other is
+refused at startup** on Unix, with the `chmod` to run; Windows carries no equivalent check and says
+so. None of this makes a source's process unable to read what the gateway's own user can read: a
+source that runs as the gateway's user, because no `--source-user` was given, can read the seed.
+The separation is only as strong as the identities the operator gives the two sides
+([docs/adr/0001](docs/adr/0001-one-engine-four-processes.md)).
+
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
 checked. A verifier that reads both from the same untrusted place gets no guarantee.

@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,18 @@ const (
 	envSourceReady = "GATEWAY_TEST_SOURCE_READY"
 	envSourceWait  = "GATEWAY_TEST_SOURCE_WAIT"
 	envSourceFail  = "GATEWAY_TEST_SOURCE_FAIL"
+	// The helper echoes one variable by name, so a test can see what reached
+	// the source's environment; and it can write a body of a stated size, so
+	// a test can cross the output bound.
+	envSourceEcho = "GATEWAY_TEST_SOURCE_ECHO"
+	envSourceBig  = "GATEWAY_TEST_SOURCE_BIG"
 )
+
+// helperEnv is the environment declared for the test source. The gateway no
+// longer hands a source its own environment (ADR-0001), so every variable the
+// helper reads is declared here by name and copied at spawn time -- which is
+// what keeps t.Setenv working between acquisitions.
+var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceBig}
 
 // A barrier named in the ARGUMENTS rather than the environment. Every helper
 // this process starts inherits the same environment, so an environment-named
@@ -86,6 +98,19 @@ func TestMain(m *testing.M) {
 		if os.Getenv(envSourceFail) == "1" {
 			fmt.Fprintln(os.Stderr, "source refused")
 			os.Exit(1)
+		}
+		if name := os.Getenv(envSourceEcho); name != "" {
+			value, present := os.LookupEnv(name)
+			out, _ := json.Marshal(map[string]any{"echo": value, "present": present})
+			os.Stdout.Write(out)
+			os.Exit(0)
+		}
+		if size := os.Getenv(envSourceBig); size != "" {
+			n, _ := strconv.Atoi(size)
+			fmt.Print(`{"pad":"`)
+			os.Stdout.Write(bytes.Repeat([]byte("x"), n))
+			fmt.Print(`"}`)
+			os.Exit(0)
 		}
 		fmt.Print(`{"checkedSuccessfully":true,"status":"not_found"}`)
 		os.Exit(0)
@@ -361,7 +386,7 @@ func testService(t *testing.T) (*gatewayService, *httptest.Server) {
 	service, err := newGatewayService(
 		filepath.Join(root, "store"), testSeed, "gateway:test",
 		filepath.Join(root, "registry.jsonl"),
-		map[string][]string{"screening": {os.Args[0]}})
+		map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1328,5 +1353,92 @@ func TestMethodContractForStateChangingRoutes(t *testing.T) {
 				t.Errorf("Stat error = %v, want IsNotExist", err)
 			}
 		})
+	}
+}
+
+// --- source isolation (ADR-0001) --------------------------------------------
+
+func echoFromSource(t *testing.T, service *gatewayService, session, name string) (string, bool) {
+	t.Helper()
+	t.Setenv(envSourceEcho, name)
+	out, err := service.acquire(session, "screening", vString("x"))
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	result := out["result"].(map[string]any)
+	value, _ := result["echo"].(string)
+	present, _ := result["present"].(bool)
+	return value, present
+}
+
+// A variable the operator did not declare for a source never reaches it, even
+// though this process holds it. PATH is the one exception, copied unless
+// declared, because a source that cannot find a shell is not a source.
+func TestSourceSeesOnlyTheDeclaredEnvironment(t *testing.T) {
+	service, _ := testService(t)
+	t.Setenv("GATEWAY_TEST_LEAK", "secret")
+	if value, present := echoFromSource(t, service, "env-1", "GATEWAY_TEST_LEAK"); present || value != "" {
+		t.Fatalf("an undeclared variable reached the source: present=%v value=%q", present, value)
+	}
+	if value, present := echoFromSource(t, service, "env-2", "PATH"); !present || value != os.Getenv("PATH") {
+		t.Fatalf("PATH must be copied unless declared: present=%v value=%q", present, value)
+	}
+}
+
+// A declared KEY=VALUE reaches the source as declared, and a declared PATH
+// replaces the copied one.
+func TestDeclaredEnvironmentReachesTheSource(t *testing.T) {
+	service, _ := testService(t)
+	spec := service.sources["screening"]
+	spec.env = append(append([]string{}, spec.env...), "GATEWAY_TEST_DECLARED=declared-value", "PATH=/declared/path")
+	service.sources["screening"] = spec
+	if value, present := echoFromSource(t, service, "env-3", "GATEWAY_TEST_DECLARED"); !present || value != "declared-value" {
+		t.Fatalf("declared value did not reach the source: present=%v value=%q", present, value)
+	}
+	if value, _ := echoFromSource(t, service, "env-4", "PATH"); value != "/declared/path" {
+		t.Fatalf("a declared PATH must win over the copied one: %q", value)
+	}
+}
+
+// A bare key names a variable to copy at spawn time; one this process does
+// not hold is omitted, not set empty, so a source can tell the two apart.
+func TestBareKeyAbsentFromTheGatewayIsOmitted(t *testing.T) {
+	service, _ := testService(t)
+	spec := service.sources["screening"]
+	spec.env = append(append([]string{}, spec.env...), "GATEWAY_TEST_NEVER_SET")
+	service.sources["screening"] = spec
+	os.Unsetenv("GATEWAY_TEST_NEVER_SET")
+	if value, present := echoFromSource(t, service, "env-5", "GATEWAY_TEST_NEVER_SET"); present || value != "" {
+		t.Fatalf("an absent variable must be omitted: present=%v value=%q", present, value)
+	}
+}
+
+// Output past the bound fails the acquisition, kills the source, and leaves
+// nothing behind: no receipt, no artifact, no session to seal.
+func TestSourceOutputIsBounded(t *testing.T) {
+	service, _ := testService(t)
+	service.maxSourceOutput = 1024
+	t.Setenv(envSourceBig, "4096")
+	_, err := service.acquire("big-1", "screening", vString("x"))
+	if err == nil {
+		t.Fatal("output past the bound must fail the acquisition")
+	}
+	if !strings.Contains(err.Error(), "exceeds 1024 bytes") {
+		t.Fatalf("the failure must name the bound: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(service.storeRoot, "receipts", "big-1")); statErr == nil {
+		t.Fatal("a receipt was written for output that was never accepted")
+	}
+	entries, _ := os.ReadDir(filepath.Join(service.storeRoot, "artifacts"))
+	if len(entries) != 0 {
+		t.Fatalf("an artifact was retained for output that was never accepted: %d", len(entries))
+	}
+	if _, sealErr := service.sealSession("big-1"); sealErr == nil {
+		t.Fatal("a session whose only acquisition overflowed must not be sealable")
+	}
+
+	service.maxSourceOutput = defaultMaxSourceOutput
+	if _, err := service.acquire("big-2", "screening", vString("x")); err != nil {
+		t.Fatalf("the same output within the bound must be accepted: %v", err)
 	}
 }
