@@ -810,3 +810,55 @@ func TestCmdServeRefusesASourceUserItCannotSwitchTo(t *testing.T) {
 		t.Fatal("the store was created before the source user was refused")
 	}
 }
+
+// The command line's output bound reaches the service, and the declared
+// sources reach it as declared.
+func TestBuildServiceAppliesTheCommandLine(t *testing.T) {
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "gateway.seed")
+	if code := cmdKeygen([]string{seed}); code != 0 {
+		t.Fatalf("cmdKeygen() = %d", code)
+	}
+	args := []string{
+		filepath.Join(dir, "store"), seed, "gateway:test", filepath.Join(dir, "registry.jsonl"),
+		"--source", "screening=go", "--source-env", "screening=FOO=bar", "--source-max-output", "4096",
+	}
+	opts, msg, ok := parseServeOptions(args)
+	if !ok {
+		t.Fatal(msg)
+	}
+	loaded, err := loadSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := buildService(args[0], loaded, args[2], args[3], opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.maxSourceOutput != 4096 {
+		t.Fatalf("maxSourceOutput = %d, want 4096", service.maxSourceOutput)
+	}
+	spec := service.sources["screening"]
+	if !reflect.DeepEqual(spec.argv, []string{"go"}) || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {
+		t.Fatalf("source not wired as declared: %+v", spec)
+	}
+}
+
+// loadSeed reads what keygen wrote through the same descriptor it judged.
+func TestLoadSeedReadsWhatKeygenWrote(t *testing.T) {
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "gateway.seed")
+	if code := cmdKeygen([]string{seed}); code != 0 {
+		t.Fatalf("cmdKeygen() = %d", code)
+	}
+	loaded, err := loadSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != seedBytes {
+		t.Fatalf("loaded %d bytes, want %d", len(loaded), seedBytes)
+	}
+	if _, err := loadSeed(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("a missing seed must be an error")
+	}
+}

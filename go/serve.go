@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -98,19 +99,24 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 // operator declared one. A bare key that this process does not have is
 // omitted rather than set empty, so a source can tell "not passed" from
 // "passed empty".
+//
+// Two platform facts bound the claim. Windows environment names are
+// case-insensitive and os/exec keeps the last of two spellings, so "Path"
+// declared there is PATH declared, and is matched as such. And os/exec on
+// Windows adds this process's SYSTEMROOT to any explicit environment that
+// lacks it, because a Windows program cannot start without one; that single
+// variable reaches a source there undeclared, and SECURITY.md says so.
 func sourceEnvironment(spec sourceSpec) []string {
 	env := make([]string, 0, len(spec.env)+1)
 	pathDeclared := false
 	for _, entry := range spec.env {
-		if key, _, found := strings.Cut(entry, "="); found {
-			if key == "PATH" {
-				pathDeclared = true
-			}
+		key, _, found := strings.Cut(entry, "=")
+		if sameEnvKey(key, "PATH") {
+			pathDeclared = true
+		}
+		if found {
 			env = append(env, entry)
 			continue
-		}
-		if entry == "PATH" {
-			pathDeclared = true
 		}
 		if value, present := os.LookupEnv(entry); present {
 			env = append(env, entry+"="+value)
@@ -123,6 +129,20 @@ func sourceEnvironment(spec sourceSpec) []string {
 	}
 	return env
 }
+
+// sameEnvKey compares environment variable names the way the platform does.
+func sameEnvKey(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// sourceWaitDelay bounds how long, after a source's context is cancelled or
+// the source has exited, the gateway keeps waiting for its stdout and stderr
+// to reach end of file. A descendant the source left holding a pipe would
+// otherwise hold the acquisition open indefinitely.
+const sourceWaitDelay = 5 * time.Second
 
 // boundedBuffer keeps at most limit bytes of what is written to it. The first
 // write that would cross the limit records the overflow and calls stop once,
@@ -221,29 +241,38 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// environment; an empty declaration is an empty environment, not an
 	// inherited one.
 	cmd.Env = sourceEnvironment(spec)
-	if err := applySourceUser(cmd, spec.user); err != nil {
+	if err := prepareSourceProcess(cmd, spec.user); err != nil {
 		return nil, fmt.Errorf("source %s: %w", source, err)
 	}
+	cmd.WaitDelay = sourceWaitDelay
 	// stdout is bounded and its overflow kills the source; stderr is bounded
 	// and simply truncated, because only its first line is ever reported and
 	// a chatty source is not a failed one.
 	stdout := &boundedBuffer{limit: g.maxSourceOutput, stop: cancel}
 	stderr := &boundedBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Run(); err != nil {
-		if stdout.overflowed {
-			return nil, fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
+	// Start and Wait are separate so that a source that could not be started
+	// at all -- the command gone, or the user switch refused by the kernel --
+	// is reported as that, with the operating system's own reason, rather
+	// than as an empty "source failed".
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("source could not be started: %v", err)
+	}
+	waitErr := cmd.Wait()
+	if stdout.overflowed {
+		// Whether the kill landed first or the source exited on its own, the
+		// output is not the output it produced.
+		return nil, fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
+	}
+	if waitErr != nil {
+		if errors.Is(waitErr, exec.ErrWaitDelay) {
+			return nil, errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
 		}
 		trimmed := stderr.buf.String()
 		if len(trimmed) > 200 {
 			trimmed = trimmed[:200]
 		}
 		return nil, fmt.Errorf("source failed: %s", trimmed)
-	}
-	if stdout.overflowed {
-		// The source exited on its own before the kill landed; its output is
-		// still not the output it produced.
-		return nil, fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
 	}
 	result, err := parseJSON(stdout.buf.Bytes())
 	if err != nil {

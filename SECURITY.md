@@ -95,21 +95,37 @@ version 2.
 and attests whatever bytes come back. It attaches no transport, authentication, or schema of its own.
 Configuring an untrusted command is equivalent to running it.
 
-**A source is started with the environment declared for it and nothing else.** `--source-env`
-sets a variable or copies one by name from the gateway's environment at spawn time; `PATH` is
-copied unless declared, because it carries no secret and a source that cannot find a shell is not
-a source. Nothing else the gateway's environment holds reaches a source, and a credential placed
-in the gateway's environment for one source is therefore a mistake this design does not cover:
-give a source a path to a file its own identity can read. `--source-user` runs a source as another
-OS user where the platform has one, and `serve` refuses to start rather than fall back to running
-the source as the signer when it cannot switch. A source's output is bounded
-(`--source-max-output`, one mebibyte by default) and a source that crosses it is killed and its
-acquisition fails; nothing it wrote is retained. **A seed file readable by group or other is
-refused at startup** on Unix, with the `chmod` to run; Windows carries no equivalent check and says
-so. None of this makes a source's process unable to read what the gateway's own user can read: a
-source that runs as the gateway's user, because no `--source-user` was given, can read the seed.
-The separation is only as strong as the identities the operator gives the two sides
-([docs/adr/0001](docs/adr/0001-one-engine-four-processes.md)).
+**A source is started with the environment declared for it, plus `PATH`, and nothing else of the
+gateway's.** `--source-env` sets a variable or copies one by name from the gateway's environment
+at spawn time; `PATH` is copied unless declared, because it carries no secret and a source that
+cannot find a shell is not a source. On Windows, os/exec adds `SYSTEMROOT` to any explicit
+environment that lacks it, and that one variable reaches a source there undeclared. The copy-by-
+name form is for passing a path through, not a secret: a credential placed in the gateway's
+environment is in the signer's memory whatever is declared, and this design does not cover that
+configuration — give a source a path to a file its own identity can read.
+
+**A source runs in its own process group**, so cancelling it — on the thirty-second timeout or on
+overflow — kills the source and every descendant it left holding a pipe, and the wait for its
+pipes to close is bounded after that. **`--source-user`** runs a source as another OS user where
+the platform has one, with that user's own supplementary groups and none of the gateway's, and
+`serve` refuses to start rather than fall back to running the source as the signer when it cannot
+switch; a root process stripped of the capability to switch passes the startup check and fails at
+its first acquisition, where the operating system's reason is reported. **A source's output is
+bounded** (`--source-max-output`, one mebibyte by default): a source that crosses it is killed, its
+acquisition fails, and nothing it wrote is retained. **The seed is opened once and judged as the
+file that was opened** — a regular file, owned by the gateway's own user, readable by nobody else —
+before it is read through that same descriptor, so the file checked is the file loaded; on Unix a
+seed that fails is refused at startup with the `chmod` to run, and Windows carries no equivalent
+check and says so. **Descriptors the launcher left open are marked close-on-exec at startup**, so a
+seed passed as `3<gateway.seed` reaches no source whatever user or mode protects the file.
+
+What none of this gives: a source that runs as the gateway's own user, because no `--source-user`
+was given, can read what that user can read, including the seed; and a gateway that runs as root,
+which `--source-user` requires today, can read the files a source user holds. The separation is
+only as strong as the identities the operator gives the two sides. Closing the second gap — a
+non-root signer beside per-source users — is the engine's job
+([docs/adr/0001](docs/adr/0001-one-engine-four-processes.md),
+[docs/design/engine-image.md](docs/design/engine-image.md)), not this reference's.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being

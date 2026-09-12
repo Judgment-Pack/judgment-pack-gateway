@@ -28,8 +28,10 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
 
@@ -1197,5 +1199,206 @@ func TestCmdConformExitStatus(t *testing.T) {
 	rc := cmdConform([]string{"--impl", os.Args[0], "--corpus", corpusDir})
 	if rc != 1 {
 		t.Fatalf("cmdConform --impl wrong returned %d, want 1 (2 is corpus error, not disagreement)", rc)
+	}
+}
+
+// --- source isolation (ADR-0001) --------------------------------------------
+//
+// Each test below is an attack on the separation the gateway claims between
+// itself and a source: something reaching a source that should not, or a
+// source holding the gateway to something it should not.
+
+func echoFromSource(t *testing.T, service *gatewayService, session, name string) (string, bool) {
+	t.Helper()
+	t.Setenv(envSourceEcho, name)
+	out, err := service.acquire(session, "screening", vString("x"))
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	result := out["result"].(map[string]any)
+	value, _ := result["echo"].(string)
+	present, _ := result["present"].(bool)
+	return value, present
+}
+
+// A variable the operator did not declare for a source never reaches it, even
+// though this process holds it. PATH is the one exception, copied unless
+// declared, because a source that cannot find a shell is not a source.
+func TestSourceSeesOnlyTheDeclaredEnvironment(t *testing.T) {
+	service, _ := testService(t)
+	t.Setenv("GATEWAY_TEST_LEAK", "secret")
+	if value, present := echoFromSource(t, service, "env-1", "GATEWAY_TEST_LEAK"); present || value != "" {
+		t.Fatalf("an undeclared variable reached the source: present=%v value=%q", present, value)
+	}
+	if value, present := echoFromSource(t, service, "env-2", "PATH"); !present || value != os.Getenv("PATH") {
+		t.Fatalf("PATH must be copied unless declared: present=%v value=%q", present, value)
+	}
+}
+
+// A declared KEY=VALUE reaches the source as declared, and a declared PATH
+// replaces the copied one.
+func TestDeclaredEnvironmentReachesTheSource(t *testing.T) {
+	service, _ := testService(t)
+	spec := service.sources["screening"]
+	spec.env = append(append([]string{}, spec.env...), "GATEWAY_TEST_DECLARED=declared-value", "PATH=/declared/path")
+	service.sources["screening"] = spec
+	if value, present := echoFromSource(t, service, "env-3", "GATEWAY_TEST_DECLARED"); !present || value != "declared-value" {
+		t.Fatalf("declared value did not reach the source: present=%v value=%q", present, value)
+	}
+	if value, _ := echoFromSource(t, service, "env-4", "PATH"); value != "/declared/path" {
+		t.Fatalf("a declared PATH must win over the copied one: %q", value)
+	}
+}
+
+// A bare key names a variable to copy at spawn time; one this process does
+// not hold is omitted, not set empty, so a source can tell the two apart.
+func TestBareKeyAbsentFromTheGatewayIsOmitted(t *testing.T) {
+	service, _ := testService(t)
+	spec := service.sources["screening"]
+	spec.env = append(append([]string{}, spec.env...), "GATEWAY_TEST_NEVER_SET")
+	service.sources["screening"] = spec
+	os.Unsetenv("GATEWAY_TEST_NEVER_SET")
+	if value, present := echoFromSource(t, service, "env-5", "GATEWAY_TEST_NEVER_SET"); present || value != "" {
+		t.Fatalf("an absent variable must be omitted: present=%v value=%q", present, value)
+	}
+}
+
+// Output past the bound fails the acquisition, kills the source, and leaves
+// nothing behind: no receipt, no artifact, no session to seal.
+func TestSourceOutputIsBounded(t *testing.T) {
+	service, _ := testService(t)
+	service.maxSourceOutput = 1024
+	t.Setenv(envSourceBig, "4096")
+	_, err := service.acquire("big-1", "screening", vString("x"))
+	if err == nil {
+		t.Fatal("output past the bound must fail the acquisition")
+	}
+	if !strings.Contains(err.Error(), "exceeds 1024 bytes") {
+		t.Fatalf("the failure must name the bound: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(service.storeRoot, "receipts", "big-1")); statErr == nil {
+		t.Fatal("a receipt was written for output that was never accepted")
+	}
+	entries, _ := os.ReadDir(filepath.Join(service.storeRoot, "artifacts"))
+	if len(entries) != 0 {
+		t.Fatalf("an artifact was retained for output that was never accepted: %d", len(entries))
+	}
+	if _, sealErr := service.sealSession("big-1"); sealErr == nil {
+		t.Fatal("a session whose only acquisition overflowed must not be sealable")
+	}
+
+	service.maxSourceOutput = defaultMaxSourceOutput
+	if _, err := service.acquire("big-2", "screening", vString("x")); err != nil {
+		t.Fatalf("the same output within the bound must be accepted: %v", err)
+	}
+}
+
+// A declared "Path" is a declared PATH exactly where the platform says so.
+// Windows environment names are case-insensitive and os/exec keeps the last
+// spelling, so appending the copied PATH there would silently win.
+func TestDeclaredPathIsRecognizedByThePlatformRule(t *testing.T) {
+	env := sourceEnvironment(sourceSpec{env: []string{"Path=/declared"}})
+	var pathEntries []string
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "PATH") {
+			pathEntries = append(pathEntries, entry)
+		}
+	}
+	switch runtime.GOOS {
+	case "windows":
+		if len(pathEntries) != 1 || pathEntries[0] != "Path=/declared" {
+			t.Fatalf("on Windows a declared Path is the PATH; got %v", pathEntries)
+		}
+	default:
+		if len(pathEntries) != 2 {
+			t.Fatalf("elsewhere Path and PATH are two variables; got %v", pathEntries)
+		}
+	}
+}
+
+// The one undeclared variable a source receives on Windows, stated as such.
+func TestWindowsSystemRootIsTheDocumentedException(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("os/exec adds SYSTEMROOT only on Windows")
+	}
+	service, _ := testService(t)
+	if _, present := echoFromSource(t, service, "env-6", "SYSTEMROOT"); !present {
+		t.Fatal("os/exec is documented to add SYSTEMROOT to an explicit environment; it did not")
+	}
+}
+
+// The bound is exact: output of the bound's size is accepted, one byte more is
+// not. The helper's body is the padding plus ten bytes of JSON around it.
+func TestOutputBoundIsExact(t *testing.T) {
+	service, _ := testService(t)
+	const padding = 1000
+	t.Setenv(envSourceBig, strconv.Itoa(padding))
+	service.maxSourceOutput = padding + 10
+	if _, err := service.acquire("exact-1", "screening", vString("x")); err != nil {
+		t.Fatalf("output exactly at the bound must be accepted: %v", err)
+	}
+	service.maxSourceOutput = padding + 9
+	if _, err := service.acquire("exact-2", "screening", vString("x")); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("output one byte past the bound must be refused: %v", err)
+	}
+}
+
+// A source that overflows and then stays alive is killed: the acquisition
+// returns on the overflow, not on the thirty-second timeout.
+func TestOverflowingSourceIsKilled(t *testing.T) {
+	service, _ := testService(t)
+	service.maxSourceOutput = 1024
+	t.Setenv(envSourceBig, "4096")
+	t.Setenv(envSourceHold, "1")
+	started := time.Now()
+	_, err := service.acquire("kill-1", "screening", vString("x"))
+	elapsed := time.Since(started)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected the overflow failure, got %v", err)
+	}
+	if elapsed > 20*time.Second {
+		t.Fatalf("the source was not killed on overflow; acquire took %s", elapsed)
+	}
+}
+
+// A source that leaves a descendant holding its stdout cannot strand the
+// acquisition. On Unix the whole process group is killed, so the return is
+// immediate; where there is no process group the bounded pipe wait is what
+// returns, five seconds later. Either way the descendant does not decide.
+func TestDescendantHoldingThePipeCannotStrandTheAcquisition(t *testing.T) {
+	service, _ := testService(t)
+	service.maxSourceOutput = 1024
+	t.Setenv(envSourceBig, "4096")
+	t.Setenv(envSourceHolder, "1")
+	started := time.Now()
+	_, err := service.acquire("hold-1", "screening", vString("x"))
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("an overflowing source with a descendant on its pipe must fail the acquisition")
+	}
+	limit := 3 * time.Second // the group kill, not the pipe wait, must be what returns
+	if runtime.GOOS == "windows" {
+		limit = sourceWaitDelay + 10*time.Second
+	}
+	if elapsed > limit {
+		t.Fatalf("the acquisition was held by a descendant; acquire took %s, limit %s", elapsed, limit)
+	}
+	if _, sealErr := service.sealSession("hold-1"); sealErr == nil {
+		t.Fatal("a session whose only acquisition failed must not be sealable")
+	}
+}
+
+// stderr is bounded too: a source that floods it fails with a short message
+// and the gateway retains none of the flood.
+func TestStderrFloodIsTruncated(t *testing.T) {
+	service, _ := testService(t)
+	t.Setenv(envSourceStderr, "200000")
+	_, err := service.acquire("stderr-1", "screening", vString("x"))
+	if err == nil {
+		t.Fatal("a failing source must fail the acquisition")
+	}
+	if len(err.Error()) > 300 {
+		t.Fatalf("the failure message must be bounded; got %d bytes", len(err.Error()))
 	}
 }

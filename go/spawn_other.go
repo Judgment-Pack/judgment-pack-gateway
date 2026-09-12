@@ -3,21 +3,25 @@
 package main
 
 // On platforms without a Unix credential model the gateway cannot run a source
-// as another user, and the seed file's protection is not expressed in mode
-// bits. Both are said plainly rather than approximated: a declared source user
-// is refused at startup, and the seed check reports that it does not apply.
+// as another user, and the seed file's protection is not expressed in owner
+// and mode bits. Both are said plainly rather than approximated: a declared
+// source user is refused at startup, and the seed check reports that it does
+// not apply. os/exec on Windows hands a child only the handles it is told to,
+// so there is nothing to mark close-on-exec.
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 )
 
-func applySourceUser(cmd *exec.Cmd, name string) error {
-	if name == "" {
-		return nil
+func prepareSourceProcess(cmd *exec.Cmd, name string) error {
+	if name != "" {
+		return fmt.Errorf("running a source as user %q is not supported on this platform", name)
 	}
-	return fmt.Errorf("running a source as user %q is not supported on this platform", name)
+	return nil
 }
 
 func requireUserSwitching(sources map[string]sourceSpec) error {
@@ -29,14 +33,21 @@ func requireUserSwitching(sources map[string]sourceSpec) error {
 	return nil
 }
 
-func checkSeedPermissions(path string) error {
-	info, err := os.Stat(path)
+func openSeed(path string) ([]byte, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return fmt.Errorf("seed must be a regular file")
+		return nil, errors.New("seed must be a regular file")
 	}
-	fmt.Fprintln(os.Stderr, "note: seed file permissions are not checked on this platform; protect it with the filesystem's own access control")
-	return nil
+	fmt.Fprintln(os.Stderr, "note: seed file ownership and permissions are not checked on this platform; protect it with the filesystem's own access control")
+	return io.ReadAll(io.LimitReader(file, 4096))
 }
+
+func markInheritedCloseOnExec() {}

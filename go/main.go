@@ -158,6 +158,33 @@ func cmdKeygen(args []string) int {
 // path -- regular file, directory, or link -- is left untouched and the
 // operator is told, instead of silently rotating the key every receipt and
 // seal already produced was signed under.
+// loadSeed opens, judges and reads the seed file through one descriptor
+// (openSeed), then accepts either the hex form keygen writes or 32 raw bytes.
+func loadSeed(path string) ([]byte, error) {
+	raw, err := openSeed(path)
+	if err != nil {
+		return nil, err
+	}
+	seed := []byte(strings.TrimSpace(string(raw)))
+	if len(seed) == 2*seedBytes {
+		if decoded, err := hex.DecodeString(string(seed)); err == nil {
+			seed = decoded
+		}
+	}
+	return seed, nil
+}
+
+// buildService is the part of cmdServe between a parsed command line and a
+// listening socket, separated so the wiring can be checked without one.
+func buildService(storeRoot string, seed []byte, authority, registryPath string, opts serveOptions) (*gatewayService, error) {
+	service, err := newGatewayService(storeRoot, seed, authority, registryPath, opts.sources)
+	if err != nil {
+		return nil, err
+	}
+	service.maxSourceOutput = opts.maxSourceOutput
+	return service, nil
+}
+
 func writeNewSeed(path string, encoded []byte) error {
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -386,22 +413,16 @@ func cmdServe(args []string) int {
 		return 2
 	}
 	storeRoot, seedPath, authority, registryPath := args[0], args[1], args[2], args[3]
-	raw, err := os.ReadFile(seedPath)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "read seed:", err)
-		return 1
-	}
-	seed := []byte(strings.TrimSpace(string(raw)))
-	if len(seed) == 2*seedBytes {
-		if decoded, err := hex.DecodeString(string(seed)); err == nil {
-			seed = decoded
-		}
-	}
+	// Nothing a launcher left open may reach a source, whatever user or mode
+	// protects the file behind it. Marked before the seed is opened, so the
+	// seed's own descriptor is never in question either.
+	markInheritedCloseOnExec()
 	// Both refusals happen before newGatewayService creates a store, a
 	// registry, or anything else on disk: a configuration under which a source
 	// could read the seed, or would run as the signer when told not to, fails
 	// as a configuration, with nothing to clean up.
-	if err := checkSeedPermissions(seedPath); err != nil {
+	seed, err := loadSeed(seedPath)
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "seed:", err)
 		return 1
 	}
@@ -410,12 +431,11 @@ func cmdServe(args []string) int {
 		return 1
 	}
 
-	service, err := newGatewayService(storeRoot, seed, authority, registryPath, opts.sources)
+	service, err := buildService(storeRoot, seed, authority, registryPath, opts)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	service.maxSourceOutput = opts.maxSourceOutput
 	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
