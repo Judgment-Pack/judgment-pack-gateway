@@ -116,6 +116,26 @@ A source is any command that reads the canonical arguments on stdin and writes a
 result on stdout. The gateway attaches no transport of its own; it attests whatever
 bytes a source returns — **proof of the bytes, not proof of their truth.**
 
+A source is started with the environment declared for it, plus `PATH`, and nothing
+else of the gateway's. `--source-env NAME=KEY=VALUE` sets a variable for source `NAME`;
+`--source-env NAME=KEY` copies that one variable from the gateway's environment at
+spawn time, which is for passing a path through by name, not a secret — a secret in
+the gateway's environment is in the signer's memory whatever is declared. On Windows,
+`SYSTEMROOT` is the one variable os/exec adds undeclared. `--source-user NAME=USER`
+runs a source as another OS user with that user's own groups (Unix; requires root,
+refused otherwise rather than run as the signer). `--source-max-output BYTES` bounds
+what a source may write on stdout (one mebibyte by default); past it the source is
+killed — on Unix its whole process group, elsewhere the direct child — and the
+acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
+than the acquisition. On Unix, `serve` refuses a seed file that is not a regular file
+owned by the gateway's own user and readable by it alone, says which `chmod` to run,
+and marks every descriptor its launcher left open close-on-exec so none reaches a
+source; on Windows it checks that the seed is a regular file and says the rest is the
+filesystem's. What this does not give: a source that runs as the gateway's own user can
+read what that user can read, and a gateway that runs as root can read the files a
+source user holds. The separation is as strong as the identities the operator gives
+the two sides; [SECURITY.md](SECURITY.md) states it in full.
+
 ```
 cd go && go test ./... && ./gateway conform     # the frozen corpus is the arbiter
 ```

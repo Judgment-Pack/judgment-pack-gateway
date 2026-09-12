@@ -21,6 +21,8 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -32,22 +34,61 @@ type sessionState struct {
 	inFlight int // admitted acquisitions whose source has not finished
 }
 
+// sourceSpec is what the operator declared for one source: the command, the
+// environment it is started with, and optionally the OS user it runs as.
+//
+// The environment is the whole of the separation between this process and a
+// source (ADR-0001, determination 2). A source started with the gateway's own
+// environment would see every variable the operator gave the gateway, so a
+// credential placed there for one source would reach the signer's memory and
+// every other source. So a source gets exactly what was declared for it:
+// `KEY=VALUE` sets a variable; a bare `KEY` copies that one variable from the
+// gateway's environment at spawn time, so a path can be passed through by
+// name without the gateway ever holding what is behind it. PATH is copied
+// unless declared, because a source that cannot find `/bin/sh` is not a
+// source, and PATH carries no secret.
+type sourceSpec struct {
+	argv []string
+	env  []string
+	user string
+}
+
+// defaultMaxSourceOutput bounds what a source may write on stdout before the
+// acquisition fails and the source is killed. One mebibyte matches
+// maxRequestBody: the same order of magnitude as anything this gateway is
+// meant to attest, and far below what a runaway source could otherwise grow
+// this process by. Before this bound existed a source's output was read into
+// memory without limit.
+const defaultMaxSourceOutput int64 = 1 << 20
+
 type gatewayService struct {
-	store     *store
-	registry  *registryWriter
-	storeRoot string
-	regPath   string
-	authority string
-	publicKey ed25519.PublicKey
-	keyID     string
-	sources   map[string][]string
+	store           *store
+	registry        *registryWriter
+	storeRoot       string
+	regPath         string
+	authority       string
+	publicKey       ed25519.PublicKey
+	keyID           string
+	sources         map[string]sourceSpec
+	maxSourceOutput int64
+	// ctx is the service's lifetime. Every source's context derives from it,
+	// so shutting the service down cancels every source in flight; a source
+	// in its own process group would otherwise outlive the gateway that
+	// started it, since it no longer shares the terminal's signals.
+	ctx    context.Context
+	cancel context.CancelFunc
+	// waitDelay bounds how long, after a source's context is cancelled or
+	// the source has exited, the gateway keeps waiting for its stdout and
+	// stderr to reach end of file. A descendant that escaped the source's
+	// process group and holds a pipe would otherwise hold the acquisition.
+	waitDelay time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
 }
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
-	sources map[string][]string) (*gatewayService, error) {
+	sources map[string]sourceSpec) (*gatewayService, error) {
 	st, err := newStore(storeRoot, seed, authority)
 	if err != nil {
 		return nil, err
@@ -56,11 +97,112 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	if err != nil {
 		return nil, err
 	}
-	return &gatewayService{
+	g := &gatewayService{
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
-		sources: sources, sessions: map[string]*sessionState{},
-	}, nil
+		sources: sources, maxSourceOutput: defaultMaxSourceOutput,
+		waitDelay: sourceWaitDelay,
+		sessions:  map[string]*sessionState{},
+	}
+	g.bindLifetime(context.Background())
+	return g, nil
+}
+
+// bindLifetime makes the service's lifetime end when parent ends, and gives
+// the service its own way to end it: serveOn cancels it on every exit path,
+// so a source in flight is killed whichever way serving stopped.
+func (g *gatewayService) bindLifetime(parent context.Context) {
+	g.ctx, g.cancel = context.WithCancel(parent)
+}
+
+// envGroupAnchor and anchorArg together select the anchor mode of this
+// executable (spawn_unix.go). Both are required: an inherited variable alone
+// must not turn an ordinary invocation into a process that swallows stdin
+// and exits successfully, and main refuses to run at all with the variable
+// set, so a stray marker is an error rather than a silent success.
+const (
+	envGroupAnchor = "GATEWAY_INTERNAL_GROUP_ANCHOR"
+	anchorArg      = "_group-anchor"
+)
+
+// sourceEnvironment builds the environment a source is started with: the
+// declared entries, resolved, and PATH copied from this process unless the
+// operator declared one. A bare key that this process does not have is
+// omitted rather than set empty, so a source can tell "not passed" from
+// "passed empty".
+//
+// Two platform facts bound the claim. Windows environment names are
+// case-insensitive and os/exec keeps the last of two spellings, so "Path"
+// declared there is PATH declared, and is matched as such. And os/exec on
+// Windows adds this process's SYSTEMROOT to any explicit environment that
+// lacks it, because a Windows program cannot start without one; that single
+// variable reaches a source there undeclared, and SECURITY.md says so.
+func sourceEnvironment(spec sourceSpec) []string {
+	env := make([]string, 0, len(spec.env)+1)
+	pathDeclared := false
+	for _, entry := range spec.env {
+		key, _, found := strings.Cut(entry, "=")
+		if sameEnvKey(key, "PATH") {
+			pathDeclared = true
+		}
+		if found {
+			env = append(env, entry)
+			continue
+		}
+		if value, present := os.LookupEnv(entry); present {
+			env = append(env, entry+"="+value)
+		}
+	}
+	if !pathDeclared {
+		if path, present := os.LookupEnv("PATH"); present {
+			env = append(env, "PATH="+path)
+		}
+	}
+	return env
+}
+
+// sameEnvKey compares environment variable names the way the platform does.
+func sameEnvKey(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// sourceWaitDelay bounds how long, after a source's context is cancelled or
+// the source has exited, the gateway keeps waiting for its stdout and stderr
+// to reach end of file. A descendant the source left holding a pipe would
+// otherwise hold the acquisition open indefinitely.
+const sourceWaitDelay = 5 * time.Second
+
+// boundedBuffer keeps at most limit bytes of what is written to it. The first
+// write that would cross the limit records the overflow and calls stop once,
+// which the caller wires to the source's context so the source is killed
+// rather than left writing into a pipe nobody drains. Writes never fail: a
+// writer that errored would make os/exec stop draining while the process is
+// still alive, and a full pipe would then hold it until the timeout.
+type boundedBuffer struct {
+	limit      int64
+	buf        bytes.Buffer
+	overflowed bool
+	stop       func()
+}
+
+func (b *boundedBuffer) Write(p []byte) (int, error) {
+	room := b.limit - int64(b.buf.Len())
+	if int64(len(p)) > room {
+		if room > 0 {
+			b.buf.Write(p[:room])
+		}
+		if !b.overflowed {
+			b.overflowed = true
+			if b.stop != nil {
+				b.stop()
+			}
+		}
+		return len(p), nil
+	}
+	return b.buf.Write(p)
 }
 
 // badRequest marks errors that are the caller's fault, so the handler can answer 400
@@ -104,7 +246,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
-	argv, known := g.sources[source]
+	spec, known := g.sources[source]
 	if !known {
 		return nil, badRequest{fmt.Errorf("unknown source: %s", source)}
 	}
@@ -121,20 +263,58 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	}
 	defer g.release(sessionID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd := exec.CommandContext(ctx, spec.argv[0], spec.argv[1:]...)
 	cmd.Stdin = bytes.NewReader(canonicalArgs)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		trimmed := stderr.String()
+	// The declared environment and nothing else (sourceSpec). An explicit
+	// slice is what stops os/exec from handing the child this process's
+	// environment; an empty declaration is an empty environment, not an
+	// inherited one.
+	cmd.Env = sourceEnvironment(spec)
+	group, err := prepareSourceProcess(cmd, spec.user)
+	if err != nil {
+		return nil, fmt.Errorf("source %s: %w", source, err)
+	}
+	cmd.WaitDelay = g.waitDelay
+	// stdout is bounded and its overflow kills the source; stderr is bounded
+	// and simply truncated, because only its first line is ever reported and
+	// a chatty source is not a failed one.
+	stdout := &boundedBuffer{limit: g.maxSourceOutput, stop: cancel}
+	stderr := &boundedBuffer{limit: 4096}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	// Start and Wait are separate so that a source that could not be started
+	// at all -- the command gone, or the user switch refused by the kernel --
+	// is reported as that, with the operating system's own reason, rather
+	// than as an empty "source failed".
+	if err := cmd.Start(); err != nil {
+		group.reap()
+		return nil, fmt.Errorf("source could not be started: %v", err)
+	}
+	waitErr := cmd.Wait()
+	// Whatever Wait returned, nothing of the source's process group survives
+	// the acquisition. os/exec stops watching the context once the direct
+	// child has exited, so an overflow written by a descendant after that
+	// cancels a context nobody acts on; the bounded wait then returns, and
+	// this is what kills the descendant. The group's anchor is reaped last,
+	// so the kill cannot reach a reused pid.
+	group.reap()
+	if stdout.overflowed {
+		// Whether the kill landed first or the source exited on its own, the
+		// output is not the output it produced.
+		return nil, fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
+	}
+	if waitErr != nil {
+		if errors.Is(waitErr, exec.ErrWaitDelay) {
+			return nil, errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
+		}
+		trimmed := stderr.buf.String()
 		if len(trimmed) > 200 {
 			trimmed = trimmed[:200]
 		}
 		return nil, fmt.Errorf("source failed: %s", trimmed)
 	}
-	result, err := parseJSON(stdout.Bytes())
+	result, err := parseJSON(stdout.buf.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("source did not return a canonical JSON value: %w", err)
 	}
@@ -399,5 +579,40 @@ func (g *gatewayService) listenAndServe(address string) error {
 	}
 	fmt.Fprintf(os.Stderr, "gateway on http://%s (authority %s, key %s)\n",
 		listener.Addr(), g.authority, g.keyID)
-	return (&http.Server{Handler: g.handler(), ReadHeaderTimeout: 10 * time.Second}).Serve(listener)
+	return g.serveOn(listener)
+}
+
+// serveOn serves until the service's lifetime ends -- the signal context
+// cmdServe bound -- or until Serve fails. Either way it ends the lifetime,
+// which kills every source in flight, then waits for every request in flight
+// to be answered before it returns, so the process never exits under a
+// handler. The grace allows for a source's pipe wait and for the answer to be
+// written; a request still open when the grace expires is aborted, and the
+// error returned says so.
+func (g *gatewayService) serveOn(listener net.Listener) error {
+	server := &http.Server{
+		Handler:           g.handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+	}
+	shutdown := make(chan error, 1)
+	go func() {
+		<-g.ctx.Done()
+		grace := g.waitDelay + 10*time.Second
+		graceCtx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		err := server.Shutdown(graceCtx)
+		if err != nil {
+			_ = server.Close()
+			err = fmt.Errorf("shutdown: the %s grace expired with requests still open, and they were aborted: %w", grace, err)
+		}
+		shutdown <- err
+	}()
+	serveErr := server.Serve(listener)
+	g.cancel()
+	shutdownErr := <-shutdown
+	if !errors.Is(serveErr, http.ErrServerClosed) {
+		return serveErr
+	}
+	return shutdownErr
 }

@@ -95,6 +95,65 @@ version 2.
 and attests whatever bytes come back. It attaches no transport, authentication, or schema of its own.
 Configuring an untrusted command is equivalent to running it.
 
+**A source is started with the environment declared for it, plus `PATH`, and nothing else of the
+gateway's.** `--source-env` sets a variable or copies one by name from the gateway's environment
+at spawn time; `PATH` is copied unless declared, because it carries no secret and a source that
+cannot find a shell is not a source. On Windows, os/exec adds `SYSTEMROOT` to any explicit
+environment that lacks it, and that one variable reaches a source there undeclared. The copy-by-
+name form is for passing a path through, not a secret: a credential placed in the gateway's
+environment is in the signer's memory whatever is declared, and this design does not cover that
+configuration — give a source a path to a file its own identity can read.
+
+**On Unix a source runs in a process group led by an anchor**, a process the gateway starts before
+the source and reaps only after the group has been killed. A group is addressed by its leader's
+pid, and a leader that has been reaped frees a pid another process can take; the anchor holds the
+group id until the last kill has been sent, so no kill reaches an unrelated process. Cancelling a
+source — on the thirty-second timeout, on overflow, or on the gateway's own shutdown — kills the
+source and every descendant still in the group, and the group is killed again after the source is
+waited for, since an overflow a descendant writes after the source has exited cancels nothing
+os/exec still watches. A descendant that has left the group is not reached: it gets a bounded wait
+for its pipe, not the acquisition. On Windows there is no process group; the direct child is
+killed and any descendant gets the same bounded wait. The gateway carries its own interrupt to
+every source in flight, because a source in its own group no longer receives the terminal's, and
+it answers every request in flight before it exits — or, if a request is still open when the
+grace (the pipe wait plus ten seconds) expires, aborts it and exits non-zero saying so. The anchor
+is this executable's own running image where the kernel exposes it (`/proc/self/exe`); elsewhere
+the executable's path is re-opened for each acquisition, so replacing or removing the binary
+while the gateway runs is not supported — stop and restart it. The anchor mode is selected by an
+internal marker variable and an argument together and requires a pipe on stdin; an ordinary
+invocation that inherits the marker refuses to run rather than silently succeed. On Linux a root
+gateway asked to run a source as another user must hold `CAP_SETUID`, `CAP_SETGID` and
+`CAP_KILL`, and refuses to start without them: a process that can switch but cannot kill could
+start the source and never stop it. **`--source-user`** runs a source as another OS
+user where the platform has one, with that user's own supplementary groups and none of the
+gateway's, and `serve` refuses to start rather than fall back to running the source as the signer
+when it cannot switch; a root process stripped of the capability to switch passes the startup
+check and fails at its first acquisition, where the operating system's reason is reported. **A
+source's stdout is bounded** (`--source-max-output`, one mebibyte by default) and its stderr is
+bounded and truncated: a source that crosses the stdout bound is killed, its acquisition fails, and
+nothing it wrote is retained. **The seed is opened once and judged as the file that was opened** —
+a regular file, on Unix also owned by the gateway's own user and readable by nobody else — before
+it is read through that same descriptor, so the file checked is the file loaded, and a file larger
+than a seed file can be is refused rather than read in part. A Unix seed that fails is refused at
+startup with the `chmod` to run. What owner and mode do not see: an access-control list that
+grants another user read access, which macOS honours before the mode bits; an operator who grants
+one has opened the seed, and nothing here notices. Windows checks that the seed is a regular file
+and says the rest is the filesystem's. **On Unix, descriptors the launcher left open are marked
+close-on-exec at startup**, enumerated exactly where the kernel lists them (`/proc/self/fd` on
+Linux, `/dev/fd` on macOS and the BSDs), so a seed passed as `3<gateway.seed` reaches no source
+whatever user or mode protects the file. Where neither listing exists the sweep runs by number up
+to the hard limit, capped, and misses a descriptor opened above a limit that was lowered
+afterwards — a last resort on platforms this reference does not test. os/exec on Windows hands a
+child only the handles it is told to.
+
+What none of this gives: a source that runs as the gateway's own user, because no `--source-user`
+was given, can read what that user can read, including the seed; and a gateway that runs as root,
+which `--source-user` requires today, can read the files a source user holds. The separation is
+only as strong as the identities the operator gives the two sides. Closing the second gap — a
+non-root signer beside per-source users — is the engine's job
+([docs/adr/0001](docs/adr/0001-one-engine-four-processes.md),
+[docs/design/engine-image.md](docs/design/engine-image.md)), not this reference's.
+
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
 checked. A verifier that reads both from the same untrusted place gets no guarantee.

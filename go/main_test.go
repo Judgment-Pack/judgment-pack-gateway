@@ -91,7 +91,7 @@ func TestParseServeOptions(t *testing.T) {
 			name: "port at the top of the range is accepted",
 			args: []string{"store", "seed", "authority", "registry", "--port", "65535"},
 			wantOptions: serveOptions{
-				sources: map[string][]string{},
+				sources: map[string]sourceSpec{},
 				port:    "65535",
 			},
 		},
@@ -99,7 +99,7 @@ func TestParseServeOptions(t *testing.T) {
 			name: "port at the bottom of the range is accepted",
 			args: []string{"store", "seed", "authority", "registry", "--port", "1"},
 			wantOptions: serveOptions{
-				sources: map[string][]string{},
+				sources: map[string]sourceSpec{},
 				port:    "1",
 			},
 		},
@@ -136,7 +136,7 @@ func TestParseServeOptions(t *testing.T) {
 			name: "required arguments only",
 			args: []string{"store", "seed", "authority", "registry"},
 			wantOptions: serveOptions{
-				sources: map[string][]string{},
+				sources: map[string]sourceSpec{},
 				port:    "8787",
 			},
 		},
@@ -144,7 +144,7 @@ func TestParseServeOptions(t *testing.T) {
 			name: "port only",
 			args: []string{"store", "seed", "authority", "registry", "--port", "9000"},
 			wantOptions: serveOptions{
-				sources: map[string][]string{},
+				sources: map[string]sourceSpec{},
 				port:    "9000",
 			},
 		},
@@ -156,8 +156,8 @@ func TestParseServeOptions(t *testing.T) {
 				"--source", "screening=go version",
 			},
 			wantOptions: serveOptions{
-				sources: map[string][]string{
-					"screening": {"go", "version"},
+				sources: map[string]sourceSpec{
+					"screening": {argv: []string{"go", "version"}},
 				},
 				port: "9000",
 			},
@@ -171,12 +171,123 @@ func TestParseServeOptions(t *testing.T) {
 				"--port", "9000",
 			},
 			wantOptions: serveOptions{
-				sources: map[string][]string{
-					"screen": {"go"},
-					"quote":  {"go", "version"},
+				sources: map[string]sourceSpec{
+					"screen": {argv: []string{"go"}},
+					"quote":  {argv: []string{"go", "version"}},
 				},
 				port: "9000",
 			},
+		},
+		{
+			name: "source env sets a value",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source", "screen=go",
+				"--source-env", "screen=FOO=bar",
+			},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{
+					"screen": {argv: []string{"go"}, env: []string{"FOO=bar"}},
+				},
+				port: "8787",
+			},
+		},
+		{
+			name: "source env copies by name and may precede the source it names",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source-env", "screen=FOO",
+				"--source-env", "screen=BAR=x=y",
+				"--source", "screen=go",
+			},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{
+					"screen": {argv: []string{"go"}, env: []string{"FOO", "BAR=x=y"}},
+				},
+				port: "8787",
+			},
+		},
+		{
+			name:    "source env for an undeclared source",
+			args:    []string{"store", "seed", "authority", "registry", "--source-env", "nosuch=FOO"},
+			wantErr: `--source-env names undeclared source "nosuch"`,
+		},
+		{
+			name:    "source env without a key",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screen=go", "--source-env", "screen="},
+			wantErr: "--source-env expects NAME=KEY or NAME=KEY=VALUE",
+		},
+		{
+			name:    "source env without equals",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screen=go", "--source-env", "screen"},
+			wantErr: "--source-env expects NAME=KEY or NAME=KEY=VALUE",
+		},
+		{
+			name:    "source env missing value",
+			args:    []string{"store", "seed", "authority", "registry", "--source-env"},
+			wantErr: "--source-env requires",
+		},
+		{
+			name: "source user",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source", "screen=go",
+				"--source-user", "screen=nobody",
+			},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{
+					"screen": {argv: []string{"go"}, user: "nobody"},
+				},
+				port: "8787",
+			},
+		},
+		{
+			name: "source user twice",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source", "screen=go",
+				"--source-user", "screen=nobody",
+				"--source-user", "screen=daemon",
+			},
+			wantErr: `duplicate --source-user for "screen"`,
+		},
+		{
+			name:    "source user for an undeclared source",
+			args:    []string{"store", "seed", "authority", "registry", "--source-user", "nosuch=nobody"},
+			wantErr: `--source-user names undeclared source "nosuch"`,
+		},
+		{
+			name:    "source user without a user",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screen=go", "--source-user", "screen="},
+			wantErr: "--source-user expects NAME=USER",
+		},
+		{
+			name: "source max output",
+			args: []string{"store", "seed", "authority", "registry", "--source-max-output", "4096"},
+			wantOptions: serveOptions{
+				sources:         map[string]sourceSpec{},
+				port:            "8787",
+				maxSourceOutput: 4096,
+			},
+		},
+		{
+			name:    "source max output zero",
+			args:    []string{"store", "seed", "authority", "registry", "--source-max-output", "0"},
+			wantErr: `--source-max-output "0" is not a positive number of bytes`,
+		},
+		{
+			name:    "source max output not a number",
+			args:    []string{"store", "seed", "authority", "registry", "--source-max-output", "1MiB"},
+			wantErr: `--source-max-output "1MiB" is not a positive number of bytes`,
+		},
+		{
+			name: "duplicate source max output",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source-max-output", "1",
+				"--source-max-output", "2",
+			},
+			wantErr: "duplicate --source-max-output option",
 		},
 	}
 
@@ -200,6 +311,13 @@ func TestParseServeOptions(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got.sources, tt.wantOptions.sources) {
 				t.Fatalf("sources = %v, want %v", got.sources, tt.wantOptions.sources)
+			}
+			wantMax := tt.wantOptions.maxSourceOutput
+			if wantMax == 0 {
+				wantMax = defaultMaxSourceOutput
+			}
+			if got.maxSourceOutput != wantMax {
+				t.Fatalf("maxSourceOutput = %d, want %d", got.maxSourceOutput, wantMax)
 			}
 		})
 	}
@@ -227,6 +345,8 @@ func TestCmdServeRejectsMalformedOptions(t *testing.T) {
 		{name: "source no equals", args: []string{"store", "seed", "authority", "registry", "--source", "cmd"}},
 		{name: "empty source name", args: []string{"store", "seed", "authority", "registry", "--source", "=cmd"}},
 		{name: "empty source command", args: []string{"store", "seed", "authority", "registry", "--source", "name="}},
+		{name: "source env for undeclared source", args: []string{"store", "seed", "authority", "registry", "--source-env", "nosuch=FOO"}},
+		{name: "source max output zero", args: []string{"store", "seed", "authority", "registry", "--source-max-output", "0"}},
 		{
 			name: "duplicate source name",
 			args: []string{
@@ -607,5 +727,200 @@ func TestReadPublicKey(t *testing.T) {
 				t.Fatalf("readPublicKey() = %x, want %x", got, tt.want)
 			}
 		})
+	}
+}
+
+// captureStderr redirects os.Stderr for the rest of the test and returns a
+// function that yields what was written so far.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = file
+	t.Cleanup(func() {
+		os.Stderr = oldStderr
+		file.Close()
+	})
+	return func() string {
+		raw, err := os.ReadFile(file.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(raw)
+	}
+}
+
+// A seed anyone but its owner can read is refused before the gateway creates
+// anything: keygen writes 0600, and a source running as another user on the
+// same host is exactly the reader the mode bits exclude (ADR-0001).
+func TestCmdServeRefusesAReadableSeed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits are not the seed's protection on Windows")
+	}
+	stderr := captureStderr(t)
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "gateway.seed")
+	if code := cmdKeygen([]string{seed}); code != 0 {
+		t.Fatalf("cmdKeygen() = %d", code)
+	}
+	if err := os.Chmod(seed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(dir, "store")
+	args := []string{store, seed, "gateway:test", filepath.Join(dir, "registry.jsonl"), "--port", "1"}
+	if got := cmdServe(args); got != 1 {
+		t.Fatalf("cmdServe() = %d, want 1", got)
+	}
+	if out := stderr(); !strings.Contains(out, "chmod 0600") {
+		t.Fatalf("the refusal must name the fix; stderr was %q", out)
+	}
+	if _, err := os.Stat(store); err == nil {
+		t.Fatal("the store was created before the seed was refused")
+	}
+}
+
+// A source user the gateway cannot switch to is refused at startup rather
+// than run as the signer. Unprivileged on Unix, unsupported elsewhere; either
+// way the refusal happens before anything is created.
+func TestCmdServeRefusesASourceUserItCannotSwitchTo(t *testing.T) {
+	if runtime.GOOS != "windows" && os.Geteuid() == 0 {
+		t.Skip("running as root: the switch would be permitted")
+	}
+	stderr := captureStderr(t)
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "gateway.seed")
+	if code := cmdKeygen([]string{seed}); code != 0 {
+		t.Fatalf("cmdKeygen() = %d", code)
+	}
+	store := filepath.Join(dir, "store")
+	args := []string{
+		store, seed, "gateway:test", filepath.Join(dir, "registry.jsonl"),
+		"--source", "screening=go", "--source-user", "screening=nobody", "--port", "1",
+	}
+	if got := cmdServe(args); got != 1 {
+		t.Fatalf("cmdServe() = %d, want 1", got)
+	}
+	if out := stderr(); !strings.Contains(out, "--source-user screening") {
+		t.Fatalf("the refusal must name the option; stderr was %q", out)
+	}
+	if _, err := os.Stat(store); err == nil {
+		t.Fatal("the store was created before the source user was refused")
+	}
+}
+
+// The command line's output bound reaches the service, and the declared
+// sources reach it as declared.
+func TestBuildServiceAppliesTheCommandLine(t *testing.T) {
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "gateway.seed")
+	if code := cmdKeygen([]string{seed}); code != 0 {
+		t.Fatalf("cmdKeygen() = %d", code)
+	}
+	args := []string{
+		filepath.Join(dir, "store"), seed, "gateway:test", filepath.Join(dir, "registry.jsonl"),
+		"--source", "screening=go", "--source-env", "screening=FOO=bar", "--source-max-output", "4096",
+	}
+	opts, msg, ok := parseServeOptions(args)
+	if !ok {
+		t.Fatal(msg)
+	}
+	loaded, err := loadSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := buildService(args[0], loaded, args[2], args[3], opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.maxSourceOutput != 4096 {
+		t.Fatalf("maxSourceOutput = %d, want 4096", service.maxSourceOutput)
+	}
+	spec := service.sources["screening"]
+	if !reflect.DeepEqual(spec.argv, []string{"go"}) || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {
+		t.Fatalf("source not wired as declared: %+v", spec)
+	}
+}
+
+// loadSeed reads what keygen wrote through the same descriptor it judged.
+func TestLoadSeedReadsWhatKeygenWrote(t *testing.T) {
+	dir := t.TempDir()
+	seed := filepath.Join(dir, "gateway.seed")
+	if code := cmdKeygen([]string{seed}); code != 0 {
+		t.Fatalf("cmdKeygen() = %d", code)
+	}
+	loaded, err := loadSeed(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != seedBytes {
+		t.Fatalf("loaded %d bytes, want %d", len(loaded), seedBytes)
+	}
+	if _, err := loadSeed(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("a missing seed must be an error")
+	}
+}
+
+// Startup marks inherited descriptors before it opens anything: the call is
+// made even when the seed is missing, which is the earliest refusal.
+func TestStartupMarksInheritedDescriptors(t *testing.T) {
+	stderr := captureStderr(t)
+	_ = stderr
+	called := false
+	previous := closeInheritedDescriptors
+	closeInheritedDescriptors = func() { called = true }
+	t.Cleanup(func() { closeInheritedDescriptors = previous })
+	dir := t.TempDir()
+	args := []string{filepath.Join(dir, "store"), filepath.Join(dir, "missing.seed"), "gateway:test", filepath.Join(dir, "registry.jsonl")}
+	if got := cmdServe(args); got != 1 {
+		t.Fatalf("cmdServe() = %d, want 1", got)
+	}
+	if !called {
+		t.Fatal("startup did not mark inherited descriptors before opening the seed")
+	}
+}
+
+// loadSeed returns exactly the bytes the file encodes, and refuses a file
+// that is not the size of a seed file however its first bytes read.
+func TestLoadSeedIsExactAndBounded(t *testing.T) {
+	dir := t.TempDir()
+	want := bytes.Repeat([]byte{0xab}, seedBytes)
+	path := filepath.Join(dir, "known.seed")
+	if err := os.WriteFile(path, []byte(hex.EncodeToString(want)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadSeed(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("loaded %x, want %x", got, want)
+	}
+	oversized := filepath.Join(dir, "oversized.seed")
+	body := append([]byte(hex.EncodeToString(want)), bytes.Repeat([]byte(" "), maxSeedFileBytes)...)
+	body = append(body, []byte("trailing garbage")...)
+	if err := os.WriteFile(oversized, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadSeed(oversized); err == nil || !strings.Contains(err.Error(), "larger than a seed file") {
+		t.Fatalf("an oversized seed file must be refused by size: %v", err)
+	}
+}
+
+// An inherited anchor marker makes an ordinary invocation refuse to run.
+func TestStrayAnchorMarkerIsRefused(t *testing.T) {
+	stderr := captureStderr(t)
+	t.Setenv(envGroupAnchor, "1")
+	if !refuseStrayAnchorMarker() {
+		t.Fatal("the marker must be refused")
+	}
+	if out := stderr(); !strings.Contains(out, envGroupAnchor) {
+		t.Fatalf("the refusal must name the marker; stderr was %q", out)
+	}
+	t.Setenv(envGroupAnchor, "")
+	if refuseStrayAnchorMarker() {
+		t.Fatal("an ordinary environment must not be refused")
 	}
 }

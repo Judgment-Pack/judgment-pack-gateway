@@ -13,14 +13,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,8 +31,10 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf16"
 )
 
@@ -1122,7 +1127,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	service1, err := newGatewayService(
 		filepath.Join(root1, "store"), seed1, "gateway:test",
 		filepath.Join(root1, "registry.jsonl"),
-		map[string][]string{"screening": {os.Args[0]}})
+		map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1133,7 +1138,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	service2, err := newGatewayService(
 		filepath.Join(root2, "store"), seed2, "gateway:test",
 		filepath.Join(root2, "registry.jsonl"),
-		map[string][]string{"screening": {os.Args[0]}})
+		map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1197,5 +1202,499 @@ func TestCmdConformExitStatus(t *testing.T) {
 	rc := cmdConform([]string{"--impl", os.Args[0], "--corpus", corpusDir})
 	if rc != 1 {
 		t.Fatalf("cmdConform --impl wrong returned %d, want 1 (2 is corpus error, not disagreement)", rc)
+	}
+}
+
+// --- source isolation (ADR-0001) --------------------------------------------
+//
+// Each test below is an attack on the separation the gateway claims between
+// itself and a source: something reaching a source that should not, or a
+// source holding the gateway to something it should not.
+
+func echoFromSource(t *testing.T, service *gatewayService, session, name string) (string, bool) {
+	t.Helper()
+	t.Setenv(envSourceEcho, name)
+	out, err := service.acquire(session, "screening", vString("x"))
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	result := out["result"].(map[string]any)
+	value, _ := result["echo"].(string)
+	present, _ := result["present"].(bool)
+	return value, present
+}
+
+// A variable the operator did not declare for a source never reaches it, even
+// though this process holds it. PATH is the one exception, copied unless
+// declared, because a source that cannot find a shell is not a source.
+func TestSourceSeesOnlyTheDeclaredEnvironment(t *testing.T) {
+	service, _ := testService(t)
+	t.Setenv("GATEWAY_TEST_LEAK", "secret")
+	if value, present := echoFromSource(t, service, "env-1", "GATEWAY_TEST_LEAK"); present || value != "" {
+		t.Fatalf("an undeclared variable reached the source: present=%v value=%q", present, value)
+	}
+	if value, present := echoFromSource(t, service, "env-2", "PATH"); !present || value != os.Getenv("PATH") {
+		t.Fatalf("PATH must be copied unless declared: present=%v value=%q", present, value)
+	}
+}
+
+// A declared KEY=VALUE reaches the source as declared, and a declared PATH
+// replaces the copied one.
+func TestDeclaredEnvironmentReachesTheSource(t *testing.T) {
+	service, _ := testService(t)
+	spec := service.sources["screening"]
+	spec.env = append(append([]string{}, spec.env...), "GATEWAY_TEST_DECLARED=declared-value", "PATH=/declared/path")
+	service.sources["screening"] = spec
+	if value, present := echoFromSource(t, service, "env-3", "GATEWAY_TEST_DECLARED"); !present || value != "declared-value" {
+		t.Fatalf("declared value did not reach the source: present=%v value=%q", present, value)
+	}
+	if value, _ := echoFromSource(t, service, "env-4", "PATH"); value != "/declared/path" {
+		t.Fatalf("a declared PATH must win over the copied one: %q", value)
+	}
+}
+
+// A bare key names a variable to copy at spawn time; one this process does
+// not hold is omitted, not set empty, so a source can tell the two apart.
+func TestBareKeyAbsentFromTheGatewayIsOmitted(t *testing.T) {
+	service, _ := testService(t)
+	spec := service.sources["screening"]
+	spec.env = append(append([]string{}, spec.env...), "GATEWAY_TEST_NEVER_SET")
+	service.sources["screening"] = spec
+	os.Unsetenv("GATEWAY_TEST_NEVER_SET")
+	if value, present := echoFromSource(t, service, "env-5", "GATEWAY_TEST_NEVER_SET"); present || value != "" {
+		t.Fatalf("an absent variable must be omitted: present=%v value=%q", present, value)
+	}
+}
+
+// Output past the bound fails the acquisition, kills the source, and leaves
+// nothing behind: no receipt, no artifact, no session to seal.
+func TestSourceOutputIsBounded(t *testing.T) {
+	service, _ := testService(t)
+	service.maxSourceOutput = 1024
+	t.Setenv(envSourceBig, "4096")
+	_, err := service.acquire("big-1", "screening", vString("x"))
+	if err == nil {
+		t.Fatal("output past the bound must fail the acquisition")
+	}
+	if !strings.Contains(err.Error(), "exceeds 1024 bytes") {
+		t.Fatalf("the failure must name the bound: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(service.storeRoot, "receipts", "big-1")); statErr == nil {
+		t.Fatal("a receipt was written for output that was never accepted")
+	}
+	entries, _ := os.ReadDir(filepath.Join(service.storeRoot, "artifacts"))
+	if len(entries) != 0 {
+		t.Fatalf("an artifact was retained for output that was never accepted: %d", len(entries))
+	}
+	if _, sealErr := service.sealSession("big-1"); sealErr == nil {
+		t.Fatal("a session whose only acquisition overflowed must not be sealable")
+	}
+
+	service.maxSourceOutput = defaultMaxSourceOutput
+	if _, err := service.acquire("big-2", "screening", vString("x")); err != nil {
+		t.Fatalf("the same output within the bound must be accepted: %v", err)
+	}
+}
+
+// A declared "Path" is a declared PATH exactly where the platform says so.
+// Windows environment names are case-insensitive and os/exec keeps the last
+// spelling, so appending the copied PATH there would silently win.
+func TestDeclaredPathIsRecognizedByThePlatformRule(t *testing.T) {
+	env := sourceEnvironment(sourceSpec{env: []string{"Path=/declared"}})
+	var pathEntries []string
+	for _, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "PATH") {
+			pathEntries = append(pathEntries, entry)
+		}
+	}
+	switch runtime.GOOS {
+	case "windows":
+		if len(pathEntries) != 1 || pathEntries[0] != "Path=/declared" {
+			t.Fatalf("on Windows a declared Path is the PATH; got %v", pathEntries)
+		}
+	default:
+		if len(pathEntries) != 2 {
+			t.Fatalf("elsewhere Path and PATH are two variables; got %v", pathEntries)
+		}
+	}
+}
+
+// The one undeclared variable a source receives on Windows, stated as such.
+func TestWindowsSystemRootIsTheDocumentedException(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("os/exec adds SYSTEMROOT only on Windows")
+	}
+	service, _ := testService(t)
+	if _, present := echoFromSource(t, service, "env-6", "SYSTEMROOT"); !present {
+		t.Fatal("os/exec is documented to add SYSTEMROOT to an explicit environment; it did not")
+	}
+}
+
+// The bound is exact: output of the bound's size is accepted, one byte more is
+// not. The helper's body is the padding plus ten bytes of JSON around it.
+func TestOutputBoundIsExact(t *testing.T) {
+	service, _ := testService(t)
+	const padding = 1000
+	t.Setenv(envSourceBig, strconv.Itoa(padding))
+	service.maxSourceOutput = padding + 10
+	if _, err := service.acquire("exact-1", "screening", vString("x")); err != nil {
+		t.Fatalf("output exactly at the bound must be accepted: %v", err)
+	}
+	service.maxSourceOutput = padding + 9
+	if _, err := service.acquire("exact-2", "screening", vString("x")); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("output one byte past the bound must be refused: %v", err)
+	}
+}
+
+// A source that overflows and then stays alive is killed: the acquisition
+// returns on the overflow, not on the thirty-second timeout.
+func TestOverflowingSourceIsKilled(t *testing.T) {
+	service, _ := testService(t)
+	service.maxSourceOutput = 1024
+	t.Setenv(envSourceBig, "4096")
+	t.Setenv(envSourceHold, "1")
+	started := time.Now()
+	_, err := service.acquire("kill-1", "screening", vString("x"))
+	elapsed := time.Since(started)
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected the overflow failure, got %v", err)
+	}
+	if elapsed > 20*time.Second {
+		t.Fatalf("the source was not killed on overflow; acquire took %s", elapsed)
+	}
+}
+
+// expectHolder arranges for the helper's grandchild to be killed when the
+// test ends, whether or not the gateway reached it, and returns a function
+// that reports the grandchild's pid and fails the test if it never started --
+// a holder test that ran without a holder tested nothing. A test must not
+// leave a process holding the test binary open: Windows refuses to delete it,
+// and `go test` then fails after every test passed, so the cleanup kills the
+// grandchild and waits until it is gone.
+func expectHolder(t *testing.T) func() int {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "holder.pid")
+	t.Setenv(envSourceHolderPid, pidFile)
+	readPid := func() (int, bool) {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			return 0, false
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		return pid, err == nil
+	}
+	t.Cleanup(func() {
+		pid, ok := readPid()
+		if !ok {
+			return
+		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return
+		}
+		_ = proc.Kill()
+		_, _ = proc.Wait() // waits on Windows; not a child on Unix, returns at once
+		if !awaitGone(pid, 10*time.Second) {
+			t.Errorf("holder %d is still running after cleanup", pid)
+		}
+	})
+	return func() int {
+		t.Helper()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if pid, ok := readPid(); ok {
+				return pid
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the holder grandchild never recorded its pid; the test ran without a descendant")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// awaitGone reports whether pid stops existing within the deadline.
+func awaitGone(pid int, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for {
+		if processGone(pid) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A source that leaves a descendant holding its stdout cannot strand the
+// acquisition. On Unix the whole process group is killed, so the return is
+// immediate; where there is no process group the bounded pipe wait is what
+// returns, five seconds later. Either way the descendant does not decide.
+func TestDescendantHoldingThePipeCannotStrandTheAcquisition(t *testing.T) {
+	service, _ := testService(t)
+	holderPid := expectHolder(t)
+	service.maxSourceOutput = 1024
+	// On Unix the pipe wait is set long so that only the group kill can make
+	// the acquisition return under the limit; process startup and scheduling
+	// then have ten seconds of room, and the alternative would take twenty.
+	limit := 10 * time.Second
+	if runtime.GOOS == "windows" {
+		limit = service.waitDelay + 10*time.Second
+	} else {
+		service.waitDelay = 20 * time.Second
+	}
+	t.Setenv(envSourceBig, "4096")
+	t.Setenv(envSourceHolder, "1")
+	// The parent stays alive after writing, so the overflow is observed while
+	// the direct child still exists and the context watcher is still acting:
+	// this test is about the kill, and the late-exit ordering has its own.
+	t.Setenv(envSourceHold, "1")
+	started := time.Now()
+	_, err := service.acquire("hold-1", "screening", vString("x"))
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("an overflowing source with a descendant on its pipe must fail the acquisition")
+	}
+	holderPid()
+	if elapsed > limit {
+		t.Fatalf("the acquisition was held by a descendant; acquire took %s, limit %s", elapsed, limit)
+	}
+	if _, sealErr := service.sealSession("hold-1"); sealErr == nil {
+		t.Fatal("a session whose only acquisition failed must not be sealable")
+	}
+}
+
+// The bounded buffers bound memory, not only the verdict: past the limit
+// nothing more is retained, however much is written.
+func TestBoundedBufferRetainsAtMostItsLimit(t *testing.T) {
+	buf := &boundedBuffer{limit: 4096}
+	chunk := bytes.Repeat([]byte("x"), 1<<20)
+	for i := 0; i < 8; i++ {
+		if n, err := buf.Write(chunk); n != len(chunk) || err != nil {
+			t.Fatalf("Write returned (%d, %v); it must never fail", n, err)
+		}
+	}
+	if buf.buf.Len() != 4096 {
+		t.Fatalf("retained %d bytes, want exactly the limit", buf.buf.Len())
+	}
+	if !buf.overflowed {
+		t.Fatal("overflow was not recorded")
+	}
+	calls := 0
+	stopping := &boundedBuffer{limit: 8, stop: func() { calls++ }}
+	stopping.Write([]byte("0123456789"))
+	stopping.Write([]byte("0123456789"))
+	if calls != 1 {
+		t.Fatalf("stop must be called exactly once, was called %d times", calls)
+	}
+}
+
+// Shutting the service down cancels a source in flight rather than leaving
+// it running past the gateway. The source is held at a barrier so it is
+// certainly running when the service's context ends.
+func TestShutdownCancelsAnInFlightSource(t *testing.T) {
+	service, _ := testService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	service.bindLifetime(ctx)
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv(envSourceReady, started)
+	t.Setenv(envSourceWait, filepath.Join(dir, "never-released"))
+
+	result := make(chan error, 1)
+	go func() {
+		_, err := service.acquire("shutdown-1", "screening", vString("x"))
+		result <- err
+	}()
+	waitForFile(t, started)
+	cancel()
+	select {
+	case err := <-result:
+		if err == nil {
+			t.Fatal("a source cancelled by shutdown must fail the acquisition")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("shutdown did not end the in-flight acquisition")
+	}
+	if _, sealErr := service.sealSession("shutdown-1"); sealErr == nil {
+		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
+	}
+}
+
+// stderr is bounded too: a source that floods it fails with a short message
+// and the gateway retains none of the flood.
+func TestStderrFloodIsTruncated(t *testing.T) {
+	service, _ := testService(t)
+	t.Setenv(envSourceStderr, "200000")
+	_, err := service.acquire("stderr-1", "screening", vString("x"))
+	if err == nil {
+		t.Fatal("a failing source must fail the acquisition")
+	}
+	if len(err.Error()) > 300 {
+		t.Fatalf("the failure message must be bounded; got %d bytes", len(err.Error()))
+	}
+}
+
+// Shutting down over the real HTTP path answers a request in flight before
+// serveOn returns: the source is cancelled, the handler writes its refusal,
+// the client reads a whole response, and only then does the server come
+// down -- so a process that exits when serveOn returns never exits under a
+// handler.
+func TestShutdownAnswersInFlightRequestsBeforeReturning(t *testing.T) {
+	service, _ := testService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	service.bindLifetime(ctx)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- service.serveOn(listener) }()
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv(envSourceReady, started)
+	t.Setenv(envSourceWait, filepath.Join(dir, "never-released"))
+	type answer struct {
+		code int
+		body map[string]any
+		err  error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		resp, err := http.Post("http://"+listener.Addr().String()+"/acquire", "application/json",
+			strings.NewReader(`{"session":"shutdown-http","source":"screening","arguments":{"q":"x"}}`))
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		var body map[string]any
+		decodeErr := json.NewDecoder(resp.Body).Decode(&body)
+		answered <- answer{code: resp.StatusCode, body: body, err: decodeErr}
+	}()
+	waitForFile(t, started)
+	cancel()
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serveOn returned an error: %v", err)
+		}
+	case <-time.After(service.waitDelay + 20*time.Second):
+		t.Fatal("serveOn did not return after shutdown")
+	}
+	select {
+	case a := <-answered:
+		if a.err != nil {
+			t.Fatalf("the in-flight request must receive a whole response, got transport error: %v", a.err)
+		}
+		if a.code != http.StatusBadRequest || a.body["error"] == nil {
+			t.Fatalf("the in-flight request must be answered with the refusal, got %d %v", a.code, a.body)
+		}
+	default:
+		t.Fatal("serveOn returned before the in-flight request was answered")
+	}
+	if _, sealErr := service.sealSession("shutdown-http"); sealErr == nil {
+		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
+	}
+}
+
+// When Serve itself fails -- the listener taken away under it -- the sources
+// in flight are still ended and their handlers still answer before serveOn
+// returns, carrying the serve error. Without that, the process would exit
+// with a source running and a handler mid-flight. The request goes over HTTP
+// because that is what Shutdown waits for: a handler, not a bare call.
+func TestServeFailureStillEndsSourcesInFlight(t *testing.T) {
+	service, _ := testService(t)
+	service.bindLifetime(context.Background())
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- service.serveOn(listener) }()
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv(envSourceReady, started)
+	t.Setenv(envSourceWait, filepath.Join(dir, "never-released"))
+	type answer struct {
+		code int
+		err  error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		resp, err := http.Post("http://"+listener.Addr().String()+"/acquire", "application/json",
+			strings.NewReader(`{"session":"serve-failure","source":"screening","arguments":{"q":"x"}}`))
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		resp.Body.Close()
+		answered <- answer{code: resp.StatusCode}
+	}()
+	waitForFile(t, started)
+	// Take the listener away: Serve returns an error that is not ErrServerClosed.
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-served:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("serveOn must return the serve error, got %v", err)
+		}
+	case <-time.After(service.waitDelay + 20*time.Second):
+		t.Fatal("serveOn did not return after the listener failed")
+	}
+	select {
+	case a := <-answered:
+		if a.err != nil || a.code != http.StatusBadRequest {
+			t.Fatalf("the in-flight request must be answered with the refusal, got %d %v", a.code, a.err)
+		}
+	default:
+		t.Fatal("serveOn returned while a request was still in flight")
+	}
+	if _, sealErr := service.sealSession("serve-failure"); sealErr == nil {
+		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
+	}
+}
+
+// A request that is still open when the grace expires is aborted rather than
+// kept forever, and serveOn says so. The client here sends headers and a
+// partial body and then stalls, which is what a body read timeout longer
+// than the grace lets through to Shutdown.
+func TestGraceExpiryAbortsAStalledRequest(t *testing.T) {
+	service, _ := testService(t)
+	service.waitDelay = time.Second // grace of eleven seconds
+	ctx, cancel := context.WithCancel(context.Background())
+	service.bindLifetime(ctx)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- service.serveOn(listener) }()
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	// Headers complete, body incomplete, then silence.
+	if _, err := conn.Write([]byte("POST /acquire HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{\"session\":")); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-served:
+		if err == nil || !strings.Contains(err.Error(), "aborted") {
+			t.Fatalf("serveOn must report the aborted request, got %v", err)
+		}
+	case <-time.After(40 * time.Second):
+		t.Fatal("serveOn did not return; the stalled request held it")
 	}
 }
