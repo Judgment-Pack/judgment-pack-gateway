@@ -622,9 +622,8 @@ nothing real and must never be used by a deployment. Verification consumes only
 which is the same property receipt version 2 gives a real verifier.
 
 The version 3 store vectors live under `corpus/v3/stores/`. They are written
-against §1.2a and §4 and are as frozen as the rest; until an implementation
-exists that answers them, `gateway conform` reads `corpus/stores/` alone, and
-the change that makes the runner read `corpus/v3/stores/` is the change that
-implements version 3 (`corpus/README.md`). A version 3 store vector may carry a
+against §1.2a and §4 and are as frozen as the rest; `gateway conform` reads
+both directories (`corpus/README.md`). A version 3 store vector may carry a
 `decisionRecords` map beside `files`, materialized as the directory §4 step 6
-names.
+names and handed to the implementation as the process contract's optional
+fourth argument.

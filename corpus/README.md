@@ -102,7 +102,7 @@ acquire/response vector class.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — thirteen vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 13 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 and 6), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
@@ -118,10 +118,9 @@ that mixes versions, which is `chain-broken`.
 
 They are as frozen as the rest and were written against the specification, not
 against an implementation: no implementation answered them when they were
-written. `gateway conform` reads `stores/` alone today. The change that
-implements version 3 is the change that makes the runner read `v3/stores/` as
-well — a vector that fails there is a specification question before it is an
-implementation one, the same rule as above.
+written, and the first that did was built afterwards to the text. `gateway
+conform` reads both directories. A vector that fails is a specification
+question before it is an implementation one, the same rule as above.
 
 ## The process contract
 

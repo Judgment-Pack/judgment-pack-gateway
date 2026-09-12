@@ -82,11 +82,10 @@ func TestCanonVectors(t *testing.T) {
 
 func TestStoreVectors(t *testing.T) {
 	publicKey := mustHex(t, strings.TrimSpace(readFile(t, corpusPath("TEST-PUBLIC-KEY"))))
-	names, err := filepath.Glob(corpusPath("stores", "*.json"))
+	names, err := storeVectorPaths(corpusPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	sort.Strings(names)
 	passed := 0
 	for _, name := range names {
 		// One materializer, shared with `gateway conform`. This test used to
@@ -95,13 +94,13 @@ func TestStoreVectors(t *testing.T) {
 		var vec storeVector
 		readJSON(t, name, &vec)
 
-		tmp, root, registryPath, err := materializeVector(vec)
+		tmp, root, registryPath, decisionRecords, err := materializeVector(vec)
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer os.RemoveAll(tmp)
 
-		rep, err := verifyWithRegistry(root, registryPath, vec.Authority, publicKey)
+		rep, err := verifyWithRegistryAndRecords(root, registryPath, vec.Authority, decisionRecords, publicKey)
 		if err != nil {
 			t.Errorf("%s: no verdict: %v", vec.Name, err)
 			continue
@@ -203,6 +202,7 @@ func TestREADMEVectorCounts(t *testing.T) {
 
 	canonRe := regexp.MustCompile(`\*\*` + "`" + `canon\.json` + "`" + `\*\* — (\d+) vectors`)
 	storesRe := regexp.MustCompile(`\*\*` + "`" + `stores/\*\.json` + "`" + `\*\* — (\d+) vectors`)
+	v3Re := regexp.MustCompile(`\*\*` + "`" + `v3/stores/\*\.json` + "`" + `\*\* — (\d+) vectors`)
 
 	canonMatch := canonRe.FindStringSubmatch(readme)
 	if canonMatch == nil {
@@ -215,6 +215,12 @@ func TestREADMEVectorCounts(t *testing.T) {
 		t.Fatal("README.md missing expected sentence for stores/*.json vectors count")
 	}
 	statedStores, _ := strconv.Atoi(storesMatch[1])
+
+	v3Match := v3Re.FindStringSubmatch(readme)
+	if v3Match == nil {
+		t.Fatal("README.md missing expected sentence for v3/stores/*.json vectors count")
+	}
+	statedV3, _ := strconv.Atoi(v3Match[1])
 
 	var canonDoc struct {
 		Vectors []any `json:"vectors"`
@@ -233,5 +239,12 @@ func TestREADMEVectorCounts(t *testing.T) {
 	}
 	if statedStores != actualStores {
 		t.Errorf("README.md states %d store vectors, but there are actually %d in stores/*.json", statedStores, actualStores)
+	}
+	v3Files, err := filepath.Glob(corpusPath("v3", "stores", "*.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statedV3 != len(v3Files) {
+		t.Errorf("README.md states %d version 3 store vectors, but there are actually %d in v3/stores/*.json", statedV3, len(v3Files))
 	}
 }
