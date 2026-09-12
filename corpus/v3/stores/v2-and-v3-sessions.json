@@ -1,0 +1,41 @@
+{
+  "name": "v2-and-v3-sessions",
+  "note": "A store holding a sealed version 2 session and a sealed version 3 session. A version 3 verifier verifies both: version 2 receipts mean afterwards exactly what they meant before.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "artifacts/d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5": "{\"n\":1,\"session\":\"s2\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:95e3bb5255f2c92ca5b6a65ed1a47dfb9a6626309bed09f61c58ddd8ffd8d348\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"5661bb414939fbd585a7f8917a5fd23bbc3a8a12a08d0c7fc0bbe918a3655ea6b6a9b294ea38d1b2459e660dcd3cd6c70cd4de9430b34a31563019330678c302\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"argumentsDigest\":\"hmac-sha256:95e3bb5255f2c92ca5b6a65ed1a47dfb9a6626309bed09f61c58ddd8ffd8d348\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":\"5661bb414939fbd585a7f8917a5fd23bbc3a8a12a08d0c7fc0bbe918a3655ea6b6a9b294ea38d1b2459e660dcd3cd6c70cd4de9430b34a31563019330678c302\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"da0021e4e0f511cc3490e29ba743ea6435e3709fc75b245c0d3ccd2ade1dee24c31b07f9828f0edeb5eee760d057dff3607ff2717211258addc7c1024da7e704\",\"source\":\"corpus\"}\n",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"ea1231645765ed1a0f27972f6cfbbc9d1a057f673101629801f9f30cf7e8fc704a535f17591f3740f4c6f3644fbf167eef93afb886d20a93f33025131083a60b\",\"source\":\"corpus\"}\n",
+    "receipts/s2/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:c23782a881a4d73007b9154c0e278949f83938bb75bc506d21d849d92b4eb054\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:710b94cc4ef897c021e70817373c64efe775a9193fbba3cbfcde0cb722635e91\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":{\"issuer\":\"https://login.example.com/\",\"subject\":\"analyst@example.com\",\"tokenDigest\":\"sha256:2223b5cd4f003f74276cf6f8b23716b61edcbe84e0c11e260d207b08bb2e8911\"},\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"ea1231645765ed1a0f27972f6cfbbc9d1a057f673101629801f9f30cf7e8fc704a535f17591f3740f4c6f3644fbf167eef93afb886d20a93f33025131083a60b\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"50454f85a4b2326dc699695078b46423678d21929546a02839dc5cb77d4e2068c12c75a24fe69a755292761ea3e021f1dd551f5ddde49421dcdda2fe6b5aed09\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"2632d892d85521e1a7999e386c675656a5eb1e4d1fe890095e5c0c1e2b7e387db75c52b4879e5ca9afd8971617b15849979ee116852d80a433111b2b24bf0800\"}\n{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"33c22c1d588cff03e38a83679fa9dbfb62f2a2e086ae1c33b4496dfe12dad8c88f72930916e54d2a8a16c5a5803e4d0366d1dd5fc1667909fa702aa80ed8e503\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s1",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s1",
+        "status": "ok"
+      },
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s2",
+        "status": "ok"
+      }
+    ]
+  }
+}

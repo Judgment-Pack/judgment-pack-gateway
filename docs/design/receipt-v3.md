@@ -1,10 +1,10 @@
 # Design note: receipt version 3
 
-**Status: design note, not normative.** [SPEC.md](../../SPEC.md) is normative for receipt
-version 2 and says nothing about version 3. Nothing here binds an implementation until it is
-written into `SPEC.md` with corpus vectors, and `SPEC.md` leads that change
-([CONTRIBUTING.md](../../CONTRIBUTING.md#changing-specmd)). This note exists so the field list can
-be argued about before anything is signed.
+**Status: graduated into [SPEC.md §1.2a](../../SPEC.md), which is normative; this note is the
+design record and is not.** Where the two differ, `SPEC.md` is right. The note is kept because it
+carries the reasoning and the open questions; the specification carries the format. The
+implementation follows the specification in its own change
+([CONTRIBUTING.md](../../CONTRIBUTING.md#changing-specmd)).
 
 ## Why a third version
 
