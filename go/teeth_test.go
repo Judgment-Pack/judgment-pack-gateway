@@ -19,6 +19,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,30 @@ import (
 )
 
 const corpusDir = "../corpus"
+
+const envConformHelper = "GATEWAY_TEST_CONFORM_HELPER"
+
+func init() {
+	if os.Getenv(envConformHelper) == "1" {
+		if len(os.Args) < 2 {
+			os.Exit(2)
+		}
+		switch os.Args[1] {
+		case "canon":
+			src, _ := io.ReadAll(os.Stdin)
+			out, err := canonText(src)
+			if err != nil {
+				os.Exit(1)
+			}
+			os.Stdout.Write(append(out, '\n'))
+			os.Exit(0)
+		case "verify":
+			os.Exit(cmdVerify(os.Args[2:]))
+		default:
+			os.Exit(2)
+		}
+	}
+}
 
 // defective wraps the real implementation with one injected fault.
 type defective struct {
@@ -1131,5 +1156,46 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 
 	if d1 == d2 {
 		t.Fatalf("argumentsDigest did not change when seed changed: %q == %q", d1, d2)
+	}
+}
+
+// TestCmdConformExitStatus pins the exit-status contract: when the corpus
+// finds disagreements, cmdConform must return 1. CI gates on this; a
+// conformance runner that under-reports is exactly the "suite with no teeth"
+// this file exists to guard against. The healthy direction is asserted in the
+// same test so it cannot pass by always reporting failure, and 1 is
+// distinguished from 2 (corpus could not be run).
+//
+// The deliberately-wrong implementation is the test binary itself as a helper
+// (via GATEWAY_TEST_CONFORM_HELPER), answering canon with a trailing newline
+// — the default of nearly every shell pipeline — and delegating verify to
+// cmdVerify so store vectors pass and the exit-1 comes from canon
+// disagreements, the exact code path under test.
+func TestCmdConformExitStatus(t *testing.T) {
+	// Healthy: in-process agrees with frozen corpus -> 0 and empty failures.
+	if rc := cmdConform([]string{"--corpus", corpusDir}); rc != 0 {
+		t.Fatalf("cmdConform healthy returned %d, want 0", rc)
+	}
+	failures, _, _, err := runCorpus(corpusDir, inProcess{})
+	if err != nil {
+		t.Fatalf("runCorpus healthy: %v", err)
+	}
+	if len(failures) != 0 {
+		t.Fatalf("healthy impl produced %d failures, want 0: %v", len(failures), failures)
+	}
+
+	// Wrong: via --impl helper -> non-zero and non-empty, specifically 1 not 2.
+	t.Setenv(envConformHelper, "1")
+	impl := subprocess{argv: []string{os.Args[0]}}
+	failures, _, _, err = runCorpus(corpusDir, impl)
+	if err != nil {
+		t.Fatalf("runCorpus wrong impl returned error (would be exit 2): %v", err)
+	}
+	if len(failures) == 0 {
+		t.Fatal("wrong impl produced no failures, want non-empty")
+	}
+	rc := cmdConform([]string{"--impl", os.Args[0], "--corpus", corpusDir})
+	if rc != 1 {
+		t.Fatalf("cmdConform --impl wrong returned %d, want 1 (2 is corpus error, not disagreement)", rc)
 	}
 }
