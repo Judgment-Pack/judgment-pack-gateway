@@ -8,7 +8,7 @@ package main
 //	gateway canon                                    < value.json
 //	gateway verify <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
 //	gateway conform [--impl CMD] [--corpus DIR]
-//	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--port N]
+//	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 
 import (
@@ -232,6 +232,7 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 		return nil, err
 	}
 	service.maxSourceOutput = opts.maxSourceOutput
+	service.receiptVersion = opts.receiptVersion
 	return service, nil
 }
 
@@ -293,6 +294,7 @@ type serveOptions struct {
 	sources         map[string]sourceSpec
 	port            string
 	maxSourceOutput int64
+	receiptVersion  string
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
@@ -334,13 +336,14 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	if len(args) < 4 {
 		return serveOptions{}, "usage: gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
-			"[--source-max-output BYTES] [--port N]", false
+			"[--source-max-output BYTES] [--receipt-version 2|3] [--port N]", false
 	}
 
 	opts := serveOptions{
 		sources:         map[string]sourceSpec{},
 		port:            "8787",
 		maxSourceOutput: defaultMaxSourceOutput,
+		receiptVersion:  receiptVersion3,
 	}
 	// --source-env and --source-user name a source that may be declared
 	// later on the same command line, so they are collected here and bound
@@ -350,8 +353,22 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	rest := args[4:]
 	portSeen := false
 	maxOutputSeen := false
+	versionSeen := false
 	for i := 0; i < len(rest); i++ {
 		switch {
+		case rest[i] == "--receipt-version":
+			if i+1 >= len(rest) {
+				return opts, "--receipt-version requires a following value", false
+			}
+			if versionSeen {
+				return opts, "duplicate --receipt-version option", false
+			}
+			if rest[i+1] != receiptVersion && rest[i+1] != receiptVersion3 {
+				return opts, fmt.Sprintf("--receipt-version %q is neither 2 nor 3", rest[i+1]), false
+			}
+			opts.receiptVersion = rest[i+1]
+			versionSeen = true
+			i++
 		case rest[i] == "--source-env":
 			if i+1 >= len(rest) {
 				return opts, "--source-env requires a following NAME=KEY[=VALUE] value", false

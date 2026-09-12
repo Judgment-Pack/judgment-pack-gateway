@@ -11,6 +11,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -71,6 +72,9 @@ type gatewayService struct {
 	keyID           string
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
+	// receiptVersion is what acquire mints: "3" unless the operator asked
+	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
+	receiptVersion string
 	// ctx is the service's lifetime. Every source's context derives from it,
 	// so shutting the service down cancels every source in flight; a source
 	// in its own process group would otherwise outlive the gateway that
@@ -101,8 +105,9 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
 		sources: sources, maxSourceOutput: defaultMaxSourceOutput,
-		waitDelay: sourceWaitDelay,
-		sessions:  map[string]*sessionState{},
+		receiptVersion: receiptVersion3,
+		waitDelay:      sourceWaitDelay,
+		sessions:       map[string]*sessionState{},
 	}
 	g.bindLifetime(context.Background())
 	return g, nil
@@ -265,7 +270,28 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 
 	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, spec.argv[0], spec.argv[1:]...)
+	// The command is resolved once, here, to the file that will be started,
+	// and that file is what a version 3 receipt digests -- os/exec would
+	// otherwise give a relative Windows command its extension only at start,
+	// after the digest. A bare name that resolves to the working directory
+	// is refused, as os/exec refuses it.
+	path, err := exec.LookPath(spec.argv[0])
+	if err != nil {
+		return nil, fmt.Errorf("source could not be started: %v", err)
+	}
+	var adapterDigest string
+	if g.receiptVersion == receiptVersion3 {
+		// Digested before anything is started, so a failure here leaves
+		// nothing to reap. It is the file at that path at that moment: a
+		// replacement between this read and the start is not detected.
+		adapterDigest, err = executableDigest(path)
+		if err != nil {
+			return nil, err
+		}
+	}
+	cmd := exec.CommandContext(ctx, path, spec.argv[1:]...)
+	// The source sees the command as configured, not as resolved.
+	cmd.Args = append([]string{spec.argv[0]}, spec.argv[1:]...)
 	cmd.Stdin = bytes.NewReader(canonicalArgs)
 	// The declared environment and nothing else (sourceSpec). An explicit
 	// slice is what stops os/exec from handing the child this process's
@@ -314,6 +340,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 		}
 		return nil, fmt.Errorf("source failed: %s", trimmed)
 	}
+	observedAt := nowStamp()
 	result, err := parseJSON(stdout.buf.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("source did not return a canonical JSON value: %w", err)
@@ -329,11 +356,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	if err != nil {
 		return nil, err
 	}
-	mac := hmac.New(sha256.New, argumentsKey(g.store.seed))
-	mac.Write(append([]byte("args:"), canonicalArgs...))
 
 	core := newObject()
-	core.set("receiptVersion", vString(receiptVersion))
+	core.set("receiptVersion", vString(g.receiptVersion))
 	core.set("sessionId", vString(sessionID))
 	core.set("callIndex", vInt(state.index))
 	if state.prev == "" {
@@ -342,10 +367,29 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 		core.set("prevSignature", vString(state.prev))
 	}
 	core.set("source", vString(source))
-	core.set("argumentsDigest", vString("hmac-sha256:"+hex.EncodeToString(mac.Sum(nil))))
 	core.set("resultDigest", vString(resultDigest))
 	core.set("servedAt", vString(nowStamp()))
 	core.set("authority", vString(g.authority))
+	var salts map[string]any
+	if g.receiptVersion == receiptVersion3 {
+		// SPEC.md §1.2a: a salted commitment to the arguments, the salt drawn
+		// fresh, returned to the caller beside the receipt, and never
+		// retained. A bare command is the "command" shape: bytes attested,
+		// the acquisition recorded as far as a command can record it.
+		salt, err := newSalt()
+		if err != nil {
+			return nil, err
+		}
+		core.set("argumentsCommitment", vString(commitmentOver(salt, "args:", canonicalArgs)))
+		core.set("kind", vString("acquisition"))
+		core.set("caller", vNull{})
+		core.set("acquisition", commandAcquisition(spec, adapterDigest, observedAt))
+		salts = map[string]any{"args": hex.EncodeToString(salt)}
+	} else {
+		mac := hmac.New(sha256.New, argumentsKey(g.store.seed))
+		mac.Write(append([]byte("args:"), canonicalArgs...))
+		core.set("argumentsDigest", vString("hmac-sha256:"+hex.EncodeToString(mac.Sum(nil))))
+	}
 
 	stored, signature, err := g.store.stamp(core)
 	if err != nil {
@@ -367,10 +411,83 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	if err := json.Unmarshal(canon(stored), &receiptOut); err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	response := map[string]any{
 		"result":  resultOut,
 		"receipt": receiptOut,
-	}, nil
+	}
+	if salts != nil {
+		response["salts"] = salts
+	}
+	return response, nil
+}
+
+// newSalt draws the 32 random bytes one commitment is salted with.
+func newSalt() ([]byte, error) {
+	salt := make([]byte, 32)
+	if _, err := rand.Read(salt); err != nil {
+		return nil, fmt.Errorf("draw salt: %w", err)
+	}
+	return salt, nil
+}
+
+// commitmentOver is SPEC.md §1.2a's commitment: SHA-256 over the salt, the
+// label, and the canonical value, as a digest string.
+func commitmentOver(salt []byte, label string, canonical []byte) string {
+	h := sha256.New()
+	h.Write(salt)
+	h.Write([]byte(label))
+	h.Write(canonical)
+	return "sha256:" + hex.EncodeToString(h.Sum(nil))
+}
+
+// commandAcquisition is the acquisition record a bare operator-configured
+// command yields (SPEC.md §1.2a, shape "command"): the adapter is the command
+// itself, named as configured and identified by the digest of the file it
+// resolved to; nothing else about the acquisition is known, and every
+// nullable member says so. observedAt is the gateway's own stamp of when the
+// source's output was read, since a command records nothing.
+func commandAcquisition(spec sourceSpec, digest, observedAt string) *vObject {
+	adapter := newObject()
+	adapter.set("name", vString(spec.argv[0]))
+	adapter.set("version", vString(""))
+	adapter.set("digest", vString(digest))
+	a := newObject()
+	a.set("adapter", adapter)
+	a.set("shape", vString("command"))
+	a.set("endpoint", vNull{})
+	a.set("statement", vNull{})
+	a.set("snapshot", vNull{})
+	a.set("peerIdentity", vNull{})
+	a.set("schema", vNull{})
+	a.set("upstreamToken", vNull{})
+	a.set("observedAt", vString(observedAt))
+	return a
+}
+
+// executableDigest is the SHA-256 of the regular file at path, streamed, as a
+// digest string. Anything but a regular file is refused by stat before it is
+// opened, since opening a FIFO would block without a writer and nothing has
+// been started yet that a timeout could cancel; a regular file swapped for a
+// FIFO between the stat and the open is the replacement the acquisition does
+// not detect.
+func executableDigest(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("source executable could not be read for its digest: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("source executable %s is not a regular file", path)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("source executable could not be read for its digest: %w", err)
+	}
+	defer file.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, file); err != nil {
+		return "", fmt.Errorf("source executable could not be read for its digest: %w", err)
+	}
+	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // admit reserves an acquisition against a session, refusing a sealed one before

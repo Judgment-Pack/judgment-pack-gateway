@@ -262,6 +262,34 @@ func TestParseServeOptions(t *testing.T) {
 			wantErr: "--source-user expects NAME=USER",
 		},
 		{
+			name: "receipt version 2 on request",
+			args: []string{"store", "seed", "authority", "registry", "--receipt-version", "2"},
+			wantOptions: serveOptions{
+				sources:        map[string]sourceSpec{},
+				port:           "8787",
+				receiptVersion: "2",
+			},
+		},
+		{
+			name:    "receipt version outside the two known",
+			args:    []string{"store", "seed", "authority", "registry", "--receipt-version", "4"},
+			wantErr: `--receipt-version "4" is neither 2 nor 3`,
+		},
+		{
+			name: "duplicate receipt version",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--receipt-version", "3",
+				"--receipt-version", "2",
+			},
+			wantErr: "duplicate --receipt-version option",
+		},
+		{
+			name:    "receipt version missing value",
+			args:    []string{"store", "seed", "authority", "registry", "--receipt-version"},
+			wantErr: "--receipt-version requires",
+		},
+		{
 			name: "source max output",
 			args: []string{"store", "seed", "authority", "registry", "--source-max-output", "4096"},
 			wantOptions: serveOptions{
@@ -318,6 +346,13 @@ func TestParseServeOptions(t *testing.T) {
 			}
 			if got.maxSourceOutput != wantMax {
 				t.Fatalf("maxSourceOutput = %d, want %d", got.maxSourceOutput, wantMax)
+			}
+			wantVersion := tt.wantOptions.receiptVersion
+			if wantVersion == "" {
+				wantVersion = receiptVersion3
+			}
+			if got.receiptVersion != wantVersion {
+				t.Fatalf("receiptVersion = %q, want %q", got.receiptVersion, wantVersion)
 			}
 		})
 	}
@@ -811,8 +846,8 @@ func TestCmdServeRefusesASourceUserItCannotSwitchTo(t *testing.T) {
 	}
 }
 
-// The command line's output bound reaches the service, and the declared
-// sources reach it as declared.
+// The command line's output bound and receipt version reach the service, and
+// the declared sources reach it as declared.
 func TestBuildServiceAppliesTheCommandLine(t *testing.T) {
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "gateway.seed")
@@ -822,6 +857,7 @@ func TestBuildServiceAppliesTheCommandLine(t *testing.T) {
 	args := []string{
 		filepath.Join(dir, "store"), seed, "gateway:test", filepath.Join(dir, "registry.jsonl"),
 		"--source", "screening=go", "--source-env", "screening=FOO=bar", "--source-max-output", "4096",
+		"--receipt-version", "2",
 	}
 	opts, msg, ok := parseServeOptions(args)
 	if !ok {
@@ -837,6 +873,9 @@ func TestBuildServiceAppliesTheCommandLine(t *testing.T) {
 	}
 	if service.maxSourceOutput != 4096 {
 		t.Fatalf("maxSourceOutput = %d, want 4096", service.maxSourceOutput)
+	}
+	if service.receiptVersion != receiptVersion {
+		t.Fatalf("receiptVersion = %q, want %q: --receipt-version did not reach the service", service.receiptVersion, receiptVersion)
 	}
 	spec := service.sources["screening"]
 	if !reflect.DeepEqual(spec.argv, []string{"go"}) || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {

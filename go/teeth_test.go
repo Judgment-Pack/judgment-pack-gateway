@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1079,7 +1080,10 @@ func TestRegistryPathShapes(t *testing.T) {
 }
 
 func TestArgumentsDigest(t *testing.T) {
-	_, server := testService(t)
+	// Version 2's keyed digest, pinned as it was: the form a consumer on
+	// --receipt-version 2 still receives.
+	service, server := testService(t)
+	service.receiptVersion = receiptVersion
 
 	// 1. Format: "hmac-sha256:" + exactly 64 lowercase hex characters
 	getArgumentsDigest := func(body map[string]any) string {
@@ -1167,6 +1171,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service1.receiptVersion = receiptVersion
 	server1 := httptest.NewServer(service1.handler())
 	defer server1.Close()
 
@@ -1178,6 +1183,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service2.receiptVersion = receiptVersion
 	server2 := httptest.NewServer(service2.handler())
 	defer server2.Close()
 
@@ -1733,4 +1739,315 @@ func TestGraceExpiryAbortsAStalledRequest(t *testing.T) {
 	case <-time.After(40 * time.Second):
 		t.Fatal("serveOn did not return; the stalled request held it")
 	}
+}
+
+// --- version 3 minting (SPEC.md §1.2a) ---------------------------------------
+
+// The arguments commitment is salted per receipt: two acquisitions with the
+// same arguments commit differently, so no caller can compare across
+// receipts; and the salt the caller receives reproduces the commitment
+// exactly, so the caller alone can reveal.
+func TestArgumentsCommitmentIsSaltedAndReproducible(t *testing.T) {
+	_, server := testService(t)
+	body := `{"session":"salt-1","source":"screening","arguments":{"q":"acme","n":1}}`
+	_, first := post(t, server, "/acquire", body)
+	_, second := post(t, server, "/acquire", body)
+	c1 := first["receipt"].(map[string]any)["argumentsCommitment"].(string)
+	c2 := second["receipt"].(map[string]any)["argumentsCommitment"].(string)
+	if c1 == c2 {
+		t.Fatal("the same arguments committed identically twice: the salt is not fresh per receipt")
+	}
+	salt, err := hex.DecodeString(first["salts"].(map[string]any)["args"].(string))
+	if err != nil || len(salt) != 32 {
+		t.Fatalf("salts.args must decode to 32 bytes: %v", err)
+	}
+	// Recomputed here from the literal canonical arguments and the returned
+	// salt, with no help from the production helper, so a commitment that
+	// dropped the arguments or the label would not reproduce.
+	h := sha256.New()
+	h.Write(salt)
+	h.Write([]byte("args:"))
+	h.Write([]byte(`{"n":1,"q":"acme"}`))
+	if want := "sha256:" + hex.EncodeToString(h.Sum(nil)); want != c1 {
+		t.Fatalf("the returned salt does not reproduce the commitment: %s vs %s", want, c1)
+	}
+	h.Reset()
+	h.Write(salt)
+	h.Write([]byte("statement:"))
+	h.Write([]byte(`{"n":1,"q":"acme"}`))
+	if "sha256:"+hex.EncodeToString(h.Sum(nil)) == c1 {
+		t.Fatal("labels must separate the commitments of one receipt")
+	}
+	// Several more draws are all distinct and none is empty. That the draw
+	// is unpredictable is crypto/rand's property, which no test observes; a
+	// reused salt is the mutation this does catch.
+	seen := map[string]bool{first["salts"].(map[string]any)["args"].(string): true,
+		second["salts"].(map[string]any)["args"].(string): true}
+	for i := 0; i < 4; i++ {
+		_, more := post(t, server, "/acquire", body)
+		got := more["salts"].(map[string]any)["args"].(string)
+		if seen[got] || got == strings.Repeat("0", 64) {
+			t.Fatalf("salt %q repeated or empty", got)
+		}
+		seen[got] = true
+	}
+}
+
+// observedAt for the command shape is the gateway's own stamp of when it had
+// read the source's output in full (SPEC.md §1.2a): of the stamp form, no
+// earlier than the request, no later than servedAt.
+func TestObservedAtIsTheGatewaysStampOfTheReadInFull(t *testing.T) {
+	_, server := testService(t)
+	before := nowStamp()
+	_, first := post(t, server, "/acquire", `{"session":"obs-1","source":"screening","arguments":{}}`)
+	after := nowStamp()
+	receipt := first["receipt"].(map[string]any)
+	observedAt, _ := receipt["acquisition"].(map[string]any)["observedAt"].(string)
+	servedAt, _ := receipt["servedAt"].(string)
+	if !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`).MatchString(observedAt) {
+		t.Fatalf("observedAt is not a stamp: %q", observedAt)
+	}
+	// The stamp form is fixed-width UTC, so string order is time order.
+	if observedAt < before || servedAt < observedAt || after < servedAt {
+		t.Fatalf("observedAt %s must lie between the request (%s) and servedAt %s (request answered by %s)", observedAt, before, servedAt, after)
+	}
+}
+
+// The digest names the file that was started, resolved as os/exec resolves
+// it: a relative command without an extension resolves to the executable on
+// Windows, and the same file is what the record digests.
+func TestAdapterDigestNamesTheFileStarted(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	name := "fetch"
+	if runtime.GOOS == "windows" {
+		name = "fetch.exe"
+	}
+	if err := os.WriteFile(filepath.Join(dir, name), image, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	t.Setenv(envSourceHelper, "1")
+	configured := "." + string(filepath.Separator) + "fetch"
+	root := t.TempDir()
+	service, err := newGatewayService(
+		filepath.Join(root, "store"), testSeed, "gateway:test", filepath.Join(root, "registry.jsonl"),
+		map[string]sourceSpec{"screening": {argv: []string{configured}, env: helperEnv}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.handler())
+	defer server.Close()
+	code, first := post(t, server, "/acquire", `{"session":"rel-1","source":"screening","arguments":{}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, first)
+	}
+	adapter := first["receipt"].(map[string]any)["acquisition"].(map[string]any)["adapter"].(map[string]any)
+	sum := sha256.Sum256(image)
+	if adapter["digest"] != "sha256:"+hex.EncodeToString(sum[:]) {
+		t.Fatalf("the digest must be of the file started (%s): %v", name, adapter["digest"])
+	}
+	if adapter["name"] != configured {
+		t.Fatalf("the adapter is named as configured: %v", adapter["name"])
+	}
+}
+
+// A command that cannot be resolved or read fails the acquisition before
+// anything is started, and leaves the session usable.
+func TestAcquisitionFailsCleanlyWhenTheExecutableIsMissing(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	root := t.TempDir()
+	service, err := newGatewayService(
+		filepath.Join(root, "store"), testSeed, "gateway:test", filepath.Join(root, "registry.jsonl"),
+		map[string]sourceSpec{
+			"screening": {argv: []string{os.Args[0]}, env: helperEnv},
+			"broken":    {argv: []string{filepath.Join(root, "missing")}},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.handler())
+	defer server.Close()
+	code, body := post(t, server, "/acquire", `{"session":"miss-1","source":"broken","arguments":{}}`)
+	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "could not be started") {
+		t.Fatalf("a missing executable must fail the acquisition as unstartable: %d %v", code, body)
+	}
+	code, first := post(t, server, "/acquire", `{"session":"miss-1","source":"screening","arguments":{}}`)
+	if code != http.StatusOK || first["receipt"].(map[string]any)["callIndex"] != float64(0) {
+		t.Fatalf("the session must remain usable at index 0 after the failure: %d %v", code, first)
+	}
+}
+
+// The salt is in the acquire response and nowhere the gateway writes: not in
+// the store, in either form, and not in the registry.
+func TestSaltIsRetainedNowhere(t *testing.T) {
+	service, server := testService(t)
+	_, first := post(t, server, "/acquire", `{"session":"nowhere-1","source":"screening","arguments":{"q":"acme"}}`)
+	saltHex := first["salts"].(map[string]any)["args"].(string)
+	raw, err := hex.DecodeString(saltHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, body := post(t, server, "/seal", `{"session":"nowhere-1"}`); code != http.StatusOK {
+		t.Fatalf("seal failed: %d %v", code, body)
+	}
+	check := func(path string) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(data, []byte(saltHex)) || bytes.Contains(data, raw) {
+			t.Fatalf("the salt was retained in %s", path)
+		}
+	}
+	files := 0
+	err = filepath.WalkDir(service.storeRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type().IsRegular() {
+			files++
+			check(path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files < 2 {
+		t.Fatalf("expected a receipt and an artifact in the store, walked %d files", files)
+	}
+	check(service.regPath)
+}
+
+// The receipt version reaches minting through the command line: the default
+// mints version 3, an explicit 3 the same, a 2 the version 2 form; and one
+// store holds sessions of both versions across restarts and still verifies.
+func TestMintingFollowsTheCommandLineAcrossRestarts(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	root := t.TempDir()
+	store, registry := filepath.Join(root, "store"), filepath.Join(root, "registry.jsonl")
+	build := func(extra ...string) *gatewayService {
+		t.Helper()
+		args := append([]string{
+			store, "seed-is-loaded-separately", "gateway:test", registry,
+			"--source", "screening=" + os.Args[0], "--source-env", "screening=" + envSourceHelper,
+		}, extra...)
+		opts, msg, ok := parseServeOptions(args)
+		if !ok {
+			t.Fatal(msg)
+		}
+		service, err := buildService(store, testSeed, "gateway:test", registry, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service
+	}
+	run := func(service *gatewayService, session string) map[string]any {
+		t.Helper()
+		server := httptest.NewServer(service.handler())
+		defer server.Close()
+		code, first := post(t, server, "/acquire", `{"session":"`+session+`","source":"screening","arguments":{"q":"x"}}`)
+		if code != http.StatusOK {
+			t.Fatalf("acquire failed: %d %v", code, first)
+		}
+		if code, body := post(t, server, "/seal", `{"session":"`+session+`"}`); code != http.StatusOK {
+			t.Fatalf("seal failed: %d %v", code, body)
+		}
+		return first
+	}
+	byDefault := run(build(), "by-default")
+	if r := byDefault["receipt"].(map[string]any); r["receiptVersion"] != "3" || byDefault["salts"] == nil {
+		t.Fatalf("the default mints version 3 with salts: %v", byDefault)
+	}
+	explicit := run(build("--receipt-version", "3"), "explicit-3")
+	if r := explicit["receipt"].(map[string]any); r["receiptVersion"] != "3" {
+		t.Fatalf("--receipt-version 3 mints version 3: %v", explicit)
+	}
+	asked := run(build("--receipt-version", "2"), "asked-2")
+	if r := asked["receipt"].(map[string]any); r["receiptVersion"] != "2" || asked["salts"] != nil {
+		t.Fatalf("--receipt-version 2 mints the version 2 form without salts: %v", asked)
+	}
+	last := build()
+	report, err := verifyWithRegistry(store, registry, "gateway:test", last.publicKey)
+	if err != nil || !report.OK || len(report.Findings) != 3 {
+		t.Fatalf("a store holding both versions across sessions must verify, three sessions: %v %v", err, report)
+	}
+}
+
+// A minted version 3 receipt verifies under the version 3 verifier and
+// records the command as its adapter: name, an empty version, and the digest
+// of the executable the command resolved to.
+func TestMintedVersion3ReceiptVerifiesAndDescribesTheCommand(t *testing.T) {
+	service, server := testService(t)
+	_, first := post(t, server, "/acquire", `{"session":"mint-1","source":"screening","arguments":{"q":"x"}}`)
+	if code, body := post(t, server, "/seal", `{"session":"mint-1"}`); code != http.StatusOK {
+		t.Fatalf("seal failed: %d %v", code, body)
+	}
+	report, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
+	if err != nil || !report.OK {
+		t.Fatalf("a minted version 3 store must verify: %v %v", err, report)
+	}
+	acquisition := first["receipt"].(map[string]any)["acquisition"].(map[string]any)
+	adapter := acquisition["adapter"].(map[string]any)
+	if adapter["name"] != os.Args[0] || adapter["version"] != "" {
+		t.Fatalf("the adapter is the command as configured: %v", adapter)
+	}
+	resolved, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if adapter["digest"] != "sha256:"+hex.EncodeToString(sum[:]) {
+		t.Fatalf("the adapter digest must be the executable's: %v", adapter["digest"])
+	}
+	if acquisition["observedAt"] == nil || acquisition["observedAt"] == "" {
+		t.Fatal("observedAt must be recorded")
+	}
+}
+
+// A version 3 receipt signed under the version 2 prefix would verify nowhere;
+// the store signs under the prefix the core's version names.
+func TestMintedReceiptIsSignedUnderItsVersionsPrefix(t *testing.T) {
+	service, server := testService(t)
+	_, first := post(t, server, "/acquire", `{"session":"prefix-1","source":"screening","arguments":{}}`)
+	raw, _ := json.Marshal(first["receipt"])
+	v, err := parseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := receiptFrom(v.(*vObject))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, _ := hex.DecodeString(r.signature)
+	if !ed25519.Verify(service.publicKey, r.signingInput(), sig) {
+		t.Fatal("the minted receipt does not verify under its own version's prefix")
+	}
+	if ed25519.Verify(service.publicKey, append([]byte(receiptContext), canon(coveredMembers(r))...), sig) {
+		t.Fatal("the minted receipt verifies under the version 2 prefix; the prefix does not carry the version")
+	}
+}
+
+func coveredMembers(r *receipt) *vObject {
+	covered := newObject()
+	for _, name := range r.obj.names {
+		if name == "signature" {
+			continue
+		}
+		v, _ := r.obj.get(name)
+		covered.set(name, v)
+	}
+	return covered
 }

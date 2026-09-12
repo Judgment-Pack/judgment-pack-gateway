@@ -527,20 +527,40 @@ func TestAcquireSealVerifyRoundTrip(t *testing.T) {
 		t.Fatal("receipt does not name the gateway's key")
 	}
 	// The response receipt is the complete stored object: every member the
-	// signature covers, keyId and signature beside them (SPEC.md §6).
+	// signature covers, keyId and signature beside them (SPEC.md §6). A
+	// version 3 receipt by default (SPEC.md §1.2a).
 	for _, member := range []string{
 		"receiptVersion", "sessionId", "callIndex", "prevSignature", "source",
-		"argumentsDigest", "resultDigest", "servedAt", "authority", "keyId", "signature",
+		"argumentsCommitment", "resultDigest", "servedAt", "authority", "kind", "caller",
+		"acquisition", "keyId", "signature",
 	} {
 		if _, present := receipt[member]; !present {
 			t.Fatalf("the response receipt must carry %q; got %v", member, receipt)
 		}
 	}
-	if len(receipt) != 11 {
+	if len(receipt) != 14 {
 		t.Fatalf("the response receipt carries the receipt's members and nothing else: %v", receipt)
+	}
+	if receipt["receiptVersion"] != "3" || receipt["kind"] != "acquisition" || receipt["caller"] != nil {
+		t.Fatalf("a default receipt is version 3, an acquisition, with no caller: %v", receipt)
 	}
 	if receipt["prevSignature"] != nil {
 		t.Fatalf("the first receipt of a session chains from null: %v", receipt["prevSignature"])
+	}
+	acquisition := receipt["acquisition"].(map[string]any)
+	if acquisition["shape"] != "command" || acquisition["endpoint"] != nil || acquisition["upstreamToken"] != nil {
+		t.Fatalf("a bare command is the command shape with nothing known about its acquisition: %v", acquisition)
+	}
+	// The salt comes back beside the receipt and nowhere else (SPEC.md §6).
+	salts, ok := first["salts"].(map[string]any)
+	if !ok {
+		t.Fatalf("the acquire response must carry salts: %v", first)
+	}
+	if salt, _ := salts["args"].(string); !isLowerHexOfLen(salt, 64) {
+		t.Fatalf("salts.args must be 32 bytes of lowercase hex: %v", salts)
+	}
+	if _, present := salts["statement"]; present {
+		t.Fatal("a null statement has no salt")
 	}
 	// The caller supplied no receipt and cannot: nothing it sent appears as proof.
 	encoded, _ := json.Marshal(receipt)
@@ -873,8 +893,13 @@ func TestAcquireResponseReceiptVerifiesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The prefix is the one the receipt's own version names (SPEC.md §1.2a).
+	prefix := receiptContext
+	if receipt["receiptVersion"] == receiptVersion3 {
+		prefix = receiptContext3
+	}
 	public := ed25519.PublicKey(mustPublic(t))
-	if !ed25519.Verify(public, append([]byte(receiptContext), unsignedCanon...), sig) {
+	if !ed25519.Verify(public, append([]byte(prefix), unsignedCanon...), sig) {
 		t.Fatal("the signature must verify over the response receipt's own members")
 	}
 
@@ -889,7 +914,7 @@ func TestAcquireResponseReceiptVerifiesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ed25519.Verify(public, append([]byte(receiptContext), tamperedCanon...), sig) {
+	if ed25519.Verify(public, append([]byte(prefix), tamperedCanon...), sig) {
 		t.Fatal("a tampered member must fail the check")
 	}
 }
@@ -1456,5 +1481,39 @@ func TestMethodContractForStateChangingRoutes(t *testing.T) {
 				t.Errorf("Stat error = %v, want IsNotExist", err)
 			}
 		})
+	}
+}
+
+// --receipt-version 2 keeps the version 2 form for a consumer not yet updated:
+// the eleven members, the keyed arguments digest, and no salts.
+func TestAcquireMintsVersion2WhenConfigured(t *testing.T) {
+	service, server := testService(t)
+	service.receiptVersion = receiptVersion
+	code, first := post(t, server, "/acquire",
+		`{"session":"v2-1","source":"screening","arguments":{"q":"acme"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, first)
+	}
+	receipt := first["receipt"].(map[string]any)
+	for _, member := range []string{
+		"receiptVersion", "sessionId", "callIndex", "prevSignature", "source",
+		"argumentsDigest", "resultDigest", "servedAt", "authority", "keyId", "signature",
+	} {
+		if _, present := receipt[member]; !present {
+			t.Fatalf("the version 2 receipt must carry %q; got %v", member, receipt)
+		}
+	}
+	if len(receipt) != 11 || receipt["receiptVersion"] != "2" {
+		t.Fatalf("the version 2 receipt carries its eleven members and nothing else: %v", receipt)
+	}
+	if _, present := first["salts"]; present {
+		t.Fatal("a version 2 acquisition has no salts")
+	}
+	if code, body := post(t, server, "/seal", `{"session":"v2-1"}`); code != http.StatusOK {
+		t.Fatalf("seal failed: %d %v", code, body)
+	}
+	report, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
+	if err != nil || !report.OK {
+		t.Fatalf("a version 2 store minted on request must verify: %v %v", err, report)
 	}
 }
