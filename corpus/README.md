@@ -100,6 +100,27 @@ trade holds while the Go binary is the only server; a second independent
 implementation of the HTTP surface is the reopening condition for an
 acquire/response vector class.
 
+## Version 3 vectors, and when they arbitrate
+
+**`v3/stores/*.json`** — twelve vectors for receipt version 3 (`SPEC.md` §1.2a,
+§4 steps 5 and 6), in the same shape as `stores/` plus an optional
+`decisionRecords` map, materialized as the directory a verifier is handed for
+§4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
+citation and decision record both resolve; `citation-unresolved`;
+`decision-record-mismatch`, with the directory present and with it absent;
+`malformed` for a `kind` outside its values, for a `null` requester, and for a
+version 2 receipt relabelled `"3"`; `signature-mismatch` for a member appended
+inside `acquisition` after signing and for a version 3 receipt signed under the
+version 2 prefix; a store holding one session of each version; and a session
+that mixes versions, which is `chain-broken`.
+
+They are as frozen as the rest and were written against the specification, not
+against an implementation: no implementation answered them when they were
+written. `gateway conform` reads `stores/` alone today. The change that
+implements version 3 is the change that makes the runner read `v3/stores/` as
+well — a vector that fails there is a specification question before it is an
+implementation one, the same rule as above.
+
 ## The process contract
 
 `--impl CMD` drives any implementation, in any language, with no dependency on

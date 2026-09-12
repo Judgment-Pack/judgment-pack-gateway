@@ -6,7 +6,11 @@ ADR-0002). It reuses the inline attestation format unchanged and adds exactly on
 mechanism on top: a **sealed session registry** that closes the two residuals the
 inline verify cannot catch on its own.
 
-**This document is normative for receipt version 2.** It began by deferring the
+**This document is normative for receipt versions 2 and 3.** Version 3 (§1.2a)
+adds to version 2 and changes nothing version 2 states: a receipt signed under
+version 2 means afterwards exactly what it meant before, a version 3 verifier
+verifies a version 2 store unchanged (§1.4), and the seal (§3) is the same record
+under both. It began by deferring the
 format to the acquisition-proxy
 ([`acquisition-proxy/SPEC.md`](https://github.com/Judgment-Pack/judgment-pack-evaluator-experiments/blob/main/acquisition-proxy/SPEC.md)),
 which specifies version 1. Version 2 **diverges** from it: receipts and seals are
@@ -62,7 +66,7 @@ else is **refused**.
   Other C0 controls take `\u00xx` with **lowercase** hex. `U+007F`, `U+2028` and
   `U+2029` are emitted raw.
 
-### 1.2 The receipt
+### 1.2 The receipt (version 2)
 
 A receipt is a canonical JSON object. Every member is required.
 
@@ -93,6 +97,102 @@ appending anything invalidates the signature.
 The context prefix domain-separates a receipt signature from a seal signature
 (§3), so neither can be replayed as the other.
 
+### 1.2a The receipt (version 3)
+
+A version 2 receipt binds the bytes, the position in a session, the chain, and
+two labels the operator chose. It does not say which system was asked, which
+statement ran, which snapshot was read, through what, or for whom; its arguments
+commitment is an equality oracle to every caller (§5); and it has no form for an
+action a person asked for. Version 3 is version 2 with those members added. It
+is the same canonical JSON object under the same rules (§1.1): the new members
+are strings, integers, `null`, objects and arrays of strings, so nothing new
+enters the canon domain.
+
+Every member is required unless marked optional. A nullable member is present
+as `null`, never absent: an absent member would let a receipt made with a
+capability switched off read the same as one made before the member existed.
+
+| Member | Type |
+|---|---|
+| `receiptVersion` | the **string** `"3"` |
+| `sessionId`, `callIndex`, `prevSignature`, `source`, `resultDigest`, `servedAt`, `authority`, `keyId`, `signature` | as in §1.2 |
+| `kind` | the string `"acquisition"` or `"action"` |
+| `argumentsCommitment` | `"sha256:" + 64 lowercase hex`, a salted commitment (below) to the canonical arguments |
+| `caller` | `{ "issuer": string, "subject": string, "tokenDigest": "sha256:" + hex }`, or `null` |
+| `acquisition` | object (below); present exactly when `kind` is `"acquisition"` |
+| `action` | object (below); present exactly when `kind` is `"action"` |
+
+`argumentsDigest` does not exist in version 3.
+
+**Commitments and the salt.** For each receipt the gateway draws 32 random bytes,
+the *salt*, and returns it to the caller in the acquire response (§6) — it is
+never retained, never signed, and never part of the store. A commitment to a
+value is `"sha256:"` + hex of SHA-256 over `salt || label || canon(value)`, where
+`label` is `"args:"` for `argumentsCommitment`, `"statement:"` for
+`acquisition.statement` and `"request:"` for `action.request`. A verifier checks
+nothing about a commitment. The disclosure boundary this fixes: a party holding
+the store learns nothing about the committed values, since without the salt every
+candidate hashes to something equally unrelated; a party able to call `/acquire`
+cannot compare its own commitment with another receipt's, since the salts differ —
+the oracle version 2 has (§5); the caller, who holds the salt, can reveal a value
+to an auditor of its choosing by handing over both, and only the caller can. A
+caller that loses the salt has lost the ability to reveal.
+
+**`caller`.** The identity that made the request, from a token the gateway
+verified against an issuer it was configured to trust: the token's issuer and
+subject, and the digest of the token bytes as presented. The token itself is
+never stored and never signed into a receipt. A gateway configured with no
+issuer records `null`. What a verified token proves is who asked, at the
+gateway's boundary. It does not prove that they approved what was asked for.
+
+**`acquisition`** — present when `kind` is `"acquisition"`:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `adapter` | `{ "name": string, "version": string, "digest": "sha256:" + hex }` | the program that fetched; for a connector image, the image digest |
+| `shape` | `"airbyte"`, `"mcp"`, `"http"`, or `"command"` | which adapter shape served the call; `"command"` is a bare operator-configured command with no adapter — the version 2 posture, kept available and visible |
+| `endpoint` | string or `null` | the host or URL the adapter connected to, as it would name it to an operator |
+| `statement` | `"sha256:" + hex` or `null` | a commitment (above) to the query, resource path, or tool call |
+| `snapshot` | string or `null` | what the source said about currency — a state bookmark, a transaction id, an object version, an ETag; `null` when the source offers nothing |
+| `peerIdentity` | string or `null` | the identity the transport established, such as `"tls:sha256:" + hex` of the peer's certificate; `null` for a local process |
+| `schema` | `"sha256:" + hex` or `null` | the discovered stream or resource schema, canonicalized and digested |
+| `upstreamToken` | string or `null` | an integrity token the upstream itself produced, carried verbatim when one exists; `null` when the upstream vouches for nothing |
+| `pageItems` | array of `"sha256:" + hex` — **optional** | for a page, the digest of each item's canonical bytes in order; absent for a single result |
+| `observedAt` | string | when the adapter received the bytes, as the adapter recorded it; `servedAt` remains the gateway's own stamp |
+
+`upstreamToken` and `shape` are the honest-bounds members: a receipt never lets
+a source that vouches for itself and a source that vouches for nothing read the
+same, and never lets bytes attested through a bare command read as bytes whose
+acquisition was recorded.
+
+**`action`** — present when `kind` is `"action"`. An action receipt records that
+an executor was asked to perform something, by which authenticated identity,
+citing which decision, and what the target answered. `resultDigest` is over the
+target's response bytes, retained like any artifact.
+
+| Member | Type | Meaning |
+|---|---|---|
+| `requester` | `{ "issuer": string, "subject": string, "tokenDigest": "sha256:" + hex }` | the authenticated identity that submitted the request; **never `null`** — a request with no authenticated requester is refused before any executor runs |
+| `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex }` | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest |
+| `cites` | array of `{ "sessionId": string, "callIndex": integer, "signature": hex }` | the acquisition receipts the requester says the decision record relied on |
+| `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string }` | what was called, named as `acquisition` names its adapter |
+| `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
+| `adapter` | as in `acquisition` | the executor that performed it |
+| `observedAt` | string | when the target answered |
+
+`decision.packDigest` and `cites` are assertions the requester supplied. §4
+checks that the cited receipts exist and that a decision record with the stated
+digest exists; it does not compare the record's contents with either, and it does
+not read them. An action receipt does not say the action was right, and it does
+not say the identity approved it: it is lineage of a request and a response.
+
+**What the signature covers** — `"judgment-pack-gateway/receipt/3:"` followed by
+`canon` of the receipt object with **the `signature` member removed and every
+other member retained**, at every depth. Appending anything anywhere, inside
+`acquisition` or `action` included, invalidates the signature. The prefix carries
+the version, so a version 3 signature cannot be presented as a version 2 one or
+the reverse; the seal's prefix is unchanged (§3).
+
 ### 1.3 Store layout
 
 ```
@@ -103,16 +203,23 @@ The context prefix domain-separates a receipt signature from a seal signature
 The registry is a separate file: one canonical seal object per line, newline
 separated.
 
+A version 3 store has the same layout. Salts are not in it (§1.2a). Decision
+records are not in it either: they are the runtime's own files, and a verifier
+is handed their directory separately (§4). A store may hold receipts of both
+versions across sessions; within one session every receipt is of one version,
+and a session that mixes them reports `chain-broken` at the first receipt whose
+version differs from the session head's.
+
 ### 1.4 Verification statuses
 
 Per receipt, **at most one finding**, taken at the first failure in this order:
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex |
-| 2 | `unsupported-version` | `receiptVersion` is not `"2"` |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3 also: a member §1.2a requires absent, `kind` outside its two values, the object for the kind missing or its sibling present, `caller` neither `null` nor of the stated shape, any commitment or digest member not of its stated form, `pageItems` present and not an array of digests, `requester` `null` or not of the stated shape, `cites` not an array of the stated shape, `observedAt` not a string |
+| 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the verifier's own key id |
-| 4 | `signature-mismatch` | the signature does not verify over §1.2's input |
+| 4 | `signature-mismatch` | the signature does not verify over the input §1.2 or §1.2a defines for the receipt's version |
 | 5 | `misfiled` | the filename stem is not `callIndex`, **or** `sessionId` is not the directory name |
 | 6 | `authority-mismatch` | `authority` is not the expected authority |
 | 7 | `artifact-missing` | no artifact at `resultDigest`'s path |
@@ -134,6 +241,16 @@ Per session, over the receipts that passed:
 A receipt that fails is excluded from that reconstruction, so a failure at
 `callIndex` 0 also produces `sequence-broken`. That second finding is a
 consequence of position, not additional evidence.
+
+The version of a receipt decides which structural checks order 1 applies and
+which signing input order 4 uses; the two versions are otherwise verified by
+the same steps, and a version 2 receipt verifies under a version 3 verifier
+exactly as it did before. A verifier that knows version 2 alone does not verify
+a version 3 receipt: it reports `malformed`, because the receipt lacks
+`argumentsDigest`, or `unsupported-version`, according to which of its order-1
+checks it reaches first — a refusal either way, never an acceptance. Version 2
+receipts are relabelled `"3"` at their peril: they lack every member §1.2a
+requires and fail at order 1, not at the signature.
 
 ## 2. What per-receipt verification catches, and what it cannot
 
@@ -223,8 +340,26 @@ not rest on the HTTP layer alone.
      seal; a seal is a high-water mark).
 4. For each sealed session **absent** from the store → **`sealed-session-missing`**
    (a whole sealed session deleted).
+5. For each version 3 receipt of kind `"action"` that passed the per-receipt
+   checks, each entry of `cites` must name a receipt present in the store at
+   `receipts/<sessionId>/<callIndex>.json` whose `signature` member equals the
+   cited one → otherwise **`citation-unresolved`**, reported once for the action
+   receipt with its own `sessionId` and `callIndex`. Nothing about the cited
+   receipt's contents is read beyond its signature; whether it verifies is its
+   own finding.
+6. For each such action receipt, its `decision.recordDigest` must equal the
+   SHA-256 of some **candidate** under the decision-record directory the
+   verifier was given → otherwise **`decision-record-mismatch`**, reported once
+   for the action receipt. A candidate is the bytes of a regular file under that
+   directory, or, for a file whose name ends in `.jsonl`, each of its lines
+   without the terminating newline. The verifier hashes candidates and compares;
+   it interprets none of them. A verifier given no decision-record directory
+   reports `decision-record-mismatch` for every action receipt: an absent
+   directory cannot make an action verify, it can only fail to excuse one
+   (§4.1).
 
-`ok` is true only if the inline verify passed **and** no registry finding fired.
+`ok` is true only if the inline verify passed **and** no registry finding fired
+**and** no citation or decision-record finding fired.
 
 The verifier must obtain the registry from the gateway (the key holder), **not** from
 the untrusted store. That is the whole point: the anchor's authority comes from being
@@ -287,6 +422,12 @@ not itself a finding.
   (binds localhost), no access control on the HTTP surface. This is a reference for
   self-hosting a trust root and for demonstrating the mechanism, not a hardened
   public deployment.
+- Version 3's `caller` and `requester` record who asked, as a token verified at
+  the gateway's boundary says; neither records that anyone **approved** anything,
+  and an action receipt is lineage of a request and a response, never a statement
+  that the action was right. Version 3's commitments close version 2's equality
+  oracle for every party but the caller, who holds the salt, and open nothing
+  to a party holding the store.
 
 ## 5a. Consuming an attestation
 
@@ -368,6 +509,15 @@ Localhost, JSON, standard library only.
 |--------|-------------|---------------|
 | POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}`, where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies §1.2's coverage rule. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
+
+A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
+salt}`: `salt` is the receipt's 32-byte salt in lowercase hex (§1.2a), returned
+here and nowhere else. Every `/acquire` receipt is of kind `"acquisition"`. This
+reference defines no surface that mints an action receipt: the format is
+specified so that a verifier written now verifies action receipts produced
+later, and the surface that produces them belongs to the engine described in
+`docs/adr/0001-one-engine-four-processes.md`. `gateway verify` takes
+`--decision-records <dir>` for §4 steps 5 and 6.
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
@@ -403,3 +553,11 @@ The vectors are signed under a published test seed (`corpus/TEST-SEED`), which s
 nothing real and must never be used by a deployment. Verification consumes only
 `corpus/TEST-PUBLIC-KEY` — running the corpus never hands the runner a secret,
 which is the same property receipt version 2 gives a real verifier.
+
+The version 3 store vectors live under `corpus/v3/stores/`. They are written
+against §1.2a and §4 and are as frozen as the rest; until an implementation
+exists that answers them, `gateway conform` reads `corpus/stores/` alone, and
+the change that makes the runner read `corpus/v3/stores/` is the change that
+implements version 3 (`corpus/README.md`). A version 3 store vector may carry a
+`decisionRecords` map beside `files`, materialized as the directory §4 step 6
+names.
