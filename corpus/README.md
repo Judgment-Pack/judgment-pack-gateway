@@ -106,8 +106,9 @@ acquire/response vector class.
 §4 steps 5 and 6), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
-citation and decision record both resolve; `citation-unresolved`, for a wrong
-signature and for the right one in another case; `decision-record-mismatch`,
+citation and decision record both resolve; `citation-unresolved` for a wrong
+signature; `malformed` for the right signature cited in another case, since a
+cited signature has the form §1.2a gives it; `decision-record-mismatch`,
 with the directory present and with it absent;
 `malformed` for a `kind` outside its values, for a `null` requester, and for a
 version 2 receipt relabelled `"3"`; `signature-mismatch` for a member appended

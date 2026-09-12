@@ -111,10 +111,17 @@ enters the canon domain.
 Every member is required unless marked optional. A nullable member is present
 as `null`, never absent: an absent member would let a receipt made with a
 capability switched off read the same as one made before the member existed.
-Every constraint this section states — a member's presence, its type, an
-enumeration, the shape of an object, the form of a string — is a condition of
-§1.4 order 1: a receipt that violates any of them is `malformed`, before its
-version, key or signature is looked at. Two forms recur and are named once:
+Every **structural** constraint this section states — a member's presence, its
+type, an enumeration, the shape of an object, the form of a string — is a
+condition of §1.4 order 1: a receipt that violates any of them is `malformed`,
+before its version, key or signature is looked at. A **relational**
+requirement — that `prevSignature` names the previous receipt's signature, that
+a cited receipt exists, that a digest matches some bytes — is not an order-1
+condition; each is checked at the stage §1.4 or §4 assigns it, and nowhere
+else. `pageItems` is a producer's assertion about the page it attests: the
+verifier checks its form and nothing about its correspondence to the artifact,
+which a consumer checks for the item it uses by re-digesting that item (§5a).
+Two forms recur and are named once:
 
 - a **digest** is the string `"sha256:"` followed by exactly 64 lowercase
   hexadecimal characters; uppercase, another length, or another prefix is not a
@@ -122,8 +129,9 @@ version, key or signature is looked at. Two forms recur and are named once:
   `statement`, `schema`, `recordDigest`, `packDigest`, `request`, and each element
   of `pageItems` are digests;
 - a version 3 **signature** — the receipt's own and each `cites[*].signature` —
-  is lowercase hexadecimal; uppercase is `malformed` here, where version 2 left
-  the case open.
+  is exactly 128 lowercase hexadecimal characters, the 64 bytes of an Ed25519
+  signature; uppercase or another length is `malformed` here, where version 2
+  left the case open and classed a wrong length as `signature-mismatch`.
 
 | Member | Type |
 |---|---|
@@ -241,7 +249,7 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape — and never a relational one |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the verifier's own key id |
 | 4 | `signature-mismatch` | the signature does not verify over the input §1.2 or §1.2a defines for the receipt's version |
@@ -394,12 +402,10 @@ not rest on the HTTP layer alone.
    each `0x0A`; each piece has one trailing `0x0D` removed if present; an empty
    piece is not a candidate; the piece after the last `0x0A`, if non-empty, is
    a candidate. The verifier hashes candidates and compares; it interprets none
-   of them. A directory that does not exist is an absent anchor: the verifier
-   reports `decision-record-mismatch` for every action receipt, since an absent
-   directory cannot make an action verify, it can only fail to excuse one
-   (§4.1). A path that exists and is not a directory, or a directory or file
-   under it that cannot be read, is present and unreadable evidence: no verdict
-   (§4.1). A verifier given no directory at all treats it as absent.
+   of them. The directory's own outcomes follow §4.1's table: absent is an
+   absent anchor, and every action receipt is then `decision-record-mismatch`;
+   present and unreadable, in any of the forms the table lists, is no verdict.
+   A verifier given no directory at all treats it as absent.
 
 Steps 5 and 6 each report their finding once per action receipt, as
 `{sessionId, callIndex, status}` with the action receipt's own session and
@@ -429,6 +435,8 @@ a verdict at all.
 | the registry file does not exist | no seals load — every session in the store is then `unregistered-session` |
 | the registry path exists but cannot be read, or any existing parent path component is not a directory | no verdict — the verifier refuses (non-zero exit); the anchor is present and unreadable, not absent |
 | a session directory holding no receipts | a session with count 0, judged against its seal like any other |
+| the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
+| the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 
 Each of these fails **closed**: an absent anchor cannot make a store verify, it can
 only fail to excuse one. A store that is genuinely empty against an empty registry
@@ -561,9 +569,10 @@ Localhost, JSON, standard library only.
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
 salts}`: `salts` is an object with one member per commitment the receipt
-carries, named by the commitment's label without its colon — `args` and
-`statement` for an acquisition receipt — each a 32-byte salt in lowercase hex
-(§1.2a), returned here and nowhere else. Every `/acquire` receipt is of kind
+carries, named by the commitment's label without its colon — `args` always, and
+`statement` exactly when `acquisition.statement` is not `null` — each a 32-byte
+salt in lowercase hex (§1.2a), returned here and nowhere else. Every `/acquire`
+receipt is of kind
 `"acquisition"`. This
 reference defines no surface that mints an action receipt: the format is
 specified so that a verifier written now verifies action receipts produced

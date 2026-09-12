@@ -1,6 +1,6 @@
 {
   "name": "v3-citation-case-differs",
-  "note": "The action receipt cites receipts/s2/0.json with that receipt's signature in uppercase hex. Signatures are lowercase and citations are compared as exact strings, so the citation does not resolve: citation-unresolved, beside the action receipt's own ok.",
+  "note": "The action receipt cites receipts/s2/0.json with that receipt's signature in uppercase hex. A version 3 signature, cited or own, is exactly 128 lowercase hex characters (§1.2a), so the receipt is malformed at §1.4 order 1 and never reaches citation resolution: the finding names the file, and the passing set {0} yields no sequence finding.",
   "authority": "gateway:corpus",
   "files": {
     "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
@@ -21,14 +21,9 @@
         "status": "ok"
       },
       {
-        "callIndex": 1,
+        "file": "1.json",
         "sessionId": "s2",
-        "status": "ok"
-      },
-      {
-        "callIndex": 1,
-        "sessionId": "s2",
-        "status": "citation-unresolved"
+        "status": "malformed"
       }
     ]
   }
