@@ -17,7 +17,7 @@ names one of them as out of scope for version 2:
 1. **The acquisition record**: the system, the statement, the snapshot, the peer, the adapter.
 2. **A salted arguments commitment**, closing the equality oracle SECURITY.md describes.
 3. **A caller identity**, from a token the customer's identity provider issued.
-4. **Two kinds of receipt**: an acquisition, and an action a person approved.
+4. **Two kinds of receipt**: an acquisition, and an action an authenticated identity requested.
 
 Page receipts over a corpus ride on the first: a page is one acquisition whose record lists the
 digest of every item in it.
