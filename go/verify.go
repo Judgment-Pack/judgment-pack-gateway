@@ -9,6 +9,7 @@ package main
 // under the public key.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -312,6 +313,51 @@ func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error)
 	return seals, order, nil
 }
 
+// topLevelSignature reads a receipt file's own signature member as written:
+// through the canonical parser when the file is in the domain, and otherwise
+// through a plain JSON decode that tolerates what the domain refuses in other
+// members, refusing only text that is not one JSON object or whose top-level
+// signature is not exactly one string. Duplicate top-level members are
+// refused as ambiguous.
+func topLevelSignature(data []byte) (string, bool) {
+	if v, err := parseJSON(data); err == nil {
+		if obj, ok := v.(*vObject); ok {
+			return memberString(obj, "signature")
+		}
+		return "", false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return "", false
+	}
+	signature, seen := "", 0
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		key, _ := keyToken.(string)
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return "", false
+		}
+		if key == "signature" {
+			seen++
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return "", false
+			}
+			signature = s
+		}
+	}
+	if seen != 1 {
+		return "", false
+	}
+	return signature, true
+}
+
 func memberString(obj *vObject, name string) (string, bool) {
 	v, ok := obj.get(name)
 	if !ok {
@@ -410,13 +456,13 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 	// against the filesystem, which may fold case -- and its decision record
 	// exists as some candidate's bytes. Both are reported beside the receipt's
 	// ok, once each, and independently.
-	var candidates map[string]bool
-	recordsPresent := false
-	if len(actions) > 0 {
-		candidates, recordsPresent, err = decisionCandidates(decisionRecords)
-		if err != nil {
-			return nil, err
-		}
+	wanted := map[string]bool{}
+	for _, r := range actions {
+		wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+	}
+	candidates, recordsPresent, err := decisionCandidates(decisionRecords, wanted)
+	if err != nil {
+		return nil, err
 	}
 	for _, r := range actions {
 		for _, c := range r.cites {
@@ -515,13 +561,12 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 		}
 		// What a citation resolves against is the file's signature member as
 		// written, whatever the file's status: a cited receipt that fails is
-		// resolved and then judged by its own finding (SPEC.md §4 step 5).
-		if v, err := parseJSON(data); err == nil {
-			if obj, ok := v.(*vObject); ok {
-				if signature, ok := memberString(obj, "signature"); ok {
-					result.signatures[strings.TrimSuffix(name, ".json")] = signature
-				}
-			}
+		// resolved and then judged by its own finding (SPEC.md §4 step 5). So
+		// the member is read even from a file the canonical parser refuses --
+		// a float in an unrelated member -- as long as the text is JSON with
+		// one unambiguous top-level string under that name.
+		if signature, ok := topLevelSignature(data); ok {
+			result.signatures[strings.TrimSuffix(name, ".json")] = signature
 		}
 		r, status := checkReceipt(data, storeRoot, sessionID, name, authority, publicKey, expectedKeyID)
 		if r == nil {

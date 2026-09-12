@@ -8,6 +8,7 @@ package main
 // session in the store.
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -48,6 +49,18 @@ func isSignature3(s string) bool { return isLowerHexOfLen(s, 128) }
 func validateVersion3(obj *vObject, r *receipt) error {
 	if !isSignature3(r.signature) {
 		return errors.New("version 3 signature is not 128 lowercase hex characters")
+	}
+	// The common members version 3 inherits from §1.2 keep their stated forms
+	// and are held to them here, where version 2 left them to later stages: a
+	// session id is a flat token (§3a) and a key id is 32 lowercase hex.
+	if err := requireSession(r.sessionID); err != nil {
+		return errors.New("version 3 sessionId is not a flat token")
+	}
+	if !isLowerHexOfLen(r.keyID, 32) {
+		return errors.New("version 3 keyId is not 32 lowercase hex characters")
+	}
+	if _, present := obj.get("argumentsDigest"); present {
+		return errors.New("argumentsDigest does not exist in version 3")
 	}
 	if err := requireDigest(obj, "argumentsCommitment"); err != nil {
 		return err
@@ -325,12 +338,16 @@ func validateAction(v value) ([]citation, string, error) {
 	return cites, recordDigest, nil
 }
 
-// decisionCandidates hashes every candidate under dir per SPEC.md §4 step 6 and
-// reports whether the directory was present at all. An empty dir means the
-// verifier was given none, which is absent. Absent and present-but-unreadable
-// are told apart exactly as they are for the registry (§4.1): absent fails
-// closed later, unreadable is no verdict here.
-func decisionCandidates(dir string) (map[string]bool, bool, error) {
+// decisionCandidates walks the decision-record directory of SPEC.md §4 step 6
+// and reports which of the wanted digests some candidate hashes to, and
+// whether the directory was present at all. An empty dir means the verifier
+// was given none, which is absent. Absent and present-but-unreadable are told
+// apart exactly as they are for the registry (§4.1): absent fails closed
+// later, unreadable is no verdict here -- and the directory is judged whether
+// or not any action receipt needs it, since an unreadable input is no verdict
+// regardless. Only the wanted digests are retained, so a large archive costs
+// its bytes once and its digests never.
+func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, bool, error) {
 	if dir == "" {
 		return nil, false, nil
 	}
@@ -347,7 +364,16 @@ func decisionCandidates(dir string) (map[string]bool, bool, error) {
 	if !info.IsDir() {
 		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
 	}
-	candidates := map[string]bool{}
+	found := map[string]bool{}
+	note := func(data []byte) {
+		if len(wanted) == 0 {
+			return
+		}
+		sum := sha256.Sum256(data)
+		if h := hex.EncodeToString(sum[:]); wanted[h] {
+			found[h] = true
+		}
+	}
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -362,16 +388,23 @@ func decisionCandidates(dir string) (map[string]bool, bool, error) {
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(data)
-		candidates[hex.EncodeToString(sum[:])] = true
+		note(data)
 		if strings.HasSuffix(d.Name(), ".jsonl") {
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSuffix(line, "\r")
-				if line == "" {
-					continue
+			// One candidate per line: split on 0x0A, one trailing 0x0D removed,
+			// empty pieces skipped, the unterminated final piece kept. Walked by
+			// index so a file of newlines allocates nothing per line.
+			rest := data
+			for len(rest) > 0 {
+				line := rest
+				if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+					line, rest = rest[:i], rest[i+1:]
+				} else {
+					rest = nil
 				}
-				sum := sha256.Sum256([]byte(line))
-				candidates[hex.EncodeToString(sum[:])] = true
+				line = bytes.TrimSuffix(line, []byte{'\r'})
+				if len(line) > 0 {
+					note(line)
+				}
 			}
 		}
 		return nil
@@ -379,5 +412,5 @@ func decisionCandidates(dir string) (map[string]bool, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	return candidates, true, nil
+	return found, true, nil
 }

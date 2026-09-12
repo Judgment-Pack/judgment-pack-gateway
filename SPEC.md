@@ -609,12 +609,12 @@ store vector per status this document names.
 through a small process contract, so an implementation in any language can answer
 to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.**
 
-Two questions this specification does not yet settle, surfaced by building the
+One question this specification does not settle, surfaced by building the
 corpus and recorded in [`corpus/README.md`](corpus/README.md): the order of
-findings, and whether a receipt that fails verification is *required* to also
+findings, which is why they are compared as a multiset. The other question that
+record raised — whether a receipt that fails verification is *required* to also
 produce the `sequence-broken` that follows from its exclusion from the chain
-reconstruction. An implementation that differs on either is not thereby
-non-conforming; the specification is what needs to improve.
+reconstruction — is settled by §1.4: it is, and the vectors expect it.
 
 The vectors are signed under a published test seed (`corpus/TEST-SEED`), which signs
 nothing real and must never be used by a deployment. Verification consumes only

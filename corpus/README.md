@@ -102,7 +102,7 @@ acquire/response vector class.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 13 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 15 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 and 6), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
@@ -110,8 +110,9 @@ citation and decision record both resolve; `citation-unresolved` for a wrong
 signature; `malformed` for the right signature cited in another case, since a
 cited signature has the form §1.2a gives it; `decision-record-mismatch`,
 with the directory present and with it absent;
-`malformed` for a `kind` outside its values, for a `null` requester, and for a
-version 2 receipt relabelled `"3"`; `signature-mismatch` for a member appended
+`malformed` for a `kind` outside its values, for a `null` requester, for a
+version 2 receipt relabelled `"3"`, for an `argumentsDigest` carried into
+version 3, and for a session id that is not a flat token; `signature-mismatch` for a member appended
 inside `acquisition` after signing and for a version 3 receipt signed under the
 version 2 prefix; a store holding one session of each version; and a session
 that mixes versions, which is `chain-broken`.

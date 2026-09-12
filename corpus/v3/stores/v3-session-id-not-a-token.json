@@ -1,0 +1,20 @@
+{
+  "name": "v3-session-id-not-a-token",
+  "note": "A validly signed version 3 receipt whose sessionId is \"bad session\", stored under a directory of that name so that misfiled would not fire. A version 3 sessionId is a flat token (§3a) at order 1, so it is malformed, and the session it sits in is then an unsealed session of one refused file.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/6c1b5fe984cdca3ecfcb1afb04e08dd874db4e8f134f19a22311aba3dfb01d02": "{\"n\":0,\"session\":\"bad session\"}",
+    "receipts/bad session/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:6c1b5fe984cdca3ecfcb1afb04e08dd874db4e8f134f19a22311aba3dfb01d02\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"bad session\",\"signature\":\"35fd6cd2ece6148582242c297c3401c450bf5247d4f5cfbe75f37c2ff3403fd792ab4e8cd548603fe20460db58d3362e65e93d023829948a203aa26cd1bb0008\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"bad session\",\"signature\":\"9f53377f37918bcf9de1a0d3d2ec84512fc157a9bf2dacfe15253631f3480f43356cbaf3e764a98f06e63c2da32360c26a89311104610572740ed225429a5d02\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "file": "0.json",
+        "sessionId": "bad session",
+        "status": "malformed"
+      }
+    ]
+  }
+}

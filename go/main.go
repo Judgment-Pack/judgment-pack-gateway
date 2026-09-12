@@ -95,11 +95,15 @@ func cmdVerify(args []string) int {
 	// The decision-record directory of SPEC.md §4 step 6: by flag, or as the
 	// fourth positional argument the corpus process contract uses. Absent
 	// means absent, and every version 3 action receipt then fails closed.
+	// Precedence, stated: two extra arguments are the flag and its value;
+	// one extra argument is the directory, whatever it is spelled -- a
+	// directory named "--records" is a directory -- except the bare flag
+	// itself, which is a flag missing its value.
 	decisionRecords := ""
 	switch rest := args[3:]; len(rest) {
 	case 0:
 	case 1:
-		if strings.HasPrefix(rest[0], "--") {
+		if rest[0] == "--decision-records" || rest[0] == "" {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2
 		}

@@ -160,7 +160,12 @@ func materializeVector(vector storeVector) (root, storeRoot, registryPath, decis
 		}
 	}
 	if vector.DecisionRecords != nil {
+		// Present, even when empty: a map with no entries is a directory with
+		// no candidates, which is not the same input as no directory.
 		decisionRecords = filepath.Join(root, "decisions")
+		if err := os.MkdirAll(decisionRecords, 0o755); err != nil {
+			return "", "", "", "", err
+		}
 		for path, text := range vector.DecisionRecords {
 			full := filepath.Join(decisionRecords, filepath.FromSlash(path))
 			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {

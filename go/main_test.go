@@ -940,8 +940,8 @@ func TestCmdVerifyArgumentForms(t *testing.T) {
 		}
 	}
 	usage("store", "registry")
-	usage("store", "registry", "authority", "--bogus")
 	usage("store", "registry", "authority", "--decision-records")
+	usage("store", "registry", "authority", "")
 	usage("store", "registry", "authority", "--decision-records", "")
 	usage("store", "registry", "authority", "dir", "extra")
 	usage("store", "registry", "authority", "--decision-records", "dir", "extra")
@@ -959,6 +959,8 @@ func TestCmdVerifyArgumentForms(t *testing.T) {
 		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test"},
 		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test", filepath.Join(dir, "records")},
 		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test", "--decision-records", filepath.Join(dir, "records")},
+		// A lone fourth argument is a directory whatever it is spelled.
+		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test", "--records"},
 	} {
 		in, err := os.CreateTemp(dir, "key")
 		if err != nil {
