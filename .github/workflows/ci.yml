@@ -53,14 +53,21 @@ jobs:
           go list -deps . | grep -v '^gateway$' | grep -vE '^(internal/|[a-z]+(/|$))' && exit 1 || true
       # The process boundary is the security claim (docs/adr/0001): the module
       # that holds the seed is never linked to the module that holds platform
-      # credentials. The adapters module's import path has no dot, so the
-      # filter above would let it through; these lines refuse it by name, and
-      # refuse the go.mod directives that would make such an import resolve.
-      - name: The core never imports the adapters module
+      # credentials. The filter above judges import spelling, and spelling is
+      # not provenance: a workspace file or a replace directive can make any
+      # name resolve anywhere. So this step asks the toolchain where every
+      # dependency actually resolved (`.Standard`), with workspaces disabled,
+      # and refuses the files and directives that would redirect resolution.
+      - name: Every core dependency resolves into the standard library
         if: matrix.os == 'ubuntu-latest'
+        env:
+          GOWORK: off
         run: |
-          go list -deps . | grep -E '^adapters(/|$)' && { echo "the core imports the adapters module"; exit 1; } || true
+          find .. -name go.work -not -path '*/.git/*' | grep -q . && { echo "a go.work file is present"; exit 1; } || true
           grep -nE '^\s*(require|replace|exclude)\b' go.mod && { echo "go.mod declares a dependency, replacement, or exclusion"; exit 1; } || true
+          go list -deps -f '{{.ImportPath}} {{.Standard}} {{.Dir}}' . \
+            | awk '$1 != "gateway" && $2 != "true" { print "resolves outside the standard library: " $0; bad = 1 } END { exit bad }'
+          go list -deps . | grep -qx plugin && { echo "the core imports plugin"; exit 1; } || true
 
   adapters:
     name: adapters · Go 1.26
@@ -68,6 +75,8 @@ jobs:
     defaults:
       run:
         working-directory: adapters
+    env:
+      GOWORK: off
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -84,9 +93,13 @@ jobs:
       - name: Build
         run: go build -buildvcs=false ./...
       # The mirror of the core's rule: an adapter may take dependencies the core
-      # never will, but it may never reach the signer, and no replace directive
-      # may make the core resolvable from here.
-      - name: The adapters module never imports the core
+      # never will, but no dependency may resolve into the core's directory,
+      # under any import name, and nothing may redirect resolution.
+      - name: No adapters dependency resolves into the core
         run: |
-          go list -deps ./... | grep -E '^gateway(/|$)' && { echo "an adapter imports the core module"; exit 1; } || true
+          find .. -name go.work -not -path '*/.git/*' | grep -q . && { echo "a go.work file is present"; exit 1; } || true
           grep -nE '^\s*replace\b' go.mod && { echo "go.mod carries a replace directive"; exit 1; } || true
+          core="$(cd ../go && pwd)"
+          go list -deps -f '{{.ImportPath}} {{.Dir}}' ./... \
+            | awk -v core="$core" '$2 == core || index($2, core "/") == 1 { print "resolves into the core: " $0; bad = 1 } END { exit bad }'
+          go list -deps ./... | grep -qx plugin && { echo "an adapter imports plugin"; exit 1; } || true

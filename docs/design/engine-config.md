@@ -29,7 +29,7 @@ and spawns what it needs. Nothing in the file is a command line, and nothing in 
   "platforms": {
     "finance-warehouse": {
       "binding": "postgres@sha256:…",
-      "credentials": { "env": "FINANCE_WAREHOUSE_DSN" }
+      "credentials": { "file": "/run/secrets/finance-warehouse" }
     },
     "policy-documents": {
       "binding": "s3-compatible@sha256:…",
@@ -54,15 +54,17 @@ silently dropped.
   takes today, named.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve
   an action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)).
-- `listen` binds localhost by default and the engine refuses a non-loopback address unless
-  `identity` is configured: an engine with no way to know who is calling does not accept
-  callers from off the machine.
+- `listen` is a loopback address, always. The gateway speaks plain HTTP and a token presented
+  over plain HTTP off the machine can be captured and replayed; SECURITY.md lists authenticated
+  transport as out of scope, and this design does not change that. Reaching the engine from
+  another host means a TLS-terminating front the operator runs and trusts, outside this
+  repository. `identity` decides who may call, never from where.
 - `identity` names the token issuer, the audience the engine expects to be named as, and a
   local copy of the issuer's public keys. The engine verifies tokens with the standard library
   and never fetches keys over the network on the request path; refreshing the key file is the
   operator's job, and a token signed by a key not in the file is refused. Without this member
   every receipt carries `caller: null` and no action is ever performed, because an action
-  requires an approver.
+  requires an authenticated requester.
 - `platforms` maps an operator-chosen name — the `source` a receipt will carry — to a
   **binding** from the catalog, pinned by digest, and to where its credentials are. `write`
   defaults to false; a platform that is not marked writable cannot be the target of an action
@@ -70,11 +72,14 @@ silently dropped.
 
 ## Credentials
 
-`credentials` is a reference, never a value: the name of an environment variable the adapter
-process will be started with, or a file path the adapter process will read. The gateway
-process resolves neither. It passes the reference to the adapter it spawns, and the adapter
-reads the secret in its own process. A configuration file that contained a secret would put
-the secret in the gateway's memory, which is the one place this design exists to keep it out of.
+`credentials` is a path, never a value, and never an environment variable: a file the
+adapter's OS identity can read and the signer's cannot. The gateway process passes the path to
+the adapter it spawns — with an otherwise empty environment — and the adapter reads the secret
+in its own process. An environment variable is refused as a reference because the only
+environment the gateway could copy it from is its own, which would put the secret in the
+signer's memory, the one place this design exists to keep it out of. At startup the engine
+checks the other direction too: a seed file readable by any adapter identity, or a credentials
+file readable by the signer's, is refused before anything listens.
 
 ## Bindings
 
@@ -90,7 +95,7 @@ running engine reaches:
     "history": {
       "shape": "airbyte",
       "image": "airbyte/source-postgres@sha256:…",
-      "licence": "MIT"
+      "licence": "ELv2"
     },
     "live": {
       "shape": "mcp",
@@ -106,7 +111,10 @@ One binding per platform; one entry per operation it supports — `history`, `li
 each naming its shape, the pinned artifact that serves it, the tools or streams it may use, and
 the licence of the artifact it pulls. A binding with an unpinned image is refused when the
 engine starts. A binding without a `licence` for an entry is refused too: the field exists so
-an operator hosting the engine for others can see which entries carry terms that forbid it.
+an operator hosting the engine for others can see which entries carry terms that forbid it —
+the Postgres connector above is one, since Airbyte's database connectors are ELv2 while most
+of its API connectors are MIT, and the value is copied from the connector's own metadata for
+the pinned digest, never assumed.
 
 Two shapes per platform is the norm, not a duplication: history comes through the connector
 protocol because it pages and bookmarks, live reads and writes come through MCP because the

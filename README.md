@@ -150,8 +150,10 @@ already exist — connector images for bulk and historical reads, the MCP server
 publish for live reads and writes — and a release that ships the gateway, the adapters
 and the runtime as one image with one configuration file. Inside that image the signer
 runs alone with the seed, each adapter runs as its own process with one platform's
-credentials, and neither is ever linked into the other; `go/boundary_test.go` and
-`adapters/boundary_test.go` make that a test rather than a promise. The receipt format
+credentials, and neither imports the other; `go/boundary_test.go` and
+`adapters/boundary_test.go` make the import rule a test, and the design notes state what
+the tests cannot: what each process may read, and which deployment choices would undo it.
+The receipt format
 this needs is designed in [docs/design/receipt-v3.md](docs/design/receipt-v3.md) and
 becomes normative only when it lands in `SPEC.md` with vectors.
 

@@ -73,13 +73,19 @@ user one thing to run. The determinations this record settles:
    the core never will; standard-library-only is preferred there too, and each addition is a
    `dependency` decision under the review regime ([README.md](README.md)).
 
-2. **No new channel.** The gateway spawns an adapter exactly as it spawns any source today:
-   the source contract of SPEC.md §6, unchanged. An adapter reads canonical arguments on stdin,
-   does its work, and writes one JSON result on stdout. It obtains a platform's credentials from
-   its own environment or files named in the engine configuration, never from the gateway
-   process; the gateway holds the seed and passes it to nothing. The runtime (`jpack`) runs as
-   its own process, pinned by release digest, and holds neither seed nor credentials. The
-   verifier needs no key at all.
+2. **No new channel, and a stated separation.** The gateway spawns an adapter over the source
+   contract of SPEC.md §6, unchanged: canonical arguments on stdin, one JSON result on stdout.
+   Spawning alone separates nothing — a child started as `serve` starts one today inherits the
+   signer's environment and runs as the signer's OS identity, so it could read the seed file
+   and the signer could read a credential placed in its environment. The engine therefore
+   starts an adapter with an **empty environment**, under a **distinct OS identity** where the
+   platform provides one, and refuses to start at all when the seed file is readable by any
+   adapter identity. A platform's credentials live in a file the adapter's identity can read and
+   the signer's cannot, named in the engine configuration by path only, never passed through the
+   gateway's environment. None of that is true of today's `serve`; making it true is the first
+   code change of the next phase, and this record claims it as a requirement, not a property.
+   The runtime (`jpack`) runs as its own process, pinned by release digest, and holds neither
+   seed nor credentials. The verifier needs the pinned public key and never the seed.
 
 3. **The release is the engine.** One image carries the gateway binary, the adapter binaries,
    the pinned runtime binary, and the catalog. One configuration file names platforms,
@@ -114,9 +120,10 @@ user one thing to run. The determinations this record settles:
 
 7. **What this record does not change.** The ceiling stays byte-lineage: a receipt never
    asserts that its contents are true or that an action was authorized. An action receipt
-   records that an executor was asked, by whom, citing which decision, and what the target
-   answered. `SPEC.md`, the corpus, and the honest bounds in the README are untouched by this
-   record.
+   records that an executor was asked, by which authenticated identity, citing which decision,
+   and what the target answered. A verified token proves who asked; it does not prove that
+   they approved this action, and the receipt does not say so. `SPEC.md`, the corpus, and the
+   honest bounds in the README are untouched by this record.
 
 ### Consequences
 
@@ -124,12 +131,18 @@ user one thing to run. The determinations this record settles:
   statement in SECURITY.md stays true by construction.
 - Good, because coverage comes from catalogs other people maintain, and the vendors' own MCP
   servers cover the systems no community connector reaches well.
-- Good, because the boundary is tested, not asserted: a crossing fails on a developer's machine
-  before a pull request exists.
+- Good, because the import boundary is tested, not asserted: a crossing fails on a developer's
+  machine before a pull request exists, and CI asks the toolchain where every dependency
+  resolved rather than trusting its spelling. The process boundary — what each process can
+  read — is a stated requirement with a named implementation step, not something the tests
+  establish, and this record says which is which.
 - Bad, because the repository is no longer dependency-free as a whole; only the core is, and
   the contribution guide has to say so.
 - Bad, because the engine depends at run time on a container runtime to execute connector
-  images, an operational dependency this repository never had.
+  images, an operational dependency this repository never had — and the wrong choice of
+  runtime dissolves the boundary: a host container socket in an adapter's hands is host
+  authority, which includes the seed. The engine-image note names the default that keeps the
+  boundary and refuses the other unless an operator accepts it by name.
 - Bad, because a second module in one repository invites the shortcut this record forbids; the
   guard is the only thing standing between "in the box" and "in the process".
 - Revisit when an adapter needs a richer channel than one request and one result over
