@@ -104,14 +104,18 @@ name form is for passing a path through, not a secret: a credential placed in th
 environment is in the signer's memory whatever is declared, and this design does not cover that
 configuration — give a source a path to a file its own identity can read.
 
-**On Unix a source runs in its own process group**, so cancelling it — on the thirty-second timeout,
-on overflow, or on the gateway's own shutdown — kills the source and every descendant still in
-that group, and the group is killed again after the source is waited for, since an overflow a
-descendant writes after the source has exited cancels nothing os/exec still watches. A descendant
-that has left the group is not reached: it gets a bounded wait for its pipe, not the acquisition.
-On Windows there is no process group; the direct child is killed and any descendant gets the same
-bounded wait. The gateway carries its own interrupt to every source in flight, because a source in
-its own group no longer receives the terminal's. **`--source-user`** runs a source as another OS
+**On Unix a source runs in a process group led by an anchor**, a process the gateway starts before
+the source and reaps only after the group has been killed. A group is addressed by its leader's
+pid, and a leader that has been reaped frees a pid another process can take; the anchor holds the
+group id until the last kill has been sent, so no kill reaches an unrelated process. Cancelling a
+source — on the thirty-second timeout, on overflow, or on the gateway's own shutdown — kills the
+source and every descendant still in the group, and the group is killed again after the source is
+waited for, since an overflow a descendant writes after the source has exited cancels nothing
+os/exec still watches. A descendant that has left the group is not reached: it gets a bounded wait
+for its pipe, not the acquisition. On Windows there is no process group; the direct child is
+killed and any descendant gets the same bounded wait. The gateway carries its own interrupt to
+every source in flight, because a source in its own group no longer receives the terminal's, and
+it answers every request in flight before it exits. **`--source-user`** runs a source as another OS
 user where the platform has one, with that user's own supplementary groups and none of the
 gateway's, and `serve` refuses to start rather than fall back to running the source as the signer
 when it cannot switch; a root process stripped of the capability to switch passes the startup
@@ -126,9 +130,12 @@ startup with the `chmod` to run. What owner and mode do not see: an access-contr
 grants another user read access, which macOS honours before the mode bits; an operator who grants
 one has opened the seed, and nothing here notices. Windows checks that the seed is a regular file
 and says the rest is the filesystem's. **On Unix, descriptors the launcher left open are marked
-close-on-exec at startup**, enumerated exactly where the kernel lists them and swept up to the hard
-limit elsewhere, so a seed passed as `3<gateway.seed` reaches no source whatever user or mode
-protects the file; os/exec on Windows hands a child only the handles it is told to.
+close-on-exec at startup**, enumerated exactly where the kernel lists them (`/proc/self/fd` on
+Linux, `/dev/fd` on macOS and the BSDs), so a seed passed as `3<gateway.seed` reaches no source
+whatever user or mode protects the file. Where neither listing exists the sweep runs by number up
+to the hard limit, capped, and misses a descriptor opened above a limit that was lowered
+afterwards — a last resort on platforms this reference does not test. os/exec on Windows hands a
+child only the handles it is told to.
 
 What none of this gives: a source that runs as the gateway's own user, because no `--source-user`
 was given, can read what that user can read, including the seed; and a gateway that runs as root,

@@ -17,11 +17,17 @@ import (
 	"os/exec"
 )
 
-func prepareSourceProcess(cmd *exec.Cmd, name string) error {
+// sourceGroup has nothing to hold here: without process groups a source is
+// the direct child and nothing more, and os/exec kills that on cancellation.
+type sourceGroup struct{}
+
+func (*sourceGroup) reap() {}
+
+func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
 	if name != "" {
-		return fmt.Errorf("running a source as user %q is not supported on this platform", name)
+		return nil, fmt.Errorf("running a source as user %q is not supported on this platform", name)
 	}
-	return nil
+	return &sourceGroup{}, nil
 }
 
 func requireUserSwitching(sources map[string]sourceSpec) error {
@@ -51,7 +57,3 @@ func openSeed(path string) ([]byte, error) {
 }
 
 func markInheritedCloseOnExec() {}
-
-// Without process groups there is nothing beyond the direct child to reap;
-// os/exec has already killed that on cancellation.
-func reapSourceGroup(cmd *exec.Cmd) {}

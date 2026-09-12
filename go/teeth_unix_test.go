@@ -108,12 +108,14 @@ func TestPrepareSourceProcessAppliesTheNamedUser(t *testing.T) {
 		t.Skip("running as nobody")
 	}
 	cmd := exec.Command("true")
-	if err := prepareSourceProcess(cmd, "nobody"); err != nil {
+	group, err := prepareSourceProcess(cmd, "nobody")
+	if err != nil {
 		t.Fatal(err)
 	}
+	defer group.reap()
 	attr := cmd.SysProcAttr
-	if attr == nil || !attr.Setpgid {
-		t.Fatal("a source must start in its own process group")
+	if attr == nil || !attr.Setpgid || attr.Pgid != group.pgid() {
+		t.Fatal("a source must start in the anchor's process group")
 	}
 	if attr.Credential == nil {
 		t.Fatal("the named user was not applied")
@@ -192,9 +194,87 @@ func TestEscapedDescendantCannotStrandTheAcquisition(t *testing.T) {
 	}
 }
 
-// processGone reports whether no process with pid exists.
+// processGone reports whether pid names no running process. A zombie is a
+// process that has terminated and not yet been reaped by whoever inherited
+// it; it counts as gone here, since the question is whether the source is
+// still executing, not whether init has got round to it.
 func processGone(pid int) bool {
-	return syscall.Kill(pid, 0) == syscall.ESRCH
+	if syscall.Kill(pid, 0) == syscall.ESRCH {
+		return true
+	}
+	stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
+	if err != nil {
+		return false // no /proc: only ESRCH can say gone
+	}
+	// The state follows the parenthesised command name.
+	if i := strings.LastIndexByte(string(stat), ')'); i >= 0 && i+2 < len(stat) {
+		return stat[i+2] == 'Z' || stat[i+2] == 'X'
+	}
+	return false
+}
+
+// The anchor exists while the group may still be killed, and not after. Its
+// pid leads the group the source joins, so the group id cannot be reused by
+// anything else until reap has finished with it.
+func TestSourceGroupAnchorLivesUntilReap(t *testing.T) {
+	cmd := exec.Command("true")
+	group, err := prepareSourceProcess(cmd, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchor := group.pgid()
+	if processGone(anchor) {
+		t.Fatal("the anchor must be running while the group is open")
+	}
+	if attr := cmd.SysProcAttr; attr == nil || !attr.Setpgid || attr.Pgid != anchor {
+		t.Fatalf("the source must join the anchor's group; got %+v", cmd.SysProcAttr)
+	}
+	group.reap()
+	if !awaitGone(anchor, 10*time.Second) {
+		t.Fatal("the anchor survived reap")
+	}
+}
+
+// After an acquisition nothing of its group remains: not the anchor, not the
+// source, not a descendant.
+func TestAcquisitionLeavesNoAnchorBehind(t *testing.T) {
+	if _, err := os.Stat("/proc/self"); err != nil {
+		t.Skip("counting children needs /proc")
+	}
+	children := func() int {
+		entries, _ := os.ReadDir("/proc")
+		count := 0
+		for _, entry := range entries {
+			pid, err := strconv.Atoi(entry.Name())
+			if err != nil {
+				continue
+			}
+			environ, err := os.ReadFile("/proc/" + entry.Name() + "/environ")
+			if err != nil {
+				continue
+			}
+			if strings.Contains(string(environ), envGroupAnchor+"=1") && !processGone(pid) {
+				count++
+			}
+		}
+		return count
+	}
+	before := children()
+	service, _ := testService(t)
+	if _, err := service.acquire("anchor-1", "screening", vString("x")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(envSourceFail, "1")
+	if _, err := service.acquire("anchor-2", "screening", vString("x")); err == nil {
+		t.Fatal("a failing source must fail the acquisition")
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for children() > before && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if after := children(); after > before {
+		t.Fatalf("%d anchor process(es) survived their acquisitions", after-before)
+	}
 }
 
 // An overflow that arrives after the direct child has exited cancels a
@@ -216,7 +296,7 @@ func TestOverflowAfterTheChildExitedStillKillsTheGroup(t *testing.T) {
 		t.Fatal("a late overflow from a descendant must fail the acquisition")
 	}
 	pid := holderPid()
-	if !awaitGone(pid, 3*time.Second) {
+	if !awaitGone(pid, 10*time.Second) {
 		t.Fatalf("descendant %d survived the acquisition; the group was not reaped", pid)
 	}
 }

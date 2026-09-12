@@ -252,7 +252,8 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// environment; an empty declaration is an empty environment, not an
 	// inherited one.
 	cmd.Env = sourceEnvironment(spec)
-	if err := prepareSourceProcess(cmd, spec.user); err != nil {
+	group, err := prepareSourceProcess(cmd, spec.user)
+	if err != nil {
 		return nil, fmt.Errorf("source %s: %w", source, err)
 	}
 	cmd.WaitDelay = g.waitDelay
@@ -267,6 +268,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// is reported as that, with the operating system's own reason, rather
 	// than as an empty "source failed".
 	if err := cmd.Start(); err != nil {
+		group.reap()
 		return nil, fmt.Errorf("source could not be started: %v", err)
 	}
 	waitErr := cmd.Wait()
@@ -274,8 +276,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// the acquisition. os/exec stops watching the context once the direct
 	// child has exited, so an overflow written by a descendant after that
 	// cancels a context nobody acts on; the bounded wait then returns, and
-	// this is what kills the descendant.
-	reapSourceGroup(cmd)
+	// this is what kills the descendant. The group's anchor is reaped last,
+	// so the kill cannot reach a reused pid.
+	group.reap()
 	if stdout.overflowed {
 		// Whether the kill landed first or the source exited on its own, the
 		// output is not the output it produced.
@@ -548,11 +551,7 @@ func (g *gatewayService) handler() http.Handler {
 
 // listenAndServe binds localhost only. This reference has no authentication and
 // no access control; it is for self-hosting a trust root and demonstrating the
-// mechanism, not a hardened public deployment. It serves until ctx ends --
-// the signal context cmdServe builds -- then stops accepting, lets in-flight
-// requests finish briefly, and returns; every source in flight was started
-// under a context derived from g.ctx, which cmdServe makes the same one, so
-// they are killed rather than left running past the gateway.
+// mechanism, not a hardened public deployment.
 func (g *gatewayService) listenAndServe(ctx context.Context, address string) error {
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -560,15 +559,29 @@ func (g *gatewayService) listenAndServe(ctx context.Context, address string) err
 	}
 	fmt.Fprintf(os.Stderr, "gateway on http://%s (authority %s, key %s)\n",
 		listener.Addr(), g.authority, g.keyID)
+	return g.serveOn(ctx, listener)
+}
+
+// serveOn serves until ctx ends -- the signal context cmdServe builds -- then
+// stops accepting, waits for every request in flight to be answered, and only
+// then returns, so the process does not exit under a handler. Every source in
+// flight was started under a context derived from g.ctx, which cmdServe makes
+// the same one, so each ends within the pipe wait; the grace allows for that
+// and for the answer to be written.
+func (g *gatewayService) serveOn(ctx context.Context, listener net.Listener) error {
 	server := &http.Server{Handler: g.handler(), ReadHeaderTimeout: 10 * time.Second}
+	shutdown := make(chan error, 1)
 	go func() {
 		<-ctx.Done()
-		grace, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		grace, cancel := context.WithTimeout(context.Background(), g.waitDelay+10*time.Second)
 		defer cancel()
-		_ = server.Shutdown(grace)
+		shutdown <- server.Shutdown(grace)
 	}()
 	if err := server.Serve(listener); !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	if err := <-shutdown; err != nil {
+		return fmt.Errorf("shutdown: %w", err)
 	}
 	return nil
 }

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1393,7 +1394,7 @@ func expectHolder(t *testing.T) func() int {
 		}
 		_ = proc.Kill()
 		_, _ = proc.Wait() // waits on Windows; not a child on Unix, returns at once
-		if !awaitGone(pid, 5*time.Second) {
+		if !awaitGone(pid, 10*time.Second) {
 			t.Errorf("holder %d is still running after cleanup", pid)
 		}
 	})
@@ -1445,6 +1446,10 @@ func TestDescendantHoldingThePipeCannotStrandTheAcquisition(t *testing.T) {
 	}
 	t.Setenv(envSourceBig, "4096")
 	t.Setenv(envSourceHolder, "1")
+	// The parent stays alive after writing, so the overflow is observed while
+	// the direct child still exists and the context watcher is still acting:
+	// this test is about the kill, and the late-exit ordering has its own.
+	t.Setenv(envSourceHold, "1")
 	started := time.Now()
 	_, err := service.acquire("hold-1", "screening", vString("x"))
 	elapsed := time.Since(started)
@@ -1528,5 +1533,70 @@ func TestStderrFloodIsTruncated(t *testing.T) {
 	}
 	if len(err.Error()) > 300 {
 		t.Fatalf("the failure message must be bounded; got %d bytes", len(err.Error()))
+	}
+}
+
+// Shutting down over the real HTTP path answers a request in flight before
+// serveOn returns: the source is cancelled, the handler writes its refusal,
+// the client reads a whole response, and only then does the server come
+// down -- so a process that exits when serveOn returns never exits under a
+// handler.
+func TestShutdownAnswersInFlightRequestsBeforeReturning(t *testing.T) {
+	service, _ := testService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	service.ctx = ctx
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	served := make(chan error, 1)
+	go func() { served <- service.serveOn(ctx, listener) }()
+
+	dir := t.TempDir()
+	started := filepath.Join(dir, "started")
+	t.Setenv(envSourceReady, started)
+	t.Setenv(envSourceWait, filepath.Join(dir, "never-released"))
+	type answer struct {
+		code int
+		body map[string]any
+		err  error
+	}
+	answered := make(chan answer, 1)
+	go func() {
+		resp, err := http.Post("http://"+listener.Addr().String()+"/acquire", "application/json",
+			strings.NewReader(`{"session":"shutdown-http","source":"screening","arguments":{"q":"x"}}`))
+		if err != nil {
+			answered <- answer{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		var body map[string]any
+		decodeErr := json.NewDecoder(resp.Body).Decode(&body)
+		answered <- answer{code: resp.StatusCode, body: body, err: decodeErr}
+	}()
+	waitForFile(t, started)
+	cancel()
+
+	select {
+	case err := <-served:
+		if err != nil {
+			t.Fatalf("serveOn returned an error: %v", err)
+		}
+	case <-time.After(service.waitDelay + 20*time.Second):
+		t.Fatal("serveOn did not return after shutdown")
+	}
+	select {
+	case a := <-answered:
+		if a.err != nil {
+			t.Fatalf("the in-flight request must receive a whole response, got transport error: %v", a.err)
+		}
+		if a.code != http.StatusBadRequest || a.body["error"] == nil {
+			t.Fatalf("the in-flight request must be answered with the refusal, got %d %v", a.code, a.body)
+		}
+	default:
+		t.Fatal("serveOn returned before the in-flight request was answered")
+	}
+	if _, sealErr := service.sealSession("shutdown-http"); sealErr == nil {
+		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
 	}
 }

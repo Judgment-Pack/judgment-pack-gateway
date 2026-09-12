@@ -18,32 +18,90 @@ import (
 	"syscall"
 )
 
+// envGroupAnchor marks the anchor process. It is set by startAnchor alone,
+// on an otherwise empty environment, and read by init below before main or
+// any test runs, so the same executable serves as its own anchor.
+const envGroupAnchor = "GATEWAY_INTERNAL_GROUP_ANCHOR"
+
+func init() {
+	if os.Getenv(envGroupAnchor) == "1" {
+		// Hold the group open until the gateway closes this pipe or kills
+		// the group. Nothing else happens in this process.
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
+}
+
+// sourceGroup is the process group a source runs in. Its leader is not the
+// source but an anchor process the gateway starts first and reaps last: a
+// group is addressed by its leader's pid, and once a leader has been reaped
+// that pid can be reused by an unrelated process, which a later kill of the
+// group would then reach. The anchor exists so that no kill is ever sent to
+// a group whose leader is gone.
+type sourceGroup struct {
+	anchor *exec.Cmd
+	stdin  io.Closer
+}
+
+func startAnchor() (*sourceGroup, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	anchor := exec.Command(self)
+	anchor.Env = []string{envGroupAnchor + "=1"}
+	anchor.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdin, err := anchor.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	if err := anchor.Start(); err != nil {
+		return nil, err
+	}
+	return &sourceGroup{anchor: anchor, stdin: stdin}, nil
+}
+
+func (g *sourceGroup) pgid() int { return g.anchor.Process.Pid }
+
+// kill sends SIGKILL to the whole group: the source, every descendant still
+// in it, and the anchor. The anchor then exists as a zombie until reap, and
+// the group id stays held.
+func (g *sourceGroup) kill() { _ = syscall.Kill(-g.pgid(), syscall.SIGKILL) }
+
+// reap kills whatever remains of the group and only then reaps the anchor.
+func (g *sourceGroup) reap() {
+	g.kill()
+	_ = g.stdin.Close()
+	_ = g.anchor.Wait()
+}
+
 // prepareSourceProcess sets what a source process starts with. Every source
-// gets its own process group, so cancelling it kills the source and every
-// descendant it left holding a pipe rather than the direct child alone. A
-// source with a named user gets that user's uid, gid and supplementary groups
-// in place of the gateway's. The groups are replaced, never kept: a gateway
-// that is a member of a group with authority -- a container runtime's, say --
-// must not pass that membership to a source.
-func prepareSourceProcess(cmd *exec.Cmd, name string) error {
-	attr := &syscall.SysProcAttr{Setpgid: true}
+// joins an anchor-led process group, so cancelling it kills the source and
+// every descendant it left holding a pipe rather than the direct child alone.
+// A source with a named user gets that user's uid, gid and supplementary
+// groups in place of the gateway's. The groups are replaced, never kept: a
+// gateway that is a member of a group with authority -- a container
+// runtime's, say -- must not pass that membership to a source.
+func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
+	group, err := startAnchor()
+	if err != nil {
+		return nil, fmt.Errorf("process group anchor: %w", err)
+	}
+	attr := &syscall.SysProcAttr{Setpgid: true, Pgid: group.pgid()}
 	if name != "" {
 		credential, err := lookupCredential(name)
 		if err != nil {
-			return err
+			group.reap()
+			return nil, err
 		}
 		attr.Credential = credential
 	}
 	cmd.SysProcAttr = attr
 	cmd.Cancel = func() error {
-		// A negative pid addresses the whole group. If that fails, the direct
-		// child is still killed, which is what the default did.
-		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
-			return cmd.Process.Kill()
-		}
+		group.kill()
 		return nil
 	}
-	return nil
+	return group, nil
 }
 
 func lookupCredential(name string) (*syscall.Credential, error) {
@@ -154,13 +212,18 @@ func openSeed(path string) ([]byte, error) {
 // launcher left open -- a seed passed as `3<gateway.seed`, say -- are not, and
 // without this they would reach every source regardless of user or mode.
 //
-// Where the kernel lists the open descriptors, they are marked exactly. Where
-// it does not, every number up to the hard limit is tried, because a
-// descriptor can exist above a soft limit that was lowered after it was
-// opened; the hard limit is capped so an unlimited one does not become a
-// million system calls at startup.
+// Where the kernel lists the open descriptors (/proc/self/fd on Linux,
+// /dev/fd on the BSDs and macOS) they are marked exactly. Where it does not,
+// every number up to the hard limit is tried, capped so an unlimited one does
+// not become a million system calls at startup; that last resort misses a
+// descriptor opened above a limit that was lowered afterwards, and
+// SECURITY.md says so.
 func markInheritedCloseOnExec() {
-	if entries, err := os.ReadDir("/proc/self/fd"); err == nil {
+	for _, dir := range []string{"/proc/self/fd", "/dev/fd"} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
 		for _, entry := range entries {
 			if fd, err := strconv.Atoi(entry.Name()); err == nil && fd > 2 {
 				syscall.CloseOnExec(fd)
@@ -181,14 +244,5 @@ func markInheritedCloseOnExec() {
 	}
 	for fd := 3; uint64(fd) < limit; fd++ {
 		syscall.CloseOnExec(fd)
-	}
-}
-
-// reapSourceGroup kills whatever remains of a source's process group after
-// Wait has returned. Errors are not reported: the group is usually already
-// gone, and there is nothing to do about one that is not.
-func reapSourceGroup(cmd *exec.Cmd) {
-	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 }
