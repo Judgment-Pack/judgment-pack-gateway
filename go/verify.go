@@ -9,6 +9,7 @@ package main
 // under the public key.
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -16,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -66,6 +68,10 @@ type receipt struct {
 	signature     string
 	prevSignature string
 	hasPrev       bool // false means the member was null: this is a session head
+	// Version 3 only (verify_v3.go).
+	kind         string
+	cites        []citation
+	recordDigest string
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {
@@ -93,10 +99,21 @@ func receiptFrom(obj *vObject) (*receipt, error) {
 		{"resultDigest", &r.resultDigest},
 		{"signature", &r.signature},
 		{"source", new(string)},
-		{"argumentsDigest", new(string)},
 		{"servedAt", new(string)},
 	} {
 		if *f.dst, err = str(f.name); err != nil {
+			return nil, err
+		}
+	}
+	// The members the version adds. A version this verifier does not know is
+	// left for order 2 to name; the two it knows are held to their own sets.
+	switch r.version {
+	case receiptVersion:
+		if _, err = str("argumentsDigest"); err != nil {
+			return nil, err
+		}
+	case receiptVersion3:
+		if err := validateVersion3(obj, r); err != nil {
 			return nil, err
 		}
 	}
@@ -139,7 +156,11 @@ func (r *receipt) signingInput() []byte {
 		v, _ := r.obj.get(name)
 		covered.set(name, v)
 	}
-	return append([]byte(receiptContext), canon(covered)...)
+	prefix := receiptContext
+	if r.version == receiptVersion3 {
+		prefix = receiptContext3
+	}
+	return append([]byte(prefix), canon(covered)...)
 }
 
 // --- seals ----------------------------------------------------------------
@@ -293,6 +314,60 @@ func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error)
 	return seals, order, nil
 }
 
+// topLevelSignature reads a receipt file's own signature member as written:
+// through the canonical parser when the file is in the domain, and otherwise
+// through a plain JSON decode that tolerates what the domain refuses in other
+// members, refusing only text that is not one JSON object or whose top-level
+// signature is not exactly one string. Duplicate top-level members are
+// refused as ambiguous.
+func topLevelSignature(data []byte) (string, bool) {
+	if v, err := parseJSON(data); err == nil {
+		if obj, ok := v.(*vObject); ok {
+			return memberString(obj, "signature")
+		}
+		return "", false
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return "", false
+	}
+	signature, seen := "", 0
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return "", false
+		}
+		key, _ := keyToken.(string)
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil {
+			return "", false
+		}
+		if key == "signature" {
+			seen++
+			var s string
+			if err := json.Unmarshal(raw, &s); err != nil {
+				return "", false
+			}
+			signature = s
+		}
+	}
+	// One complete object and nothing after it: the closing brace, then end
+	// of input. A second value, trailing bytes, or a truncated object is not
+	// a receipt file whose signature can be read as written.
+	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
+		return "", false
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return "", false
+	}
+	if seen != 1 {
+		return "", false
+	}
+	return signature, true
+}
+
 func memberString(obj *vObject, name string) (string, bool) {
 	v, ok := obj.get(name)
 	if !ok {
@@ -304,7 +379,17 @@ func memberString(obj *vObject, name string) (string, bool) {
 
 // --- verification ---------------------------------------------------------
 
+// verifyWithRegistry verifies with no decision-record directory: the version 2
+// call, under which every version 3 action receipt that passes the ladder is
+// decision-record-mismatch (SPEC.md §4 step 6, fail closed).
 func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []byte) (*report, error) {
+	return verifyWithRegistryAndRecords(storeRoot, registryPath, authority, "", publicKey)
+}
+
+// verifyWithRegistryAndRecords is the whole of SPEC.md §4: the per-receipt and
+// per-session findings, the registry anchor, and for version 3 action receipts
+// the citation and decision-record checks of steps 5 and 6.
+func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
 	// SPEC.md §4.1: A store root that exists but is not a directory is an unreadable evidence container (refusal).
 	if info, err := os.Stat(storeRoot); err != nil {
 		if !os.IsNotExist(err) {
@@ -324,13 +409,17 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 		return nil, err
 	}
 	counts := map[string]int64{}
+	signatures := map[string]map[string]string{}
+	var actions []*receipt
 	for _, sessionID := range sessions {
-		findings, n, err := verifySession(storeRoot, sessionID, authority, publicKey)
+		result, err := verifySession(storeRoot, sessionID, authority, publicKey)
 		if err != nil {
 			return nil, err
 		}
-		counts[sessionID] = n
-		rep.Findings = append(rep.Findings, findings...)
+		counts[sessionID] = result.count
+		signatures[sessionID] = result.signatures
+		actions = append(actions, result.actions...)
+		rep.Findings = append(rep.Findings, result.findings...)
 	}
 
 	seals, sealOrder, err := loadSeals(registryPath, publicKey)
@@ -368,6 +457,36 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 		if !inStore[sessionID] {
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": sessionID, "status": "sealed-session-missing",
+			})
+		}
+	}
+
+	// SPEC.md §4 steps 5 and 6: for each version 3 action receipt that passed
+	// the ladder, its citations resolve against what was enumerated -- never
+	// against the filesystem, which may fold case -- and its decision record
+	// exists as some candidate's bytes. Both are reported beside the receipt's
+	// ok, once each, and independently.
+	wanted := map[string]bool{}
+	for _, r := range actions {
+		wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+	}
+	candidates, recordsPresent, err := decisionCandidates(decisionRecords, wanted)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range actions {
+		for _, c := range r.cites {
+			stem := strconv.FormatInt(c.callIndex, 10)
+			if signature, ok := signatures[c.sessionID][stem]; !ok || signature != c.signature {
+				rep.Findings = append(rep.Findings, finding{
+					"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "citation-unresolved",
+				})
+				break
+			}
+		}
+		if !recordsPresent || !candidates[strings.TrimPrefix(r.recordDigest, "sha256:")] {
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-record-mismatch",
 			})
 		}
 	}
@@ -411,15 +530,26 @@ func listSessions(storeRoot string) ([]string, error) {
 	return sessions, nil
 }
 
-// verifySession returns the findings for one session and the number of receipt
-// files it holds -- the "store count" the seal is compared against, which
-// counts files present, not the highest callIndex.
-func verifySession(storeRoot, sessionID, authority string, publicKey []byte) ([]finding, int64, error) {
+// sessionResult is what verifying one session establishes: its findings; the
+// number of receipt files it holds -- the "store count" the seal is compared
+// against, which counts files present, not the highest callIndex; the
+// signature member of every file that parsed to one, by filename stem, which
+// is what a citation resolves against (SPEC.md §4 step 5); and the version 3
+// action receipts that passed the ladder, for steps 5 and 6.
+type sessionResult struct {
+	findings   []finding
+	count      int64
+	signatures map[string]string
+	actions    []*receipt
+}
+
+func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*sessionResult, error) {
 	dir := filepath.Join(storeRoot, "receipts", sessionID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
+	result := &sessionResult{signatures: map[string]string{}}
 	var names []string
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
@@ -437,7 +567,16 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) ([]
 	for _, name := range names {
 		data, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil {
-			return nil, 0, err
+			return nil, err
+		}
+		// What a citation resolves against is the file's signature member as
+		// written, whatever the file's status: a cited receipt that fails is
+		// resolved and then judged by its own finding (SPEC.md §4 step 5). So
+		// the member is read even from a file the canonical parser refuses --
+		// a float in an unrelated member -- as long as the text is JSON with
+		// one unambiguous top-level string under that name.
+		if signature, ok := topLevelSignature(data); ok {
+			result.signatures[strings.TrimSuffix(name, ".json")] = signature
 		}
 		r, status := checkReceipt(data, storeRoot, sessionID, name, authority, publicKey, expectedKeyID)
 		if r == nil {
@@ -451,6 +590,9 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) ([]
 		})
 		if status == "ok" {
 			valid = append(valid, r)
+			if r.kind == "action" {
+				result.actions = append(result.actions, r)
+			}
 		}
 	}
 
@@ -469,13 +611,18 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) ([]
 			"sessionId": sessionID, "callIndex": nil, "status": "sequence-broken",
 		})
 	} else {
+		// A session is of one version (SPEC.md §1.3): a receipt whose version
+		// differs from the head's breaks the chain exactly as a prevSignature
+		// that names the wrong signature does, and the first break of either
+		// kind reports the one chain-broken.
 		for i, r := range valid {
 			var want string
 			var wantSet bool
 			if i > 0 {
 				want, wantSet = valid[i-1].signature, true
 			}
-			if r.hasPrev != wantSet || (wantSet && r.prevSignature != want) {
+			versionDiffers := i > 0 && r.version != valid[0].version
+			if r.hasPrev != wantSet || (wantSet && r.prevSignature != want) || versionDiffers {
 				findings = append(findings, finding{
 					"sessionId": sessionID, "callIndex": nil, "status": "chain-broken",
 				})
@@ -483,7 +630,8 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) ([]
 			}
 		}
 	}
-	return findings, int64(len(names)), nil
+	result.findings, result.count = findings, int64(len(names))
+	return result, nil
 }
 
 // checkReceipt runs the per-receipt checks in the order SPEC.md §1 lists them:
@@ -521,7 +669,7 @@ func checkReceipt(data []byte, storeRoot, sessionID, fileName, authority string,
 		return nil, "malformed"
 	}
 
-	if r.version != receiptVersion {
+	if r.version != receiptVersion && r.version != receiptVersion3 {
 		return r, "unsupported-version"
 	}
 	// key-mismatch precedes signature-mismatch (SPEC 1.4 orders 3 then 4), so a

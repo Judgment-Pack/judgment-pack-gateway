@@ -40,6 +40,10 @@ type storeVector struct {
 	Authority string            `json:"authority"`
 	Files     map[string]string `json:"files"`
 	Registry  string            `json:"registry"`
+	// Version 3 only: the decision-record directory of SPEC.md §4 step 6,
+	// materialized under its own root. Absent means the verifier is given
+	// no directory, which is not the same as an empty one.
+	DecisionRecords map[string]string `json:"decisionRecords"`
 	// Optional, for cases the files map cannot express (SPEC.md §4.1).
 	AbsentRegistry bool     `json:"absentRegistry"`
 	EmptySessions  []string `json:"emptySessions"`
@@ -52,7 +56,7 @@ type storeVector struct {
 // implementation is either this binary's own code or another process.
 type implementation interface {
 	canon(source string) ([]byte, bool)
-	verify(storeRoot, registryPath, authority string, publicKey []byte) (bool, []map[string]any, error)
+	verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error)
 	label() string
 }
 
@@ -68,8 +72,8 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority string, publicKey []byte) (bool, []map[string]any, error) {
-	rep, err := verifyWithRegistry(storeRoot, registryPath, authority, publicKey)
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+	rep, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	if err != nil {
 		return false, nil, err
 	}
@@ -102,8 +106,14 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority string, publicKey []byte) (bool, []map[string]any, error) {
-	cmd := exec.Command(s.argv[0], append(s.argv[1:], "verify", storeRoot, registryPath, authority)...)
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+	args := append(s.argv[1:], "verify", storeRoot, registryPath, authority)
+	if decisionRecords != "" {
+		// The process contract's optional fourth argument (corpus/README.md):
+		// passed exactly when the vector carries decision records.
+		args = append(args, decisionRecords)
+	}
+	cmd := exec.Command(s.argv[0], args...)
 	cmd.Stdin = bytes.NewReader(publicKey)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -132,43 +142,60 @@ func sortedFindings(findings []map[string]any) []string {
 	return out
 }
 
-func materializeVector(vector storeVector) (root, storeRoot, registryPath string, err error) {
+func materializeVector(vector storeVector) (root, storeRoot, registryPath, decisionRecords string, err error) {
 	root, err = os.MkdirTemp("", "corpus")
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	storeRoot = filepath.Join(root, "store")
 	for path, text := range vector.Files {
 		full := filepath.Join(storeRoot, filepath.FromSlash(path))
 		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
 		// Bytes, never text: a newline translation would invalidate every
 		// signature in the corpus.
 		if err := os.WriteFile(full, []byte(text), 0o600); err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
+		}
+	}
+	if vector.DecisionRecords != nil {
+		// Present, even when empty: a map with no entries is a directory with
+		// no candidates, which is not the same input as no directory.
+		decisionRecords = filepath.Join(root, "decisions")
+		if err := os.MkdirAll(decisionRecords, 0o755); err != nil {
+			return "", "", "", "", err
+		}
+		for path, text := range vector.DecisionRecords {
+			full := filepath.Join(decisionRecords, filepath.FromSlash(path))
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				return "", "", "", "", err
+			}
+			if err := os.WriteFile(full, []byte(text), 0o600); err != nil {
+				return "", "", "", "", err
+			}
 		}
 	}
 	for _, required := range []string{"receipts", "artifacts"} {
 		if err := os.MkdirAll(filepath.Join(storeRoot, required), 0o755); err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
 	}
 	for _, name := range vector.EmptySessions {
 		if err := os.MkdirAll(filepath.Join(storeRoot, "receipts", name), 0o755); err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
 	}
 	registryPath = filepath.Join(root, "registry.jsonl")
 	if vector.AbsentRegistry {
 		// Deliberately not created: a MISSING registry is a different input from
 		// an empty one, and only one of them was previously covered.
-		return root, storeRoot, registryPath, nil
+		return root, storeRoot, registryPath, decisionRecords, nil
 	}
 	if err := os.WriteFile(registryPath, []byte(vector.Registry), 0o600); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
-	return root, storeRoot, registryPath, nil
+	return root, storeRoot, registryPath, decisionRecords, nil
 }
 
 func corpusPublicKey(corpusDir string) ([]byte, error) {
@@ -223,11 +250,12 @@ func runCorpus(corpusDir string, impl implementation) ([]string, int, int, error
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	paths, err := filepath.Glob(filepath.Join(corpusDir, "stores", "*.json"))
+	// Both directories arbitrate: the version 2 vectors and, since the
+	// version 3 verifier, the version 3 vectors staged beside them.
+	paths, err := storeVectorPaths(corpusDir)
 	if err != nil {
 		return nil, 0, 0, err
 	}
-	sort.Strings(paths)
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
@@ -237,11 +265,11 @@ func runCorpus(corpusDir string, impl implementation) ([]string, int, int, error
 		if err := json.Unmarshal(raw, &vector); err != nil {
 			return nil, 0, 0, err
 		}
-		root, storeRoot, registryPath, err := materializeVector(vector)
+		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
 		if err != nil {
 			return nil, 0, 0, err
 		}
-		ok, findings, err := impl.verify(storeRoot, registryPath, vector.Authority, publicKey)
+		ok, findings, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, publicKey)
 		os.RemoveAll(root)
 		if err != nil {
 			return nil, 0, 0, err
@@ -258,6 +286,21 @@ func runCorpus(corpusDir string, impl implementation) ([]string, int, int, error
 		}
 	}
 	return failures, len(canonFile.Vectors), len(paths), nil
+}
+
+// storeVectorPaths lists every store vector the runner answers to, in a fixed
+// order: corpus/stores/ and corpus/v3/stores/.
+func storeVectorPaths(corpusDir string) ([]string, error) {
+	var paths []string
+	for _, dir := range []string{filepath.Join(corpusDir, "stores"), filepath.Join(corpusDir, "v3", "stores")} {
+		found, err := filepath.Glob(filepath.Join(dir, "*.json"))
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(found)
+		paths = append(paths, found...)
+	}
+	return paths, nil
 }
 
 func cmdConform(args []string) int {

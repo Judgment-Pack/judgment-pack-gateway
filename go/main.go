@@ -6,7 +6,7 @@ package main
 // Subcommands:
 //
 //	gateway canon                                    < value.json
-//	gateway verify <store-root> <registry> <auth>    < publickey.raw
+//	gateway verify <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
 //	gateway conform [--impl CMD] [--corpus DIR]
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--port N]
 //	gateway keygen [seedfile]
@@ -86,11 +86,35 @@ func cmdCanon() int {
 }
 
 func cmdVerify(args []string) int {
-	if len(args) != 3 {
-		fmt.Fprintln(os.Stderr, "usage: gateway verify <store-root> <registry-path> <authority>")
+	const usage = "usage: gateway verify <store-root> <registry-path> <authority> [--decision-records <dir> | <dir>]"
+	if len(args) < 3 || len(args) > 5 {
+		fmt.Fprintln(os.Stderr, usage)
 		return 2
 	}
 	storeRoot, registryPath, authority := args[0], args[1], args[2]
+	// The decision-record directory of SPEC.md §4 step 6: by flag, or as the
+	// fourth positional argument the corpus process contract uses. Absent
+	// means absent, and every version 3 action receipt then fails closed.
+	// Precedence, stated: two extra arguments are the flag and its value;
+	// one extra argument is the directory, whatever it is spelled -- a
+	// directory named "--decision-records" is a directory, because the
+	// process contract reserves no spelling; only an empty name is refused.
+	decisionRecords := ""
+	switch rest := args[3:]; len(rest) {
+	case 0:
+	case 1:
+		if rest[0] == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		decisionRecords = rest[0]
+	case 2:
+		if rest[0] != "--decision-records" || rest[1] == "" {
+			fmt.Fprintln(os.Stderr, usage)
+			return 2
+		}
+		decisionRecords = rest[1]
+	}
 
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
@@ -103,7 +127,7 @@ func cmdVerify(args []string) int {
 		return 1
 	}
 
-	report, err := verifyWithRegistry(storeRoot, registryPath, authority, publicKey)
+	report, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	if err != nil {
 		// Could not produce a verdict at all.
 		fmt.Fprintln(os.Stderr, "verify:", err)

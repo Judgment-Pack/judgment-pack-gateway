@@ -924,3 +924,59 @@ func TestStrayAnchorMarkerIsRefused(t *testing.T) {
 		t.Fatal("an ordinary environment must not be refused")
 	}
 }
+
+// verify takes the decision-record directory of SPEC.md §4 step 6 as a flag or
+// as the process contract's fourth positional argument, and refuses a stray
+// option, an empty flag value, or a fifth argument as usage.
+func TestCmdVerifyArgumentForms(t *testing.T) {
+	stderr := captureStderr(t)
+	_ = stderr
+	oldStdin := os.Stdin
+	t.Cleanup(func() { os.Stdin = oldStdin })
+	usage := func(args ...string) {
+		t.Helper()
+		if got := cmdVerify(args); got != 2 {
+			t.Fatalf("cmdVerify(%v) = %d, want 2 (usage)", args, got)
+		}
+	}
+	usage("store", "registry")
+	usage("store", "registry", "authority", "")
+	usage("store", "registry", "authority", "--decision-records", "")
+	usage("store", "registry", "authority", "dir", "extra")
+	usage("store", "registry", "authority", "--decision-records", "dir", "extra")
+
+	// Both accepted forms reach verification: with a store that exists and an
+	// absent registry they produce a verdict (exit 0), the decision-record
+	// directory absent or present alike.
+	dir := t.TempDir()
+	store := filepath.Join(dir, "store")
+	if err := os.MkdirAll(filepath.Join(store, "receipts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	public := mustPublic(t)
+	for _, args := range [][]string{
+		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test"},
+		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test", filepath.Join(dir, "records")},
+		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test", "--decision-records", filepath.Join(dir, "records")},
+		// A lone fourth argument is a directory whatever it is spelled, the
+		// flag's own spelling included: the contract reserves none.
+		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test", "--records"},
+		{store, filepath.Join(dir, "registry.jsonl"), "gateway:test", "--decision-records"},
+	} {
+		in, err := os.CreateTemp(dir, "key")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := in.WriteString(public); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := in.Seek(0, 0); err != nil {
+			t.Fatal(err)
+		}
+		os.Stdin = in
+		if got := cmdVerify(args); got != 0 {
+			t.Fatalf("cmdVerify(%v) = %d, want 0 (a verdict)", args, got)
+		}
+		in.Close()
+	}
+}

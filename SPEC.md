@@ -288,8 +288,11 @@ Per session, over the receipts that passed:
   a session whose sequence is broken is not walked at all.
 
 A receipt that fails is excluded from that reconstruction, so a failure at
-`callIndex` 0 also produces `sequence-broken`. That second finding is a
-consequence of position, not additional evidence.
+`callIndex` 0 in a session where any other receipt passed also produces
+`sequence-broken`. That second finding is a consequence of position, not
+additional evidence. A session in which **no** receipt passed has an empty
+passing set, which is `0..n-1` with `n` = 0: it is not broken, and the
+session reports its failures and nothing about its sequence or chain.
 
 The version of a receipt decides which structural checks order 1 applies and
 which signing input order 4 uses; the two versions are otherwise verified by
@@ -609,12 +612,12 @@ store vector per status this document names.
 through a small process contract, so an implementation in any language can answer
 to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.**
 
-Two questions this specification does not yet settle, surfaced by building the
+One question this specification does not settle, surfaced by building the
 corpus and recorded in [`corpus/README.md`](corpus/README.md): the order of
-findings, and whether a receipt that fails verification is *required* to also
+findings, which is why they are compared as a multiset. The other question that
+record raised — whether a receipt that fails verification is *required* to also
 produce the `sequence-broken` that follows from its exclusion from the chain
-reconstruction. An implementation that differs on either is not thereby
-non-conforming; the specification is what needs to improve.
+reconstruction — is settled by §1.4: it is, and the vectors expect it.
 
 The vectors are signed under a published test seed (`corpus/TEST-SEED`), which signs
 nothing real and must never be used by a deployment. Verification consumes only
@@ -622,9 +625,8 @@ nothing real and must never be used by a deployment. Verification consumes only
 which is the same property receipt version 2 gives a real verifier.
 
 The version 3 store vectors live under `corpus/v3/stores/`. They are written
-against §1.2a and §4 and are as frozen as the rest; until an implementation
-exists that answers them, `gateway conform` reads `corpus/stores/` alone, and
-the change that makes the runner read `corpus/v3/stores/` is the change that
-implements version 3 (`corpus/README.md`). A version 3 store vector may carry a
+against §1.2a and §4 and are as frozen as the rest; `gateway conform` reads
+both directories (`corpus/README.md`). A version 3 store vector may carry a
 `decisionRecords` map beside `files`, materialized as the directory §4 step 6
-names.
+names and handed to the implementation as the process contract's optional
+fourth argument.

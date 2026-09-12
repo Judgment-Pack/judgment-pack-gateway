@@ -66,8 +66,9 @@ func init() {
 
 // defective wraps the real implementation with one injected fault.
 type defective struct {
-	canonDefect  func([]byte) []byte
-	ignoreAnchor bool
+	canonDefect       func([]byte) []byte
+	ignoreAnchor      bool
+	ignoreActionLinks bool
 }
 
 func (defective) label() string { return "defective" }
@@ -83,9 +84,32 @@ func (d defective) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (d defective) verify(storeRoot, registryPath, authority string, publicKey []byte) (bool, []map[string]any, error) {
+func (d defective) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+	if d.ignoreActionLinks {
+		// Every ladder and registry check intact; SPEC.md §4 steps 5 and 6
+		// never run -- a verifier that treats an action receipt's citations
+		// and decision record as decoration.
+		ok, findings, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		if err != nil {
+			return false, nil, err
+		}
+		kept := findings[:0]
+		for _, f := range findings {
+			if f["status"] == "citation-unresolved" || f["status"] == "decision-record-mismatch" {
+				continue
+			}
+			kept = append(kept, f)
+		}
+		ok = true
+		for _, f := range kept {
+			if f["status"] != "ok" {
+				ok = false
+			}
+		}
+		return ok, kept, nil
+	}
 	if !d.ignoreAnchor {
-		return inProcess{}.verify(storeRoot, registryPath, authority, publicKey)
+		return inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	}
 	// Every receipt checked, the registry anchor ignored -- the exact gap this
 	// gateway exists to close.
@@ -96,11 +120,11 @@ func (d defective) verify(storeRoot, registryPath, authority string, publicKey [
 	ok := true
 	var findings []map[string]any
 	for _, sessionID := range sessions {
-		sessionFindings, _, err := verifySession(storeRoot, sessionID, authority, publicKey)
+		result, err := verifySession(storeRoot, sessionID, authority, publicKey)
 		if err != nil {
 			return false, nil, err
 		}
-		for _, f := range sessionFindings {
+		for _, f := range result.findings {
 			encoded, _ := json.Marshal(f)
 			var asMap map[string]any
 			_ = json.Unmarshal(encoded, &asMap)
@@ -165,6 +189,18 @@ func TestCorpusCatchesAVerifierThatIgnoresTheRegistry(t *testing.T) {
 		if !strings.Contains(joined, missed) {
 			t.Fatalf("corpus did not catch a verifier ignoring the registry (%s):\n%s",
 				missed, joined)
+		}
+	}
+}
+
+// A verifier that ignores an action receipt's citations and decision record
+// must be caught: the version 3 vectors for citation-unresolved and
+// decision-record-mismatch exist for exactly that verifier.
+func TestCorpusCatchesAVerifierThatIgnoresActionLinks(t *testing.T) {
+	joined := failuresFor(t, defective{ignoreActionLinks: true})
+	for _, missed := range []string{"v3-citation-unresolved", "v3-decision-record-mismatch", "v3-decision-records-absent"} {
+		if !strings.Contains(joined, missed) {
+			t.Fatalf("corpus did not catch a verifier ignoring action links (%s):\n%s", missed, joined)
 		}
 	}
 }
