@@ -453,3 +453,35 @@ func TestMissingCapabilitiesAreNamed(t *testing.T) {
 		t.Fatalf("without a CapEff line nothing can be said, got %v", missing)
 	}
 }
+
+// A configured source that is not a regular file -- a FIFO with the execute
+// bit, which os/exec would resolve -- is refused by stat before it is
+// opened, since opening it would block without a writer and nothing is yet
+// running for the timeout to cancel.
+func TestSourceThatIsNotARegularFileIsRefusedBeforeItIsOpened(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fetch")
+	if err := syscall.Mkfifo(fifo, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	service, err := newGatewayService(
+		filepath.Join(root, "store"), testSeed, "gateway:test", filepath.Join(root, "registry.jsonl"),
+		map[string]sourceSpec{"screening": {argv: []string{fifo}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.acquire("fifo-1", "screening", newObject())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("a FIFO must be refused as not a regular file: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the acquisition blocked on opening the FIFO")
+	}
+}

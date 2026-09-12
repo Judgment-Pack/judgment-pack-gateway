@@ -109,12 +109,15 @@ curl -s localhost:8787/publickey           # consistency only: a real verifier u
 
 The gateway mints version 3 receipts (SPEC.md §1.2a): `/acquire` answers
 `{result, receipt, salts}`, where `salts.args` is the 32-byte salt behind the receipt's
-arguments commitment, returned here and nowhere else — the caller keeps it, and only
-the caller can reveal the arguments to an auditor. A bare `--source` command is the
-`"command"` shape: its acquisition record names the command and the digest of the file
-it resolved to, read just before the source is started — for a script, the script and
-not its interpreter — and says nothing else was known; `observedAt` is the gateway's own
-stamp of when the source's output was read, since a command records nothing.
+arguments commitment, returned here and retained nowhere. Revealing the arguments to an
+auditor takes the salt, so whoever holds it can, and nobody else; this reference hands it
+over plaintext localhost HTTP, so the holder is whoever can read that exchange. A bare
+`--source` command is the `"command"` shape: its acquisition record names the command
+and the digest of the file its first word resolved to, read just before the source is
+started, and says nothing else was known — a directly executed script is digested as the
+script, while `python3 fetch.py` is digested as the interpreter and the script is an
+argument the record does not repeat; `observedAt` is the gateway's own stamp of when
+it had read the source's output in full, since a command records nothing.
 `--receipt-version 2` keeps the version 2 form for a consumer not yet updated.
 
 A consumer does not stop at those endpoints: it runs `gateway verify` itself, over

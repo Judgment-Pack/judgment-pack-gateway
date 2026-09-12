@@ -187,7 +187,7 @@ gateway's boundary. It does not prove that they approved what was asked for.
 | `schema` | `"sha256:" + hex` or `null` | the discovered stream or resource schema, canonicalized and digested |
 | `upstreamToken` | string or `null` | an integrity token the upstream itself produced, carried verbatim when one exists; `null` when the upstream vouches for nothing |
 | `pageItems` | array of `"sha256:" + hex` — **optional** | for a page, the digest of each item's canonical bytes in order; absent for a single result |
-| `observedAt` | string | when the adapter received the bytes, as the adapter recorded it; `servedAt` remains the gateway's own stamp |
+| `observedAt` | string | when the adapter received the bytes, as the adapter recorded it; `servedAt` remains the gateway's own stamp. For the `"command"` shape, which records nothing, it is the gateway's own stamp of the moment it had read the source's output in full, never later than `servedAt` |
 
 `upstreamToken` and `shape` are the honest-bounds members: a receipt never lets
 a source that vouches for itself and a source that vouches for nothing read the

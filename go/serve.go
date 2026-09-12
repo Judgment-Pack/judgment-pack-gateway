@@ -270,7 +270,28 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 
 	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, spec.argv[0], spec.argv[1:]...)
+	// The command is resolved once, here, to the file that will be started,
+	// and that file is what a version 3 receipt digests -- os/exec would
+	// otherwise give a relative Windows command its extension only at start,
+	// after the digest. A bare name that resolves to the working directory
+	// is refused, as os/exec refuses it.
+	path, err := exec.LookPath(spec.argv[0])
+	if err != nil {
+		return nil, fmt.Errorf("source could not be started: %v", err)
+	}
+	var adapterDigest string
+	if g.receiptVersion == receiptVersion3 {
+		// Digested before anything is started, so a failure here leaves
+		// nothing to reap. It is the file at that path at that moment: a
+		// replacement between this read and the start is not detected.
+		adapterDigest, err = executableDigest(path)
+		if err != nil {
+			return nil, err
+		}
+	}
+	cmd := exec.CommandContext(ctx, path, spec.argv[1:]...)
+	// The source sees the command as configured, not as resolved.
+	cmd.Args = append([]string{spec.argv[0]}, spec.argv[1:]...)
 	cmd.Stdin = bytes.NewReader(canonicalArgs)
 	// The declared environment and nothing else (sourceSpec). An explicit
 	// slice is what stops os/exec from handing the child this process's
@@ -292,16 +313,6 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// at all -- the command gone, or the user switch refused by the kernel --
 	// is reported as that, with the operating system's own reason, rather
 	// than as an empty "source failed".
-	var adapterDigest string
-	if g.receiptVersion == receiptVersion3 && cmd.Err == nil {
-		// The file os/exec resolved the command to, digested immediately
-		// before the start. It is the file at that path at that moment: a
-		// replacement between this read and the start is not detected.
-		adapterDigest, err = executableDigest(cmd.Path)
-		if err != nil {
-			return nil, err
-		}
-	}
 	if err := cmd.Start(); err != nil {
 		group.reap()
 		return nil, fmt.Errorf("source could not be started: %v", err)
@@ -453,9 +464,20 @@ func commandAcquisition(spec sourceSpec, digest, observedAt string) *vObject {
 	return a
 }
 
-// executableDigest is the SHA-256 of the file at path, streamed, as a digest
-// string. For a script it is the script's bytes, not its interpreter's.
+// executableDigest is the SHA-256 of the regular file at path, streamed, as a
+// digest string. Anything but a regular file is refused by stat before it is
+// opened, since opening a FIFO would block without a writer and nothing has
+// been started yet that a timeout could cancel; a regular file swapped for a
+// FIFO between the stat and the open is the replacement the acquisition does
+// not detect.
 func executableDigest(path string) (string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("source executable could not be read for its digest: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("source executable %s is not a regular file", path)
+	}
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("source executable could not be read for its digest: %w", err)

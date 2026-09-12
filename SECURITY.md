@@ -83,18 +83,22 @@ silently voiding the coverage guarantee in [`SPEC.md` §3](SPEC.md). Treat any i
 where the gateway writes as a vulnerability in this class, not as a configuration mistake.
 
 **Version 3 receipts, the default, commit to arguments under a per-receipt salt** that is returned
-to the caller beside the receipt and never retained (SPEC.md §1.2a). A party holding the store
-learns nothing about the arguments from the commitment, a caller cannot compare its commitment
-with another receipt's, and only the caller can reveal — for every commitment, independently.
-What the retained artifact itself discloses is the source's affair. `--receipt-version 2` keeps
-the version 2 form for a consumer not yet updated, and with it the oracle described next.
+in the acquire response and never retained (SPEC.md §1.2a). A party holding only the store learns
+nothing about the arguments from the commitment and cannot compare it with another receipt's;
+revealing a committed value takes its salt, so whoever holds the salt can reveal that one value
+and nobody else can. Who holds it is a matter of transport and custody: this reference delivers
+the response over unauthenticated plaintext HTTP on localhost, so the holder is whoever can read
+that exchange, and exclusivity to the caller is not something the reference provides. What the
+retained artifact itself discloses is the source's affair. `--receipt-version 2` keeps the
+version 2 form for a consumer not yet updated, and with it the oracle described next.
 
-**A version 3 acquisition record names the source by the digest of the file its command
-resolved to**, read immediately before the source is started. It is that file at that moment:
-a replacement between the read and the start is not detected; a script is digested as the
-script, not as the interpreter that runs it; and the command's further arguments are operator
-configuration the record does not repeat. What the record says is which program the operator
-configured, not that the program is honest.
+**A version 3 acquisition record names the source by the digest of the file the command's first
+word resolved to**, resolved once and read before anything is started. It is that file at that
+moment: a replacement between the read and the start is not detected, and a file that is not a
+regular file is refused rather than opened. A directly executed script is digested as the script;
+`python3 fetch.py` is digested as the interpreter, and the script, like every further argument of
+the command, is operator configuration the record does not repeat. What the record says is which
+program the operator configured, not that the program is honest.
 
 **Version 2's arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
 keyed digest of the canonical arguments, with no per-receipt salt. The keying stops a party that only
