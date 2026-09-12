@@ -141,6 +141,30 @@ Stated plainly because the whole line is about being exact where proof stops:
   the HTTP surface, no HA. It is for self-hosting a trust root and demonstrating the
   mechanism — not a hardened public deployment.
 
+## Where this is going
+
+The source contract above is the gateway's whole integration surface, and every source
+that exists is a script someone wrote by hand. [docs/adr/0001](docs/adr/0001-one-engine-four-processes.md)
+records the direction: a second module, `adapters/`, that reaches the catalogs that
+already exist — connector images for bulk and historical reads, the MCP servers vendors
+publish for live reads and writes — and a release that ships the gateway, the adapters
+and the runtime as one image with one configuration file. Inside that image the signer
+runs alone with the seed, each adapter runs as its own process with one platform's
+credentials, and neither imports the other; `go/boundary_test.go` and
+`adapters/boundary_test.go` make the import rule a test, and the design notes state what
+the tests cannot: what each process may read, and which deployment choices would undo it.
+The receipt format
+this needs is designed in [docs/design/receipt-v3.md](docs/design/receipt-v3.md) and
+becomes normative only when it lands in `SPEC.md` with vectors.
+
+```
+go/          the core: canon, sign, seal, verify, conform, serve — standard library only
+adapters/    what reaches outside, spawned by the core over the source contract, never linked
+corpus/      the frozen vectors both answer to
+docs/adr/    why the repository is shaped this way
+docs/design/ what is designed and not yet decided
+```
+
 ## Why this repo is open
 
 The format, the registry contract, and the verifier are all here and inspectable, on

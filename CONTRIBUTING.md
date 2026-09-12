@@ -22,6 +22,23 @@ CI runs the same four on Linux, macOS and Windows against Go 1.26. `gateway conf
 matters most: `corpus/` is frozen, and a change that makes it pass differently has
 changed the format, whatever the diff looks like.
 
+The repository holds a second Go module, `adapters/`, checked the same way from its own
+directory (`cd adapters && gofmt -l . && go vet ./... && go test ./...`). The two modules
+never import each other, and the core never imports anything outside the standard
+library: `go/boundary_test.go` and `adapters/boundary_test.go` fail `go test` on the
+first crossing, refuse a workspace file, a nested module, a vendor directory and the
+`plugin` package, and CI asks the toolchain where every dependency actually resolved,
+because import spelling is not provenance. The reason is in
+[docs/adr/0001](docs/adr/0001-one-engine-four-processes.md) — the process that holds the
+seed is never linked to code that holds a platform's credentials — and the check is not
+optional tidiness: removing it removes the claim. These are import guards: they establish
+what each module links, not what a process can read; the process model in the design notes
+carries that claim.
+
+Every pull request carries a one-line `Material-decision impact:` declaration, and material
+decisions require the recorded cross-vendor review described in
+[docs/adr/README.md](docs/adr/README.md#review-of-material-decisions).
+
 Tests here are grouped by what they defend, and a change should land in the group it
 belongs to rather than in whichever file is nearest:
 
@@ -86,14 +103,25 @@ names what a verifier accepts.
 
 ## Scope
 
-This repository stays one Go binary and its specification. The gateway serves,
+The core, `go/`, stays one Go binary and its specification. The gateway serves,
 verifies, canonicalizes and mints identities; it does not decide anything, and it
 does not grow a client library — a consumer's helper belongs in that consumer's
 language and repository, reaching this one over the wire.
 
+Beside the core, `adapters/` holds the programs that reach outside catalogs on the
+gateway's behalf and hand it bytes over the source contract. They ship in the same
+release, run as their own processes, and are never linked into the signer;
+[docs/adr/0001](docs/adr/0001-one-engine-four-processes.md) records what belongs there
+and what does not. An adapter fetches and, on a request from an authenticated identity,
+performs; it does not decide either.
+
 What the gateway attests is deliberately narrow: byte lineage from a named key
 holder. A change that would let a receipt assert that its contents are *true*, or
-that an action was *authorized*, is out of scope no matter how convenient.
+that an action was *authorized*, is out of scope no matter how convenient. An action
+receipt, when the format grows one, records that an executor was asked, by which
+authenticated identity, citing which decision, and what the target answered — lineage of
+a request and a response, never a statement that the action was right or that the
+identity approved it.
 
 ## Sign-off and license
 
