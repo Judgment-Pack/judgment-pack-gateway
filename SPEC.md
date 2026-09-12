@@ -203,7 +203,7 @@ target's response bytes, retained like any artifact.
 |---|---|---|
 | `requester` | `{ "issuer": string, "subject": string, "tokenDigest": "sha256:" + hex }` | the authenticated identity that submitted the request; **never `null`** — a request with no authenticated requester is refused before any executor runs |
 | `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex }` | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest |
-| `cites` | array of `{ "sessionId": string, "callIndex": integer, "signature": hex }` | the acquisition receipts the requester says the decision record relied on |
+| `cites` | array of `{ "sessionId": flat token (§3a), "callIndex": non-negative integer, "signature": signature }` | the acquisition receipts the requester says the decision record relied on |
 | `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string }` | what was called, named as `acquisition` names its adapter |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it |
@@ -267,8 +267,12 @@ A finding carries `sessionId`, `status`, and the receipt's `callIndex` — excep
 `malformed` finding, which carries `file`, the receipt's filename, in place of
 `callIndex`: a receipt refused at order 1 has not established what its index is,
 whatever the text claims, and this holds for a version 3 receipt refused for a
-§1.2a violation as it does for one that never parsed. Version 2 has always
-reported it so; version 3 changes nothing here.
+§1.2a violation as it does for one that never parsed. In every per-receipt
+finding, `sessionId` is the name of the session directory the receipt was found
+in, never the value the receipt claims: a `misfiled` receipt claiming another
+session is reported under the directory that holds it, so a session-scoped
+reading (§5a.1) sees every failure in the session it scopes to. Version 2 has
+always reported both so; version 3 changes nothing here.
 
 Per session, over the receipts that passed:
 
@@ -386,13 +390,15 @@ not rest on the HTTP layer alone.
 4. For each sealed session **absent** from the store → **`sealed-session-missing`**
    (a whole sealed session deleted).
 5. For each version 3 receipt of kind `"action"` whose ladder status is `ok`,
-   each entry of `cites` must name a receipt present in the store at
-   `receipts/<sessionId>/<callIndex>.json` whose `signature` member is **the
-   same string** as the cited one, compared exactly — version 3 signatures are
-   lowercase hex, so no case folding is involved and a citation in another case
-   does not resolve → otherwise **`citation-unresolved`**. Nothing about the
-   cited receipt's contents is read beyond its signature; whether it verifies is
-   its own finding.
+   each entry of `cites` must resolve: its `sessionId` must be **exactly** one
+   of the session directory names the verifier enumerated (§4 step 3), its
+   `callIndex` must be **exactly** the stem of one of that directory's `.json`
+   files, and that file's `signature` member must be **the same string** as
+   the cited one — all three compared as strings, never by asking the
+   filesystem for the cited path, so a filesystem that folds case or
+   normalizes names resolves nothing the enumeration does not → otherwise
+   **`citation-unresolved`**. Nothing about the cited receipt's contents is
+   read beyond its signature; whether it verifies is its own finding.
 6. For each such action receipt, its `decision.recordDigest` must equal the
    SHA-256 of some **candidate** under the decision-record directory the
    verifier was given → otherwise **`decision-record-mismatch`**. The directory
