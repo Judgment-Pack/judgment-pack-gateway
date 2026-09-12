@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"sort"
@@ -2050,4 +2051,232 @@ func coveredMembers(r *receipt) *vObject {
 		covered.set(name, v)
 	}
 	return covered
+}
+
+// --- adapter sources (SPEC.md §6, "Adapter sources") ------------------------
+
+// shapedService has one adapter source of the given shape and one bare
+// command, both the test helper.
+func shapedService(t *testing.T, shape string) (*gatewayService, *httptest.Server) {
+	t.Helper()
+	t.Setenv(envSourceHelper, "1")
+	root := t.TempDir()
+	service, err := newGatewayService(
+		filepath.Join(root, "store"), testSeed, "gateway:test", filepath.Join(root, "registry.jsonl"),
+		map[string]sourceSpec{
+			"history":   {argv: []string{os.Args[0]}, env: helperEnv, shape: shape},
+			"screening": {argv: []string{os.Args[0]}, env: helperEnv},
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.handler())
+	t.Cleanup(server.Close)
+	return service, server
+}
+
+func envelopeDigest(label string) string {
+	sum := sha256.Sum256([]byte(label))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// goodEnvelope is a complete envelope as an Airbyte adapter would write it:
+// a page of two records. The acquisition map is returned too, so a test can
+// mutate it in place.
+func goodEnvelope() (map[string]any, map[string]any) {
+	acquisition := map[string]any{
+		"adapter":       map[string]any{"name": "airbyte/source-postgres", "version": "3.6.1", "digest": envelopeDigest("image")},
+		"endpoint":      "warehouse.internal:5432",
+		"statement":     "SELECT id, status FROM decisions WHERE id > 100",
+		"snapshot":      "state:8812041",
+		"peerIdentity":  "tls:" + envelopeDigest("peer"),
+		"schema":        envelopeDigest("schema"),
+		"upstreamToken": nil,
+		"observedAt":    "2026-09-12T10:00:00Z",
+	}
+	env := map[string]any{
+		"acquisition": acquisition,
+		"result":      []any{map[string]any{"id": 101, "status": "approved"}, map[string]any{"id": 102, "status": "denied"}},
+		"page":        true,
+	}
+	return env, acquisition
+}
+
+func envelopeText(t *testing.T, env map[string]any) string {
+	t.Helper()
+	text, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(text)
+}
+
+// An adapter's envelope is recorded as reported, except for what §1.2a gives
+// the gateway: the shape it configured, the commitment to the statement, and
+// the page items it digests itself. The attested result is the inner one.
+func TestAdapterEnvelopeIsRecordedAsReported(t *testing.T) {
+	service, server := shapedService(t, "airbyte")
+	env, reported := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	code, first := post(t, server, "/acquire", `{"session":"env-1","source":"history","arguments":{"stream":"decisions"}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, first)
+	}
+	receipt := first["receipt"].(map[string]any)
+	acquisition := receipt["acquisition"].(map[string]any)
+	if acquisition["shape"] != "airbyte" {
+		t.Fatalf("the shape is the configured one: %v", acquisition["shape"])
+	}
+	for _, name := range []string{"adapter", "endpoint", "snapshot", "peerIdentity", "schema", "upstreamToken", "observedAt"} {
+		if !reflect.DeepEqual(acquisition[name], reported[name]) {
+			t.Fatalf("%s recorded as %v, reported %v", name, acquisition[name], reported[name])
+		}
+	}
+	// The statement is committed, not stored, and the salt comes back.
+	statement, _ := acquisition["statement"].(string)
+	saltHex, _ := first["salts"].(map[string]any)["statement"].(string)
+	salt, err := hex.DecodeString(saltHex)
+	if err != nil || len(salt) != 32 {
+		t.Fatalf("salts.statement must be 32 bytes of hex: %q", saltHex)
+	}
+	h := sha256.New()
+	h.Write(salt)
+	h.Write([]byte("statement:"))
+	h.Write([]byte(`"SELECT id, status FROM decisions WHERE id > 100"`))
+	if want := "sha256:" + hex.EncodeToString(h.Sum(nil)); statement != want {
+		t.Fatalf("statement commitment %s does not reproduce from the salt (%s)", statement, want)
+	}
+	if encoded, _ := json.Marshal(receipt); bytes.Contains(encoded, []byte("SELECT")) {
+		t.Fatal("the statement text reached the receipt")
+	}
+	// Page items are the gateway's own digests of each item's canonical form.
+	items, _ := acquisition["pageItems"].([]any)
+	want := []string{envelopeDigest(`{"id":101,"status":"approved"}`), envelopeDigest(`{"id":102,"status":"denied"}`)}
+	if len(items) != 2 || items[0] != want[0] || items[1] != want[1] {
+		t.Fatalf("pageItems %v, want %v", items, want)
+	}
+	// What is attested is the inner result, and that is what the caller gets.
+	if receipt["resultDigest"] != envelopeDigest(`[{"id":101,"status":"approved"},{"id":102,"status":"denied"}]`) {
+		t.Fatalf("resultDigest must be over the inner result: %v", receipt["resultDigest"])
+	}
+	if result, _ := first["result"].([]any); len(result) != 2 {
+		t.Fatalf("the response result is the inner result: %v", first["result"])
+	}
+	if code, body := post(t, server, "/seal", `{"session":"env-1"}`); code != http.StatusOK {
+		t.Fatalf("seal failed: %d %v", code, body)
+	}
+	report, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
+	if err != nil || !report.OK {
+		t.Fatalf("a store with an adapter receipt must verify: %v %v", err, report)
+	}
+}
+
+// A null statement has no salt and no page has no pageItems; and the same
+// bytes from a bare command are attested whole, envelope and all.
+func TestAdapterEnvelopeWithoutStatementOrPageAndTheCommandContrast(t *testing.T) {
+	_, server := shapedService(t, "mcp")
+	env, acquisition := goodEnvelope()
+	acquisition["statement"] = nil
+	delete(env, "page")
+	env["result"] = map[string]any{"content": "live"}
+	text := envelopeText(t, env)
+	t.Setenv(envSourceEnvelope, text)
+	code, first := post(t, server, "/acquire", `{"session":"env-2","source":"history","arguments":{}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, first)
+	}
+	acq := first["receipt"].(map[string]any)["acquisition"].(map[string]any)
+	if acq["shape"] != "mcp" || acq["statement"] != nil {
+		t.Fatalf("a null statement stays null under the configured shape: %v", acq)
+	}
+	if _, present := acq["pageItems"]; present {
+		t.Fatal("no page, no pageItems")
+	}
+	if _, present := first["salts"].(map[string]any)["statement"]; present {
+		t.Fatal("a null statement has no salt")
+	}
+	// The bare command writes the same text and is attested whole.
+	code, whole := post(t, server, "/acquire", `{"session":"env-2","source":"screening","arguments":{}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, whole)
+	}
+	receipt := whole["receipt"].(map[string]any)
+	if receipt["acquisition"].(map[string]any)["shape"] != "command" {
+		t.Fatal("a bare command is the command shape whatever it writes")
+	}
+	canonical, err := canonText([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if receipt["resultDigest"] != envelopeDigest(string(canonical)) {
+		t.Fatal("a bare command's output is attested whole, envelope and all")
+	}
+	if _, isObject := whole["result"].(map[string]any)["acquisition"]; !isObject {
+		t.Fatal("the caller gets the bare command's whole output")
+	}
+}
+
+// Every departure from the envelope contract fails the acquisition, with
+// nothing minted or retained, and the session stays usable.
+func TestAdapterEnvelopeRefusals(t *testing.T) {
+	_, server := shapedService(t, "http")
+	cases := []struct {
+		name   string
+		mutate func(env, acq map[string]any)
+	}{
+		{"missing acquisition", func(env, _ map[string]any) { delete(env, "acquisition") }},
+		{"missing result", func(env, _ map[string]any) { delete(env, "result") }},
+		{"unknown envelope member", func(env, _ map[string]any) { env["extra"] = 1 }},
+		{"acquisition missing observedAt", func(_, acq map[string]any) { delete(acq, "observedAt") }},
+		{"acquisition names its own shape", func(_, acq map[string]any) { acq["shape"] = "http" }},
+		{"acquisition names pageItems", func(_, acq map[string]any) { acq["pageItems"] = []any{} }},
+		{"adapter digest malformed", func(_, acq map[string]any) { acq["adapter"].(map[string]any)["digest"] = "sha256:nope" }},
+		{"adapter with an extra member", func(_, acq map[string]any) { acq["adapter"].(map[string]any)["image"] = "x" }},
+		{"adapter missing its version", func(_, acq map[string]any) { delete(acq["adapter"].(map[string]any), "version") }},
+		{"schema not a digest", func(_, acq map[string]any) { acq["schema"] = "the schema" }},
+		{"observedAt not a stamp", func(_, acq map[string]any) { acq["observedAt"] = "2026-09-12 10:00:00" }},
+		{"endpoint not a string", func(_, acq map[string]any) { acq["endpoint"] = 5432 }},
+		{"statement not a string", func(_, acq map[string]any) { acq["statement"] = 7 }},
+		{"upstreamToken absent", func(_, acq map[string]any) { delete(acq, "upstreamToken") }},
+		{"page false", func(env, _ map[string]any) { env["page"] = false }},
+		{"page with an object result", func(env, _ map[string]any) { env["result"] = map[string]any{"rows": 2} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, acq := goodEnvelope()
+			tc.mutate(env, acq)
+			t.Setenv(envSourceEnvelope, envelopeText(t, env))
+			code, body := post(t, server, "/acquire", `{"session":"env-3","source":"history","arguments":{}}`)
+			if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "not an envelope") {
+				t.Fatalf("must be refused as not an envelope: %d %v", code, body)
+			}
+		})
+	}
+	t.Run("not an object", func(t *testing.T) {
+		t.Setenv(envSourceEnvelope, `[]`)
+		code, body := post(t, server, "/acquire", `{"session":"env-3","source":"history","arguments":{}}`)
+		if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "not an envelope") {
+			t.Fatalf("must be refused as not an envelope: %d %v", code, body)
+		}
+	})
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	code, first := post(t, server, "/acquire", `{"session":"env-3","source":"history","arguments":{}}`)
+	if code != http.StatusOK || first["receipt"].(map[string]any)["callIndex"] != float64(0) {
+		t.Fatalf("no refusal minted anything: the session's first receipt is index 0: %d %v", code, first)
+	}
+}
+
+// An adapter source has nowhere to put its acquisition in a version 2
+// receipt, so a version 2 gateway refuses it rather than attest the
+// envelope as a result.
+func TestAdapterSourceNeedsVersion3(t *testing.T) {
+	service, server := shapedService(t, "airbyte")
+	service.receiptVersion = receiptVersion
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	code, body := post(t, server, "/acquire", `{"session":"env-4","source":"history","arguments":{}}`)
+	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "needs receipt version 3") {
+		t.Fatalf("an adapter source under version 2 must be refused: %d %v", code, body)
+	}
 }

@@ -100,6 +100,17 @@ regular file is refused rather than opened. A directly executed script is digest
 the command, is operator configuration the record does not repeat. What the record says is which
 program the operator configured, not that the program is honest.
 
+**An adapter's acquisition record is its testimony under the gateway's signature.** For a
+source declared with `--source-shape`, the endpoint, snapshot, schema, peer identity, upstream
+token, adapter identity and observation time in the receipt are what the adapter wrote in its
+envelope, held to their stated forms and otherwise taken on its word; the shape, the statement
+commitment and the page-item digests are the gateway's own. A compromised adapter can
+therefore misreport its acquisition exactly as it can misreport its bytes, and the receipt
+attributes both to the source it was configured as; what it cannot do is sign, and a bare
+command cannot make its output read as an adapter's record, because the shape is declared by
+the operator and never by the source. The adapter binary itself is not named in the receipt;
+it is attributable through the engine release that shipped it (ADR-0002 records this as open).
+
 **Version 2's arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
 keyed digest of the canonical arguments, with no per-receipt salt. The keying stops a party that only
 holds receipts from brute-forcing a small argument space; it does not stop a party that can also

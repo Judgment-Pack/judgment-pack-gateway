@@ -8,7 +8,7 @@ package main
 //	gateway canon                                    < value.json
 //	gateway verify <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
 //	gateway conform [--impl CMD] [--corpus DIR]
-//	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--receipt-version 2|3] [--port N]
+//	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 
 import (
@@ -336,7 +336,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	if len(args) < 4 {
 		return serveOptions{}, "usage: gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
-			"[--source-max-output BYTES] [--receipt-version 2|3] [--port N]", false
+			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--receipt-version 2|3] [--port N]", false
 	}
 
 	opts := serveOptions{
@@ -350,6 +350,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	// once every --source is known.
 	pendingEnv := map[string][]string{}
 	pendingUser := map[string]string{}
+	pendingShape := map[string]string{}
 	rest := args[4:]
 	portSeen := false
 	maxOutputSeen := false
@@ -395,6 +396,19 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 				return opts, fmt.Sprintf("duplicate --source-user for %q", name), false
 			}
 			pendingUser[name] = account
+			i++
+		case rest[i] == "--source-shape":
+			if i+1 >= len(rest) {
+				return opts, "--source-shape requires a following NAME=SHAPE value", false
+			}
+			name, shape, found := strings.Cut(rest[i+1], "=")
+			if !found || strings.TrimSpace(name) == "" || !adapterShapes[shape] {
+				return opts, "--source-shape expects NAME=airbyte|mcp|http", false
+			}
+			if _, exists := pendingShape[name]; exists {
+				return opts, fmt.Sprintf("duplicate --source-shape for %q", name), false
+			}
+			pendingShape[name] = shape
 			i++
 		case rest[i] == "--source-max-output":
 			if i+1 >= len(rest) {
@@ -475,6 +489,17 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			return opts, fmt.Sprintf("--source-user names undeclared source %q", name), false
 		}
 		spec.user = account
+		opts.sources[name] = spec
+	}
+	for name, shape := range pendingShape {
+		spec, declared := opts.sources[name]
+		if !declared {
+			return opts, fmt.Sprintf("--source-shape names undeclared source %q", name), false
+		}
+		if opts.receiptVersion != receiptVersion3 {
+			return opts, fmt.Sprintf("adapter source %q needs --receipt-version 3", name), false
+		}
+		spec.shape = shape
 		opts.sources[name] = spec
 	}
 	return opts, "", true
