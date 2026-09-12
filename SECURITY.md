@@ -38,7 +38,7 @@ more importantly, what it does not.
 everything — every receipt, every seal, retroactively. There is no defence against a compromised
 gateway, and none is claimed.
 
-**Verification is asymmetric** (receipt version 2). Receipts and seals are Ed25519 signatures, so
+**Verification is asymmetric** (receipt versions 2 and 3). Receipts and seals are Ed25519 signatures, so
 checking one requires only the **public** key. A verifier gains no power to forge by being able to
 verify, and needs no trust relationship with the operator beyond holding the right public key. This
 replaced an HMAC format in which anyone who could verify could also forge; that format is gone rather
@@ -82,7 +82,21 @@ never enumerate — `/verify` would answer `ok` for a store missing sessions the
 silently voiding the coverage guarantee in [`SPEC.md` §3](SPEC.md). Treat any input that can steer
 where the gateway writes as a vulnerability in this class, not as a configuration mistake.
 
-**The arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
+**Version 3 receipts, the default, commit to arguments under a per-receipt salt** that is returned
+to the caller beside the receipt and never retained (SPEC.md §1.2a). A party holding the store
+learns nothing about the arguments from the commitment, a caller cannot compare its commitment
+with another receipt's, and only the caller can reveal — for every commitment, independently.
+What the retained artifact itself discloses is the source's affair. `--receipt-version 2` keeps
+the version 2 form for a consumer not yet updated, and with it the oracle described next.
+
+**A version 3 acquisition record names the source by the digest of the file its command
+resolved to**, read immediately before the source is started. It is that file at that moment:
+a replacement between the read and the start is not detected; a script is digested as the
+script, not as the interpreter that runs it; and the command's further arguments are operator
+configuration the record does not repeat. What the record says is which program the operator
+configured, not that the program is honest.
+
+**Version 2's arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
 keyed digest of the canonical arguments, with no per-receipt salt. The keying stops a party that only
 holds receipts from brute-forcing a small argument space; it does not stop a party that can also
 invoke `/acquire` under the same key, which — since the acquire response carries the complete

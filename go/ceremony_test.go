@@ -186,7 +186,13 @@ func TestCeremonyFromAcquireToUsableBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !ed25519.Verify(pinned, append([]byte(receiptContext), unsignedCanon...), sig) {
+	// The coverage rule is the one the receipt's own version names (§6):
+	// a version 3 receipt is checked under §1.2a's prefix.
+	prefix := receiptContext
+	if receipt["receiptVersion"] == receiptVersion3 {
+		prefix = receiptContext3
+	}
+	if !ed25519.Verify(pinned, append([]byte(prefix), unsignedCanon...), sig) {
 		t.Fatal("an unverifiable response receipt selects nothing")
 	}
 	session, _ := receipt["sessionId"].(string)

@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -1079,7 +1080,10 @@ func TestRegistryPathShapes(t *testing.T) {
 }
 
 func TestArgumentsDigest(t *testing.T) {
-	_, server := testService(t)
+	// Version 2's keyed digest, pinned as it was: the form a consumer on
+	// --receipt-version 2 still receives.
+	service, server := testService(t)
+	service.receiptVersion = receiptVersion
 
 	// 1. Format: "hmac-sha256:" + exactly 64 lowercase hex characters
 	getArgumentsDigest := func(body map[string]any) string {
@@ -1167,6 +1171,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service1.receiptVersion = receiptVersion
 	server1 := httptest.NewServer(service1.handler())
 	defer server1.Close()
 
@@ -1178,6 +1183,7 @@ func TestArgumentsDigestChangesWithSeed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service2.receiptVersion = receiptVersion
 	server2 := httptest.NewServer(service2.handler())
 	defer server2.Close()
 
@@ -1733,4 +1739,105 @@ func TestGraceExpiryAbortsAStalledRequest(t *testing.T) {
 	case <-time.After(40 * time.Second):
 		t.Fatal("serveOn did not return; the stalled request held it")
 	}
+}
+
+// --- version 3 minting (SPEC.md §1.2a) ---------------------------------------
+
+// The arguments commitment is salted per receipt: two acquisitions with the
+// same arguments commit differently, so no caller can compare across
+// receipts; and the salt the caller receives reproduces the commitment
+// exactly, so the caller alone can reveal.
+func TestArgumentsCommitmentIsSaltedAndReproducible(t *testing.T) {
+	_, server := testService(t)
+	body := `{"session":"salt-1","source":"screening","arguments":{"q":"acme","n":1}}`
+	_, first := post(t, server, "/acquire", body)
+	_, second := post(t, server, "/acquire", body)
+	c1 := first["receipt"].(map[string]any)["argumentsCommitment"].(string)
+	c2 := second["receipt"].(map[string]any)["argumentsCommitment"].(string)
+	if c1 == c2 {
+		t.Fatal("the same arguments committed identically twice: the salt is not fresh per receipt")
+	}
+	salt, err := hex.DecodeString(first["salts"].(map[string]any)["args"].(string))
+	if err != nil || len(salt) != 32 {
+		t.Fatalf("salts.args must decode to 32 bytes: %v", err)
+	}
+	args := newObject()
+	args.set("q", vString("acme"))
+	args.set("n", vInt(1))
+	if got := commitmentOver(salt, "args:", canon(args)); got != c1 {
+		t.Fatalf("the returned salt does not reproduce the commitment: %s vs %s", got, c1)
+	}
+	if got := commitmentOver(salt, "statement:", canon(args)); got == c1 {
+		t.Fatal("labels must separate the commitments of one receipt")
+	}
+}
+
+// A minted version 3 receipt verifies under the version 3 verifier and
+// records the command as its adapter: name, an empty version, and the digest
+// of the executable the command resolved to.
+func TestMintedVersion3ReceiptVerifiesAndDescribesTheCommand(t *testing.T) {
+	service, server := testService(t)
+	_, first := post(t, server, "/acquire", `{"session":"mint-1","source":"screening","arguments":{"q":"x"}}`)
+	if code, body := post(t, server, "/seal", `{"session":"mint-1"}`); code != http.StatusOK {
+		t.Fatalf("seal failed: %d %v", code, body)
+	}
+	report, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
+	if err != nil || !report.OK {
+		t.Fatalf("a minted version 3 store must verify: %v %v", err, report)
+	}
+	acquisition := first["receipt"].(map[string]any)["acquisition"].(map[string]any)
+	adapter := acquisition["adapter"].(map[string]any)
+	if adapter["name"] != os.Args[0] || adapter["version"] != "" {
+		t.Fatalf("the adapter is the command as configured: %v", adapter)
+	}
+	resolved, err := exec.LookPath(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(data)
+	if adapter["digest"] != "sha256:"+hex.EncodeToString(sum[:]) {
+		t.Fatalf("the adapter digest must be the executable's: %v", adapter["digest"])
+	}
+	if acquisition["observedAt"] == nil || acquisition["observedAt"] == "" {
+		t.Fatal("observedAt must be recorded")
+	}
+}
+
+// A version 3 receipt signed under the version 2 prefix would verify nowhere;
+// the store signs under the prefix the core's version names.
+func TestMintedReceiptIsSignedUnderItsVersionsPrefix(t *testing.T) {
+	service, server := testService(t)
+	_, first := post(t, server, "/acquire", `{"session":"prefix-1","source":"screening","arguments":{}}`)
+	raw, _ := json.Marshal(first["receipt"])
+	v, err := parseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := receiptFrom(v.(*vObject))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig, _ := hex.DecodeString(r.signature)
+	if !ed25519.Verify(service.publicKey, r.signingInput(), sig) {
+		t.Fatal("the minted receipt does not verify under its own version's prefix")
+	}
+	if ed25519.Verify(service.publicKey, append([]byte(receiptContext), canon(coveredMembers(r))...), sig) {
+		t.Fatal("the minted receipt verifies under the version 2 prefix; the prefix does not carry the version")
+	}
+}
+
+func coveredMembers(r *receipt) *vObject {
+	covered := newObject()
+	for _, name := range r.obj.names {
+		if name == "signature" {
+			continue
+		}
+		v, _ := r.obj.get(name)
+		covered.set(name, v)
+	}
+	return covered
 }

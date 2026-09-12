@@ -107,6 +107,16 @@ curl -s localhost:8787/registry            # the anchor a verifier fetches from 
 curl -s localhost:8787/publickey           # consistency only: a real verifier uses the key pinned from keygen, never this
 ```
 
+The gateway mints version 3 receipts (SPEC.md §1.2a): `/acquire` answers
+`{result, receipt, salts}`, where `salts.args` is the 32-byte salt behind the receipt's
+arguments commitment, returned here and nowhere else — the caller keeps it, and only
+the caller can reveal the arguments to an auditor. A bare `--source` command is the
+`"command"` shape: its acquisition record names the command and the digest of the file
+it resolved to, read just before the source is started — for a script, the script and
+not its interpreter — and says nothing else was known; `observedAt` is the gateway's own
+stamp of when the source's output was read, since a command records nothing.
+`--receipt-version 2` keeps the version 2 form for a consumer not yet updated.
+
 A consumer does not stop at those endpoints: it runs `gateway verify` itself, over
 a store it holds, under the key it pinned from `keygen`'s output, then binds the
 receipt and re-digests the artifact before using a byte — the normative sequence
@@ -174,8 +184,9 @@ credentials, and neither imports the other; `go/boundary_test.go` and
 `adapters/boundary_test.go` make the import rule a test, and the design notes state what
 the tests cannot: what each process may read, and which deployment choices would undo it.
 The receipt format
-this needs is designed in [docs/design/receipt-v3.md](docs/design/receipt-v3.md) and
-becomes normative only when it lands in `SPEC.md` with vectors.
+this needs, version 3, is normative in [SPEC.md §1.2a](SPEC.md) with vectors under
+`corpus/v3/`, and is what `serve` mints; its design record is
+[docs/design/receipt-v3.md](docs/design/receipt-v3.md).
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only

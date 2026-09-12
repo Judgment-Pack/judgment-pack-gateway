@@ -183,7 +183,14 @@ func (s *store) stamp(core *vObject) (*vObject, string, error) {
 	}
 
 	core.set("keyId", vString(s.keyID))
-	signature := ed25519.Sign(s.private, append([]byte(receiptContext), canon(core)...))
+	// The prefix carries the version (SPEC.md §1.2, §1.2a): a version 3 core
+	// is signed under the version 3 context, so neither version's signature
+	// can be presented as the other's.
+	prefix := receiptContext
+	if version, ok := memberString(core, "receiptVersion"); ok && version == receiptVersion3 {
+		prefix = receiptContext3
+	}
+	signature := ed25519.Sign(s.private, append([]byte(prefix), canon(core)...))
 	signatureHex := hex.EncodeToString(signature)
 
 	stored := newObject()
