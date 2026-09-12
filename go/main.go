@@ -97,13 +97,13 @@ func cmdVerify(args []string) int {
 	// means absent, and every version 3 action receipt then fails closed.
 	// Precedence, stated: two extra arguments are the flag and its value;
 	// one extra argument is the directory, whatever it is spelled -- a
-	// directory named "--records" is a directory -- except the bare flag
-	// itself, which is a flag missing its value.
+	// directory named "--decision-records" is a directory, because the
+	// process contract reserves no spelling; only an empty name is refused.
 	decisionRecords := ""
 	switch rest := args[3:]; len(rest) {
 	case 0:
 	case 1:
-		if rest[0] == "--decision-records" || rest[0] == "" {
+		if rest[0] == "" {
 			fmt.Fprintln(os.Stderr, usage)
 			return 2
 		}

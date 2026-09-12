@@ -248,6 +248,17 @@ func TestTopLevelSignatureSurvivesAnOutOfDomainMember(t *testing.T) {
 	if _, ok := topLevelSignature([]byte(`{"signature":1}`)); ok {
 		t.Fatal("not a string")
 	}
+	// One complete object and nothing after it.
+	for _, text := range []string{
+		`{"extra":1.0,"signature":"` + testSig3 + `"} {}`,
+		`{"extra":1.0,"signature":"` + testSig3 + `"} trailing`,
+		`{"extra":1.0,"signature":"` + testSig3 + `"`,
+		`{"extra":1.0,"signature":"` + testSig3 + `"}}`,
+	} {
+		if _, ok := topLevelSignature([]byte(text)); ok {
+			t.Fatalf("resolved a signature from text that is not one complete object: %s", text)
+		}
+	}
 }
 
 func hexOf(b []byte) string { s := sha256.Sum256(b); return hex.EncodeToString(s[:]) }

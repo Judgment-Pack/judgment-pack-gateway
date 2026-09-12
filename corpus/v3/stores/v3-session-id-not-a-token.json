@@ -1,6 +1,6 @@
 {
   "name": "v3-session-id-not-a-token",
-  "note": "A validly signed version 3 receipt whose sessionId is \"bad session\", stored under a directory of that name so that misfiled would not fire. A version 3 sessionId is a flat token (§3a) at order 1, so it is malformed, and the session it sits in is then an unsealed session of one refused file.",
+  "note": "A validly signed version 3 receipt whose sessionId is \"bad session\", stored under a directory of that name so that misfiled would not fire. A version 3 sessionId is a flat token (§3a) at order 1, so it is malformed; the session is validly sealed at count 1, holds one refused file, and with no passing receipt has an empty sequence, which is not broken (§1.4).",
   "authority": "gateway:corpus",
   "files": {
     "artifacts/6c1b5fe984cdca3ecfcb1afb04e08dd874db4e8f134f19a22311aba3dfb01d02": "{\"n\":0,\"session\":\"bad session\"}",

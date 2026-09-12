@@ -288,8 +288,11 @@ Per session, over the receipts that passed:
   a session whose sequence is broken is not walked at all.
 
 A receipt that fails is excluded from that reconstruction, so a failure at
-`callIndex` 0 also produces `sequence-broken`. That second finding is a
-consequence of position, not additional evidence.
+`callIndex` 0 in a session where any other receipt passed also produces
+`sequence-broken`. That second finding is a consequence of position, not
+additional evidence. A session in which **no** receipt passed has an empty
+passing set, which is `0..n-1` with `n` = 0: it is not broken, and the
+session reports its failures and nothing about its sequence or chain.
 
 The version of a receipt decides which structural checks order 1 applies and
 which signing input order 4 uses; the two versions are otherwise verified by

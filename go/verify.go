@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -351,6 +352,15 @@ func topLevelSignature(data []byte) (string, bool) {
 			}
 			signature = s
 		}
+	}
+	// One complete object and nothing after it: the closing brace, then end
+	// of input. A second value, trailing bytes, or a truncated object is not
+	// a receipt file whose signature can be read as written.
+	if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
+		return "", false
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return "", false
 	}
 	if seen != 1 {
 		return "", false
