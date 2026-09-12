@@ -102,12 +102,13 @@ acquire/response vector class.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — twelve vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — thirteen vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 and 6), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
-citation and decision record both resolve; `citation-unresolved`;
-`decision-record-mismatch`, with the directory present and with it absent;
+citation and decision record both resolve; `citation-unresolved`, for a wrong
+signature and for the right one in another case; `decision-record-mismatch`,
+with the directory present and with it absent;
 `malformed` for a `kind` outside its values, for a `null` requester, and for a
 version 2 receipt relabelled `"3"`; `signature-mismatch` for a member appended
 inside `acquisition` after signing and for a version 3 receipt signed under the
@@ -129,10 +130,14 @@ this one:
 - `CMD canon` — stdin: one JSON document (the *text*). stdout: the canonical
   bytes, exactly, no trailing newline. Exit 0 if inside the domain, non-zero if
   refused.
-- `CMD verify <store-root> <registry-path> <authority>` — stdin: the 32-byte
-  Ed25519 **public** key, raw bytes, never a secret. stdout:
-  `{"ok": bool, "findings": [...]}`. Exit 0 whenever a verdict was produced; a
-  *failing* verdict is still exit 0.
+- `CMD verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
+  — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
+  stdout: `{"ok": bool, "findings": [...]}`. Exit 0 whenever a verdict was
+  produced; a *failing* verdict is still exit 0. The fourth argument is the
+  decision-record directory of `SPEC.md` §4 step 6; the runner passes it
+  exactly when the vector carries a `decisionRecords` map, materialized with
+  each key as a path under a fresh directory, and passes nothing when the map
+  is absent, so an absent map means an absent directory and never an empty one.
 
 Findings are compared as a **multiset**: order is not normative.
 
