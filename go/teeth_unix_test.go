@@ -175,6 +175,7 @@ func detachFromProcessGroup(cmd *exec.Cmd) {
 // acquisition, and it must.
 func TestEscapedDescendantCannotStrandTheAcquisition(t *testing.T) {
 	service, _ := testService(t)
+	expectHolder(t)
 	service.maxSourceOutput = 1024
 	t.Setenv(envSourceBig, "4096")
 	t.Setenv(envSourceHolder, "1")

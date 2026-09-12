@@ -1362,12 +1362,36 @@ func TestOverflowingSourceIsKilled(t *testing.T) {
 	}
 }
 
+// expectHolder arranges for the helper's grandchild to be killed when the
+// test ends, whether or not the gateway reached it. A test must not leave a
+// process holding the test binary open: Windows refuses to delete it, and
+// `go test` then fails after every test passed.
+func expectHolder(t *testing.T) {
+	t.Helper()
+	pidFile := filepath.Join(t.TempDir(), "holder.pid")
+	t.Setenv(envSourceHolderPid, pidFile)
+	t.Cleanup(func() {
+		raw, err := os.ReadFile(pidFile)
+		if err != nil {
+			return
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+		if err != nil {
+			return
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+		}
+	})
+}
+
 // A source that leaves a descendant holding its stdout cannot strand the
 // acquisition. On Unix the whole process group is killed, so the return is
 // immediate; where there is no process group the bounded pipe wait is what
 // returns, five seconds later. Either way the descendant does not decide.
 func TestDescendantHoldingThePipeCannotStrandTheAcquisition(t *testing.T) {
 	service, _ := testService(t)
+	expectHolder(t)
 	service.maxSourceOutput = 1024
 	t.Setenv(envSourceBig, "4096")
 	t.Setenv(envSourceHolder, "1")

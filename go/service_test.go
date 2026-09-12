@@ -48,13 +48,17 @@ const (
 	// With holder, the grandchild leaves the source's process group, so only
 	// the bounded pipe wait can end the acquisition.
 	envSourceEscape = "GATEWAY_TEST_SOURCE_ESCAPE"
+	// Where the helper writes its grandchild's pid, so the test can kill a
+	// holder the gateway did not reach. A process left holding the test
+	// binary open makes `go test` unable to delete it on Windows.
+	envSourceHolderPid = "GATEWAY_TEST_SOURCE_HOLDER_PID"
 )
 
 // helperEnv is the environment declared for the test source. The gateway no
 // longer hands a source its own environment (ADR-0001), so every variable the
 // helper reads is declared here by name and copied at spawn time -- which is
 // what keeps t.Setenv working between acquisitions.
-var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape}
+var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid}
 
 // A barrier named in the ARGUMENTS rather than the environment. Every helper
 // this process starts inherits the same environment, so an environment-named
@@ -141,7 +145,11 @@ func TestMain(m *testing.M) {
 				if os.Getenv(envSourceEscape) == "1" {
 					detachFromProcessGroup(grandchild)
 				}
-				_ = grandchild.Start()
+				if err := grandchild.Start(); err == nil {
+					if pidFile := os.Getenv(envSourceHolderPid); pidFile != "" {
+						_ = os.WriteFile(pidFile, []byte(strconv.Itoa(grandchild.Process.Pid)), 0o600)
+					}
+				}
 			}
 			fmt.Print(`{"pad":"`)
 			os.Stdout.Write(bytes.Repeat([]byte("x"), n))
