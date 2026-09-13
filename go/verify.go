@@ -470,7 +470,28 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 	for _, r := range actions {
 		wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
 	}
-	candidates, recordsPresent, err := decisionCandidates(decisionRecords, wanted)
+	// SPEC.md §4 step 7, resolved as each citing record is found -- the
+	// enumeration the citations resolve against is complete by now -- so
+	// nothing of the archive is retained but the findings: a record that
+	// cites -- a candidate that is one JSON object carrying a cites member
+	// -- has each citation resolved exactly as an action's is, against the
+	// same enumeration; a member not of the shape is malformed. Once per
+	// record, by the digest of its bytes.
+	var recordFindings []finding
+	onRecord := func(r citingRecord) {
+		if r.malformed {
+			recordFindings = append(recordFindings, finding{"recordDigest": r.digest, "status": "record-citation-malformed"})
+			return
+		}
+		for _, c := range r.cites {
+			stem := strconv.FormatInt(c.callIndex, 10)
+			if signature, ok := signatures[c.sessionID][stem]; !ok || signature != c.signature {
+				recordFindings = append(recordFindings, finding{"recordDigest": r.digest, "status": "record-citation-unresolved"})
+				return
+			}
+		}
+	}
+	candidates, recordsPresent, err := decisionCandidates(decisionRecords, wanted, onRecord)
 	if err != nil {
 		return nil, err
 	}
@@ -490,6 +511,8 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 			})
 		}
 	}
+
+	rep.Findings = append(rep.Findings, recordFindings...)
 
 	for _, f := range rep.Findings {
 		if f["status"] != "ok" {
