@@ -37,7 +37,13 @@ for layer in layers:
     except tarfile.ReadError:
         fail("layer %s is not a tar archive" % layer)
     for m in t.getmembers():
-        name = m.name.lstrip("./").rstrip("/")
+        # The name as the layer spells it, less a leading "./" and any
+        # trailing "/": not lstrip of a character set, which would eat
+        # the dot a whiteout starts with.
+        name = m.name[2:] if m.name.startswith("./") else m.name
+        name = name.strip("/")
+        if name == "":
+            continue
         base, parent = os.path.basename(name), os.path.dirname(name)
         if base == ".wh..wh..opq":
             for existing in [p for p in fs if p.startswith(parent + "/")]:
@@ -119,6 +125,10 @@ for name, uid in homes.items():
     _, m = entry(name)
     if not m.isdir() or m.mode & 0o7777 != 0o700 or m.uid != uid or m.gid != uid:
         fail("%s is %s mode %04o uid %d gid %d; it must be a directory, 0700, owned by %d:%d" % (name, m.type, m.mode & 0o7777, m.uid, m.gid, uid, uid))
+
+# 3a. No helper left behind: the homes' maker removed itself.
+if any(name == "mkhomes" or name.endswith("/mkhomes") for name in fs):
+    fail("the mkhomes helper is still in the image")
 
 # 4. The adapters: there, executable by the platform users, unprivileged.
 for name in ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp"):

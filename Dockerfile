@@ -24,21 +24,23 @@ RUN cd go && go build -buildvcs=false -o /out/gateway . \
 # own attribute by build/setcap.go, so the builder needs no package for it.
 COPY build/setcap.go /src/setcap.go
 RUN cd /src && go run setcap.go /out/gateway && chmod 0700 /out/gateway
+COPY build/mkhomes.go /src/mkhomes.go
+RUN cd /src && go build -o /out/mkhomes mkhomes.go
 # The platform users: a configuration names one per platform, and the
 # engine refuses a platform whose user is root, the signer's, or another
 # platform's. Eight is a convention, not a limit an operator cannot raise
 # with a derived image; the signer runs as engine (uid 65532, the base's
-# nonroot user, renamed). Each user's home is its own alone: the mode is
-# given to the COPY outright, since a directory COPY otherwise lands at
-# the builder's default and not at what the build stage set.
-RUN set -e; mkdir -p /out/etc /out/home; \
+# nonroot user, renamed). The homes are made in the final stage, by
+# build/mkhomes.go, each its user's alone: a directory COPY lands at the
+# builder's default mode whatever the source had, and the builders differ
+# in what --chmod reaches, so a directory made in place is what holds on
+# every builder.
+RUN set -e; mkdir -p /out/etc; \
     printf 'root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:engine signer:/home/engine:/sbin/nologin\n' > /out/etc/passwd; \
     printf 'root:x:0:\nengine:x:65532:\n' > /out/etc/group; \
-    mkdir -m 0700 /out/home/engine && chown 65532:65532 /out/home/engine; \
     for n in 1 2 3 4 5 6 7 8; do \
       printf 'engine-%s:x:6560%s:6560%s:platform user %s:/home/engine-%s:/sbin/nologin\n' "$n" "$n" "$n" "$n" "$n" >> /out/etc/passwd; \
       printf 'engine-%s:x:6560%s:\n' "$n" "$n" >> /out/etc/group; \
-      mkdir -m 0700 "/out/home/engine-$n" && chown "6560$n:6560$n" "/out/home/engine-$n"; \
     done
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
@@ -49,15 +51,13 @@ COPY --from=build /out/etc/passwd /out/etc/group /etc/
 # are run by the platform users, and carry nothing.
 COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
 COPY --from=build /out/adapter-airbyte /out/adapter-mcp /usr/local/bin/
-COPY --from=build --chown=65532:65532 --chmod=0700 /out/home/engine /home/engine
-COPY --from=build --chown=65601:65601 --chmod=0700 /out/home/engine-1 /home/engine-1
-COPY --from=build --chown=65602:65602 --chmod=0700 /out/home/engine-2 /home/engine-2
-COPY --from=build --chown=65603:65603 --chmod=0700 /out/home/engine-3 /home/engine-3
-COPY --from=build --chown=65604:65604 --chmod=0700 /out/home/engine-4 /home/engine-4
-COPY --from=build --chown=65605:65605 --chmod=0700 /out/home/engine-5 /home/engine-5
-COPY --from=build --chown=65606:65606 --chmod=0700 /out/home/engine-6 /home/engine-6
-COPY --from=build --chown=65607:65607 --chmod=0700 /out/home/engine-7 /home/engine-7
-COPY --from=build --chown=65608:65608 --chmod=0700 /out/home/engine-8 /home/engine-8
+# The homes, made in place as root -- the base's own user is nonroot, so
+# root is taken for this one step and given back below -- and each given
+# to its user; the helper removes itself, so the final filesystem carries
+# it as a whiteout only.
+COPY --from=build /out/mkhomes /mkhomes
+USER 0
+RUN ["/mkhomes"]
 COPY catalog/ /usr/share/engine/catalog/
 COPY corpus/ /usr/share/engine/corpus/
 USER engine
