@@ -758,6 +758,7 @@ func TestSaysAbsent(t *testing.T) {
 	const name = "jp-airbyte-0123456789abcdef"
 	for _, yes := range []string{
 		"Error: No such object: " + name,
+		"error: NO SUCH OBJECT: " + name,
 		"Error: No such container: " + name + "\n",
 		"Error: inspecting object: no such container " + name,
 		`Error: no such object: "` + name + `"`,
@@ -772,6 +773,8 @@ func TestSaysAbsent(t *testing.T) {
 		`Error: no such container "` + name + `.other"`,
 		"Error: No such container: " + name + "-2",
 		"Error: No such container: " + name + "_b",
+		"Error: No such object: " + strings.ToUpper(name),
+		`Error: no such container "` + strings.ToUpper(name) + `"`,
 		`Get "http://dockerd/v1.47/containers/` + name + `/json": dial tcp: lookup dockerd: no such host`,
 		"no such host " + name,
 		"Cannot connect to the Docker daemon",
