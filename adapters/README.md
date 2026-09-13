@@ -115,8 +115,12 @@ the adapter's canonicalizer answers to the same frozen vectors as the core's
 A client of a [Model Context Protocol](https://modelcontextprotocol.io) server reached over
 stdio — the servers vendors now publish for their own systems — that calls **one tool** per
 acquisition: the tool's whole result as the result, and the acquisition as the adapter
-recorded it. Live reads at decision time; writes are the executor's, later, and not this
-adapter's.
+recorded it. It is meant for live reads at decision time; writes belong to the executor,
+later. **The adapter cannot tell a read tool from a write tool**: an offered tool of any name
+is callable with the configured credentials, and a read tool given a write statement runs
+it. Reads-only is therefore the operator's to establish — credentials the platform holds to
+read-only, and `--tools` naming only the tools meant to be called — and nothing here
+establishes it for them.
 
 ```
 gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
@@ -125,8 +129,11 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   --source-env live=HOME
 ```
 
-- `--image` runs a pinned server image with stdin attached; `--command 'CMD ARGS'` runs a
-  local server instead, for a server installed beside the gateway. Exactly one of the two.
+- `--image` runs a pinned server image with stdin attached. A local server instead — one
+  installed beside the gateway, or a launcher like `npx` — is given after `--`, word by
+  word: `adapter-mcp --credentials … -- npx -y @example/mcp-server --flag`. The gateway
+  splits a source on whitespace and parses no quotes, which is why the command is not a
+  quoted value. Exactly one of the two forms.
 - `--credentials` is a JSON object of strings that become the server's environment — a
   token, a connection string — and nothing else is added: a container gets them through an
   env file in its private mount; a command gets them beside the adapter's own environment,
@@ -150,21 +157,31 @@ What the envelope carries, and so what the receipt records:
 | `statement` | the call — tool and arguments — which the gateway commits to under a salt |
 | `snapshot` | `null`: the protocol offers no bookmark |
 | `peerIdentity` | `null`: a server over stdio establishes no transport identity |
-| `schema` | the digest of the tool's descriptor as the server lists it, canonicalized per §1.1 with any non-integer number carried as its decimal text |
+| `schema` | the digest of the tool's declared output schema, canonicalized per §1.1 with any non-integer number carried as its decimal text; `null` when the tool declares none, which most do today — the descriptor's name, title, description and annotations are presentation, not schema |
 | `upstreamToken` | `null` |
 | `observedAt` | when the tool's answer was read |
 | `result` | the tool's whole result — content, structured content — carried into the canon domain; no `page` |
 
-The handshake is `initialize`, `notifications/initialized`, `tools/list` (paged to the
-tool), `tools/call`. A request the server makes of the adapter — for roots, for sampling —
-is answered "method not found", since this adapter serves nothing; a notification is passed
-over. A tool that answers `isError` fails the acquisition with its text, redacted. A line
-on the server's stdout that is not a JSON-RPC message is a protocol violation and fails the
-acquisition, as the stdio transport reserves stdout for messages.
+The handshake is `initialize` — refused unless the server answers with a protocol version
+this client speaks (2025-06-18, 2025-03-26 or 2024-11-05) and a tools capability —
+`notifications/initialized`, `tools/list` (paged to the tool), `tools/call`. A `ping` from
+the server is answered with an empty result; any other request the server makes of the
+adapter — for roots, for sampling — is answered "method not found", since this adapter
+serves nothing; a notification, and a response to an id this adapter never used, are passed
+over. A tool result is held to its shape — a `content` array of typed items, an object for
+`structuredContent`, a boolean for `isError` — by exact member names; one that answers
+`isError` fails the acquisition with its text, redacted. A line on the server's stdout that
+is not a JSON-RPC message is a protocol violation and fails the acquisition, as the stdio
+transport reserves stdout for messages.
 
-**The server.** An image is run and stopped as `adapter-airbyte` runs a connector: told to
-stop by name when the call is done, its absence established. A command is ended by
-end-of-input and, after the wait delay, killed; a descendant it left behind is not reached,
-which is why `--image` is the shape that keeps the lifecycle under a name. Diagnostics are
-redacted as `adapter-airbyte`'s are, and a connection string's user name and password count
-as secrets in their own right.
+**The server.** An image is run and stopped as `adapter-airbyte` runs a connector — given
+the wait delay to end on end-of-input, then told to stop by name, its absence established;
+stopping takes up to nine seconds. A command is ended by end-of-input and, after the wait
+delay, killed; both ends of its pipes are closed with the deadline, so neither a reader nor
+a writer holds the adapter past it; a descendant the command left behind is not reached,
+which is why `--image` is the shape that keeps the lifecycle under a name. Every diagnostic
+that crosses the source boundary — the server's, the runtime's, and this adapter's own about
+what the server said, offered tool names included — is redacted and bounded as
+`adapter-airbyte`'s are; a connection string's user name, password and query values count
+as secrets in their own right, encoded and decoded, and a credential value that is itself
+JSON is walked. A token inside a format the redactor does not parse is not caught.

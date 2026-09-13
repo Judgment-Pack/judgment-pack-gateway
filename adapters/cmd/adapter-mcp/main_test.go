@@ -22,13 +22,12 @@ const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef012345678
 func TestRunUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{},
-		{"--image", "x@" + digest, "--command", "y"},
-		{"--command", "y", "stray"},
-		{"--command", "y", "--unknown"},
+		{"--image", "x@" + digest, "--", "y"},
+		{"--unknown", "--", "y"},
 	} {
-		var stderr bytes.Buffer
-		if code := run(args, strings.NewReader(`{"tool":"query"}`), &bytes.Buffer{}, &stderr); code != 2 {
-			t.Errorf("%v: exit %d, want 2 (%s)", args, code, stderr.String())
+		var stdout, stderr bytes.Buffer
+		if code := run(args, strings.NewReader(`{"tool":"query"}`), &stdout, &stderr); code != 2 || stdout.Len() != 0 {
+			t.Errorf("%v: exit %d, want 2 with nothing on stdout (%s)", args, code, stderr.String())
 		}
 	}
 }
@@ -41,7 +40,9 @@ func TestRunEndToEnd(t *testing.T) {
 	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"secret-token"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"--command", os.Args[0], "--credentials", credentials, "--endpoint", "api.example", "--tools", "query,other"}
+	// The server command comes after --, word by word, since the gateway
+	// splits a source on whitespace and parses no quotes.
+	args := []string{"--credentials", credentials, "--endpoint", "api.example", "--tools", "query,other", "--", os.Args[0], "--server-flag", "value"}
 	var stdout, stderr bytes.Buffer
 	if code := run(args, strings.NewReader(`{"tool":"query","arguments":{"sql":"select 1"}}`), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
@@ -52,6 +53,10 @@ func TestRunEndToEnd(t *testing.T) {
 		t.Fatalf("envelope: %s", out)
 	}
 	stdout.Reset()
+	tr, _ := os.ReadFile(os.Getenv(fakemcp.EnvTrace))
+	if !strings.Contains(string(tr), `"--server-flag","value"`) {
+		t.Fatalf("the server's own arguments reach it: %s", tr)
+	}
 	if code := run(args, strings.NewReader(`{"tool":"drop_table"}`), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "is not one this source may call") {
 		t.Fatalf("a failed acquisition exits 1 with the reason on stderr: %d %s", code, stderr.String())
 	}

@@ -19,3 +19,13 @@ func TestSecretsOfURLUserInfo(t *testing.T) {
 		t.Fatalf("redaction: %q", got)
 	}
 }
+
+// A percent-encoded password is a secret as written and as decoded; a
+// query value is a secret; a value that is itself JSON is walked.
+func TestSecretsOfEncodedQueryAndNestedJSON(t *testing.T) {
+	secrets := SecretsOf([]byte(`{"URL":"postgresql://app:p%40ss@h/db?sslpassword=qsecret&x=1","NESTED":"{\"token\":\"tsecret\",\"n\":[\"deep\"]}"}`))
+	got := Redact("p%40ss p@ss qsecret tsecret deep app", secrets)
+	if got != "[redacted] [redacted] [redacted] [redacted] [redacted] [redacted]" {
+		t.Fatalf("redaction: %q from %v", got, secrets)
+	}
+}

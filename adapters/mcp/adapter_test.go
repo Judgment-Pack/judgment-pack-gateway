@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,9 +27,9 @@ const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef01234
 
 const credentialsFixture = `{"DATABASE_URL":"postgresql://app:hunter2@warehouse.internal:5432/decisions","PGSSLMODE":"require"}`
 
-// queryDescriptor is the default tool as the fake describes it, in the
-// canonical form the adapter digests.
-const queryDescriptor = `{"description":"Run a read-only query","inputSchema":{"properties":{"sql":{"type":"string"}},"required":["sql"],"type":"object"},"name":"query"}`
+// queryOutputSchema is the default tool's declared output schema as the
+// fake describes it, in the canonical form the adapter digests.
+const queryOutputSchema = `{"properties":{"rows":{"type":"array"}},"type":"object"}`
 
 var stampForm = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)
 
@@ -38,12 +39,15 @@ func fake(t *testing.T) Config {
 	t.Helper()
 	dir := t.TempDir()
 	for _, name := range []string{fakemcp.EnvTools, fakemcp.EnvResult, fakemcp.EnvHang, fakemcp.EnvExitBeforeCall, fakemcp.EnvStderr,
-		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck} {
+		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck,
+		fakemcp.EnvPing, fakemcp.EnvWrongID, fakemcp.EnvHoldStdin, fakemcp.EnvConflict, fakemcp.EnvExitAtStart, fakemcp.EnvProtocol, fakemcp.EnvNoTools,
+		fakemcp.EnvLinger} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")
 	t.Setenv(fakemcp.EnvTrace, filepath.Join(dir, "trace.jsonl"))
 	t.Setenv(fakemcp.EnvKills, filepath.Join(dir, "kills"))
+	t.Setenv(fakemcp.EnvHolderPid, filepath.Join(dir, "holder"))
 	t.Setenv(fakemcp.EnvEnvKeys, "DATABASE_URL,PGSSLMODE,ADAPTER_MARK")
 	credentials := filepath.Join(dir, "credentials.json")
 	if err := os.WriteFile(credentials, []byte(credentialsFixture), 0o600); err != nil {
@@ -142,7 +146,9 @@ func TestAcquireCallsOneToolAndRecordsTheAcquisition(t *testing.T) {
 	cfg := fake(t)
 	cfg.Endpoint = "warehouse.internal:5432"
 	t.Setenv("ADAPTER_MARK", "declared-for-the-adapter")
+	before := time.Now().UTC().Truncate(time.Second).Format(stampLayout)
 	acq, result := acquire(t, cfg, query("select 1"))
+	after := time.Now().UTC().Truncate(time.Second).Format(stampLayout)
 	if string(result) != `{"content":[{"text":"1 row","type":"text"}],"structuredContent":{"rows":[{"amount":"12.5","id":101}]}}` {
 		t.Fatalf("the result is the tool's whole answer, canonical: %s", result)
 	}
@@ -166,12 +172,13 @@ func TestAcquireCallsOneToolAndRecordsTheAcquisition(t *testing.T) {
 	if acq["statement"] != `{"arguments":{"sql":"select 1"},"tool":"query"}` {
 		t.Fatalf("the statement is the call: %v", acq["statement"])
 	}
-	schemaSum := sha256.Sum256([]byte(queryDescriptor))
+	schemaSum := sha256.Sum256([]byte(queryOutputSchema))
 	if acq["schema"] != "sha256:"+hex.EncodeToString(schemaSum[:]) {
-		t.Fatalf("the schema is the digest of the tool's canonical descriptor: %v", acq["schema"])
+		t.Fatalf("the schema is the digest of the tool's canonical output schema: %v", acq["schema"])
 	}
-	if !stampForm.MatchString(acq["observedAt"].(string)) {
-		t.Fatalf("observedAt is a stamp: %v", acq["observedAt"])
+	observedAt, _ := acq["observedAt"].(string)
+	if !stampForm.MatchString(observedAt) || observedAt < before || after < observedAt {
+		t.Fatalf("observedAt is a stamp of when the answer was read: %v (between %s and %s)", acq["observedAt"], before, after)
 	}
 	tr := trace(t)
 	if got := methods(tr); strings.Join(got, " ") != "initialize notifications/initialized tools/list tools/call" {
@@ -209,8 +216,9 @@ func TestAcquireThroughTheRuntime(t *testing.T) {
 		joined[i] = a.(string)
 	}
 	line := strings.Join(joined, " ")
-	if joined[0] != "run" || joined[1] != "--rm" || !strings.Contains(line, " --env-file ") || !strings.Contains(line, " -i "+cfg.Image) {
-		t.Fatalf("run --rm --name NAME -v MOUNT:/secrets:ro --env-file MOUNT/env -i IMAGE: %s", line)
+	if joined[0] != "run" || joined[1] != "--rm" || !strings.Contains(line, " --env-file ") || !strings.Contains(line, " -i "+cfg.Image) ||
+		strings.Index(line, " --env-file ") > strings.Index(line, cfg.Image) {
+		t.Fatalf("run --rm --name NAME -v MOUNT:/secrets:ro --env-file MOUNT/env -i IMAGE, the env file before the image: %s", line)
 	}
 	if run["envFile"] != "DATABASE_URL=postgresql://app:hunter2@warehouse.internal:5432/decisions\nPGSSLMODE=require\n" {
 		t.Fatalf("the env file carries the credentials, sorted: %q", run["envFile"])
@@ -269,6 +277,73 @@ func TestAcquireRefusals(t *testing.T) {
 		cfg.MaxOutput = 64
 		// Refused at the tool's result, before an envelope is built around it.
 		mustFail(t, cfg, query("select 1"), "the tool's result exceeds the output bound of 64 bytes")
+		// A result within the bound whose envelope is not: refused too.
+		cfg.MaxOutput = 200
+		mustFail(t, cfg, query("select 1"), "the envelope exceeds the output bound of 200 bytes")
+	})
+	t.Run("unsupported protocol version", func(t *testing.T) {
+		cfg := fake(t)
+		t.Setenv(fakemcp.EnvProtocol, "1999-01-01")
+		mustFail(t, cfg, query("select 1"), `speaks protocol version "1999-01-01", which this client does not`)
+	})
+	t.Run("no tools capability", func(t *testing.T) {
+		cfg := fake(t)
+		t.Setenv(fakemcp.EnvNoTools, "1")
+		mustFail(t, cfg, query("select 1"), "the server offers no tools capability")
+	})
+	t.Run("server exits at start with stderr only", func(t *testing.T) {
+		cfg := fake(t)
+		t.Setenv(fakemcp.EnvExitAtStart, "1")
+		t.Setenv(fakemcp.EnvStderr, "cannot bind: address in use\n")
+		mustFail(t, cfg, query("select 1"), "the server ended before answering initialize: cannot bind: address in use")
+	})
+	t.Run("result and error both", func(t *testing.T) {
+		cfg := fake(t)
+		t.Setenv(fakemcp.EnvConflict, "1")
+		mustFail(t, cfg, query("select 1"), "answered with both a result and an error")
+	})
+	t.Run("tool results held to their shape", func(t *testing.T) {
+		for text, want := range map[string]string{
+			`{}`:                                     "has no content array",
+			`{"content":null}`:                       "has no content array",
+			`{"content":[{"text":"x"}]}`:             "a content item without a type",
+			`{"content":[],"structuredContent":[1]}`: "structuredContent is not an object",
+			`{"content":[],"isError":"yes"}`:         "isError is not a boolean",
+			`{"content":[{"type":"text","text":"boom"}],"isError":true,"ISERROR":false}`: "the tool reported an error: boom",
+			`{"content":[{"type":"text","text":"ok"}]}`:                                  "",
+		} {
+			cfg := fake(t)
+			path := filepath.Join(t.TempDir(), "result.json")
+			os.WriteFile(path, []byte(text), 0o600)
+			t.Setenv(fakemcp.EnvResult, path)
+			if want == "" {
+				if _, result := acquire(t, cfg, query("select 1")); string(result) != `{"content":[{"text":"ok","type":"text"}]}` {
+					t.Fatalf("a content-only result is a result: %s", result)
+				}
+				continue
+			}
+			mustFail(t, cfg, query("select 1"), want)
+		}
+	})
+	t.Run("server-derived diagnostics are redacted", func(t *testing.T) {
+		cfg := fake(t)
+		os.WriteFile(cfg.Credentials, []byte(`{"TOKEN":"hunter2"}`), 0o600)
+		path := filepath.Join(t.TempDir(), "tools.json")
+		os.WriteFile(path, []byte(`[{"name":"hunter2","inputSchema":{"type":"object"}}]`), 0o600)
+		t.Setenv(fakemcp.EnvTools, path)
+		_, err := Acquire(context.Background(), cfg, query("select 1"))
+		if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), "not one the server offers: [[redacted]]") {
+			t.Fatalf("offered names are redacted: %v", err)
+		}
+		cfg = fake(t)
+		os.WriteFile(cfg.Credentials, []byte(`{"TOKEN":"hunter2"}`), 0o600)
+		result := filepath.Join(t.TempDir(), "result.json")
+		os.WriteFile(result, []byte(`{"content":[],"hunter2":0,"hunter2":1}`), 0o600)
+		t.Setenv(fakemcp.EnvResult, result)
+		_, err = Acquire(context.Background(), cfg, query("select 1"))
+		if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `duplicate member name "[redacted]"`) {
+			t.Fatalf("a canonicalization diagnostic is redacted: %v", err)
+		}
 	})
 	t.Run("credentials not an object of strings", func(t *testing.T) {
 		cfg := fake(t)
@@ -302,25 +377,38 @@ func TestAcquireRefusals(t *testing.T) {
 	})
 }
 
-// A server's own request is answered with "method not found" and the call
-// still completes; a notification is passed over; a paged tool list is
-// walked to the tool.
+// A server's own request is answered with "method not found" and a ping
+// with an empty result, and the call still completes; a notification and a
+// response to an id this client never used are passed over; a paged tool
+// list is walked to the tool, and a tool without an output schema records
+// null.
 func TestAcquireTalksTheProtocol(t *testing.T) {
 	cfg := fake(t)
 	t.Setenv(fakemcp.EnvServerRequest, "1")
+	t.Setenv(fakemcp.EnvPing, "1")
 	t.Setenv(fakemcp.EnvNotify, "1")
-	acquire(t, cfg, query("select 1"))
-	var answered bool
+	t.Setenv(fakemcp.EnvWrongID, "1")
+	_, result := acquire(t, cfg, query("select 1"))
+	if strings.Contains(string(result), "WRONG") {
+		t.Fatalf("a response to another id is not this call's: %s", result)
+	}
+	var refused, pinged bool
 	for _, m := range trace(t) {
 		if m["id"] == "srv-1" && m["error"] != nil {
 			if code := m["error"].(map[string]any)["code"]; code != float64(-32601) {
 				t.Fatalf("the server's request is refused with method-not-found: %v", m)
 			}
-			answered = true
+			refused = true
+		}
+		if m["id"] == "ping-1" {
+			if res, ok := m["result"].(map[string]any); !ok || len(res) != 0 || m["error"] != nil {
+				t.Fatalf("a ping is answered with an empty result: %v", m)
+			}
+			pinged = true
 		}
 	}
-	if !answered {
-		t.Fatal("the server's request was not answered")
+	if !refused || !pinged {
+		t.Fatalf("the server's request (%v) and its ping (%v) must both be answered", refused, pinged)
 	}
 	cfg = fake(t)
 	path := filepath.Join(t.TempDir(), "tools.json")
@@ -328,29 +416,109 @@ func TestAcquireTalksTheProtocol(t *testing.T) {
 	t.Setenv(fakemcp.EnvTools, path)
 	t.Setenv(fakemcp.EnvPagedTools, "1")
 	acq, _ := acquire(t, cfg, query("select 1"))
-	sum := sha256.Sum256([]byte(`{"inputSchema":{"type":"object"},"name":"query"}`))
-	if acq["schema"] != "sha256:"+hex.EncodeToString(sum[:]) {
-		t.Fatalf("the tool on the second page is the one digested: %v", acq["schema"])
+	if acq["schema"] != nil {
+		t.Fatalf("a tool that declares no output schema records null: %v", acq["schema"])
 	}
 	if got := methods(trace(t)); strings.Count(strings.Join(got, " "), "tools/list") != 2 {
 		t.Fatalf("two pages listed: %v", got)
 	}
 }
 
-// A server that never answers is stopped when the acquisition's time is up.
+// A server that never answers is stopped when the acquisition's time is up,
+// at once: the deadline is the budget, and the context kills the server (or
+// the runtime client, whose container is then told to stop by name).
 func TestAcquireStopsAHangingServer(t *testing.T) {
+	for _, form := range []string{"command", "image"} {
+		cfg := fake(t)
+		if form == "image" {
+			cfg = image(cfg)
+		}
+		t.Setenv(fakemcp.EnvHang, "1")
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		start := time.Now()
+		_, err := Acquire(ctx, cfg, query("select 1"))
+		cancel()
+		if err == nil || !strings.Contains(err.Error(), "did not answer in time: context deadline exceeded") {
+			t.Fatalf("%s: a deadline is reported as one: %v", form, err)
+		}
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond+4*time.Second {
+			t.Fatalf("%s: the server held the acquisition past its deadline: %v", form, elapsed)
+		}
+		if form == "image" {
+			if kills, _ := os.ReadFile(os.Getenv(fakemcp.EnvKills)); len(strings.TrimSpace(string(kills))) == 0 {
+				t.Fatal("the container is told to stop by name")
+			}
+		}
+	}
+}
+
+// A server that answered but ignores end-of-input is given the wait delay
+// to end on it and then killed -- in both forms -- so a stop costs the wait
+// delay and no more, and a server that ends on end-of-input costs nothing
+// (the acquire helper's bound).
+func TestStopGivesEndOfInputAChance(t *testing.T) {
+	for _, form := range []string{"command", "image"} {
+		cfg := fake(t)
+		if form == "image" {
+			cfg = image(cfg)
+		}
+		t.Setenv(fakemcp.EnvLinger, "1")
+		start := time.Now()
+		out, err := Acquire(context.Background(), cfg, query("select 1"))
+		if err != nil {
+			t.Fatalf("%s: %v", form, err)
+		}
+		decode(t, out)
+		elapsed := time.Since(start)
+		if elapsed < 2*time.Second || elapsed > 6*time.Second {
+			t.Fatalf("%s: a lingering server costs the wait delay and is then killed; took %v", form, elapsed)
+		}
+	}
+}
+
+// A write blocked on stdin -- a descendant holds the pipe and nobody reads
+// -- ends with the deadline: stdin is closed with the context.
+func TestAcquireIsNotHeldByABlockedWrite(t *testing.T) {
 	cfg := fake(t)
-	t.Setenv(fakemcp.EnvHang, "1")
+	t.Setenv(fakemcp.EnvHoldStdin, "1")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(os.Getenv(fakemcp.EnvHolderPid))
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if pid, err := strconv.Atoi(line); err == nil {
+				if p, err := os.FindProcess(pid); err == nil {
+					p.Kill()
+					p.Wait()
+				}
+			}
+		}
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	_, err := Acquire(ctx, cfg, query("select 1"))
-	if err == nil || !strings.Contains(err.Error(), "did not answer in time: context deadline exceeded") {
-		t.Fatalf("a deadline is reported as one: %v", err)
+	big := Request{Tool: "query", Arguments: json.RawMessage(`{"sql":"` + strings.Repeat("x", 300000) + `"}`)}
+	_, err := Acquire(ctx, cfg, big)
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("the deadline must end the acquisition: %v", err)
 	}
 	if time.Since(start) > 500*time.Millisecond+4*time.Second {
-		t.Fatalf("the server held the acquisition for %v", time.Since(start))
+		t.Fatalf("a blocked write held the acquisition for %v", time.Since(start))
 	}
+}
+
+// The adapter cannot tell a read tool from a write tool: an offered tool of
+// any name is callable unless the operator restricts the source. That is
+// the boundary the README states as the operator's.
+func TestWriteCapableToolIsTheOperatorsToRestrict(t *testing.T) {
+	cfg := fake(t)
+	path := filepath.Join(t.TempDir(), "tools.json")
+	os.WriteFile(path, []byte(`[{"name":"query","inputSchema":{"type":"object"}},{"name":"delete_rows","inputSchema":{"type":"object"}}]`), 0o600)
+	t.Setenv(fakemcp.EnvTools, path)
+	acquire(t, cfg, Request{Tool: "delete_rows", Arguments: json.RawMessage(`{"table":"decisions"}`)})
+	cfg.Tools = []string{"query"}
+	mustFail(t, cfg, Request{Tool: "delete_rows", Arguments: json.RawMessage(`{}`)}, `tool "delete_rows" is not one this source may call: [query]`)
 }
 
 // Nothing of the credentials reaches the envelope: neither the result nor
@@ -372,6 +540,9 @@ func TestParseRequest(t *testing.T) {
 	r, err := ParseRequest(strings.NewReader(`{"tool":"query"}`))
 	if err != nil || r.Tool != "query" || string(r.Arguments) != "{}" {
 		t.Fatalf("defaults: %+v %v", r, err)
+	}
+	if _, err := ParseRequest(strings.NewReader(`{"tool":"query","arguments":{"x":"` + strings.Repeat("y", 2<<20) + `"}}`)); err == nil {
+		t.Fatal("a request past one mebibyte is refused")
 	}
 	for in, want := range map[string]string{
 		`{"tool":"query","arguments":{"sql":"x"},"extra":1}`: "unknown field",

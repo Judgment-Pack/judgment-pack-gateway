@@ -60,6 +60,12 @@ const (
 	maxToolPages    = 32
 )
 
+// supportedVersions are the protocol revisions this client implements: the
+// one it proposes and the two before it, whose tools/list, tools/call and
+// lifecycle it speaks unchanged. A server that answers with any other
+// version is refused rather than talked to on a guess.
+var supportedVersions = map[string]bool{"2025-06-18": true, "2025-03-26": true, "2024-11-05": true}
+
 // ParseRequest reads the request strictly: an object with the known members
 // only, a non-empty tool, arguments that are an object when given.
 func ParseRequest(r io.Reader) (Request, error) {
@@ -135,24 +141,42 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Every exit passes here: the server is stopped, a container that
+	// would not stop comes first in the error, and every diagnostic --
+	// the server's, the runtime's, this adapter's own about what the
+	// server said -- is redacted once and bounded before it crosses the
+	// source boundary.
 	finish := func(out []byte, err error) ([]byte, error) {
 		if stopErr := srv.stop(); stopErr != nil {
 			if err == nil {
-				return nil, stopErr
+				err = stopErr
+			} else {
+				err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
 			}
-			err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
 		}
-		return out, err
+		if err != nil {
+			return nil, errors.New(redact.Redact(err.Error(), secrets))
+		}
+		return out, nil
 	}
+	// fail reports why a call did not complete: the deadline as such, or
+	// the error with the server's first line of stderr when the server
+	// ended -- read after the server has been stopped, so the line is
+	// whole and no longer being written.
 	fail := func(err error) ([]byte, error) {
 		if ctx.Err() != nil {
 			return finish(nil, fmt.Errorf("the server did not answer in time: %v", ctx.Err()))
 		}
-		return finish(nil, fmt.Errorf("%s", redact.Redact(withStderr(err, srv), secrets)))
+		stopErr := srv.stop()
+		message := withStderr(err, srv)
+		if stopErr != nil {
+			message = stopErr.Error() + "; the acquisition had also failed: " + message
+		}
+		return nil, errors.New(redact.Redact(message, secrets))
 	}
 	rpc := newClient(srv.stdin, srv.stdout)
-	// The handshake: what the server is, and that this client is done
-	// negotiating.
+	// The handshake: a version this client speaks, a server that offers
+	// tools, and this client done negotiating.
 	raw, err := rpc.call(ctx, "initialize", map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
@@ -161,25 +185,19 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return fail(err)
 	}
-	var initialized struct {
-		ProtocolVersion string `json:"protocolVersion"`
-		ServerInfo      struct {
-			Name    string `json:"name"`
-			Version string `json:"version"`
-		} `json:"serverInfo"`
-	}
-	if err := json.Unmarshal(raw, &initialized); err != nil || initialized.ProtocolVersion == "" {
-		return fail(errors.New("initialize: the server's answer is not an initialize result"))
+	initialized, err := parseInitialize(raw)
+	if err != nil {
+		return finish(nil, err)
 	}
 	if err := rpc.notify("notifications/initialized", map[string]any{}); err != nil {
 		return fail(err)
 	}
 	identity := srv.identity
 	if identity.Version == "" {
-		identity.Version = initialized.ServerInfo.Version
+		identity.Version = initialized.version
 	}
-	// The tool, as the server describes it: its descriptor is the schema
-	// the receipt names.
+	// The tool, as the server describes it: its declared output schema is
+	// the schema the receipt names, and null when it declares none.
 	descriptor, names, err := findTool(ctx, rpc, req.Tool)
 	if err != nil {
 		if names != nil {
@@ -187,9 +205,9 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		}
 		return fail(err)
 	}
-	schema, err := canon.Canonicalize(descriptor, canon.CarryNumbersAsText)
+	schema, err := outputSchemaOf(descriptor)
 	if err != nil {
-		return finish(nil, fmt.Errorf("tool %q: descriptor: %v", req.Tool, err))
+		return finish(nil, fmt.Errorf("tool %q: %v", req.Tool, err))
 	}
 	// The call.
 	raw, err = rpc.call(ctx, "tools/call", map[string]any{"name": req.Tool, "arguments": req.Arguments})
@@ -197,27 +215,133 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		return fail(err)
 	}
 	observedAt := time.Now().UTC().Truncate(time.Second).Format(stampLayout)
-	var outcome struct {
-		IsError bool              `json:"isError"`
-		Content []json.RawMessage `json:"content"`
-	}
-	if !canon.IsObject(raw) || json.Unmarshal(raw, &outcome) != nil {
-		return finish(nil, errors.New("tools/call: the server's answer is not a tool result"))
-	}
-	if outcome.IsError {
-		return finish(nil, fmt.Errorf("the tool reported an error: %s", redact.Redact(textOf(outcome.Content), secrets)))
-	}
 	if int64(len(raw)) > cfg.MaxOutput {
 		return finish(nil, fmt.Errorf("the tool's result exceeds the output bound of %d bytes", cfg.MaxOutput))
 	}
-	result, err := canon.Canonicalize(raw, canon.CarryNumbersAsText)
+	result, err := parseToolResult(raw)
 	if err != nil {
-		return finish(nil, fmt.Errorf("the tool's result: %v", err))
+		return finish(nil, err)
 	}
 	if err := srv.stop(); err != nil {
+		return nil, errors.New(redact.Redact(err.Error(), secrets))
+	}
+	out, err := buildEnvelope(cfg, identity, req, schema, result, observedAt)
+	if err != nil {
+		return nil, errors.New(redact.Redact(err.Error(), secrets))
+	}
+	return out, nil
+}
+
+type initializeResult struct {
+	protocol string
+	version  string
+}
+
+// parseInitialize holds the server's answer to what the lifecycle
+// requires: a protocol version this client speaks, a tools capability,
+// and the server's own name and version.
+func parseInitialize(raw json.RawMessage) (initializeResult, error) {
+	members, err := exactMembers(raw)
+	if err != nil {
+		return initializeResult{}, fmt.Errorf("initialize: the server's answer is not an initialize result: %v", err)
+	}
+	var protocol string
+	if json.Unmarshal(members["protocolVersion"], &protocol) != nil || protocol == "" {
+		return initializeResult{}, errors.New("initialize: the server's answer names no protocol version")
+	}
+	if !supportedVersions[protocol] {
+		return initializeResult{}, fmt.Errorf("initialize: the server speaks protocol version %q, which this client does not", protocol)
+	}
+	capabilities, err := exactMembers(members["capabilities"])
+	if err != nil {
+		return initializeResult{}, errors.New("initialize: the server's answer carries no capabilities object")
+	}
+	if !canon.IsObject(capabilities["tools"]) {
+		return initializeResult{}, errors.New("initialize: the server offers no tools capability")
+	}
+	var info struct {
+		Version string `json:"version"`
+	}
+	if serverInfo, ok := members["serverInfo"]; ok {
+		json.Unmarshal(serverInfo, &info)
+	}
+	return initializeResult{protocol: protocol, version: info.Version}, nil
+}
+
+// exactMembers decodes an object by its members' exact names -- Go's
+// struct decoding would match "ISERROR" to isError and let the last one
+// win -- refusing anything but an object.
+func exactMembers(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	if !canon.IsObject(raw) {
+		return nil, errors.New("not an object")
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
 		return nil, err
 	}
-	return buildEnvelope(cfg, identity, req, schema, result, observedAt)
+	return members, nil
+}
+
+// outputSchemaOf is the tool's declared output schema in canonical form,
+// or nil when the tool declares none. The descriptor's other members --
+// name, title, description, annotations -- are presentation, not schema,
+// and a schema that changed with a description would name nothing.
+func outputSchemaOf(descriptor json.RawMessage) ([]byte, error) {
+	members, err := exactMembers(descriptor)
+	if err != nil {
+		return nil, fmt.Errorf("descriptor: %v", err)
+	}
+	raw, ok := members["outputSchema"]
+	if !ok || string(raw) == "null" {
+		return nil, nil
+	}
+	if !canon.IsObject(raw) {
+		return nil, errors.New("descriptor: outputSchema is not an object")
+	}
+	return canon.Canonicalize(raw, canon.CarryNumbersAsText)
+}
+
+// parseToolResult holds the server's answer to what a CallToolResult is
+// -- content, an array of objects each with a string type; structured
+// content, an object when present; isError, a boolean when present -- by
+// exact member names on the canonical form, which has refused a duplicate
+// name already, and returns that canonical form as the result. A result
+// that says isError is not a fact and fails the acquisition with its text.
+func parseToolResult(raw json.RawMessage) ([]byte, error) {
+	result, err := canon.Canonicalize(raw, canon.CarryNumbersAsText)
+	if err != nil {
+		return nil, fmt.Errorf("tools/call: the tool's result: %v", err)
+	}
+	members, err := exactMembers(result)
+	if err != nil {
+		return nil, errors.New("tools/call: the server's answer is not a tool result")
+	}
+	var content []json.RawMessage
+	contentRaw, ok := members["content"]
+	if !ok || json.Unmarshal(contentRaw, &content) != nil || string(contentRaw) == "null" {
+		return nil, errors.New("tools/call: the tool's result has no content array")
+	}
+	for _, item := range content {
+		var head struct {
+			Type string `json:"type"`
+		}
+		if !canon.IsObject(item) || json.Unmarshal(item, &head) != nil || head.Type == "" {
+			return nil, errors.New("tools/call: a content item without a type")
+		}
+	}
+	if structured, ok := members["structuredContent"]; ok && !canon.IsObject(structured) {
+		return nil, errors.New("tools/call: structuredContent is not an object")
+	}
+	if flag, ok := members["isError"]; ok {
+		var isError bool
+		if json.Unmarshal(flag, &isError) != nil {
+			return nil, errors.New("tools/call: isError is not a boolean")
+		}
+		if isError {
+			return nil, fmt.Errorf("the tool reported an error: %s", textOf(content))
+		}
+	}
+	return result, nil
 }
 
 // findTool pages through tools/list until the tool is found; when it is
@@ -279,10 +403,10 @@ func textOf(content []json.RawMessage) string {
 	return strings.Join(parts, " ")
 }
 
-// withStderr adds the server's first line of stderr to an error about its
-// ending, which is where a server says why.
+// withStderr adds the server's first line of stderr to an error about a
+// call that did not complete, which is where a server says why.
 func withStderr(err error, srv *server) string {
-	if line := srv.firstLine(); line != "" && strings.Contains(err.Error(), "ended before") {
+	if line := srv.firstLine(); line != "" {
 		return err.Error() + ": " + line
 	}
 	return err.Error()
@@ -322,20 +446,23 @@ type envelope struct {
 // buildEnvelope is the envelope of SPEC.md §6 for one tool call: the
 // tool's whole result as the result, and the acquisition as this adapter
 // recorded it -- the server as the adapter, the call as the statement, the
-// tool's descriptor digested as the schema, and null for what a server
-// reached over stdio cannot tell it: a snapshot, the peer's identity, any
-// token the upstream produced. A tool call is one result, never a page.
+// tool's declared output schema digested as the schema (null when it
+// declares none), and null for what a server reached over stdio cannot tell
+// it: a snapshot, the peer's identity, any token the upstream produced. A
+// tool call is one result, never a page.
 func buildEnvelope(cfg Config, identity adapterIdentity, req Request, schema, result []byte, observedAt string) ([]byte, error) {
 	statement, err := canon.EncodeJSON(map[string]any{"tool": req.Tool, "arguments": req.Arguments})
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256(schema)
 	acq := acquisition{
 		Adapter:    identity,
 		Statement:  ptr(string(statement)),
-		Schema:     ptr("sha256:" + hex.EncodeToString(sum[:])),
 		ObservedAt: observedAt,
+	}
+	if schema != nil {
+		sum := sha256.Sum256(schema)
+		acq.Schema = ptr("sha256:" + hex.EncodeToString(sum[:]))
 	}
 	if cfg.Endpoint != "" {
 		acq.Endpoint = ptr(cfg.Endpoint)

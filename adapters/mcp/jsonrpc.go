@@ -74,6 +74,12 @@ func (c *client) call(ctx context.Context, method string, params any) (json.RawM
 		}
 		isRequest := m.Method != "" && len(m.ID) > 0 && string(m.ID) != "null"
 		switch {
+		case isRequest && m.Method == "ping":
+			// A liveness check must be answered with an empty result, or
+			// a server that pings ends the conversation.
+			if err := c.send(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": map[string]any{}}); err != nil {
+				return nil, err
+			}
 		case isRequest:
 			// A server may ask its client for roots or sampling; this
 			// client serves nothing, and says so rather than hang the
@@ -88,8 +94,14 @@ func (c *client) call(ctx context.Context, method string, params any) (json.RawM
 			if json.Unmarshal(m.ID, &got) != nil || got != id {
 				continue // a response to another request, which this client never made
 			}
+			if m.Error != nil && len(m.Result) > 0 {
+				return nil, fmt.Errorf("%s: the server answered with both a result and an error", method)
+			}
 			if m.Error != nil {
 				return nil, fmt.Errorf("%s: %s (code %d)", method, m.Error.Message, m.Error.Code)
+			}
+			if len(m.Result) == 0 {
+				return nil, fmt.Errorf("%s: the server answered with neither a result nor an error", method)
 			}
 			return m.Result, nil
 		default:

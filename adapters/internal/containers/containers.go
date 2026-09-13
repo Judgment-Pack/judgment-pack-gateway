@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -21,8 +22,10 @@ import (
 // of the acquisition's own timeout: the kill, the inspect that follows a
 // refused kill and the drain of its pipes, and the wait for the client's
 // pipes after that, which a descendant holding stderr can stretch to the
-// wait delay. Seven seconds at most; the command's default timeout of
-// twenty leaves that room, and some to report, under the gateway's thirty.
+// wait delay. Seven seconds at most -- nine for a container with stdin,
+// which is first given the wait delay to end on end-of-input; the commands'
+// default timeouts leave that room, and some to report, under the
+// gateway's thirty.
 const (
 	KillWindow    = 3 * time.Second
 	InspectWindow = time.Second
@@ -41,15 +44,15 @@ type Container struct {
 	// Stdin is the container's standard input when Spec.Stdin was set.
 	Stdin io.WriteCloser
 
-	runtime string
-	dir     string
-	cmd     *exec.Cmd
-	stderr  *boundedBuffer
-	ctx     context.Context
-	cancel  context.CancelFunc
-	waited  bool
-	waitErr error
-	stopped bool
+	runtime  string
+	dir      string
+	cmd      *exec.Cmd
+	stderr   *boundedBuffer
+	ctx      context.Context
+	cancel   context.CancelFunc
+	waitOnce sync.Once
+	waitErr  error
+	stopped  bool
 }
 
 // Spec is what to run. Files are written into a private directory and
@@ -153,16 +156,17 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 	go func() {
 		<-runCtx.Done()
 		stdout.Close()
+		if stdin != nil {
+			stdin.Close()
+		}
 	}()
 	return &Container{Name: name, Stdout: stdout, Stdin: stdin, runtime: runtime, dir: dir, cmd: cmd, stderr: stderr, ctx: runCtx, cancel: cancel}, nil
 }
 
-// Wait waits once for the runtime client and returns its error.
+// Wait waits once for the runtime client and returns its error; a second
+// caller, from another goroutine, waits for the first.
 func (c *Container) Wait() error {
-	if !c.waited {
-		c.waited = true
-		c.waitErr = c.cmd.Wait()
-	}
+	c.waitOnce.Do(func() { c.waitErr = c.cmd.Wait() })
 	return c.waitErr
 }
 
@@ -179,10 +183,21 @@ func (c *Container) Stop() error {
 		return nil
 	}
 	c.stopped = true
-	c.cancel()
 	if c.Stdin != nil {
+		// End of input first, and a bounded chance to end on it, before
+		// the container is told to stop: a server that ends cleanly on
+		// end-of-input ends cleanly. The container is still told to
+		// stop by name afterwards, since the client's exit establishes
+		// nothing about its container.
 		c.Stdin.Close()
+		done := make(chan struct{})
+		go func() { c.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(WaitDelay):
+		}
 	}
+	c.cancel()
 	err := c.stopByName()
 	c.Wait()
 	if c.dir != "" {
@@ -272,12 +287,16 @@ func (c *Container) FirstLine() string {
 // boundedBuffer keeps the first limit bytes written to it and drops the
 // rest, reporting every write as complete: a writer that reported a short
 // write would have os/exec's copier stop and close the pipe on the child.
+// It is written by that copier and read for a diagnostic, so it locks.
 type boundedBuffer struct {
+	mu    sync.Mutex
 	limit int
 	buf   []byte
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if room := b.limit - len(b.buf); room > 0 {
 		kept := p
 		if len(kept) > room {
@@ -288,7 +307,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *boundedBuffer) String() string { return string(b.buf) }
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.buf)
+}
 
 // Image is a digest-pinned image reference taken apart: what runs is then
 // what a receipt names, not whatever a tag resolved to at pull time.

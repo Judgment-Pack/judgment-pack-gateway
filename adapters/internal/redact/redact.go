@@ -12,13 +12,17 @@ import (
 )
 
 // SecretsOf collects every scalar of the connector's configuration, at any
-// depth -- every non-empty string and every number, as written, each once,
-// and the user name and password inside a string that is a URL -- so that a diagnostic repeating one is redacted before it crosses the
+// depth -- every non-empty string and every number, as written, each once;
+// the user name, the password and every query value inside a string that
+// is a URL, encoded and decoded; and the scalars of a string that is itself
+// JSON -- so that a diagnostic repeating one is redacted before it crosses the
 // source boundary, where the gateway returns it to whoever called
 // /acquire. The list is sorted longest first so a value that contains
 // another is replaced whole. It is as good as the connector's habit of
 // quoting its configuration verbatim: a secret it encodes or splits is not
-// caught, and a one-letter value redacts every letter like it.
+// caught, a token inside a format this does not parse (a bare "key=value"
+// line, a header) is not caught, and a one-letter value redacts every
+// letter like it.
 func SecretsOf(config []byte) []string {
 	dec := json.NewDecoder(bytes.NewReader(config))
 	dec.UseNumber()
@@ -42,12 +46,28 @@ func SecretsOf(config []byte) []string {
 			// A connection string carries its password inside a longer
 			// value, and a diagnostic quotes the password alone: the
 			// user-info parts of a value that parses as a URL are
-			// secrets in their own right.
+			// secrets in their own right, as written (percent-encoded)
+			// and as decoded, and so is every query value. A value that
+			// is itself JSON is walked.
 			if u, err := url.Parse(x); err == nil && u.User != nil {
 				add(u.User.Username())
 				if password, ok := u.User.Password(); ok {
 					add(password)
 				}
+				if raw := rawUserInfo(x); raw != "" {
+					user, password, _ := strings.Cut(raw, ":")
+					add(user)
+					add(password)
+				}
+				for _, values := range u.Query() {
+					for _, v := range values {
+						add(v)
+					}
+				}
+			}
+			var nested any
+			if len(x) > 1 && (x[0] == '{' || x[0] == '[') && json.Unmarshal([]byte(x), &nested) == nil {
+				walk(nested)
 			}
 		case json.Number:
 			add(x.String())
@@ -64,6 +84,25 @@ func SecretsOf(config []byte) []string {
 	walk(value)
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
+}
+
+// rawUserInfo is the user-info segment of a URL as written, between the
+// scheme's "//" and the "@" before the host.
+func rawUserInfo(raw string) string {
+	_, rest, ok := strings.Cut(raw, "//")
+	if !ok {
+		return ""
+	}
+	end := strings.IndexAny(rest, "/?#")
+	authority := rest
+	if end >= 0 {
+		authority = rest[:end]
+	}
+	at := strings.LastIndex(authority, "@")
+	if at < 0 {
+		return ""
+	}
+	return authority[:at]
 }
 
 const MaxDiagnostic = 512

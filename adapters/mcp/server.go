@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"adapters/internal/containers"
@@ -81,9 +82,13 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 		cancel()
 		return nil, fmt.Errorf("server could not be started: %v", err)
 	}
+	// A reader blocked on stdout, or a writer blocked on stdin because a
+	// descendant holds the pipe without reading, returns when the context
+	// ends: both ends are closed with it.
 	go func() {
 		<-runCtx.Done()
 		stdout.Close()
+		stdin.Close()
 	}()
 	var waited bool
 	var waitErr error
@@ -143,12 +148,16 @@ func executableDigest(path string) (string, error) {
 }
 
 // boundedBuffer keeps the first limit bytes and reports every write whole.
+// It is written by os/exec's copier and read for a diagnostic, so it locks.
 type boundedBuffer struct {
+	mu    sync.Mutex
 	limit int
 	buf   []byte
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if room := b.limit - len(b.buf); room > 0 {
 		kept := p
 		if len(kept) > room {
@@ -160,7 +169,9 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func (b *boundedBuffer) firstLine() string {
+	b.mu.Lock()
 	text := string(b.buf)
+	b.mu.Unlock()
 	for i, r := range text {
 		if r == '\n' {
 			return text[:i]

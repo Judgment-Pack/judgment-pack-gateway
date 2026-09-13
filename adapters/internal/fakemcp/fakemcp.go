@@ -11,7 +11,9 @@ import (
 	"bufio"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -52,6 +54,31 @@ const (
 	EnvInitError = "MCP_FAKE_INIT_ERROR"
 	// EnvStuck makes kill fail and inspect answer present.
 	EnvStuck = "MCP_FAKE_STUCK"
+	// EnvPing makes the server ping the client before answering
+	// tools/call, and record the answer.
+	EnvPing = "MCP_FAKE_PING"
+	// EnvWrongID makes the server answer tools/call first with a response
+	// to an id the client never used, then with the real one.
+	EnvWrongID = "MCP_FAKE_WRONG_ID"
+	// EnvHoldStdin makes the server, after answering tools/list, leave a
+	// descendant holding its stdin and exit without reading the call.
+	EnvHoldStdin = "MCP_FAKE_HOLD_STDIN"
+	// EnvLinger makes the server ignore end-of-input after answering
+	// tools/call: it sleeps until killed.
+	EnvLinger = "MCP_FAKE_LINGER"
+	// EnvHolderPid is the file the descendant's pid is written to.
+	EnvHolderPid = "MCP_FAKE_HOLDER_PID"
+	// EnvConflict makes tools/call answer with both a result and an error.
+	EnvConflict = "MCP_FAKE_CONFLICT"
+	// EnvExitAtStart makes the server write EnvStderr and exit 1 before
+	// reading anything.
+	EnvExitAtStart = "MCP_FAKE_EXIT_AT_START"
+	// EnvProtocol, when set, is the protocol version initialize answers.
+	EnvProtocol = "MCP_FAKE_PROTOCOL"
+	// EnvNoTools makes initialize answer without a tools capability.
+	EnvNoTools = "MCP_FAKE_NO_TOOLS"
+
+	envSleep = "MCP_FAKE_SLEEP"
 )
 
 // Invocation is what one runtime run was asked, and the env file it found
@@ -98,8 +125,15 @@ func Run(args []string) int {
 }
 
 func serve() int {
+	if os.Getenv(envSleep) == "1" {
+		time.Sleep(60 * time.Second)
+		return 0
+	}
 	if text := os.Getenv(EnvStderr); text != "" {
 		os.Stderr.WriteString(text)
+	}
+	if os.Getenv(EnvExitAtStart) == "1" {
+		return 1
 	}
 	env := map[string]string{}
 	for _, key := range strings.Split(os.Getenv(EnvEnvKeys), ",") {
@@ -107,9 +141,9 @@ func serve() int {
 			env[key] = os.Getenv(key)
 		}
 	}
-	line, _ := json.Marshal(map[string]any{"env": env})
+	line, _ := json.Marshal(map[string]any{"env": env, "argv": os.Args})
 	appendLine(os.Getenv(EnvTrace), string(line))
-	tools := json.RawMessage(`[{"name":"query","description":"Run a read-only query","inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]}}]`)
+	tools := json.RawMessage(`[{"name":"query","description":"Run a read-only query","inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]},"outputSchema":{"type":"object","properties":{"rows":{"type":"array"}}}}]`)
 	if path := os.Getenv(EnvTools); path != "" {
 		tools, _ = os.ReadFile(path)
 	}
@@ -150,8 +184,16 @@ func serve() int {
 				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "error": map[string]any{"code": -32602, "message": "unsupported protocol version"}})
 				continue
 			}
+			protocol := "2025-06-18"
+			if v := os.Getenv(EnvProtocol); v != "" {
+				protocol = v
+			}
+			capabilities := map[string]any{"tools": map[string]any{}}
+			if os.Getenv(EnvNoTools) == "1" {
+				capabilities = map[string]any{"prompts": map[string]any{}}
+			}
 			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": map[string]any{
-				"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}},
+				"protocolVersion": protocol, "capabilities": capabilities,
 				"serverInfo": map[string]any{"name": "fake-mcp", "version": "1.0"}}})
 		case "notifications/initialized":
 		case "tools/list":
@@ -168,6 +210,15 @@ func serve() int {
 				continue
 			}
 			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": map[string]any{"tools": toolList}})
+			if os.Getenv(EnvHoldStdin) == "1" {
+				child := exec.Command(os.Args[0])
+				child.Env = append(os.Environ(), envSleep+"=1")
+				child.Stdin = os.Stdin
+				if err := child.Start(); err == nil {
+					appendLine(os.Getenv(EnvHolderPid), strconv.Itoa(child.Process.Pid))
+				}
+				return 0
+			}
 		case "tools/call":
 			if os.Getenv(EnvExitBeforeCall) == "1" {
 				return 1
@@ -186,7 +237,24 @@ func serve() int {
 					appendLine(os.Getenv(EnvTrace), string(scanner.Bytes()))
 				}
 			}
+			if os.Getenv(EnvPing) == "1" {
+				emit(map[string]any{"jsonrpc": "2.0", "id": "ping-1", "method": "ping"})
+				if scanner.Scan() {
+					appendLine(os.Getenv(EnvTrace), string(scanner.Bytes()))
+				}
+			}
+			if os.Getenv(EnvWrongID) == "1" {
+				emit(map[string]any{"jsonrpc": "2.0", "id": 999, "result": map[string]any{"content": []any{map[string]any{"type": "text", "text": "WRONG"}}}})
+			}
+			if os.Getenv(EnvConflict) == "1" {
+				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result, "error": map[string]any{"code": -1, "message": "also failed"}})
+				continue
+			}
 			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
+			if os.Getenv(EnvLinger) == "1" {
+				time.Sleep(60 * time.Second)
+				return 0
+			}
 		default:
 			if len(m.ID) > 0 {
 				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "error": map[string]any{"code": -32601, "message": "method not found"}})

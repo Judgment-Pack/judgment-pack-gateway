@@ -53,8 +53,8 @@ import (
 )
 
 func main() {
-	if os.Getenv("SERVICE_TOKEN") != "secret-token" {
-		os.Stderr.WriteString("no token\n")
+	if os.Getenv("SERVICE_TOKEN") != "secret-token" || len(os.Args) != 3 || os.Args[1] != "--mode" || os.Args[2] != "readonly" {
+		os.Stderr.WriteString("no token, or not started with --mode readonly\n")
 		os.Exit(1)
 	}
 	in := bufio.NewScanner(os.Stdin)
@@ -69,7 +69,7 @@ func main() {
 		var result any
 		switch m.Method {
 		case "initialize":
-			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "serverInfo": map[string]any{"name": "standin", "version": "0.1"}}
+			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "standin", "version": "0.1"}}
 		case "tools/list":
 			result = map[string]any{"tools": []any{map[string]any{"name": "lookup", "inputSchema": map[string]any{"type": "object"}}}}
 		case "tools/call":
@@ -101,7 +101,7 @@ func main() {
 	}
 	args := []string{
 		filepath.Join(dir, "store"), "seed-is-loaded-separately", "gateway:test", filepath.Join(dir, "registry.jsonl"),
-		"--source", "live=" + adapter + " --command " + server + " --credentials " + credentials + " --endpoint api.example --tools lookup",
+		"--source", "live=" + adapter + " --credentials " + credentials + " --endpoint api.example --tools lookup -- " + server + " --mode readonly",
 		"--source-shape", "live=mcp",
 	}
 	opts, msg, ok := parseServeOptions(args)
@@ -126,9 +126,8 @@ func main() {
 	if acquisition["shape"] != "mcp" || adapterOut["name"] != server || adapterOut["version"] != "0.1" || adapterOut["digest"] != "sha256:"+hex.EncodeToString(sum[:]) {
 		t.Fatalf("the receipt names the server command, its version and its digest under the declared shape: %v", acquisition)
 	}
-	schemaSum := sha256.Sum256([]byte(`{"inputSchema":{"type":"object"},"name":"lookup"}`))
-	if acquisition["endpoint"] != "api.example" || acquisition["snapshot"] != nil || acquisition["schema"] != "sha256:"+hex.EncodeToString(schemaSum[:]) || acquisition["peerIdentity"] != nil {
-		t.Fatalf("endpoint as named, no snapshot, the tool's descriptor digested, no peer identity: %v", acquisition)
+	if acquisition["endpoint"] != "api.example" || acquisition["snapshot"] != nil || acquisition["schema"] != nil || acquisition["peerIdentity"] != nil {
+		t.Fatalf("endpoint as named; no snapshot, no schema (the tool declares no output schema), no peer identity: %v", acquisition)
 	}
 	if _, present := acquisition["pageItems"]; present {
 		t.Fatal("a tool call is one result, not a page")

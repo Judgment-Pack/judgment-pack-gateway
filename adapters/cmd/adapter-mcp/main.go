@@ -24,8 +24,7 @@ func main() {
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("adapter-mcp", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	image := fs.String("image", "", "pinned server image, name[:tag]@sha256:<64 hex>; or use --command")
-	command := fs.String("command", "", "a local server command with its arguments, quoted as one value; or use --image")
+	image := fs.String("image", "", "pinned server image, name[:tag]@sha256:<64 hex>; or give a local server command after --")
 	credentials := fs.String("credentials", "", "path of a JSON object of strings that become the server's environment")
 	runtime := fs.String("runtime", "docker", "container runtime command for --image: docker or podman")
 	endpoint := fs.String("endpoint", "", "the host the server reaches, as the operator names it; recorded as the receipt's endpoint")
@@ -35,8 +34,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 0 || (*image == "") == (*command == "") {
-		fmt.Fprintln(stderr, "usage: adapter-mcp (--image REF@sha256:HEX | --command 'CMD ARGS') [--credentials FILE] [--runtime docker|podman] [--endpoint HOST] [--tools A,B] [--max-output BYTES] [--timeout D]")
+	// The gateway splits a source command on whitespace and parses no
+	// quotes, so a server command with arguments is given after "--",
+	// word by word, and nothing else is positional.
+	command := fs.Args()
+	if (*image == "") == (len(command) == 0) {
+		fmt.Fprintln(stderr, "usage: adapter-mcp (--image REF@sha256:HEX | [options] -- CMD ARGS...) [--credentials FILE] [--runtime docker|podman] [--endpoint HOST] [--tools A,B] [--max-output BYTES] [--timeout D]")
 		return 2
 	}
 	req, err := mcp.ParseRequest(stdin)
@@ -44,10 +47,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "adapter-mcp:", err)
 		return 1
 	}
-	cfg := mcp.Config{Runtime: *runtime, Image: *image, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
-	if *command != "" {
-		cfg.Command = strings.Fields(*command)
-	}
+	cfg := mcp.Config{Runtime: *runtime, Image: *image, Command: command, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
 	if *tools != "" {
 		cfg.Tools = strings.Split(*tools, ",")
 	}
