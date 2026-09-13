@@ -118,10 +118,12 @@ good as the connector's habit of quoting its configuration verbatim: a secret it
 or splits is not caught, and a one-letter value redacts every letter like it. What the
 connector or the runtime writes on stderr is kept up to 64 KiB and redacted before its first
 line is cut, so a key spanning lines, or a value longer than a line, is matched whole; when
-the buffer overflowed, whatever ends it that is the start of a credential is cut off first,
-since the rest of it may be what was dropped. A message with a duplicate member anywhere in
-it is refused before it is classified, since a second `type` spelled with an escape would
-otherwise decide what the line is. A check the connector ends without a status reports the
+the buffer overflowed, whatever ends it that is the start of a credential is cut off — after the
+whole ones were replaced — since the rest of it may be what was dropped. A message with a duplicate member anywhere in
+it, or nested deeper than a decoder reads (10,000 levels), is refused before it is classified,
+since a second `type` spelled with an escape, or a member too deep to read, would otherwise
+decide what the line is. A credentials file that is refused is not quoted: the refusal names
+no member, since a member's name may be another member's value. A check the connector ends without a status reports the
 connector's first line of stderr, when it wrote one.
 
 Two honest bounds. The record data are the connector's: a record with a duplicate
@@ -175,7 +177,8 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   since an env file drops a line that begins with `#` or whitespace) with a string value
   holding no newline, carriage return or NUL, since an env file is read by lines and a
   carriage return before the newline is dropped with it — a value the container would see
-  differently from the adapter is refused rather than carried.
+  differently from the adapter is refused rather than carried. A refusal names no member, since
+  a member's name may be another member's value.
 - `--tools` names the only tools a request may call; a request outside it is refused before
   any server starts.
 - `--check` starts the server with the credentials, completes the handshake and lists its
@@ -234,16 +237,20 @@ a writer holds the adapter past it; and the command stays in the adapter's own p
 so that under the gateway the source group's kill reaches it and what it started. On Linux the
 adapter also adopts the orphans its descendants leave (`PR_SET_CHILD_SUBREAPER`) and kills every
 descendant last, found through `/proc`, so a process the server left behind — holding the
-credentials in its environment — does not keep them, rescanning until none is alive and failing
-the stop — and with it the check or the acquisition — when one survives; a descendant that made
+credentials in its environment — does not keep them, rescanning until two scans in a row find none alive and
+reap none — so a process forked between a listing and the reading of its parent is found once
+its parent is gone — and failing the stop — and with it the check or the acquisition — when one
+survives; a descendant that made
 a session of its own is not found, and elsewhere than Linux only the server itself is reached. `--image` is the shape
 that keeps the lifecycle under a name. Every diagnostic
 that crosses the source boundary — the server's, the runtime's, and this adapter's own about
 what the server said, offered tool names included — is redacted and bounded as
 `adapter-airbyte`'s are; a connection string's user name, password and query values count
 as secrets in their own right, encoded and decoded, and a credential value that is itself
-JSON is walked. A token inside a format the redactor does not parse is not caught. What a server or a runtime
+JSON is walked, as tokens, so a value under a member name that repeats is a secret too. A
+token inside a format the redactor does not parse is not caught. What a server or a runtime
 writes on stderr is kept up to 64 KiB and redacted before its first line is cut, so a credential
 longer than a line, or spanning lines, is matched whole, and when the buffer overflowed whatever
-ends it that is the start of a credential is cut off first; a duplicate member name in a message,
+ends it that is the start of a credential is cut off — after the whole ones were replaced, since a
+credential whose end repeats its start is whole before it is a prefix; a duplicate member name in a message,
 which the diagnostic names, is written as it is rather than quoted with an escape.

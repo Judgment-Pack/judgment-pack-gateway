@@ -1016,8 +1016,14 @@ func TestConfigIsHeldToOneReadingAndOneSize(t *testing.T) {
 	if err := os.WriteFile(cfg.Credentials, []byte(`{"password":"first-secret","\u0070assword":"second-secret"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file is not JSON: duplicate member name 'password'") {
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file has a member name twice") {
 		t.Fatalf("a duplicate member, spelled with an escape, is refused: %v", err)
+	}
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"password":"hunter2","hunter2":"x","hunter2":"y"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file has a member name twice") || strings.Contains(err.Error(), "hunter2") {
+		t.Fatalf("the refusal names nothing of the file: %v", err)
 	}
 	for _, text := range []string{`[]`, `"x"`, `null`, `{"a":"\xff"}`} {
 		if err := os.WriteFile(cfg.Credentials, []byte(text), 0o600); err != nil {
@@ -1062,5 +1068,23 @@ func TestACheckWithoutAStatusReportsWhatTheConnectorSaid(t *testing.T) {
 	_, err := Check(context.Background(), cfg)
 	if err == nil || !strings.Contains(err.Error(), "the connector answered no connection status: authentication failed for app with [redacted]") {
 		t.Fatalf("the connector's own line, redacted: %v", err)
+	}
+}
+
+func TestAMessageTooDeepToReadCannotHideAFailure(t *testing.T) {
+	deep := strings.Repeat("[", 10001) + strings.Repeat("]", 10001)
+	cfg := checkFake(t, `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"no"},"extra":`+deep+`}`+"\n"+checkSucceeded)
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "malformed message: nesting deeper than 10000 levels") {
+		t.Fatalf("refused, not skipped: %v", err)
+	}
+}
+
+func TestAValueUnderARepeatedNestedNameIsASecretToo(t *testing.T) {
+	cfg := checkFake(t, `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"rejected first-secret and second-secret"}}`+"\n")
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","blob":"{\"token\":\"first-secret\",\"token\":\"second-secret\"}"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "rejected [redacted] and [redacted]") {
+		t.Fatalf("both values are secrets: %v", err)
 	}
 }

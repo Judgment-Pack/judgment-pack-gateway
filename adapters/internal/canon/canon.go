@@ -34,6 +34,10 @@ var integerLiteral = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
 
 const maxInteger = 1<<53 - 1
 
+// maxNesting is the containers a value may nest, the depth a decoder reads
+// (encoding/json refuses deeper): what canonicalizes here decodes there.
+const maxNesting = 10000
+
 // Canonicalize renders one JSON document in the form SPEC.md §1.1 states --
 // member names sorted by code point, no insignificant whitespace, strings
 // with the short escapes, lowercase \u00xx for the other control characters
@@ -53,7 +57,7 @@ func Canonicalize(raw []byte, numbers NumberPolicy) ([]byte, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	var out bytes.Buffer
-	if err := writeCanonical(dec, &out, numbers); err != nil {
+	if err := writeCanonical(dec, &out, numbers, 0); err != nil {
 		return nil, err
 	}
 	if _, err := dec.Token(); err != io.EOF {
@@ -62,7 +66,7 @@ func Canonicalize(raw []byte, numbers NumberPolicy) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers NumberPolicy) error {
+func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers NumberPolicy, depth int) error {
 	tok, err := dec.Token()
 	if err != nil {
 		if err == io.EOF {
@@ -72,6 +76,9 @@ func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers NumberPolicy) 
 	}
 	switch v := tok.(type) {
 	case json.Delim:
+		if depth >= maxNesting {
+			return fmt.Errorf("nesting deeper than %d levels", maxNesting)
+		}
 		switch v {
 		case '{':
 			type member struct {
@@ -96,7 +103,7 @@ func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers NumberPolicy) 
 				}
 				seen[name] = true
 				var value bytes.Buffer
-				if err := writeCanonical(dec, &value, numbers); err != nil {
+				if err := writeCanonical(dec, &value, numbers, depth+1); err != nil {
 					return err
 				}
 				members = append(members, member{name, value.Bytes()})
@@ -123,7 +130,7 @@ func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers NumberPolicy) 
 					out.WriteByte(',')
 				}
 				first = false
-				if err := writeCanonical(dec, out, numbers); err != nil {
+				if err := writeCanonical(dec, out, numbers, depth+1); err != nil {
 					return err
 				}
 			}

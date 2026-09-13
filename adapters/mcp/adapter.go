@@ -127,20 +127,22 @@ func credentialsEnv(path string) (env []string, secrets []string, err error) {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
+		// None of these names the member: a member's name may be another
+		// member's value, and the file is not yet one the redactor knows.
 		var value string
 		if raw := bytes.TrimSpace(members[k]); !bytes.HasPrefix(raw, []byte(`"`)) || json.Unmarshal(raw, &value) != nil {
-			return nil, nil, fmt.Errorf("credentials member '%s' is not a string", k)
+			return nil, nil, errors.New("a credentials member is not a string")
 		}
 		// A name an environment and an env file both carry unchanged:
 		// a runtime's env-file parser drops a line that begins with a
 		// comment mark or whitespace, and a shell refuses other names.
 		if !envName.MatchString(k) {
-			return nil, nil, fmt.Errorf("credentials member '%s' is not an environment variable name", k)
+			return nil, nil, errors.New("a credentials member is not an environment variable name")
 		}
 		// A value both carry unchanged: an env file is read by lines,
 		// and a carriage return before the newline is dropped with it.
 		if strings.ContainsAny(value, "\n\r\x00") {
-			return nil, nil, fmt.Errorf("credentials member '%s' has a value an environment cannot carry", k)
+			return nil, nil, errors.New("a credentials member has a value an environment cannot carry")
 		}
 		env = append(env, k+"="+value)
 	}

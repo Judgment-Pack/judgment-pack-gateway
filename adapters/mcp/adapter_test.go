@@ -363,11 +363,11 @@ func TestAcquireRefusals(t *testing.T) {
 	t.Run("credentials not an object of strings", func(t *testing.T) {
 		cfg := fake(t)
 		os.WriteFile(cfg.Credentials, []byte(`{"PORT":5432}`), 0o600)
-		mustFail(t, cfg, query("select 1"), "credentials member 'PORT' is not a string")
+		mustFail(t, cfg, query("select 1"), "a credentials member is not a string")
 		os.WriteFile(cfg.Credentials, []byte(`{"KEY":"a\nb"}`), 0o600)
-		mustFail(t, cfg, query("select 1"), "credentials member 'KEY' has a value an environment cannot carry")
+		mustFail(t, cfg, query("select 1"), "a credentials member has a value an environment cannot carry")
 		os.WriteFile(cfg.Credentials, []byte(`{"A=B":"x"}`), 0o600)
-		mustFail(t, cfg, query("select 1"), "credentials member 'A=B' is not an environment variable name")
+		mustFail(t, cfg, query("select 1"), "a credentials member is not an environment variable name")
 	})
 	t.Run("neither or both servers", func(t *testing.T) {
 		cfg := fake(t)
@@ -983,7 +983,8 @@ func TestCredentialsAreHeldToWhatAnEnvironmentCarries(t *testing.T) {
 		{`null`, "is not a JSON object of strings"},
 		{`[]`, "is not a JSON object of strings"},
 		{`"x"`, "is not a JSON object of strings"},
-		{`{"a":"1","\u0061":"2"}`, "not JSON: duplicate member name 'a'"},
+		{`{"a":"1","\u0061":"2"}`, "credentials file has a member name twice"},
+		{`{"TOKEN":"hunter2","hunter2":"x","hunter2":"y"}`, "credentials file has a member name twice"},
 		{`{"a":"\xff"}`, "credentials file is not JSON"},
 	} {
 		t.Run(tc.text, func(t *testing.T) {
@@ -993,8 +994,8 @@ func TestCredentialsAreHeldToWhatAnEnvironmentCarries(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg.Credentials = credentials
-			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("want %q, got %v", tc.want, err)
+			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "hunter2") {
+				t.Fatalf("want %q, naming nothing of the file: %v", tc.want, err)
 			}
 		})
 	}
@@ -1006,5 +1007,41 @@ func TestCredentialsAreHeldToWhatAnEnvironmentCarries(t *testing.T) {
 	cfg.Credentials = big
 	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file exceeds 1 MiB") {
 		t.Fatalf("bounded: %v", err)
+	}
+}
+
+func TestAWholeCredentialWhoseEndRepeatsItsStartIsRedactedWhole(t *testing.T) {
+	cfg := fake(t)
+	secret := "TOPSECRET" + strings.Repeat("x", 64<<10-9-18) + "TOPSECRET"
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	text := filepath.Join(t.TempDir(), "stderr.txt")
+	// Exactly the buffer's worth, and the newline overflows it.
+	if err := os.WriteFile(text, []byte("refused: "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvStderrFile, text)
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.HasSuffix(err.Error(), "refused: [redacted]") {
+		t.Fatalf("whole before prefix: %.120v", err)
+	}
+}
+
+func TestAValueUnderARepeatedNestedNameIsASecret(t *testing.T) {
+	cfg := fake(t)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"BLOB":"{\"token\":\"first-secret\",\"token\":\"second-secret\"}"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvStderr, "rejected first-secret and second-secret\n")
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "rejected [redacted] and [redacted]") {
+		t.Fatalf("both values are secrets: %v", err)
 	}
 }

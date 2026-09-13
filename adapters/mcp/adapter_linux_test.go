@@ -61,3 +61,31 @@ func TestACommandServerStaysInTheAdaptersGroup(t *testing.T) {
 		t.Fatal("the stand-in recorded no process group")
 	}
 }
+
+// A descendant that forks and exits at once leaves a grandchild whose
+// parent is gone: adopted here, it is found and reached all the same.
+func TestStoppingACommandReachesAGrandchildWhoseParentIsGone(t *testing.T) {
+	cfg := fake(t)
+	t.Setenv(fakemcp.EnvHoldStdin, "1")
+	t.Setenv(fakemcp.EnvHoldFork, "1")
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(os.Getenv(fakemcp.EnvHolderPid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("a holder and its child were started: %q", lines)
+	}
+	for _, line := range lines {
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
+			t.Fatalf("%d survived the check with the credentials, or was left unreaped: %s", pid, stat)
+		}
+	}
+}

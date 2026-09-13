@@ -68,6 +68,9 @@ const (
 	EnvLinger = "MCP_FAKE_LINGER"
 	// EnvHolderPid is the file the descendant's pid is written to.
 	EnvHolderPid = "MCP_FAKE_HOLDER_PID"
+	// EnvHoldFork makes the descendant itself fork a sleeper and exit at
+	// once, so what holds on is a grandchild whose parent is gone.
+	EnvHoldFork = "MCP_FAKE_HOLD_FORK"
 	// EnvConflict makes tools/call answer with both a result and an error;
 	// EnvNullError with a result and an error member that is null.
 	EnvConflict  = "MCP_FAKE_CONFLICT"
@@ -148,6 +151,15 @@ func Run(args []string) int {
 
 func serve() int {
 	if os.Getenv(envSleep) == "1" {
+		if os.Getenv(EnvHoldFork) == "1" {
+			child := exec.Command(os.Args[0])
+			child.Env = append(os.Environ(), EnvHoldFork+"=0")
+			child.Stdin = os.Stdin
+			if err := child.Start(); err == nil {
+				appendLine(os.Getenv(EnvHolderPid), strconv.Itoa(child.Process.Pid))
+			}
+			return 0
+		}
 		time.Sleep(60 * time.Second)
 		return 0
 	}
@@ -266,6 +278,18 @@ func serve() int {
 				child.Stdin = os.Stdin
 				if err := child.Start(); err == nil {
 					appendLine(os.Getenv(EnvHolderPid), strconv.Itoa(child.Process.Pid))
+					if os.Getenv(EnvHoldFork) == "1" {
+						// Stay until the holder has forked its child and
+						// written its pid, so the grandchild exists before
+						// the adapter stops anything.
+						for i := 0; i < 300; i++ {
+							data, _ := os.ReadFile(os.Getenv(EnvHolderPid))
+							if strings.Count(string(data), "\n") >= 2 {
+								break
+							}
+							time.Sleep(10 * time.Millisecond)
+						}
+					}
 				}
 				return 0
 			}

@@ -1,6 +1,7 @@
 package airbyte
 
 import (
+	"bytes"
 	"encoding/json"
 
 	"adapters/internal/canon"
@@ -63,6 +64,12 @@ type connectionStatus struct {
 
 // object is a JSON object read by its members' exact names.
 type object map[string]json.RawMessage
+
+// startsObject reports whether a line begins, after whitespace, an object.
+func startsObject(line []byte) bool {
+	trimmed := bytes.TrimLeft(line, " \t\r\n")
+	return len(trimmed) > 0 && trimmed[0] == '{'
+}
 
 func objectOf(raw json.RawMessage) (object, bool) {
 	if !canon.IsObject(raw) {

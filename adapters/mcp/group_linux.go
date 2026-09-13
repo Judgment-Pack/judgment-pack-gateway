@@ -38,16 +38,29 @@ const descendantsDeadline = 3 * time.Second
 // keeps the lifecycle under a name.
 func killDescendants() error {
 	deadline := time.Now().Add(descendantsDeadline)
+	quiet := 0
 	for {
-		live, err := liveDescendants()
+		live, reaped, err := liveDescendants()
 		if err != nil {
 			return err
 		}
-		if len(live) == 0 {
-			return nil
-		}
-		for _, pid := range live {
-			syscall.Kill(pid, syscall.SIGKILL)
+		// Done only after a scan that found nothing alive and reaped
+		// nothing, twice over: a process forked between the listing and
+		// the reading of its parent is found on the next scan, once its
+		// parent is gone and it is this process's own.
+		switch {
+		case len(live) == 0 && reaped == 0:
+			quiet++
+			if quiet >= 2 {
+				return nil
+			}
+		case len(live) == 0:
+			quiet = 0
+		default:
+			quiet = 0
+			for _, pid := range live {
+				syscall.Kill(pid, syscall.SIGKILL)
+			}
 		}
 		if time.Now().After(deadline) {
 			return fmt.Errorf("%d process(es) the server left behind survived being stopped and may hold the credentials", len(live))
@@ -58,11 +71,11 @@ func killDescendants() error {
 
 // liveDescendants lists the descendants of this process that are not
 // zombies, reaping a zombie this process adopted on the way, so that it
-// leaves /proc.
-func liveDescendants() ([]int, error) {
+// leaves /proc, and says how many it reaped.
+func liveDescendants() (live []int, reaped int, err error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil, fmt.Errorf("cannot list processes: %w", err)
+		return nil, 0, fmt.Errorf("cannot list processes: %w", err)
 	}
 	type process struct {
 		ppid   int
@@ -98,7 +111,6 @@ func liveDescendants() ([]int, error) {
 		children[ppid] = append(children[ppid], pid)
 	}
 	self := os.Getpid()
-	var live []int
 	queue := []int{self}
 	for len(queue) > 0 {
 		parent := queue[0]
@@ -106,7 +118,9 @@ func liveDescendants() ([]int, error) {
 		for _, child := range children[parent] {
 			if processes[child].zombie {
 				if parent == self {
-					syscall.Wait4(child, nil, syscall.WNOHANG, nil)
+					if pid, _ := syscall.Wait4(child, nil, syscall.WNOHANG, nil); pid == child {
+						reaped++
+					}
 				}
 				continue
 			}
@@ -114,5 +128,5 @@ func liveDescendants() ([]int, error) {
 			queue = append(queue, child)
 		}
 	}
-	return live, nil
+	return live, reaped, nil
 }

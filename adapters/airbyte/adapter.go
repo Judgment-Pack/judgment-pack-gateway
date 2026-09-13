@@ -186,12 +186,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		return nil, err
 	}
 	c, err := containers.Start(ctx, containers.Spec{
-		Redact: func(text string, truncated bool) string {
-			if truncated {
-				text = redact.TrimPartialSecret(text, secrets)
-			}
-			return redact.Redact(text, secrets)
-		},
+		Redact:  func(text string, truncated bool) string { return redact.Diagnostic(text, truncated, secrets) },
 		Runtime: cfg.Runtime, Image: cfg.Image,
 		Files: map[string][]byte{"config.json": config},
 		Args:  []string{"check", "--config", "/secrets/config.json"},
@@ -295,12 +290,7 @@ func readConfig(path string) (config []byte, secrets []string, err error) {
 // without it.
 func discover(ctx context.Context, cfg Config, req Request, config []byte, secrets []string) (stream, error) {
 	c, err := containers.Start(ctx, containers.Spec{
-		Redact: func(text string, truncated bool) string {
-			if truncated {
-				text = redact.TrimPartialSecret(text, secrets)
-			}
-			return redact.Redact(text, secrets)
-		},
+		Redact:  func(text string, truncated bool) string { return redact.Diagnostic(text, truncated, secrets) },
 		Runtime: cfg.Runtime, Image: cfg.Image,
 		Files: map[string][]byte{"config.json": config},
 		Args:  []string{"discover", "--config", "/secrets/config.json"},
@@ -451,17 +441,25 @@ func stateFileFor(snapshot *string) ([]byte, error) {
 // that does not decode as one is an error the caller must not skip, since
 // what it failed to say may have been an error.
 func parseMessage(line []byte) (message, bool, error) {
-	members, ok := objectOf(line)
-	if !ok {
+	// Whether the line is an object is read from its first byte, not
+	// from a decoder: a decoder would refuse an object too deep to read,
+	// and a line that begins an object and cannot be read is refused
+	// below, not skipped.
+	if !startsObject(line) {
 		return message{}, false, nil
 	}
 	// Every object line is held to exact member names with a duplicate
-	// refused at any depth -- before it is classified, since a second
-	// "type" spelled with an escape would otherwise decide what the line
-	// is; the canonical form itself is not used, so a checkpoint is handed
+	// refused at any depth, and to the nesting a decoder reads -- before
+	// it is classified, since a second "type" spelled with an escape, or
+	// a member too deep to read, would otherwise decide what the line is;
+	// the canonical form itself is not used, so a checkpoint is handed
 	// back as emitted.
 	if _, err := canon.Canonicalize(line, canon.CarryNumbersAsText); err != nil {
 		return message{}, true, fmt.Errorf("the connector emitted a malformed message: %v", err)
+	}
+	members, ok := objectOf(line)
+	if !ok {
+		return message{}, true, errors.New("the connector emitted a malformed message: an object that does not decode")
 	}
 	typ, ok := members.str("type")
 	if !ok {
@@ -569,12 +567,7 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 		args = append(args, "--state", "/secrets/state.json")
 	}
 	c, err := containers.Start(ctx, containers.Spec{
-		Redact: func(text string, truncated bool) string {
-			if truncated {
-				text = redact.TrimPartialSecret(text, secrets)
-			}
-			return redact.Redact(text, secrets)
-		}, Runtime: cfg.Runtime, Image: cfg.Image, Files: files, Args: append([]string{"read"}, args...)})
+		Redact: func(text string, truncated bool) string { return redact.Diagnostic(text, truncated, secrets) }, Runtime: cfg.Runtime, Image: cfg.Image, Files: files, Args: append([]string{"read"}, args...)})
 	if err != nil {
 		return page{}, err
 	}

@@ -35,12 +35,7 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	// Everything a server or a runtime wrote is redacted before it is
 	// cut; when the buffer overflowed, what ends it may be the start of
 	// a credential whose rest was dropped, and that is cut off first.
-	redactor := func(text string, truncated bool) string {
-		if truncated {
-			text = redact.TrimPartialSecret(text, secrets)
-		}
-		return redact.Redact(text, secrets)
-	}
+	redactor := func(text string, truncated bool) string { return redact.Diagnostic(text, truncated, secrets) }
 	if cfg.Image != "" {
 		image, err := containers.ParseImage(cfg.Image)
 		if err != nil {

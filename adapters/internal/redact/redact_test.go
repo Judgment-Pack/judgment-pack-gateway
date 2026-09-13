@@ -61,3 +61,47 @@ func TestTrimPartialSecret(t *testing.T) {
 		t.Errorf("no secrets: %q", got)
 	}
 }
+
+func TestDiagnosticReplacesWholeSecretsBeforeTrimming(t *testing.T) {
+	// A secret whose end repeats its start, held whole in a buffer that
+	// overflowed after it: whole first, so nothing of it is taken for a
+	// prefix.
+	secret := "TOPSECRET" + strings.Repeat("x", 100) + "TOPSECRET"
+	got := Diagnostic("refused: "+secret, true, []string{secret})
+	if got != "refused: [redacted]" {
+		t.Fatalf("got %q", got)
+	}
+	if got := Diagnostic("refused: TOPSEC", true, []string{secret}); got != "refused: " {
+		t.Fatalf("a partial start is still cut: %q", got)
+	}
+	if got := Diagnostic("refused: TOPSEC", false, []string{secret}); got != "refused: TOPSEC" {
+		t.Fatalf("nothing is cut when nothing overflowed: %q", got)
+	}
+	// The length bound comes last, so a prefix past it is still cut.
+	long := strings.Repeat("k", 70000)
+	if got := Diagnostic("refused: "+long[:65527], true, []string{long}); got != "refused: " {
+		t.Fatalf("a prefix longer than the bound is cut: %.60q", got)
+	}
+}
+
+func TestSecretsOfWalksTokens(t *testing.T) {
+	secrets := SecretsOf([]byte(`{"password":"first-secret","blob":"{\"token\":\"t-one\",\"token\":\"t-two\",\"n\":[7,{\"k\":\"deep\"}]}","port":5432}`))
+	has := func(s string) bool {
+		for _, x := range secrets {
+			if x == s {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"first-secret", "t-one", "t-two", "deep", "7", "5432"} {
+		if !has(want) {
+			t.Errorf("%q is a secret: %v", want, secrets)
+		}
+	}
+	for _, not := range []string{"password", "blob", "token", "n", "k", "port"} {
+		if has(not) {
+			t.Errorf("%q is a member name, not a secret: %v", not, secrets)
+		}
+	}
+}

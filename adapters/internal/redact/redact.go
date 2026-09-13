@@ -28,12 +28,6 @@ import (
 // line, a header) is not caught, and a one-letter value redacts every
 // letter like it.
 func SecretsOf(config []byte) []string {
-	dec := json.NewDecoder(bytes.NewReader(config))
-	dec.UseNumber()
-	var value any
-	if dec.Decode(&value) != nil {
-		return nil
-	}
 	seen := map[string]bool{}
 	var out []string
 	add := func(s string) {
@@ -42,64 +36,94 @@ func SecretsOf(config []byte) []string {
 			out = append(out, s)
 		}
 	}
-	var walk func(v any)
-	walk = func(v any) {
-		switch x := v.(type) {
-		case string:
-			add(x)
-			// A connection string carries its password inside a longer
-			// value, and a diagnostic quotes the password alone: the
-			// user-info parts of a value that parses as a URL are
-			// secrets in their own right, as written (percent-encoded)
-			// and as decoded, and so is every query value. A value that
-			// is itself JSON is walked.
-			if u, err := url.Parse(x); err == nil {
-				if u.User != nil {
-					add(u.User.Username())
-					if password, ok := u.User.Password(); ok {
-						add(password)
-					}
-					if raw := rawUserInfo(x); raw != "" {
-						user, password, _ := strings.Cut(raw, ":")
-						add(user)
-						add(password)
-					}
+	var scalar func(s string)
+	scalar = func(x string) {
+		add(x)
+		// A connection string carries its password inside a longer
+		// value, and a diagnostic quotes the password alone: the
+		// user-info parts of a value that parses as a URL are secrets
+		// in their own right, as written (percent-encoded) and as
+		// decoded, and so is every query value. A value that is itself
+		// JSON is walked.
+		if u, err := url.Parse(x); err == nil {
+			if u.User != nil {
+				add(u.User.Username())
+				if password, ok := u.User.Password(); ok {
+					add(password)
 				}
-				// Query values whether or not the URL has user-info, as
-				// written and as decoded.
-				for _, pair := range strings.Split(u.RawQuery, "&") {
-					if _, raw, ok := strings.Cut(pair, "="); ok {
-						add(raw)
-						if decoded, err := url.QueryUnescape(raw); err == nil {
-							add(decoded)
-						}
-					}
+				if raw := rawUserInfo(x); raw != "" {
+					user, password, _ := strings.Cut(raw, ":")
+					add(user)
+					add(password)
 				}
 			}
-			trimmed := strings.TrimSpace(x)
-			if len(trimmed) > 1 && (trimmed[0] == '{' || trimmed[0] == '[') {
-				dec := json.NewDecoder(strings.NewReader(trimmed))
-				dec.UseNumber()
-				var nested any
-				if dec.Decode(&nested) == nil {
-					walk(nested)
+			// Query values whether or not the URL has user-info, as
+			// written and as decoded.
+			for _, pair := range strings.Split(u.RawQuery, "&") {
+				if _, raw, ok := strings.Cut(pair, "="); ok {
+					add(raw)
+					if decoded, err := url.QueryUnescape(raw); err == nil {
+						add(decoded)
+					}
 				}
-			}
-		case json.Number:
-			add(x.String())
-		case map[string]any:
-			for _, e := range x {
-				walk(e)
-			}
-		case []any:
-			for _, e := range x {
-				walk(e)
 			}
 		}
+		trimmed := strings.TrimSpace(x)
+		if len(trimmed) > 1 && (trimmed[0] == '{' || trimmed[0] == '[') {
+			walkTokens([]byte(trimmed), scalar)
+		}
 	}
-	walk(value)
+	walkTokens(config, scalar)
 	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
+}
+
+// walkTokens hands every scalar value of a JSON text to scalar, as tokens,
+// so that a value under a duplicate member name is seen as well as the
+// last one -- a map decode would keep only the last -- and an object's
+// member names are not taken for values. A text that is not JSON is walked
+// as far as it parses.
+func walkTokens(text []byte, scalar func(string)) {
+	dec := json.NewDecoder(bytes.NewReader(text))
+	dec.UseNumber()
+	type frame struct{ object, key bool }
+	var stack []frame
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return
+		}
+		if delim, ok := tok.(json.Delim); ok {
+			switch delim {
+			case '{':
+				stack = append(stack, frame{object: true, key: true})
+			case '[':
+				stack = append(stack, frame{})
+			case '}', ']':
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+				if len(stack) > 0 && stack[len(stack)-1].object {
+					stack[len(stack)-1].key = true
+				}
+			}
+			continue
+		}
+		top := len(stack) - 1
+		isKey := top >= 0 && stack[top].object && stack[top].key
+		if top >= 0 && stack[top].object {
+			stack[top].key = !stack[top].key
+		}
+		if isKey {
+			continue
+		}
+		switch v := tok.(type) {
+		case string:
+			scalar(v)
+		case json.Number:
+			scalar(v.String())
+		}
+	}
 }
 
 // rawUserInfo is the user-info segment of a URL as written, between the
@@ -129,11 +153,14 @@ const MaxDiagnostic = 512
 // grow the text past its bound nor be re-matched. The output is bounded as
 // it is built.
 func Redact(text string, secrets []string) string {
+	return bound(replace(text, secrets))
+}
+
+// replace is Redact without the length bound: every secret replaced, in
+// one pass, longest first where they overlap.
+func replace(text string, secrets []string) string {
 	var out strings.Builder
 	for i := 0; i < len(text); {
-		if out.Len() > MaxDiagnostic {
-			break
-		}
 		matched := false
 		for _, s := range secrets {
 			if strings.HasPrefix(text[i:], s) {
@@ -148,10 +175,15 @@ func Redact(text string, secrets []string) string {
 			i++
 		}
 	}
-	if out.Len() > MaxDiagnostic {
-		return out.String()[:MaxDiagnostic] + "…"
-	}
 	return out.String()
+}
+
+// bound cuts a diagnostic to MaxDiagnostic, marked.
+func bound(text string) string {
+	if len(text) > MaxDiagnostic {
+		return text[:MaxDiagnostic] + "…"
+	}
+	return text
 }
 
 // MaxCredentialBytes bounds a credentials file: a diagnostic buffer holds
@@ -178,7 +210,8 @@ func ReadCredentials(path string) ([]byte, error) {
 // TrimPartialSecret cuts from the end of a text that was truncated any
 // suffix that is a proper prefix of a secret: what was cut off may have
 // been the rest of it, and the start of a credential is a leak of it.
-// Applied before Redact, on the text as written.
+// Applied after Redact, so a whole secret is replaced before its end is
+// taken for a prefix of another (Diagnostic).
 func TrimPartialSecret(text string, secrets []string) string {
 	cut := 0
 	for _, s := range secrets {
@@ -233,12 +266,27 @@ func longestPrefixAtEnd(text, s string) int {
 	return k
 }
 
-// MalformedCredentials says a credentials file is not well-formed JSON,
-// naming a duplicate member -- structure, not a value -- and echoing
-// nothing else of the file: a syntax error's detail quotes what it found.
+// MalformedCredentials says a credentials file is not JSON, or has a
+// member name twice, and echoes nothing of the file: a syntax error's
+// detail quotes what it found, and a member's name may be another
+// member's value.
 func MalformedCredentials(err error) error {
 	if strings.Contains(err.Error(), "duplicate member name") {
-		return fmt.Errorf("credentials file is not JSON: %v", err)
+		return errors.New("credentials file has a member name twice")
 	}
 	return errors.New("credentials file is not JSON")
+}
+
+// Diagnostic is what may cross the source boundary of a text a server, a
+// connector or a runtime wrote: every secret in it replaced, then, when
+// the buffer it was read from overflowed, whatever ends it that is the
+// start of a secret cut off -- whole before prefix, since a secret whose
+// end repeats its start would otherwise lose its end -- and the length
+// bound last, so a prefix past the bound is still cut.
+func Diagnostic(text string, truncated bool, secrets []string) string {
+	out := replace(text, secrets)
+	if truncated {
+		out = TrimPartialSecret(out, secrets)
+	}
+	return bound(out)
 }
