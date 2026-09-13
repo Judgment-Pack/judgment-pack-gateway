@@ -666,7 +666,10 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("%s: %v", next, err)
 			}
-			if !filepath.IsAbs(target) {
+			// A target that starts at a root -- absolute, or rooted on the
+			// current volume where volumes exist -- is walked from that
+			// root; a relative one from the link's own directory.
+			if !filepath.IsAbs(target) && !strings.HasPrefix(target, string(filepath.Separator)) {
 				target = filepath.Join(current, target)
 			}
 			// The walk restarts at the root of the target, holding each of
