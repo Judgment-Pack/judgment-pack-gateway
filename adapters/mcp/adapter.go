@@ -287,7 +287,14 @@ func exactMembers(raw json.RawMessage) (map[string]json.RawMessage, error) {
 // name, title, description, annotations -- are presentation, not schema,
 // and a schema that changed with a description would name nothing.
 func outputSchemaOf(descriptor json.RawMessage) ([]byte, error) {
-	members, err := exactMembers(descriptor)
+	// The whole descriptor is canonicalized first, which refuses a
+	// duplicate member name: a second outputSchema could otherwise pick
+	// which one is named, or suppress the schema with a trailing null.
+	canonical, err := canon.Canonicalize(descriptor, canon.CarryNumbersAsText)
+	if err != nil {
+		return nil, fmt.Errorf("descriptor: %v", err)
+	}
+	members, err := exactMembers(canonical)
 	if err != nil {
 		return nil, fmt.Errorf("descriptor: %v", err)
 	}
@@ -312,7 +319,11 @@ func parseToolResult(raw json.RawMessage) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tools/call: the tool's result: %v", err)
 	}
-	members, err := exactMembers(result)
+	// The shape is checked on the answer as the server wrote it -- no
+	// duplicate names survive the canonicalization above, so exact member
+	// names are unambiguous -- and before any number was carried as text,
+	// so a numeric type is still a number.
+	members, err := exactMembers(raw)
 	if err != nil {
 		return nil, errors.New("tools/call: the server's answer is not a tool result")
 	}
@@ -322,10 +333,12 @@ func parseToolResult(raw json.RawMessage) ([]byte, error) {
 		return nil, errors.New("tools/call: the tool's result has no content array")
 	}
 	for _, item := range content {
-		var head struct {
-			Type string `json:"type"`
+		itemMembers, err := exactMembers(item)
+		if err != nil {
+			return nil, errors.New("tools/call: a content item that is not an object")
 		}
-		if !canon.IsObject(item) || json.Unmarshal(item, &head) != nil || head.Type == "" {
+		var kind string
+		if typ, ok := itemMembers["type"]; !ok || len(typ) == 0 || typ[0] != '"' || json.Unmarshal(typ, &kind) != nil || kind == "" {
 			return nil, errors.New("tools/call: a content item without a type")
 		}
 	}
@@ -333,12 +346,12 @@ func parseToolResult(raw json.RawMessage) ([]byte, error) {
 		return nil, errors.New("tools/call: structuredContent is not an object")
 	}
 	if flag, ok := members["isError"]; ok {
-		var isError bool
-		if json.Unmarshal(flag, &isError) != nil {
-			return nil, errors.New("tools/call: isError is not a boolean")
-		}
-		if isError {
+		switch string(flag) {
+		case "true":
 			return nil, fmt.Errorf("the tool reported an error: %s", textOf(content))
+		case "false":
+		default:
+			return nil, errors.New("tools/call: isError is not a boolean")
 		}
 	}
 	return result, nil

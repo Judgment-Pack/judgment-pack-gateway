@@ -41,7 +41,7 @@ func fake(t *testing.T) Config {
 	for _, name := range []string{fakemcp.EnvTools, fakemcp.EnvResult, fakemcp.EnvHang, fakemcp.EnvExitBeforeCall, fakemcp.EnvStderr,
 		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck,
 		fakemcp.EnvPing, fakemcp.EnvWrongID, fakemcp.EnvHoldStdin, fakemcp.EnvConflict, fakemcp.EnvExitAtStart, fakemcp.EnvProtocol, fakemcp.EnvNoTools,
-		fakemcp.EnvLinger} {
+		fakemcp.EnvLinger, fakemcp.EnvNullError} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")
@@ -301,6 +301,17 @@ func TestAcquireRefusals(t *testing.T) {
 		cfg := fake(t)
 		t.Setenv(fakemcp.EnvConflict, "1")
 		mustFail(t, cfg, query("select 1"), "answered with both a result and an error")
+		// An error member that is null is still an error member.
+		cfg = fake(t)
+		t.Setenv(fakemcp.EnvNullError, "1")
+		mustFail(t, cfg, query("select 1"), "answered with both a result and an error")
+	})
+	t.Run("duplicate output schema in a descriptor", func(t *testing.T) {
+		cfg := fake(t)
+		path := filepath.Join(t.TempDir(), "tools.json")
+		os.WriteFile(path, []byte(`[{"name":"query","inputSchema":{"type":"object"},"outputSchema":{"type":"object"},"outputSchema":null}]`), 0o600)
+		t.Setenv(fakemcp.EnvTools, path)
+		mustFail(t, cfg, query("select 1"), `tool "query": descriptor: duplicate member name "outputSchema"`)
 	})
 	t.Run("tool results held to their shape", func(t *testing.T) {
 		for text, want := range map[string]string{
@@ -309,7 +320,11 @@ func TestAcquireRefusals(t *testing.T) {
 			`{"content":[{"text":"x"}]}`:             "a content item without a type",
 			`{"content":[],"structuredContent":[1]}`: "structuredContent is not an object",
 			`{"content":[],"isError":"yes"}`:         "isError is not a boolean",
+			`{"content":[],"isError":null}`:          "isError is not a boolean",
+			`{"content":[{"Type":"text"}]}`:          "a content item without a type",
+			`{"content":[{"type":1.5}]}`:             "a content item without a type",
 			`{"content":[{"type":"text","text":"boom"}],"isError":true,"ISERROR":false}`: "the tool reported an error: boom",
+			`{"content":[{"type":"text","text":"boom"}],"isError":true,"iserror":false}`: "the tool reported an error: boom",
 			`{"content":[{"type":"text","text":"ok"}]}`:                                  "",
 		} {
 			cfg := fake(t)

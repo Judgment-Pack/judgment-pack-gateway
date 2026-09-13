@@ -49,25 +49,37 @@ func SecretsOf(config []byte) []string {
 			// secrets in their own right, as written (percent-encoded)
 			// and as decoded, and so is every query value. A value that
 			// is itself JSON is walked.
-			if u, err := url.Parse(x); err == nil && u.User != nil {
-				add(u.User.Username())
-				if password, ok := u.User.Password(); ok {
-					add(password)
+			if u, err := url.Parse(x); err == nil {
+				if u.User != nil {
+					add(u.User.Username())
+					if password, ok := u.User.Password(); ok {
+						add(password)
+					}
+					if raw := rawUserInfo(x); raw != "" {
+						user, password, _ := strings.Cut(raw, ":")
+						add(user)
+						add(password)
+					}
 				}
-				if raw := rawUserInfo(x); raw != "" {
-					user, password, _ := strings.Cut(raw, ":")
-					add(user)
-					add(password)
-				}
-				for _, values := range u.Query() {
-					for _, v := range values {
-						add(v)
+				// Query values whether or not the URL has user-info, as
+				// written and as decoded.
+				for _, pair := range strings.Split(u.RawQuery, "&") {
+					if _, raw, ok := strings.Cut(pair, "="); ok {
+						add(raw)
+						if decoded, err := url.QueryUnescape(raw); err == nil {
+							add(decoded)
+						}
 					}
 				}
 			}
-			var nested any
-			if len(x) > 1 && (x[0] == '{' || x[0] == '[') && json.Unmarshal([]byte(x), &nested) == nil {
-				walk(nested)
+			trimmed := strings.TrimSpace(x)
+			if len(trimmed) > 1 && (trimmed[0] == '{' || trimmed[0] == '[') {
+				dec := json.NewDecoder(strings.NewReader(trimmed))
+				dec.UseNumber()
+				var nested any
+				if dec.Decode(&nested) == nil {
+					walk(nested)
+				}
 			}
 		case json.Number:
 			add(x.String())

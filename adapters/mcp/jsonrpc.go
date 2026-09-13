@@ -69,9 +69,12 @@ func (c *client) call(ctx context.Context, method string, params any) (json.RawM
 	}
 	for c.out.Scan() {
 		var m rpcMessage
-		if err := json.Unmarshal(c.out.Bytes(), &m); err != nil || m.JSONRPC != "2.0" {
+		var present map[string]json.RawMessage
+		if err := json.Unmarshal(c.out.Bytes(), &m); err != nil || m.JSONRPC != "2.0" || json.Unmarshal(c.out.Bytes(), &present) != nil {
 			return nil, errors.New("the server wrote a line on stdout that is not a JSON-RPC message")
 		}
+		_, hasResult := present["result"]
+		_, hasError := present["error"]
 		isRequest := m.Method != "" && len(m.ID) > 0 && string(m.ID) != "null"
 		switch {
 		case isRequest && m.Method == "ping":
@@ -94,13 +97,18 @@ func (c *client) call(ctx context.Context, method string, params any) (json.RawM
 			if json.Unmarshal(m.ID, &got) != nil || got != id {
 				continue // a response to another request, which this client never made
 			}
-			if m.Error != nil && len(m.Result) > 0 {
+			// A response carries exactly one of result and error, by
+			// presence: an error member that is null is still present.
+			if hasResult && hasError {
 				return nil, fmt.Errorf("%s: the server answered with both a result and an error", method)
 			}
-			if m.Error != nil {
+			if hasError {
+				if m.Error == nil {
+					return nil, fmt.Errorf("%s: the server answered with an error that is not an object", method)
+				}
 				return nil, fmt.Errorf("%s: %s (code %d)", method, m.Error.Message, m.Error.Code)
 			}
-			if len(m.Result) == 0 {
+			if !hasResult {
 				return nil, fmt.Errorf("%s: the server answered with neither a result nor an error", method)
 			}
 			return m.Result, nil

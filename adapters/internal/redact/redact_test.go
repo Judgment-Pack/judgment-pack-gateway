@@ -29,3 +29,13 @@ func TestSecretsOfEncodedQueryAndNestedJSON(t *testing.T) {
 		t.Fatalf("redaction: %q from %v", got, secrets)
 	}
 }
+
+// Query values are secrets with or without user-info, as written and as
+// decoded; nested JSON is walked past leading whitespace with its numbers.
+func TestSecretsOfQueryWithoutUserInfoAndNestedNumbers(t *testing.T) {
+	secrets := SecretsOf([]byte(`{"URL":"https://host/?token=qsecret&k=q%20s","NESTED":"  {\"pin\":739201}"}`))
+	got := Redact("qsecret q%20s q s 739201", secrets)
+	if got != "[redacted] [redacted] [redacted] [redacted]" {
+		t.Fatalf("redaction: %q from %v", got, secrets)
+	}
+}

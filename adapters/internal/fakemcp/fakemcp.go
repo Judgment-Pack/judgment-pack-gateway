@@ -68,8 +68,10 @@ const (
 	EnvLinger = "MCP_FAKE_LINGER"
 	// EnvHolderPid is the file the descendant's pid is written to.
 	EnvHolderPid = "MCP_FAKE_HOLDER_PID"
-	// EnvConflict makes tools/call answer with both a result and an error.
-	EnvConflict = "MCP_FAKE_CONFLICT"
+	// EnvConflict makes tools/call answer with both a result and an error;
+	// EnvNullError with a result and an error member that is null.
+	EnvConflict  = "MCP_FAKE_CONFLICT"
+	EnvNullError = "MCP_FAKE_NULL_ERROR"
 	// EnvExitAtStart makes the server write EnvStderr and exit 1 before
 	// reading anything.
 	EnvExitAtStart = "MCP_FAKE_EXIT_AT_START"
@@ -248,6 +250,10 @@ func serve() int {
 			}
 			if os.Getenv(EnvConflict) == "1" {
 				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result, "error": map[string]any{"code": -1, "message": "also failed"}})
+				continue
+			}
+			if os.Getenv(EnvNullError) == "1" {
+				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result, "error": nil})
 				continue
 			}
 			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
