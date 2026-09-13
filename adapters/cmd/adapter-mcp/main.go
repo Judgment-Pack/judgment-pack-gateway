@@ -32,18 +32,19 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
 	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; stopping the server takes up to seven seconds more, under the gateway's thirty")
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
-	if err := fs.Parse(args); err != nil {
-		return 2
-	}
 	// The gateway splits a source command on whitespace and parses no
 	// quotes, so what comes after "--" is given word by word: a server
 	// command with its arguments, or, with --image, the server's own
-	// arguments inside the container. Nothing else is positional.
-	positional := fs.Args()
-	// What is positional is exactly what follows "--": without the
-	// delimiter, Go's flag parsing would stop at the first word and hand
-	// every later flag to the server, silently.
-	if len(positional) > 0 && !afterDelimiter(args, positional) {
+	// arguments inside the container. Nothing else is positional, and the
+	// line is split at its first "--" before the flags are parsed: parsed
+	// together, a "--" could be consumed as a flag's value, and without
+	// one Go's flag parsing would stop at the first word and hand every
+	// later flag to the server, silently.
+	flags, positional := splitAtDelimiter(args)
+	if err := fs.Parse(flags); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
 		fmt.Fprintln(stderr, "adapter-mcp: a server command or a server's arguments follow --; nothing else is positional")
 		return 2
 	}
@@ -96,22 +97,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// afterDelimiter reports whether the positional arguments are exactly
-// what follows the first "--" on the command line.
-func afterDelimiter(args, positional []string) bool {
+// splitAtDelimiter divides the command line at its first "--": the
+// adapter's flags before it, the server's words after it.
+func splitAtDelimiter(args []string) (flags, positional []string) {
 	for i, a := range args {
 		if a == "--" {
-			rest := args[i+1:]
-			if len(rest) != len(positional) {
-				return false
-			}
-			for j := range rest {
-				if rest[j] != positional[j] {
-					return false
-				}
-			}
-			return true
+			return args[:i], args[i+1:]
 		}
 	}
-	return false
+	return args, nil
 }

@@ -142,7 +142,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv, err := startServer(ctx, cfg, env)
+	srv, err := startServer(ctx, cfg, env, secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +294,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	srv, err := startServer(ctx, cfg, env)
+	srv, err := startServer(ctx, cfg, env, secrets)
 	if err != nil {
 		return nil, err
 	}

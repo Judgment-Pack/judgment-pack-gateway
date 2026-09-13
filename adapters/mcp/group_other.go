@@ -1,12 +1,11 @@
-//go:build !unix
+//go:build !linux
 
 package mcp
 
-import "os/exec"
+// Elsewhere than Linux a command server's descendants are not reached
+// when it is stopped: --image is the shape that keeps the lifecycle under
+// a name, and under the gateway the source group's kill reaches what
+// stayed in the group.
+func adoptOrphans() {}
 
-// Process groups are a Unix notion; elsewhere a command's descendants are
-// not reached, and --image is the shape that keeps the lifecycle under a
-// name.
-func ownGroup(cmd *exec.Cmd) {}
-
-func killGroup(cmd *exec.Cmd) {}
+func killDescendants() {}

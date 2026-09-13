@@ -195,6 +195,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	}
 	secrets := redact.SecretsOf(config)
 	c, err := containers.Start(ctx, containers.Spec{
+		Redact:  func(text string) string { return redact.Redact(text, secrets) },
 		Runtime: cfg.Runtime, Image: cfg.Image,
 		Files: map[string][]byte{"config.json": config},
 		Args:  []string{"check", "--config", "/secrets/config.json"},
@@ -275,6 +276,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 // without it.
 func discover(ctx context.Context, cfg Config, req Request, config []byte, secrets []string) (stream, error) {
 	c, err := containers.Start(ctx, containers.Spec{
+		Redact:  func(text string) string { return redact.Redact(text, secrets) },
 		Runtime: cfg.Runtime, Image: cfg.Image,
 		Files: map[string][]byte{"config.json": config},
 		Args:  []string{"discover", "--config", "/secrets/config.json"},
@@ -429,6 +431,14 @@ func parseMessage(line []byte) (message, bool, error) {
 	if !ok {
 		return message{}, false, nil
 	}
+	// Every object line is held to exact member names with a duplicate
+	// refused at any depth -- before it is classified, since a second
+	// "type" spelled with an escape would otherwise decide what the line
+	// is; the canonical form itself is not used, so a checkpoint is handed
+	// back as emitted.
+	if _, err := canon.Canonicalize(line, canon.CarryNumbersAsText); err != nil {
+		return message{}, true, fmt.Errorf("the connector emitted a malformed message: %v", err)
+	}
 	typ, ok := members.str("type")
 	if !ok {
 		return message{}, false, nil
@@ -439,12 +449,6 @@ func parseMessage(line []byte) (message, bool, error) {
 		return message{}, false, nil // LOG, SPEC, CONTROL: not read here
 	}
 	malformed := fmt.Errorf("the connector emitted a malformed %s message", typ)
-	// A message that decides something is held to exact member names
-	// with a duplicate refused at any depth; the canonical form itself is
-	// not used, so a checkpoint is handed back as emitted.
-	if _, err := canon.Canonicalize(line, canon.CarryNumbersAsText); err != nil {
-		return message{}, true, fmt.Errorf("%v: %v", malformed, err)
-	}
 	m := message{Type: typ}
 	switch typ {
 	case "RECORD":
@@ -540,7 +544,8 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 		files["state.json"] = stateFile
 		args = append(args, "--state", "/secrets/state.json")
 	}
-	c, err := containers.Start(ctx, containers.Spec{Runtime: cfg.Runtime, Image: cfg.Image, Files: files, Args: append([]string{"read"}, args...)})
+	c, err := containers.Start(ctx, containers.Spec{
+		Redact: func(text string) string { return redact.Redact(text, secrets) }, Runtime: cfg.Runtime, Image: cfg.Image, Files: files, Args: append([]string{"read"}, args...)})
 	if err != nil {
 		return page{}, err
 	}

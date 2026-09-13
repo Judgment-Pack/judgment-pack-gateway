@@ -113,7 +113,11 @@ Every scalar of the credentials file — each non-empty string and each number, 
 written, longest first, in one pass over the original text — is redacted from it before
 it leaves the adapter. That is as
 good as the connector's habit of quoting its configuration verbatim: a secret it encodes
-or splits is not caught, and a one-letter value redacts every letter like it.
+or splits is not caught, and a one-letter value redacts every letter like it. What the
+connector or the runtime writes on stderr is kept up to 64 KiB and redacted before its first
+line is cut, so a key spanning lines, or a value longer than a line, is matched whole; a
+message with a duplicate member anywhere in it is refused before it is classified, since a
+second `type` spelled with an escape would otherwise decide what the line is.
 
 Two honest bounds. The record data are the connector's: a record with a duplicate
 member name or invalid UTF-8 fails the acquisition rather than being repaired. And the
@@ -154,8 +158,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   `--`, word by word, with its arguments: `adapter-mcp --credentials … -- npx -y
   @example/mcp-server --flag`. The gateway splits a source on whitespace and parses no
   quotes, which is why neither is a quoted value. Exactly one of the two forms, and the
-  `--` is required: without it, flag parsing would stop at the first word and hand every
-  later flag to the server, silently.
+  `--` is required and the line is split at it before the adapter's flags are parsed: without
+  it, flag parsing would stop at the first word and hand every later flag to the server,
+  silently, and parsed together a `--` could be consumed as a flag's value.
 - `--credentials` is a JSON object of strings that become the server's environment — a
   token, a connection string — and nothing else is added: a container gets them through an
   env file in its private mount; a command gets them beside the adapter's own environment,
@@ -215,13 +220,18 @@ never quoted with an escape that would carry it past the redactor.
 the wait delay to end on end-of-input, then told to stop by name, its absence established;
 stopping takes up to nine seconds. A command is ended by end-of-input and, after the wait
 delay, killed; both ends of its pipes are closed with the deadline, so neither a reader nor
-a writer holds the adapter past it; and where there are process groups the command leads one
-of its own, which is killed last, so a descendant it left behind — holding the credentials in
-its environment — is reached. The group is addressed after its leader was reaped, a window in
-which the id could in principle be reused; under the gateway the adapter's own group is killed
-too, which closes it, and `--image` is the shape that keeps the lifecycle under a name. Every diagnostic
+a writer holds the adapter past it; and the command stays in the adapter's own process group,
+so that under the gateway the source group's kill reaches it and what it started. On Linux the
+adapter also adopts the orphans its descendants leave (`PR_SET_CHILD_SUBREAPER`) and kills every
+descendant last, found through `/proc`, so a process the server left behind — holding the
+credentials in its environment — does not keep them; a descendant that made a session of its own
+is not found, and elsewhere than Linux only the server itself is reached. `--image` is the shape
+that keeps the lifecycle under a name. Every diagnostic
 that crosses the source boundary — the server's, the runtime's, and this adapter's own about
 what the server said, offered tool names included — is redacted and bounded as
 `adapter-airbyte`'s are; a connection string's user name, password and query values count
 as secrets in their own right, encoded and decoded, and a credential value that is itself
-JSON is walked. A token inside a format the redactor does not parse is not caught.
+JSON is walked. A token inside a format the redactor does not parse is not caught. What a server or a runtime
+writes on stderr is kept up to 64 KiB and redacted before its first line is cut, so a credential
+longer than a line, or spanning lines, is matched whole; a duplicate member name in a message,
+which the diagnostic names, is written as it is rather than quoted with an escape.

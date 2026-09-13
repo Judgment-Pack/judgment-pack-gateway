@@ -311,7 +311,7 @@ func TestAcquireRefusals(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "tools.json")
 		os.WriteFile(path, []byte(`[{"name":"query","inputSchema":{"type":"object"},"outputSchema":{"type":"object"},"outputSchema":null}]`), 0o600)
 		t.Setenv(fakemcp.EnvTools, path)
-		mustFail(t, cfg, query("select 1"), `JSON-RPC message that is malformed: duplicate member name "outputSchema"`)
+		mustFail(t, cfg, query("select 1"), `JSON-RPC message that is malformed: duplicate member name 'outputSchema'`)
 	})
 	t.Run("tool results held to their shape", func(t *testing.T) {
 		for text, want := range map[string]string{
@@ -356,7 +356,7 @@ func TestAcquireRefusals(t *testing.T) {
 		os.WriteFile(result, []byte(`{"content":[],"hunter2":0,"hunter2":1}`), 0o600)
 		t.Setenv(fakemcp.EnvResult, result)
 		_, err = Acquire(context.Background(), cfg, query("select 1"))
-		if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `duplicate member name "[redacted]"`) {
+		if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `duplicate member name '[redacted]'`) {
 			t.Fatalf("a canonicalization diagnostic is redacted: %v", err)
 		}
 	})
@@ -866,7 +866,7 @@ func TestAServerEchoingACredentialWithQuotesIsRedacted(t *testing.T) {
 func TestAResponseIsReadByExactMemberNames(t *testing.T) {
 	for _, tc := range []struct{ line, want string }{
 		{`{"jsonrpc":"2.0","id":{id},"result":null,"RESULT":{"tools":[]}}`, "is not a tool list"},
-		{`{"jsonrpc":"2.0","id":{id},"result":{"tools":[]},"result":{"tools":[{"name":"query"}]}}`, `malformed: duplicate member name "result"`},
+		{`{"jsonrpc":"2.0","id":{id},"result":{"tools":[]},"result":{"tools":[{"name":"query"}]}}`, `malformed: duplicate member name 'result'`},
 		{`{"jsonrpc":"2.0","ID":{id},"result":{"tools":[]}}`, "neither a request, a notification nor a response"},
 		{`{"JSONRPC":"2.0","id":{id},"result":{"tools":[]}}`, "is not a JSON-RPC message"},
 		{`{"jsonrpc":"2.0","id":{id},"error":null,"ERROR":{"code":1,"message":"x"}}`, "an error that is not an object"},
@@ -899,7 +899,44 @@ func TestAToolIsNamedByItsExactMember(t *testing.T) {
 	if err := os.WriteFile(tools, []byte(`[{"name":"a","name":"query","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `malformed: duplicate member name "name"`) {
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `malformed: duplicate member name 'name'`) {
 		t.Fatalf("a duplicate name is refused: %v", err)
+	}
+}
+
+func TestADuplicateMemberEchoingACredentialIsRedacted(t *testing.T) {
+	cfg := fake(t)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"ab\"cd\\e"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	line := filepath.Join(t.TempDir(), "line.json")
+	if err := os.WriteFile(line, []byte(`{"jsonrpc":"2.0","id":{id},"result":{"tools":[]},"ab\"cd\\e":1,"ab\"cd\\e":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvListLine, line)
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "duplicate member name '[redacted]'") || strings.Contains(err.Error(), "cd") {
+		t.Fatalf("a duplicate name is written as it is and redacted: %v", err)
+	}
+}
+
+func TestStderrIsRedactedBeforeItIsCut(t *testing.T) {
+	// A credential longer than a line's worth, echoed whole on stderr,
+	// is matched whole: the buffer is redacted before the first line is
+	// taken, and it holds more than a few kilobytes.
+	cfg := fake(t)
+	secret := strings.Repeat("k", 5000)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	t.Setenv(fakemcp.EnvStderr, "refused: "+secret+"\n")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "refused: [redacted]") || strings.Contains(err.Error(), strings.Repeat("k", 64)) {
+		t.Fatalf("redacted whole: %.120v", err)
 	}
 }

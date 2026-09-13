@@ -876,14 +876,14 @@ func TestCheckRefusals(t *testing.T) {
 		{"a status that is not an object", `{"type":"CONNECTION_STATUS","connectionStatus":"ok"}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
 		{"the runtime fails", checkSucceeded, map[string]string{fakeruntime.EnvExit: "1", fakeruntime.EnvStderr: "daemon refused hunter2\n"}, "connector check failed: daemon refused "},
 		{"a status under another case", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","STATUS":"SUCCEEDED","message":"x"}}` + "\n", nil, "the connector could not connect (FAILED)"},
-		{"a status stated twice", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","status":"SUCCEEDED"}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"a status stated twice", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","status":"SUCCEEDED"}}` + "\n", nil, "the connector emitted a malformed message: duplicate member name 'status'"},
 		{"a message that is not a string", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":{"text":"x"}}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
 		{"a failure a later success cannot revise", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"no"}}` + "\n" + checkSucceeded, nil, "the connector could not connect (FAILED): no"},
 		{"two answers", checkSucceeded + checkSucceeded, nil, "the connector answered more than once"},
 		{"a container that would not stop, its answer redacted", checkSucceeded, map[string]string{fakeruntime.EnvKillExit: "1", fakeruntime.EnvInspectStderr: "daemon busy with hunter2 at warehouse.internal"}, "[redacted]"},
 		{"a type under another case cannot hide a failure", `{"type":"CONNECTION_STATUS","TYPE":"LOG","connectionStatus":{"status":"FAILED","message":"no"}}` + "\n" + checkSucceeded, nil, "the connector could not connect (FAILED): no"},
 		{"a trace type under another case cannot hide an error", `{"type":"TRACE","TYPE":"LOG","trace":{"type":"ERROR","TYPE":"INFO","error":{"message":"boom"}}}` + "\n" + checkSucceeded, nil, "connector reported an error during check: boom"},
-		{"a duplicate member anywhere in a message", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":"a","message":"b"}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"a duplicate member anywhere in a message", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":"a","message":"b"}}` + "\n", nil, "the connector emitted a malformed message: duplicate member name 'message'"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := checkFake(t, tc.check)
@@ -948,7 +948,7 @@ func TestExactMemberNamesDecideTheRecord(t *testing.T) {
 	}
 	read = `{"type":"RECORD","record":{"stream":"audit","stream":"decisions","emitted_at":2,"data":{"id":102}}}` + "\n"
 	cfg = fake(t, discoverFixture, read)
-	if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "malformed RECORD message") {
+	if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "malformed message: duplicate member name 'stream'") {
 		t.Fatalf("a duplicate member is refused: %v", err)
 	}
 	// A line whose type is not spelled "type" is something printed, not
@@ -958,5 +958,55 @@ func TestExactMemberNamesDecideTheRecord(t *testing.T) {
 	out, err = Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
 	if err != nil || strings.Contains(string(out), `"id":103`) || !strings.Contains(string(out), `"id":104`) {
 		t.Fatalf("only exact messages are read: %v %s", err, out)
+	}
+}
+
+func TestAnEscapedDuplicateTypeCannotHideAFailure(t *testing.T) {
+	// "\u0074ype" is "type": a duplicate spelled with an escape would be
+	// read as the line's type before a duplicate check that ran later.
+	cfg := checkFake(t, `{"type":"CONNECTION_STATUS","\u0074ype":"LOG","connectionStatus":{"status":"FAILED","message":"no"}}`+"\n"+checkSucceeded)
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "the connector emitted a malformed message: duplicate member name 'type'") {
+		t.Fatalf("refused before it is classified: %v", err)
+	}
+	cfg = checkFake(t, `{"type":"CONNECTION_STATUS","\u0074ype":null,"connectionStatus":{"status":"FAILED","message":"no"}}`+"\n"+checkSucceeded)
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "duplicate member name 'type'") {
+		t.Fatalf("a null duplicate too: %v", err)
+	}
+	// A duplicate whose name echoes a credential with a quote is written
+	// as it is, and redacted.
+	cfg = checkFake(t, `{"type":"CONNECTION_STATUS","wa\"re":1,"wa\"re":2,"connectionStatus":{"status":"SUCCEEDED"}}`+"\n")
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"wa\"re","password":"hunter2"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "duplicate member name '[redacted]'") || strings.Contains(err.Error(), `wa"re`) || strings.Contains(err.Error(), `wa\"re`) {
+		t.Fatalf("redacted as written: %v", err)
+	}
+}
+
+func TestStderrIsRedactedBeforeTheFirstLineIsCut(t *testing.T) {
+	// A multi-line credential -- a key -- echoed on stderr is matched
+	// whole before the first line is taken; so is one longer than a few
+	// kilobytes in the runtime's answer about a container.
+	key := "-----BEGIN KEY-----\nAAAA\nBBBB\n-----END KEY-----"
+	cfg := checkFake(t, checkSucceeded)
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","key":"`+strings.ReplaceAll(key, "\n", `\n`)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvExit, "1")
+	t.Setenv(fakeruntime.EnvStderr, "rejected "+key+"\n")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "connector check failed: rejected [redacted]") || strings.Contains(err.Error(), "BEGIN") {
+		t.Fatalf("redacted before the cut: %v", err)
+	}
+	long := strings.Repeat("k", 5000)
+	cfg = checkFake(t, checkSucceeded)
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","password":"`+long+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvKillExit, "1")
+	t.Setenv(fakeruntime.EnvInspectStderr, "daemon busy with "+long)
+	_, err = Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "daemon busy with [redacted]") || strings.Contains(err.Error(), strings.Repeat("k", 64)) {
+		t.Fatalf("the runtime's answer is redacted whole: %.160v", err)
 	}
 }

@@ -90,7 +90,9 @@ func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers NumberPolicy) 
 					return errors.New("member name is not a string")
 				}
 				if seen[name] {
-					return fmt.Errorf("duplicate member name %q", name)
+					// Written as it is, not quoted with %q: an escape would
+					// carry a name that echoes a credential past a redactor.
+					return fmt.Errorf("duplicate member name '%s'", name)
 				}
 				seen[name] = true
 				var value bytes.Buffer

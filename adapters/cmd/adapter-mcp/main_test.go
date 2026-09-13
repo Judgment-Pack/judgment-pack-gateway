@@ -117,4 +117,10 @@ func TestRunCheck(t *testing.T) {
 			t.Fatalf("%v: exit %d %s", args, code, stderr.String())
 		}
 	}
+	// A "--" cannot be consumed as a flag's value: the split comes first,
+	// and the flag is then missing its value.
+	stderr.Reset()
+	if code := run([]string{"--check", "--endpoint", "--", os.Args[0], "--tools", "query"}, strings.NewReader(""), &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "flag needs an argument") {
+		t.Fatalf("a -- consumed as a value: exit %d %s", code, stderr.String())
+	}
 }

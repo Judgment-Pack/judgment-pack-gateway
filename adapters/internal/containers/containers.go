@@ -37,6 +37,7 @@ const (
 // container runtime: its stdout a stream the caller drains, its stdin a
 // pipe the caller writes when it asked for one.
 type Container struct {
+	redact func(string) string
 	// Name is the name the container was run under.
 	Name string
 	// Stdout is the container's standard output, closed with the context.
@@ -67,6 +68,10 @@ type Spec struct {
 	Flags   []string
 	Args    []string
 	Stdin   bool
+	// Redact is applied to everything the runtime or the container wrote
+	// before any of it is cut to a line or a length for a diagnostic, so
+	// a credential longer than the cut, or spanning lines, still matches.
+	Redact func(string) string
 }
 
 // startContainer writes files into a private directory, mounts it read-only
@@ -137,7 +142,7 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	stderr := &boundedBuffer{limit: 4096}
+	stderr := &boundedBuffer{limit: DiagnosticBytes}
 	cmd.Stderr = stderr
 	var stdin io.WriteCloser
 	if spec.Stdin {
@@ -162,7 +167,11 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 			stdin.Close()
 		}
 	}()
-	return &Container{Name: name, Stdout: stdout, Stdin: stdin, runtime: runtime, dir: dir, cmd: cmd, stderr: stderr, ctx: runCtx, cancel: cancel}, nil
+	redactor := spec.Redact
+	if redactor == nil {
+		redactor = func(text string) string { return text }
+	}
+	return &Container{Name: name, Stdout: stdout, Stdin: stdin, runtime: runtime, dir: dir, cmd: cmd, stderr: stderr, ctx: runCtx, cancel: cancel, redact: redactor}, nil
 }
 
 // Wait waits once for the runtime client and returns its error; a second
@@ -233,7 +242,7 @@ func (c *Container) stopByName() error {
 	// holding one would otherwise hold this past the window: the drain is
 	// bounded too.
 	inspect.WaitDelay = InspectDrain
-	answer := &boundedBuffer{limit: 4096}
+	answer := &boundedBuffer{limit: DiagnosticBytes}
 	inspect.Stderr = answer
 	inspect.Stdout = io.Discard
 	err := inspect.Run()
@@ -243,7 +252,7 @@ func (c *Container) stopByName() error {
 	case SaysAbsent(answer.String(), c.Name):
 		return nil // absent: it ended on its own, and --rm removed it
 	}
-	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.Name, c.runtime, firstLineOf(answer.String(), err))
+	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.Name, c.runtime, firstLineOf(c.redact(answer.String()), err))
 }
 
 // SaysAbsent reports whether an inspect's answer is the runtime saying the
@@ -274,10 +283,15 @@ func firstLineOf(text string, err error) string {
 	return text
 }
 
-// FirstLine is the first line of what the connector wrote on stderr, for an
-// error message; never the whole of it.
+// diagnosticBytes is how much of what a runtime or a container writes is
+// kept for a diagnostic: enough that a credential echoed whole is still
+// whole when the redactor sees it, before the first line is cut.
+const DiagnosticBytes = 64 << 10
+
+// FirstLine is the first line of what the connector wrote on stderr,
+// redacted before the cut, for an error message; never the whole of it.
 func (c *Container) FirstLine() string {
-	text := c.stderr.String()
+	text := c.redact(c.stderr.String())
 	for i, r := range text {
 		if r == '\n' {
 			return text[:i]

@@ -152,7 +152,7 @@ func serve() int {
 			env[key] = os.Getenv(key)
 		}
 	}
-	line, _ := json.Marshal(map[string]any{"env": env, "argv": os.Args})
+	line, _ := json.Marshal(map[string]any{"env": env, "argv": os.Args, "pgid": processGroup()})
 	appendLine(os.Getenv(EnvTrace), string(line))
 	tools := json.RawMessage(`[{"name":"query","description":"Run a read-only query","inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]},"outputSchema":{"type":"object","properties":{"rows":{"type":"array"}}}}]`)
 	if path := os.Getenv(EnvTools); path != "" {

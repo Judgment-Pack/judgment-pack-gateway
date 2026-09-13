@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -40,5 +41,28 @@ func TestStoppingACommandReachesItsDescendants(t *testing.T) {
 			t.Fatalf("the descendant %d survived the check with the credentials: %s", pid, stat)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A command server stays in the adapter's own process group -- under the
+// gateway, the source group's kill reaches it -- and what it leaves behind
+// is reached at stop through the adapter's adoption of orphans.
+func TestACommandServerStaysInTheAdaptersGroup(t *testing.T) {
+	cfg := fake(t)
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	own := syscall.Getpgrp()
+	found := false
+	for _, m := range trace(t) {
+		if pgid, ok := m["pgid"].(float64); ok {
+			found = true
+			if int(pgid) != own {
+				t.Fatalf("the server ran in group %d, not the adapter's %d", int(pgid), own)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("the stand-in recorded no process group")
 	}
 }
