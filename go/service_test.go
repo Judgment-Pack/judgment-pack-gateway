@@ -935,7 +935,7 @@ func TestAcquireResponseReceiptVerifiesAlone(t *testing.T) {
 
 func TestAcquireAfterSealDoesNotStartTheSource(t *testing.T) {
 	service, _ := testService(t)
-	if _, err := service.acquire("race-sealed", "screening", vString("x")); err != nil {
+	if _, err := service.acquire("race-sealed", "screening", vString("x"), nil); err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
 	if _, err := service.sealSession("race-sealed"); err != nil {
@@ -947,7 +947,7 @@ func TestAcquireAfterSealDoesNotStartTheSource(t *testing.T) {
 	started := filepath.Join(t.TempDir(), "source-started")
 	t.Setenv(envSourceReady, started)
 
-	if _, err := service.acquire("race-sealed", "screening", vString("x")); err == nil {
+	if _, err := service.acquire("race-sealed", "screening", vString("x"), nil); err == nil {
 		t.Fatal("acquire on a sealed session must be refused")
 	}
 	if _, err := os.Stat(started); err == nil {
@@ -963,7 +963,7 @@ func TestSealRefusesWhileAnAcquisitionIsInFlight(t *testing.T) {
 	// is not created until its source completes, so the seal below fails with
 	// "no such session" rather than because work is in flight. Found by
 	// mutation-checking this test against the original code.
-	if _, err := service.acquire("race-inflight", "screening", vString("x")); err != nil {
+	if _, err := service.acquire("race-inflight", "screening", vString("x"), nil); err != nil {
 		t.Fatalf("seed acquire: %v", err)
 	}
 
@@ -973,7 +973,7 @@ func TestSealRefusesWhileAnAcquisitionIsInFlight(t *testing.T) {
 	t.Setenv(envSourceWait, release)
 
 	done := make(chan error, 1)
-	go func() { _, err := service.acquire("race-inflight", "screening", vString("x")); done <- err }()
+	go func() { _, err := service.acquire("race-inflight", "screening", vString("x"), nil); done <- err }()
 	waitForFile(t, started) // the source is now running and cannot finish
 
 	before := registryLines(t, service.regPath)
@@ -1015,7 +1015,7 @@ func TestFailedSourceLeavesNoSealablePhantomSession(t *testing.T) {
 	service, _ := testService(t)
 	t.Setenv(envSourceFail, "1")
 
-	if _, err := service.acquire("race-phantom", "screening", vString("x")); err == nil {
+	if _, err := service.acquire("race-phantom", "screening", vString("x"), nil); err == nil {
 		t.Fatal("a failing source must fail the acquisition")
 	}
 	if _, err := service.sealSession("race-phantom"); err == nil {
@@ -1039,7 +1039,7 @@ func TestConcurrentAcquisitionsKeepContiguousIndices(t *testing.T) {
 	const n = 6
 	done := make(chan error, n)
 	for i := 0; i < n; i++ {
-		go func() { _, err := service.acquire("race-parallel", "screening", vString("x")); done <- err }()
+		go func() { _, err := service.acquire("race-parallel", "screening", vString("x"), nil); done <- err }()
 	}
 	for i := 0; i < n; i++ {
 		if err := <-done; err != nil {
@@ -1096,10 +1096,10 @@ func TestBlockedSourceDoesNotBlockAnIndependentSession(t *testing.T) {
 
 	dir := t.TempDir()
 	done := make(chan error, 1)
-	go func() { _, err := service.acquire("race-indep-a", "screening", barrierArg(dir)); done <- err }()
+	go func() { _, err := service.acquire("race-indep-a", "screening", barrierArg(dir), nil); done <- err }()
 	waitForFile(t, filepath.Join(dir, startedFile)) // A's source is running and cannot finish
 
-	if _, err := service.acquire("race-indep-b", "screening", vString("x")); err != nil {
+	if _, err := service.acquire("race-indep-b", "screening", vString("x"), nil); err != nil {
 		t.Fatalf("session B could not acquire while session A's source was blocked: %v", err)
 	}
 	out, err := service.sealSession("race-indep-b")

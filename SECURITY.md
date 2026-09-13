@@ -3,8 +3,9 @@
 ## Support status
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,
-compatibility, or support service-level guarantee, binds localhost, has no authentication or
-authorization on its HTTP surface, and runs as a single operator holding a single signing identity.
+compatibility, or support service-level guarantee, binds localhost, has no authorization on its HTTP
+surface and no authentication unless an `identity` is configured (which decides who may call,
+never from where; a token presented off the machine can be replayed), and runs as a single operator holding a single signing identity.
 It must not be used as the sole control for consequential production decisions, and a `/verify` that
 answers `ok` must not be read as a statement that the underlying facts are true — see
 [Security boundary](#security-boundary).
@@ -212,6 +213,13 @@ before it runs a platform's adapters once in check mode — as the platform's us
 environment `serve` would give them — and writes the entry only when they answered; the
 report an adapter writes crosses to the operator, redacted by the adapter as its diagnostics
 are, and nothing is signed from it.
+
+**`identity` decides who may call, never from where.** A configured issuer's tokens are verified
+against a key file the operator holds, with the standard library and no fetch on the request path;
+a token names who asked at the engine's boundary and proves nothing about what they approved. The
+token is never stored and never signed into a receipt, only its digest. Transport is still plain
+HTTP on a loopback address: a token presented off the machine can be captured and replayed, and
+reaching the engine from another host means a TLS-terminating front the operator runs and trusts.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being

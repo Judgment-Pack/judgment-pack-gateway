@@ -1257,7 +1257,7 @@ func TestCmdConformExitStatus(t *testing.T) {
 func echoFromSource(t *testing.T, service *gatewayService, session, name string) (string, bool) {
 	t.Helper()
 	t.Setenv(envSourceEcho, name)
-	out, err := service.acquire(session, "screening", vString("x"))
+	out, err := service.acquire(session, "screening", vString("x"), nil)
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -1315,7 +1315,7 @@ func TestSourceOutputIsBounded(t *testing.T) {
 	service, _ := testService(t)
 	service.maxSourceOutput = 1024
 	t.Setenv(envSourceBig, "4096")
-	_, err := service.acquire("big-1", "screening", vString("x"))
+	_, err := service.acquire("big-1", "screening", vString("x"), nil)
 	if err == nil {
 		t.Fatal("output past the bound must fail the acquisition")
 	}
@@ -1334,7 +1334,7 @@ func TestSourceOutputIsBounded(t *testing.T) {
 	}
 
 	service.maxSourceOutput = defaultMaxSourceOutput
-	if _, err := service.acquire("big-2", "screening", vString("x")); err != nil {
+	if _, err := service.acquire("big-2", "screening", vString("x"), nil); err != nil {
 		t.Fatalf("the same output within the bound must be accepted: %v", err)
 	}
 }
@@ -1381,11 +1381,11 @@ func TestOutputBoundIsExact(t *testing.T) {
 	const padding = 1000
 	t.Setenv(envSourceBig, strconv.Itoa(padding))
 	service.maxSourceOutput = padding + 10
-	if _, err := service.acquire("exact-1", "screening", vString("x")); err != nil {
+	if _, err := service.acquire("exact-1", "screening", vString("x"), nil); err != nil {
 		t.Fatalf("output exactly at the bound must be accepted: %v", err)
 	}
 	service.maxSourceOutput = padding + 9
-	if _, err := service.acquire("exact-2", "screening", vString("x")); err == nil || !strings.Contains(err.Error(), "exceeds") {
+	if _, err := service.acquire("exact-2", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("output one byte past the bound must be refused: %v", err)
 	}
 }
@@ -1398,7 +1398,7 @@ func TestOverflowingSourceIsKilled(t *testing.T) {
 	t.Setenv(envSourceBig, "4096")
 	t.Setenv(envSourceHold, "1")
 	started := time.Now()
-	_, err := service.acquire("kill-1", "screening", vString("x"))
+	_, err := service.acquire("kill-1", "screening", vString("x"), nil)
 	elapsed := time.Since(started)
 	if err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("expected the overflow failure, got %v", err)
@@ -1495,7 +1495,7 @@ func TestDescendantHoldingThePipeCannotStrandTheAcquisition(t *testing.T) {
 	// this test is about the kill, and the late-exit ordering has its own.
 	t.Setenv(envSourceHold, "1")
 	started := time.Now()
-	_, err := service.acquire("hold-1", "screening", vString("x"))
+	_, err := service.acquire("hold-1", "screening", vString("x"), nil)
 	elapsed := time.Since(started)
 	if err == nil {
 		t.Fatal("an overflowing source with a descendant on its pipe must fail the acquisition")
@@ -1548,7 +1548,7 @@ func TestShutdownCancelsAnInFlightSource(t *testing.T) {
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := service.acquire("shutdown-1", "screening", vString("x"))
+		_, err := service.acquire("shutdown-1", "screening", vString("x"), nil)
 		result <- err
 	}()
 	waitForFile(t, started)
@@ -1571,7 +1571,7 @@ func TestShutdownCancelsAnInFlightSource(t *testing.T) {
 func TestStderrFloodIsTruncated(t *testing.T) {
 	service, _ := testService(t)
 	t.Setenv(envSourceStderr, "200000")
-	_, err := service.acquire("stderr-1", "screening", vString("x"))
+	_, err := service.acquire("stderr-1", "screening", vString("x"), nil)
 	if err == nil {
 		t.Fatal("a failing source must fail the acquisition")
 	}

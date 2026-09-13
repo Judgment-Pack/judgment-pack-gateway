@@ -240,6 +240,7 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	}
 	service.maxSourceOutput = opts.maxSourceOutput
 	service.receiptVersion = opts.receiptVersion
+	service.identity = opts.identity
 	return service, nil
 }
 
@@ -286,7 +287,12 @@ func cmdServeEngine(args []string) int {
 	for _, statement := range statements {
 		fmt.Fprintln(os.Stderr, "start:", statement)
 	}
-	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources))
+	identity, err := loadIdentity(cfg.identity)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, identity))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -360,6 +366,10 @@ type serveOptions struct {
 	port            string
 	maxSourceOutput int64
 	receiptVersion  string
+	// identity, when set, is who may call: every request that acquires,
+	// seals or verifies carries a bearer token this issuer signed, and a
+	// receipt names the caller it proved. Nil records caller null.
+	identity *identityConfig
 }
 
 // validateEnvKey accepts what an environment variable name can be on the

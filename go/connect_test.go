@@ -717,3 +717,36 @@ func storeOf(t *testing.T, f *connectFixture) string {
 	}
 	return cfg.store
 }
+
+// The identity's key file is read as serve reads it at start: a connect
+// under a configuration whose keys cannot be read is refused before any
+// check, and one whose keys read proceeds.
+func TestConnectReadsTheIdentitysKeysAsServeDoes(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	keys := filepath.Join(t.TempDir(), "keys.json")
+	withIdentity := func() {
+		t.Helper()
+		text := strings.Replace(f.fileText(t), `"platforms":{`, `"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"`+escapePath(keys)+`"},"platforms":{`, 1)
+		if err := os.WriteFile(f.config, []byte(text), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	withIdentity()
+	before := f.fileText(t)
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "identity.keys:") || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatalf("an absent key file refuses the connect before any check: %v (asked %d)", err, len(f.asked))
+	}
+	if err := os.WriteFile(keys, []byte(`{"keys":[{"kty":"oct","kid":"s"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), `identity.keys: key set: key "s" has kty "oct"`) || len(f.asked) != 0 {
+		t.Fatalf("a key file serve would refuse: %v", err)
+	}
+	if err := os.WriteFile(keys, newIssuer(t).keySet(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil || len(f.asked) != 2 {
+		t.Fatalf("with keys that read: %v (asked %d)", err, len(f.asked))
+	}
+}
