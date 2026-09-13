@@ -768,6 +768,10 @@ func TestSaysAbsent(t *testing.T) {
 	}
 	for _, no := range []string{
 		"Error: No such object: " + name + "x",
+		"Error: No such object: " + name + ".other",
+		`Error: no such container "` + name + `.other"`,
+		"Error: No such container: " + name + "-2",
+		"Error: No such container: " + name + "_b",
 		`Get "http://dockerd/v1.47/containers/` + name + `/json": dial tcp: lookup dockerd: no such host`,
 		"no such host " + name,
 		"Cannot connect to the Docker daemon",

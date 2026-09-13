@@ -187,11 +187,14 @@ func (c *container) stopByName() error {
 // saysAbsent reports whether an inspect's answer is the runtime saying the
 // container itself does not exist: docker's "No such object: NAME" or "No
 // such container: NAME", podman's "no such container NAME" -- the absence
-// phrase immediately followed by the name. A transport failure that
-// mentions the name elsewhere, as a request URL does ("Get
-// .../containers/NAME/json: ... no such host"), is not that.
+// phrase immediately followed by the name as a whole token, quoted or not,
+// ending at whitespace or the end of the text. A dot, a dash or an
+// underscore are container-name characters, so "NAME.other" is another
+// container and does not match; and a transport failure that mentions the
+// name elsewhere, as a request URL does ("Get .../containers/NAME/json:
+// ... no such host"), is not an absence.
 func saysAbsent(answer, name string) bool {
-	pattern := regexp.MustCompile(`(?i)no such (?:object|container):?\s*"?` + regexp.QuoteMeta(name) + `"?(?:\s|$|[.,;])`)
+	pattern := regexp.MustCompile(`(?i)no such (?:object|container):?\s*"?` + regexp.QuoteMeta(name) + `"?(?:\s|$)`)
 	return pattern.MatchString(answer)
 }
 
