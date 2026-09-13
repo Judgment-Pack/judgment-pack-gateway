@@ -153,29 +153,69 @@ const MaxDiagnostic = 512
 // grow the text past its bound nor be re-matched. The output is bounded as
 // it is built.
 func Redact(text string, secrets []string) string {
-	return bound(replace(text, secrets))
+	return render(text, wholeSpans(text, secrets, true), len(text))
 }
 
-// replace is Redact without the length bound: every secret replaced, in
-// one pass, longest first where they overlap.
-func replace(text string, secrets []string) string {
-	var out strings.Builder
+// span is a run of a text that is a whole secret.
+type span struct{ start, end int }
+
+// wholeSpans finds every whole secret in text, scanning left to right and
+// taking the longest at each position (the list is sorted so). With
+// bounded set, the scan stops once what it would render exceeds the
+// diagnostic bound, so a text of many megabytes costs no more than the
+// bound: a diagnostic is built bounded, never whole and then cut.
+func wholeSpans(text string, secrets []string, bounded bool) []span {
+	var spans []span
+	rendered := 0
 	for i := 0; i < len(text); {
+		if bounded && rendered > MaxDiagnostic {
+			break
+		}
 		matched := false
 		for _, s := range secrets {
-			if strings.HasPrefix(text[i:], s) {
-				out.WriteString("[redacted]")
+			if s != "" && strings.HasPrefix(text[i:], s) {
+				spans = append(spans, span{i, i + len(s)})
 				i += len(s)
+				rendered += len(replacement)
 				matched = true
 				break
 			}
 		}
 		if !matched {
-			out.WriteByte(text[i])
 			i++
+			rendered++
 		}
 	}
-	return out.String()
+	return spans
+}
+
+const replacement = "[redacted]"
+
+// render writes text up to end with every whole secret replaced, and no
+// more than the bound plus a byte, marked when cut.
+func render(text string, spans []span, end int) string {
+	var out strings.Builder
+	write := func(s string) {
+		if room := MaxDiagnostic + 1 - out.Len(); room > 0 {
+			if len(s) > room {
+				s = s[:room]
+			}
+			out.WriteString(s)
+		}
+	}
+	i := 0
+	for _, sp := range spans {
+		if sp.end > end || out.Len() > MaxDiagnostic {
+			break
+		}
+		write(text[i:sp.start])
+		write(replacement)
+		i = sp.end
+	}
+	if i < end {
+		write(text[i:end])
+	}
+	return bound(out.String())
 }
 
 // bound cuts a diagnostic to MaxDiagnostic, marked.
@@ -210,16 +250,22 @@ func ReadCredentials(path string) ([]byte, error) {
 // TrimPartialSecret cuts from the end of a text that was truncated any
 // suffix that is a proper prefix of a secret: what was cut off may have
 // been the rest of it, and the start of a credential is a leak of it.
-// Applied after Redact, so a whole secret is replaced before its end is
-// taken for a prefix of another (Diagnostic).
+// Diagnostic applies the same cut on the text as written, beside the
+// whole secrets.
 func TrimPartialSecret(text string, secrets []string) string {
+	return text[:len(text)-longestCut(text, secrets)]
+}
+
+// longestCut is the length of the longest proper prefix of any secret
+// that text ends with.
+func longestCut(text string, secrets []string) int {
 	cut := 0
 	for _, s := range secrets {
 		if k := longestPrefixAtEnd(text, s); k > cut {
 			cut = k
 		}
 	}
-	return text[:len(text)-cut]
+	return cut
 }
 
 // longestPrefixAtEnd is the length of the longest proper prefix of s that
@@ -278,15 +324,28 @@ func MalformedCredentials(err error) error {
 }
 
 // Diagnostic is what may cross the source boundary of a text a server, a
-// connector or a runtime wrote: every secret in it replaced, then, when
-// the buffer it was read from overflowed, whatever ends it that is the
-// start of a secret cut off -- whole before prefix, since a secret whose
-// end repeats its start would otherwise lose its end -- and the length
-// bound last, so a prefix past the bound is still cut.
+// connector or a runtime wrote: every whole secret in it replaced and,
+// when the buffer it was read from overflowed, whatever ends it that is
+// the start of a secret cut off. Both are found on the text as written,
+// together: a whole secret that the cut would fall inside keeps its
+// replacement -- one whose end repeats its start, or one another secret
+// begins -- and what follows a whole secret into the start of another is
+// cut with it. The length bound comes last, so a prefix past it is cut.
 func Diagnostic(text string, truncated bool, secrets []string) string {
-	out := replace(text, secrets)
+	spans := wholeSpans(text, secrets, false)
+	end := len(text)
 	if truncated {
-		out = TrimPartialSecret(out, secrets)
+		end = len(text) - longestCut(text, secrets)
+		for _, sp := range spans {
+			if sp.start < end && end < sp.end {
+				if sp.end == len(text) {
+					end = len(text)
+				} else {
+					end = sp.end
+				}
+				break
+			}
+		}
 	}
-	return bound(out)
+	return render(text, spans, end)
 }

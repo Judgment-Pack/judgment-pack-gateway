@@ -240,8 +240,10 @@ descendant last, found through `/proc`, so a process the server left behind — 
 credentials in its environment — does not keep them, rescanning until two scans in a row find none alive and
 reap none — so a process forked between a listing and the reading of its parent is found once
 its parent is gone — and failing the stop — and with it the check or the acquisition — when one
-survives; a descendant that made
-a session of its own is not found, and elsewhere than Linux only the server itself is reached. `--image` is the shape
+survives. A descendant is found through its
+parentage, whatever session or group it made itself — it is the source group's kill, the
+fallback, that a new session escapes — and a process in another pid namespace is not seen;
+elsewhere than Linux only the server itself is reached. `--image` is the shape
 that keeps the lifecycle under a name. Every diagnostic
 that crosses the source boundary — the server's, the runtime's, and this adapter's own about
 what the server said, offered tool names included — is redacted and bounded as

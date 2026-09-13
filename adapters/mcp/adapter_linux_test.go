@@ -89,3 +89,37 @@ func TestStoppingACommandReachesAGrandchildWhoseParentIsGone(t *testing.T) {
 		}
 	}
 }
+
+// The stop is done only after two quiet scans in a row: a scan that
+// reaped something, or found something alive, starts the count over.
+func TestStoppingWaitsForTwoQuietScans(t *testing.T) {
+	sequence := []struct {
+		live   []int
+		reaped int
+	}{
+		{nil, 0},       // quiet once
+		{nil, 1},       // a zombie reaped: not quiet
+		{[]int{42}, 0}, // a descendant revealed
+		{nil, 0},       // quiet once
+		{nil, 0},       // quiet twice: done
+		{[]int{43}, 0}, // never reached
+	}
+	scans := 0
+	var killed []int
+	scan := func() ([]int, int, error) {
+		step := sequence[scans]
+		scans++
+		return step.live, step.reaped, nil
+	}
+	if err := stopDescendants(scan, func(pid int) { killed = append(killed, pid) }, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if scans != 5 || len(killed) != 1 || killed[0] != 42 {
+		t.Fatalf("scans %d, killed %v", scans, killed)
+	}
+	// A descendant that stays alive past the deadline fails the stop.
+	err := stopDescendants(func() ([]int, int, error) { return []int{7}, 0, nil }, func(int) {}, 50*time.Millisecond)
+	if err == nil || !strings.Contains(err.Error(), "1 process(es) the server left behind survived") {
+		t.Fatalf("survivors fail the stop: %v", err)
+	}
+}

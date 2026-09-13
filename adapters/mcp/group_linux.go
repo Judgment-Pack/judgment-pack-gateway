@@ -33,14 +33,22 @@ const descendantsDeadline = 3 * time.Second
 // through /proc, and rescans until none is left alive, reaping the ones
 // adopted here, or reports the survivors. The server stays in this
 // process's own group, so under the gateway the source group's kill
-// reaches all of it as well. A descendant that made a session of its own
-// is not descended any more and is not found; --image is the shape that
-// keeps the lifecycle under a name.
+// reaches all of it as well. A session or a group of its own does not
+// change a process's parentage, so it is found here -- it is the group's
+// kill, the fallback, that a new session escapes; a process in another
+// pid namespace is not seen. --image is the shape that keeps the
+// lifecycle under a name.
 func killDescendants() error {
-	deadline := time.Now().Add(descendantsDeadline)
+	return stopDescendants(liveDescendants, func(pid int) { syscall.Kill(pid, syscall.SIGKILL) }, descendantsDeadline)
+}
+
+// stopDescendants is killDescendants with the scan and the kill given,
+// so the rule can be held on its own.
+func stopDescendants(scan func() ([]int, int, error), kill func(int), within time.Duration) error {
+	deadline := time.Now().Add(within)
 	quiet := 0
 	for {
-		live, reaped, err := liveDescendants()
+		live, reaped, err := scan()
 		if err != nil {
 			return err
 		}
@@ -59,7 +67,7 @@ func killDescendants() error {
 		default:
 			quiet = 0
 			for _, pid := range live {
-				syscall.Kill(pid, syscall.SIGKILL)
+				kill(pid)
 			}
 		}
 		if time.Now().After(deadline) {
