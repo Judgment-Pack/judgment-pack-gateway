@@ -164,8 +164,12 @@ gateway asked to run a source as another user must hold `CAP_SETUID`, `CAP_SETGI
 start the source and never stop it. **`--source-user`** runs a source as another OS
 user where the platform has one, with that user's own supplementary groups and none of the
 gateway's, and `serve` refuses to start rather than fall back to running the source as the signer
-when it cannot switch; a root process stripped of the capability to switch passes the startup
-check and fails at its first acquisition, where the operating system's reason is reported. **A
+when it cannot switch: root may switch, and so may a process that is not root but holds
+`CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` on Linux as file capabilities, holding nothing
+ambient or inheritable and nothing that reads past permissions, which is how the engine runs its
+signer as a user of its own; a process stripped of the capability to switch passes the startup
+check only where capabilities cannot be read, and fails at its first acquisition, where the
+operating system's reason is reported. **A
 source's stdout is bounded** (`--source-max-output`, one mebibyte by default) and its stderr is
 bounded and truncated: a source that crosses the stdout bound is killed, its acquisition fails, and
 nothing it wrote is retained. **The seed is opened once and judged as the file that was opened** —
@@ -184,12 +188,23 @@ afterwards — a last resort on platforms this reference does not test. os/exec 
 child only the handles it is told to.
 
 What none of this gives: a source that runs as the gateway's own user, because no `--source-user`
-was given, can read what that user can read, including the seed; and a gateway that runs as root,
-which `--source-user` requires today, can read the files a source user holds. The separation is
-only as strong as the identities the operator gives the two sides. Closing the second gap — a
-non-root signer beside per-source users — is the engine's job
-([docs/adr/0001](docs/adr/0001-one-engine-four-processes.md),
-[docs/design/engine-image.md](docs/design/engine-image.md)), not this reference's.
+was given, can read what that user can read, including the seed; and a gateway that runs as root
+can read the files a source user holds. The separation is only as strong as the identities the
+operator gives the two sides. **`serve --config`** holds a configuration to both sides at once
+([docs/design/engine-config.md](docs/design/engine-config.md)): every platform's adapters run as
+a user of their own that is neither root nor the signer nor another platform's, a credentials
+file must be owned by that user and readable by nobody else under directories nobody else can
+replace it in, a signer that is root must be accepted by name, and so must a host
+container-runtime socket an adapter could reach; a non-root signer may hold no capability that
+reads past permissions, in its effective or permitted set, and none that is ambient or
+inheritable, since either could cross into an adapter and let it switch back — the three it
+needs are file capabilities on the gateway binary, and nothing is cleared, as clearing is per
+thread. What that holds is
+the signer as written: a signer holding `CAP_SETUID` can assume any user, so a compromised
+signer is not held out of credentials by the configuration — that takes a privileged launcher
+separate from the signer, which is the engine image's job. The checks hold the configuration
+to what the filesystem and the kernel report; an access-control list or a socket at another
+path is not seen.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being

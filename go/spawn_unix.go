@@ -158,11 +158,12 @@ func requireUserSwitching(sources map[string]sourceSpec) error {
 		if spec.user == "" {
 			continue
 		}
-		if os.Geteuid() != 0 {
-			return fmt.Errorf("--source-user %s=%s: switching to another user requires the gateway to run as root", name, spec.user)
-		}
-		if missing := missingCapabilities(); len(missing) > 0 {
-			return fmt.Errorf("--source-user %s=%s: this process lacks %s; it could start the source as that user but not stop it, or not start it at all", name, spec.user, strings.Join(missing, ", "))
+		// Root may switch; so may a process that is not root but holds the
+		// three capabilities, which is how the engine runs its signer as a
+		// user of its own beside per-platform users. Where capabilities
+		// cannot be read (not Linux), only root may.
+		if err := switchingRefusal(os.Geteuid(), processCapabilities()); err != nil {
+			return fmt.Errorf("--source-user %s=%s: %v", name, spec.user, err)
 		}
 		if _, err := lookupCredential(spec.user); err != nil {
 			return fmt.Errorf("--source-user %s: %w", name, err)
@@ -187,11 +188,37 @@ var requiredCapabilities = []struct {
 }
 
 func missingCapabilities() []string {
-	status, err := os.ReadFile("/proc/self/status")
-	if err != nil {
+	return missingCapabilitiesInSets(processCapabilities())
+}
+
+// switchingRefusal is why this process may not switch a source to another
+// user, or nil: root may; a process that is not root may where the kernel
+// reports capabilities, holding the three it needs and none that would
+// cross into the source (capabilityRefusal); elsewhere only root may.
+func switchingRefusal(euid int, sets capabilitySets) error {
+	if euid != 0 && !sets.known {
+		return errors.New("switching to another user requires the gateway to run as root")
+	}
+	if missing := missingCapabilitiesInSets(sets); len(missing) > 0 {
+		return fmt.Errorf("this process lacks %s; it could start the source as that user but not stop it, or not start it at all", strings.Join(missing, ", "))
+	}
+	if euid != 0 {
+		return capabilityRefusal(sets)
+	}
+	return nil
+}
+
+func missingCapabilitiesInSets(sets capabilitySets) []string {
+	if !sets.known {
 		return nil
 	}
-	return missingCapabilitiesIn(string(status))
+	var missing []string
+	for _, capability := range requiredCapabilities {
+		if sets.effective&(1<<capability.bit) == 0 {
+			missing = append(missing, capability.name)
+		}
+	}
+	return missing
 }
 
 func missingCapabilitiesIn(status string) []string {

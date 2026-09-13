@@ -236,6 +236,60 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	return service, nil
 }
 
+// cmdServeEngine is `serve --config FILE`: the engine's configuration names
+// platforms, the sources are derived from their bindings, and the engine
+// refuses to start under a configuration the isolation claim does not
+// survive (docs/design/engine-config.md). Nothing else may be given beside
+// the file: a process is never named on the command line.
+func cmdServeEngine(args []string) int {
+	if len(args) != 1 {
+		fmt.Fprintln(os.Stderr, "usage: gateway serve --config <engine.json>")
+		return 2
+	}
+	host := osEngineHost()
+	cfg, bindings, err := loadEngineConfig(args[0], host.account)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	closeInheritedDescriptors()
+	// The isolation refusals come first, so a configuration is judged as a
+	// configuration whatever this process may do; they leave every path
+	// resolved, and the sources are derived from those; then the seed, then
+	// whether the switching the configuration needs is available.
+	statements, err := engineRefusals(&cfg, host)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	sources := deriveSources(cfg, bindings)
+	seed, err := loadSeed(cfg.seed)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "seed:", err)
+		return 1
+	}
+	if err := requireUserSwitching(sources); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	for _, statement := range statements {
+		fmt.Fprintln(os.Stderr, "start:", statement)
+	}
+	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	service.bindLifetime(ctx)
+	if err := service.listenAndServe(cfg.listen); err != nil {
+		fmt.Fprintln(os.Stderr, "serve:", err)
+		return 1
+	}
+	return 0
+}
+
 // writeNewSeed creates path exclusively. O_EXCL is the whole point and a
 // check-then-write would not do: between a stat and a write, a rerun or a
 // planted symlink decides which identity the gateway keeps. O_CREATE|O_EXCL
@@ -334,7 +388,7 @@ func validatePort(value string) (string, bool) {
 
 func parseServeOptions(args []string) (serveOptions, string, bool) {
 	if len(args) < 4 {
-		return serveOptions{}, "usage: gateway serve <store> <seedfile> <authority> <registry> " +
+		return serveOptions{}, "usage: gateway serve --config <engine.json> | gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
 			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--receipt-version 2|3] [--port N]", false
 	}
@@ -506,6 +560,9 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 }
 
 func cmdServe(args []string) int {
+	if len(args) > 0 && args[0] == "--config" {
+		return cmdServeEngine(args[1:])
+	}
 	opts, msg, ok := parseServeOptions(args)
 	if !ok {
 		fmt.Fprintln(os.Stderr, msg)

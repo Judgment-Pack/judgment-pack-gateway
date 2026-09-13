@@ -134,6 +134,12 @@ a store it holds, under the key it pinned from `keygen`'s output, then binds the
 receipt and re-digests the artifact before using a byte — the normative sequence
 is [SPEC.md §5a](SPEC.md), executable in `go/ceremony_test.go`.
 
+`gateway serve --config engine.json` is the engine's form of the same command: the file
+names platforms — a catalog binding pinned by digest, a credentials file, the OS user the
+platform's adapters run as — and `serve` derives every source from it, refusing to start
+under a configuration in which an adapter could read the seed or the signer a credential
+([docs/design/engine-config.md](docs/design/engine-config.md)).
+
 A source is any command that reads the canonical arguments on stdin and writes a JSON
 result on stdout. The gateway attaches no transport of its own; it attests whatever
 bytes a source returns — **proof of the bytes, not proof of their truth.**
