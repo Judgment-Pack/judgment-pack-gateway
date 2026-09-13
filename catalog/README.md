@@ -20,7 +20,10 @@ file name.
 
 The `live` entry's `probe`, `list_schemas`, is what a check calls once: this server starts
 and lists its tools whether or not it could reach the database, so the handshake alone
-establishes nothing about the connection, and a schema listing does. The `live` entry names the server's read tools — schemas, objects, object details, SQL
+establishes nothing about the connection, and a schema listing does. The server catches its
+own failure and answers it as ordinary text beginning `Error:` with `isError` false
+(`src/postgres_mcp/server.py` at v0.3.0 wraps each tool's exception as `f"Error: {e}"`), so
+the probe's `failure` names that text and such an answer fails the check. The `live` entry names the server's read tools — schemas, objects, object details, SQL
 under the server's restricted mode, query plans — and not its workload-analysis tools,
 which read `pg_stat_statements` and are an operator's, not a decision's. The two operations
 read different files: the server takes its connection string from the environment

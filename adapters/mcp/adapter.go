@@ -53,6 +53,12 @@ type Config struct {
 	// handshake all the same. The result is read for an error and
 	// discarded; nothing is minted from a check.
 	Probe string
+	// ProbeFailure, when given, is text a probe's answer begins with when
+	// the platform was not reached: a server that catches its own
+	// failure and answers it as ordinary text, isError false, says so
+	// only in the text, and the binding that pins the server knows what
+	// it says.
+	ProbeFailure string
 	// MaxOutput bounds the envelope in bytes.
 	MaxOutput int64
 }
@@ -403,8 +409,14 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		if int64(len(raw)) > cfg.MaxOutput {
 			return finish(nil, fmt.Errorf("the probe's result exceeds the output bound of %d bytes", cfg.MaxOutput))
 		}
-		if _, err := parseToolResult(raw); err != nil {
+		result, err := parseToolResult(raw)
+		if err != nil {
 			return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
+		}
+		if cfg.ProbeFailure != "" {
+			if text, failed := answersFailure(result, cfg.ProbeFailure); failed {
+				return finish(nil, fmt.Errorf("probe %q: the platform was not reached: %s", cfg.Probe, text))
+			}
 		}
 		probe = &probeReport{Tool: cfg.Probe, Answered: true}
 	}
@@ -670,6 +682,30 @@ func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listed
 		tools = append(tools, listedTool{name: name, descriptor: tool})
 	}
 	return tools, next, nil
+}
+
+// answersFailure reports whether a tool result, isError or not, carries a
+// text item beginning with the failure text the binding named, and that
+// item's text.
+func answersFailure(result []byte, failure string) (string, bool) {
+	members, err := exactMembers(result)
+	if err != nil {
+		return "", false
+	}
+	var content []json.RawMessage
+	if json.Unmarshal(members["content"], &content) != nil {
+		return "", false
+	}
+	for _, item := range content {
+		var text struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(item, &text) == nil && text.Type == "text" && strings.HasPrefix(strings.TrimSpace(text.Text), failure) {
+			return strings.TrimSpace(text.Text), true
+		}
+	}
+	return "", false
 }
 
 // textOf joins the text parts of a tool result's content, for an error

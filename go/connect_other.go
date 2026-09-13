@@ -11,6 +11,8 @@ type fileOwnerIDs struct{ known bool }
 
 func ownerIDsOf(info os.FileInfo) fileOwnerIDs { return fileOwnerIDs{} }
 
+func parentHeld(info os.FileInfo) error { return nil }
+
 func keepOwner(file *os.File, owner fileOwnerIDs) error { return nil }
 
 func openConfigForRead(dir *os.Root, name string) (*os.File, error) {

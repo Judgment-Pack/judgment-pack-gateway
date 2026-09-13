@@ -201,6 +201,7 @@ running engine reaches:
       "shape": "mcp",
       "server": { "image": "…/mcp-postgres@sha256:…", "args": ["--access-mode=restricted"] },
       "tools": ["query"],
+      "probe": { "tool": "query", "failure": "Error:" },
       "licence": "MIT"
     }
   }
@@ -212,10 +213,12 @@ each naming its shape, the pinned artifact that serves it, the tools it may call
 licence of the artifact it pulls. An `mcp` entry's `server.args`, when present, are the
 server's own arguments inside its container — the mode a server runs in, say — each one word
 as written: the engine builds the adapter's command line and splits nothing, and the adapter
-hands them to the runtime after the image. Its `probe`, when present, is one of its `tools`
-that a check calls once with no arguments: a server that starts and lists its tools without a
+hands them to the runtime after the image. Its `probe`, when present, is `{"tool", "failure"?}`: `tool` is one of its `tools`
+that a check calls once with no arguments — a server that starts and lists its tools without a
 working connection to its platform answers the handshake all the same, and the probe is what
-establishes the connection; its result is discarded. A restriction of streams for the history operation is not yet
+establishes the connection — and `failure`, when present, is the text such an answer begins
+with for a server that catches its own failure and answers it as ordinary text, `isError`
+false; the result is discarded either way. A restriction of streams for the history operation is not yet
 applied at acquisition, so a binding may not declare one: a restriction accepted and not
 applied would read as applied. `history` is served by the `airbyte` shape and `live`
 and `write` by the `mcp` shape; the `http` shape is not shipped by this release, and a binding

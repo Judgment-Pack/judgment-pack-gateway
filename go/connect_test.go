@@ -16,7 +16,7 @@ const restrictedBinding = `{
   "platform": "postgres",
   "operations": {
     "history": {"shape": "airbyte", "image": "airbyte/source-postgres:3.8.5@` + testImageDigest + `", "licence": "ELv2"},
-    "live": {"shape": "mcp", "server": {"image": "crystaldba/postgres-mcp:0.3.0@` + testImageDigest + `", "args": ["--access-mode=restricted"]}, "tools": ["query"], "probe": "query", "licence": "MIT"}
+    "live": {"shape": "mcp", "server": {"image": "crystaldba/postgres-mcp:0.3.0@` + testImageDigest + `", "args": ["--access-mode=restricted"]}, "tools": ["query"], "probe": {"tool": "query", "failure": "Error:"}, "licence": "MIT"}
   }
 }`
 
@@ -116,7 +116,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	if argv := strings.Join(f.asked[1].argv, " "); !strings.HasSuffix(argv, " --endpoint warehouse.internal:5432 -- --access-mode=restricted") || !strings.Contains(argv, "--credentials "+f.credentials+" ") {
 		t.Fatalf("the derived command line carries the binding's server arguments after --: %s", argv)
 	}
-	if strings.Join(f.asked[1].check, " ") != "--probe query" || len(f.asked[0].check) != 0 {
+	if strings.Join(f.asked[1].check, " ") != "--probe query --probe-failure Error:" || len(f.asked[0].check) != 0 {
 		t.Fatalf("the check carries the binding's probe: %q %q", f.asked[0].check, f.asked[1].check)
 	}
 	if len(out.answers) != 2 || out.answers[0] != "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: Connected" ||
@@ -479,9 +479,23 @@ func TestConnectJudgesTheSeedAsServeDoes(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "seed:") || !strings.Contains(err.Error(), "chmod 0600") || len(f.asked) != 0 || f.fileText(t) != before {
 		t.Fatalf("a seed serve would refuse ends the connect before any check: %v (asked %d)", err, len(f.asked))
 	}
+	if err := os.Chmod(f.seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []string{"", "too short", strings.Repeat("a", 31)} {
+		if err := os.WriteFile(f.seed, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "seed: seed file does not hold a 32-byte seed") {
+			t.Fatalf("a seed that is not one (%d bytes) is refused before any check: %v", len(content), err)
+		}
+	}
 	os.Remove(f.seed)
 	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "seed:") {
 		t.Fatalf("an absent seed too: %v", err)
+	}
+	if len(f.asked) != 0 {
+		t.Fatal("nothing was asked for any of them")
 	}
 }
 

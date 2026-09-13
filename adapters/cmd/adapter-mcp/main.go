@@ -33,6 +33,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; stopping the server takes up to seven seconds more, under the gateway's thirty")
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
 	probe := fs.String("probe", "", "with --check, a tool to call once with no arguments, so a server that lists its tools without reaching its platform is found out; its result is read for an error and discarded")
+	probeFailure := fs.String("probe-failure", "", "with --probe, text the probe's answer begins with when the platform was not reached, for a server that answers its own failure as ordinary text")
 	// The gateway splits a source command on whitespace and parses no
 	// quotes, so what comes after "--" is given word by word: a server
 	// command with its arguments, or, with --image, the server's own
@@ -62,11 +63,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if *tools != "" {
 		cfg.Tools = strings.Split(*tools, ",")
 	}
-	if *probe != "" && !*check {
-		fmt.Fprintln(stderr, "adapter-mcp: --probe is for --check")
+	if (*probe != "" && !*check) || (*probeFailure != "" && *probe == "") {
+		fmt.Fprintln(stderr, "adapter-mcp: --probe is for --check, and --probe-failure for --probe")
 		return 2
 	}
-	cfg.Probe = *probe
+	cfg.Probe, cfg.ProbeFailure = *probe, *probeFailure
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	var out []byte

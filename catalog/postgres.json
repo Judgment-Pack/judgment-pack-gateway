@@ -14,7 +14,7 @@
         "args": ["--access-mode=restricted"]
       },
       "tools": ["list_schemas", "list_objects", "get_object_details", "execute_sql", "explain_query"],
-      "probe": "list_schemas",
+      "probe": {"tool": "list_schemas", "failure": "Error:"},
       "licence": "MIT"
     },
     "write": {

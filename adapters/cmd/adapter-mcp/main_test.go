@@ -25,6 +25,7 @@ func TestRunUsage(t *testing.T) {
 		{"--check"},
 		{"--unknown", "--", "y"},
 		{"--probe", "query", "--", "y"},
+		{"--check", "--probe-failure", "Error:", "--", "y"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, strings.NewReader(`{"tool":"query"}`), &stdout, &stderr); code != 2 || stdout.Len() != 0 {

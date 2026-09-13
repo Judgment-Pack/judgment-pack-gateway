@@ -121,8 +121,23 @@ func TestReplaceKeepsTheGroupUnderASetgidDirectory(t *testing.T) {
 	if err := os.Chown(f.dir, -1, other); err != nil {
 		t.Skipf("cannot give the directory the group: %v", err)
 	}
-	if err := os.Chmod(f.dir, 0o2770); err != nil {
+	// The directory is group-owned by the other group with the setgid bit,
+	// and writable by that group only under the sticky bit, which the
+	// held-parent rule requires.
+	if err := os.Chmod(f.dir, os.ModeSetgid|os.ModeSticky|0o770); err != nil {
 		t.Fatal(err)
+	}
+	if info, err := os.Stat(f.dir); err != nil || info.Mode()&os.ModeSetgid == 0 {
+		t.Skipf("the filesystem does not keep the setgid bit: %v", err)
+	}
+	// The directory gives a new file its group: shown before the replace.
+	if probe, err := os.CreateTemp(f.dir, "probe"); err == nil {
+		info, _ := probe.Stat()
+		probe.Close()
+		os.Remove(probe.Name())
+		if ownerIDsOf(info).gid != other {
+			t.Skip("the directory does not give a new file its group here")
+		}
 	}
 	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
 		t.Fatal(err)
@@ -133,5 +148,48 @@ func TestReplaceKeepsTheGroupUnderASetgidDirectory(t *testing.T) {
 	}
 	if got := ownerIDsOf(info); got.gid != os.Getegid() {
 		t.Fatalf("the file's group is %d, the directory's; it was %d", got.gid, os.Getegid())
+	}
+}
+
+// A directory another user could write is refused before anything is
+// read: the private directory the new file is written in could be
+// swapped there. With the sticky bit, it could not.
+func TestConnectRefusesADirectoryAnotherUserCouldWrite(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	if err := os.Chmod(f.dir, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "is writable beyond its owner (mode 0777) without the sticky bit") || len(f.asked) != 0 {
+		t.Fatalf("refused before any check: %v (asked %d)", err, len(f.asked))
+	}
+	if err := os.Chmod(f.dir, os.ModeSticky|0o777); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatalf("with the sticky bit, another user cannot replace what is there: %v", err)
+	}
+}
+
+// The file read is the entry's own: a regular file put in the entry's
+// place between the open and the judgment is not read.
+func TestReadingTheConfigurationJudgesTheEntryItOpened(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	file, err := openConfigFile(f.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.close()
+	other := filepath.Join(f.dir, "other.json")
+	if err := os.WriteFile(other, []byte(`{"engineVersion":"1"}`), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	file.afterOpen = func() {
+		if err := os.Rename(other, f.config); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := file.read(); err == nil || !strings.Contains(err.Error(), "is not the regular file it was") {
+		t.Fatalf("the descriptor and the entry differ: %v", err)
 	}
 }

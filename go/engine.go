@@ -62,12 +62,16 @@ type binding struct {
 }
 
 type operation struct {
-	shape   string
-	image   string
-	args    []string // the server's own arguments inside its container (mcp)
-	tools   []string
-	probe   string // a tool a check calls once to reach the platform (mcp)
-	licence string
+	shape string
+	image string
+	args  []string // the server's own arguments inside its container (mcp)
+	tools []string
+	probe string // a tool a check calls once to reach the platform (mcp)
+	// probeFailure is text the probe's answer begins with when the
+	// platform was not reached, for a server that answers its own failure
+	// as ordinary text.
+	probeFailure string
+	licence      string
 }
 
 // engineHost is what the engine asks the operating system while it holds
@@ -499,19 +503,29 @@ func parseOperation(op *vObject, name string) (operation, error) {
 		// The probe is the tool a check calls once to establish that the
 		// server reaches its platform: one of the tools the operation may
 		// call, so a check calls nothing an acquisition could not.
-		if _, present := op.get("probe"); present {
-			probe, err := requireString(op, "probe")
-			if err != nil || probe == "" {
-				return o, fmt.Errorf("operation %s: probe, when present, names a tool", name)
+		if probeValue, present := op.get("probe"); present {
+			probe, err := requireObject(probeValue, "probe")
+			if err != nil {
+				return o, fmt.Errorf("operation %s: probe, when present, is an object naming a tool", name)
+			}
+			if err := exactlyMembers(probe, map[string]bool{"tool": true, "failure": false}, "operation "+name+" probe"); err != nil {
+				return o, err
+			}
+			if o.probe, err = requireString(probe, "tool"); err != nil || o.probe == "" {
+				return o, fmt.Errorf("operation %s: probe.tool names a tool", name)
 			}
 			found := false
 			for _, t := range o.tools {
-				found = found || t == probe
+				found = found || t == o.probe
 			}
 			if !found {
-				return o, fmt.Errorf("operation %s: probe %q is not one of its tools", name, probe)
+				return o, fmt.Errorf("operation %s: probe %q is not one of its tools", name, o.probe)
 			}
-			o.probe = probe
+			if _, present := probe.get("failure"); present {
+				if o.probeFailure, err = requireString(probe, "failure"); err != nil || o.probeFailure == "" {
+					return o, fmt.Errorf("operation %s: probe.failure, when present, is the text a failed answer begins with", name)
+				}
+			}
 		}
 	case "http":
 		return o, fmt.Errorf("operation %s: the http shape is not shipped by this release", name)
@@ -564,6 +578,9 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			var check []string
 			if b.live.probe != "" {
 				check = []string{"--probe", b.live.probe}
+				if b.live.probeFailure != "" {
+					check = append(check, "--probe-failure", b.live.probeFailure)
+				}
 			}
 			if len(b.live.args) > 0 {
 				argv = append(append(argv, "--"), b.live.args...)

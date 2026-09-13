@@ -189,7 +189,10 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   acquisition. A server that starts and lists its tools without a working connection to its
   platform answers the handshake all the same, so `--probe TOOL` names a tool the check calls
   once with no arguments — one of `--tools`, offered by the server — and requires it to answer
-  without an error; its result is discarded, and the report says which tool answered. What the server said of itself — its name and version, its tools' names — is
+  without an error; its result is discarded, and the report says which tool answered. A server
+  that catches its own failure and answers it as ordinary text, `isError` false, says so only
+  in the text, and `--probe-failure TEXT` names what such an answer begins with, so that
+  answer fails the check too; the binding that pins the server is where that text is known. What the server said of itself — its name and version, its tools' names — is
   redacted before it is reported, as every diagnostic is. The report carries `"status":
   "succeeded"`; a check that did not succeed writes `{"check": {"status": "failed",
   "message"}}` on stdout beside its exit status, so a caller reads one shape either way. The

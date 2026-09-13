@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"syscall"
 )
@@ -19,6 +20,21 @@ func ownerIDsOf(info os.FileInfo) fileOwnerIDs {
 		return fileOwnerIDs{uid: int(st.Uid), gid: int(st.Gid), known: true}
 	}
 	return fileOwnerIDs{}
+}
+
+// parentHeld is why another user could replace an entry of the
+// configuration's directory, or nil: the rule the credentials' directories
+// are held to (holdDirectory), on the directory as the kernel reports it.
+func parentHeld(info os.FileInfo) error {
+	owner := ownerIDsOf(info)
+	if owner.known && owner.uid != 0 && owner.uid != os.Geteuid() {
+		return fmt.Errorf("is owned by uid %d, neither root nor this process, so its owner could replace what is in it", owner.uid)
+	}
+	perm := info.Mode().Perm()
+	if perm&0o022 != 0 && info.Mode()&os.ModeSticky == 0 {
+		return fmt.Errorf("is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is in it", perm)
+	}
+	return nil
 }
 
 // keepOwner gives the open file the owner the replaced file had, whenever

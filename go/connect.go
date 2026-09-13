@@ -527,6 +527,10 @@ type configFile struct {
 	mode   os.FileMode
 	owner  fileOwnerIDs
 	unlock func()
+	// afterOpen, when set, runs between opening the file and judging the
+	// entry: a test's way of putting another file in the entry's place
+	// at exactly that moment.
+	afterOpen func()
 }
 
 func openConfigFile(path string) (*configFile, error) {
@@ -535,6 +539,17 @@ func openConfigFile(path string) (*configFile, error) {
 		return nil, fmt.Errorf("engine configuration: %v", err)
 	}
 	f := &configFile{dir: dir, base: filepath.Base(path)}
+	// The directory itself must be one nobody else could replace an entry
+	// of: owned by root or by this process, and writable beyond its owner
+	// only with the sticky bit -- else another user could swap the private
+	// directory the new file is written in before the rename.
+	if info, err := dir.Stat("."); err != nil {
+		dir.Close()
+		return nil, fmt.Errorf("engine configuration: %v", err)
+	} else if err := parentHeld(info); err != nil {
+		dir.Close()
+		return nil, fmt.Errorf("engine configuration: %s %v", filepath.Dir(path), err)
+	}
 	info, err := f.regular()
 	if err != nil {
 		dir.Close()
@@ -580,6 +595,9 @@ func (f *configFile) read() ([]byte, error) {
 		return nil, fmt.Errorf("engine configuration: %v", err)
 	}
 	defer file.Close()
+	if f.afterOpen != nil {
+		f.afterOpen()
+	}
 	info, err := file.Stat()
 	if err != nil {
 		return nil, fmt.Errorf("engine configuration: %v", err)

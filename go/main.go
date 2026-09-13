@@ -223,6 +223,11 @@ func loadSeed(path string) ([]byte, error) {
 			seed = decoded
 		}
 	}
+	// Judged here, where connect and serve both read it, so a seed that
+	// is not one is refused before adapters are run or a store is made.
+	if len(seed) != seedBytes {
+		return nil, fmt.Errorf("seed file does not hold a %d-byte seed (%d bytes after decoding)", seedBytes, len(seed))
+	}
 	return seed, nil
 }
 

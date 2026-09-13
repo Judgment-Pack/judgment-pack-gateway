@@ -127,7 +127,9 @@ func main() {
 			// The probe: a server that could not reach its database says
 			// so here, whatever the handshake said.
 			if os.Getenv("PROBE_FAILS") == "1" {
-				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "connection refused"}}, "isError": true}
+				// As the pinned Postgres server does: the failure caught
+				// and answered as ordinary text, isError false.
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "Error: connection refused"}}}
 			} else {
 				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "public"}}}
 			}
@@ -244,7 +246,7 @@ func main() {
 	// is found out by the probe, and nothing is written.
 	req.environment = []string{"FAKE_TRACE=" + trace, "PROBE_FAILS=1"}
 	_, err = connect(context.Background(), req, host, asSelf)
-	if err == nil || !strings.Contains(err.Error(), `warehouse/live: probe "query": the tool reported an error`) {
+	if err == nil || !strings.Contains(err.Error(), `warehouse/live: probe "query": the platform was not reached: Error: connection refused`) {
 		t.Fatalf("the probe's error ends the connect: %v", err)
 	}
 	if after, _ := os.ReadFile(config); string(after) != string(before) {

@@ -1085,6 +1085,20 @@ func TestCheckProbesThePlatform(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), `probe "query": the tool reported an error: connection refused for [redacted]`) {
 		t.Fatalf("an error answer fails the check, redacted: %v", err)
 	}
+	// A server that catches its own failure answers ordinary text, isError
+	// false; the binding names what such an answer begins with.
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"Error: connection to warehouse.internal refused for app"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatalf("without a failure text named, ordinary text is an answer: %v", err)
+	}
+	cfg.ProbeFailure = "Error:"
+	_, err = Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), `probe "query": the platform was not reached: Error: connection to warehouse.internal refused for [redacted]`) {
+		t.Fatalf("the named failure text fails the check, redacted: %v", err)
+	}
+	cfg.ProbeFailure = ""
 	t.Setenv(fakemcp.EnvResult, "")
 	cfg.Probe = "drop_table"
 	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "drop_table" is not one this source may call`) {
@@ -1099,9 +1113,9 @@ func TestCheckProbesThePlatform(t *testing.T) {
 	if _, err := Check(context.Background(), cfg); err != nil {
 		t.Fatal(err)
 	}
-	// Across the five runs above, only the two with an offered probe
-	// called anything.
-	if got := strings.Join(methods(trace(t)), " "); strings.Count(got, "tools/call") != 2 {
+	// Across the runs above, only the four with an offered probe called
+	// anything.
+	if got := strings.Join(methods(trace(t)), " "); strings.Count(got, "tools/call") != 4 {
 		t.Fatalf("a call only for an offered probe: %v", got)
 	}
 }
