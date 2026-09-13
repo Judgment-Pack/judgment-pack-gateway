@@ -239,7 +239,10 @@ func TestVerifyTokenRefusals(t *testing.T) {
 		{"signature with its unused bits set", withDirtyBits(t, good), "signature is not canonical base64url"},
 		{"payload with its unused bits set", issuer.mintSegments(t, "ec-1", b64([]byte(`{"alg":"ES256","kid":"ec-1"}`)), dirty(t, b64([]byte(unevenPayload(exp))))), "payload is not canonical base64url"},
 		{"line break inside the payload", issuer.mintSegments(t, "ec-1", b64([]byte(`{"alg":"ES256","kid":"ec-1"}`)), func() string { s := b64([]byte(unevenPayload(exp))); return s[:10] + "\n" + s[10:] }()), "payload is not canonical base64url"},
-		{"line break inside the header", func() string { h := b64([]byte(`{"alg":"ES256","kid":"ec-1"}`)); return issuer.mintSegments(t, "ec-1", h[:5]+"\n"+h[5:], b64([]byte(unevenPayload(exp)))) }(), "header is not canonical base64url"},
+		{"line break inside the header", func() string {
+			h := b64([]byte(`{"alg":"ES256","kid":"ec-1"}`))
+			return issuer.mintSegments(t, "ec-1", h[:5]+"\n"+h[5:], b64([]byte(unevenPayload(exp))))
+		}(), "header is not canonical base64url"},
 		{"padded header", "=" + good, "header is not canonical base64url"},
 		{"audience by another case", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"other","AUD":"gateway:acme","exp":`+exp+`}`), "does not name this engine"},
 		{"subject twice", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"alice","sub":null,"aud":"gateway:acme","exp":`+exp+`}`), `duplicate member name "sub"`},
