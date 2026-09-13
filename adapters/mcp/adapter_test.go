@@ -1060,3 +1060,108 @@ func TestACredentialAnotherOneBeginsInsideIsRedactedWhole(t *testing.T) {
 		t.Fatalf("covered together: %v", err)
 	}
 }
+
+func TestCheckProbesThePlatform(t *testing.T) {
+	cfg := fake(t)
+	cfg.Tools = []string{"query"}
+	cfg.Probe = "query"
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"probe":{"tool":"query","answered":true}`) {
+		t.Fatalf("the report says the probe answered: %s", out)
+	}
+	if got := methods(trace(t)); strings.Join(got, " ") != "initialize notifications/initialized tools/list tools/call" {
+		t.Fatalf("the probe is one call: %v", got)
+	}
+	// A probe the server answers with an error is a platform not reached.
+	result := filepath.Join(t.TempDir(), "result.json")
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"connection refused for app"}],"isError":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvResult, result)
+	_, err = Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), `probe "query": the tool reported an error: connection refused for [redacted]`) {
+		t.Fatalf("an error answer fails the check, redacted: %v", err)
+	}
+	// A server that catches its own failure answers ordinary text, isError
+	// false; the binding names what such an answer begins with.
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"Error: connection to warehouse.internal refused for app"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatalf("without a failure text named, ordinary text is an answer: %v", err)
+	}
+	cfg.ProbeFailure = "Error:"
+	_, err = Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), `probe "query": the platform was not reached: Error: connection to warehouse.internal refused for [redacted]`) {
+		t.Fatalf("the named failure text fails the check, redacted: %v", err)
+	}
+	cfg.ProbeFailure = ""
+	t.Setenv(fakemcp.EnvResult, "")
+	cfg.Probe = "drop_table"
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "drop_table" is not one this source may call`) {
+		t.Fatalf("a probe outside the allowed tools: %v", err)
+	}
+	cfg.Tools = nil
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "drop_table" is not one the server offers`) {
+		t.Fatalf("a probe the server lacks: %v", err)
+	}
+	// Without a probe, nothing is called.
+	cfg.Probe = ""
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Across the runs above, only the four with an offered probe called
+	// anything.
+	if got := strings.Join(methods(trace(t)), " "); strings.Count(got, "tools/call") != 4 {
+		t.Fatalf("a call only for an offered probe: %v", got)
+	}
+}
+
+func TestAProbeAnswerIsReadByExactMembers(t *testing.T) {
+	cfg := fake(t)
+	cfg.Tools = []string{"query"}
+	cfg.Probe = "query"
+	cfg.ProbeFailure = "Error:"
+	result := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv(fakemcp.EnvResult, result)
+	// A "Text" beside "text" would make struct decoding fail and the
+	// item be passed over; read exactly, the item says Error:.
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"Error: refused","Text":0}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "query": the platform was not reached: Error: refused`) {
+		t.Fatalf("the failure text is seen through an extra member: %v", err)
+	}
+	// A text item whose text is not a string -- a number, null, a number
+	// the canonical form would carry as a string -- fails the check and the
+	// acquisition rather than being passed over or filled in.
+	for _, text := range []string{"0", "null", "0.5", "[]"} {
+		if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":`+text+`}]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "query": tools/call: a text item's text is not a string`) {
+			t.Fatalf("text %s: a text item that is not a string fails the check: %v", text, err)
+		}
+		if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), "a text item's text is not a string") {
+			t.Fatalf("text %s: and the acquisition: %v", text, err)
+		}
+	}
+	// The prefix is matched as written: a leading space on either side
+	// counts.
+	cfg.ProbeFailure = " Error:"
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":" Error: refused"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "the platform was not reached:  Error: refused") {
+		t.Fatalf("matched as written: %v", err)
+	}
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"Error: refused"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatalf("an answer without the space does not begin with the prefix: %v", err)
+	}
+}

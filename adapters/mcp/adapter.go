@@ -47,6 +47,18 @@ type Config struct {
 	Endpoint string
 	// Tools, when given, are the only tools a request may name.
 	Tools []string
+	// Probe, when given, is a tool a check calls once with no arguments
+	// to establish that the server reaches its platform -- a server that
+	// starts and lists its tools without a working connection answers the
+	// handshake all the same. The result is read for an error and
+	// discarded; nothing is minted from a check.
+	Probe string
+	// ProbeFailure, when given, is text a probe's answer begins with when
+	// the platform was not reached: a server that catches its own
+	// failure and answers it as ordinary text, isError false, says so
+	// only in the text, and the binding that pins the server knows what
+	// it says.
+	ProbeFailure string
 	// MaxOutput bounds the envelope in bytes.
 	MaxOutput int64
 }
@@ -290,6 +302,13 @@ type checkReport struct {
 	Server          serverIdentity  `json:"server"`
 	ProtocolVersion string          `json:"protocolVersion"`
 	Tools           []string        `json:"tools"`
+	Probe           *probeReport    `json:"probe,omitempty"`
+}
+
+// probeReport says which tool the check called and that it answered.
+type probeReport struct {
+	Tool     string `json:"tool"`
+	Answered bool   `json:"answered"`
 }
 
 // FailedCheck is the report of a check that did not succeed, for stdout
@@ -372,6 +391,40 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return finish(nil, fmt.Errorf("tool %q is allowed by the configuration but not offered by the server: %v", allowed, names))
 		}
 	}
+	var probe *probeReport
+	if cfg.Probe != "" {
+		// The probe is one of the tools this source may call, offered by
+		// the server, and it must answer without an error: a connection
+		// the server could not make is what it answers with.
+		if len(cfg.Tools) > 0 && !contains(cfg.Tools, cfg.Probe) {
+			return finish(nil, fmt.Errorf("probe %q is not one this source may call: %v", cfg.Probe, cfg.Tools))
+		}
+		if !contains(names, cfg.Probe) {
+			return finish(nil, fmt.Errorf("probe %q is not one the server offers: %v", cfg.Probe, names))
+		}
+		raw, err := rpc.call(ctx, "tools/call", map[string]any{"name": cfg.Probe, "arguments": map[string]any{}})
+		if err != nil {
+			return fail(err)
+		}
+		if int64(len(raw)) > cfg.MaxOutput {
+			return finish(nil, fmt.Errorf("the probe's result exceeds the output bound of %d bytes", cfg.MaxOutput))
+		}
+		if _, err := parseToolResult(raw); err != nil {
+			return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
+		}
+		if cfg.ProbeFailure != "" {
+			// On the answer as the server wrote it, not the canonical
+			// form, in which a number would have become a string.
+			text, failed, err := answersFailure(raw, cfg.ProbeFailure)
+			if err != nil {
+				return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
+			}
+			if failed {
+				return finish(nil, fmt.Errorf("probe %q: the platform was not reached: %s", cfg.Probe, text))
+			}
+		}
+		probe = &probeReport{Tool: cfg.Probe, Answered: true}
+	}
 	// Everything the server said of itself is redacted before it is
 	// reported, as every diagnostic is: a server echoes what it was given.
 	identity := srv.identity
@@ -388,6 +441,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		Server:          serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)},
 		ProtocolVersion: initialized.protocol,
 		Tools:           redacted,
+		Probe:           probe,
 	}})
 	if err != nil {
 		return finish(nil, err)
@@ -515,6 +569,14 @@ func parseToolResult(raw json.RawMessage) ([]byte, error) {
 		if typ, ok := itemMembers["type"]; !ok || len(typ) == 0 || typ[0] != '"' || json.Unmarshal(typ, &kind) != nil || kind == "" {
 			return nil, errors.New("tools/call: a content item without a type")
 		}
+		// A text item's text is a string in the form the server wrote:
+		// judged before any number was carried as text, and null is not
+		// a string whatever a decoder would fill in for it.
+		if kind == "text" {
+			if text, ok := itemMembers["text"]; !ok || len(text) == 0 || text[0] != '"' || !json.Valid(text) {
+				return nil, errors.New("tools/call: a text item's text is not a string")
+			}
+		}
 	}
 	if structured, ok := members["structuredContent"]; ok && !canon.IsObject(structured) {
 		return nil, errors.New("tools/call: structuredContent is not an object")
@@ -633,6 +695,41 @@ func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listed
 		tools = append(tools, listedTool{name: name, descriptor: tool})
 	}
 	return tools, next, nil
+}
+
+// answersFailure reports whether a tool result, isError or not, carries a
+// text item beginning with the failure text the binding named -- as
+// written, neither trimmed -- and that item's text. Items are read by
+// their exact member names: struct decoding would let a "Text" beside
+// "text" make the item unreadable and so passed over, and a text item
+// that cannot be read is an error rather than an answer.
+func answersFailure(result []byte, failure string) (text string, failed bool, err error) {
+	members, err := exactMembers(result)
+	if err != nil {
+		return "", false, errors.New("the answer is not an object")
+	}
+	var content []json.RawMessage
+	if json.Unmarshal(members["content"], &content) != nil {
+		return "", false, errors.New("the answer carries no content array")
+	}
+	for _, item := range content {
+		fields, err := exactMembers(item)
+		if err != nil {
+			return "", false, errors.New("a content item is not an object")
+		}
+		var kind string
+		if json.Unmarshal(fields["type"], &kind) != nil || kind != "text" {
+			continue
+		}
+		var body string
+		if raw, ok := fields["text"]; !ok || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &body) != nil {
+			return "", false, errors.New("a text item's text is not a string")
+		}
+		if strings.HasPrefix(body, failure) {
+			return body, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // textOf joins the text parts of a tool result's content, for an error

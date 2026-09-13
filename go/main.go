@@ -32,7 +32,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | keygen")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | connect | keygen")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -44,6 +44,8 @@ func main() {
 		os.Exit(cmdConform(os.Args[2:]))
 	case "serve":
 		os.Exit(cmdServe(os.Args[2:]))
+	case "connect":
+		os.Exit(cmdConnect(os.Args[2:]))
 	case "keygen":
 		os.Exit(cmdKeygen(os.Args[2:]))
 	default:
@@ -221,6 +223,11 @@ func loadSeed(path string) ([]byte, error) {
 			seed = decoded
 		}
 	}
+	// Judged here, where connect and serve both read it, so a seed that
+	// is not one is refused before adapters are run or a store is made.
+	if len(seed) != seedBytes {
+		return nil, fmt.Errorf("seed file does not hold a %d-byte seed (%d bytes after decoding)", seedBytes, len(seed))
+	}
 	return seed, nil
 }
 
@@ -263,6 +270,10 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	sources := deriveSources(cfg, bindings)
+	if err := preflightPaths(cfg.store, cfg.registry, cfg.decisionRecords); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "seed:", err)

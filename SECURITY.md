@@ -167,7 +167,10 @@ gateway's, and `serve` refuses to start rather than fall back to running the sou
 when it cannot switch: root may switch, and so may a process that is not root but holds
 `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` on Linux as file capabilities, holding nothing
 ambient or inheritable and nothing that reads past permissions, which is how the engine runs its
-signer as a user of its own; a process stripped of the capability to switch passes the startup
+signer as a user of its own. A source run as another user is started held to the kernel's
+`no_new_privs` on Linux, which it inherits and cannot clear, so executing the gateway binary — or
+any set-user-id file — grants it nothing; and the engine refuses to start when its binary carries
+file capabilities and is executable by anyone but its owner. A process stripped of the capability to switch passes the startup
 check only where capabilities cannot be read, and fails at its first acquisition, where the
 operating system's reason is reported. **A
 source's stdout is bounded** (`--source-max-output`, one mebibyte by default) and its stderr is
@@ -192,9 +195,9 @@ was given, can read what that user can read, including the seed; and a gateway t
 can read the files a source user holds. The separation is only as strong as the identities the
 operator gives the two sides. **`serve --config`** holds a configuration to both sides at once
 ([docs/design/engine-config.md](docs/design/engine-config.md)): every platform's adapters run as
-a user of their own that is neither root nor the signer nor another platform's, a credentials
-file must be owned by that user and readable by nobody else under directories nobody else can
-replace it in, a signer that is root must be accepted by name, and so must a host
+a user of their own that is neither root nor the signer nor another platform's, each credentials
+file — one per operation — must be owned by that user and readable by nobody else under
+directories nobody else can replace it in, a signer that is root must be accepted by name, and so must a host
 container-runtime socket an adapter could reach; a non-root signer may hold no capability that
 reads past permissions, in its effective or permitted set, and none that is ambient or
 inheritable, since either could cross into an adapter and let it switch back — the three it
@@ -204,7 +207,11 @@ the signer as written: a signer holding `CAP_SETUID` can assume any user, so a c
 signer is not held out of credentials by the configuration — that takes a privileged launcher
 separate from the signer, which is the engine image's job. The checks hold the configuration
 to what the filesystem and the kernel report; an access-control list or a socket at another
-path is not seen.
+path is not seen. **`connect`** holds the configuration it would write to the same checks
+before it runs a platform's adapters once in check mode — as the platform's user, in the
+environment `serve` would give them — and writes the entry only when they answered; the
+report an adapter writes crosses to the operator, redacted by the adapter as its diagnostics
+are, and nothing is signed from it.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being

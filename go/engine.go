@@ -9,9 +9,11 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // The engine's one configuration file (docs/design/engine-config.md): it
@@ -42,8 +44,8 @@ type engineConfig struct {
 
 type platformConfig struct {
 	name        string
-	binding     string // name@sha256:hex
-	credentials string // a path, never a value
+	binding     string            // name@sha256:hex
+	credentials map[string]string // by operation (history, live): a path, never a value
 	user        string
 	uid         int    // resolved from the user database
 	home        string // the user's home, from the user database
@@ -61,10 +63,16 @@ type binding struct {
 }
 
 type operation struct {
-	shape   string
-	image   string
-	tools   []string
-	licence string
+	shape string
+	image string
+	args  []string // the server's own arguments inside its container (mcp)
+	tools []string
+	probe string // a tool a check calls once to reach the platform (mcp)
+	// probeFailure is text the probe's answer begins with when the
+	// platform was not reached, for a server that answers its own failure
+	// as ordinary text.
+	probeFailure string
+	licence      string
 }
 
 // engineHost is what the engine asks the operating system while it holds
@@ -77,6 +85,21 @@ type engineHost struct {
 	fileOwner    func(path string) (fileOwnership, error)
 	readLink     func(path string) (string, error) // where a symbolic link points
 	account      func(name string) (uid int, home string, err error)
+	// switching is why this process could not run the sources as the
+	// users they name -- the requirement serve holds every source to
+	// at start (requireUserSwitching) -- or nil.
+	switching func(sources map[string]sourceSpec) error
+	// executable is this binary as the kernel sees it (exeFacts).
+	executable func() (exeFacts, error)
+}
+
+// exeFacts is what the engine knows about its own binary: its path, its
+// permission bits, and whether it carries file capabilities, which make it
+// a file that grants privilege to whoever executes it.
+type exeFacts struct {
+	path         string
+	mode         os.FileMode
+	capabilities bool
 }
 
 type fileOwnership struct {
@@ -182,14 +205,14 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	if err != nil {
 		return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 	}
-	if len(platforms.names) == 0 {
-		return engineConfig{}, errors.New("engine configuration: platforms names no platform")
-	}
+	// An empty platforms object parses: it is what a configuration looks
+	// like before its first `connect`, and serving it is refused where the
+	// configuration is held to what it must name (engineRefusals).
 	names := append([]string(nil), platforms.names...)
 	sort.Strings(names)
 	for _, name := range names {
-		if strings.ContainsAny(name, "/=\x00") || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
-			return engineConfig{}, fmt.Errorf("engine configuration: platform name %q may not be empty, padded, or contain / or =", name)
+		if err := validPlatformName(name); err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		raw, _ := platforms.get(name)
 		p, err := requireObject(raw, "platform "+name)
@@ -203,16 +226,34 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if pc.binding, err = requireString(p, "binding"); err != nil || !isBindingRef(pc.binding) {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: binding must be name@sha256:<64 hex>, the name a catalog file's without / or \\", name)
 		}
+		// One credentials file per operation: a connector's configuration
+		// and a server's environment are different files, and a binding's
+		// operations each name theirs. Which operations must be named is
+		// the binding's to say (resolveEngineConfig).
 		credentialsValue, _ := p.get("credentials")
 		credentials, err := requireObject(credentialsValue, "credentials")
 		if err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
 		}
-		if err := exactlyMembers(credentials, map[string]bool{"file": true}, "platform "+name+" credentials"); err != nil {
+		if err := exactlyMembers(credentials, map[string]bool{"history": false, "live": false}, "platform "+name+" credentials"); err != nil {
 			return engineConfig{}, err
 		}
-		if pc.credentials, err = requireAbsolutePath(credentials, "file"); err != nil {
-			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials.%v", name, err)
+		if len(credentials.names) == 0 {
+			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials names no operation", name)
+		}
+		pc.credentials = map[string]string{}
+		for _, op := range credentials.names {
+			raw, _ := credentials.get(op)
+			entry, err := requireObject(raw, "credentials."+op)
+			if err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
+			}
+			if err := exactlyMembers(entry, map[string]bool{"file": true}, "platform "+name+" credentials."+op); err != nil {
+				return engineConfig{}, err
+			}
+			if pc.credentials[op], err = requireAbsolutePath(entry, "file"); err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials.%s.%v", name, op, err)
+			}
 		}
 		if pc.user, err = requireString(p, "user"); err != nil || pc.user == "" {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: user must name the OS user its adapters run as; an adapter running as the signer could read the seed", name)
@@ -253,6 +294,31 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 func requireAbsolutePath(obj *vObject, name string) (string, error) {
 	s, err := requireString(obj, name)
 	if err != nil || s == "" {
+		return "", fmt.Errorf("%s must be a non-empty absolute path", name)
+	}
+	return cleanAbsolutePath(name, s)
+}
+
+// validPlatformName is why a platform name cannot be one, or nil: it is a
+// source name's first segment, an environment value and a word an operator
+// reads, so it is neither empty nor padded, holds no separator, and is
+// made of graphic characters -- no control character, no line break, no
+// escape that a terminal would act on.
+func validPlatformName(name string) error {
+	if strings.ContainsAny(name, "/=\x00") || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
+		return fmt.Errorf("platform name %q may not be empty, padded, or contain / or =", name)
+	}
+	for _, r := range name {
+		if !unicode.IsGraphic(r) {
+			return fmt.Errorf("platform name %q may not contain a control or other non-graphic character", name)
+		}
+	}
+	return nil
+}
+
+// cleanAbsolutePath holds a configured path to being absolute and clean.
+func cleanAbsolutePath(name, s string) (string, error) {
+	if s == "" {
 		return "", fmt.Errorf("%s must be a non-empty absolute path", name)
 	}
 	if !filepath.IsAbs(s) {
@@ -414,7 +480,7 @@ func parseOperation(op *vObject, name string) (operation, error) {
 			return o, fmt.Errorf("operation %s: image must be pinned, name[:tag]@sha256:<64 hex>", name)
 		}
 	case "mcp":
-		if err := exactlyMembers(op, map[string]bool{"shape": true, "server": true, "licence": true, "tools": true}, "operation "+name); err != nil {
+		if err := exactlyMembers(op, map[string]bool{"shape": true, "server": true, "licence": true, "tools": true, "probe": false}, "operation "+name); err != nil {
 			return o, err
 		}
 		serverValue, _ := op.get("server")
@@ -422,11 +488,28 @@ func parseOperation(op *vObject, name string) (operation, error) {
 		if err != nil {
 			return o, fmt.Errorf("operation %s: %v", name, err)
 		}
-		if err := exactlyMembers(server, map[string]bool{"image": true}, "operation "+name+" server"); err != nil {
+		if err := exactlyMembers(server, map[string]bool{"image": true, "args": false}, "operation "+name+" server"); err != nil {
 			return o, err
 		}
 		if o.image, err = requireString(server, "image"); err != nil || !isPinnedImage(o.image) {
 			return o, fmt.Errorf("operation %s: server.image must be pinned, name[:tag]@sha256:<64 hex>", name)
+		}
+		if argsValue, present := server.get("args"); present {
+			// The server's own arguments, handed to the adapter after "--"
+			// and by it to the runtime after the image: each one word as
+			// written, since the engine builds the command line and splits
+			// nothing.
+			args, ok := argsValue.(vArray)
+			if !ok || len(args) == 0 {
+				return o, fmt.Errorf("operation %s: server.args, when present, is a non-empty array of the server's arguments", name)
+			}
+			for _, a := range args {
+				s, ok := a.(vString)
+				if !ok || s == "" || strings.ContainsAny(string(s), "\n\x00") {
+					return o, fmt.Errorf("operation %s: server.args must be non-empty strings without newlines", name)
+				}
+				o.args = append(o.args, string(s))
+			}
 		}
 		toolsValue, _ := op.get("tools")
 		tools, ok := toolsValue.(vArray)
@@ -440,6 +523,38 @@ func parseOperation(op *vObject, name string) (operation, error) {
 			}
 			o.tools = append(o.tools, string(s))
 		}
+		// The probe is the tool a check calls once to establish that the
+		// server reaches its platform: one of the tools the operation may
+		// call, so a check calls nothing an acquisition could not.
+		if probeValue, present := op.get("probe"); present {
+			probe, err := requireObject(probeValue, "probe")
+			if err != nil {
+				return o, fmt.Errorf("operation %s: probe, when present, is an object naming a tool", name)
+			}
+			if err := exactlyMembers(probe, map[string]bool{"tool": true, "failure": false}, "operation "+name+" probe"); err != nil {
+				return o, err
+			}
+			if o.probe, err = requireString(probe, "tool"); err != nil || o.probe == "" {
+				return o, fmt.Errorf("operation %s: probe.tool names a tool", name)
+			}
+			found := false
+			for _, t := range o.tools {
+				found = found || t == o.probe
+			}
+			if !found {
+				return o, fmt.Errorf("operation %s: probe %q is not one of its tools", name, o.probe)
+			}
+			if _, present := probe.get("failure"); present {
+				if o.probeFailure, err = requireString(probe, "failure"); err != nil || o.probeFailure == "" {
+					return o, fmt.Errorf("operation %s: probe.failure, when present, is the text a failed answer begins with", name)
+				}
+				// Matched as written on both sides; a prefix that begins or
+				// ends with whitespace is one the operator did not mean.
+				if strings.TrimSpace(o.probeFailure) != o.probeFailure {
+					return o, fmt.Errorf("operation %s: probe.failure may not begin or end with whitespace", name)
+				}
+			}
+		}
 	case "http":
 		return o, fmt.Errorf("operation %s: the http shape is not shipped by this release", name)
 	default:
@@ -448,9 +563,15 @@ func parseOperation(op *vObject, name string) (operation, error) {
 	return o, nil
 }
 
+// imageReference is the shape of an image's name[:tag], as the adapters
+// hold it: registry with an optional port, path components and a tag,
+// each beginning with a letter or digit, so nothing a binding names as an
+// image can be read by a runtime as an option.
+var imageReference = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(?::[0-9]+)?(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
+
 func isPinnedImage(ref string) bool {
 	name, digest, ok := strings.Cut(ref, "@")
-	return ok && name != "" && isDigest(digest)
+	return ok && imageReference.MatchString(name) && isDigest(digest)
 }
 
 // deriveSources turns platforms and their bindings into the sources `serve`
@@ -471,21 +592,142 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		b := bindings[p.name]
 		env := append([]string{"HOME=" + p.home}, p.environment...)
 		if b.history != nil {
-			argv := []string{adapter("adapter-airbyte"), "--image", b.history.image, "--credentials", p.credentials, "--runtime", cfg.runtime}
+			// Every flag and its value as one word, flag=value: a value that
+			// is "--" would otherwise be the delimiter the adapter splits its
+			// line at, and a tool, an endpoint or a runtime can be so named.
+			argv := []string{adapter("adapter-airbyte"), "--image=" + b.history.image, "--credentials=" + p.credentials["history"], "--runtime=" + cfg.runtime}
 			if p.endpoint != "" {
-				argv = append(argv, "--endpoint", p.endpoint)
+				argv = append(argv, "--endpoint="+p.endpoint)
 			}
 			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
 		}
 		if b.live != nil {
-			argv := []string{adapter("adapter-mcp"), "--image", b.live.image, "--credentials", p.credentials, "--runtime", cfg.runtime, "--tools", strings.Join(b.live.tools, ",")}
+			argv := []string{adapter("adapter-mcp"), "--image=" + b.live.image, "--credentials=" + p.credentials["live"], "--runtime=" + cfg.runtime, "--tools=" + strings.Join(b.live.tools, ",")}
 			if p.endpoint != "" {
-				argv = append(argv, "--endpoint", p.endpoint)
+				argv = append(argv, "--endpoint="+p.endpoint)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp"}
+			// Each as one word, flag=value: a value of "--" as its own word
+			// would be the delimiter the adapter splits its line at.
+			var check []string
+			if b.live.probe != "" {
+				check = []string{"--probe=" + b.live.probe}
+				if b.live.probeFailure != "" {
+					check = append(check, "--probe-failure="+b.live.probeFailure)
+				}
+			}
+			if len(b.live.args) > 0 {
+				argv = append(append(argv, "--"), b.live.args...)
+			}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", check: check}
 		}
 	}
 	return sources
+}
+
+// preflightPaths is why serve could not make what the configuration
+// names, or nil: the store must be a directory or absent with a parent to
+// make it in, the registry a regular file or absent likewise, and the
+// decision-record directory a directory or absent likewise; a link to
+// nothing, or a lookup that fails for any reason but absence, is refused
+// rather than taken for absence, since making a directory over a dangling
+// link fails; and where serve must make or write something, this process
+// must be allowed to, judged as the kernel would (canWrite). Connect judges
+// the same before any adapter is run, so it does not succeed where the
+// next start would fail. Nothing is made here.
+func preflightPaths(store, registry, decisionRecords string) error {
+	// present is what is at a path -- the target of a link, when it is
+	// one that leads somewhere -- or nil for absence; anything else that
+	// goes wrong on the way is an error.
+	present := func(name, path string) (os.FileInfo, error) {
+		entry, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			return nil, nil
+		case err != nil:
+			return nil, fmt.Errorf("%s %s: %v", name, path, err)
+		case entry.Mode()&os.ModeSymlink == 0:
+			return entry, nil
+		}
+		target, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s is a link that leads nowhere: %v", name, path, err)
+		}
+		return target, nil
+	}
+	// makeable holds a path that must be made to a parent that is there
+	// and that this process may write into.
+	makeable := func(name, path string) error {
+		parent, err := present(name, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		if parent == nil || !parent.IsDir() {
+			return fmt.Errorf("%s %s cannot be made: its directory is not there", name, path)
+		}
+		if !canWrite(filepath.Dir(path)) {
+			return fmt.Errorf("%s %s cannot be made: this process may not write in its directory", name, path)
+		}
+		return nil
+	}
+	info, err := present("store", store)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info == nil:
+		if err := makeable("store", store); err != nil {
+			return err
+		}
+	case !info.IsDir():
+		return fmt.Errorf("store %s is not a directory", store)
+	default:
+		// The store's own directories, which serve makes on start and
+		// writes into: a file or a dangling link in the place of either
+		// is a start that fails, and so is one this process may not
+		// write in, or may not make.
+		for _, child := range []string{"artifacts", "receipts"} {
+			path := filepath.Join(store, child)
+			info, err := present("store", path)
+			if err != nil {
+				return err
+			}
+			switch {
+			case info == nil:
+				if !canWrite(store) {
+					return fmt.Errorf("store %s: %s cannot be made: this process may not write in the store", store, child)
+				}
+			case !info.IsDir():
+				return fmt.Errorf("store %s: %s is not a directory", store, child)
+			case !canWrite(path):
+				return fmt.Errorf("store %s: this process may not write in %s", store, child)
+			}
+		}
+	}
+	info, err = present("registry", registry)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info == nil:
+		if err := makeable("registry", registry); err != nil {
+			return err
+		}
+	case !info.Mode().IsRegular():
+		return fmt.Errorf("registry %s is not a regular file", registry)
+	case !canWrite(registry):
+		return fmt.Errorf("registry %s: this process may not write it", registry)
+	}
+	info, err = present("decisionRecords", decisionRecords)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info == nil:
+		return makeable("decisionRecords", decisionRecords)
+	case !info.IsDir():
+		return fmt.Errorf("decisionRecords %s is not a directory", decisionRecords)
+	}
+	return nil
 }
 
 // hostRuntimeSockets are where a host container runtime listens when it is
@@ -548,10 +790,14 @@ func capabilityRefusal(sets capabilitySets) error {
 // platform's; no credentials file, and no directory on the way to one, can
 // be read or replaced by anyone but its owner and root; the signer holds no
 // capability that reads past permissions and none an adapter could take
-// up. A signer that holds CAP_SETUID can assume any
+// up, and its binary, where it carries file capabilities, is executable by
+// nobody else. A signer that holds CAP_SETUID can assume any
 // user, so a compromised signer is not held out of credentials by this;
 // the design note says which separation would.
 func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
+	if len(cfg.platforms) == 0 {
+		return nil, errors.New("engine configuration: platforms names no platform; `gateway connect` adds one")
+	}
 	var statements []string
 	if host.euid == 0 {
 		if !cfg.rootSigner {
@@ -561,6 +807,21 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 	} else if host.capabilities != nil {
 		if err := capabilityRefusal(host.capabilities()); err != nil {
 			return nil, err
+		}
+	}
+	// The gateway binary itself, when it carries file capabilities: a
+	// process that executes it takes them up, so it must be executable by
+	// its owner alone. Every switched source is held to no_new_privs
+	// besides (sourceGroup.start), which denies the same to anything the
+	// engine started; this holds it against a platform user's process
+	// that the engine did not start.
+	if host.executable != nil {
+		exe, err := host.executable()
+		if err != nil {
+			return nil, fmt.Errorf("the gateway binary: %v", err)
+		}
+		if exe.capabilities && exe.mode&0o011 != 0 {
+			return nil, fmt.Errorf("the gateway binary %s carries file capabilities and is executable by others (mode %04o): a platform user's process that executed it would take them up; make it executable by the signer alone (chmod 0700)", exe.path, exe.mode)
 		}
 	}
 	// The seed's own file is held by loadSeed; the directories on the way
@@ -585,28 +846,36 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			return nil, fmt.Errorf("platform %s: user %s is also platform %s's; each platform's adapters run as a user of their own, or one could read the other's credentials", p.name, p.user, other)
 		}
 		seen[uid] = p.name
-		// The directories first, and the path used from here on is the
-		// resolved one, so the file judged is the file the adapter opens.
-		credentials, err := trustedAncestors(p.credentials, uid, host)
-		if err != nil {
-			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
+		// Every credentials file, in operation order. The directories
+		// first, and the path used from here on is the resolved one, so
+		// the file judged is the file the adapter opens.
+		ops := make([]string, 0, len(p.credentials))
+		for op := range p.credentials {
+			ops = append(ops, op)
 		}
-		p.credentials = credentials
-		owner, err := host.fileOwner(p.credentials)
-		if err != nil {
-			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
-		}
-		if owner.link {
-			return nil, fmt.Errorf("platform %s: credentials %s is a symbolic link", p.name, p.credentials)
-		}
-		if owner.dir {
-			return nil, fmt.Errorf("platform %s: credentials %s is a directory", p.name, p.credentials)
-		}
-		if owner.uid != uid {
-			return nil, fmt.Errorf("platform %s: credentials %s must be owned by %s, the user its adapters run as", p.name, p.credentials, p.user)
-		}
-		if owner.mode&0o077 != 0 {
-			return nil, fmt.Errorf("platform %s: credentials %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, p.credentials, owner.mode, p.credentials)
+		sort.Strings(ops)
+		for _, op := range ops {
+			credentials, err := trustedAncestors(p.credentials[op], uid, host)
+			if err != nil {
+				return nil, fmt.Errorf("platform %s: credentials.%s: %v", p.name, op, err)
+			}
+			p.credentials[op] = credentials
+			owner, err := host.fileOwner(credentials)
+			if err != nil {
+				return nil, fmt.Errorf("platform %s: credentials.%s: %v", p.name, op, err)
+			}
+			if owner.link {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s is a symbolic link", p.name, op, credentials)
+			}
+			if owner.dir {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s is a directory", p.name, op, credentials)
+			}
+			if owner.uid != uid {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s must be owned by %s, the user its adapters run as", p.name, op, credentials, p.user)
+			}
+			if owner.mode&0o077 != 0 {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, op, credentials, owner.mode, credentials)
+			}
 		}
 	}
 	if host.sockets != nil {
@@ -768,21 +1037,66 @@ func loadEngineConfig(path string, account func(name string) (int, string, error
 	if err != nil {
 		return engineConfig{}, nil, err
 	}
+	bindings, err := resolveEngineConfig(&cfg, account)
+	if err != nil {
+		return engineConfig{}, nil, err
+	}
+	return cfg, bindings, nil
+}
+
+// resolveEngineConfig looks up every platform's user and loads every
+// binding a parsed configuration pins.
+func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, string, error)) (map[string]binding, error) {
 	bindings := map[string]binding{}
 	for i := range cfg.platforms {
 		p := &cfg.platforms[i]
 		uid, home, err := account(p.user)
 		if err != nil {
-			return engineConfig{}, nil, fmt.Errorf("platform %s: %v", p.name, err)
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		p.uid, p.home = uid, home
 		b, err := loadBinding(cfg.catalog, p.binding)
 		if err != nil {
-			return engineConfig{}, nil, fmt.Errorf("platform %s: %v", p.name, err)
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		if err := credentialsMatch(p.credentials, b); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		bindings[p.name] = b
 	}
-	return cfg, bindings, nil
+	return bindings, nil
+}
+
+// bindingOperations are the operations a binding derives sources for, in
+// order.
+func bindingOperations(b binding) []string {
+	var ops []string
+	if b.history != nil {
+		ops = append(ops, "history")
+	}
+	if b.live != nil {
+		ops = append(ops, "live")
+	}
+	return ops
+}
+
+// credentialsMatch holds a platform's credentials to its binding: a file
+// for every operation the binding offers, and none for an operation it
+// does not.
+func credentialsMatch(credentials map[string]string, b binding) error {
+	offered := map[string]bool{}
+	for _, op := range bindingOperations(b) {
+		offered[op] = true
+		if credentials[op] == "" {
+			return fmt.Errorf("the binding offers %s but credentials name no %s file", op, op)
+		}
+	}
+	for op := range credentials {
+		if !offered[op] {
+			return fmt.Errorf("credentials name a %s file but the binding offers no %s", op, op)
+		}
+	}
+	return nil
 }
 
 // readBounded reads a regular file of at most limit bytes through one

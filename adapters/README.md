@@ -186,7 +186,15 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   "protocolVersion", "tools"}}` — calling nothing and reading no stdin. A tool named by
   `--tools` that the server does not offer fails the check, so a binding that names a tool
   the pinned server lacks is found out when the platform is connected, not at the first
-  acquisition. What the server said of itself — its name and version, its tools' names — is
+  acquisition. A server that starts and lists its tools without a working connection to its
+  platform answers the handshake all the same, so `--probe TOOL` names a tool the check calls
+  once with no arguments — one of `--tools`, offered by the server — and requires it to answer
+  without an error; its result is discarded, and the report says which tool answered. A server
+  that catches its own failure and answers it as ordinary text, `isError` false, says so only
+  in the text, and `--probe-failure TEXT` names what such an answer begins with — as written, neither side
+  trimmed — so that answer fails the check too; the binding that pins the server is where that
+  text is known. A text item the check cannot read by its exact members fails the check as
+  well, rather than being passed over. What the server said of itself — its name and version, its tools' names — is
   redacted before it is reported, as every diagnostic is. The report carries `"status":
   "succeeded"`; a check that did not succeed writes `{"check": {"status": "failed",
   "message"}}` on stdout beside its exit status, so a caller reads one shape either way. The
@@ -222,7 +230,8 @@ adapter — for roots, for sampling — is answered "method not found", since th
 serves nothing; a notification, and a response to an id this adapter never used, are passed
 over. A tool result is held to its shape — a `content` array of typed items, an object for
 `structuredContent`, a boolean for `isError` — by exact member names; one that answers
-`isError` fails the acquisition with its text, redacted. A line on the server's stdout that
+`isError` fails the acquisition with its text, redacted; a text item whose `text` is not a
+string as the server wrote it — null, or a number — is malformed and fails too. A line on the server's stdout that
 is not a JSON-RPC message is a protocol violation and fails the acquisition, as the stdio
 transport reserves stdout for messages. Every message, and every tool descriptor, is read by
 its members' exact names with a duplicate refused, so `RESULT` cannot stand in for `result`

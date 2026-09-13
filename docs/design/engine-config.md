@@ -28,18 +28,21 @@ and spawns what it needs. Nothing in the file is a command line, and nothing in 
   "platforms": {
     "finance-warehouse": {
       "binding": "postgres@sha256:…",
-      "credentials": { "file": "/run/secrets/finance-warehouse" },
+      "credentials": {
+        "history": { "file": "/run/secrets/finance-warehouse-connector" },
+        "live": { "file": "/run/secrets/finance-warehouse-env" }
+      },
       "user": "engine-finance",
       "endpoint": "warehouse.internal:5432"
     },
     "policy-documents": {
       "binding": "s3-compatible@sha256:…",
-      "credentials": { "file": "/run/secrets/policy-documents" },
+      "credentials": { "history": { "file": "/run/secrets/policy-documents" } },
       "user": "engine-documents"
     },
     "service-desk": {
       "binding": "jira@sha256:…",
-      "credentials": { "file": "/run/secrets/service-desk" },
+      "credentials": { "live": { "file": "/run/secrets/service-desk" } },
       "user": "engine-desk",
       "write": true
     }
@@ -81,7 +84,10 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   claim.
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
   a receipt will carry — to a **binding** from the catalog, pinned by digest, to where its
-  credentials are, and to the OS **user** its adapters run as, which must exist, must not be
+  credentials are — **one file per operation** the binding offers, `history` and `live`, since
+  a connector's configuration and a server's environment are different files in different
+  forms, and a file for an operation the binding does not offer, or none for one it does, is
+  refused — and to the OS **user** its adapters run as, which must exist, must not be
   root or the signer, and must be no other platform's. `endpoint` is the host the platform is
   reached at as the operator names it, recorded as the receipt's endpoint; the adapters do not
   read it from the credentials. `environment` is an object of string values the platform's
@@ -101,8 +107,12 @@ way:
 
 | Source | Adapter | Command line |
 |---|---|---|
-| `<platform>/history` | `adapter-airbyte` | `--image <history.image> --credentials <file> --runtime <runtime> [--endpoint <endpoint>]` |
-| `<platform>/live` | `adapter-mcp` | `--image <live.server.image> --credentials <file> --runtime <runtime> --tools <live.tools, comma-joined> [--endpoint <endpoint>]` |
+| `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
+| `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
+
+Every flag and its value are one word, `flag=value`: a value that is `--` on its own would be
+the delimiter the adapter splits its line at, and a tool, an endpoint or a runtime can be so
+named.
 
 A binding's `write` operation derives nothing: the executor that performs writes does not
 exist yet, and a source that could be asked to write would be a read that writes.
@@ -142,6 +152,16 @@ engine refuses to start under a configuration the isolation claim of
   per thread and cannot be verified for every thread the engine spawns from: the three
   capabilities are held as file capabilities on the gateway binary, which put them in the
   permitted and effective sets and nowhere else, and anything else is refused;
+- the **gateway binary itself carrying file capabilities while executable by others**: a
+  platform user's process that executed it would take them up and switch to the signer; it must
+  be executable by its owner alone (the image gives it mode 0700). Besides, every source that
+  runs as a platform's user is started held to the kernel's `no_new_privs`, which it inherits
+  and can never clear: an `execve` then grants it no privilege it does not have — no file
+  capability, no set-user-id bit — so an adapter cannot regain the signer's capabilities by
+  executing the gateway binary, nor anything else. The limit that buys: a source that must
+  itself gain privilege on exec, such as a rootless container runtime that needs `newuidmap`,
+  cannot run as a switched source; the runtime an adapter uses is one that listens on a socket
+  the platform user may reach;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
   the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
@@ -193,8 +213,9 @@ running engine reaches:
     },
     "live": {
       "shape": "mcp",
-      "server": { "image": "…/mcp-postgres@sha256:…" },
+      "server": { "image": "…/mcp-postgres@sha256:…", "args": ["--access-mode=restricted"] },
       "tools": ["query"],
+      "probe": { "tool": "query", "failure": "Error:" },
       "licence": "MIT"
     }
   }
@@ -203,7 +224,15 @@ running engine reaches:
 
 One binding per platform; one entry per operation it supports — `history`, `live`, `write` —
 each naming its shape, the pinned artifact that serves it, the tools it may call, and the
-licence of the artifact it pulls. A restriction of streams for the history operation is not yet
+licence of the artifact it pulls. An `mcp` entry's `server.args`, when present, are the
+server's own arguments inside its container — the mode a server runs in, say — each one word
+as written: the engine builds the adapter's command line and splits nothing, and the adapter
+hands them to the runtime after the image. Its `probe`, when present, is `{"tool", "failure"?}`: `tool` is one of its `tools`
+that a check calls once with no arguments — a server that starts and lists its tools without a
+working connection to its platform answers the handshake all the same, and the probe is what
+establishes the connection — and `failure`, when present, is the text such an answer begins
+with for a server that catches its own failure and answers it as ordinary text, `isError`
+false; the result is discarded either way. A restriction of streams for the history operation is not yet
 applied at acquisition, so a binding may not declare one: a restriction accepted and not
 applied would read as applied. `history` is served by the `airbyte` shape and `live`
 and `write` by the `mcp` shape; the `http` shape is not shipped by this release, and a binding
@@ -225,14 +254,56 @@ is fetched both ways and must derive to byte-identical canonical facts.
 ## `connect`
 
 ```
-engine connect service-desk --binding jira --credentials-file /run/secrets/service-desk
+gateway connect --config engine.json service-desk --binding jira \
+  --credentials-file live=/run/secrets/service-desk --user engine-service-desk \
+  [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace]
 ```
 
-writes the platform entry, resolves the binding's digest from the catalog, starts the adapter
-once in check mode with the credentials reference, and reports what the platform answered —
-without acquiring anything and without minting a receipt. It refuses a binding that is not in
-the catalog, and it refuses to overwrite an existing entry unless told to. The entry is written
-only when the check succeeds; a platform that cannot be reached is not silently configured.
+writes the platform entry — the binding pinned by the digest of the catalog file as it is
+now, a credentials path per operation as written (`--credentials-file history=… live=…`,
+exactly the operations the binding offers), the user, and what else was given; the platform
+may stand anywhere among the flags — and it writes nothing until two things have held. First, the configuration as it would be, with the entry
+in place, passes every refusal `serve` applies (the platforms it already names included, so a
+pin the catalog no longer digests to is found here and not at the next start): the user is
+neither root nor the signer nor another platform's, the credentials file is that user's alone
+under directories nobody else can replace it in, and so on through the list above — and
+what `serve` judges before it starts holds too: the store, registry and decision-record
+paths are what it could make or write (a link to nothing in the place of one is not
+absence), and every platform's user, the existing ones included, is one this process can
+switch to. Second, each of the platform's derived sources is run once in check mode, as the platform's user, in
+the environment `serve` would give it: `adapter-airbyte --check` runs the connector's own
+`check` with the credentials; `adapter-mcp --check` starts the server, completes the handshake
+and lists its tools, failing when a tool the binding names is not offered, and calls the
+binding's `probe` once when it names one. What each answered
+is printed, one line per operation; the first that cannot answer ends the connect with the
+adapter's reason. Nothing is acquired and no receipt is minted. An image the runtime does not
+hold yet is pulled during the check, which is why a check is given five minutes where an
+acquisition has twenty seconds.
+
+It refuses a binding that is not in the catalog, a platform already configured unless
+`--replace` is given — and with it the entry replaced is not resolved, since its pin may be
+what is being repaired, while every other platform is — a configuration path that is a symbolic
+link, and a configuration that with the entry would exceed the size `serve` reads, judged
+before any check runs. The file's directory is held open from the first read to the rename, so
+what is read, written beside it and put in place is in that directory whatever a path component
+is swapped for meanwhile; one connect at a time holds `<file>.lock` beside it, and a second
+refuses rather than waits — a lock already there is trusted only as a regular file owned by
+root, the connect's user or the configuration's owner, since in a sticky directory another
+user's file can be unlinked by that user and replaced; the file is put in place only if, read again just before the rename, it
+still holds what the checks were run against — which holds against another connect, since
+one takes the lock, while an editor that does not is not held out, and its save in the
+instant between that read and the rename would be written over; the new file is written in
+a directory of the connect's own beside the configuration, so no other user can swap it
+before the rename, and it keeps the old one's mode and owner, set through the open
+descriptor, or is not put in place; and the seed, the store, the registry and the decision-record directory are judged as
+`serve` judges them before any adapter is run — the seed a seed, the store a directory or
+absent with a directory to make it in, the registry a regular file or absent likewise — so a
+connect does not succeed where the next start would refuse. The file is rewritten whole, in the engine's own form —
+members in canonical order, indented — and put in place by a rename, so a reader sees the old
+file or the new and never a partial one. Every value written is valid UTF-8, since the file
+is JSON; a path that is not is refused rather than written as something else. A configuration
+with an empty `platforms` object is what the file looks like before its first `connect`; it
+parses, and `serve` refuses to start on it.
 
 ## What the file is not
 
