@@ -289,3 +289,36 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func (b *boundedBuffer) String() string { return string(b.buf) }
+
+// Image is a digest-pinned image reference taken apart: what runs is then
+// what a receipt names, not whatever a tag resolved to at pull time.
+type Image struct{ Name, Version, Digest string }
+
+// ParseImage requires name[:tag]@sha256:<64 hex>.
+func ParseImage(ref string) (Image, error) {
+	name, digest, ok := strings.Cut(ref, "@")
+	if !ok || !isDigest(digest) {
+		return Image{}, fmt.Errorf("image %q must be pinned: name[:tag]@sha256:<64 hex>", ref)
+	}
+	version := ""
+	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {
+		version, name = name[i+1:], name[:i]
+	}
+	if name == "" {
+		return Image{}, fmt.Errorf("image %q has no name", ref)
+	}
+	return Image{Name: name, Version: version, Digest: digest}, nil
+}
+
+func isDigest(s string) bool {
+	h, ok := strings.CutPrefix(s, "sha256:")
+	if !ok || len(h) != 64 {
+		return false
+	}
+	for _, c := range h {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}

@@ -300,3 +300,16 @@ func IsObject(raw json.RawMessage) bool {
 	_, ok := ObjectMembers(raw)
 	return ok
 }
+
+// EncodeJSON marshals without HTML escaping and without a trailing newline:
+// ordinary JSON for an envelope or a statement, which the gateway
+// canonicalizes itself.
+func EncodeJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}

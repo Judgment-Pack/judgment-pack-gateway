@@ -109,3 +109,62 @@ Tests run the adapter against a stand-in for the container runtime
 (`internal/fakeruntime`), so no runtime is needed to test it and none is used in CI;
 the adapter's canonicalizer answers to the same frozen vectors as the core's
 (`corpus/canon.json`), read from disk and never linked.
+
+## adapter-mcp
+
+A client of a [Model Context Protocol](https://modelcontextprotocol.io) server reached over
+stdio — the servers vendors now publish for their own systems — that calls **one tool** per
+acquisition: the tool's whole result as the result, and the acquisition as the adapter
+recorded it. Live reads at decision time; writes are the executor's, later, and not this
+adapter's.
+
+```
+gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
+  --source live='adapter-mcp --image ghcr.io/example/mcp-postgres:2.1@sha256:… --credentials /run/secrets/warehouse-env --endpoint warehouse.internal:5432 --tools query' \
+  --source-shape live=mcp \
+  --source-env live=HOME
+```
+
+- `--image` runs a pinned server image with stdin attached; `--command 'CMD ARGS'` runs a
+  local server instead, for a server installed beside the gateway. Exactly one of the two.
+- `--credentials` is a JSON object of strings that become the server's environment — a
+  token, a connection string — and nothing else is added: a container gets them through an
+  env file in its private mount; a command gets them beside the adapter's own environment,
+  which is what the operator declared and what a launcher like `npx` needs. A value with a
+  newline cannot be carried and is refused.
+- `--tools` names the only tools a request may call; a request outside it is refused before
+  any server starts.
+
+The request, as canonical arguments on stdin:
+
+```json
+{"tool": "query", "arguments": {"sql": "select id, status from decisions where id > 100"}}
+```
+
+What the envelope carries, and so what the receipt records:
+
+| Member | From |
+|---|---|
+| `adapter` | the pinned image: name, tag, digest; for a command, the command as configured, the version the server reports of itself, and the digest of the executable |
+| `endpoint` | `--endpoint`, or `null` |
+| `statement` | the call — tool and arguments — which the gateway commits to under a salt |
+| `snapshot` | `null`: the protocol offers no bookmark |
+| `peerIdentity` | `null`: a server over stdio establishes no transport identity |
+| `schema` | the digest of the tool's descriptor as the server lists it, canonicalized per §1.1 with any non-integer number carried as its decimal text |
+| `upstreamToken` | `null` |
+| `observedAt` | when the tool's answer was read |
+| `result` | the tool's whole result — content, structured content — carried into the canon domain; no `page` |
+
+The handshake is `initialize`, `notifications/initialized`, `tools/list` (paged to the
+tool), `tools/call`. A request the server makes of the adapter — for roots, for sampling —
+is answered "method not found", since this adapter serves nothing; a notification is passed
+over. A tool that answers `isError` fails the acquisition with its text, redacted. A line
+on the server's stdout that is not a JSON-RPC message is a protocol violation and fails the
+acquisition, as the stdio transport reserves stdout for messages.
+
+**The server.** An image is run and stopped as `adapter-airbyte` runs a connector: told to
+stop by name when the call is done, its absence established. A command is ended by
+end-of-input and, after the wait delay, killed; a descendant it left behind is not reached,
+which is why `--image` is the shape that keeps the lifecycle under a name. Diagnostics are
+redacted as `adapter-airbyte`'s are, and a connection string's user name and password count
+as secrets in their own right.

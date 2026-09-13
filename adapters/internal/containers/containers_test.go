@@ -36,3 +36,23 @@ func TestSaysAbsent(t *testing.T) {
 		}
 	}
 }
+
+func TestParseImage(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for ref, want := range map[string]Image{
+		"airbyte/source-postgres:3.6.1@" + digest: {"airbyte/source-postgres", "3.6.1", digest},
+		"airbyte/source-postgres@" + digest:       {"airbyte/source-postgres", "", digest},
+		"registry.example:5000/x/y:v1@" + digest:  {"registry.example:5000/x/y", "v1", digest},
+		"registry.example:5000/x/y@" + digest:     {"registry.example:5000/x/y", "", digest},
+	} {
+		got, err := ParseImage(ref)
+		if err != nil || got != want {
+			t.Errorf("%s: %+v %v, want %+v", ref, got, err, want)
+		}
+	}
+	for _, ref := range []string{"airbyte/source-postgres:3.6.1", "airbyte/source-postgres@sha256:abc", "@" + digest, "x@md5:" + digest[7:]} {
+		if _, err := ParseImage(ref); err == nil {
+			t.Errorf("%s must be refused", ref)
+		}
+	}
+}

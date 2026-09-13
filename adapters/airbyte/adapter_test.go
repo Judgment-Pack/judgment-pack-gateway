@@ -562,25 +562,6 @@ func TestParseRequest(t *testing.T) {
 	}
 }
 
-func TestParseImage(t *testing.T) {
-	for ref, want := range map[string]imageRef{
-		"airbyte/source-postgres:3.6.1@" + testDigest: {"airbyte/source-postgres", "3.6.1", testDigest},
-		"airbyte/source-postgres@" + testDigest:       {"airbyte/source-postgres", "", testDigest},
-		"registry.example:5000/x/y:v1@" + testDigest:  {"registry.example:5000/x/y", "v1", testDigest},
-		"registry.example:5000/x/y@" + testDigest:     {"registry.example:5000/x/y", "", testDigest},
-	} {
-		got, err := parseImage(ref)
-		if err != nil || got != want {
-			t.Errorf("%s: %+v %v, want %+v", ref, got, err, want)
-		}
-	}
-	for _, ref := range []string{"airbyte/source-postgres:3.6.1", "airbyte/source-postgres@sha256:abc", "@" + testDigest, "x@md5:" + testDigest[7:]} {
-		if _, err := parseImage(ref); err == nil {
-			t.Errorf("%s must be refused", ref)
-		}
-	}
-}
-
 // Absence is established positively: an inspect the runtime cannot answer
 // leaves the question open, and an open question fails the acquisition.
 func TestStopRequiresAPositiveAnswerFromInspect(t *testing.T) {

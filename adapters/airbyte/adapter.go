@@ -11,7 +11,6 @@ import (
 	"adapters/internal/containers"
 	"adapters/internal/redact"
 	"bufio"
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -117,28 +115,9 @@ func ParseRequest(r io.Reader, maxRecords int) (Request, error) {
 	return req, nil
 }
 
-type imageRef struct{ name, version, digest string }
-
-// parseImage requires a digest-pinned reference: what runs is then what the
-// receipt names, not whatever a tag resolved to at pull time.
-func parseImage(ref string) (imageRef, error) {
-	name, digest, ok := strings.Cut(ref, "@")
-	if !ok || !canon.IsDigestString(digest) {
-		return imageRef{}, fmt.Errorf("image %q must be pinned: name[:tag]@sha256:<64 hex>", ref)
-	}
-	version := ""
-	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {
-		version, name = name[i+1:], name[:i]
-	}
-	if name == "" {
-		return imageRef{}, fmt.Errorf("image %q has no name", ref)
-	}
-	return imageRef{name: name, version: version, digest: digest}, nil
-}
-
 // Acquire reads one page of the requested stream and returns the envelope.
 func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
-	image, err := parseImage(cfg.Image)
+	image, err := containers.ParseImage(cfg.Image)
 	if err != nil {
 		return nil, err
 	}
@@ -573,7 +552,7 @@ type envelope struct {
 // checkpoint as the snapshot, the discovered schema's digest, and null for
 // what a connector inside a container cannot tell it: the peer's identity
 // and any token the upstream produced.
-func buildEnvelope(cfg Config, image imageRef, req Request, strm stream, mode string, cursor []string, schema []byte, p page) ([]byte, error) {
+func buildEnvelope(cfg Config, image containers.Image, req Request, strm stream, mode string, cursor []string, schema []byte, p page) ([]byte, error) {
 	statementValue := map[string]any{
 		"stream":      strm.Name,
 		"namespace":   nil,
@@ -587,14 +566,14 @@ func buildEnvelope(cfg Config, image imageRef, req Request, strm stream, mode st
 	if req.State != nil {
 		statementValue["state"] = json.RawMessage(*req.State)
 	}
-	statement, err := encodeJSON(statementValue)
+	statement, err := canon.EncodeJSON(statementValue)
 	if err != nil {
 		return nil, err
 	}
 	sum := sha256.Sum256(schema)
 	schemaDigest := "sha256:" + hex.EncodeToString(sum[:])
 	acq := acquisition{
-		Adapter:    adapterIdentity{Name: image.name, Version: image.version, Digest: image.digest},
+		Adapter:    adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest},
 		Statement:  ptr(string(statement)),
 		Schema:     ptr(schemaDigest),
 		ObservedAt: p.observedAt,
@@ -609,7 +588,7 @@ func buildEnvelope(cfg Config, image imageRef, req Request, strm stream, mode st
 	for _, item := range p.items {
 		result = append(result, json.RawMessage(item))
 	}
-	out, err := encodeJSON(envelope{Acquisition: acq, Result: result, Page: true})
+	out, err := canon.EncodeJSON(envelope{Acquisition: acq, Result: result, Page: true})
 	if err != nil {
 		return nil, err
 	}
@@ -617,17 +596,6 @@ func buildEnvelope(cfg Config, image imageRef, req Request, strm stream, mode st
 		return nil, fmt.Errorf("the envelope exceeds the output bound of %d bytes; lower the limit", cfg.MaxOutput)
 	}
 	return out, nil
-}
-
-// encodeJSON marshals without HTML escaping and without a trailing newline.
-func encodeJSON(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }
 
 func ptr(s string) *string { return &s }

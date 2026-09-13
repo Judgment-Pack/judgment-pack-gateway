@@ -6,13 +6,14 @@ package redact
 import (
 	"bytes"
 	"encoding/json"
+	"net/url"
 	"sort"
 	"strings"
 )
 
 // SecretsOf collects every scalar of the connector's configuration, at any
-// depth -- every non-empty string and every number, as written, each once
-// -- so that a diagnostic repeating one is redacted before it crosses the
+// depth -- every non-empty string and every number, as written, each once,
+// and the user name and password inside a string that is a URL -- so that a diagnostic repeating one is redacted before it crosses the
 // source boundary, where the gateway returns it to whoever called
 // /acquire. The list is sorted longest first so a value that contains
 // another is replaced whole. It is as good as the connector's habit of
@@ -38,6 +39,16 @@ func SecretsOf(config []byte) []string {
 		switch x := v.(type) {
 		case string:
 			add(x)
+			// A connection string carries its password inside a longer
+			// value, and a diagnostic quotes the password alone: the
+			// user-info parts of a value that parses as a URL are
+			// secrets in their own right.
+			if u, err := url.Parse(x); err == nil && u.User != nil {
+				add(u.User.Username())
+				if password, ok := u.User.Password(); ok {
+					add(password)
+				}
+			}
 		case json.Number:
 			add(x.String())
 		case map[string]any:
