@@ -413,6 +413,12 @@ func TestPrintOutcomeWritesOneLinePerAnswer(t *testing.T) {
 		lines[2] != "warehouse: written to "+f.config || stderr.Len() != 0 {
 		t.Fatalf("one line per answer, controls escaped: %q %q", stdout.String(), stderr.String())
 	}
+	// The platform name is printed through the same door, whatever the
+	// parser lets through.
+	stdout.Reset()
+	if code := printOutcome(&stdout, &stderr, "ware\nhouse", connectOutcome{written: f.config}, nil); code != 0 || stdout.String() != `ware\nhouse: written to `+f.config+"\n" {
+		t.Fatalf("the platform name escaped: %d %q", code, stdout.String())
+	}
 	stdout.Reset()
 	statements := connectOutcome{statements: []string{"rootSigner accepted\nconnect: forged"}}
 	if code := printOutcome(&stdout, &stderr, "warehouse", statements, errors.New("warehouse/live: the adapter reported\n\"failed\"")); code != 1 ||

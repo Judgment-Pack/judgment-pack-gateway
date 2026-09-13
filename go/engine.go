@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 // The engine's one configuration file (docs/design/engine-config.md): it
@@ -299,11 +300,18 @@ func requireAbsolutePath(obj *vObject, name string) (string, error) {
 }
 
 // validPlatformName is why a platform name cannot be one, or nil: it is a
-// source name's first segment and an environment value, so it is neither
-// empty nor padded and holds no separator.
+// source name's first segment, an environment value and a word an operator
+// reads, so it is neither empty nor padded, holds no separator, and is
+// made of graphic characters -- no control character, no line break, no
+// escape that a terminal would act on.
 func validPlatformName(name string) error {
 	if strings.ContainsAny(name, "/=\x00") || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
 		return fmt.Errorf("platform name %q may not be empty, padded, or contain / or =", name)
+	}
+	for _, r := range name {
+		if !unicode.IsGraphic(r) {
+			return fmt.Errorf("platform name %q may not contain a control or other non-graphic character", name)
+		}
 	}
 	return nil
 }

@@ -124,21 +124,26 @@ func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
 // process inherits and can never clear: an execve then grants it no
 // privilege it does not have, so it cannot take up the gateway's own file
 // capabilities by executing the gateway binary, nor a set-user-id bit on
-// any other file. The thread is held for the fork alone and stays marked
-// afterwards, which affects nothing but what it forks. The limit this
-// buys, stated in the design note: a source that must itself gain
-// privilege on exec -- a rootless container runtime that needs newuidmap,
-// say -- cannot run as a switched source.
+// any other file. The mark is for good, so the thread is a goroutine's
+// own, locked and never unlocked: it ends with the goroutine and never
+// returns to the scheduler to fork a source that runs as the gateway
+// itself. The limit this buys, stated in the design note: a source that
+// must itself gain privilege on exec -- a rootless container runtime that
+// needs newuidmap, say -- cannot run as a switched source.
 func (g *sourceGroup) start(cmd *exec.Cmd) error {
 	if !g.switched {
 		return cmd.Start()
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	if err := denyNewPrivilegesHere(); err != nil {
-		return fmt.Errorf("holding the source to no_new_privs: %v", err)
-	}
-	return cmd.Start()
+	done := make(chan error, 1)
+	go func() {
+		runtime.LockOSThread()
+		if err := denyNewPrivilegesHere(); err != nil {
+			done <- fmt.Errorf("holding the source to no_new_privs: %v", err)
+			return
+		}
+		done <- cmd.Start()
+	}()
+	return <-done
 }
 
 func lookupCredential(name string) (*syscall.Credential, error) {

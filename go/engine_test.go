@@ -703,3 +703,20 @@ func TestAProbeFailureOfTwoDashesReachesTheAdapter(t *testing.T) {
 		t.Fatalf("a tool named --: %s %q", argv, sources["warehouse/live"].check)
 	}
 }
+
+// A platform name is a word an operator reads: graphic characters only.
+func TestPlatformNamesAreGraphic(t *testing.T) {
+	for _, name := range []string{"warehouse", "ware house", "wäre-house.1", "docs_2"} {
+		if err := validPlatformName(name); err != nil {
+			t.Errorf("%q: %v", name, err)
+		}
+	}
+	for _, name := range []string{"ware\nhouse", "ware\rhouse", "ware\x1b[2Jhouse", "ware\thouse", "ware\u200bhouse", "", " warehouse", "ware/house", "ware=house", "ware\x00house"} {
+		if err := validPlatformName(name); err == nil {
+			t.Errorf("%q: allowed", name)
+		}
+	}
+	if err := validPlatformName("ware\nhouse"); err == nil || !strings.Contains(err.Error(), "non-graphic character") {
+		t.Fatalf("a control character is named as the reason: %v", err)
+	}
+}

@@ -93,7 +93,7 @@ func printOutcome(stdout, stderr io.Writer, platform string, out connectOutcome,
 		fmt.Fprintln(stderr, "connect:", printable(err.Error()))
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s: written to %s\n", platform, printable(out.written))
+	fmt.Fprintf(stdout, "%s: written to %s\n", printable(platform), printable(out.written))
 	return 0
 }
 
