@@ -26,7 +26,11 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   --source-env history=HOME
 ```
 
-- `--image` must be pinned by digest: what runs is what the receipt names.
+- `--image` must be pinned by digest: what runs is what the receipt names. The name is
+  held to the shape of a reference — registry, path and tag components, each beginning
+  with a letter or digit — and the runtime's option parsing is ended (`--`) before the
+  image on its command line, so nothing handed to it as an image or as a container
+  argument is read as an option.
 - `--credentials` is the connector's configuration JSON, a file the adapter's identity
   can read and the signer's cannot ([SECURITY.md](../SECURITY.md)). It is mounted
   read-only into the connector's container and never passed through an environment.
@@ -40,8 +44,11 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   "succeeded", "message"}}`, the message redacted as every diagnostic is — without reading
   stdin. A connector that answers `FAILED`, reports an error, or answers nothing fails the
   check with its own message, and a connector exits 0 whichever way it answers, so the
-  answer is read from the message and never from the exit status. The report is for the
-  operator connecting a platform (`gateway connect`); nothing is minted from it.
+  answer is read from the message and never from the exit status. The first status the
+  connector emits is its answer — a later one cannot revise it, and a second answer fails
+  the check — and it is read by its members' exact names with a duplicate refused, since Go's
+  struct decoding would let `STATUS` stand in for `status`. The report is for the operator
+  connecting a platform (`gateway connect`); nothing is minted from it.
 
 The request, as canonical arguments on stdin:
 
@@ -97,7 +104,8 @@ pipes), and the sum stays under the gateway's thirty, so a slow connector is rep
 a deadline rather than killed mid-report.
 
 **Diagnostics.** A connector's error — the first line of its stderr, or a `TRACE`
-message — is reported to the gateway, which returns it to whoever called `/acquire`.
+message, or the runtime's answer about a container that would not stop — is reported to
+the gateway, which returns it to whoever called `/acquire`.
 Every scalar of the credentials file — each non-empty string and each number, as
 written, longest first, in one pass over the original text — is redacted from it before
 it leaves the adapter. That is as
@@ -155,8 +163,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   "protocolVersion", "tools"}}` — calling nothing and reading no stdin. A tool named by
   `--tools` that the server does not offer fails the check, so a binding that names a tool
   the pinned server lacks is found out when the platform is connected, not at the first
-  acquisition. The report is for the operator (`gateway connect`); nothing is minted from
-  it.
+  acquisition. What the server said of itself — its name and version, its tools' names — is
+  redacted before it is reported, as every diagnostic is. The report is for the operator
+  (`gateway connect`); nothing is minted from it.
 
 The request, as canonical arguments on stdin:
 
@@ -168,7 +177,7 @@ What the envelope carries, and so what the receipt records:
 
 | Member | From |
 |---|---|
-| `adapter` | the pinned image: name, tag, digest; for a command, the command as configured, the version the server reports of itself, and the digest of the executable |
+| `adapter` | the pinned image: name, tag, digest; for a command, the command as configured, the version the server reports of itself (redacted, as a diagnostic is), and the digest of the executable |
 | `endpoint` | `--endpoint`, or `null` |
 | `statement` | the call — tool and arguments — which the gateway commits to under a salt |
 | `snapshot` | `null`: the protocol offers no bookmark |
@@ -179,8 +188,10 @@ What the envelope carries, and so what the receipt records:
 | `result` | the tool's whole result — content, structured content — carried into the canon domain; no `page` |
 
 The handshake is `initialize` — refused unless the server answers with a protocol version
-this client speaks (2025-06-18, 2025-03-26 or 2024-11-05) and a tools capability —
-`notifications/initialized`, `tools/list` (paged to the tool), `tools/call`. A `ping` from
+this client speaks (2025-06-18, 2025-03-26 or 2024-11-05), a tools capability, and a
+`serverInfo` naming the server with a version string — `notifications/initialized`,
+`tools/list` (paged to the tool; a page must carry a `tools` array, and a `nextCursor` that
+is present must be a non-empty string), `tools/call`. A `ping` from
 the server is answered with an empty result; any other request the server makes of the
 adapter — for roots, for sampling — is answered "method not found", since this adapter
 serves nothing; a notification, and a response to an id this adapter never used, are passed

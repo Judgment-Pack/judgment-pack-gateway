@@ -134,10 +134,16 @@ func Run(args []string) int {
 		inv := Invocation{Argv: args, Files: map[string]string{}, Modes: map[string]string{}}
 		dir := ""
 		for i, a := range args {
-			if a == "-v" && i+3 < len(args) {
+			if a == "-v" && i+1 < len(args) {
 				dir = strings.TrimSuffix(args[i+1], ":/secrets:ro")
-				inv.Image = args[i+2]
-				inv.Verb = args[i+3]
+				j := i + 2
+				if j < len(args) && args[j] == "--" {
+					j++
+				}
+				if j+1 < len(args) {
+					inv.Image = args[j]
+					inv.Verb = args[j+1]
+				}
 			}
 		}
 		if dir != "" {

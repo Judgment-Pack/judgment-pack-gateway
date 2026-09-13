@@ -41,7 +41,7 @@ func fake(t *testing.T) Config {
 	for _, name := range []string{fakemcp.EnvTools, fakemcp.EnvResult, fakemcp.EnvHang, fakemcp.EnvExitBeforeCall, fakemcp.EnvStderr,
 		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck,
 		fakemcp.EnvPing, fakemcp.EnvWrongID, fakemcp.EnvHoldStdin, fakemcp.EnvConflict, fakemcp.EnvExitAtStart, fakemcp.EnvProtocol, fakemcp.EnvNoTools,
-		fakemcp.EnvLinger, fakemcp.EnvNullError} {
+		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")
@@ -216,7 +216,7 @@ func TestAcquireThroughTheRuntime(t *testing.T) {
 		joined[i] = a.(string)
 	}
 	line := strings.Join(joined, " ")
-	if joined[0] != "run" || joined[1] != "--rm" || !strings.Contains(line, " --env-file ") || !strings.Contains(line, " -i "+cfg.Image) ||
+	if joined[0] != "run" || joined[1] != "--rm" || !strings.Contains(line, " --env-file ") || !strings.Contains(line, " -i -- "+cfg.Image) ||
 		strings.Index(line, " --env-file ") > strings.Index(line, cfg.Image) {
 		t.Fatalf("run --rm --name NAME -v MOUNT:/secrets:ro --env-file MOUNT/env -i IMAGE, the env file before the image: %s", line)
 	}
@@ -714,5 +714,135 @@ func TestImageArgumentsFollowTheImageOnAcquire(t *testing.T) {
 	cfg.Args = []string{"--flag"}
 	if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), "a server command carries its own arguments") {
 		t.Fatalf("args beside a command are refused: %v", err)
+	}
+}
+
+func TestCheckRedactsWhatTheServerSaysOfItself(t *testing.T) {
+	cfg := fake(t)
+	// The server echoes the credential in its name, its version and a
+	// tool's name; none of it reaches the report as written.
+	t.Setenv(fakemcp.EnvServerInfo, `{"name":"server for app","version":"1.0+hunter2"}`)
+	tools := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(tools, []byte(`[{"name":"query_hunter2","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvTools, tools)
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, server, _, listed := decodeCheck(t, out)
+	if strings.Contains(string(out), "hunter2") || strings.Contains(string(out), "app") {
+		t.Fatalf("the report carries no credential: %s", out)
+	}
+	if server["name"] != "server for [redacted]" || server["version"] != "1.0+[redacted]" || adapter["version"] != "1.0+[redacted]" || strings.Join(listed, ",") != "query_[redacted]" {
+		t.Fatalf("every field the server said is redacted: %s", out)
+	}
+	// The same version goes into an acquisition's envelope for a command,
+	// redacted there too.
+	envelope, err := Acquire(context.Background(), cfg, Request{Tool: "query_hunter2", Arguments: json.RawMessage(`{}`)})
+	if err == nil || !strings.Contains(err.Error(), "not one the server offers") {
+		// The tool's own name carries the secret and the request names it
+		// verbatim, which the server matches; the envelope must not carry it.
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The statement names the tool as the caller asked for it; the
+		// adapter's version is the server's word and is redacted.
+		acq, _ := decode(t, envelope)
+		if acq["adapter"].(map[string]any)["version"] != "1.0+[redacted]" {
+			t.Fatalf("the envelope's adapter version is redacted: %s", envelope)
+		}
+	}
+}
+
+func TestInitializeRequiresTheServersIdentity(t *testing.T) {
+	for _, tc := range []struct{ info, want string }{
+		{"absent", "the server's answer carries no serverInfo object"},
+		{`null`, "the server's answer carries no serverInfo object"},
+		{`"pg"`, "the server's answer carries no serverInfo object"},
+		{`{"version":"1"}`, "serverInfo names no server"},
+		{`{"name":"","version":"1"}`, "serverInfo names no server"},
+		{`{"name":"pg"}`, "serverInfo carries no version string"},
+		{`{"name":"pg","version":null}`, "serverInfo carries no version string"},
+		{`{"name":"pg","version":3}`, "serverInfo carries no version string"},
+	} {
+		t.Run(tc.info, func(t *testing.T) {
+			cfg := fake(t)
+			t.Setenv(fakemcp.EnvServerInfo, tc.info)
+			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("check: want %q, got %v", tc.want, err)
+			}
+			if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("acquire: want %q, got %v", tc.want, err)
+			}
+		})
+	}
+	cfg := fake(t)
+	t.Setenv(fakemcp.EnvServerInfo, `{"name":"pg","version":""}`)
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatalf("an empty version string is a version string: %v", err)
+	}
+}
+
+func TestToolListMustBeAPage(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{`{}`, "carries no tools array"},
+		{`{"tools":null}`, "carries no tools array"},
+		{`{"tools":{}}`, "carries no tools array"},
+		{`{"TOOLS":[]}`, "carries no tools array"},
+		{`{"tools":[],"nextCursor":""}`, "nextCursor, when present, is a non-empty string"},
+		{`{"tools":[],"nextCursor":5}`, "nextCursor, when present, is a non-empty string"},
+		{`[]`, "is not a tool list"},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			cfg := fake(t)
+			raw := filepath.Join(t.TempDir(), "list.json")
+			if err := os.WriteFile(raw, []byte(tc.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(fakemcp.EnvListRaw, raw)
+			// No allowed tools, so an empty page would otherwise succeed.
+			if out, err := Check(context.Background(), cfg); err == nil || out != nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v %s", tc.want, err, out)
+			}
+			if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("acquire: want %q, got %v", tc.want, err)
+			}
+		})
+	}
+	cfg := fake(t)
+	raw := filepath.Join(t.TempDir(), "list.json")
+	if err := os.WriteFile(raw, []byte(`{"tools":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvListRaw, raw)
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, listed := decodeCheck(t, out); len(listed) != 0 || !strings.Contains(string(out), `"tools":[]`) {
+		t.Fatalf("a server offering no tool is reported as offering none: %s", out)
+	}
+}
+
+func TestAnImageShapedLikeAnOptionIsRefused(t *testing.T) {
+	cfg := image(fake(t))
+	for _, ref := range []string{"--label=probe=value@" + testDigest, "-x@" + testDigest, "ghcr.io/-example/mcp@" + testDigest, "a/b:-tag@" + testDigest, "a b@" + testDigest} {
+		cfg.Image = ref
+		if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "is not a reference") {
+			t.Fatalf("%s: %v", ref, err)
+		}
+	}
+	// The runtime's option parsing is ended before the image, so a server
+	// argument shaped like an option is the server's.
+	cfg = image(fake(t))
+	cfg.Args = []string{"--name", "stray"}
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	argv := runArgv(t)
+	if n := len(argv); n < 4 || argv[n-4] != "--" || argv[n-3] != cfg.Image || argv[n-2] != "--name" || argv[n-1] != "stray" {
+		t.Fatalf("-- ends the runtime's options before the image and the server's arguments: %v", argv)
 	}
 }

@@ -50,7 +50,9 @@ func TestRunEndToEnd(t *testing.T) {
 		`{"type":"CATALOG","catalog":{"streams":[{"name":"s","json_schema":{"type":"object"},"supported_sync_modes":["full_refresh"]}]}}`+"\n"))
 	t.Setenv(fakeruntime.EnvRead, write("read.out",
 		`{"type":"RECORD","record":{"stream":"s","emitted_at":1,"data":{"id":1}}}`+"\n"))
-	credentials := write("credentials.json", `{"host":"h"}`)
+	// A one-letter credential value would redact every letter like it
+	// from a diagnostic, as the README says; the fixture uses a word.
+	credentials := write("credentials.json", `{"host":"warehouse"}`)
 	args := []string{"--image", "x/y:1@" + digest, "--credentials", credentials, "--runtime", os.Args[0], "--endpoint", "h:1"}
 	var stdout, stderr bytes.Buffer
 	if code := run(args, strings.NewReader(`{"stream":"s","limit":5}`), &stdout, &stderr); code != 0 {
@@ -81,7 +83,7 @@ func TestRunCheck(t *testing.T) {
 	}
 	t.Setenv(fakeruntime.EnvActivate, "1")
 	t.Setenv(fakeruntime.EnvCheck, write("check.out", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":"ok"}}`+"\n"))
-	credentials := write("credentials.json", `{"host":"h"}`)
+	credentials := write("credentials.json", `{"host":"warehouse"}`)
 	args := []string{"--check", "--image", "x/y:1@" + digest, "--credentials", credentials, "--runtime", os.Args[0]}
 	// stdin is not read by a check: what is attached is the operator's.
 	stdin := strings.NewReader("not a request")

@@ -875,6 +875,12 @@ func TestCheckRefusals(t *testing.T) {
 		{"a status without its payload", `{"type":"CONNECTION_STATUS","connectionStatus":{"message":"x"}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
 		{"a status that is not an object", `{"type":"CONNECTION_STATUS","connectionStatus":"ok"}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
 		{"the runtime fails", checkSucceeded, map[string]string{fakeruntime.EnvExit: "1", fakeruntime.EnvStderr: "daemon refused hunter2\n"}, "connector check failed: daemon refused "},
+		{"a status under another case", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","STATUS":"SUCCEEDED","message":"x"}}` + "\n", nil, "the connector could not connect (FAILED)"},
+		{"a status stated twice", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","status":"SUCCEEDED"}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"a message that is not a string", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":{"text":"x"}}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"a failure a later success cannot revise", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"no"}}` + "\n" + checkSucceeded, nil, "the connector could not connect (FAILED): no"},
+		{"two answers", checkSucceeded + checkSucceeded, nil, "the connector answered more than once"},
+		{"a container that would not stop, its answer redacted", checkSucceeded, map[string]string{fakeruntime.EnvKillExit: "1", fakeruntime.EnvInspectStderr: "daemon busy with hunter2 at warehouse.internal"}, "[redacted]"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := checkFake(t, tc.check)
@@ -896,5 +902,17 @@ func TestCheckRefusals(t *testing.T) {
 	cfg.Credentials = filepath.Join(t.TempDir(), "missing")
 	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials could not be read") {
 		t.Fatalf("missing credentials: %v", err)
+	}
+}
+
+func TestAcquireRedactsAContainerThatWouldNotStop(t *testing.T) {
+	// The same stop failure after a successful read, and after a
+	// successful discover, crosses the redaction too.
+	cfg := fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvKillExit, "1")
+	t.Setenv(fakeruntime.EnvInspectStderr, "daemon busy with hunter2 at warehouse.internal")
+	_, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 2})
+	if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("redacted: %v", err)
 	}
 }

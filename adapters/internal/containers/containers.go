@@ -123,7 +123,9 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 	if spec.Stdin {
 		argv = append(argv, "-i")
 	}
-	argv = append(argv, image)
+	// The runtime's option parsing ends here: what follows is the image
+	// and the container's arguments, whatever they look like.
+	argv = append(argv, "--", image)
 	argv = append(argv, spec.Args...)
 	runCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(runCtx, runtime, argv...)
@@ -317,11 +319,20 @@ func (b *boundedBuffer) String() string {
 // what a receipt names, not whatever a tag resolved to at pull time.
 type Image struct{ Name, Version, Digest string }
 
-// ParseImage requires name[:tag]@sha256:<64 hex>.
+// imageReference is the shape of name[:tag]: a registry with an optional
+// port, path components, and a tag, every component beginning with a
+// letter or digit -- so nothing that is handed to a runtime as an image
+// can be read by it as an option.
+var imageReference = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(?::[0-9]+)?(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
+
+// ParseImage requires name[:tag]@sha256:<64 hex>, the name a reference.
 func ParseImage(ref string) (Image, error) {
 	name, digest, ok := strings.Cut(ref, "@")
 	if !ok || !isDigest(digest) {
 		return Image{}, fmt.Errorf("image %q must be pinned: name[:tag]@sha256:<64 hex>", ref)
+	}
+	if !imageReference.MatchString(name) {
+		return Image{}, fmt.Errorf("image %q is not a reference: registry, path and tag components, each beginning with a letter or digit", ref)
 	}
 	version := ""
 	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {

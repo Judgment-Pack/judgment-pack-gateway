@@ -79,6 +79,12 @@ const (
 	EnvProtocol = "MCP_FAKE_PROTOCOL"
 	// EnvNoTools makes initialize answer without a tools capability.
 	EnvNoTools = "MCP_FAKE_NO_TOOLS"
+	// EnvServerInfo replaces initialize's serverInfo with the JSON given,
+	// or omits it when "absent".
+	EnvServerInfo = "MCP_FAKE_SERVER_INFO"
+	// EnvListRaw names a file whose contents are the raw result of every
+	// tools/list, as given.
+	EnvListRaw = "MCP_FAKE_LIST_RAW"
 
 	envSleep = "MCP_FAKE_SLEEP"
 )
@@ -194,11 +200,22 @@ func serve() int {
 			if os.Getenv(EnvNoTools) == "1" {
 				capabilities = map[string]any{"prompts": map[string]any{}}
 			}
-			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": map[string]any{
-				"protocolVersion": protocol, "capabilities": capabilities,
-				"serverInfo": map[string]any{"name": "fake-mcp", "version": "1.0"}}})
+			result := map[string]any{"protocolVersion": protocol, "capabilities": capabilities,
+				"serverInfo": map[string]any{"name": "fake-mcp", "version": "1.0"}}
+			switch v := os.Getenv(EnvServerInfo); {
+			case v == "absent":
+				delete(result, "serverInfo")
+			case v != "":
+				result["serverInfo"] = json.RawMessage(v)
+			}
+			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
 		case "notifications/initialized":
 		case "tools/list":
+			if path := os.Getenv(EnvListRaw); path != "" {
+				raw, _ := os.ReadFile(path)
+				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": json.RawMessage(raw)})
+				continue
+			}
 			if os.Getenv(EnvPagedTools) == "1" && len(toolList) > 1 {
 				page := 0
 				if m.Params.Cursor != "" {

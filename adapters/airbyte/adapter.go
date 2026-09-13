@@ -193,12 +193,15 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Every error crosses the same redaction, a container that would not
+	// stop included: an inspect's answer can quote what it was asked.
 	finish := func(out []byte, err error) ([]byte, error) {
 		if stopErr := c.Stop(); stopErr != nil {
 			if err == nil {
-				return nil, stopErr
+				err = stopErr
+			} else {
+				err = fmt.Errorf("%v; the check had also failed: %v", stopErr, err)
 			}
-			err = fmt.Errorf("%v; the check had also failed: %v", stopErr, err)
 		}
 		if err != nil {
 			return nil, errors.New(redact.Redact(err.Error(), secrets))
@@ -217,7 +220,15 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		}
 		switch m.Type {
 		case "CONNECTION_STATUS":
+			// The first answer is the answer: a later one cannot revise
+			// it, and a FAILED ends the check where it is said.
+			if answer != nil {
+				return finish(nil, errors.New("the connector answered more than once"))
+			}
 			answer = m.ConnectionStatus
+			if answer.Status != "SUCCEEDED" {
+				return finish(nil, fmt.Errorf("the connector could not connect (%s): %s", answer.Status, answer.Message))
+			}
 		case "TRACE":
 			if m.Trace != nil && m.Trace.Type == "ERROR" {
 				return finish(nil, fmt.Errorf("connector reported an error during check: %s", traceMessage(m.Trace)))
@@ -237,9 +248,6 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	}
 	if answer == nil {
 		return finish(nil, errors.New("the connector answered no connection status"))
-	}
-	if answer.Status != "SUCCEEDED" {
-		return finish(nil, fmt.Errorf("the connector could not connect (%s): %s", answer.Status, answer.Message))
 	}
 	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
 		Adapter: adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest},
@@ -270,11 +278,15 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 			// The container that needs a hand comes first: the gateway
 			// keeps only the start of a source's diagnostic.
 			if err == nil {
-				return stream{}, stopErr
+				err = stopErr
+			} else {
+				err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
 			}
-			err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
 		}
-		return s, err
+		if err != nil {
+			return stream{}, errors.New(redact.Redact(err.Error(), secrets))
+		}
+		return s, nil
 	}
 	var found *catalog
 	scanner := newScanner(c.Stdout)
@@ -440,11 +452,57 @@ func parseMessage(line []byte) (message, bool, error) {
 			return message{}, true, malformed
 		}
 	case "CONNECTION_STATUS":
-		if m.ConnectionStatus == nil || m.ConnectionStatus.Status == "" {
+		cs, err := strictConnectionStatus(line)
+		if err != nil {
 			return message{}, true, malformed
 		}
+		m.ConnectionStatus = cs
 	}
 	return m, true, nil
+}
+
+// strictConnectionStatus reads a CONNECTION_STATUS message by its members'
+// exact names, with a duplicate member refused: Go's struct decoding would
+// let "STATUS" stand in for status and a second status overwrite the
+// first, and the status decides whether the platform answered.
+func strictConnectionStatus(line []byte) (*connectionStatus, error) {
+	canonical, err := canon.Canonicalize(line, canon.CarryNumbersAsText)
+	if err != nil {
+		return nil, err
+	}
+	members, err := objectMembers(canonical)
+	if err != nil {
+		return nil, err
+	}
+	var typ string
+	if json.Unmarshal(members["type"], &typ) != nil || typ != "CONNECTION_STATUS" {
+		return nil, errors.New("not a connection status")
+	}
+	status, err := objectMembers(members["connectionStatus"])
+	if err != nil {
+		return nil, err
+	}
+	var cs connectionStatus
+	if json.Unmarshal(status["status"], &cs.Status) != nil || cs.Status == "" {
+		return nil, errors.New("no status")
+	}
+	if raw, ok := status["message"]; ok && json.Unmarshal(raw, &cs.Message) != nil {
+		return nil, errors.New("message is not a string")
+	}
+	return &cs, nil
+}
+
+// objectMembers decodes an object by its members' exact names, refusing
+// anything but an object.
+func objectMembers(raw json.RawMessage) (map[string]json.RawMessage, error) {
+	if !canon.IsObject(raw) {
+		return nil, errors.New("not an object")
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &members); err != nil {
+		return nil, err
+	}
+	return members, nil
 }
 
 type page struct {
@@ -476,9 +534,13 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 	finish := func(p page, err error) (page, error) {
 		if stopErr := c.Stop(); stopErr != nil {
 			if err == nil {
-				return page{}, stopErr
+				err = stopErr
+			} else {
+				err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
 			}
-			err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
+		}
+		if err != nil {
+			return page{}, errors.New(redact.Redact(err.Error(), secrets))
 		}
 		return p, err
 	}

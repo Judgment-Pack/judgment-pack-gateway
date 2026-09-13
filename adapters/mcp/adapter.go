@@ -8,6 +8,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -198,7 +199,9 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	}
 	identity := srv.identity
 	if identity.Version == "" {
-		identity.Version = initialized.version
+		// A command's version is what the server says of itself, and it
+		// goes into the receipt: redacted, as a diagnostic would be.
+		identity.Version = redact.Redact(initialized.version, secrets)
 	}
 	// The tool, as the server describes it: its declared output schema is
 	// the schema the receipt names, and null when it declares none.
@@ -334,15 +337,21 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return finish(nil, fmt.Errorf("tool %q is allowed by the configuration but not offered by the server: %v", allowed, names))
 		}
 	}
+	// Everything the server said of itself is redacted before it is
+	// reported, as every diagnostic is: a server echoes what it was given.
 	identity := srv.identity
 	if identity.Version == "" {
-		identity.Version = initialized.version
+		identity.Version = redact.Redact(initialized.version, secrets)
+	}
+	redacted := make([]string, 0, len(names))
+	for _, name := range names {
+		redacted = append(redacted, redact.Redact(name, secrets))
 	}
 	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
 		Adapter:         identity,
-		Server:          serverIdentity{Name: initialized.name, Version: initialized.version},
+		Server:          serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)},
 		ProtocolVersion: initialized.protocol,
-		Tools:           names,
+		Tools:           redacted,
 	}})
 	if err != nil {
 		return finish(nil, err)
@@ -378,14 +387,21 @@ func parseInitialize(raw json.RawMessage) (initializeResult, error) {
 	if !canon.IsObject(capabilities["tools"]) {
 		return initializeResult{}, errors.New("initialize: the server offers no tools capability")
 	}
-	var info struct {
-		Name    string `json:"name"`
-		Version string `json:"version"`
+	// The server's identity is required of an initialize result, and it
+	// is what a check reports and what a command-form receipt carries as
+	// the adapter's version.
+	info, err := exactMembers(members["serverInfo"])
+	if err != nil {
+		return initializeResult{}, errors.New("initialize: the server's answer carries no serverInfo object")
 	}
-	if serverInfo, ok := members["serverInfo"]; ok {
-		json.Unmarshal(serverInfo, &info)
+	var name, version string
+	if json.Unmarshal(info["name"], &name) != nil || name == "" {
+		return initializeResult{}, errors.New("initialize: serverInfo names no server")
 	}
-	return initializeResult{protocol: protocol, name: info.Name, version: info.Version}, nil
+	if raw, ok := info["version"]; !ok || string(bytes.TrimSpace(raw)) == "null" || json.Unmarshal(raw, &version) != nil {
+		return initializeResult{}, errors.New("initialize: serverInfo carries no version string")
+	}
+	return initializeResult{protocol: protocol, name: name, version: version}, nil
 }
 
 // exactMembers decodes an object by its members' exact names -- Go's
@@ -537,12 +553,28 @@ func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listed
 	if err != nil {
 		return nil, "", err
 	}
-	var listed struct {
-		Tools      []json.RawMessage `json:"tools"`
-		NextCursor string            `json:"nextCursor"`
-	}
-	if !canon.IsObject(raw) || json.Unmarshal(raw, &listed) != nil {
+	// A page is an object with a tools array, present and an array, and a
+	// cursor that is a non-empty string when there is a next page: an
+	// answer with neither is not a page, not an empty one.
+	members, err := exactMembers(raw)
+	if err != nil {
 		return nil, "", errors.New("tools/list: the server's answer is not a tool list")
+	}
+	toolsRaw, ok := members["tools"]
+	if !ok || !bytes.HasPrefix(bytes.TrimSpace(toolsRaw), []byte("[")) {
+		return nil, "", errors.New("tools/list: the server's answer carries no tools array")
+	}
+	var listed struct {
+		Tools []json.RawMessage
+	}
+	if json.Unmarshal(toolsRaw, &listed.Tools) != nil {
+		return nil, "", errors.New("tools/list: the server's answer is not a tool list")
+	}
+	next := ""
+	if cursorRaw, ok := members["nextCursor"]; ok {
+		if json.Unmarshal(cursorRaw, &next) != nil || next == "" {
+			return nil, "", errors.New("tools/list: nextCursor, when present, is a non-empty string")
+		}
 	}
 	var tools []listedTool
 	for _, tool := range listed.Tools {
@@ -554,7 +586,7 @@ func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listed
 		}
 		tools = append(tools, listedTool{name: head.Name, descriptor: tool})
 	}
-	return tools, listed.NextCursor, nil
+	return tools, next, nil
 }
 
 // textOf joins the text parts of a tool result's content, for an error
