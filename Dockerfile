@@ -28,7 +28,9 @@ RUN cd /src && go run setcap.go /out/gateway && chmod 0700 /out/gateway
 # engine refuses a platform whose user is root, the signer's, or another
 # platform's. Eight is a convention, not a limit an operator cannot raise
 # with a derived image; the signer runs as engine (uid 65532, the base's
-# nonroot user, renamed). Each user's home is its own alone.
+# nonroot user, renamed). Each user's home is its own alone: the mode is
+# given to the COPY outright, since a directory COPY otherwise lands at
+# the builder's default and not at what the build stage set.
 RUN set -e; mkdir -p /out/etc /out/home; \
     printf 'root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:engine signer:/home/engine:/sbin/nologin\n' > /out/etc/passwd; \
     printf 'root:x:0:\nengine:x:65532:\n' > /out/etc/group; \
@@ -47,15 +49,15 @@ COPY --from=build /out/etc/passwd /out/etc/group /etc/
 # are run by the platform users, and carry nothing.
 COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
 COPY --from=build /out/adapter-airbyte /out/adapter-mcp /usr/local/bin/
-COPY --from=build --chown=65532:65532 /out/home/engine /home/engine
-COPY --from=build --chown=65601:65601 /out/home/engine-1 /home/engine-1
-COPY --from=build --chown=65602:65602 /out/home/engine-2 /home/engine-2
-COPY --from=build --chown=65603:65603 /out/home/engine-3 /home/engine-3
-COPY --from=build --chown=65604:65604 /out/home/engine-4 /home/engine-4
-COPY --from=build --chown=65605:65605 /out/home/engine-5 /home/engine-5
-COPY --from=build --chown=65606:65606 /out/home/engine-6 /home/engine-6
-COPY --from=build --chown=65607:65607 /out/home/engine-7 /home/engine-7
-COPY --from=build --chown=65608:65608 /out/home/engine-8 /home/engine-8
+COPY --from=build --chown=65532:65532 --chmod=0700 /out/home/engine /home/engine
+COPY --from=build --chown=65601:65601 --chmod=0700 /out/home/engine-1 /home/engine-1
+COPY --from=build --chown=65602:65602 --chmod=0700 /out/home/engine-2 /home/engine-2
+COPY --from=build --chown=65603:65603 --chmod=0700 /out/home/engine-3 /home/engine-3
+COPY --from=build --chown=65604:65604 --chmod=0700 /out/home/engine-4 /home/engine-4
+COPY --from=build --chown=65605:65605 --chmod=0700 /out/home/engine-5 /home/engine-5
+COPY --from=build --chown=65606:65606 --chmod=0700 /out/home/engine-6 /home/engine-6
+COPY --from=build --chown=65607:65607 --chmod=0700 /out/home/engine-7 /home/engine-7
+COPY --from=build --chown=65608:65608 --chmod=0700 /out/home/engine-8 /home/engine-8
 COPY catalog/ /usr/share/engine/catalog/
 COPY corpus/ /usr/share/engine/corpus/
 USER engine

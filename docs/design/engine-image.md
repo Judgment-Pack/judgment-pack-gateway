@@ -41,9 +41,32 @@ operator who needs more derives an image with more; the engine refuses a platfor
 root, the signer's, or another platform's, whatever the image carries.
 
 CI builds the image from every commit and never pushes it: what it checks is that it builds
-from the pinned bases, that the core inside it agrees with the corpus it carries, that the
-gateway binary holds exactly its three capabilities, and that the adapters and the catalog are
-where the configuration expects them.
+from the pinned bases, that the core inside it agrees with the corpus it carries, and that the
+image's final filesystem — its layers applied in the manifest's order, whiteouts honoured — is
+what this note states: the gateway binary with exactly its three capabilities (read from the v2
+or the v3 attribute, not compared as bytes), mode 0700 and the signer's; nothing else carrying a
+capability or a set-user-id or set-group-id bit; every home its user's alone at 0700; the
+adapters executable and unprivileged; the catalog and the corpus byte for byte the checkout's;
+the users by uid; and the entrypoint and command. It then starts the image as built, with no
+override, and holds the two launch overrides below to what is stated here.
+
+**Launch overrides.** With every capability dropped (`--cap-drop ALL`) the kernel refuses to
+execute the gateway at all — the binary's attribute has the effective bit set, which demands its
+permitted set in full, and the bounding set no longer allows it — so the engine never starts and
+no refusal of its own is reached; the supported minimum is `--cap-drop ALL --cap-add SETUID
+--cap-add SETGID --cap-add KILL`, under which it starts as it does by default. Run as root
+(`--user 0`) the engine refuses to start unless the configuration sets `rootSigner: "accepted"`
+([engine-config.md](engine-config.md)), and an accepted root signer is not confined to the three
+capabilities: it holds whatever the container runtime gives root, which is a deployment outside
+this note's claim.
+
+**What is pinned is the inputs, not the bytes.** Two clean builds of the same commit are the
+same in content and differ in digest: built files, the account files and the homes carry the
+build's timestamps, and the image metadata is not normalised. A release publishes the digest of
+one build; the pins are what make a rebuild comparable in content, not identical in bytes. Making
+the image reproducible byte for byte — a fixed `SOURCE_DATE_EPOCH` and an exporter that rewrites
+timestamps — is a limit accepted here, not a defect: the default builder does not rewrite
+timestamps, and the claim this image makes rests on its contents.
 
 ## The processes
 
@@ -86,8 +109,19 @@ another container without help, and the choices are all operational:
    and run in-process under a Python interpreter shipped with the image; the Java connectors
    for databases do not.
 
-The default is **2**: it is the only one of the three under which the boundary this design
-claims survives. **1** is available, and it is outside the isolation claim: the engine refuses
+None of the three ships in the image, and the image is built for **2** arranged beside it,
+since it is the only one of the three under which the boundary this design claims survives.
+What that arrangement is, stated as the contract it is rather than as a default: a runtime
+client binary (`docker` or `podman`, static) at the path the configuration's `runtime` names,
+executable by the platform users; a runtime socket that client reaches, belonging to a daemon
+that runs **as that platform user** — a rootless daemon started as a service outside the
+adapter, since a switched adapter is held to `no_new_privs` and cannot itself gain privilege
+through helpers such as `newuidmap` ([engine-config.md](engine-config.md)); and the engine's
+temporary directory visible to that daemon at the same absolute path, because the adapter
+stages a connector's credentials in a directory under it and names that path in the mount it
+asks for — a daemon in another mount namespace would mount nothing, or something else. A
+deployment that provides a client and a socket and not the shared path has not provided a
+runtime. **1** is available, and it is outside the isolation claim: the engine refuses
 a host-socket configuration unless the operator sets `hostRuntime: "accepted"` in the engine
 configuration, the startup log says in one line that the Airbyte adapter now holds host
 authority equivalent to the signer's, and the deployment is then one in which the seed's

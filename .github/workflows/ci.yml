@@ -123,14 +123,27 @@ jobs:
       - name: The image's core agrees with the corpus it carries
         run: docker run --rm engine:ci conform --corpus /usr/share/engine/corpus
       # The capability travels as an attribute in the layer; a copy to the
-      # host would drop it, so the saved image's headers are read as they are.
-      - name: The signer binary holds exactly the three capabilities it needs, and nobody else may execute it
+      # host would drop it, so the saved image's layers are read as they
+      # are, applied in the manifest's order, and the final filesystem is
+      # held to the design: the gateway's capabilities, mode and owner;
+      # nothing else privileged; the homes; the adapters; the catalog and
+      # corpus byte for byte; the users; the entrypoint and command.
+      - name: The image's final filesystem is what the design states
         run: |
           mkdir -p image && docker save engine:ci | tar -x -C image
-          python3 .github/capabilities.py image
-      - name: The image carries the adapters and the catalog
+          python3 .github/image_checks.py image .
+      - name: The image runs the adapters and starts the engine as built
         run: |
-          docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp is not in the image"; exit 1; }
-          docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte is not in the image"; exit 1; }
-          docker run --rm -i --entrypoint /usr/local/bin/gateway engine:ci canon < catalog/postgres.json | grep -q '"bindingVersion":"1"' || { echo "the catalog is not read" ; exit 1; }
-          docker run --rm --entrypoint /usr/local/bin/gateway engine:ci serve --config /etc/engine/engine.json 2>&1 | grep -q 'engine configuration' || { echo "the image does not start the engine"; exit 1; }
+          docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }
+          docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte does not run"; exit 1; }
+          # As built: no entrypoint or command override, so the default CMD is what runs.
+          docker run --rm engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the image does not start the engine with its own command"; exit 1; }
+      # The launch overrides the design note states: every capability
+      # dropped is an exec the kernel refuses, since the binary's effective
+      # bit demands its permitted set in full; the three added back is the
+      # supported minimum.
+      - name: The stated launch overrides behave as stated
+        run: |
+          if docker run --rm --cap-drop ALL engine:ci >out.txt 2>&1; then echo "started with every capability dropped"; cat out.txt; exit 1; fi
+          grep -qi 'operation not permitted\|permission denied' out.txt || { echo "refused for another reason:"; cat out.txt; exit 1; }
+          docker run --rm --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the three capabilities alone do not start the engine"; exit 1; }
