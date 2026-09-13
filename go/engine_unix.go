@@ -6,29 +6,29 @@ import (
 	"fmt"
 	"os"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"syscall"
 )
 
-// fileOwnerOf is who owns a file or directory and how it is protected, as
-// the filesystem reports them, following no symbolic link: a link is
-// somebody's choice of another path, and the path checked is the one named.
+// fileOwnerOf is who owns a file, a directory or a symbolic link and how it
+// is protected, as the filesystem reports them of that entry itself: a link
+// is judged as a link, by its owner, and its target through the resolved
+// chain.
 func fileOwnerOf(path string) (fileOwnership, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fileOwnership{}, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fileOwnership{}, fmt.Errorf("%s is a symbolic link", path)
-	}
-	if !info.Mode().IsRegular() && !info.IsDir() {
+	link := info.Mode()&os.ModeSymlink != 0
+	if !link && !info.Mode().IsRegular() && !info.IsDir() {
 		return fileOwnership{}, fmt.Errorf("%s is neither a regular file nor a directory", path)
 	}
 	st, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {
 		return fileOwnership{}, fmt.Errorf("%s: ownership could not be determined", path)
 	}
-	return fileOwnership{uid: int(st.Uid), mode: info.Mode().Perm(), dir: info.IsDir(), sticky: info.Mode()&os.ModeSticky != 0}, nil
+	return fileOwnership{uid: int(st.Uid), mode: info.Mode().Perm(), dir: info.IsDir(), link: link, sticky: info.Mode()&os.ModeSticky != 0}, nil
 }
 
 // accountOf is the uid and home directory of a named OS user.
@@ -70,6 +70,7 @@ func osEngineHost() engineHost {
 		sockets:      hostRuntimeSockets,
 		capabilities: processCapabilities,
 		fileOwner:    fileOwnerOf,
+		resolve:      filepath.EvalSymlinks,
 		account:      accountOf,
 	}
 }

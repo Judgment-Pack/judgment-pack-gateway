@@ -85,7 +85,11 @@ func load(t *testing.T, text string) (engineConfig, map[string]sourceSpec, error
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return loadEngineConfig(path, stubAccounts(stubUsers))
+	cfg, bindings, err := loadEngineConfig(path, stubAccounts(stubUsers))
+	if err != nil {
+		return cfg, nil, err
+	}
+	return cfg, deriveSources(cfg, bindings), nil
 }
 
 // A configuration names platforms, and the engine derives from each one
@@ -230,14 +234,42 @@ func TestBindingRefusals(t *testing.T) {
 	}
 }
 
-// ownership stands the filesystem in: a map of paths to owners.
+// ownership stands the filesystem in: a map of paths to owners, and the
+// links among them to their targets (a link's entry has link set; where it
+// points is in targets).
 type ownership map[string]fileOwnership
+
+var linkTargets = map[string]string{}
 
 func (o ownership) owner(path string) (fileOwnership, error) {
 	if fo, ok := o[path]; ok {
 		return fo, nil
 	}
 	return fileOwnership{}, os.ErrNotExist
+}
+
+// resolve follows every link among a directory's components, as
+// filepath.EvalSymlinks would.
+func (o ownership) resolve(dir string) (string, error) {
+	var parts []string
+	for d := dir; ; d = filepath.Dir(d) {
+		parts = append([]string{d}, parts...)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	resolved := parts[0]
+	for _, p := range parts[1:] {
+		candidate := filepath.Join(resolved, filepath.Base(p))
+		if fo, ok := o[candidate]; ok && fo.link {
+			candidate = linkTargets[candidate]
+		}
+		if _, ok := o[candidate]; !ok {
+			return "", os.ErrNotExist
+		}
+		resolved = candidate
+	}
+	return resolved, nil
 }
 
 // A filesystem in which everything the configuration names is as it should
@@ -261,6 +293,12 @@ func goodFilesystem(seed, credentials string, signer, adapter int) ownership {
 
 // The refusals the isolation claim depends on, with the filesystem, the
 // user database and the kernel stood in for.
+func ptr(c engineConfig) *engineConfig {
+	copied := c
+	copied.platforms = append([]platformConfig(nil), c.platforms...)
+	return &copied
+}
+
 func TestEngineRefusalsForIsolation(t *testing.T) {
 	seed := filepath.Join(string(filepath.Separator), "var", "lib", "engine", "gateway.seed")
 	credentials := filepath.Join(string(filepath.Separator), "run", "secrets", "warehouse")
@@ -268,19 +306,21 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	noSockets := []string{filepath.Join(t.TempDir(), "absent.sock")}
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	os.WriteFile(socket, nil, 0o600)
+	// Links resolve as the stub filesystem says; a path with none resolves
+	// to itself.
 	host := func(euid int, fs ownership, sockets []string, caps func() capabilitySets) engineHost {
-		return engineHost{euid: euid, sockets: func(string) []string { return sockets }, capabilities: caps, fileOwner: fs.owner}
+		return engineHost{euid: euid, sockets: func(string) []string { return sockets }, capabilities: caps, fileOwner: fs.owner, resolve: fs.resolve}
 	}
 	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
 	noCaps := func() capabilitySets { return capabilitySets{known: true, effective: three, permitted: three} }
 	good := goodFilesystem(seed, credentials, 1000, 1001)
 
-	if statements, err := engineRefusals(cfg, host(1000, good, noSockets, noCaps)); err != nil || len(statements) != 0 {
+	if statements, err := engineRefusals(ptr(cfg), host(1000, good, noSockets, noCaps)); err != nil || len(statements) != 0 {
 		t.Fatalf("a non-root signer beside a platform user with private credentials starts silently: %v %v", err, statements)
 	}
 	expect := func(name string, h engineHost, c engineConfig, want string) {
 		t.Helper()
-		if _, err := engineRefusals(c, h); err == nil || !strings.Contains(err.Error(), want) {
+		if _, err := engineRefusals(ptr(c), h); err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("%s: want %q, got %v", name, want, err)
 		}
 	}
@@ -288,7 +328,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	expect("root signer", host(0, asRoot, noSockets, noCaps), cfg, "the signer runs as root")
 	accepted := cfg
 	accepted.rootSigner = true
-	if statements, err := engineRefusals(accepted, host(0, asRoot, noSockets, noCaps)); err != nil || len(statements) != 1 || !strings.Contains(statements[0], "rootSigner accepted") {
+	if statements, err := engineRefusals(ptr(accepted), host(0, asRoot, noSockets, noCaps)); err != nil || len(statements) != 1 || !strings.Contains(statements[0], "rootSigner accepted") {
 		t.Fatalf("an accepted root signer starts with a statement: %v %v", err, statements)
 	}
 	expect("effective DAC capability", host(1000, good, noSockets, func() capabilitySets {
@@ -303,7 +343,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	expect("inheritable capabilities", host(1000, good, noSockets, func() capabilitySets {
 		return capabilitySets{known: true, effective: three, permitted: three, inheritable: 1 << capSetuid}
 	}), cfg, "holds inheritable capabilities")
-	if _, err := engineRefusals(cfg, host(1000, good, noSockets, func() capabilitySets { return capabilitySets{} })); err != nil {
+	if _, err := engineRefusals(ptr(cfg), host(1000, good, noSockets, func() capabilitySets { return capabilitySets{} })); err != nil {
 		t.Fatalf("where the kernel reports no capabilities, none are judged: %v", err)
 	}
 
@@ -328,7 +368,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	expect("credentials directory writable by others", host(1000, writableDir, noSockets, noCaps), cfg, "writable beyond its owner (mode 0777) without the sticky bit")
 	stickyDir := goodFilesystem(seed, credentials, 1000, 1001)
 	stickyDir[filepath.Dir(credentials)] = fileOwnership{uid: 0, mode: 0o777, dir: true, sticky: true}
-	if _, err := engineRefusals(cfg, host(1000, stickyDir, noSockets, noCaps)); err != nil {
+	if _, err := engineRefusals(ptr(cfg), host(1000, stickyDir, noSockets, noCaps)); err != nil {
 		t.Fatalf("a sticky directory keeps others from replacing what is under it: %v", err)
 	}
 	foreignDir := goodFilesystem(seed, credentials, 1000, 1001)
@@ -346,12 +386,54 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	expect("credentials directory owned by the user without its execute bit", host(1000, ownedClosed, noSockets, noCaps), cfg, "cannot be traversed by uid 1001")
 	ownedPrivate := goodFilesystem(seed, credentials, 1000, 1001)
 	ownedPrivate[filepath.Dir(credentials)] = fileOwnership{uid: 1001, mode: 0o700, dir: true}
-	if _, err := engineRefusals(cfg, host(1000, ownedPrivate, noSockets, noCaps)); err != nil {
+	if _, err := engineRefusals(ptr(cfg), host(1000, ownedPrivate, noSockets, noCaps)); err != nil {
 		t.Fatalf("a private directory of the user's own is traversable by the user: %v", err)
 	}
 	seedDir := goodFilesystem(seed, credentials, 1000, 1001)
 	seedDir[filepath.Dir(seed)] = fileOwnership{uid: 1000, mode: 0o770, dir: true}
 	expect("seed directory writable by its group", host(1000, seedDir, noSockets, noCaps), cfg, "seed: ")
+
+	// A symbolic link among the configured components: root's is a
+	// system's own and is allowed, its target's directories held; anyone
+	// else's could be retargeted and is refused; and a link a platform user
+	// placed in their own directory pointing into trusted directories is
+	// refused for the link, not for its target.
+	root := string(filepath.Separator)
+	plainSeed := filepath.Join(root, "srv", "engine", "gateway.seed")
+	linked := filepath.Join(root, "var", "secrets", "warehouse")
+	target := filepath.Join(root, "private", "var", "secrets", "warehouse")
+	viaLink := goodFilesystem(plainSeed, target, 1000, 1001)
+	viaLink[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "var")] = filepath.Join(root, "private", "var")
+	// Lstat follows an intermediate link: the configured chain's directory
+	// behind the link is the target's.
+	viaLink[filepath.Join(root, "var", "secrets")] = viaLink[filepath.Join(root, "private", "var", "secrets")]
+	linkedCfg := cfg
+	linkedCfg.seed = plainSeed
+	linkedCfg.platforms = []platformConfig{{name: "warehouse", credentials: linked, user: "engine-warehouse", uid: 1001}}
+	resolved := ptr(linkedCfg)
+	if _, err := engineRefusals(resolved, host(1000, viaLink, noSockets, noCaps)); err != nil {
+		t.Fatalf("a root-owned link among the components is a system's own: %v", err)
+	}
+	if resolved.platforms[0].credentials != target {
+		t.Fatalf("the path used from here on is the resolved one: %s", resolved.platforms[0].credentials)
+	}
+	viaLink[filepath.Join(root, "var")] = fileOwnership{uid: 1002, mode: 0o755, link: true}
+	expect("a link owned by another user", host(1000, viaLink, noSockets, noCaps), linkedCfg, "symbolic link owned by uid 1002, not root")
+	ownLink := filepath.Join(root, "home", "other", "link", "warehouse")
+	own := goodFilesystem(plainSeed, target, 1000, 1001)
+	own[filepath.Join(root, "home")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	own[filepath.Join(root, "home", "other")] = fileOwnership{uid: 1002, mode: 0o755, dir: true}
+	own[filepath.Join(root, "home", "other", "link")] = fileOwnership{uid: 1002, mode: 0o777, link: true}
+	linkTargets[filepath.Join(root, "home", "other", "link")] = filepath.Join(root, "private", "var", "secrets")
+	ownCfg := cfg
+	ownCfg.seed = plainSeed
+	ownCfg.platforms = []platformConfig{{name: "warehouse", credentials: ownLink, user: "engine-warehouse", uid: 1001}}
+	expect("a link in another user's directory into trusted directories", host(1000, own, noSockets, noCaps), ownCfg, "owned by uid 1002, neither root nor uid 1001")
+	// The credentials file itself may not be a link.
+	fileLink := goodFilesystem(seed, credentials, 1000, 1001)
+	fileLink[credentials] = fileOwnership{uid: 1001, mode: 0o600, link: true}
+	expect("credentials that is a link", host(1000, fileLink, noSockets, noCaps), cfg, "is a symbolic link")
 	missing := goodFilesystem(seed, credentials, 1000, 1001)
 	delete(missing, credentials)
 	expect("credentials absent", host(1000, missing, noSockets, noCaps), cfg, "credentials: file does not exist")
@@ -359,7 +441,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	expect("host runtime socket", host(1000, good, []string{socket}, noCaps), cfg, "host container runtime socket is present")
 	accepted = cfg
 	accepted.hostRuntime = true
-	if statements, err := engineRefusals(accepted, host(1000, good, []string{socket}, noCaps)); err != nil || len(statements) != 1 || !strings.Contains(statements[0], "hostRuntime accepted") {
+	if statements, err := engineRefusals(ptr(accepted), host(1000, good, []string{socket}, noCaps)); err != nil || len(statements) != 1 || !strings.Contains(statements[0], "hostRuntime accepted") {
 		t.Fatalf("an accepted host runtime starts with a statement: %v %v", err, statements)
 	}
 }

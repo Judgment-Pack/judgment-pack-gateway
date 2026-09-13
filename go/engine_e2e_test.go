@@ -129,10 +129,11 @@ func main() {
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, sources, err := loadEngineConfig(path, stubAccounts(map[string]int{"engine-warehouse": 1001}))
+	cfg, bindings, err := loadEngineConfig(path, stubAccounts(map[string]int{"engine-warehouse": 1001}))
 	if err != nil {
 		t.Fatal(err)
 	}
+	sources := deriveSources(cfg, bindings)
 	for name, spec := range sources {
 		spec.user = ""
 		sources[name] = spec

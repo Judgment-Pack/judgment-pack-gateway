@@ -247,20 +247,22 @@ func cmdServeEngine(args []string) int {
 		return 2
 	}
 	host := osEngineHost()
-	cfg, sources, err := loadEngineConfig(args[0], host.account)
+	cfg, bindings, err := loadEngineConfig(args[0], host.account)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
 	closeInheritedDescriptors()
 	// The isolation refusals come first, so a configuration is judged as a
-	// configuration whatever this process may do; then the seed, then
+	// configuration whatever this process may do; they leave every path
+	// resolved, and the sources are derived from those; then the seed, then
 	// whether the switching the configuration needs is available.
-	statements, err := engineRefusals(cfg, host)
+	statements, err := engineRefusals(&cfg, host)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	sources := deriveSources(cfg, bindings)
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "seed:", err)

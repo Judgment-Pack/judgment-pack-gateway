@@ -75,6 +75,7 @@ type engineHost struct {
 	sockets      func(runtime string) []string
 	capabilities func() capabilitySets
 	fileOwner    func(path string) (fileOwnership, error)
+	resolve      func(dir string) (string, error) // every symbolic link followed
 	account      func(name string) (uid int, home string, err error)
 }
 
@@ -82,6 +83,7 @@ type fileOwnership struct {
 	uid    int
 	mode   os.FileMode // permission bits
 	dir    bool
+	link   bool // a symbolic link, judged as itself and not as its target
 	sticky bool // a directory in which only a file's owner may remove or rename it
 }
 
@@ -544,7 +546,7 @@ func capabilityRefusal(sets capabilitySets) error {
 // up. A signer that holds CAP_SETUID can assume any
 // user, so a compromised signer is not held out of credentials by this;
 // the design note says which separation would.
-func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
+func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 	var statements []string
 	if host.euid == 0 {
 		if !cfg.rootSigner {
@@ -557,12 +559,16 @@ func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 		}
 	}
 	// The seed's own file is held by loadSeed; the directories on the way
-	// to it must not let another user replace it.
-	if err := trustedAncestors(cfg.seed, host.euid, host.fileOwner); err != nil {
+	// to it must not let another user replace it, and the path used from
+	// here on is the resolved one.
+	seed, err := trustedAncestors(cfg.seed, host.euid, host)
+	if err != nil {
 		return nil, fmt.Errorf("seed: %v", err)
 	}
+	cfg.seed = seed
 	seen := map[int]string{}
-	for _, p := range cfg.platforms {
+	for i := range cfg.platforms {
+		p := &cfg.platforms[i]
 		uid := p.uid
 		if uid == 0 {
 			return nil, fmt.Errorf("platform %s: user %s is root; an adapter running as root reads the seed", p.name, p.user)
@@ -574,9 +580,19 @@ func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 			return nil, fmt.Errorf("platform %s: user %s is also platform %s's; each platform's adapters run as a user of their own, or one could read the other's credentials", p.name, p.user, other)
 		}
 		seen[uid] = p.name
+		// The directories first, and the path used from here on is the
+		// resolved one, so the file judged is the file the adapter opens.
+		credentials, err := trustedAncestors(p.credentials, uid, host)
+		if err != nil {
+			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
+		}
+		p.credentials = credentials
 		owner, err := host.fileOwner(p.credentials)
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
+		}
+		if owner.link {
+			return nil, fmt.Errorf("platform %s: credentials %s is a symbolic link", p.name, p.credentials)
 		}
 		if owner.dir {
 			return nil, fmt.Errorf("platform %s: credentials %s is a directory", p.name, p.credentials)
@@ -586,9 +602,6 @@ func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 		}
 		if owner.mode&0o077 != 0 {
 			return nil, fmt.Errorf("platform %s: credentials %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, p.credentials, owner.mode, p.credentials)
-		}
-		if err := trustedAncestors(p.credentials, uid, host.fileOwner); err != nil {
-			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
 		}
 	}
 	if host.sockets != nil {
@@ -605,34 +618,66 @@ func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 }
 
 // trustedAncestors holds every directory on the way to a file to what the
-// file's owner needs and no more: owned by root or by that user, writable
-// by nobody else unless the sticky bit keeps others from removing or
-// renaming what they do not own (so nobody else can replace the file under
-// its name), and traversable by that user. The path is resolved first --
-// a system's own links, /var to /private/var, are not somebody's choice --
-// and the directories held are those of the path the file is actually
-// under; a link somebody else placed sits in a directory these rules
-// refuse, since they could write there.
-func trustedAncestors(path string, uid int, fileOwner func(string) (fileOwnership, error)) error {
-	// The directory is what is resolved: the file itself may not exist
-	// yet, as a seed does not before keygen, and its directories must be
-	// held either way.
-	if resolved, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
-		path = filepath.Join(resolved, filepath.Base(path))
+// file's owner needs and no more, and returns the path with every
+// symbolic link resolved, which is the path then used: owned by root or by
+// that user, writable by nobody else unless the sticky bit keeps others
+// from removing or renaming what they do not own (so nobody else can
+// replace the file under its name), and traversable by that user. Both
+// chains are held: the components of the path as configured, where a
+// symbolic link is allowed only when root owns it (a system's own, such as
+// macOS's /var) and its directory is held like any other, so nobody but
+// root could have placed or could retarget it; and the resolved chain, in
+// which no link remains. The file itself need not exist yet -- a seed does
+// not before keygen -- so it is the directory that is resolved.
+func trustedAncestors(path string, uid int, host engineHost) (string, error) {
+	dir := filepath.Dir(path)
+	if err := holdChain(dir, uid, host.fileOwner, true); err != nil {
+		return "", err
 	}
-	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
-		owner, err := fileOwner(dir)
+	resolved, err := host.resolve(dir)
+	if err != nil {
+		return "", fmt.Errorf("%s could not be resolved: %v", dir, err)
+	}
+	if resolved != dir {
+		if err := holdChain(resolved, uid, host.fileOwner, false); err != nil {
+			return "", err
+		}
+	}
+	return filepath.Join(resolved, filepath.Base(path)), nil
+}
+
+// holdChain holds a directory and each of its ancestors, from the root
+// down, to the ancestor rules.
+func holdChain(dir string, uid int, fileOwner func(string) (fileOwnership, error), linksAllowed bool) error {
+	var chain []string
+	for d := dir; ; d = filepath.Dir(d) {
+		chain = append([]string{d}, chain...)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	for _, d := range chain {
+		owner, err := fileOwner(d)
 		if err != nil {
-			return fmt.Errorf("%s: %v", dir, err)
+			return fmt.Errorf("%s: %v", d, err)
+		}
+		if owner.link {
+			if !linksAllowed {
+				return fmt.Errorf("%s is a symbolic link after resolution", d)
+			}
+			if owner.uid != 0 {
+				return fmt.Errorf("%s is a symbolic link owned by uid %d, not root, so its owner could retarget it", d, owner.uid)
+			}
+			continue // its target's directories are held in the resolved chain
 		}
 		if !owner.dir {
-			return fmt.Errorf("%s is not a directory", dir)
+			return fmt.Errorf("%s is not a directory", d)
 		}
 		if owner.uid != 0 && owner.uid != uid {
-			return fmt.Errorf("%s is owned by uid %d, neither root nor uid %d, so its owner could replace what is under it", dir, owner.uid, uid)
+			return fmt.Errorf("%s is owned by uid %d, neither root nor uid %d, so its owner could replace what is under it", d, owner.uid, uid)
 		}
 		if owner.mode&0o022 != 0 && !owner.sticky {
-			return fmt.Errorf("%s is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is under it", dir, owner.mode)
+			return fmt.Errorf("%s is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is under it", d, owner.mode)
 		}
 		// Traversal is judged by the class that applies to the user: the
 		// owner bits when the directory is the user's, the other bits when
@@ -643,12 +688,10 @@ func trustedAncestors(path string, uid int, fileOwner func(string) (fileOwnershi
 			traversable = owner.mode&0o100 != 0
 		}
 		if !traversable {
-			return fmt.Errorf("%s (mode %04o) cannot be traversed by uid %d", dir, owner.mode, uid)
-		}
-		if parent := filepath.Dir(dir); parent == dir {
-			return nil
+			return fmt.Errorf("%s (mode %04o) cannot be traversed by uid %d", d, owner.mode, uid)
 		}
 	}
+	return nil
 }
 
 // engineServeOptions is what `serve` runs for a configuration: the derived
@@ -658,8 +701,9 @@ func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec) serveOp
 }
 
 // loadEngineConfig reads and resolves a configuration file: the file, every
-// platform's user, every binding it pins, and the sources they derive.
-func loadEngineConfig(path string, account func(name string) (int, string, error)) (engineConfig, map[string]sourceSpec, error) {
+// platform's user, and every binding it pins. The sources are derived after
+// the refusals, from the paths the refusals resolved.
+func loadEngineConfig(path string, account func(name string) (int, string, error)) (engineConfig, map[string]binding, error) {
 	data, err := readBounded(path, maxEngineConfigBytes)
 	if err != nil {
 		return engineConfig{}, nil, fmt.Errorf("engine configuration: %v", err)
@@ -682,7 +726,7 @@ func loadEngineConfig(path string, account func(name string) (int, string, error
 		}
 		bindings[p.name] = b
 	}
-	return cfg, deriveSources(cfg, bindings), nil
+	return cfg, bindings, nil
 }
 
 // readBounded reads a regular file of at most limit bytes through one
