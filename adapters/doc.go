@@ -4,12 +4,22 @@
 // the source contract in SPEC.md §6 (canonical arguments on stdin, one JSON
 // result on stdout).
 //
-// The module is empty on purpose at this point. What it will hold, and the one
-// rule it lives under, is recorded in docs/adr/0001-one-engine-four-processes.md:
-// an adapter is shipped in the same release as the gateway and runs as its own
-// process, spawned by the gateway exactly as any `--source NAME=CMD` is today.
-// It holds a platform's credentials; it never holds the signing seed; and it
-// never imports the core module, so nothing in it can be linked into the
-// process that signs. boundary_test.go makes `go test ./...` fail on the first
-// import that crosses that line.
+// What it holds, and the one rule it lives under, is recorded in
+// docs/adr/0001-one-engine-four-processes.md: an adapter is shipped in the same
+// release as the gateway and runs as its own process, spawned by the gateway
+// exactly as any `--source NAME=CMD` is, declared an adapter of its shape with
+// `--source-shape`, and answering with the envelope of SPEC.md §6
+// (docs/adr/0002-adapters-report-in-the-envelope.md). It holds a platform's
+// credentials; it never holds the signing seed; and it never imports the core
+// module, so nothing in it can be linked into the process that signs.
+// boundary_test.go makes `go test ./...` fail on the first import that crosses
+// that line.
+//
+//	airbyte/               the Airbyte-shaped adapter: a pinned connector image
+//	                       run through the operator's container runtime, one
+//	                       page of one stream per acquisition
+//	cmd/adapter-airbyte/   its command
+//	internal/fakeruntime/  a stand-in for the container runtime, for tests
+//
+// README.md says how an adapter is wired to `gateway serve`.
 package adapters

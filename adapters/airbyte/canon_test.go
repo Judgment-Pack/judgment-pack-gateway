@@ -1,0 +1,75 @@
+package airbyte
+
+import (
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"testing"
+)
+
+// The adapter's canonicalizer answers to the same frozen vectors as the
+// core's (corpus/canon.json), read from disk and never linked: every
+// accepted vector renders byte-for-byte, every rejected one is refused.
+func TestCanonicalizeAnswersToTheFrozenCorpus(t *testing.T) {
+	data, err := os.ReadFile("../../corpus/canon.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var corpus struct {
+		Vectors []struct {
+			Note         string `json:"note"`
+			InputJSON    string `json:"inputJson"`
+			ExpectedHex  string `json:"expectedHex"`
+			ExpectedUTF8 string `json:"expectedUtf8"`
+			Reject       bool   `json:"reject"`
+		} `json:"vectors"`
+	}
+	if err := json.Unmarshal(data, &corpus); err != nil {
+		t.Fatal(err)
+	}
+	if len(corpus.Vectors) < 30 {
+		t.Fatalf("expected the whole corpus, read %d vectors", len(corpus.Vectors))
+	}
+	for _, v := range corpus.Vectors {
+		got, err := canonicalize([]byte(v.InputJSON), refuseNumbers)
+		if v.Reject {
+			if err == nil {
+				t.Errorf("%s: %q must be refused, produced %q", v.Note, v.InputJSON, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %q refused: %v", v.Note, v.InputJSON, err)
+			continue
+		}
+		if string(got) != v.ExpectedUTF8 || hex.EncodeToString(got) != v.ExpectedHex {
+			t.Errorf("%s: %q produced %q, want %q", v.Note, v.InputJSON, got, v.ExpectedUTF8)
+		}
+	}
+}
+
+// Under the carrying policy a number outside the domain becomes a string
+// holding its literal exactly; everything the corpus refuses for another
+// reason is still refused.
+func TestCanonicalizeCarriesNumbersAsText(t *testing.T) {
+	cases := map[string]string{
+		`{"n":1.5}`:                    `{"n":"1.5"}`,
+		`{"n":1.0}`:                    `{"n":"1.0"}`,
+		`{"n":1e2}`:                    `{"n":"1e2"}`,
+		`{"n":9007199254740992}`:       `{"n":"9007199254740992"}`,
+		`{"n":-9007199254740992}`:      `{"n":"-9007199254740992"}`,
+		`{"n":9007199254740991}`:       `{"n":9007199254740991}`,
+		`{"b":[0.5,2],"a":{"x":-0.0}}`: `{"a":{"x":"-0.0"},"b":["0.5",2]}`,
+	}
+	for in, want := range cases {
+		got, err := canonicalize([]byte(in), carryNumbersAsText)
+		if err != nil || string(got) != want {
+			t.Errorf("%s: got %q (%v), want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{`{"a":1,"a":2}`, `{"k":"\ud800"}`, "{\"k\":\"\xff\"}", `{"a":1}{"b":2}`, `[1,`} {
+		if _, err := canonicalize([]byte(in), carryNumbersAsText); err == nil {
+			t.Errorf("%q must be refused under either policy", in)
+		}
+	}
+}
