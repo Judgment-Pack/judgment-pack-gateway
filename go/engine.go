@@ -73,7 +73,7 @@ type operation struct {
 type engineHost struct {
 	euid         int
 	sockets      func(runtime string) []string
-	capabilities func() (effective, ambient uint64, known bool)
+	capabilities func() capabilitySets
 	fileOwner    func(path string) (fileOwnership, error)
 	account      func(name string) (uid int, home string, err error)
 }
@@ -506,6 +506,32 @@ const (
 	dacCapabilityBits = 1<<capDacOverride | 1<<capDacReadSearch
 )
 
+// capabilityRefusal is why a non-root signer's capability sets are refused,
+// or nil. Effective and permitted alike may not read past permissions,
+// since a permitted capability is raised without any privilege gained.
+// Nothing may be inheritable or ambient: an ambient capability survives
+// the switch into an adapter and the exec; an inheritable one is granted
+// to any file carrying it as inheritable, which an adapter could execute;
+// and clearing either is per thread, so it cannot be verified for every
+// thread this process spawns from. The three capabilities the signer
+// needs are held as file capabilities on the gateway binary, which put
+// them in the permitted and effective sets and nowhere else.
+func capabilityRefusal(sets capabilitySets) error {
+	if !sets.known {
+		return nil
+	}
+	if (sets.effective|sets.permitted)&dacCapabilityBits != 0 {
+		return errors.New("the signer holds CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH, which read past every permission; it needs CAP_SETUID, CAP_SETGID and CAP_KILL and nothing more")
+	}
+	if sets.ambient != 0 {
+		return errors.New("the signer holds ambient capabilities, which survive the switch into an adapter and let it switch back; hold the capabilities as file capabilities on the gateway binary instead")
+	}
+	if sets.inheritable != 0 {
+		return errors.New("the signer holds inheritable capabilities, which a file an adapter executes could take up; hold the capabilities as file capabilities on the gateway binary instead")
+	}
+	return nil
+}
+
 // engineRefusals are the conditions under which the engine does not start,
 // checked before anything is written: each is a configuration the isolation
 // claim does not survive, refused as a configuration with nothing to clean
@@ -514,8 +540,8 @@ const (
 // adapter runs as a user that is neither root nor the signer nor another
 // platform's; no credentials file, and no directory on the way to one, can
 // be read or replaced by anyone but its owner and root; the signer holds no
-// capability that reads past permissions and no ambient capability an
-// adapter would inherit. A signer that holds CAP_SETUID can assume any
+// capability that reads past permissions and none an adapter could take
+// up. A signer that holds CAP_SETUID can assume any
 // user, so a compromised signer is not held out of credentials by this;
 // the design note says which separation would.
 func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
@@ -526,13 +552,8 @@ func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 		}
 		statements = append(statements, "rootSigner accepted: the signer runs as root and can read every platform's credentials; the separation between signer and adapters rests on the host, not on this configuration")
 	} else if host.capabilities != nil {
-		if effective, ambient, known := host.capabilities(); known {
-			if effective&dacCapabilityBits != 0 {
-				return nil, errors.New("the signer holds CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH, which read past every permission; it needs CAP_SETUID, CAP_SETGID and CAP_KILL and nothing more")
-			}
-			if ambient != 0 {
-				return nil, errors.New("the signer holds ambient capabilities, which survive the switch into an adapter and let it switch back; hold the capabilities as file capabilities on the gateway binary instead")
-			}
+		if err := capabilityRefusal(host.capabilities()); err != nil {
+			return nil, err
 		}
 	}
 	// The seed's own file is held by loadSeed; the directories on the way
@@ -610,7 +631,15 @@ func trustedAncestors(path string, uid int, fileOwner func(string) (fileOwnershi
 		if owner.mode&0o022 != 0 && !owner.sticky {
 			return fmt.Errorf("%s is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is under it", dir, owner.mode)
 		}
-		if owner.uid != uid && owner.mode&0o001 == 0 {
+		// Traversal is judged by the class that applies to the user: the
+		// owner bits when the directory is the user's, the other bits when
+		// it is root's (the group bits would apply to a group the user is
+		// in, which is not known here and is not assumed).
+		traversable := owner.mode&0o001 != 0
+		if owner.uid == uid {
+			traversable = owner.mode&0o100 != 0
+		}
+		if !traversable {
 			return fmt.Errorf("%s (mode %04o) cannot be traversed by uid %d", dir, owner.mode, uid)
 		}
 		if parent := filepath.Dir(dir); parent == dir {
@@ -654,26 +683,20 @@ func loadEngineConfig(path string, account func(name string) (int, string, error
 }
 
 // readBounded reads a regular file of at most limit bytes through one
-// descriptor: judged as the file that was opened, then read at most one
-// byte past the limit, so a file that grew or was replaced between a look
-// and a read is not read in part. A special file is refused by the first
-// look without being opened, since opening a FIFO would block.
+// descriptor, opened without blocking so that a special file put in the
+// regular file's place is judged as what was opened and refused rather
+// than waited on, then read at most one byte past the limit, so a file
+// that grew between the look and the read is not read in part.
 func readBounded(path string, limit int) ([]byte, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
-	file, err := os.Open(path)
+	file, err := openRegular(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	if info, err = file.Stat(); err != nil || !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", path)
-	}
+	return readBoundedFrom(file, path, limit)
+}
+
+func readBoundedFrom(file io.Reader, path string, limit int) ([]byte, error) {
 	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
 	if err != nil {
 		return nil, err

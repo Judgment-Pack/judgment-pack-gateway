@@ -47,6 +47,22 @@ func accountOf(name string) (int, string, error) {
 	return uid, account.HomeDir, nil
 }
 
+// openRegular opens a path without blocking -- a FIFO put in a regular
+// file's place would otherwise hold the open until a writer came -- and
+// judges the descriptor it got: a regular file, or refused.
+func openRegular(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		file.Close()
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	return file, nil
+}
+
 // osEngineHost is the operating system as the engine's host.
 func osEngineHost() engineHost {
 	return engineHost{

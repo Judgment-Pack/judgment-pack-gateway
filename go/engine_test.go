@@ -268,10 +268,11 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	noSockets := []string{filepath.Join(t.TempDir(), "absent.sock")}
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	os.WriteFile(socket, nil, 0o600)
-	host := func(euid int, fs ownership, sockets []string, caps func() (uint64, uint64, bool)) engineHost {
+	host := func(euid int, fs ownership, sockets []string, caps func() capabilitySets) engineHost {
 		return engineHost{euid: euid, sockets: func(string) []string { return sockets }, capabilities: caps, fileOwner: fs.owner}
 	}
-	noCaps := func() (uint64, uint64, bool) { return 1<<capSetuid | 1<<capSetgid | 1<<capKill, 0, true }
+	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
+	noCaps := func() capabilitySets { return capabilitySets{known: true, effective: three, permitted: three} }
 	good := goodFilesystem(seed, credentials, 1000, 1001)
 
 	if statements, err := engineRefusals(cfg, host(1000, good, noSockets, noCaps)); err != nil || len(statements) != 0 {
@@ -290,8 +291,21 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	if statements, err := engineRefusals(accepted, host(0, asRoot, noSockets, noCaps)); err != nil || len(statements) != 1 || !strings.Contains(statements[0], "rootSigner accepted") {
 		t.Fatalf("an accepted root signer starts with a statement: %v %v", err, statements)
 	}
-	expect("DAC capability", host(1000, good, noSockets, func() (uint64, uint64, bool) { return 1<<capSetuid | 1<<capDacOverride, 0, true }), cfg, "CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH")
-	expect("ambient capabilities", host(1000, good, noSockets, func() (uint64, uint64, bool) { return 1 << capSetuid, 1 << capSetuid, true }), cfg, "holds ambient capabilities")
+	expect("effective DAC capability", host(1000, good, noSockets, func() capabilitySets {
+		return capabilitySets{known: true, effective: three | 1<<capDacOverride, permitted: three}
+	}), cfg, "CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH")
+	expect("permitted-only DAC capability", host(1000, good, noSockets, func() capabilitySets {
+		return capabilitySets{known: true, effective: three, permitted: three | 1<<capDacReadSearch}
+	}), cfg, "CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH")
+	expect("ambient capabilities", host(1000, good, noSockets, func() capabilitySets {
+		return capabilitySets{known: true, effective: three, permitted: three, ambient: 1 << capSetuid}
+	}), cfg, "holds ambient capabilities")
+	expect("inheritable capabilities", host(1000, good, noSockets, func() capabilitySets {
+		return capabilitySets{known: true, effective: three, permitted: three, inheritable: 1 << capSetuid}
+	}), cfg, "holds inheritable capabilities")
+	if _, err := engineRefusals(cfg, host(1000, good, noSockets, func() capabilitySets { return capabilitySets{} })); err != nil {
+		t.Fatalf("where the kernel reports no capabilities, none are judged: %v", err)
+	}
 
 	rootUser := cfg
 	rootUser.platforms = []platformConfig{{name: "warehouse", credentials: credentials, user: "root", uid: 0}}
@@ -323,6 +337,18 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	closedDir := goodFilesystem(seed, credentials, 1000, 1001)
 	closedDir[filepath.Dir(credentials)] = fileOwnership{uid: 0, mode: 0o700, dir: true}
 	expect("credentials directory the adapter cannot traverse", host(1000, closedDir, noSockets, noCaps), cfg, "cannot be traversed by uid 1001")
+	// Traversal is judged by the class that applies: a directory the user
+	// owns without its owner's execute bit is closed to the user however
+	// open it is to others; one the user owns with it is open to the user
+	// however closed to others.
+	ownedClosed := goodFilesystem(seed, credentials, 1000, 1001)
+	ownedClosed[filepath.Dir(credentials)] = fileOwnership{uid: 1001, mode: 0o655, dir: true}
+	expect("credentials directory owned by the user without its execute bit", host(1000, ownedClosed, noSockets, noCaps), cfg, "cannot be traversed by uid 1001")
+	ownedPrivate := goodFilesystem(seed, credentials, 1000, 1001)
+	ownedPrivate[filepath.Dir(credentials)] = fileOwnership{uid: 1001, mode: 0o700, dir: true}
+	if _, err := engineRefusals(cfg, host(1000, ownedPrivate, noSockets, noCaps)); err != nil {
+		t.Fatalf("a private directory of the user's own is traversable by the user: %v", err)
+	}
 	seedDir := goodFilesystem(seed, credentials, 1000, 1001)
 	seedDir[filepath.Dir(seed)] = fileOwnership{uid: 1000, mode: 0o770, dir: true}
 	expect("seed directory writable by its group", host(1000, seedDir, noSockets, noCaps), cfg, "seed: ")
@@ -423,5 +449,17 @@ func TestReadBounded(t *testing.T) {
 	}
 	if _, err := readBounded(dir, 16); err == nil || !strings.Contains(err.Error(), "not a regular file") {
 		t.Fatalf("a directory is refused: %v", err)
+	}
+	// Consumption stops one byte past the bound, whatever the file holds.
+	file, err := os.Open(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := readBoundedFrom(file, big, 4); err == nil || !strings.Contains(err.Error(), "larger than 4 bytes") {
+		t.Fatalf("past the bound is refused: %v", err)
+	}
+	if offset, _ := file.Seek(0, 1); offset != 5 {
+		t.Fatalf("read %d bytes of a 17-byte file, want the bound plus one", offset)
 	}
 }

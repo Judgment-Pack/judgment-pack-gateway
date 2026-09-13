@@ -165,8 +165,9 @@ start the source and never stop it. **`--source-user`** runs a source as another
 user where the platform has one, with that user's own supplementary groups and none of the
 gateway's, and `serve` refuses to start rather than fall back to running the source as the signer
 when it cannot switch: root may switch, and so may a process that is not root but holds
-`CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` on Linux, which is how the engine runs its signer as
-a user of its own; a process stripped of the capability to switch passes the startup
+`CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` on Linux as file capabilities, holding nothing
+ambient or inheritable and nothing that reads past permissions, which is how the engine runs its
+signer as a user of its own; a process stripped of the capability to switch passes the startup
 check only where capabilities cannot be read, and fails at its first acquisition, where the
 operating system's reason is reported. **A
 source's stdout is bounded** (`--source-max-output`, one mebibyte by default) and its stderr is
@@ -195,8 +196,10 @@ a user of their own that is neither root nor the signer nor another platform's, 
 file must be owned by that user and readable by nobody else under directories nobody else can
 replace it in, a signer that is root must be accepted by name, and so must a host
 container-runtime socket an adapter could reach; a non-root signer may hold no capability that
-reads past permissions, and its ambient set is emptied before it switches anyone, since an
-ambient capability would survive into the adapter and let it switch back. What that holds is
+reads past permissions, in its effective or permitted set, and none that is ambient or
+inheritable, since either could cross into an adapter and let it switch back — the three it
+needs are file capabilities on the gateway binary, and nothing is cleared, as clearing is per
+thread. What that holds is
 the signer as written: a signer holding `CAP_SETUID` can assume any user, so a compromised
 signer is not held out of credentials by the configuration — that takes a privileged launcher
 separate from the signer, which is the engine image's job. The checks hold the configuration

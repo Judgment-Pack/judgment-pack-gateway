@@ -120,7 +120,8 @@ engine refuses to start under a configuration the isolation claim of
   other than `0600`); and any directory on the way to it that is owned by neither root nor
   that user, or writable beyond its owner without the sticky bit (so someone else could
   replace the file under its name), or that the user cannot traverse (the adapter could not
-  open its own credentials) — the path resolved first, so a system's own link such as
+  open its own credentials, judged by the owner bits when the directory is the user's and by
+  the other bits when it is root's) — the path resolved first, so a system's own link such as
   macOS's `/var` is not refused, and the directories held are those the file is actually
   under; the seed's directories are held to the same, for the signer;
 - a signer that runs as **root**, which reads every credentials file whatever protects it,
@@ -129,10 +130,14 @@ engine refuses to start under a configuration the isolation claim of
   configuration. The way to avoid it: run the signer as a user of its own holding
   `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` **as file capabilities on the gateway binary**,
   which is what lets it switch adapters to their users;
-- a non-root signer holding **`CAP_DAC_OVERRIDE` or `CAP_DAC_READ_SEARCH`**, which read past
-  every permission, or holding any **ambient** capability, which would survive the switch into
-  an adapter and the exec and let the adapter switch back — the engine empties its ambient set
-  before it switches anyone, and refuses a set it cannot empty;
+- a non-root signer holding **`CAP_DAC_OVERRIDE` or `CAP_DAC_READ_SEARCH`** in its effective
+  or permitted set (a permitted capability is raised without any privilege gained), which read
+  past every permission; or holding any **ambient** capability, which would survive the switch
+  into an adapter and the exec and let the adapter switch back; or any **inheritable** one,
+  which a file the adapter executes could take up. Neither set is cleared, since clearing is
+  per thread and cannot be verified for every thread the engine spawns from: the three
+  capabilities are held as file capabilities on the gateway binary, which put them in the
+  permitted and effective sets and nowhere else, and anything else is refused;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
   the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
@@ -144,7 +149,7 @@ engine refuses to start under a configuration the isolation claim of
 What these checks establish, and no more: every adapter runs as a user that is neither root
 nor the signer nor another platform's; no credentials file, and no directory on the way to
 one, can be read or replaced by anyone but its owner and root; the signer holds no capability
-that reads past permissions and no capability an adapter would inherit. **A signer that holds
+that reads past permissions and none an adapter could take up. **A signer that holds
 `CAP_SETUID` can assume any user**, and so can read any credentials file by becoming its owner:
 what this configuration holds is the signer *as written* — it reads no credential — not a
 signer that has been compromised. Holding a compromised signer out of credentials takes a

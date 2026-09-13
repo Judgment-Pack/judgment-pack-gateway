@@ -162,18 +162,8 @@ func requireUserSwitching(sources map[string]sourceSpec) error {
 		// three capabilities, which is how the engine runs its signer as a
 		// user of its own beside per-platform users. Where capabilities
 		// cannot be read (not Linux), only root may.
-		missing, known := effectiveCapabilities()
-		if os.Geteuid() != 0 && !known {
-			return fmt.Errorf("--source-user %s=%s: switching to another user requires the gateway to run as root", name, spec.user)
-		}
-		if len(missing) > 0 {
-			return fmt.Errorf("--source-user %s=%s: this process lacks %s; it could start the source as that user but not stop it, or not start it at all", name, spec.user, strings.Join(missing, ", "))
-		}
-		// A capability held ambiently would survive the switch into the
-		// source and the exec, and let the source switch back: the set is
-		// emptied here, and a set that cannot be emptied is refused.
-		if os.Geteuid() != 0 && !clearAmbientCapabilities() {
-			return fmt.Errorf("--source-user %s=%s: this process holds ambient capabilities that could not be cleared; hold them as file capabilities on the gateway binary instead", name, spec.user)
+		if err := switchingRefusal(os.Geteuid(), processCapabilities()); err != nil {
+			return fmt.Errorf("--source-user %s=%s: %v", name, spec.user, err)
 		}
 		if _, err := lookupCredential(spec.user); err != nil {
 			return fmt.Errorf("--source-user %s: %w", name, err)
@@ -198,18 +188,37 @@ var requiredCapabilities = []struct {
 }
 
 func missingCapabilities() []string {
-	missing, _ := effectiveCapabilities()
-	return missing
+	return missingCapabilitiesInSets(processCapabilities())
 }
 
-// effectiveCapabilities is what this process lacks of the three it needs,
-// and whether the kernel said: on Linux, from /proc/self/status.
-func effectiveCapabilities() ([]string, bool) {
-	status, err := os.ReadFile("/proc/self/status")
-	if err != nil {
-		return nil, false
+// switchingRefusal is why this process may not switch a source to another
+// user, or nil: root may; a process that is not root may where the kernel
+// reports capabilities, holding the three it needs and none that would
+// cross into the source (capabilityRefusal); elsewhere only root may.
+func switchingRefusal(euid int, sets capabilitySets) error {
+	if euid != 0 && !sets.known {
+		return errors.New("switching to another user requires the gateway to run as root")
 	}
-	return missingCapabilitiesIn(string(status)), strings.Contains(string(status), "CapEff:")
+	if missing := missingCapabilitiesInSets(sets); len(missing) > 0 {
+		return fmt.Errorf("this process lacks %s; it could start the source as that user but not stop it, or not start it at all", strings.Join(missing, ", "))
+	}
+	if euid != 0 {
+		return capabilityRefusal(sets)
+	}
+	return nil
+}
+
+func missingCapabilitiesInSets(sets capabilitySets) []string {
+	if !sets.known {
+		return nil
+	}
+	var missing []string
+	for _, capability := range requiredCapabilities {
+		if sets.effective&(1<<capability.bit) == 0 {
+			missing = append(missing, capability.name)
+		}
+	}
+	return missing
 }
 
 func missingCapabilitiesIn(status string) []string {
