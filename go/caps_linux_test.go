@@ -254,6 +254,14 @@ func TestExecutableFactsSurviveReplacementOfThePath(t *testing.T) {
 	if err := os.WriteFile(replacement, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Mode set outright, so a umask that would make it 0700 as well
+	// cannot take the distinction away.
+	if err := os.Chmod(replacement, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(replacement); err != nil || info.Mode().Perm() != 0o755 {
+		t.Fatalf("the replacement's mode: %v %v", info, err)
+	}
 	if err := os.Rename(replacement, helper); err != nil {
 		t.Fatal(err)
 	}
