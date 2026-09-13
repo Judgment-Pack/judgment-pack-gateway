@@ -580,11 +580,13 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint", p.endpoint)
 			}
+			// Each as one word, flag=value: a value of "--" as its own word
+			// would be the delimiter the adapter splits its line at.
 			var check []string
 			if b.live.probe != "" {
-				check = []string{"--probe", b.live.probe}
+				check = []string{"--probe=" + b.live.probe}
 				if b.live.probeFailure != "" {
-					check = append(check, "--probe-failure", b.live.probeFailure)
+					check = append(check, "--probe-failure="+b.live.probeFailure)
 				}
 			}
 			if len(b.live.args) > 0 {
@@ -594,6 +596,40 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		}
 	}
 	return sources
+}
+
+// preflightPaths is why serve could not make what the configuration
+// names, or nil: the store must be a directory or absent with a parent to
+// make it in, the registry a regular file or absent likewise, and the
+// decision-record directory a directory or absent likewise. Connect judges
+// the same before any adapter is run, so it does not succeed where the
+// next start would fail. Nothing is made here.
+func preflightPaths(store, registry, decisionRecords string) error {
+	judge := func(name, path string, dir bool) error {
+		info, err := os.Stat(path)
+		switch {
+		case err == nil && dir && !info.IsDir():
+			return fmt.Errorf("%s %s is not a directory", name, path)
+		case err == nil && !dir && !info.Mode().IsRegular():
+			return fmt.Errorf("%s %s is not a regular file", name, path)
+		case err == nil:
+			return nil
+		case !errors.Is(err, os.ErrNotExist):
+			return fmt.Errorf("%s %s: %v", name, path, err)
+		}
+		parent, err := os.Stat(filepath.Dir(path))
+		if err != nil || !parent.IsDir() {
+			return fmt.Errorf("%s %s cannot be made: its directory is not there", name, path)
+		}
+		return nil
+	}
+	if err := judge("store", store, true); err != nil {
+		return err
+	}
+	if err := judge("registry", registry, false); err != nil {
+		return err
+	}
+	return judge("decisionRecords", decisionRecords, true)
 }
 
 // hostRuntimeSockets are where a host container runtime listens when it is

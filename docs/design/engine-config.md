@@ -278,8 +278,10 @@ one takes the lock, while an editor that does not is not held out, and its save 
 instant between that read and the rename would be written over; the new file is written in
 a directory of the connect's own beside the configuration, so no other user can swap it
 before the rename, and it keeps the old one's mode and owner, set through the open
-descriptor, or is not put in place; and the seed is judged as `serve` judges it before any
-adapter is run, so a connect does not succeed where the next start would refuse. The file is rewritten whole, in the engine's own form —
+descriptor, or is not put in place; and the seed, the store, the registry and the decision-record directory are judged as
+`serve` judges them before any adapter is run — the seed a seed, the store a directory or
+absent with a directory to make it in, the registry a regular file or absent likewise — so a
+connect does not succeed where the next start would refuse. The file is rewritten whole, in the engine's own form —
 members in canonical order, indented — and put in place by a rename, so a reader sees the old
 file or the new and never a partial one. Every value written is valid UTF-8, since the file
 is JSON; a path that is not is refused rather than written as something else. A configuration

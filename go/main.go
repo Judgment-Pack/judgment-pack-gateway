@@ -270,6 +270,10 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	sources := deriveSources(cfg, bindings)
+	if err := preflightPaths(cfg.store, cfg.registry, cfg.decisionRecords); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "seed:", err)

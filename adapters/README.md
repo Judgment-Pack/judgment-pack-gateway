@@ -230,7 +230,8 @@ adapter — for roots, for sampling — is answered "method not found", since th
 serves nothing; a notification, and a response to an id this adapter never used, are passed
 over. A tool result is held to its shape — a `content` array of typed items, an object for
 `structuredContent`, a boolean for `isError` — by exact member names; one that answers
-`isError` fails the acquisition with its text, redacted. A line on the server's stdout that
+`isError` fails the acquisition with its text, redacted; a text item whose `text` is not a
+string as the server wrote it — null, or a number — is malformed and fails too. A line on the server's stdout that
 is not a JSON-RPC message is a protocol violation and fails the acquisition, as the stdio
 transport reserves stdout for messages. Every message, and every tool descriptor, is read by
 its members' exact names with a duplicate refused, so `RESULT` cannot stand in for `result`

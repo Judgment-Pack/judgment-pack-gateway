@@ -654,3 +654,17 @@ func TestReadBounded(t *testing.T) {
 		t.Fatalf("read %d bytes of a 17-byte file, want the bound plus one", offset)
 	}
 }
+
+// A failure prefix of "--" reaches the adapter as one word, flag=value,
+// not as the delimiter the adapter splits its line at.
+func TestAProbeFailureOfTwoDashesReachesTheAdapter(t *testing.T) {
+	binding := `{"bindingVersion":"1","platform":"postgres","operations":{"live":{"shape":"mcp","server":{"image":"x/mcp@` + testImageDigest + `"},"tools":["q"],"probe":{"tool":"q","failure":"--"},"licence":"MIT"}}}`
+	catalog := catalogWith(t, map[string]string{"postgres": binding})
+	_, sources, err := load(t, engineJSON(t, catalog, ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(binding), "engine-warehouse", ``, "live")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(sources["warehouse/live"].check, " "); got != "--probe=q --probe-failure=--" {
+		t.Fatalf("check arguments: %q", got)
+	}
+}

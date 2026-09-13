@@ -116,7 +116,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	if argv := strings.Join(f.asked[1].argv, " "); !strings.HasSuffix(argv, " --endpoint warehouse.internal:5432 -- --access-mode=restricted") || !strings.Contains(argv, "--credentials "+f.credentials+" ") {
 		t.Fatalf("the derived command line carries the binding's server arguments after --: %s", argv)
 	}
-	if strings.Join(f.asked[1].check, " ") != "--probe query --probe-failure Error:" || len(f.asked[0].check) != 0 {
+	if strings.Join(f.asked[1].check, " ") != "--probe=query --probe-failure=Error:" || len(f.asked[0].check) != 0 {
 		t.Fatalf("the check carries the binding's probe: %q %q", f.asked[0].check, f.asked[1].check)
 	}
 	if len(out.answers) != 2 || out.answers[0] != "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: Connected" ||
@@ -508,4 +508,51 @@ func TestDescribeCheckReportsTheProbe(t *testing.T) {
 	if _, err := describeCheck("mcp", []byte(strings.Replace(report, `"answered":true`, `"answered":false`, 1))); err == nil || !strings.Contains(err.Error(), `the probe "list_schemas" did not answer`) {
 		t.Fatalf("a probe that did not answer: %v", err)
 	}
+}
+
+func TestConnectJudgesThePathsServeMakes(t *testing.T) {
+	// Written out rather than tabled: each case changes a different path.
+	f := newConnectFixture(t, restrictedBinding, ``)
+	store := storeOf(t, f)
+	if err := os.WriteFile(store, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := f.fileText(t)
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "store "+store+" is not a directory") || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatalf("a store serve could not make is refused before any check: %v (asked %d)", err, len(f.asked))
+	}
+	os.Remove(store)
+	registry := strings.TrimSuffix(store, "store") + "registry.jsonl"
+	if err := os.Mkdir(registry, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "registry "+registry+" is not a regular file") {
+		t.Fatalf("a registry that is a directory: %v", err)
+	}
+	os.Remove(registry)
+	decisions := strings.TrimSuffix(store, "store") + "decisions"
+	if err := os.WriteFile(decisions, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "decisionRecords "+decisions+" is not a directory") {
+		t.Fatalf("a decision-record path that is a file: %v", err)
+	}
+	os.Remove(decisions)
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatalf("absent, with a directory to make them in: %v", err)
+	}
+	if err := preflightPaths(filepath.Join(t.TempDir(), "missing", "store"), registry, decisions); err == nil || !strings.Contains(err.Error(), "cannot be made: its directory is not there") {
+		t.Fatalf("a store with no directory to make it in: %v", err)
+	}
+}
+
+// storeOf is the store path the fixture's configuration names.
+func storeOf(t *testing.T, f *connectFixture) string {
+	t.Helper()
+	cfg, err := parseEngineConfig([]byte(f.fileText(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.store
 }

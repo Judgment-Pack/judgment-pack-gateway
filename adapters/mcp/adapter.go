@@ -409,12 +409,13 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		if int64(len(raw)) > cfg.MaxOutput {
 			return finish(nil, fmt.Errorf("the probe's result exceeds the output bound of %d bytes", cfg.MaxOutput))
 		}
-		result, err := parseToolResult(raw)
-		if err != nil {
+		if _, err := parseToolResult(raw); err != nil {
 			return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
 		}
 		if cfg.ProbeFailure != "" {
-			text, failed, err := answersFailure(result, cfg.ProbeFailure)
+			// On the answer as the server wrote it, not the canonical
+			// form, in which a number would have become a string.
+			text, failed, err := answersFailure(raw, cfg.ProbeFailure)
 			if err != nil {
 				return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
 			}
@@ -568,6 +569,14 @@ func parseToolResult(raw json.RawMessage) ([]byte, error) {
 		if typ, ok := itemMembers["type"]; !ok || len(typ) == 0 || typ[0] != '"' || json.Unmarshal(typ, &kind) != nil || kind == "" {
 			return nil, errors.New("tools/call: a content item without a type")
 		}
+		// A text item's text is a string in the form the server wrote:
+		// judged before any number was carried as text, and null is not
+		// a string whatever a decoder would fill in for it.
+		if kind == "text" {
+			if text, ok := itemMembers["text"]; !ok || len(text) == 0 || text[0] != '"' || !json.Valid(text) {
+				return nil, errors.New("tools/call: a text item's text is not a string")
+			}
+		}
 	}
 	if structured, ok := members["structuredContent"]; ok && !canon.IsObject(structured) {
 		return nil, errors.New("tools/call: structuredContent is not an object")
@@ -713,7 +722,7 @@ func answersFailure(result []byte, failure string) (text string, failed bool, er
 			continue
 		}
 		var body string
-		if raw, ok := fields["text"]; !ok || json.Unmarshal(raw, &body) != nil {
+		if raw, ok := fields["text"]; !ok || len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &body) != nil {
 			return "", false, errors.New("a text item's text is not a string")
 		}
 		if strings.HasPrefix(body, failure) {

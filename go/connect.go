@@ -217,6 +217,10 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if _, err := loadSeed(candidate.seed); err != nil {
 		return out, fmt.Errorf("seed: %v", err)
 	}
+	// The paths serve makes, judged as serve would before making them.
+	if err := preflightPaths(candidate.store, candidate.registry, candidate.decisionRecords); err != nil {
+		return out, err
+	}
 	// The platform's own sources, each asked once; the first that cannot
 	// answer ends the connect, and nothing is written.
 	sources := deriveSources(candidate, bindings)

@@ -119,6 +119,11 @@ func TestRunCheck(t *testing.T) {
 			t.Fatalf("%v: exit %d %s", args, code, stderr.String())
 		}
 	}
+	// As flag=value, a value of "--" is one word and not the delimiter.
+	stdout.Reset()
+	if code := run([]string{"--check", "--probe=query", "--probe-failure=--", "--credentials", credentials, "--", os.Args[0]}, strings.NewReader(""), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"probe":{"tool":"query","answered":true}`) {
+		t.Fatalf("flag=value with a -- value: exit %d %s %s", code, stderr.String(), stdout.String())
+	}
 	// A "--" cannot be consumed as a flag's value: the split comes first,
 	// and the flag is then missing its value.
 	stderr.Reset()

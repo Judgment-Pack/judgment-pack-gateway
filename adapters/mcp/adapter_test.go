@@ -1135,13 +1135,19 @@ func TestAProbeAnswerIsReadByExactMembers(t *testing.T) {
 	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "query": the platform was not reached: Error: refused`) {
 		t.Fatalf("the failure text is seen through an extra member: %v", err)
 	}
-	// A text item whose text is not a string fails the check rather than
-	// being passed over.
-	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":0}]}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "query": a text item's text is not a string`) {
-		t.Fatalf("a text item that cannot be read fails: %v", err)
+	// A text item whose text is not a string -- a number, null, a number
+	// the canonical form would carry as a string -- fails the check and the
+	// acquisition rather than being passed over or filled in.
+	for _, text := range []string{"0", "null", "0.5", "[]"} {
+		if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":`+text+`}]}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "query": tools/call: a text item's text is not a string`) {
+			t.Fatalf("text %s: a text item that is not a string fails the check: %v", text, err)
+		}
+		if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), "a text item's text is not a string") {
+			t.Fatalf("text %s: and the acquisition: %v", text, err)
+		}
 	}
 	// The prefix is matched as written: a leading space on either side
 	// counts.
