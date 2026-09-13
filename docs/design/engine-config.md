@@ -1,8 +1,9 @@
 # Design note: the engine's one configuration file
 
 **Status: design note, not normative.** This describes the configuration the engine
-([ADR-0001](../adr/0001-one-engine-four-processes.md)) reads. It is a convention of this
-distribution, not part of the receipt format, and it can change without a corpus vector moving.
+([ADR-0001](../adr/0001-one-engine-four-processes.md)) reads through `gateway serve --config`.
+It is a convention of this distribution, not part of the receipt format, and it can change
+without a corpus vector moving.
 
 ## The rule
 
@@ -21,65 +22,121 @@ and spawns what it needs. Nothing in the file is a command line, and nothing in 
   "registry": "/var/lib/engine/registry.jsonl",
   "decisionRecords": "/var/lib/engine/decisions",
   "listen": "127.0.0.1:8787",
-  "identity": {
-    "issuer": "https://login.example.com/",
-    "audience": "judgment-pack-engine",
-    "keys": "/var/lib/engine/idp-jwks.json"
-  },
+  "catalog": "/usr/local/share/engine/catalog",
+  "runtime": "docker",
+  "adapters": "/usr/local/bin",
   "platforms": {
     "finance-warehouse": {
       "binding": "postgres@sha256:…",
-      "credentials": { "file": "/run/secrets/finance-warehouse" }
+      "credentials": { "file": "/run/secrets/finance-warehouse" },
+      "user": "engine-finance",
+      "endpoint": "warehouse.internal:5432"
     },
     "policy-documents": {
       "binding": "s3-compatible@sha256:…",
-      "credentials": { "file": "/run/secrets/policy-documents" }
+      "credentials": { "file": "/run/secrets/policy-documents" },
+      "user": "engine-documents"
     },
     "service-desk": {
       "binding": "jira@sha256:…",
       "credentials": { "file": "/run/secrets/service-desk" },
+      "user": "engine-desk",
       "write": true
     }
   }
 }
 ```
 
-Every member is required except `identity` and `write`. The file is read through the same
-strict parser the gateway uses for everything else: duplicate member names refused, integers
-only, unknown members refused by name. A misspelled key is an error, never an intention
-silently dropped.
+The file is read through the same strict parser the gateway uses for everything else:
+duplicate member names refused, integers only, unknown members refused by name. A misspelled
+key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
+`store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
+`runtime`, `adapters`, `rootSigner`, `hostRuntime` and `identity` are optional; within a
+platform, `binding`, `credentials` and `user` are required, `endpoint` and `write` optional.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
   takes today, named.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve
   an action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)).
-- `listen` is a loopback address, always. The gateway speaks plain HTTP and a token presented
-  over plain HTTP off the machine can be captured and replayed; SECURITY.md lists authenticated
-  transport as out of scope, and this design does not change that. Reaching the engine from
-  another host means a TLS-terminating front the operator runs and trusts, outside this
-  repository. `identity` decides who may call, never from where.
+- `listen` is a loopback address, always, and the engine refuses any other. The gateway
+  speaks plain HTTP and a token presented over plain HTTP off the machine can be captured and
+  replayed; SECURITY.md lists authenticated transport as out of scope, and this design does
+  not change that. Reaching the engine from another host means a TLS-terminating front the
+  operator runs and trusts, outside this repository. `identity` decides who may call, never
+  from where.
+- `catalog` is the directory of binding files (below). `runtime` is the container runtime
+  command the adapters use, `docker` by default or `podman`. `adapters` is the directory
+  holding the adapter binaries; when absent they are found on the engine's `PATH`.
 - `identity` names the token issuer, the audience the engine expects to be named as, and a
   local copy of the issuer's public keys. The engine verifies tokens with the standard library
   and never fetches keys over the network on the request path; refreshing the key file is the
   operator's job, and a token signed by a key not in the file is refused. Without this member
   every receipt carries `caller: null` and no action is ever performed, because an action
-  requires an authenticated requester.
-- `platforms` maps an operator-chosen name — the `source` a receipt will carry — to a
-  **binding** from the catalog, pinned by digest, and to where its credentials are. `write`
-  defaults to false; a platform that is not marked writable cannot be the target of an action
-  no matter what its binding offers.
+  requires an authenticated requester. **This release refuses a configuration that carries
+  `identity`**, since nothing verifies a token yet: a member that did nothing would read as a
+  claim.
+- `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
+  a receipt will carry — to a **binding** from the catalog, pinned by digest, to where its
+  credentials are, and to the OS **user** its adapters run as. `endpoint` is the host the
+  platform is reached at as the operator names it, recorded as the receipt's endpoint; the
+  adapters do not read it from the credentials. `write` defaults to false; a platform that is
+  not marked writable cannot be the target of an action no matter what its binding offers.
+
+## What the engine derives
+
+For each platform and each operation its binding offers, one source, declared with the
+shape the operation is served by, run as the platform's user, with an environment of `HOME`
+and `PATH` alone — a container runtime needs both, and a secret never travels this way:
+
+| Source | Adapter | Command line |
+|---|---|---|
+| `<platform>/history` | `adapter-airbyte` | `--image <history.image> --credentials <file> --runtime <runtime> [--endpoint <endpoint>]` |
+| `<platform>/live` | `adapter-mcp` | `--image <live.server.image> --credentials <file> --runtime <runtime> --tools <live.tools, comma-joined> [--endpoint <endpoint>]` |
+
+A binding's `write` operation derives nothing: the executor that performs writes does not
+exist yet, and a source that could be asked to write would be a read that writes.
+
+## What the engine refuses
+
+Before anything is written — no store, no registry — the engine refuses to start under a
+configuration the isolation claim of [ADR-0001](../adr/0001-one-engine-four-processes.md)
+does not survive:
+
+- a platform without a `user`: an adapter running as the signer could read the seed;
+- a platform whose `user` is the signer's own, for the same reason;
+- a credentials file not owned by the platform's user, or readable beyond its owner
+  (mode other than `0600`): the signer, which runs as a user of its own without
+  `CAP_DAC_OVERRIDE`, must not be able to read it, and neither may another platform;
+- a signer that runs as **root**, which reads every credentials file whatever protects it,
+  unless the operator sets `"rootSigner": "accepted"` — the engine then says in one line at
+  startup that the separation between signer and adapters rests on the host, not on the
+  configuration. The way to avoid it: run the signer as a user of its own holding
+  `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL`, which is what lets it switch adapters to their
+  users while it reads nothing of theirs;
+- a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
+  the runtime is `docker` (or `podman`): an adapter that can reach it holds host authority,
+  which includes the seed ([engine-image.md](engine-image.md)), unless the operator sets
+  `"hostRuntime": "accepted"`, with the same one-line statement at startup;
+- the seed file's own checks, as for any `serve`: a regular file, owned by the signer, readable
+  by nobody else.
+
+What these checks do not see is stated with them: an access-control list that grants a read
+the mode bits do not show; a runtime reachable through a socket at another path; a platform
+user that is also in a group the signer's files admit. The engine holds the configuration to
+what the filesystem reports, and no further.
 
 ## Credentials
 
 `credentials` is a path, never a value, and never an environment variable: a file the
 adapter's OS identity can read and the signer's cannot. The gateway process passes the path to
-the adapter it spawns — with an otherwise empty environment — and the adapter reads the secret
-in its own process. An environment variable is refused as a reference because the only
-environment the gateway could copy it from is its own, which would put the secret in the
-signer's memory, the one place this design exists to keep it out of. At startup the engine
-checks the other direction too: a seed file readable by any adapter identity, or a credentials
-file readable by the signer's, is refused before anything listens.
+the adapter it spawns — with an environment of `HOME` and `PATH` alone — and the adapter reads
+the secret in its own process. An environment variable is refused as a reference (the member
+is unknown to the parser) because the only environment the gateway could copy it from is its
+own, which would put the secret in the signer's memory, the one place this design exists to
+keep it out of. At startup the engine checks the other direction too, as the refusals above
+say: a seed file readable by any adapter identity, or a credentials file readable by the
+signer's, is refused before anything listens.
 
 ## Bindings
 
@@ -109,8 +166,13 @@ running engine reaches:
 
 One binding per platform; one entry per operation it supports — `history`, `live`, `write` —
 each naming its shape, the pinned artifact that serves it, the tools or streams it may use, and
-the licence of the artifact it pulls. A binding with an unpinned image is refused when the
-engine starts. A binding without a `licence` for an entry is refused too: the field exists so
+the licence of the artifact it pulls. `history` is served by the `airbyte` shape and `live`
+and `write` by the `mcp` shape; the `http` shape is not shipped by this release, and a binding
+naming it is refused. The file is `catalog/<platform>.json`, it must name that platform, and
+the configuration pins it as `<platform>@sha256:<digest of the file's bytes>`; a file that
+does not digest to its pin is refused, since the catalog changed under the configuration. A
+binding with an unpinned image is refused when the engine starts. A binding without a
+`licence` for an entry is refused too: the field exists so
 an operator hosting the engine for others can see which entries carry terms that forbid it —
 the Postgres connector above is one, since Airbyte's database connectors are ELv2 while most
 of its API connectors are MIT, and the value is copied from the connector's own metadata for

@@ -158,10 +158,15 @@ func requireUserSwitching(sources map[string]sourceSpec) error {
 		if spec.user == "" {
 			continue
 		}
-		if os.Geteuid() != 0 {
+		// Root may switch; so may a process that is not root but holds the
+		// three capabilities, which is how the engine runs its signer as a
+		// user of its own beside per-platform users. Where capabilities
+		// cannot be read (not Linux), only root may.
+		missing, known := effectiveCapabilities()
+		if os.Geteuid() != 0 && !known {
 			return fmt.Errorf("--source-user %s=%s: switching to another user requires the gateway to run as root", name, spec.user)
 		}
-		if missing := missingCapabilities(); len(missing) > 0 {
+		if len(missing) > 0 {
 			return fmt.Errorf("--source-user %s=%s: this process lacks %s; it could start the source as that user but not stop it, or not start it at all", name, spec.user, strings.Join(missing, ", "))
 		}
 		if _, err := lookupCredential(spec.user); err != nil {
@@ -187,11 +192,18 @@ var requiredCapabilities = []struct {
 }
 
 func missingCapabilities() []string {
+	missing, _ := effectiveCapabilities()
+	return missing
+}
+
+// effectiveCapabilities is what this process lacks of the three it needs,
+// and whether the kernel said: on Linux, from /proc/self/status.
+func effectiveCapabilities() ([]string, bool) {
 	status, err := os.ReadFile("/proc/self/status")
 	if err != nil {
-		return nil
+		return nil, false
 	}
-	return missingCapabilitiesIn(string(status))
+	return missingCapabilitiesIn(string(status)), strings.Contains(string(status), "CapEff:")
 }
 
 func missingCapabilitiesIn(status string) []string {
