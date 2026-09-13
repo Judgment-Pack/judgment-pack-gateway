@@ -86,6 +86,9 @@ type gatewayService struct {
 	// started counts the sources this service has started; a test reads it
 	// to prove that a refusal came before any source ran.
 	started atomic.Int64
+	// identity is who may call (serveOptions.identity); nil when no
+	// issuer is configured, and every receipt then carries caller null.
+	identity *identityConfig
 	// receiptVersion is what acquire mints: "3" unless the operator asked
 	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
 	receiptVersion string
@@ -269,7 +272,7 @@ func decodeSingleJSON(r io.Reader, dst any) error {
 	return nil
 }
 
-func (g *gatewayService) acquire(sessionID, source string, arguments value) (map[string]any, error) {
+func (g *gatewayService) acquire(sessionID, source string, arguments value, who *caller) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
@@ -431,7 +434,16 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 		}
 		core.set("argumentsCommitment", vString(commitmentOver(salt, "args:", canonicalArgs)))
 		core.set("kind", vString("acquisition"))
-		core.set("caller", vNull{})
+		// SPEC.md §1.2a: the identity a verified token proved, or null.
+		if who == nil {
+			core.set("caller", vNull{})
+		} else {
+			identity := newObject()
+			identity.set("issuer", vString(who.issuer))
+			identity.set("subject", vString(who.subject))
+			identity.set("tokenDigest", vString(who.tokenDigest))
+			core.set("caller", identity)
+		}
 		salts = map[string]any{"args": hex.EncodeToString(salt)}
 		if adapterEnvelope == nil {
 			core.set("acquisition", commandAcquisition(spec, adapterDigest, observedAt))
@@ -797,9 +809,36 @@ func (g *gatewayService) handler() http.Handler {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
 
+	// authenticate holds a request to the configured identity: a bearer
+	// token the issuer signed, naming this engine, or 401 with why -- one
+	// reason, never the token. With no identity configured every request
+	// is admitted and no caller is recorded.
+	authenticate := func(w http.ResponseWriter, r *http.Request) (*caller, bool) {
+		if g.identity == nil {
+			return nil, true
+		}
+		token := bearerToken(r.Header.Get("Authorization"))
+		if token == "" {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "a bearer token from the configured issuer is required"})
+			return nil, false
+		}
+		who, err := verifyToken(token, *g.identity, time.Now())
+		if err != nil {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
+			return nil, false
+		}
+		return &who, true
+	}
+
 	mux.HandleFunc("/acquire", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
+		who, ok := authenticate(w, r)
+		if !ok {
 			return
 		}
 		limitBody(w, r)
@@ -821,7 +860,7 @@ func (g *gatewayService) handler() http.Handler {
 			}
 			arguments = parsed
 		}
-		out, err := g.acquire(body.Session, body.Source, arguments)
+		out, err := g.acquire(body.Session, body.Source, arguments, who)
 		if err != nil {
 			fail(w, err)
 			return
@@ -832,6 +871,9 @@ func (g *gatewayService) handler() http.Handler {
 	mux.HandleFunc("/seal", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
+		if _, ok := authenticate(w, r); !ok {
 			return
 		}
 		limitBody(w, r)
@@ -850,7 +892,12 @@ func (g *gatewayService) handler() http.Handler {
 		writeJSON(w, http.StatusOK, out)
 	})
 
+	// /registry and /publickey stay open: they are the anchors a verifier
+	// fetches from the key holder, and a verifier holds no token.
 	mux.HandleFunc("/verify", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := authenticate(w, r); !ok {
+			return
+		}
 		out, err := g.verify()
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

@@ -138,7 +138,7 @@ func main() {
 		spec.user = ""
 		sources[name] = spec
 	}
-	service, err := buildService(cfg.store, testSeed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources))
+	service, err := buildService(cfg.store, testSeed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

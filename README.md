@@ -143,7 +143,11 @@ engine.json <platform> --binding <name> --credentials-file <operation>=<path>...
 writes a platform entry: it holds the configuration that would result to the same refusals, runs each
 of the platform's adapters once in check mode as the platform's user, prints what the platform
 answered, and writes only then — nothing is acquired and no receipt is minted. The bindings
-the engine ships, with their pins and licences, are in [catalog/](catalog/README.md).
+the engine ships, with their pins and licences, are in [catalog/](catalog/README.md). With an
+`identity` in the configuration — an issuer, the audience the engine is named as, and a file of
+the issuer's public keys — every request that acquires, seals or verifies carries a bearer token
+the issuer signed, and the receipt names the caller it proved; without one, every receipt carries
+`caller: null`.
 
 A source is any command that reads the canonical arguments on stdin and writes a JSON
 result on stdout. The gateway attaches no transport of its own; it attests whatever

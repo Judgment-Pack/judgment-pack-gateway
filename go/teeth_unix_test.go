@@ -36,7 +36,7 @@ func TestInheritedDescriptorDoesNotReachASource(t *testing.T) {
 	service, _ := testService(t)
 	t.Setenv(envSourceFdProbe, strconv.Itoa(fd))
 
-	out, err := service.acquire("fd-1", "screening", vString("x"))
+	out, err := service.acquire("fd-1", "screening", vString("x"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +45,7 @@ func TestInheritedDescriptorDoesNotReachASource(t *testing.T) {
 	}
 
 	markInheritedCloseOnExec()
-	out, err = service.acquire("fd-2", "screening", vString("x"))
+	out, err = service.acquire("fd-2", "screening", vString("x"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestNamedUserIsAppliedAtStart(t *testing.T) {
 	spec.user = "nobody"
 	service.sources["screening"] = spec
 	started := time.Now()
-	_, err := service.acquire("user-1", "screening", vString("x"))
+	_, err := service.acquire("user-1", "screening", vString("x"), nil)
 	if err == nil {
 		t.Fatal("an unprivileged gateway must not be able to start a source as another user")
 	}
@@ -183,7 +183,7 @@ func TestEscapedDescendantCannotStrandTheAcquisition(t *testing.T) {
 	t.Setenv(envSourceHolder, "1")
 	t.Setenv(envSourceEscape, "1")
 	started := time.Now()
-	_, err := service.acquire("escape-1", "screening", vString("x"))
+	_, err := service.acquire("escape-1", "screening", vString("x"), nil)
 	elapsed := time.Since(started)
 	if err == nil {
 		t.Fatal("an overflowing source must fail the acquisition")
@@ -261,11 +261,11 @@ func TestAcquisitionLeavesNoAnchorBehind(t *testing.T) {
 	}
 	before := children()
 	service, _ := testService(t)
-	if _, err := service.acquire("anchor-1", "screening", vString("x")); err != nil {
+	if _, err := service.acquire("anchor-1", "screening", vString("x"), nil); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(envSourceFail, "1")
-	if _, err := service.acquire("anchor-2", "screening", vString("x")); err == nil {
+	if _, err := service.acquire("anchor-2", "screening", vString("x"), nil); err == nil {
 		t.Fatal("a failing source must fail the acquisition")
 	}
 	deadline := time.Now().Add(10 * time.Second)
@@ -291,7 +291,7 @@ func TestOverflowAfterTheChildExitedStillKillsTheGroup(t *testing.T) {
 	t.Setenv(envSourceHolder, "1")
 	t.Setenv(envSourceQuiet, "1")
 	t.Setenv(envSourceDelay, "500")
-	_, err := service.acquire("late-1", "screening", vString("x"))
+	_, err := service.acquire("late-1", "screening", vString("x"), nil)
 	if err == nil {
 		t.Fatal("a late overflow from a descendant must fail the acquisition")
 	}
@@ -328,7 +328,7 @@ func TestHighInheritedDescriptorDoesNotReachASource(t *testing.T) {
 	// F_DUPFD leaves close-on-exec clear, as a launcher's descriptor would be.
 	service, _ := testService(t)
 	t.Setenv(envSourceFdProbe, strconv.Itoa(int(dup)))
-	out, err := service.acquire("fd-high-1", "screening", vString("x"))
+	out, err := service.acquire("fd-high-1", "screening", vString("x"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestHighInheritedDescriptorDoesNotReachASource(t *testing.T) {
 		t.Fatalf("the hazard did not reproduce for descriptor %d", dup)
 	}
 	markInheritedCloseOnExec()
-	out, err = service.acquire("fd-high-2", "screening", vString("x"))
+	out, err = service.acquire("fd-high-2", "screening", vString("x"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,7 +473,7 @@ func TestSourceThatIsNotARegularFileIsRefusedBeforeItIsOpened(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := service.acquire("fifo-1", "screening", newObject())
+		_, err := service.acquire("fifo-1", "screening", newObject(), nil)
 		done <- err
 	}()
 	select {

@@ -213,6 +213,13 @@ environment `serve` would give them — and writes the entry only when they answ
 report an adapter writes crosses to the operator, redacted by the adapter as its diagnostics
 are, and nothing is signed from it.
 
+**`identity` decides who may call, never from where.** A configured issuer's tokens are verified
+against a key file the operator holds, with the standard library and no fetch on the request path;
+a token names who asked at the engine's boundary and proves nothing about what they approved. The
+token is never stored and never signed into a receipt, only its digest. Transport is still plain
+HTTP on a loopback address: a token presented off the machine can be captured and replayed, and
+reaching the engine from another host means a TLS-terminating front the operator runs and trusts.
+
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
 checked. A verifier that reads both from the same untrusted place gets no guarantee.

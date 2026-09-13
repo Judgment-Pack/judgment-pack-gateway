@@ -79,9 +79,15 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   and never fetches keys over the network on the request path; refreshing the key file is the
   operator's job, and a token signed by a key not in the file is refused. Without this member
   every receipt carries `caller: null` and no action is ever performed, because an action
-  requires an authenticated requester. **This release refuses a configuration that carries
-  `identity`**, since nothing verifies a token yet: a member that did nothing would read as a
-  claim.
+  requires an authenticated requester. With it, every request that acquires, seals or
+  verifies carries `Authorization: Bearer <token>` — a JWT in compact form, signed with a key
+  the file holds under the token's `kid` (RSA of 2048 bits or more for RS256, P-256 for
+  ES256, Ed25519 for EdDSA; the algorithm is the key's, never the token's word), from
+  `issuer`, naming `audience`, within its validity window with thirty seconds' leeway — or is
+  refused `401` with one reason and never the token; `/publickey` and `/registry` stay open,
+  since a verifier fetches its anchors there and holds no token. A receipt then carries
+  `caller: {issuer, subject, tokenDigest}` (SPEC.md §1.2a). The key file is read once, when
+  the engine starts; a key not in it is a key the engine does not know.
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
   a receipt will carry — to a **binding** from the catalog, pinned by digest, to where its
   credentials are — **one file per operation** the binding offers, `history` and `live`, since

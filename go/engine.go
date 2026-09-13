@@ -39,6 +39,7 @@ type engineConfig struct {
 	adapters        string
 	rootSigner      bool
 	hostRuntime     bool
+	identity        *identitySpec    // who may call; nil records caller null
 	platforms       []platformConfig // in name order
 }
 
@@ -52,6 +53,15 @@ type platformConfig struct {
 	endpoint    string
 	environment []string // KEY=VALUE, for the runtime's selection, never a secret
 	write       bool
+}
+
+// identitySpec is the identity member as written: the token issuer, the
+// audience this engine is named as, and the file holding the issuer's
+// public keys, read when the configuration is loaded and never fetched.
+type identitySpec struct {
+	issuer   string
+	audience string
+	keys     string // an absolute path to a JSON Web Key Set
 }
 
 // binding is a catalog entry: which pinned artifact serves which operation
@@ -161,8 +171,25 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		*m.into = s
 	}
-	if _, present := obj.get("identity"); present {
-		return engineConfig{}, errors.New("engine configuration: identity is not supported by this release; every receipt carries caller null until it is")
+	if identityValue, present := obj.get("identity"); present {
+		identity, err := requireObject(identityValue, "identity")
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		if err := exactlyMembers(identity, map[string]bool{"issuer": true, "audience": true, "keys": true}, "identity"); err != nil {
+			return engineConfig{}, err
+		}
+		spec := &identitySpec{}
+		if spec.issuer, err = requireString(identity, "issuer"); err != nil || spec.issuer == "" {
+			return engineConfig{}, errors.New("engine configuration: identity.issuer must be the token issuer, as its tokens name it")
+		}
+		if spec.audience, err = requireString(identity, "audience"); err != nil || spec.audience == "" {
+			return engineConfig{}, errors.New("engine configuration: identity.audience must be the audience this engine is named as in a token")
+		}
+		if spec.keys, err = requireAbsolutePath(identity, "keys"); err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: identity.%v", err)
+		}
+		cfg.identity = spec
 	}
 	cfg.runtime = "docker"
 	if _, present := obj.get("runtime"); present {
@@ -1021,8 +1048,29 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
-func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec) serveOptions {
-	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, receiptVersion: receiptVersion3}
+func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
+	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, receiptVersion: receiptVersion3, identity: identity}
+}
+
+// maxKeySetBytes bounds the issuer's key file.
+const maxKeySetBytes = 1 << 20
+
+// loadIdentity reads the issuer's keys the configuration names and
+// returns the identity the service verifies against; nil when the
+// configuration names none.
+func loadIdentity(spec *identitySpec) (*identityConfig, error) {
+	if spec == nil {
+		return nil, nil
+	}
+	data, err := readBounded(spec.keys, maxKeySetBytes)
+	if err != nil {
+		return nil, fmt.Errorf("identity.keys: %v", err)
+	}
+	keys, err := parseKeySet(data)
+	if err != nil {
+		return nil, fmt.Errorf("identity.keys: %v", err)
+	}
+	return &identityConfig{issuer: spec.issuer, audience: spec.audience, keys: keys}, nil
 }
 
 // loadEngineConfig reads and resolves a configuration file: the file, every
