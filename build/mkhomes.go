@@ -20,6 +20,13 @@ func main() {
 	for n := 1; n <= 8; n++ {
 		homes[fmt.Sprintf("/home/engine-%d", n)] = 65600 + n
 	}
+	// /home itself is root's and open, whatever the base carries.
+	if err := os.MkdirAll("/home", 0o755); err != nil {
+		panic(err)
+	}
+	if err := os.Chmod("/home", 0o755); err != nil {
+		panic(err)
+	}
 	for path, uid := range homes {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			panic(err)

@@ -45,12 +45,17 @@ RUN set -e; mkdir -p /out/etc; \
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/etc/passwd /out/etc/group /etc/
-# The gateway binary is executable by the signer alone: with file
-# capabilities on it, a platform user's process that executed it would
-# take them up, and the engine refuses to start otherwise. The adapters
-# are run by the platform users, and carry nothing.
-COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
+# The adapters first, so that the directories on the way -- which the
+# base does not carry -- are made by this COPY as root's: a COPY that
+# chowns makes the directories it has to make for its owner, and a
+# /usr/local/bin the signer owned would be a /usr/local/bin the signer
+# could put another adapter in for a platform user to run. The adapters
+# are run by the platform users, and carry nothing. Then the gateway,
+# executable by the signer alone: with file capabilities on it, a
+# platform user's process that executed it would take them up, and the
+# engine refuses to start otherwise.
 COPY --from=build /out/adapter-airbyte /out/adapter-mcp /usr/local/bin/
+COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
 # The homes, made in place as root -- the base's own user is nonroot, so
 # root is taken for this one step and given back below -- and each given
 # to its user; the helper removes itself, so the final filesystem carries

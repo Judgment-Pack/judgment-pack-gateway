@@ -128,6 +128,8 @@ jobs:
       # held to the design: the gateway's capabilities, mode and owner;
       # nothing else privileged; the homes; the adapters; the catalog and
       # corpus byte for byte; the users; the entrypoint and command.
+      - name: The image check reads layers as an unpacker would
+        run: python3 .github/test_image_checks.py
       - name: The image's final filesystem is what the design states
         run: |
           mkdir -p image && docker save engine:ci | tar -x -C image

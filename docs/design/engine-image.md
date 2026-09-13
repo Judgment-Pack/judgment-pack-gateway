@@ -44,10 +44,16 @@ CI builds the image from every commit and never pushes it: what it checks is tha
 from the pinned bases, that the core inside it agrees with the corpus it carries, and that the
 image's final filesystem — its layers applied in the manifest's order, whiteouts honoured — is
 what this note states: the gateway binary with exactly its three capabilities (read from the v2
-or the v3 attribute, not compared as bytes), mode 0700 and the signer's; nothing else carrying a
-capability or a set-user-id or set-group-id bit; every home its user's alone at 0700; the
-adapters executable and unprivileged; the catalog and the corpus byte for byte the checkout's;
-the users by uid; and the entrypoint and command. It then starts the image as built, with no
+or the v3 attribute, not compared as bytes), mode 0700 and the signer's, reached through
+directories that are root's and that nobody else may write, with no link on the way; nothing
+else carrying a capability or a set-user-id or set-group-id bit, hard links included; every
+home its user's alone at 0700; the adapters, the catalog and the corpus root's, unwritable by
+others, reached the same way, the last two byte for byte the checkout's; the users by uid; the
+helper that made the homes gone; and the entrypoint and command. The check reads the layers as
+an unpacker would — names normalised, a whiteout removing what earlier layers left and never
+what its own layer adds, a path replaced by a file or a link losing its descendants, a hard
+link sharing its target's bits — and its own tests hold it to that, one fixture per way a wrong
+image was once found to pass. It then starts the image as built, with no
 override, and holds the two launch overrides below to what is stated here.
 
 **Launch overrides.** With every capability dropped (`--cap-drop ALL`) the kernel refuses to
@@ -116,12 +122,19 @@ client binary (`docker` or `podman`, static) at the path the configuration's `ru
 executable by the platform users; a runtime socket that client reaches, belonging to a daemon
 that runs **as that platform user** — a rootless daemon started as a service outside the
 adapter, since a switched adapter is held to `no_new_privs` and cannot itself gain privilege
-through helpers such as `newuidmap` ([engine-config.md](engine-config.md)); and the engine's
+through helpers such as `newuidmap` ([engine-config.md](engine-config.md)), whose socket that
+platform user alone may reach, and whose subordinate uid and gid ranges — the identities its
+containers may take — are disjoint from every other platform's and exclude the signer's, since
+a rootless daemon's authority is its user's plus those ranges and a range that overlapped
+another platform's identity would reach that platform's credentials; and the adapter's
 temporary directory visible to that daemon at the same absolute path, because the adapter
-stages a connector's credentials in a directory under it and names that path in the mount it
-asks for — a daemon in another mount namespace would mount nothing, or something else. A
-deployment that provides a client and a socket and not the shared path has not provided a
-runtime. **1** is available, and it is outside the isolation claim: the engine refuses
+stages a connector's credentials under it and names that path in the mount it asks for — a
+daemon in another mount namespace would mount nothing, or something else. The adapter's
+temporary directory is its own `TMPDIR`, or `/tmp` when the platform's declared environment
+sets none; the engine forwards nothing of its own environment, so a deployment either shares
+`/tmp` between the engine and each daemon or sets each platform's `environment.TMPDIR` to the
+path it shares. A deployment that provides a client and a socket and not the rest has not
+provided a runtime. **1** is available, and it is outside the isolation claim: the engine refuses
 a host-socket configuration unless the operator sets `hostRuntime: "accepted"` in the engine
 configuration, the startup log says in one line that the Airbyte adapter now holds host
 authority equivalent to the signer's, and the deployment is then one in which the seed's
