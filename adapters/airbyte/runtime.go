@@ -15,13 +15,14 @@ import (
 
 // The budget for stopping a container once the acquisition is over, on top
 // of the acquisition's own timeout: the kill, the inspect that follows a
-// refused kill, and the wait for the client's pipes after it, which a
-// descendant holding stderr can stretch to the wait delay. Seven seconds
-// at most; the command's default timeout of twenty leaves that room, and
-// some to report, under the gateway's thirty.
+// refused kill and the drain of its pipes, and the wait for the client's
+// pipes after that, which a descendant holding stderr can stretch to the
+// wait delay. Seven seconds at most; the command's default timeout of
+// twenty leaves that room, and some to report, under the gateway's thirty.
 const (
 	killWindow    = 3 * time.Second
-	inspectWindow = 2 * time.Second
+	inspectWindow = time.Second
+	inspectDrain  = time.Second
 	waitDelay     = 2 * time.Second
 )
 
@@ -148,9 +149,12 @@ func (c *container) stop() error {
 
 // stopByName kills the container and, when the runtime refuses, establishes
 // positively that the container is absent: an inspect that succeeds means
-// present; one the runtime answers with "no such" means absent; anything
-// else -- a timeout, a daemon that is down, a permission refused -- leaves
-// the question open, and an open question is an error, not an absence.
+// present; one the runtime answers with "no such" and the container's own
+// name -- docker's "No such object: NAME", podman's "no such container
+// NAME" -- means absent; anything else -- a timeout, a daemon that is down,
+// a host that cannot be resolved ("no such host" names no container) --
+// leaves the question open, and an open question is an error, not an
+// absence.
 func (c *container) stopByName() error {
 	killCtx, cancelKill := context.WithTimeout(context.Background(), killWindow)
 	defer cancelKill()
@@ -163,14 +167,19 @@ func (c *container) stopByName() error {
 	defer cancelInspect()
 	inspect := exec.CommandContext(inspectCtx, c.runtime, "inspect", c.name)
 	inspect.Env = os.Environ()
+	// The answer is read through pipes, and a descendant of the runtime
+	// holding one would otherwise hold this past the window: the drain is
+	// bounded too.
+	inspect.WaitDelay = inspectDrain
 	answer := &boundedBuffer{limit: 4096}
 	inspect.Stderr = answer
 	inspect.Stdout = io.Discard
 	err := inspect.Run()
+	said := strings.ToLower(answer.String())
 	switch {
 	case err == nil:
 		return fmt.Errorf("container %s could not be stopped and is still known to %s; stop it by hand -- it holds the credentials mount", c.name, c.runtime)
-	case strings.Contains(strings.ToLower(answer.String()), "no such"):
+	case strings.Contains(said, "no such") && strings.Contains(said, strings.ToLower(c.name)):
 		return nil // absent: it ended on its own, and --rm removed it
 	}
 	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.name, c.runtime, firstLineOf(answer.String(), err))

@@ -54,6 +54,12 @@ const (
 	// EnvStuckOnRead makes the container run for a read refuse its kill and
 	// answer inspect as present, while discover's stops normally.
 	EnvStuckOnRead = "AIRBYTE_FAKE_STUCK_ON_READ"
+	// EnvInspectStderr, when set, is what an inspect writes on stderr
+	// instead of the default, with {name} replaced by the container name.
+	EnvInspectStderr = "AIRBYTE_FAKE_INSPECT_STDERR"
+	// EnvHoldInspect makes an inspect leave a descendant holding its
+	// output and exit.
+	EnvHoldInspect = "AIRBYTE_FAKE_HOLD_INSPECT"
 
 	envSleep = "AIRBYTE_FAKE_SLEEP"
 )
@@ -98,14 +104,27 @@ func Run(args []string) int {
 		if v := os.Getenv(EnvInspectExit); v != "" {
 			code, _ = strconv.Atoi(v)
 		}
-		switch code {
-		case 0:
-		case 1:
-			if len(args) > 1 {
-				os.Stderr.WriteString("Error: No such object: " + args[1] + "\n")
-			}
+		name := ""
+		if len(args) > 1 {
+			name = args[1]
+		}
+		switch {
+		case os.Getenv(EnvInspectStderr) != "":
+			os.Stderr.WriteString(strings.ReplaceAll(os.Getenv(EnvInspectStderr), "{name}", name) + "\n")
+		case code == 0:
+		case code == 1:
+			os.Stderr.WriteString("Error: No such object: " + name + "\n")
 		default:
 			os.Stderr.WriteString("Cannot connect to the Docker daemon\n")
+		}
+		if os.Getenv(EnvHoldInspect) == "1" {
+			child := exec.Command(os.Args[0])
+			child.Env = append(os.Environ(), envSleep+"=1")
+			child.Stdout = os.Stdout
+			child.Stderr = os.Stderr
+			if err := child.Start(); err == nil {
+				appendLine(os.Getenv(EnvHolderPid), strconv.Itoa(child.Process.Pid))
+			}
 		}
 		return code
 	case "run":

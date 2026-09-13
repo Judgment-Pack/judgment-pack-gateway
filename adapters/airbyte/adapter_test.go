@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,6 +17,10 @@ import (
 
 	"adapters/internal/fakeruntime"
 )
+
+func given(s string) OptionalString { return OptionalString{Given: true, Value: &s} }
+
+func givenNull() OptionalString { return OptionalString{Given: true} }
 
 func TestMain(m *testing.M) {
 	if os.Getenv(fakeruntime.EnvActivate) == "1" {
@@ -72,7 +77,8 @@ func fake(t *testing.T, discover, read string) Config {
 		return path
 	}
 	for _, name := range []string{fakeruntime.EnvStderr, fakeruntime.EnvExit, fakeruntime.EnvHang, fakeruntime.EnvHold,
-		fakeruntime.EnvHoldStderr, fakeruntime.EnvKillExit, fakeruntime.EnvKillDelay, fakeruntime.EnvInspectExit, fakeruntime.EnvStuckOnRead} {
+		fakeruntime.EnvHoldStderr, fakeruntime.EnvKillExit, fakeruntime.EnvKillDelay, fakeruntime.EnvInspectExit, fakeruntime.EnvStuckOnRead,
+		fakeruntime.EnvInspectStderr, fakeruntime.EnvHoldInspect} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakeruntime.EnvActivate, "1")
@@ -326,8 +332,7 @@ func TestAcquireByNamespace(t *testing.T) {
 		`{"type":"STATE","state":{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions","namespace":"public"},"stream_state":{"updated_at":"2026-09-12T10:00:00Z"}}}}` + "\n"
 	cfg := fake(t, catalog, read)
 	mustFail(t, cfg, Request{Stream: "decisions", Limit: 5}, `exists in more than one namespace [public archive]`)
-	public := "public"
-	env := acquire(t, cfg, Request{Stream: "decisions", Namespace: &public, Limit: 1})
+	env := acquire(t, cfg, Request{Stream: "decisions", Namespace: given("public"), Limit: 1})
 	if len(env.Result) != 1 || string(env.Result[0]) != `{"id":2}` {
 		t.Fatalf("only the namespace's records: %s", env.Result)
 	}
@@ -337,8 +342,7 @@ func TestAcquireByNamespace(t *testing.T) {
 	if !strings.Contains(env.Acquisition["statement"].(string), `"namespace":"public"`) {
 		t.Fatalf("the statement names the namespace: %v", env.Acquisition["statement"])
 	}
-	missing := "staging"
-	mustFail(t, cfg, Request{Stream: "decisions", Namespace: &missing, Limit: 1}, `stream "staging/decisions" is not one the connector offers: [public/decisions archive/decisions]`)
+	mustFail(t, cfg, Request{Stream: "decisions", Namespace: given("staging"), Limit: 1}, `stream "staging/decisions" is not one the connector offers: [public/decisions archive/decisions]`)
 }
 
 // Failures the connector or the operator can cause, each named, and none
@@ -518,11 +522,18 @@ func TestStderrIsBoundedWithoutBreakingThePipe(t *testing.T) {
 
 func TestParseRequest(t *testing.T) {
 	good, err := ParseRequest(strings.NewReader(`{"stream":"decisions"}`), 10000)
-	if err != nil || good.Stream != "decisions" || good.Limit != defaultLimit || good.State != nil || good.Namespace != nil {
+	if err != nil || good.Stream != "decisions" || good.Limit != defaultLimit || good.State != nil || good.Namespace.Given {
 		t.Fatalf("defaults: %+v %v", good, err)
 	}
-	if r, err := ParseRequest(strings.NewReader(`{"stream":"decisions","namespace":"public","limit":2}`), 10000); err != nil || *r.Namespace != "public" || r.Limit != 2 {
+	if r, err := ParseRequest(strings.NewReader(`{"stream":"decisions","namespace":"public","limit":2}`), 10000); err != nil || !r.Namespace.Given || *r.Namespace.Value != "public" || r.Limit != 2 {
 		t.Fatalf("namespace: %+v %v", r, err)
+	}
+	// A null namespace is given, and names the streams without one.
+	if r, err := ParseRequest(strings.NewReader(`{"stream":"decisions","namespace":null}`), 10000); err != nil || !r.Namespace.Given || r.Namespace.Value != nil {
+		t.Fatalf("null namespace: %+v %v", r, err)
+	}
+	if _, err := ParseRequest(strings.NewReader(`{"stream":"decisions","namespace":5}`), 10000); err == nil || !strings.Contains(err.Error(), "must be a string or null") {
+		t.Fatalf("a numeric namespace is refused: %v", err)
 	}
 	for in, want := range map[string]string{
 		`{"stream":"decisions","limit":3,"state":"{\"type\":\"LEGACY\",\"data\":{}}","extra":1}`: "unknown field",
@@ -669,25 +680,122 @@ func TestContainerWarningComesFirst(t *testing.T) {
 }
 
 // A null namespace and an empty one are distinct streams, as the protocol
-// says: only the matching one's records and checkpoints count, and the
-// statement keeps the distinction.
+// says: only the matching one's records and checkpoints count -- a
+// checkpoint of the other namespace neither completes the page nor
+// bookmarks it -- the statement keeps the distinction, and an explicit
+// null selects the stream without a namespace.
 func TestEmptyNamespaceIsNotNull(t *testing.T) {
 	catalog := `{"type":"CATALOG","catalog":{"streams":[` +
 		`{"name":"decisions","json_schema":{"type":"object"},"supported_sync_modes":["full_refresh"]},` +
 		`{"name":"decisions","namespace":"","json_schema":{"type":"object"},"supported_sync_modes":["full_refresh"]}]}}` + "\n"
+	nullState := `{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions"},"stream_state":{"k":"null-ns"}}}`
+	emptyState := `{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions","namespace":""},"stream_state":{"k":"empty-ns"}}}`
 	read := `{"type":"RECORD","record":{"stream":"decisions","emitted_at":1,"data":{"id":1}}}` + "\n" +
 		`{"type":"RECORD","record":{"stream":"decisions","namespace":"","emitted_at":2,"data":{"id":2}}}` + "\n" +
-		`{"type":"RECORD","record":{"stream":"decisions","namespace":null,"emitted_at":3,"data":{"id":3}}}` + "\n"
+		`{"type":"STATE","state":` + nullState + `}` + "\n" +
+		`{"type":"RECORD","record":{"stream":"decisions","namespace":"","emitted_at":3,"data":{"id":3}}}` + "\n" +
+		`{"type":"RECORD","record":{"stream":"decisions","namespace":null,"emitted_at":4,"data":{"id":4}}}` + "\n" +
+		`{"type":"STATE","state":` + emptyState + `}` + "\n" +
+		`{"type":"RECORD","record":{"stream":"decisions","namespace":"","emitted_at":5,"data":{"id":5}}}` + "\n" +
+		`{"type":"STATE","state":` + nullState + `}` + "\n"
 	cfg := fake(t, catalog, read)
 	mustFail(t, cfg, Request{Stream: "decisions", Limit: 5}, `exists in more than one namespace [null ]`)
-	empty := ""
-	env := acquire(t, cfg, Request{Stream: "decisions", Namespace: &empty, Limit: 5})
-	if len(env.Result) != 1 || string(env.Result[0]) != `{"id":2}` {
-		t.Fatalf("the empty namespace's records alone: %s", env.Result)
+	// Limit 1 on the empty namespace: id 2 reaches the limit; the null
+	// namespace's checkpoint must not complete the page, so id 3 is read
+	// and the empty namespace's checkpoint completes it.
+	env := acquire(t, cfg, Request{Stream: "decisions", Namespace: given(""), Limit: 1})
+	if len(env.Result) != 2 || string(env.Result[0]) != `{"id":2}` || string(env.Result[1]) != `{"id":3}` {
+		t.Fatalf("the empty namespace's records to its own checkpoint: %s", env.Result)
+	}
+	if env.Acquisition["snapshot"] != emptyState {
+		t.Fatalf("bookmarked by the empty namespace's checkpoint: %v", env.Acquisition["snapshot"])
 	}
 	if !strings.Contains(env.Acquisition["statement"].(string), `"namespace":""`) {
 		t.Fatalf("the statement keeps the empty namespace: %v", env.Acquisition["statement"])
 	}
-	missing := "x"
-	mustFail(t, cfg, Request{Stream: "decisions", Namespace: &missing, Limit: 1}, `stream "x/decisions" is not one the connector offers: [decisions /decisions]`)
+	// An explicit null selects the stream without a namespace: ids 1 and 4,
+	// bookmarked by the null namespace's second checkpoint.
+	env = acquire(t, cfg, Request{Stream: "decisions", Namespace: givenNull(), Limit: 2})
+	if len(env.Result) != 2 || string(env.Result[0]) != `{"id":1}` || string(env.Result[1]) != `{"id":4}` || env.Acquisition["snapshot"] != nullState {
+		t.Fatalf("the null namespace's records and checkpoint: %s %v", env.Result, env.Acquisition["snapshot"])
+	}
+	if !strings.Contains(env.Acquisition["statement"].(string), `"namespace":null`) {
+		t.Fatalf("the statement keeps the null namespace: %v", env.Acquisition["statement"])
+	}
+	mustFail(t, cfg, Request{Stream: "decisions", Namespace: given("x"), Limit: 1}, `stream "x/decisions" is not one the connector offers: [decisions /decisions]`)
+}
+
+// An inspect's answer counts as absence only when it says "no such" of the
+// container itself, in docker's or podman's words; a transport failure
+// that says "no such host" names no container and leaves the question
+// open.
+func TestInspectAbsenceNamesTheContainer(t *testing.T) {
+	for _, wording := range []string{"Error: No such object: {name}", "Error: inspecting object: no such container {name}"} {
+		cfg := fake(t, discoverFixture, readFixture)
+		t.Setenv(fakeruntime.EnvKillExit, "1")
+		t.Setenv(fakeruntime.EnvInspectExit, "125")
+		t.Setenv(fakeruntime.EnvInspectStderr, wording)
+		acquire(t, cfg, Request{Stream: "decisions", Limit: 3})
+	}
+	cfg := fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvKillExit, "1")
+	t.Setenv(fakeruntime.EnvInspectExit, "1")
+	t.Setenv(fakeruntime.EnvInspectStderr, "error during connect: dial tcp: lookup dockerd: no such host")
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "could not say whether it is gone (error during connect: dial tcp: lookup dockerd: no such host)")
+}
+
+// An inspect whose output is held by a descendant is drained within its
+// own bound, so stopping stays inside the budget.
+func TestInspectDrainIsBounded(t *testing.T) {
+	cfg := fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvKillExit, "1")
+	t.Setenv(fakeruntime.EnvInspectExit, "2")
+	t.Setenv(fakeruntime.EnvHoldInspect, "1")
+	t.Cleanup(func() { killHolders(t) })
+	start := time.Now()
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "could not say whether it is gone")
+	// The discover container's stop: a kill answered at once, an inspect
+	// that exits at once but leaves its pipes held for the drain window.
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("a descendant on inspect's output held stopping for %v", elapsed)
+	}
+}
+
+// A message of a known type without the payload its type requires is
+// refused in whatever phase it appears.
+func TestPayloadIsRequiredPerType(t *testing.T) {
+	cfg := fake(t, discoverFixture, rec(1, "0", "")+`{"type":"TRACE","trace":{}}`+"\n"+`{"type":"STATE","state":`+state1+`}`+"\n")
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed TRACE message")
+	cfg = fake(t, `{"type":"STATE","state":5}`+"\n"+discoverFixture, readFixture)
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed STATE message")
+	cfg = fake(t, discoverFixture, `{"type":"CATALOG","catalog":null}`+"\n"+readFixture)
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "malformed CATALOG message")
+	cfg = fake(t, discoverFixture, `{"type":"RECORD","record":{"stream":"decisions"}}`+"\n")
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed RECORD message")
+}
+
+// Redaction is one pass over the original text: a value that appears many
+// times in the configuration is replaced once per occurrence in the
+// diagnostic, a replacement is never re-matched, and the output cannot
+// grow past its bound.
+func TestRedactionIsOnePass(t *testing.T) {
+	var config strings.Builder
+	config.WriteString(`{"a":"e"`)
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&config, `,"k%d":"e"`, i)
+	}
+	config.WriteString(`,"long":"red"}`)
+	secrets := secretsOf([]byte(config.String()))
+	if len(secrets) != 2 || secrets[0] != "red" || secrets[1] != "e" {
+		t.Fatalf("deduplicated, longest first: %v", secrets)
+	}
+	if got := redact("e", secrets); got != "[redacted]" {
+		t.Fatalf("one occurrence, one marker: %q", got)
+	}
+	if got := redact("see red", secrets); got != "s[redacted][redacted] [redacted]" {
+		t.Fatalf("each occurrence once, longest first: %q", got)
+	}
+	if got := redact(strings.Repeat("e", 10000), secrets); len(got) > maxDiagnostic+len("…")+len("[redacted]") {
+		t.Fatalf("bounded as it is built: %d bytes", len(got))
+	}
 }

@@ -48,10 +48,39 @@ type Config struct {
 // how many records the page should hold, and the snapshot of the previous
 // page to resume from, exactly as its receipt recorded it.
 type Request struct {
-	Stream    string  `json:"stream"`
-	Namespace *string `json:"namespace"`
-	Limit     int     `json:"limit"`
-	State     *string `json:"state"`
+	Stream    string         `json:"stream"`
+	Namespace OptionalString `json:"namespace"`
+	Limit     int            `json:"limit"`
+	State     *string        `json:"state"`
+}
+
+// OptionalString tells an absent member from a null one and from a string:
+// a namespace not given constrains nothing, a null one names the streams
+// without a namespace, a string names that namespace.
+type OptionalString struct {
+	Given bool
+	Value *string
+}
+
+func (o *OptionalString) UnmarshalJSON(data []byte) error {
+	o.Given = true
+	if string(data) == "null" {
+		o.Value = nil
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return fmt.Errorf(`"namespace" must be a string or null`)
+	}
+	o.Value = &s
+	return nil
+}
+
+func (o OptionalString) MarshalJSON() ([]byte, error) {
+	if !o.Given || o.Value == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(*o.Value)
 }
 
 const defaultLimit = 1000
@@ -208,14 +237,14 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 		}
 		s.raw = raw
 		names = append(names, describe(s.Name, s.Namespace))
-		if s.Name != req.Stream || (req.Namespace != nil && !sameNamespace(s.Namespace, req.Namespace)) {
+		if s.Name != req.Stream || (req.Namespace.Given && !sameNamespace(s.Namespace, req.Namespace.Value)) {
 			continue
 		}
 		candidates = append(candidates, s)
 	}
 	switch len(candidates) {
 	case 0:
-		return finish(stream{}, fmt.Errorf("stream %q is not one the connector offers: %v", describe(req.Stream, req.Namespace), names))
+		return finish(stream{}, fmt.Errorf("stream %q is not one the connector offers: %v", describe(req.Stream, req.Namespace.Value), names))
 	case 1:
 		if len(candidates[0].JSONSchema) == 0 {
 			return finish(stream{}, fmt.Errorf("stream %q has no schema", req.Stream))
@@ -300,13 +329,35 @@ func parseMessage(line []byte) (message, bool, error) {
 	if json.Unmarshal(line, &probe) != nil || probe.Type == nil {
 		return message{}, false, nil
 	}
+	malformed := fmt.Errorf("the connector emitted a malformed %s message", *probe.Type)
 	var m message
 	if err := json.Unmarshal(line, &m); err != nil {
 		switch *probe.Type {
 		case "RECORD", "STATE", "TRACE", "CATALOG":
-			return message{}, true, fmt.Errorf("the connector emitted a malformed %s message", *probe.Type)
+			return message{}, true, malformed
 		}
 		return message{}, false, nil
+	}
+	// The payload the type requires must be there, whatever phase reads
+	// it: a scalar STATE during discover or a null CATALOG during read is
+	// refused where it appears.
+	switch m.Type {
+	case "RECORD":
+		if m.Record == nil || m.Record.Stream == "" || len(m.Record.Data) == 0 {
+			return message{}, true, malformed
+		}
+	case "STATE":
+		if members, ok := objectMembers(m.State); !ok || members == 0 {
+			return message{}, true, malformed
+		}
+	case "TRACE":
+		if m.Trace == nil || m.Trace.Type == "" {
+			return message{}, true, malformed
+		}
+	case "CATALOG":
+		if m.Catalog == nil {
+			return message{}, true, malformed
+		}
 	}
 	return m, true, nil
 }
@@ -360,9 +411,6 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 		}
 		switch m.Type {
 		case "RECORD":
-			if m.Record == nil || m.Record.Stream == "" {
-				return finish(page{}, errors.New("the connector emitted a malformed RECORD message"))
-			}
 			if m.Record.Stream != strm.Name || !sameNamespace(m.Record.Namespace, strm.Namespace) {
 				continue
 			}
@@ -435,10 +483,6 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 // with members, or a per-stream one without a descriptor, is malformed:
 // an empty bookmark could never be handed back.
 func stateBelongsTo(m message, strm stream) (bool, error) {
-	members, ok := objectMembers(m.State)
-	if !ok || members == 0 {
-		return false, errors.New("the connector emitted a malformed STATE message")
-	}
 	var sm stateMessage
 	if err := json.Unmarshal(m.State, &sm); err != nil {
 		return false, errors.New("the connector emitted a malformed STATE message")
@@ -492,13 +536,13 @@ func failure(c *container, err error) string {
 }
 
 // secretsOf collects every scalar of the connector's configuration, at any
-// depth -- every non-empty string and every number, as written -- so that
-// a diagnostic repeating one is redacted before it crosses the source
-// boundary, where the gateway returns it to whoever called /acquire. The
-// list is sorted longest first so a value that contains another is
-// replaced whole. It is as good as the connector's habit of quoting its
-// configuration verbatim: a secret it encodes or splits is not caught, and
-// a one-letter value redacts every letter like it.
+// depth -- every non-empty string and every number, as written, each once
+// -- so that a diagnostic repeating one is redacted before it crosses the
+// source boundary, where the gateway returns it to whoever called
+// /acquire. The list is sorted longest first so a value that contains
+// another is replaced whole. It is as good as the connector's habit of
+// quoting its configuration verbatim: a secret it encodes or splits is not
+// caught, and a one-letter value redacts every letter like it.
 func secretsOf(config []byte) []string {
 	dec := json.NewDecoder(bytes.NewReader(config))
 	dec.UseNumber()
@@ -506,16 +550,21 @@ func secretsOf(config []byte) []string {
 	if dec.Decode(&value) != nil {
 		return nil
 	}
+	seen := map[string]bool{}
 	var out []string
+	add := func(s string) {
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
 	var walk func(v any)
 	walk = func(v any) {
 		switch x := v.(type) {
 		case string:
-			if x != "" {
-				out = append(out, x)
-			}
+			add(x)
 		case json.Number:
-			out = append(out, x.String())
+			add(x.String())
 		case map[string]any:
 			for _, e := range x {
 				walk(e)
@@ -533,16 +582,35 @@ func secretsOf(config []byte) []string {
 
 const maxDiagnostic = 512
 
-// redact replaces every configured value in a diagnostic, longest first,
-// and bounds its length.
+// redact rewrites a diagnostic in one pass over the original text: at each
+// position the longest configured value that starts there is replaced, and
+// what was written is never scanned again, so a replacement can neither
+// grow the text past its bound nor be re-matched. The output is bounded as
+// it is built.
 func redact(text string, secrets []string) string {
-	for _, s := range secrets {
-		text = strings.ReplaceAll(text, s, "[redacted]")
+	var out strings.Builder
+	for i := 0; i < len(text); {
+		if out.Len() > maxDiagnostic {
+			break
+		}
+		matched := false
+		for _, s := range secrets {
+			if strings.HasPrefix(text[i:], s) {
+				out.WriteString("[redacted]")
+				i += len(s)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			out.WriteByte(text[i])
+			i++
+		}
 	}
-	if len(text) > maxDiagnostic {
-		text = text[:maxDiagnostic] + "…"
+	if out.Len() > maxDiagnostic {
+		return out.String()[:maxDiagnostic] + "…"
 	}
-	return text
+	return out.String()
 }
 
 func newScanner(r io.Reader) *bufio.Scanner {

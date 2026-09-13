@@ -44,7 +44,8 @@ The request, as canonical arguments on stdin:
 
 A stream is named by `stream` and, when the connector offers that name in more than one
 namespace, by `namespace` — a null namespace and an empty one are distinct, as the
-protocol has them; a name that is ambiguous without one is refused. `limit` is
+protocol has them, and `"namespace": null` names the stream without one; a name that is
+ambiguous without a namespace is refused. `limit` is
 the page's floor, not a cut: once it is reached, records are kept until the connector
 emits a checkpoint that covers them, so the next page never repeats a record; past
 `--max-records` without one, the read is given up on. A stream that ends with records
@@ -79,17 +80,19 @@ umask the adapter was launched under does not narrow them. Every container is to
 stop by name when the acquisition ends, whether or not its client is still running,
 because a runtime client that is killed leaves its container running; a kill the runtime
 refuses is followed by an inspect, and only an inspect the runtime answers with "no such"
-counts as gone — a container it still knows, or a runtime that cannot say, fails the
+and the container's own name counts as gone — a container it still knows, or a runtime
+that cannot say (a daemon that is down, a host that cannot be resolved), fails the
 acquisition and says so first, since the container holds the credentials mount.
 `--timeout` (twenty seconds) is the time for reading; stopping takes up to seven seconds
-more (a kill, an inspect, and the wait for the client's pipes), and the sum stays under
-the gateway's thirty, so a slow connector is reported as a deadline rather than killed
-mid-report.
+more (a kill, an inspect and the drain of its output, and the wait for the client's
+pipes), and the sum stays under the gateway's thirty, so a slow connector is reported as
+a deadline rather than killed mid-report.
 
 **Diagnostics.** A connector's error — the first line of its stderr, or a `TRACE`
 message — is reported to the gateway, which returns it to whoever called `/acquire`.
 Every scalar of the credentials file — each non-empty string and each number, as
-written, longest first — is redacted from it before it leaves the adapter. That is as
+written, longest first, in one pass over the original text — is redacted from it before
+it leaves the adapter. That is as
 good as the connector's habit of quoting its configuration verbatim: a secret it encodes
 or splits is not caught, and a one-letter value redacts every letter like it.
 
