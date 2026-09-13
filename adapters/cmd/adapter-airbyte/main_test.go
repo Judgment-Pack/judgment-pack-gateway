@@ -91,12 +91,13 @@ func TestRunCheck(t *testing.T) {
 	if code := run(args, stdin, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	if want := `{"check":{"adapter":{"name":"x/y","version":"1","digest":"` + digest + `"},"status":"succeeded","message":"ok"}}`; stdout.String() != want || stdin.Len() != len("not a request") {
+	if want := `{"check":{"status":"succeeded","adapter":{"name":"x/y","version":"1","digest":"` + digest + `"},"message":"ok"}}`; stdout.String() != want || stdin.Len() != len("not a request") {
 		t.Fatalf("report: %s (stdin left %d bytes)", stdout.String(), stdin.Len())
 	}
 	stdout.Reset()
 	t.Setenv(fakeruntime.EnvCheck, write("failed.out", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"no route to h"}}`+"\n"))
-	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "could not connect (FAILED)") || stdout.Len() != 0 {
-		t.Fatalf("a failed check exits 1 with the reason on stderr and nothing on stdout: %d %s %s", code, stderr.String(), stdout.String())
+	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "could not connect (FAILED)") ||
+		stdout.String() != `{"check":{"message":"the connector could not connect (FAILED): no route to h","status":"failed"}}` {
+		t.Fatalf("a failed check exits 1 with the reason on stderr and as a failed report on stdout: %d %s %s", code, stderr.String(), stdout.String())
 	}
 }

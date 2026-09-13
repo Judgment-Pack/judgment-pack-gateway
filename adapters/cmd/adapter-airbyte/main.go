@@ -50,7 +50,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// acquisition, and stdin is whatever they left attached.
 		report, err := airbyte.Check(ctx, cfg)
 		if err != nil {
+			// The reason goes to stdout as a report of the same shape,
+			// for the caller that reads reports, and to stderr for the
+			// operator; the exit status says the platform did not answer.
 			fmt.Fprintln(stderr, "adapter-airbyte: check:", err)
+			stdout.Write(airbyte.FailedCheck(err.Error()))
 			return 1
 		}
 		out = report

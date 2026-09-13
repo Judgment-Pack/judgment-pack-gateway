@@ -159,9 +159,18 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 // connector answered. It is for the operator who is connecting a platform,
 // and it is not an envelope: nothing is minted from it.
 type checkReport struct {
-	Adapter adapterIdentity `json:"adapter"`
 	Status  string          `json:"status"`
+	Adapter adapterIdentity `json:"adapter"`
 	Message string          `json:"message"`
+}
+
+// FailedCheck is the report of a check that did not succeed, for stdout
+// beside the exit status: the same members a success carries, so a
+// caller reads one shape, and the reason as the adapter reported it,
+// already redacted.
+func FailedCheck(reason string) []byte {
+	out, _ := canon.EncodeJSON(map[string]any{"check": map[string]string{"status": "failed", "message": reason}})
+	return out
 }
 
 // Check runs the connector's check with the credentials and reports what
@@ -250,8 +259,8 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		return finish(nil, errors.New("the connector answered no connection status"))
 	}
 	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
-		Adapter: adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest},
 		Status:  "succeeded",
+		Adapter: adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest},
 		Message: redact.Redact(answer.Message, secrets),
 	}})
 	if err != nil {
@@ -324,11 +333,10 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 	var candidates []stream
 	var names []string
 	for _, raw := range found.Streams {
-		var s stream
-		if err := json.Unmarshal(raw, &s); err != nil || s.Name == "" {
+		s, ok := parseStream(raw)
+		if !ok {
 			return finish(stream{}, errors.New("the connector's catalog is malformed"))
 		}
-		s.raw = raw
 		names = append(names, describe(s.Name, s.Namespace))
 		if s.Name != req.Stream || (req.Namespace.Given && !sameNamespace(s.Namespace, req.Namespace.Value)) {
 			continue
@@ -396,15 +404,16 @@ func stateFileFor(snapshot *string) ([]byte, error) {
 	if snapshot == nil {
 		return nil, nil
 	}
-	var sm stateMessage
-	if err := json.Unmarshal([]byte(*snapshot), &sm); err != nil {
-		return nil, fmt.Errorf(`request: "state" is not a state the connector emitted: %v`, err)
+	sm, ok := objectOf([]byte(*snapshot))
+	if !ok {
+		return nil, errors.New(`request: "state" is not a state the connector emitted`)
 	}
+	typ, _ := sm.str("type")
 	switch {
-	case sm.Type == "STREAM" || sm.Type == "GLOBAL":
+	case typ == "STREAM" || typ == "GLOBAL":
 		return []byte("[" + *snapshot + "]"), nil
-	case len(sm.Data) > 0:
-		return sm.Data, nil
+	case len(sm["data"]) > 0:
+		return sm["data"], nil
 	}
 	return nil, errors.New(`request: "state" is neither a stream, a global nor a legacy state`)
 }
@@ -416,93 +425,97 @@ func stateFileFor(snapshot *string) ([]byte, error) {
 // that does not decode as one is an error the caller must not skip, since
 // what it failed to say may have been an error.
 func parseMessage(line []byte) (message, bool, error) {
-	var probe struct {
-		Type *string `json:"type"`
-	}
-	if json.Unmarshal(line, &probe) != nil || probe.Type == nil {
+	members, ok := objectOf(line)
+	if !ok {
 		return message{}, false, nil
 	}
-	malformed := fmt.Errorf("the connector emitted a malformed %s message", *probe.Type)
-	var m message
-	if err := json.Unmarshal(line, &m); err != nil {
-		switch *probe.Type {
-		case "RECORD", "STATE", "TRACE", "CATALOG", "CONNECTION_STATUS":
-			return message{}, true, malformed
-		}
+	typ, ok := members.str("type")
+	if !ok {
 		return message{}, false, nil
 	}
-	// The payload the type requires must be there, whatever phase reads
-	// it: a scalar STATE during discover or a null CATALOG during read is
-	// refused where it appears.
-	switch m.Type {
+	switch typ {
+	case "RECORD", "STATE", "TRACE", "CATALOG", "CONNECTION_STATUS":
+	default:
+		return message{}, false, nil // LOG, SPEC, CONTROL: not read here
+	}
+	malformed := fmt.Errorf("the connector emitted a malformed %s message", typ)
+	// A message that decides something is held to exact member names
+	// with a duplicate refused at any depth; the canonical form itself is
+	// not used, so a checkpoint is handed back as emitted.
+	if _, err := canon.Canonicalize(line, canon.CarryNumbersAsText); err != nil {
+		return message{}, true, fmt.Errorf("%v: %v", malformed, err)
+	}
+	m := message{Type: typ}
+	switch typ {
 	case "RECORD":
-		if m.Record == nil || m.Record.Stream == "" || len(m.Record.Data) == 0 {
+		rec, ok := objectOf(members["record"])
+		if !ok {
 			return message{}, true, malformed
 		}
+		r := &record{Data: rec["data"]}
+		if r.Stream, ok = rec.str("stream"); !ok || r.Stream == "" || len(r.Data) == 0 {
+			return message{}, true, malformed
+		}
+		if r.Namespace, ok = rec.optional("namespace"); !ok {
+			return message{}, true, malformed
+		}
+		m.Record = r
 	case "STATE":
+		// The payload the type requires must be there, whatever phase
+		// reads it: a scalar STATE during discover is refused where it
+		// appears.
+		m.State = members["state"]
 		if !validState(m.State) {
 			return message{}, true, malformed
 		}
 	case "TRACE":
-		if m.Trace == nil || m.Trace.Type == "" {
+		tr, ok := objectOf(members["trace"])
+		if !ok {
 			return message{}, true, malformed
 		}
+		t := &trace{}
+		if t.Type, ok = tr.str("type"); !ok || t.Type == "" {
+			return message{}, true, malformed
+		}
+		if raw, present := tr["error"]; present && string(raw) != "null" {
+			errObj, ok := objectOf(raw)
+			if !ok {
+				return message{}, true, malformed
+			}
+			msg, ok := errObj.str("message")
+			if raw, present := errObj["message"]; present && !ok && string(raw) != "null" {
+				return message{}, true, malformed
+			}
+			t.Error = &traceError{Message: msg}
+		}
+		m.Trace = t
 	case "CATALOG":
-		if m.Catalog == nil {
+		cat, ok := objectOf(members["catalog"])
+		if !ok {
 			return message{}, true, malformed
 		}
-	case "CONNECTION_STATUS":
-		cs, err := strictConnectionStatus(line)
-		if err != nil {
+		c := &catalog{}
+		if raw, present := cat["streams"]; present && json.Unmarshal(raw, &c.Streams) != nil {
 			return message{}, true, malformed
+		}
+		m.Catalog = c
+	case "CONNECTION_STATUS":
+		status, ok := objectOf(members["connectionStatus"])
+		if !ok {
+			return message{}, true, malformed
+		}
+		cs := &connectionStatus{}
+		if cs.Status, ok = status.str("status"); !ok || cs.Status == "" {
+			return message{}, true, malformed
+		}
+		if raw, present := status["message"]; present {
+			if cs.Message, ok = status.str("message"); !ok && string(raw) != "null" {
+				return message{}, true, malformed
+			}
 		}
 		m.ConnectionStatus = cs
 	}
 	return m, true, nil
-}
-
-// strictConnectionStatus reads a CONNECTION_STATUS message by its members'
-// exact names, with a duplicate member refused: Go's struct decoding would
-// let "STATUS" stand in for status and a second status overwrite the
-// first, and the status decides whether the platform answered.
-func strictConnectionStatus(line []byte) (*connectionStatus, error) {
-	canonical, err := canon.Canonicalize(line, canon.CarryNumbersAsText)
-	if err != nil {
-		return nil, err
-	}
-	members, err := objectMembers(canonical)
-	if err != nil {
-		return nil, err
-	}
-	var typ string
-	if json.Unmarshal(members["type"], &typ) != nil || typ != "CONNECTION_STATUS" {
-		return nil, errors.New("not a connection status")
-	}
-	status, err := objectMembers(members["connectionStatus"])
-	if err != nil {
-		return nil, err
-	}
-	var cs connectionStatus
-	if json.Unmarshal(status["status"], &cs.Status) != nil || cs.Status == "" {
-		return nil, errors.New("no status")
-	}
-	if raw, ok := status["message"]; ok && json.Unmarshal(raw, &cs.Message) != nil {
-		return nil, errors.New("message is not a string")
-	}
-	return &cs, nil
-}
-
-// objectMembers decodes an object by its members' exact names, refusing
-// anything but an object.
-func objectMembers(raw json.RawMessage) (map[string]json.RawMessage, error) {
-	if !canon.IsObject(raw) {
-		return nil, errors.New("not an object")
-	}
-	var members map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &members); err != nil {
-		return nil, err
-	}
-	return members, nil
 }
 
 type page struct {
@@ -630,21 +643,33 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 // its global object, a LEGACY or untyped state its data object. A state of
 // any other type is refused.
 func validState(raw json.RawMessage) bool {
-	if members, ok := canon.ObjectMembers(raw); !ok || members == 0 {
+	sm, ok := objectOf(raw)
+	if !ok || len(sm) == 0 {
 		return false
 	}
-	var sm stateMessage
-	if json.Unmarshal(raw, &sm) != nil {
-		return false
+	typ := ""
+	if _, present := sm["type"]; present {
+		if typ, ok = sm.str("type"); !ok {
+			return false
+		}
 	}
-	switch sm.Type {
+	switch typ {
 	case "STREAM":
-		return sm.Stream != nil && sm.Stream.Descriptor.Name != ""
+		st, ok := objectOf(sm["stream"])
+		if !ok {
+			return false
+		}
+		descriptor, ok := objectOf(st["stream_descriptor"])
+		if !ok {
+			return false
+		}
+		name, ok := descriptor.str("name")
+		return ok && name != ""
 	case "GLOBAL":
-		_, ok := canon.ObjectMembers(sm.Global)
+		_, ok := objectOf(sm["global"])
 		return ok
 	case "LEGACY", "":
-		_, ok := canon.ObjectMembers(sm.Data)
+		_, ok := objectOf(sm["data"])
 		return ok
 	}
 	return false
@@ -654,12 +679,16 @@ func validState(raw json.RawMessage) bool {
 // valid, bookmarks the stream: a per-stream state names it by name and
 // namespace; a global or legacy state covers every stream.
 func stateBelongsTo(m message, strm stream) (bool, error) {
-	var sm stateMessage
-	if err := json.Unmarshal(m.State, &sm); err != nil {
-		return false, errors.New("the connector emitted a malformed STATE message")
-	}
-	if sm.Type == "STREAM" {
-		return sm.Stream.Descriptor.Name == strm.Name && sameNamespace(sm.Stream.Descriptor.Namespace, strm.Namespace), nil
+	sm, _ := objectOf(m.State)
+	if typ, _ := sm.str("type"); typ == "STREAM" {
+		st, _ := objectOf(sm["stream"])
+		descriptor, _ := objectOf(st["stream_descriptor"])
+		name, _ := descriptor.str("name")
+		namespace, ok := descriptor.optional("namespace")
+		if !ok {
+			return false, errors.New("the connector emitted a malformed STATE message")
+		}
+		return name == strm.Name && sameNamespace(namespace, strm.Namespace), nil
 	}
 	return true, nil
 }

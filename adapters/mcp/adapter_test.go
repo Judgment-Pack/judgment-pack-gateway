@@ -41,7 +41,7 @@ func fake(t *testing.T) Config {
 	for _, name := range []string{fakemcp.EnvTools, fakemcp.EnvResult, fakemcp.EnvHang, fakemcp.EnvExitBeforeCall, fakemcp.EnvStderr,
 		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck,
 		fakemcp.EnvPing, fakemcp.EnvWrongID, fakemcp.EnvHoldStdin, fakemcp.EnvConflict, fakemcp.EnvExitAtStart, fakemcp.EnvProtocol, fakemcp.EnvNoTools,
-		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw} {
+		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw, fakemcp.EnvListLine} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")
@@ -284,7 +284,7 @@ func TestAcquireRefusals(t *testing.T) {
 	t.Run("unsupported protocol version", func(t *testing.T) {
 		cfg := fake(t)
 		t.Setenv(fakemcp.EnvProtocol, "1999-01-01")
-		mustFail(t, cfg, query("select 1"), `speaks protocol version "1999-01-01", which this client does not`)
+		mustFail(t, cfg, query("select 1"), `speaks protocol version '1999-01-01', which this client does not`)
 	})
 	t.Run("no tools capability", func(t *testing.T) {
 		cfg := fake(t)
@@ -311,7 +311,7 @@ func TestAcquireRefusals(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "tools.json")
 		os.WriteFile(path, []byte(`[{"name":"query","inputSchema":{"type":"object"},"outputSchema":{"type":"object"},"outputSchema":null}]`), 0o600)
 		t.Setenv(fakemcp.EnvTools, path)
-		mustFail(t, cfg, query("select 1"), `tool "query": descriptor: duplicate member name "outputSchema"`)
+		mustFail(t, cfg, query("select 1"), `JSON-RPC message that is malformed: duplicate member name "outputSchema"`)
 	})
 	t.Run("tool results held to their shape", func(t *testing.T) {
 		for text, want := range map[string]string{
@@ -844,5 +844,62 @@ func TestAnImageShapedLikeAnOptionIsRefused(t *testing.T) {
 	argv := runArgv(t)
 	if n := len(argv); n < 4 || argv[n-4] != "--" || argv[n-3] != cfg.Image || argv[n-2] != "--name" || argv[n-1] != "stray" {
 		t.Fatalf("-- ends the runtime's options before the image and the server's arguments: %v", argv)
+	}
+}
+
+func TestAServerEchoingACredentialWithQuotesIsRedacted(t *testing.T) {
+	cfg := fake(t)
+	// A credential with a quote and a backslash: quoted with %q it would
+	// be escaped past the redactor.
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"ab\"cd\\e"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvProtocol, `ab"cd\e`)
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "protocol version '[redacted]'") || strings.Contains(err.Error(), "cd") {
+		t.Fatalf("the server's word is redacted as it said it: %v", err)
+	}
+}
+
+func TestAResponseIsReadByExactMemberNames(t *testing.T) {
+	for _, tc := range []struct{ line, want string }{
+		{`{"jsonrpc":"2.0","id":{id},"result":null,"RESULT":{"tools":[]}}`, "is not a tool list"},
+		{`{"jsonrpc":"2.0","id":{id},"result":{"tools":[]},"result":{"tools":[{"name":"query"}]}}`, `malformed: duplicate member name "result"`},
+		{`{"jsonrpc":"2.0","ID":{id},"result":{"tools":[]}}`, "neither a request, a notification nor a response"},
+		{`{"JSONRPC":"2.0","id":{id},"result":{"tools":[]}}`, "is not a JSON-RPC message"},
+		{`{"jsonrpc":"2.0","id":{id},"error":null,"ERROR":{"code":1,"message":"x"}}`, "an error that is not an object"},
+	} {
+		t.Run(tc.line, func(t *testing.T) {
+			cfg := fake(t)
+			line := filepath.Join(t.TempDir(), "line.json")
+			if err := os.WriteFile(line, []byte(tc.line), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(fakemcp.EnvListLine, line)
+			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestAToolIsNamedByItsExactMember(t *testing.T) {
+	cfg := fake(t)
+	tools := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(tools, []byte(`[{"name":"other","NAME":"query","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvTools, tools)
+	cfg.Tools = []string{"query"}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `tool "query" is allowed by the configuration but not offered by the server: [other]`) {
+		t.Fatalf("NAME does not stand in for name: %v", err)
+	}
+	if err := os.WriteFile(tools, []byte(`[{"name":"a","name":"query","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `malformed: duplicate member name "name"`) {
+		t.Fatalf("a duplicate name is refused: %v", err)
 	}
 }

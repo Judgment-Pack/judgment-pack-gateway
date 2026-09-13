@@ -40,6 +40,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// command with its arguments, or, with --image, the server's own
 	// arguments inside the container. Nothing else is positional.
 	positional := fs.Args()
+	// What is positional is exactly what follows "--": without the
+	// delimiter, Go's flag parsing would stop at the first word and hand
+	// every later flag to the server, silently.
+	if len(positional) > 0 && !afterDelimiter(args, positional) {
+		fmt.Fprintln(stderr, "adapter-mcp: a server command or a server's arguments follow --; nothing else is positional")
+		return 2
+	}
 	if *image == "" && len(positional) == 0 {
 		fmt.Fprintln(stderr, "usage: adapter-mcp (--image REF@sha256:HEX [-- SERVER ARGS...] | [options] -- CMD ARGS...) [--check] [--credentials FILE] [--runtime docker|podman] [--endpoint HOST] [--tools A,B] [--max-output BYTES] [--timeout D]")
 		return 2
@@ -61,7 +68,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		// acquisition, and stdin is whatever they left attached.
 		report, err := mcp.Check(ctx, cfg)
 		if err != nil {
+			// The reason goes to stdout as a report of the same shape,
+			// for the caller that reads reports, and to stderr for the
+			// operator; the exit status says the platform did not answer.
 			fmt.Fprintln(stderr, "adapter-mcp: check:", err)
+			stdout.Write(mcp.FailedCheck(err.Error()))
 			return 1
 		}
 		out = report
@@ -83,4 +94,24 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// afterDelimiter reports whether the positional arguments are exactly
+// what follows the first "--" on the command line.
+func afterDelimiter(args, positional []string) bool {
+	for i, a := range args {
+		if a == "--" {
+			rest := args[i+1:]
+			if len(rest) != len(positional) {
+				return false
+			}
+			for j := range rest {
+				if rest[j] != positional[j] {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
 }

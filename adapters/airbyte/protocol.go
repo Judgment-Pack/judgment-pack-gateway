@@ -1,69 +1,138 @@
 package airbyte
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"adapters/internal/canon"
+)
 
 // The Airbyte protocol, as much of it as this adapter reads: one JSON object
 // per line on the connector's stdout, typed by its "type" member. Lines that
 // are not messages are what connectors print when they log to stdout, and
-// are skipped.
+// are skipped. A message is read by its members' exact names, with a
+// duplicate member refused at any depth (parseMessage): Go's struct
+// decoding would let "TYPE" stand in for type, or "STREAM" for stream, and
+// a second member overwrite the first, on lines that decide what a record
+// belongs to and whether the platform answered.
 type message struct {
-	Type             string            `json:"type"`
-	Record           *record           `json:"record"`
-	State            json.RawMessage   `json:"state"`
-	Catalog          *catalog          `json:"catalog"`
-	Trace            *trace            `json:"trace"`
-	ConnectionStatus *connectionStatus `json:"connectionStatus"`
-}
-
-// connectionStatus is what a connector's check answers: SUCCEEDED or
-// FAILED, with a message the connector chose.
-type connectionStatus struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	Type             string
+	Record           *record
+	State            json.RawMessage
+	Catalog          *catalog
+	Trace            *trace
+	ConnectionStatus *connectionStatus
 }
 
 type record struct {
-	Stream    string          `json:"stream"`
-	Namespace *string         `json:"namespace"`
-	Data      json.RawMessage `json:"data"`
+	Stream    string
+	Namespace *string
+	Data      json.RawMessage
 }
 
 type catalog struct {
-	Streams []json.RawMessage `json:"streams"`
+	Streams []json.RawMessage
 }
 
 // stream is the part of an AirbyteStream the adapter reads. raw is the
 // whole object as the connector gave it, carried into the configured
 // catalog untouched.
 type stream struct {
-	Name               string          `json:"name"`
-	Namespace          *string         `json:"namespace"`
-	JSONSchema         json.RawMessage `json:"json_schema"`
-	SupportedSyncModes []string        `json:"supported_sync_modes"`
-	DefaultCursorField []string        `json:"default_cursor_field"`
+	Name               string
+	Namespace          *string
+	JSONSchema         json.RawMessage
+	SupportedSyncModes []string
+	DefaultCursorField []string
 	raw                json.RawMessage
 }
 
 type trace struct {
-	Type  string `json:"type"`
-	Error *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	Type  string
+	Error *traceError
 }
 
-// stateMessage is the part of an AirbyteStateMessage the adapter reads: to
-// attribute a bookmark to a stream, and to write one back for a resume in
-// the form the connector expects.
-type stateMessage struct {
-	Type   string `json:"type"`
-	Stream *struct {
-		Descriptor struct {
-			Name      string  `json:"name"`
-			Namespace *string `json:"namespace"`
-		} `json:"stream_descriptor"`
-	} `json:"stream"`
-	Global json.RawMessage `json:"global"`
-	Data   json.RawMessage `json:"data"`
+type traceError struct {
+	Message string
+}
+
+// connectionStatus is what a connector's check answers: SUCCEEDED or
+// FAILED, with a message the connector chose.
+type connectionStatus struct {
+	Status  string
+	Message string
+}
+
+// object is a JSON object read by its members' exact names.
+type object map[string]json.RawMessage
+
+func objectOf(raw json.RawMessage) (object, bool) {
+	if !canon.IsObject(raw) {
+		return nil, false
+	}
+	var members object
+	if json.Unmarshal(raw, &members) != nil {
+		return nil, false
+	}
+	return members, true
+}
+
+// str is the member's value when it is present and a string.
+func (o object) str(name string) (string, bool) {
+	var s string
+	if raw, ok := o[name]; !ok || json.Unmarshal(raw, &s) != nil || string(raw) == "null" {
+		return "", false
+	}
+	return s, true
+}
+
+// optional is the member's value when it is a string, nil when it is null
+// or absent, and not ok otherwise.
+func (o object) optional(name string) (*string, bool) {
+	raw, ok := o[name]
+	if !ok || string(raw) == "null" {
+		return nil, true
+	}
+	var s string
+	if json.Unmarshal(raw, &s) != nil {
+		return nil, false
+	}
+	return &s, true
+}
+
+// strings is the member's value when it is an array of strings, nil when
+// absent, and not ok otherwise.
+func (o object) strings(name string) ([]string, bool) {
+	raw, ok := o[name]
+	if !ok {
+		return nil, true
+	}
+	var list []string
+	if json.Unmarshal(raw, &list) != nil {
+		return nil, false
+	}
+	return list, true
+}
+
+// parseStream reads a catalog's stream entry.
+func parseStream(raw json.RawMessage) (stream, bool) {
+	o, ok := objectOf(raw)
+	if !ok {
+		return stream{}, false
+	}
+	s := stream{raw: raw}
+	if s.Name, ok = o.str("name"); !ok || s.Name == "" {
+		return stream{}, false
+	}
+	if s.Namespace, ok = o.optional("namespace"); !ok {
+		return stream{}, false
+	}
+	s.JSONSchema = o["json_schema"]
+	if s.SupportedSyncModes, ok = o.strings("supported_sync_modes"); !ok {
+		return stream{}, false
+	}
+	if s.DefaultCursorField, ok = o.strings("default_cursor_field"); !ok {
+		return stream{}, false
+	}
+	return s, true
 }
 
 // sameNamespace treats a null or absent namespace and an empty one as

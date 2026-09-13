@@ -260,10 +260,20 @@ func (cfg Config) serverRefusal() error {
 // for the operator who is connecting a platform, and it is not an
 // envelope: nothing is minted from it.
 type checkReport struct {
+	Status          string          `json:"status"`
 	Adapter         adapterIdentity `json:"adapter"`
 	Server          serverIdentity  `json:"server"`
 	ProtocolVersion string          `json:"protocolVersion"`
 	Tools           []string        `json:"tools"`
+}
+
+// FailedCheck is the report of a check that did not succeed, for stdout
+// beside the exit status: the same member the success carries, so a
+// caller reads one shape, and the reason as the adapter reported it,
+// already redacted.
+func FailedCheck(reason string) []byte {
+	out, _ := canon.EncodeJSON(map[string]any{"check": map[string]string{"status": "failed", "message": reason}})
+	return out
 }
 
 type serverIdentity struct {
@@ -348,6 +358,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		redacted = append(redacted, redact.Redact(name, secrets))
 	}
 	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
+		Status:          "succeeded",
 		Adapter:         identity,
 		Server:          serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)},
 		ProtocolVersion: initialized.protocol,
@@ -378,7 +389,9 @@ func parseInitialize(raw json.RawMessage) (initializeResult, error) {
 		return initializeResult{}, errors.New("initialize: the server's answer names no protocol version")
 	}
 	if !supportedVersions[protocol] {
-		return initializeResult{}, fmt.Errorf("initialize: the server speaks protocol version %q, which this client does not", protocol)
+		// Written as the server said it, not quoted with %q: an escape
+		// would put it past the redactor.
+		return initializeResult{}, fmt.Errorf("initialize: the server speaks protocol version '%s', which this client does not", protocol)
 	}
 	capabilities, err := exactMembers(members["capabilities"])
 	if err != nil {
@@ -578,13 +591,21 @@ func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listed
 	}
 	var tools []listedTool
 	for _, tool := range listed.Tools {
-		var head struct {
-			Name string `json:"name"`
+		// A descriptor's name is read by its exact member name, with a
+		// duplicate refused: "NAME" beside "name" would otherwise let a
+		// descriptor answer to a name the server did not give it.
+		if _, err := canon.Canonicalize(tool, canon.CarryNumbersAsText); err != nil {
+			return nil, "", fmt.Errorf("tools/list: a tool descriptor is malformed: %v", err)
 		}
-		if json.Unmarshal(tool, &head) != nil || head.Name == "" {
+		head, err := exactMembers(tool)
+		if err != nil {
+			return nil, "", errors.New("tools/list: a tool that is not an object")
+		}
+		var name string
+		if json.Unmarshal(head["name"], &name) != nil || name == "" {
 			return nil, "", errors.New("tools/list: a tool without a name")
 		}
-		tools = append(tools, listedTool{name: head.Name, descriptor: tool})
+		tools = append(tools, listedTool{name: name, descriptor: tool})
 	}
 	return tools, next, nil
 }

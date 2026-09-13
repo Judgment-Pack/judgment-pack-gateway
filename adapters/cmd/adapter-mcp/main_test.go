@@ -81,7 +81,7 @@ func TestRunCheck(t *testing.T) {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	out := stdout.String()
-	if !strings.HasPrefix(out, `{"check":{"adapter":{"name":"`+os.Args[0]+`","version":"1.0","digest":"sha256:`) || !strings.Contains(out, `"server":{"name":"fake-mcp","version":"1.0"}`) ||
+	if !strings.HasPrefix(out, `{"check":{"status":"succeeded","adapter":{"name":"`+os.Args[0]+`","version":"1.0","digest":"sha256:`) || !strings.Contains(out, `"server":{"name":"fake-mcp","version":"1.0"}`) ||
 		!strings.Contains(out, `"tools":["query"]`) || strings.Contains(out, "secret-token") || stdin.Len() != len("not a request") {
 		t.Fatalf("report: %s (stdin left %d bytes)", out, stdin.Len())
 	}
@@ -92,7 +92,7 @@ func TestRunCheck(t *testing.T) {
 	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	if !strings.HasPrefix(stdout.String(), `{"check":{"adapter":{"name":"x/y","version":"1","digest":"`+digest+`"}`) {
+	if !strings.HasPrefix(stdout.String(), `{"check":{"status":"succeeded","adapter":{"name":"x/y","version":"1","digest":"`+digest+`"}`) {
 		t.Fatalf("the report names the pinned image: %s", stdout.String())
 	}
 	tr, _ := os.ReadFile(os.Getenv(fakemcp.EnvTrace))
@@ -101,7 +101,20 @@ func TestRunCheck(t *testing.T) {
 	}
 	stdout.Reset()
 	args = []string{"--check", "--tools", "drop_table", "--", os.Args[0]}
-	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "not offered by the server") || stdout.Len() != 0 {
-		t.Fatalf("a failed check exits 1 with the reason on stderr and nothing on stdout: %d %s %s", code, stderr.String(), stdout.String())
+	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "not offered by the server") ||
+		!strings.HasPrefix(stdout.String(), `{"check":{"message":"tool \"drop_table\" is allowed by the configuration but not offered by the server: [query]","status":"failed"}}`) {
+		t.Fatalf("a failed check exits 1 with the reason on stderr and as a failed report on stdout: %d %s %s", code, stderr.String(), stdout.String())
+	}
+	// A server command, or a server's arguments, follow --; without the
+	// delimiter, flag parsing would hand later flags to the server.
+	stdout.Reset()
+	for _, args := range [][]string{
+		{"--check", "--image", "x/y:1@" + digest, "serve", "--tools", "query"},
+		{"--credentials", credentials, os.Args[0]},
+		{"--check", "--image", "x/y:1@" + digest, "stray", "--", "--flag"},
+	} {
+		if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "follow --") {
+			t.Fatalf("%v: exit %d %s", args, code, stderr.String())
+		}
 	}
 }

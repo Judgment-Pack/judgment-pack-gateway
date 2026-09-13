@@ -85,6 +85,9 @@ const (
 	// EnvListRaw names a file whose contents are the raw result of every
 	// tools/list, as given.
 	EnvListRaw = "MCP_FAKE_LIST_RAW"
+	// EnvListLine names a file whose contents are the whole line written
+	// in answer to tools/list, with {id} replaced by the request's id.
+	EnvListLine = "MCP_FAKE_LIST_LINE"
 
 	envSleep = "MCP_FAKE_SLEEP"
 )
@@ -211,6 +214,12 @@ func serve() int {
 			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
 		case "notifications/initialized":
 		case "tools/list":
+			if path := os.Getenv(EnvListLine); path != "" {
+				raw, _ := os.ReadFile(path)
+				out.WriteString(strings.ReplaceAll(strings.TrimSpace(string(raw)), "{id}", string(m.ID)) + "\n")
+				out.Flush()
+				continue
+			}
 			if path := os.Getenv(EnvListRaw); path != "" {
 				raw, _ := os.ReadFile(path)
 				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": json.RawMessage(raw)})

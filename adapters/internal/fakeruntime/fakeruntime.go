@@ -101,6 +101,13 @@ func Run(args []string) int {
 		return code
 	case "inspect":
 		if len(args) > 1 && stuck(args[1]) {
+			// A stuck container is still known to the runtime; with
+			// EnvInspectStderr set, the runtime instead cannot say, and
+			// says that.
+			if text := os.Getenv(EnvInspectStderr); text != "" {
+				os.Stderr.WriteString(strings.ReplaceAll(text, "{name}", args[1]) + "\n")
+				return 1
+			}
 			return 0
 		}
 		code := 1

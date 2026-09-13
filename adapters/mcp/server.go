@@ -67,6 +67,10 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 	cmd.Args[0] = cfg.Command[0]
 	cmd.Env = append(os.Environ(), env...)
 	cmd.WaitDelay = containers.WaitDelay
+	// The command leads a process group of its own (where there are
+	// process groups), so a descendant it leaves behind -- holding the
+	// credentials in its environment -- is reached when it is stopped.
+	ownGroup(cmd)
 	stderr := &boundedBuffer{limit: 4096}
 	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
@@ -107,8 +111,12 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 		}
 		stopped = true
 		// End of input ends a well-behaved server; one that lingers is
-		// killed after the wait delay. A descendant the command left
-		// behind is not reached: --image is the shape that keeps the
+		// killed after the wait delay; and the whole process group is
+		// killed last, so a descendant the command left behind does not
+		// keep the credentials. The group is addressed after its leader
+		// was reaped, a window in which the id could in principle be
+		// reused; under the gateway the adapter's own group is killed
+		// too, which closes it, and --image is the shape that keeps the
 		// lifecycle under a name.
 		stdin.Close()
 		done := make(chan error, 1)
@@ -120,6 +128,7 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 			<-done
 		}
 		cancel()
+		killGroup(cmd)
 		return nil
 	}
 	return &server{stdin: stdin, stdout: stdout, stop: stop, firstLine: stderr.firstLine,

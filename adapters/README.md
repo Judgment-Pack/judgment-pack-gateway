@@ -46,9 +46,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   check with its own message, and a connector exits 0 whichever way it answers, so the
   answer is read from the message and never from the exit status. The first status the
   connector emits is its answer — a later one cannot revise it, and a second answer fails
-  the check — and it is read by its members' exact names with a duplicate refused, since Go's
-  struct decoding would let `STATUS` stand in for `status`. The report is for the operator
-  connecting a platform (`gateway connect`); nothing is minted from it.
+  the check. A check that did not succeed writes `{"check": {"status": "failed", "message"}}`
+  on stdout beside its exit status, so a caller reads one shape either way. The report is for
+  the operator connecting a platform (`gateway connect`); nothing is minted from it.
 
 The request, as canonical arguments on stdin:
 
@@ -69,7 +69,10 @@ repeat them and the receipt has no member to say so. `state` is the previous pag
 the form it reads. A record whose data is not an object, and a `RECORD`, `STATE`,
 `TRACE` or `CATALOG` message that does not have its stated shape — a checkpoint without
 the payload its type needs to be handed back, among them — fail the acquisition; a line
-that is not a message at all — a connector's log — is skipped.
+that is not a message at all — a connector's log — is skipped. A message is read by its
+members' exact names, with a duplicate member at any depth refused: Go's struct decoding
+would let `TYPE` stand in for `type`, or `STREAM` for `stream`, and a second member overwrite
+the first, on lines that decide what a record belongs to and whether the platform answered.
 
 What the envelope carries, and so what the receipt records:
 
@@ -150,7 +153,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   instead — one installed beside the gateway, or a launcher like `npx` — is given after
   `--`, word by word, with its arguments: `adapter-mcp --credentials … -- npx -y
   @example/mcp-server --flag`. The gateway splits a source on whitespace and parses no
-  quotes, which is why neither is a quoted value. Exactly one of the two forms.
+  quotes, which is why neither is a quoted value. Exactly one of the two forms, and the
+  `--` is required: without it, flag parsing would stop at the first word and hand every
+  later flag to the server, silently.
 - `--credentials` is a JSON object of strings that become the server's environment — a
   token, a connection string — and nothing else is added: a container gets them through an
   env file in its private mount; a command gets them beside the adapter's own environment,
@@ -164,8 +169,10 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   `--tools` that the server does not offer fails the check, so a binding that names a tool
   the pinned server lacks is found out when the platform is connected, not at the first
   acquisition. What the server said of itself — its name and version, its tools' names — is
-  redacted before it is reported, as every diagnostic is. The report is for the operator
-  (`gateway connect`); nothing is minted from it.
+  redacted before it is reported, as every diagnostic is. The report carries `"status":
+  "succeeded"`; a check that did not succeed writes `{"check": {"status": "failed",
+  "message"}}` on stdout beside its exit status, so a caller reads one shape either way. The
+  report is for the operator (`gateway connect`); nothing is minted from it.
 
 The request, as canonical arguments on stdin:
 
@@ -199,14 +206,20 @@ over. A tool result is held to its shape — a `content` array of typed items, a
 `structuredContent`, a boolean for `isError` — by exact member names; one that answers
 `isError` fails the acquisition with its text, redacted. A line on the server's stdout that
 is not a JSON-RPC message is a protocol violation and fails the acquisition, as the stdio
-transport reserves stdout for messages.
+transport reserves stdout for messages. Every message, and every tool descriptor, is read by
+its members' exact names with a duplicate refused, so `RESULT` cannot stand in for `result`
+nor `NAME` for `name`; and what the server says is written into a diagnostic as it said it,
+never quoted with an escape that would carry it past the redactor.
 
 **The server.** An image is run and stopped as `adapter-airbyte` runs a connector — given
 the wait delay to end on end-of-input, then told to stop by name, its absence established;
 stopping takes up to nine seconds. A command is ended by end-of-input and, after the wait
 delay, killed; both ends of its pipes are closed with the deadline, so neither a reader nor
-a writer holds the adapter past it; a descendant the command left behind is not reached,
-which is why `--image` is the shape that keeps the lifecycle under a name. Every diagnostic
+a writer holds the adapter past it; and where there are process groups the command leads one
+of its own, which is killed last, so a descendant it left behind — holding the credentials in
+its environment — is reached. The group is addressed after its leader was reaped, a window in
+which the id could in principle be reused; under the gateway the adapter's own group is killed
+too, which closes it, and `--image` is the shape that keeps the lifecycle under a name. Every diagnostic
 that crosses the source boundary — the server's, the runtime's, and this adapter's own about
 what the server said, offered tool names included — is redacted and bounded as
 `adapter-airbyte`'s are; a connection string's user name, password and query values count

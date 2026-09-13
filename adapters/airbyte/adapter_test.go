@@ -881,6 +881,9 @@ func TestCheckRefusals(t *testing.T) {
 		{"a failure a later success cannot revise", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"no"}}` + "\n" + checkSucceeded, nil, "the connector could not connect (FAILED): no"},
 		{"two answers", checkSucceeded + checkSucceeded, nil, "the connector answered more than once"},
 		{"a container that would not stop, its answer redacted", checkSucceeded, map[string]string{fakeruntime.EnvKillExit: "1", fakeruntime.EnvInspectStderr: "daemon busy with hunter2 at warehouse.internal"}, "[redacted]"},
+		{"a type under another case cannot hide a failure", `{"type":"CONNECTION_STATUS","TYPE":"LOG","connectionStatus":{"status":"FAILED","message":"no"}}` + "\n" + checkSucceeded, nil, "the connector could not connect (FAILED): no"},
+		{"a trace type under another case cannot hide an error", `{"type":"TRACE","TYPE":"LOG","trace":{"type":"ERROR","TYPE":"INFO","error":{"message":"boom"}}}` + "\n" + checkSucceeded, nil, "connector reported an error during check: boom"},
+		{"a duplicate member anywhere in a message", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":"a","message":"b"}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := checkFake(t, tc.check)
@@ -906,13 +909,54 @@ func TestCheckRefusals(t *testing.T) {
 }
 
 func TestAcquireRedactsAContainerThatWouldNotStop(t *testing.T) {
-	// The same stop failure after a successful read, and after a
-	// successful discover, crosses the redaction too.
+	// A stop failure after discover, and one after a successful read
+	// with discover's container stopped cleanly, both cross the
+	// redaction.
 	cfg := fake(t, discoverFixture, readFixture)
 	t.Setenv(fakeruntime.EnvKillExit, "1")
 	t.Setenv(fakeruntime.EnvInspectStderr, "daemon busy with hunter2 at warehouse.internal")
 	_, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 2})
 	if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") || !strings.Contains(err.Error(), "[redacted]") {
-		t.Fatalf("redacted: %v", err)
+		t.Fatalf("after discover: %v", err)
+	}
+	if inv := invocations(t); len(inv) != 1 || inv[0].Verb != "discover" {
+		t.Fatalf("discover's stop failed before any read: %+v", inv)
+	}
+	cfg = fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvStuckOnRead, "1")
+	t.Setenv(fakeruntime.EnvInspectStderr, "daemon busy with hunter2 at warehouse.internal")
+	_, err = Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 2})
+	if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("after read: %v", err)
+	}
+	if inv := invocations(t); len(inv) != 2 || inv[1].Verb != "read" {
+		t.Fatalf("the read was reached and its container's stop failed: %+v", inv)
+	}
+}
+
+func TestExactMemberNamesDecideTheRecord(t *testing.T) {
+	// A record whose "STREAM" says otherwise still belongs to its
+	// "stream"; a record with "stream" stated twice is malformed.
+	read := rec(101, "0", `,"status":"approved"`) + `{"type":"RECORD","record":{"stream":"decisions","STREAM":"audit","emitted_at":2,"data":{"id":102}}}` + "\n" + `{"type":"STATE","state":` + state1 + `}` + "\n"
+	cfg := fake(t, discoverFixture, read)
+	out, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `{"id":102}`) {
+		t.Fatalf("the record is the stream's: %s", out)
+	}
+	read = `{"type":"RECORD","record":{"stream":"audit","stream":"decisions","emitted_at":2,"data":{"id":102}}}` + "\n"
+	cfg = fake(t, discoverFixture, read)
+	if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "malformed RECORD message") {
+		t.Fatalf("a duplicate member is refused: %v", err)
+	}
+	// A line whose type is not spelled "type" is something printed, not
+	// a message; a message whose type is not one read here is skipped.
+	read = `{"TYPE":"RECORD","record":{"stream":"decisions","emitted_at":2,"data":{"id":103}}}` + "\n" + `{"type":"SPEC","spec":{}}` + "\n" + rec(104, "0", ``) + `{"type":"STATE","state":` + state1 + `}` + "\n"
+	cfg = fake(t, discoverFixture, read)
+	out, err = Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
+	if err != nil || strings.Contains(string(out), `"id":103`) || !strings.Contains(string(out), `"id":104`) {
+		t.Fatalf("only exact messages are read: %v %s", err, out)
 	}
 }
