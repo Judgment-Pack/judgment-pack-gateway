@@ -138,7 +138,12 @@ is [SPEC.md §5a](SPEC.md), executable in `go/ceremony_test.go`.
 names platforms — a catalog binding pinned by digest, a credentials file, the OS user the
 platform's adapters run as — and `serve` derives every source from it, refusing to start
 under a configuration in which an adapter could read the seed or the signer a credential
-([docs/design/engine-config.md](docs/design/engine-config.md)).
+([docs/design/engine-config.md](docs/design/engine-config.md)). `gateway connect --config
+engine.json <platform> --binding <name> --credentials-file <path> --user <name>` writes a
+platform entry: it holds the configuration that would result to the same refusals, runs each
+of the platform's adapters once in check mode as the platform's user, prints what the platform
+answered, and writes only then — nothing is acquired and no receipt is minted. The bindings
+the engine ships, with their pins and licences, are in [catalog/](catalog/README.md).
 
 A source is any command that reads the canonical arguments on stdin and writes a JSON
 result on stdout. The gateway attaches no transport of its own; it attests whatever

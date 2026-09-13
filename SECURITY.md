@@ -204,7 +204,11 @@ the signer as written: a signer holding `CAP_SETUID` can assume any user, so a c
 signer is not held out of credentials by the configuration — that takes a privileged launcher
 separate from the signer, which is the engine image's job. The checks hold the configuration
 to what the filesystem and the kernel report; an access-control list or a socket at another
-path is not seen.
+path is not seen. **`connect`** holds the configuration it would write to the same checks
+before it runs a platform's adapters once in check mode — as the platform's user, in the
+environment `serve` would give them — and writes the entry only when they answered; the
+report an adapter writes crosses to the operator, redacted by the adapter as its diagnostics
+are, and nothing is signed from it.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being

@@ -193,7 +193,7 @@ running engine reaches:
     },
     "live": {
       "shape": "mcp",
-      "server": { "image": "…/mcp-postgres@sha256:…" },
+      "server": { "image": "…/mcp-postgres@sha256:…", "args": ["--access-mode=restricted"] },
       "tools": ["query"],
       "licence": "MIT"
     }
@@ -203,7 +203,10 @@ running engine reaches:
 
 One binding per platform; one entry per operation it supports — `history`, `live`, `write` —
 each naming its shape, the pinned artifact that serves it, the tools it may call, and the
-licence of the artifact it pulls. A restriction of streams for the history operation is not yet
+licence of the artifact it pulls. An `mcp` entry's `server.args`, when present, are the
+server's own arguments inside its container — the mode a server runs in, say — each one word
+as written: the engine builds the adapter's command line and splits nothing, and the adapter
+hands them to the runtime after the image. A restriction of streams for the history operation is not yet
 applied at acquisition, so a binding may not declare one: a restriction accepted and not
 applied would read as applied. `history` is served by the `airbyte` shape and `live`
 and `write` by the `mcp` shape; the `http` shape is not shipped by this release, and a binding
@@ -225,14 +228,33 @@ is fetched both ways and must derive to byte-identical canonical facts.
 ## `connect`
 
 ```
-engine connect service-desk --binding jira --credentials-file /run/secrets/service-desk
+gateway connect --config engine.json service-desk --binding jira \
+  --credentials-file /run/secrets/service-desk --user engine-service-desk \
+  [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace]
 ```
 
-writes the platform entry, resolves the binding's digest from the catalog, starts the adapter
-once in check mode with the credentials reference, and reports what the platform answered —
-without acquiring anything and without minting a receipt. It refuses a binding that is not in
-the catalog, and it refuses to overwrite an existing entry unless told to. The entry is written
-only when the check succeeds; a platform that cannot be reached is not silently configured.
+writes the platform entry — the binding pinned by the digest of the catalog file as it is
+now, the credentials path as written, the user, and what else was given — and it writes
+nothing until two things have held. First, the configuration as it would be, with the entry
+in place, passes every refusal `serve` applies (the platforms it already names included, so a
+pin the catalog no longer digests to is found here and not at the next start): the user is
+neither root nor the signer nor another platform's, the credentials file is that user's alone
+under directories nobody else can replace it in, and so on through the list above. Second,
+each of the platform's derived sources is run once in check mode, as the platform's user, in
+the environment `serve` would give it: `adapter-airbyte --check` runs the connector's own
+`check` with the credentials; `adapter-mcp --check` starts the server, completes the handshake
+and lists its tools, failing when a tool the binding names is not offered. What each answered
+is printed, one line per operation; the first that cannot answer ends the connect with the
+adapter's reason. Nothing is acquired and no receipt is minted. An image the runtime does not
+hold yet is pulled during the check, which is why a check is given five minutes where an
+acquisition has twenty seconds.
+
+It refuses a binding that is not in the catalog, a platform already configured unless
+`--replace` is given, and a configuration path that is a symbolic link. The file is rewritten
+whole, in the engine's own form — members in canonical order, indented — and put in place by a
+rename, so a reader sees the old file or the new and never a partial one. A configuration
+with an empty `platforms` object is what the file looks like before its first `connect`; it
+parses, and `serve` refuses to start on it.
 
 ## What the file is not
 

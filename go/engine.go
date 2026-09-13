@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,7 @@ type binding struct {
 type operation struct {
 	shape   string
 	image   string
+	args    []string // the server's own arguments inside its container (mcp)
 	tools   []string
 	licence string
 }
@@ -182,14 +184,14 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	if err != nil {
 		return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 	}
-	if len(platforms.names) == 0 {
-		return engineConfig{}, errors.New("engine configuration: platforms names no platform")
-	}
+	// An empty platforms object parses: it is what a configuration looks
+	// like before its first `connect`, and serving it is refused where the
+	// configuration is held to what it must name (engineRefusals).
 	names := append([]string(nil), platforms.names...)
 	sort.Strings(names)
 	for _, name := range names {
-		if strings.ContainsAny(name, "/=\x00") || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
-			return engineConfig{}, fmt.Errorf("engine configuration: platform name %q may not be empty, padded, or contain / or =", name)
+		if err := validPlatformName(name); err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		raw, _ := platforms.get(name)
 		p, err := requireObject(raw, "platform "+name)
@@ -253,6 +255,24 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 func requireAbsolutePath(obj *vObject, name string) (string, error) {
 	s, err := requireString(obj, name)
 	if err != nil || s == "" {
+		return "", fmt.Errorf("%s must be a non-empty absolute path", name)
+	}
+	return cleanAbsolutePath(name, s)
+}
+
+// validPlatformName is why a platform name cannot be one, or nil: it is a
+// source name's first segment and an environment value, so it is neither
+// empty nor padded and holds no separator.
+func validPlatformName(name string) error {
+	if strings.ContainsAny(name, "/=\x00") || strings.TrimSpace(name) == "" || name != strings.TrimSpace(name) {
+		return fmt.Errorf("platform name %q may not be empty, padded, or contain / or =", name)
+	}
+	return nil
+}
+
+// cleanAbsolutePath holds a configured path to being absolute and clean.
+func cleanAbsolutePath(name, s string) (string, error) {
+	if s == "" {
 		return "", fmt.Errorf("%s must be a non-empty absolute path", name)
 	}
 	if !filepath.IsAbs(s) {
@@ -422,11 +442,28 @@ func parseOperation(op *vObject, name string) (operation, error) {
 		if err != nil {
 			return o, fmt.Errorf("operation %s: %v", name, err)
 		}
-		if err := exactlyMembers(server, map[string]bool{"image": true}, "operation "+name+" server"); err != nil {
+		if err := exactlyMembers(server, map[string]bool{"image": true, "args": false}, "operation "+name+" server"); err != nil {
 			return o, err
 		}
 		if o.image, err = requireString(server, "image"); err != nil || !isPinnedImage(o.image) {
 			return o, fmt.Errorf("operation %s: server.image must be pinned, name[:tag]@sha256:<64 hex>", name)
+		}
+		if argsValue, present := server.get("args"); present {
+			// The server's own arguments, handed to the adapter after "--"
+			// and by it to the runtime after the image: each one word as
+			// written, since the engine builds the command line and splits
+			// nothing.
+			args, ok := argsValue.(vArray)
+			if !ok || len(args) == 0 {
+				return o, fmt.Errorf("operation %s: server.args, when present, is a non-empty array of the server's arguments", name)
+			}
+			for _, a := range args {
+				s, ok := a.(vString)
+				if !ok || s == "" || strings.ContainsAny(string(s), "\n\x00") {
+					return o, fmt.Errorf("operation %s: server.args must be non-empty strings without newlines", name)
+				}
+				o.args = append(o.args, string(s))
+			}
 		}
 		toolsValue, _ := op.get("tools")
 		tools, ok := toolsValue.(vArray)
@@ -448,9 +485,15 @@ func parseOperation(op *vObject, name string) (operation, error) {
 	return o, nil
 }
 
+// imageReference is the shape of an image's name[:tag], as the adapters
+// hold it: registry with an optional port, path components and a tag,
+// each beginning with a letter or digit, so nothing a binding names as an
+// image can be read by a runtime as an option.
+var imageReference = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(?::[0-9]+)?(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
+
 func isPinnedImage(ref string) bool {
 	name, digest, ok := strings.Cut(ref, "@")
-	return ok && name != "" && isDigest(digest)
+	return ok && imageReference.MatchString(name) && isDigest(digest)
 }
 
 // deriveSources turns platforms and their bindings into the sources `serve`
@@ -481,6 +524,9 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			argv := []string{adapter("adapter-mcp"), "--image", b.live.image, "--credentials", p.credentials, "--runtime", cfg.runtime, "--tools", strings.Join(b.live.tools, ",")}
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint", p.endpoint)
+			}
+			if len(b.live.args) > 0 {
+				argv = append(append(argv, "--"), b.live.args...)
 			}
 			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp"}
 		}
@@ -552,6 +598,9 @@ func capabilityRefusal(sets capabilitySets) error {
 // user, so a compromised signer is not held out of credentials by this;
 // the design note says which separation would.
 func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
+	if len(cfg.platforms) == 0 {
+		return nil, errors.New("engine configuration: platforms names no platform; `gateway connect` adds one")
+	}
 	var statements []string
 	if host.euid == 0 {
 		if !cfg.rootSigner {
@@ -768,21 +817,31 @@ func loadEngineConfig(path string, account func(name string) (int, string, error
 	if err != nil {
 		return engineConfig{}, nil, err
 	}
+	bindings, err := resolveEngineConfig(&cfg, account)
+	if err != nil {
+		return engineConfig{}, nil, err
+	}
+	return cfg, bindings, nil
+}
+
+// resolveEngineConfig looks up every platform's user and loads every
+// binding a parsed configuration pins.
+func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, string, error)) (map[string]binding, error) {
 	bindings := map[string]binding{}
 	for i := range cfg.platforms {
 		p := &cfg.platforms[i]
 		uid, home, err := account(p.user)
 		if err != nil {
-			return engineConfig{}, nil, fmt.Errorf("platform %s: %v", p.name, err)
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		p.uid, p.home = uid, home
 		b, err := loadBinding(cfg.catalog, p.binding)
 		if err != nil {
-			return engineConfig{}, nil, fmt.Errorf("platform %s: %v", p.name, err)
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		bindings[p.name] = b
 	}
-	return cfg, bindings, nil
+	return bindings, nil
 }
 
 // readBounded reads a regular file of at most limit bytes through one

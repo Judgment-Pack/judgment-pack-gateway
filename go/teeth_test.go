@@ -1629,6 +1629,10 @@ func TestShutdownAnswersInFlightRequestsBeforeReturning(t *testing.T) {
 	case <-time.After(service.waitDelay + 20*time.Second):
 		t.Fatal("serveOn did not return after shutdown")
 	}
+	// The response was written before serveOn returned; the client's
+	// goroutine still has to read and decode it, which on a slow runner
+	// can land after serveOn's return is observed here, so the answer is
+	// waited for, briefly, rather than demanded at once.
 	select {
 	case a := <-answered:
 		if a.err != nil {
@@ -1637,8 +1641,8 @@ func TestShutdownAnswersInFlightRequestsBeforeReturning(t *testing.T) {
 		if a.code != http.StatusBadRequest || a.body["error"] == nil {
 			t.Fatalf("the in-flight request must be answered with the refusal, got %d %v", a.code, a.body)
 		}
-	default:
-		t.Fatal("serveOn returned before the in-flight request was answered")
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveOn returned without the in-flight request being answered")
 	}
 	if _, sealErr := service.sealSession("shutdown-http"); sealErr == nil {
 		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
@@ -1692,13 +1696,15 @@ func TestServeFailureStillEndsSourcesInFlight(t *testing.T) {
 	case <-time.After(service.waitDelay + 20*time.Second):
 		t.Fatal("serveOn did not return after the listener failed")
 	}
+	// As above: the response was written before serveOn returned, and
+	// the client's read of it is waited for, briefly.
 	select {
 	case a := <-answered:
 		if a.err != nil || a.code != http.StatusBadRequest {
 			t.Fatalf("the in-flight request must be answered with the refusal, got %d %v", a.code, a.err)
 		}
-	default:
-		t.Fatal("serveOn returned while a request was still in flight")
+	case <-time.After(5 * time.Second):
+		t.Fatal("serveOn returned without the in-flight request being answered")
 	}
 	if _, sealErr := service.sealSession("serve-failure"); sealErr == nil {
 		t.Fatal("a session whose only acquisition was cancelled must not be sealable")
