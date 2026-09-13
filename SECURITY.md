@@ -192,9 +192,9 @@ was given, can read what that user can read, including the seed; and a gateway t
 can read the files a source user holds. The separation is only as strong as the identities the
 operator gives the two sides. **`serve --config`** holds a configuration to both sides at once
 ([docs/design/engine-config.md](docs/design/engine-config.md)): every platform's adapters run as
-a user of their own that is neither root nor the signer nor another platform's, a credentials
-file must be owned by that user and readable by nobody else under directories nobody else can
-replace it in, a signer that is root must be accepted by name, and so must a host
+a user of their own that is neither root nor the signer nor another platform's, each credentials
+file — one per operation — must be owned by that user and readable by nobody else under
+directories nobody else can replace it in, a signer that is root must be accepted by name, and so must a host
 container-runtime socket an adapter could reach; a non-root signer may hold no capability that
 reads past permissions, in its effective or permitted set, and none that is ambient or
 inheritable, since either could cross into an adapter and let it switch back — the three it

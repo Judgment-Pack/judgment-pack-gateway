@@ -20,11 +20,12 @@ file name.
 
 The `live` entry names the server's read tools — schemas, objects, object details, SQL
 under the server's restricted mode, query plans — and not its workload-analysis tools,
-which read `pg_stat_statements` and are an operator's, not a decision's. The server takes
-its connection string from the environment variable `DATABASE_URI`, so the platform's
-credentials file is `{"DATABASE_URI": "postgresql://…"}`; the connector's is the
-configuration its `spec` describes (`host`, `port`, `database`, `username`, `password`,
-`ssl_mode`, …). The `write` entry is stated and not derived: nothing runs it until an
+which read `pg_stat_statements` and are an operator's, not a decision's. The two operations
+read different files: the server takes its connection string from the environment
+variable `DATABASE_URI`, so the `live` credentials file is `{"DATABASE_URI":
+"postgresql://…"}`, an object of strings; the connector's `history` file is the
+configuration its `spec` describes (`host`, `port` as a number, `database`, `username`,
+`password`, `ssl_mode` as an object, …). A platform names one file per operation. The `write` entry is stated and not derived: nothing runs it until an
 executor exists.
 
 ELv2 (the Elastic License 2.0) forbids providing the connector to third parties as a

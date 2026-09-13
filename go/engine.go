@@ -43,8 +43,8 @@ type engineConfig struct {
 
 type platformConfig struct {
 	name        string
-	binding     string // name@sha256:hex
-	credentials string // a path, never a value
+	binding     string            // name@sha256:hex
+	credentials map[string]string // by operation (history, live): a path, never a value
 	user        string
 	uid         int    // resolved from the user database
 	home        string // the user's home, from the user database
@@ -205,16 +205,34 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if pc.binding, err = requireString(p, "binding"); err != nil || !isBindingRef(pc.binding) {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: binding must be name@sha256:<64 hex>, the name a catalog file's without / or \\", name)
 		}
+		// One credentials file per operation: a connector's configuration
+		// and a server's environment are different files, and a binding's
+		// operations each name theirs. Which operations must be named is
+		// the binding's to say (resolveEngineConfig).
 		credentialsValue, _ := p.get("credentials")
 		credentials, err := requireObject(credentialsValue, "credentials")
 		if err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
 		}
-		if err := exactlyMembers(credentials, map[string]bool{"file": true}, "platform "+name+" credentials"); err != nil {
+		if err := exactlyMembers(credentials, map[string]bool{"history": false, "live": false}, "platform "+name+" credentials"); err != nil {
 			return engineConfig{}, err
 		}
-		if pc.credentials, err = requireAbsolutePath(credentials, "file"); err != nil {
-			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials.%v", name, err)
+		if len(credentials.names) == 0 {
+			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials names no operation", name)
+		}
+		pc.credentials = map[string]string{}
+		for _, op := range credentials.names {
+			raw, _ := credentials.get(op)
+			entry, err := requireObject(raw, "credentials."+op)
+			if err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
+			}
+			if err := exactlyMembers(entry, map[string]bool{"file": true}, "platform "+name+" credentials."+op); err != nil {
+				return engineConfig{}, err
+			}
+			if pc.credentials[op], err = requireAbsolutePath(entry, "file"); err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials.%s.%v", name, op, err)
+			}
 		}
 		if pc.user, err = requireString(p, "user"); err != nil || pc.user == "" {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: user must name the OS user its adapters run as; an adapter running as the signer could read the seed", name)
@@ -514,14 +532,14 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		b := bindings[p.name]
 		env := append([]string{"HOME=" + p.home}, p.environment...)
 		if b.history != nil {
-			argv := []string{adapter("adapter-airbyte"), "--image", b.history.image, "--credentials", p.credentials, "--runtime", cfg.runtime}
+			argv := []string{adapter("adapter-airbyte"), "--image", b.history.image, "--credentials", p.credentials["history"], "--runtime", cfg.runtime}
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint", p.endpoint)
 			}
 			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
 		}
 		if b.live != nil {
-			argv := []string{adapter("adapter-mcp"), "--image", b.live.image, "--credentials", p.credentials, "--runtime", cfg.runtime, "--tools", strings.Join(b.live.tools, ",")}
+			argv := []string{adapter("adapter-mcp"), "--image", b.live.image, "--credentials", p.credentials["live"], "--runtime", cfg.runtime, "--tools", strings.Join(b.live.tools, ",")}
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint", p.endpoint)
 			}
@@ -634,28 +652,36 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			return nil, fmt.Errorf("platform %s: user %s is also platform %s's; each platform's adapters run as a user of their own, or one could read the other's credentials", p.name, p.user, other)
 		}
 		seen[uid] = p.name
-		// The directories first, and the path used from here on is the
-		// resolved one, so the file judged is the file the adapter opens.
-		credentials, err := trustedAncestors(p.credentials, uid, host)
-		if err != nil {
-			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
+		// Every credentials file, in operation order. The directories
+		// first, and the path used from here on is the resolved one, so
+		// the file judged is the file the adapter opens.
+		ops := make([]string, 0, len(p.credentials))
+		for op := range p.credentials {
+			ops = append(ops, op)
 		}
-		p.credentials = credentials
-		owner, err := host.fileOwner(p.credentials)
-		if err != nil {
-			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
-		}
-		if owner.link {
-			return nil, fmt.Errorf("platform %s: credentials %s is a symbolic link", p.name, p.credentials)
-		}
-		if owner.dir {
-			return nil, fmt.Errorf("platform %s: credentials %s is a directory", p.name, p.credentials)
-		}
-		if owner.uid != uid {
-			return nil, fmt.Errorf("platform %s: credentials %s must be owned by %s, the user its adapters run as", p.name, p.credentials, p.user)
-		}
-		if owner.mode&0o077 != 0 {
-			return nil, fmt.Errorf("platform %s: credentials %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, p.credentials, owner.mode, p.credentials)
+		sort.Strings(ops)
+		for _, op := range ops {
+			credentials, err := trustedAncestors(p.credentials[op], uid, host)
+			if err != nil {
+				return nil, fmt.Errorf("platform %s: credentials.%s: %v", p.name, op, err)
+			}
+			p.credentials[op] = credentials
+			owner, err := host.fileOwner(credentials)
+			if err != nil {
+				return nil, fmt.Errorf("platform %s: credentials.%s: %v", p.name, op, err)
+			}
+			if owner.link {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s is a symbolic link", p.name, op, credentials)
+			}
+			if owner.dir {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s is a directory", p.name, op, credentials)
+			}
+			if owner.uid != uid {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s must be owned by %s, the user its adapters run as", p.name, op, credentials, p.user)
+			}
+			if owner.mode&0o077 != 0 {
+				return nil, fmt.Errorf("platform %s: credentials.%s %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, op, credentials, owner.mode, credentials)
+			}
 		}
 	}
 	if host.sockets != nil {
@@ -839,9 +865,44 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
+		if err := credentialsMatch(p.credentials, b); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
 		bindings[p.name] = b
 	}
 	return bindings, nil
+}
+
+// bindingOperations are the operations a binding derives sources for, in
+// order.
+func bindingOperations(b binding) []string {
+	var ops []string
+	if b.history != nil {
+		ops = append(ops, "history")
+	}
+	if b.live != nil {
+		ops = append(ops, "live")
+	}
+	return ops
+}
+
+// credentialsMatch holds a platform's credentials to its binding: a file
+// for every operation the binding offers, and none for an operation it
+// does not.
+func credentialsMatch(credentials map[string]string, b binding) error {
+	offered := map[string]bool{}
+	for _, op := range bindingOperations(b) {
+		offered[op] = true
+		if credentials[op] == "" {
+			return fmt.Errorf("the binding offers %s but credentials name no %s file", op, op)
+		}
+	}
+	for op := range credentials {
+		if !offered[op] {
+			return fmt.Errorf("credentials name a %s file but the binding offers no %s", op, op)
+		}
+	}
+	return nil
 }
 
 // readBounded reads a regular file of at most limit bytes through one

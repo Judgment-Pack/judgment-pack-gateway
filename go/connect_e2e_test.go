@@ -82,9 +82,18 @@ func main() {
 	}
 	line := strings.Join(os.Args, " ")
 	if strings.Contains(line, "source-postgres") {
+		// The connector's configuration: the fields its spec names, with
+		// the port a number, as the real connector reads it.
 		config, _ := os.ReadFile(mount + "/config.json")
-		if !strings.Contains(string(config), "hunter2") {
-			os.Stderr.WriteString("no configuration mounted\n")
+		var spec struct {
+			Host     string ` + "`json:\"host\"`" + `
+			Port     int    ` + "`json:\"port\"`" + `
+			Database string ` + "`json:\"database\"`" + `
+			Username string ` + "`json:\"username\"`" + `
+			Password string ` + "`json:\"password\"`" + `
+		}
+		if json.Unmarshal(config, &spec) != nil || spec.Host != "warehouse.internal" || spec.Port != 5432 || spec.Database != "decisions" || spec.Username != "app" || spec.Password != "hunter2" {
+			os.Stderr.WriteString("the connector's configuration is not the connector's\n")
 			os.Exit(1)
 		}
 		status := os.Getenv("CHECK_STATUS")
@@ -135,9 +144,14 @@ func main() {
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("building the stand-in runtime: %v\n%s", err, out)
 	}
-	// One credentials file serves both operations here; the connector's
-	// configuration and the server's environment are both JSON objects.
-	credentials := filepath.Join(dir, "warehouse.json")
+	// Two credentials files, one per operation, each in the form its
+	// adapter reads: the connector's configuration, and the server's
+	// environment.
+	connector := filepath.Join(dir, "warehouse-connector.json")
+	if err := os.WriteFile(connector, []byte(`{"host":"warehouse.internal","port":5432,"database":"decisions","username":"app","password":"hunter2","ssl_mode":{"mode":"require"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	credentials := filepath.Join(dir, "warehouse-env.json")
 	if err := os.WriteFile(credentials, []byte(`{"DATABASE_URI":"postgresql://app:hunter2@warehouse.internal:5432/decisions"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -159,6 +173,7 @@ func main() {
 	}
 	trace := filepath.Join(dir, "runtime.trace")
 	fs := goodFilesystem(seed, credentials, os.Geteuid(), 4242)
+	fs[connector] = fileOwnership{uid: 4242, mode: 0o600}
 	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
 	host := engineHost{
 		euid:         os.Geteuid(),
@@ -172,7 +187,7 @@ func main() {
 		spec.user = ""
 		return runCheck(ctx, spec)
 	}
-	req := connectRequest{config: config, platform: "warehouse", binding: "postgres", credentials: credentials, user: "engine-warehouse",
+	req := connectRequest{config: config, platform: "warehouse", binding: "postgres", credentials: map[string]string{"history": connector, "live": credentials}, user: "engine-warehouse",
 		endpoint: "warehouse.internal:5432", environment: []string{"FAKE_TRACE=" + trace}}
 	out, err := connect(context.Background(), req, host, asSelf)
 	if err != nil {
@@ -192,7 +207,8 @@ func main() {
 	if err != nil || len(cfg.platforms) != 1 || cfg.platforms[0].binding != "postgres@"+digestOf(restrictedBinding) {
 		t.Fatalf("the written file is what serve reads: %v %+v", err, cfg.platforms)
 	}
-	if sources := deriveSources(cfg, bindings); len(sources) != 2 || !strings.HasSuffix(strings.Join(sources["warehouse/live"].argv, " "), " -- --access-mode=restricted") {
+	if sources := deriveSources(cfg, bindings); len(sources) != 2 || !strings.HasSuffix(strings.Join(sources["warehouse/live"].argv, " "), " -- --access-mode=restricted") ||
+		!strings.Contains(strings.Join(sources["warehouse/history"].argv, " "), "--credentials "+connector+" ") || !strings.Contains(strings.Join(sources["warehouse/live"].argv, " "), "--credentials "+credentials+" ") {
 		t.Fatalf("serve derives both sources from the written entry: %v", sources)
 	}
 	// A platform that does not answer is not configured: replacing the

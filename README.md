@@ -139,8 +139,8 @@ names platforms — a catalog binding pinned by digest, a credentials file, the 
 platform's adapters run as — and `serve` derives every source from it, refusing to start
 under a configuration in which an adapter could read the seed or the signer a credential
 ([docs/design/engine-config.md](docs/design/engine-config.md)). `gateway connect --config
-engine.json <platform> --binding <name> --credentials-file <path> --user <name>` writes a
-platform entry: it holds the configuration that would result to the same refusals, runs each
+engine.json <platform> --binding <name> --credentials-file <operation>=<path>... --user <name>`
+writes a platform entry: it holds the configuration that would result to the same refusals, runs each
 of the platform's adapters once in check mode as the platform's user, prints what the platform
 answered, and writes only then — nothing is acquired and no receipt is minted. The bindings
 the engine ships, with their pins and licences, are in [catalog/](catalog/README.md).

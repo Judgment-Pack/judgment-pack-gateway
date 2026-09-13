@@ -64,7 +64,22 @@ func engineJSON(t *testing.T, catalog string, extra string, platforms string) st
 
 func platformJSON(t *testing.T, name, binding, user string, extra string) string {
 	t.Helper()
-	return `"` + name + `":{"binding":"` + binding + `","credentials":{"file":"` + abs(t, t.TempDir(), name+".json") + `"},"user":"` + user + `"` + extra + `}`
+	return platformJSONFor(t, name, binding, user, extra, "history", "live")
+}
+
+// platformJSONFor is a platform entry with a credentials file for each
+// operation named.
+func platformJSONFor(t *testing.T, name, binding, user string, extra string, ops ...string) string {
+	t.Helper()
+	dir := t.TempDir()
+	credentials := ""
+	for i, op := range ops {
+		if i > 0 {
+			credentials += ","
+		}
+		credentials += `"` + op + `":{"file":"` + abs(t, dir, name+"-"+op+".json") + `"}`
+	}
+	return `"` + name + `":{"binding":"` + binding + `","credentials":{` + credentials + `},"user":"` + user + `"` + extra + `}`
 }
 
 // stubAccounts resolves the named users to fixed uids and homes.
@@ -119,12 +134,12 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 	want := map[string]sourceSpec{
 		"warehouse/history": {
 			argv: []string{filepath.Join(binDir, "adapter-airbyte"), "--image", "airbyte/source-postgres:3.6.1@" + testImageDigest,
-				"--credentials", p.credentials, "--runtime", "podman", "--endpoint", "warehouse.internal:5432"},
+				"--credentials", p.credentials["history"], "--runtime", "podman", "--endpoint", "warehouse.internal:5432"},
 			env: env, user: "engine-warehouse", shape: "airbyte",
 		},
 		"warehouse/live": {
 			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image", "ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
-				"--credentials", p.credentials, "--runtime", "podman", "--tools", "query,explain", "--endpoint", "warehouse.internal:5432"},
+				"--credentials", p.credentials["live"], "--runtime", "podman", "--tools", "query,explain", "--endpoint", "warehouse.internal:5432"},
 			env: env, user: "engine-warehouse", shape: "mcp",
 		},
 	}
@@ -136,7 +151,7 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 	// derives nothing; the runtime is docker by default.
 	one := `{"bindingVersion":"1","platform":"docs","operations":{"history":{"shape":"airbyte","image":"airbyte/source-s3:4.0.0@` + testImageDigest + `","licence":"MIT"}}}`
 	catalog = catalogWith(t, map[string]string{"docs": one})
-	_, sources, err = load(t, engineJSON(t, catalog, ``, platformJSON(t, "policy-documents", "docs@"+digestOf(one), "engine-docs", ``)))
+	_, sources, err = load(t, engineJSON(t, catalog, ``, platformJSONFor(t, "policy-documents", "docs@"+digestOf(one), "engine-docs", ``, "history")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,15 +190,18 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"rootSigner not accepted", engineJSON(t, catalog, `,"rootSigner":true`, good), `rootSigner, when present, is the string "accepted"`},
 		{"hostRuntime wrong word", engineJSON(t, catalog, `,"hostRuntime":"yes"`, good), `hostRuntime, when present, is the string "accepted"`},
 		{"runtime not a string", engineJSON(t, catalog, `,"runtime":1`, good), "runtime must be a non-empty string"},
-		{"platform name with slash", engineJSON(t, catalog, ``, `"a/b":{"binding":"`+ref+`","credentials":{"file":"/f"},"user":"u"}`), `platform name "a/b"`},
+		{"platform name with slash", engineJSON(t, catalog, ``, `"a/b":{"binding":"`+ref+`","credentials":{"history":{"file":"/f"},"live":{"file":"/f"}},"user":"u"}`), `platform name "a/b"`},
 		{"platform unknown member", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", ref, "engine-warehouse", `,"command":"x"`)), `unknown member "command"`},
-		{"platform without user", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"/f"}}`), `missing member "user"`},
-		{"platform empty user", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"`+abs(t, t.TempDir(), "f")+`"},"user":""}`), "an adapter running as the signer could read the seed"},
+		{"platform without user", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"history":{"file":"/f"},"live":{"file":"/f"}}}`), `missing member "user"`},
+		{"platform empty user", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"history":{"file":"`+abs(t, t.TempDir(), "f")+`"},"live":{"file":"`+abs(t, t.TempDir(), "g")+`"}},"user":""}`), "an adapter running as the signer could read the seed"},
 		{"platform unknown user", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", ref, "nobody-here", ``)), "platform warehouse: file does not exist"},
 		{"credentials as a value", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"env":"DATABASE_URL"},"user":"u"}`), `unknown member "env"`},
-		{"credentials relative", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"secrets/w"},"user":"engine-warehouse"}`), "credentials.file must be an absolute path"},
-		{"binding unpinned", engineJSON(t, catalog, ``, `"warehouse":{"binding":"postgres","credentials":{"file":"/f"},"user":"u"}`), "binding must be name@sha256"},
-		{"binding traversal", engineJSON(t, catalog, ``, `"warehouse":{"binding":"../postgres@`+digestOf(postgresBinding)+`","credentials":{"file":"/f"},"user":"u"}`), "binding must be name@sha256"},
+		{"credentials one file for all", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"/f"},"user":"u"}`), `unknown member "file"`},
+		{"credentials naming no operation", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{},"user":"u"}`), "credentials names no operation"},
+		{"credentials relative", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"history":{"file":"secrets/w"},"live":{"file":"/f"}},"user":"engine-warehouse"}`), "credentials.history.file must be an absolute path"},
+		{"credentials for an operation the binding lacks", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"history":{"file":"/f"}},"user":"engine-warehouse"}`), "the binding offers live but credentials name no live file"},
+		{"binding unpinned", engineJSON(t, catalog, ``, `"warehouse":{"binding":"postgres","credentials":{"history":{"file":"/f"},"live":{"file":"/f"}},"user":"u"}`), "binding must be name@sha256"},
+		{"binding traversal", engineJSON(t, catalog, ``, `"warehouse":{"binding":"../postgres@`+digestOf(postgresBinding)+`","credentials":{"history":{"file":"/f"},"live":{"file":"/f"}},"user":"u"}`), "binding must be name@sha256"},
 		{"binding digest mismatch", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", "postgres@"+testImageDigest, "engine-warehouse", ``)), "does not digest to the pinned"},
 		{"binding absent from the catalog", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", "jira@"+testImageDigest, "engine-warehouse", ``)), "binding jira@"},
 		{"write not a boolean", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", ref, "engine-warehouse", `,"write":"yes"`)), "write, when present, is a boolean"},
@@ -288,6 +306,13 @@ func goodFilesystem(seed, credentials string, signer, adapter int) ownership {
 func ptr(c engineConfig) *engineConfig {
 	copied := c
 	copied.platforms = append([]platformConfig(nil), c.platforms...)
+	for i := range copied.platforms {
+		credentials := map[string]string{}
+		for op, path := range copied.platforms[i].credentials {
+			credentials[op] = path
+		}
+		copied.platforms[i].credentials = credentials
+	}
 	return &copied
 }
 
@@ -307,7 +332,8 @@ func TestComponentsSplitOnEverySeparatorThePlatformAccepts(t *testing.T) {
 func TestEngineRefusalsForIsolation(t *testing.T) {
 	seed := filepath.Join(string(filepath.Separator), "var", "lib", "engine", "gateway.seed")
 	credentials := filepath.Join(string(filepath.Separator), "run", "secrets", "warehouse")
-	cfg := engineConfig{runtime: "docker", seed: seed, platforms: []platformConfig{{name: "warehouse", credentials: credentials, user: "engine-warehouse", uid: 1001}}}
+	both := func(path string) map[string]string { return map[string]string{"history": path, "live": path} }
+	cfg := engineConfig{runtime: "docker", seed: seed, platforms: []platformConfig{{name: "warehouse", credentials: both(credentials), user: "engine-warehouse", uid: 1001}}}
 	noSockets := []string{filepath.Join(t.TempDir(), "absent.sock")}
 	socket := filepath.Join(t.TempDir(), "docker.sock")
 	os.WriteFile(socket, nil, 0o600)
@@ -353,13 +379,13 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	}
 
 	rootUser := cfg
-	rootUser.platforms = []platformConfig{{name: "warehouse", credentials: credentials, user: "root", uid: 0}}
+	rootUser.platforms = []platformConfig{{name: "warehouse", credentials: both(credentials), user: "root", uid: 0}}
 	expect("platform user root", host(1000, goodFilesystem(seed, credentials, 1000, 0), noSockets, noCaps), rootUser, "user root is root")
 	expect("platform user is the signer", host(1001, goodFilesystem(seed, credentials, 1001, 1001), noSockets, noCaps), cfg, "is the signer's own")
 	shared := cfg
 	shared.platforms = []platformConfig{
-		{name: "docs", credentials: credentials, user: "engine-warehouse", uid: 1001},
-		{name: "warehouse", credentials: credentials, user: "also-warehouse", uid: 1001},
+		{name: "docs", credentials: both(credentials), user: "engine-warehouse", uid: 1001},
+		{name: "warehouse", credentials: both(credentials), user: "also-warehouse", uid: 1001},
 	}
 	expect("two platforms one user", host(1000, good, noSockets, noCaps), shared, "is also platform docs's")
 
@@ -415,12 +441,12 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	linkTargets[filepath.Join(root, "var")] = filepath.Join(root, "private", "var")
 	linkedCfg := cfg
 	linkedCfg.seed = plainSeed
-	linkedCfg.platforms = []platformConfig{{name: "warehouse", credentials: linked, user: "engine-warehouse", uid: 1001}}
+	linkedCfg.platforms = []platformConfig{{name: "warehouse", credentials: both(linked), user: "engine-warehouse", uid: 1001}}
 	resolved := ptr(linkedCfg)
 	if _, err := engineRefusals(resolved, host(1000, viaLink, noSockets, noCaps)); err != nil {
 		t.Fatalf("a root-owned link among the components is a system's own: %v", err)
 	}
-	if resolved.platforms[0].credentials != target {
+	if resolved.platforms[0].credentials["history"] != target {
 		t.Fatalf("the path used from here on is the resolved one: %s", resolved.platforms[0].credentials)
 	}
 	// The target's components are held: a root-owned link into a directory
@@ -440,14 +466,14 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	linkTargets[filepath.Join(root, "home", "other", "hop")] = filepath.Join(root, "private", "var", "secrets")
 	hopCfg := cfg
 	hopCfg.seed = plainSeed
-	hopCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "entry", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	hopCfg.platforms = []platformConfig{{name: "warehouse", credentials: both(filepath.Join(root, "entry", "warehouse")), user: "engine-warehouse", uid: 1001}}
 	expect("a root-owned link through another user's link", host(1000, hops, noSockets, noCaps), hopCfg, filepath.Join(root, "home", "other", "hop")+" is a symbolic link owned by uid 1002, not root")
 	hops[filepath.Join(root, "home", "other", "hop")] = fileOwnership{uid: 0, mode: 0o755, link: true}
 	hops[filepath.Join(root, "home", "other")] = fileOwnership{uid: 1002, mode: 0o755, dir: true}
 	expect("a root-owned link through another user's directory", host(1000, hops, noSockets, noCaps), hopCfg, filepath.Join(root, "home", "other")+" is owned by uid 1002")
 	hops[filepath.Join(root, "home", "other")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
 	resolvedHops := ptr(hopCfg)
-	if _, err := engineRefusals(resolvedHops, host(1000, hops, noSockets, noCaps)); err != nil || resolvedHops.platforms[0].credentials != target {
+	if _, err := engineRefusals(resolvedHops, host(1000, hops, noSockets, noCaps)); err != nil || resolvedHops.platforms[0].credentials["history"] != target {
 		t.Fatalf("two root-owned hops resolve to the target: %v %s", err, resolvedHops.platforms[0].credentials)
 	}
 	// A link the platform's own user placed, in the user's own directory,
@@ -459,7 +485,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	linkTargets[filepath.Join(root, "srv", "mine", "link")] = filepath.Join(root, "private", "var", "secrets")
 	ownedCfg := cfg
 	ownedCfg.seed = plainSeed
-	ownedCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "srv", "mine", "link", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	ownedCfg.platforms = []platformConfig{{name: "warehouse", credentials: both(filepath.Join(root, "srv", "mine", "link", "warehouse")), user: "engine-warehouse", uid: 1001}}
 	expect("a link owned by the platform's own user", host(1000, owned, noSockets, noCaps), ownedCfg, filepath.Join(root, "srv", "mine", "link")+" is a symbolic link owned by uid 1001, not root")
 	// A target is walked as written, never cleaned first: "hop/../secrets"
 	// follows hop (a link elsewhere) before ".." applies, so the walk
@@ -474,12 +500,12 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	written[filepath.Join(root, "srv", "secrets")] = fileOwnership{uid: 1002, mode: 0o755, dir: true} // where cleaning first would wrongly arrive
 	writtenCfg := cfg
 	writtenCfg.seed = plainSeed
-	writtenCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "srv", "entry", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	writtenCfg.platforms = []platformConfig{{name: "warehouse", credentials: both(filepath.Join(root, "srv", "entry", "warehouse")), user: "engine-warehouse", uid: 1001}}
 	arrived := ptr(writtenCfg)
 	if _, err := engineRefusals(arrived, host(1000, written, noSockets, noCaps)); err != nil {
 		t.Fatalf("a target with .. after a link is walked as the kernel walks it: %v", err)
 	}
-	if arrived.platforms[0].credentials != filepath.Join(root, "opt", "release", "secrets", "warehouse") {
+	if arrived.platforms[0].credentials["history"] != filepath.Join(root, "opt", "release", "secrets", "warehouse") {
 		t.Fatalf("the walk must arrive where the kernel would: %s", arrived.platforms[0].credentials)
 	}
 	written[filepath.Join(root, "srv", "hop")] = fileOwnership{uid: 1002, mode: 0o755, link: true}
@@ -494,7 +520,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	linkTargets[filepath.Join(root, "loop")] = filepath.Join(root, "loop")
 	loopCfg := cfg
 	loopCfg.seed = plainSeed
-	loopCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "loop", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	loopCfg.platforms = []platformConfig{{name: "warehouse", credentials: both(filepath.Join(root, "loop", "warehouse")), user: "engine-warehouse", uid: 1001}}
 	expect("a link loop", host(1000, loop, noSockets, noCaps), loopCfg, "more than 32 symbolic links")
 	viaLink[filepath.Join(root, "var")] = fileOwnership{uid: 1002, mode: 0o755, link: true}
 	expect("a link owned by another user", host(1000, viaLink, noSockets, noCaps), linkedCfg, "symbolic link owned by uid 1002, not root")
@@ -506,7 +532,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	linkTargets[filepath.Join(root, "home", "other", "link")] = filepath.Join(root, "private", "var", "secrets")
 	ownCfg := cfg
 	ownCfg.seed = plainSeed
-	ownCfg.platforms = []platformConfig{{name: "warehouse", credentials: ownLink, user: "engine-warehouse", uid: 1001}}
+	ownCfg.platforms = []platformConfig{{name: "warehouse", credentials: both(ownLink), user: "engine-warehouse", uid: 1001}}
 	expect("a link in another user's directory into trusted directories", host(1000, own, noSockets, noCaps), ownCfg, "owned by uid 1002, neither root nor uid 1001")
 	// The credentials file itself may not be a link.
 	fileLink := goodFilesystem(seed, credentials, 1000, 1001)
@@ -514,7 +540,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	expect("credentials that is a link", host(1000, fileLink, noSockets, noCaps), cfg, "is a symbolic link")
 	missing := goodFilesystem(seed, credentials, 1000, 1001)
 	delete(missing, credentials)
-	expect("credentials absent", host(1000, missing, noSockets, noCaps), cfg, "credentials: file does not exist")
+	expect("credentials absent", host(1000, missing, noSockets, noCaps), cfg, "credentials.history: file does not exist")
 
 	expect("host runtime socket", host(1000, good, []string{socket}, noCaps), cfg, "host container runtime socket is present")
 	accepted = cfg
@@ -557,7 +583,7 @@ func TestServeConfigRefusesBeforeWriting(t *testing.T) {
 	os.WriteFile(credentials, []byte(`{}`), 0o600)
 	text := `{"engineVersion":"1","authority":"gateway:test","seed":"` + abs(t, dir, "gateway.seed") + `","store":"` + abs(t, store) + `",` +
 		`"registry":"` + abs(t, dir, "registry.jsonl") + `","decisionRecords":"` + abs(t, dir, "decisions") + `","listen":"127.0.0.1:0",` +
-		`"catalog":"` + abs(t, catalog) + `","platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"file":"` + abs(t, credentials) + `"},"user":"` + self.Username + `"}}}`
+		`"catalog":"` + abs(t, catalog) + `","platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + abs(t, credentials) + `"},"live":{"file":"` + abs(t, credentials) + `"}},"user":"` + self.Username + `"}}}`
 	path := filepath.Join(dir, "engine.json")
 	os.WriteFile(path, []byte(text), 0o600)
 	stderr := captureStderr(t)

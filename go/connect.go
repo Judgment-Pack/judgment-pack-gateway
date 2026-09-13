@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // connectRequest is what the operator asked `connect` to write: a platform
@@ -26,8 +27,8 @@ import (
 type connectRequest struct {
 	config      string
 	platform    string
-	binding     string // a catalog name; the pin is computed here
-	credentials string // the path as written; never a value
+	binding     string            // a catalog name; the pin is computed here
+	credentials map[string]string // by operation: the path as written; never a value
 	user        string
 	endpoint    string
 	environment []string // KEY=VALUE
@@ -55,7 +56,7 @@ const (
 	checkMaxOutput = 1 << 20
 )
 
-const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <path> --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace]"
+const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <operation>=<path>... --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace]"
 
 // cmdConnect writes a platform entry into the engine's configuration:
 // after holding the configuration it would produce to every refusal
@@ -88,30 +89,51 @@ func cmdConnect(args []string) int {
 }
 
 // parseConnectArgs reads the command line; the platform is the one
-// positional argument, first or last.
+// positional argument, wherever it stands among the flags.
 func parseConnectArgs(args []string) (connectRequest, string, bool) {
-	var req connectRequest
-	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
-		req.platform, args = args[0], args[1:]
-	}
+	req := connectRequest{credentials: map[string]string{}}
 	fs := flag.NewFlagSet("connect", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&req.config, "config", "", "")
 	fs.StringVar(&req.binding, "binding", "", "")
-	fs.StringVar(&req.credentials, "credentials-file", "", "")
+	var credentialsErr error
+	fs.Func("credentials-file", "", func(s string) error {
+		op, path, ok := strings.Cut(s, "=")
+		if !ok || op == "" || path == "" {
+			credentialsErr = fmt.Errorf("--credentials-file expects <operation>=<path>, not %q", s)
+			return nil
+		}
+		if _, twice := req.credentials[op]; twice {
+			credentialsErr = fmt.Errorf("--credentials-file names %s twice", op)
+			return nil
+		}
+		req.credentials[op] = path
+		return nil
+	})
 	fs.StringVar(&req.user, "user", "", "")
 	fs.StringVar(&req.endpoint, "endpoint", "", "")
 	fs.Func("environment", "", func(s string) error { req.environment = append(req.environment, s); return nil })
 	fs.BoolVar(&req.write, "write", false, "")
 	fs.BoolVar(&req.replace, "replace", false, "")
-	if err := fs.Parse(args); err != nil {
-		return req, connectUsage + "\n" + err.Error(), false
+	// Go's flag parsing stops at the first word that is not a flag; the
+	// platform may stand there, and parsing resumes after it.
+	for {
+		if err := fs.Parse(args); err != nil {
+			return req, connectUsage + "\n" + err.Error(), false
+		}
+		rest := fs.Args()
+		if len(rest) == 0 {
+			break
+		}
+		if req.platform != "" {
+			return req, connectUsage + "\n" + fmt.Sprintf("one platform, not %q and %q", req.platform, rest[0]), false
+		}
+		req.platform, args = rest[0], rest[1:]
 	}
-	rest := fs.Args()
-	if req.platform == "" && len(rest) == 1 {
-		req.platform, rest = rest[0], nil
+	if credentialsErr != nil {
+		return req, connectUsage + "\n" + credentialsErr.Error(), false
 	}
-	if len(rest) != 0 || req.platform == "" || req.config == "" || req.binding == "" || req.credentials == "" || req.user == "" {
+	if req.platform == "" || req.config == "" || req.binding == "" || len(req.credentials) == 0 || req.user == "" {
 		return req, connectUsage, false
 	}
 	return req, "", true
@@ -125,22 +147,21 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err := validPlatformName(req.platform); err != nil {
 		return out, err
 	}
-	// The file must be one this command can put in place, judged before
-	// any adapter is run for nothing.
-	if err := regularFile(req.config); err != nil {
+	// The file's directory is held open from here to the rename, so what
+	// is read, written beside it and put in place is in that directory
+	// whatever a path component is swapped for meanwhile; the file must
+	// be one this command can put in place, judged before any adapter is
+	// run for nothing; and one connect at a time holds the file.
+	file, err := openConfigFile(req.config)
+	if err != nil {
 		return out, err
 	}
-	data, err := readBounded(req.config, maxEngineConfigBytes)
+	defer file.close()
+	data, err := file.read()
 	if err != nil {
-		return out, fmt.Errorf("engine configuration: %v", err)
+		return out, err
 	}
 	cfg, err := parseEngineConfig(data)
-	if err != nil {
-		return out, err
-	}
-	// Every platform already configured is resolved too: a pin the
-	// catalog no longer digests to is found here, not at the next start.
-	bindings, err := resolveEngineConfig(&cfg, host.account)
 	if err != nil {
 		return out, err
 	}
@@ -153,26 +174,38 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if index >= 0 && !req.replace {
 		return out, fmt.Errorf("platform %s is already configured in %s; --replace replaces its entry", req.platform, req.config)
 	}
+	if index >= 0 {
+		// The entry replaced is not resolved: its pin is what --replace
+		// may be repairing. Every other platform is.
+		cfg.platforms = append(cfg.platforms[:index:index], cfg.platforms[index+1:]...)
+	}
+	// Every platform kept is resolved too: a pin the catalog no longer
+	// digests to is found here, not at the next start.
+	bindings, err := resolveEngineConfig(&cfg, host.account)
+	if err != nil {
+		return out, err
+	}
 	ref, b, err := pinBinding(cfg.catalog, req.binding)
 	if err != nil {
 		return out, err
 	}
-	entry, err := newPlatformEntry(req, ref, host.account)
+	entry, err := newPlatformEntry(req, ref, b, host.account)
 	if err != nil {
 		return out, err
 	}
 	// The configuration as it would be, held to every refusal serve
-	// applies -- with the new entry in place of the old when replacing,
-	// so the old entry's user does not collide with its own.
+	// applies, and to the size serve reads, before anything is asked.
 	candidate := cfg
-	candidate.platforms = append([]platformConfig(nil), cfg.platforms...)
-	if index >= 0 {
-		candidate.platforms[index] = entry
-	} else {
-		candidate.platforms = append(candidate.platforms, entry)
-	}
+	candidate.platforms = append(append([]platformConfig(nil), cfg.platforms...), entry)
 	sort.Slice(candidate.platforms, func(i, j int) bool { return candidate.platforms[i].name < candidate.platforms[j].name })
 	bindings[req.platform] = b
+	text, err := renderPlatformEntry(data, req, ref)
+	if err != nil {
+		return out, err
+	}
+	if len(text) > maxEngineConfigBytes {
+		return out, fmt.Errorf("the configuration with %s would exceed %d bytes, which serve does not read", req.platform, maxEngineConfigBytes)
+	}
 	statements, err := engineRefusals(&candidate, host)
 	if err != nil {
 		return out, err
@@ -199,7 +232,9 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		}
 		out.answers = append(out.answers, name+": "+answer)
 	}
-	if err := writePlatformEntry(req.config, data, req, ref); err != nil {
+	// The file is put in place only if it is still what was read: a
+	// connect that raced this one is not written over.
+	if err := file.replace(data, text); err != nil {
 		return out, err
 	}
 	out.written = req.config
@@ -230,14 +265,31 @@ func pinBinding(catalog, name string) (string, binding, error) {
 }
 
 // newPlatformEntry is the platform as the configuration will hold it,
-// under the rules the parser applies to one it reads.
-func newPlatformEntry(req connectRequest, ref string, account func(name string) (int, string, error)) (platformConfig, error) {
-	p := platformConfig{name: req.platform, binding: ref, user: req.user, endpoint: req.endpoint, write: req.write}
-	credentials, err := cleanAbsolutePath("credentials-file", req.credentials)
-	if err != nil {
-		return p, err
+// under the rules the parser applies to one it reads, with a credentials
+// file for exactly the operations the binding offers.
+func newPlatformEntry(req connectRequest, ref string, b binding, account func(name string) (int, string, error)) (platformConfig, error) {
+	p := platformConfig{name: req.platform, binding: ref, user: req.user, endpoint: req.endpoint, write: req.write, credentials: map[string]string{}}
+	// Everything written into the file is written as JSON text, which
+	// carries only valid UTF-8: a byte that is not would come back as a
+	// different path, or name.
+	for _, s := range append([]string{req.platform, req.binding, req.user, req.endpoint}, req.environment...) {
+		if !utf8.ValidString(s) {
+			return p, errors.New("a request value is not valid UTF-8; it could not be written as given")
+		}
 	}
-	p.credentials = credentials
+	for op, path := range req.credentials {
+		if !utf8.ValidString(op) || !utf8.ValidString(path) {
+			return p, errors.New("a credentials path is not valid UTF-8; it could not be written as given")
+		}
+		credentials, err := cleanAbsolutePath("credentials-file "+op, path)
+		if err != nil {
+			return p, err
+		}
+		p.credentials[op] = credentials
+	}
+	if err := credentialsMatch(p.credentials, b); err != nil {
+		return p, fmt.Errorf("platform %s: %v", req.platform, err)
+	}
 	if req.user == "" {
 		return p, errors.New("user must name the OS user the platform's adapters run as")
 	}
@@ -394,29 +446,36 @@ func describeCheck(shape string, report []byte) (string, error) {
 	return "", fmt.Errorf("no check for shape %q", shape)
 }
 
-// writePlatformEntry puts the entry into the configuration file as
-// written, in the engine's own form: the file re-read as a value, the
-// platform set under platforms, the whole written out with members in
-// canonical order, and put in place by a rename so a reader sees the old
-// file or the new and never a partial one.
-func writePlatformEntry(path string, data []byte, req connectRequest, ref string) error {
+// renderPlatformEntry is the configuration with the entry in it, as the
+// engine writes its own form: the file re-read as a value, the platform
+// set under platforms, the whole rendered with members in canonical order.
+func renderPlatformEntry(data []byte, req connectRequest, ref string) ([]byte, error) {
 	v, err := parseJSON(data)
 	if err != nil {
-		return fmt.Errorf("engine configuration: %v", err)
+		return nil, fmt.Errorf("engine configuration: %v", err)
 	}
 	obj, err := requireObject(v, "engine configuration")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	platformsValue, _ := obj.get("platforms")
 	platforms, err := requireObject(platformsValue, "platforms")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	entry := newObject()
 	entry.set("binding", vString(ref))
 	credentials := newObject()
-	credentials.set("file", vString(req.credentials))
+	ops := make([]string, 0, len(req.credentials))
+	for op := range req.credentials {
+		ops = append(ops, op)
+	}
+	sort.Strings(ops)
+	for _, op := range ops {
+		file := newObject()
+		file.set("file", vString(req.credentials[op]))
+		credentials.set(op, file)
+	}
 	entry.set("credentials", credentials)
 	entry.set("user", vString(req.user))
 	if req.endpoint != "" {
@@ -437,22 +496,133 @@ func writePlatformEntry(path string, data []byte, req connectRequest, ref string
 	var sb strings.Builder
 	formatValue(&sb, obj, "")
 	sb.WriteByte('\n')
-	return replaceFile(path, []byte(sb.String()))
+	return []byte(sb.String()), nil
 }
 
-// regularFile is why path is not a file this command writes, or nil.
-func regularFile(path string) error {
-	info, err := os.Lstat(path)
+// configFile is the engine configuration held for one connect: its
+// directory open, so every read, write beside it and rename is in that
+// directory whatever a path component is swapped for meanwhile; a lock
+// beside it, so one connect at a time writes; and the file judged as one
+// this command can put in place.
+type configFile struct {
+	dir    *os.Root
+	base   string
+	mode   os.FileMode
+	owner  fileOwnerIDs
+	unlock func()
+}
+
+func openConfigFile(path string) (*configFile, error) {
+	dir, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return nil, fmt.Errorf("engine configuration: %v", err)
+	}
+	f := &configFile{dir: dir, base: filepath.Base(path)}
+	info, err := f.regular()
+	if err != nil {
+		dir.Close()
+		return nil, err
+	}
+	f.mode = info.Mode().Perm()
+	f.owner = ownerIDsOf(info)
+	unlock, err := lockBeside(dir, f.base)
+	if err != nil {
+		dir.Close()
+		return nil, fmt.Errorf("engine configuration: %v", err)
+	}
+	f.unlock = unlock
+	return f, nil
+}
+
+// regular is the file's state, refused when it is a link or not a file:
+// the operator names the file, and a link's owner would otherwise choose
+// which file the entry lands in.
+func (f *configFile) regular() (os.FileInfo, error) {
+	info, err := f.dir.Lstat(f.base)
+	if err != nil {
+		return nil, fmt.Errorf("engine configuration: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("engine configuration: %s is a symbolic link; name the file itself", filepath.Join(f.dir.Name(), f.base))
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("engine configuration: %s is not a regular file", filepath.Join(f.dir.Name(), f.base))
+	}
+	return info, nil
+}
+
+func (f *configFile) read() ([]byte, error) {
+	file, err := f.dir.OpenFile(f.base, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, fmt.Errorf("engine configuration: %v", err)
+	}
+	defer file.Close()
+	data, err := readBoundedFrom(file, f.base, maxEngineConfigBytes)
+	if err != nil {
+		return nil, fmt.Errorf("engine configuration: %v", err)
+	}
+	return data, nil
+}
+
+// replace writes content beside the file and renames it into place, with
+// the file's mode and owner kept, provided the file still holds what was
+// read: a connect that raced this one is not written over.
+func (f *configFile) replace(read, content []byte) error {
+	if _, err := f.regular(); err != nil {
+		return err
+	}
+	current, err := f.read()
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, read) {
+		return errors.New("engine configuration: the file changed while the checks ran; run connect again")
+	}
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return err
+	}
+	tmp := f.base + ".connect-" + hex.EncodeToString(suffix[:])
+	file, err := f.dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, f.mode)
 	if err != nil {
 		return fmt.Errorf("engine configuration: %v", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("engine configuration: %s is a symbolic link; name the file itself", path)
+	fail := func(err error) error {
+		file.Close()
+		f.dir.Remove(tmp)
+		return fmt.Errorf("engine configuration: %v", err)
 	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("engine configuration: %s is not a regular file", path)
+	if _, err := file.Write(content); err != nil {
+		return fail(err)
+	}
+	if err := file.Sync(); err != nil {
+		return fail(err)
+	}
+	// The mode as it was, whatever the umask narrowed it to at creation;
+	// the owner as it was, or the rename does not happen: a file the
+	// signer could read must stay one it can read.
+	if err := f.dir.Chmod(tmp, f.mode); err != nil {
+		return fail(err)
+	}
+	if err := keepOwner(f.dir, tmp, f.owner); err != nil {
+		return fail(err)
+	}
+	if err := file.Close(); err != nil {
+		f.dir.Remove(tmp)
+		return fmt.Errorf("engine configuration: %v", err)
+	}
+	if err := f.dir.Rename(tmp, f.base); err != nil {
+		f.dir.Remove(tmp)
+		return fmt.Errorf("engine configuration: %v", err)
 	}
 	return nil
+}
+
+func (f *configFile) close() {
+	if f.unlock != nil {
+		f.unlock()
+	}
+	f.dir.Close()
 }
 
 // formatValue writes a value as indented JSON with members in canonical
@@ -496,47 +666,4 @@ func formatValue(sb *strings.Builder, v value, indent string) {
 	default:
 		x.canonWrite(sb)
 	}
-}
-
-// replaceFile writes content beside path and renames it into place,
-// keeping the file's mode. A path that is a symbolic link is refused: the
-// operator names the file, and the link's owner would otherwise choose
-// which file the entry lands in.
-func replaceFile(path string, content []byte) error {
-	if err := regularFile(path); err != nil {
-		return err
-	}
-	info, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("engine configuration: %v", err)
-	}
-	var suffix [4]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return err
-	}
-	tmp := path + ".connect-" + hex.EncodeToString(suffix[:])
-	file, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
-	if err != nil {
-		return fmt.Errorf("engine configuration: %v", err)
-	}
-	fail := func(err error) error {
-		file.Close()
-		os.Remove(tmp)
-		return fmt.Errorf("engine configuration: %v", err)
-	}
-	if _, err := file.Write(content); err != nil {
-		return fail(err)
-	}
-	if err := file.Sync(); err != nil {
-		return fail(err)
-	}
-	if err := file.Close(); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("engine configuration: %v", err)
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("engine configuration: %v", err)
-	}
-	return nil
 }

@@ -28,18 +28,21 @@ and spawns what it needs. Nothing in the file is a command line, and nothing in 
   "platforms": {
     "finance-warehouse": {
       "binding": "postgres@sha256:…",
-      "credentials": { "file": "/run/secrets/finance-warehouse" },
+      "credentials": {
+        "history": { "file": "/run/secrets/finance-warehouse-connector" },
+        "live": { "file": "/run/secrets/finance-warehouse-env" }
+      },
       "user": "engine-finance",
       "endpoint": "warehouse.internal:5432"
     },
     "policy-documents": {
       "binding": "s3-compatible@sha256:…",
-      "credentials": { "file": "/run/secrets/policy-documents" },
+      "credentials": { "history": { "file": "/run/secrets/policy-documents" } },
       "user": "engine-documents"
     },
     "service-desk": {
       "binding": "jira@sha256:…",
-      "credentials": { "file": "/run/secrets/service-desk" },
+      "credentials": { "live": { "file": "/run/secrets/service-desk" } },
       "user": "engine-desk",
       "write": true
     }
@@ -81,7 +84,10 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   claim.
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
   a receipt will carry — to a **binding** from the catalog, pinned by digest, to where its
-  credentials are, and to the OS **user** its adapters run as, which must exist, must not be
+  credentials are — **one file per operation** the binding offers, `history` and `live`, since
+  a connector's configuration and a server's environment are different files in different
+  forms, and a file for an operation the binding does not offer, or none for one it does, is
+  refused — and to the OS **user** its adapters run as, which must exist, must not be
   root or the signer, and must be no other platform's. `endpoint` is the host the platform is
   reached at as the operator names it, recorded as the receipt's endpoint; the adapters do not
   read it from the credentials. `environment` is an object of string values the platform's
@@ -101,8 +107,8 @@ way:
 
 | Source | Adapter | Command line |
 |---|---|---|
-| `<platform>/history` | `adapter-airbyte` | `--image <history.image> --credentials <file> --runtime <runtime> [--endpoint <endpoint>]` |
-| `<platform>/live` | `adapter-mcp` | `--image <live.server.image> --credentials <file> --runtime <runtime> --tools <live.tools, comma-joined> [--endpoint <endpoint>]` |
+| `<platform>/history` | `adapter-airbyte` | `--image <history.image> --credentials <credentials.history.file> --runtime <runtime> [--endpoint <endpoint>]` |
+| `<platform>/live` | `adapter-mcp` | `--image <live.server.image> --credentials <credentials.live.file> --runtime <runtime> --tools <live.tools, comma-joined> [--endpoint <endpoint>] [-- <live.server.args>]` |
 
 A binding's `write` operation derives nothing: the executor that performs writes does not
 exist yet, and a source that could be asked to write would be a read that writes.
@@ -229,13 +235,14 @@ is fetched both ways and must derive to byte-identical canonical facts.
 
 ```
 gateway connect --config engine.json service-desk --binding jira \
-  --credentials-file /run/secrets/service-desk --user engine-service-desk \
+  --credentials-file live=/run/secrets/service-desk --user engine-service-desk \
   [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace]
 ```
 
 writes the platform entry — the binding pinned by the digest of the catalog file as it is
-now, the credentials path as written, the user, and what else was given — and it writes
-nothing until two things have held. First, the configuration as it would be, with the entry
+now, a credentials path per operation as written (`--credentials-file history=… live=…`,
+exactly the operations the binding offers), the user, and what else was given; the platform
+may stand anywhere among the flags — and it writes nothing until two things have held. First, the configuration as it would be, with the entry
 in place, passes every refusal `serve` applies (the platforms it already names included, so a
 pin the catalog no longer digests to is found here and not at the next start): the user is
 neither root nor the signer nor another platform's, the credentials file is that user's alone
@@ -250,9 +257,18 @@ hold yet is pulled during the check, which is why a check is given five minutes 
 acquisition has twenty seconds.
 
 It refuses a binding that is not in the catalog, a platform already configured unless
-`--replace` is given, and a configuration path that is a symbolic link. The file is rewritten
-whole, in the engine's own form — members in canonical order, indented — and put in place by a
-rename, so a reader sees the old file or the new and never a partial one. A configuration
+`--replace` is given — and with it the entry replaced is not resolved, since its pin may be
+what is being repaired, while every other platform is — a configuration path that is a symbolic
+link, and a configuration that with the entry would exceed the size `serve` reads, judged
+before any check runs. The file's directory is held open from the first read to the rename, so
+what is read, written beside it and put in place is in that directory whatever a path component
+is swapped for meanwhile; one connect at a time holds `<file>.lock` beside it, and a second
+refuses rather than waits; the file is put in place only if it still holds what was read, so
+a connect that raced this one is not written over; and the new file keeps the old one's mode
+and owner, or is not put in place. The file is rewritten whole, in the engine's own form —
+members in canonical order, indented — and put in place by a rename, so a reader sees the old
+file or the new and never a partial one. Every value written is valid UTF-8, since the file
+is JSON; a path that is not is refused rather than written as something else. A configuration
 with an empty `platforms` object is what the file looks like before its first `connect`; it
 parses, and `serve` refuses to start on it.
 

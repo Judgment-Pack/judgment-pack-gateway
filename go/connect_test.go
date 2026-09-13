@@ -76,7 +76,7 @@ func (f *connectFixture) check(_ context.Context, spec sourceSpec) ([]byte, erro
 }
 
 func (f *connectFixture) request() connectRequest {
-	return connectRequest{config: f.config, platform: "warehouse", binding: "postgres", credentials: f.credentials, user: "engine-warehouse",
+	return connectRequest{config: f.config, platform: "warehouse", binding: "postgres", credentials: map[string]string{"history": f.credentials, "live": f.credentials}, user: "engine-warehouse",
 		endpoint: "warehouse.internal:5432", environment: []string{"DOCKER_HOST=unix:///run/user/1001/docker.sock"}, write: true}
 }
 
@@ -129,7 +129,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 		t.Fatalf("one platform: %+v", cfg.platforms)
 	}
 	p := cfg.platforms[0]
-	if p.name != "warehouse" || p.binding != "postgres@"+digestOf(restrictedBinding) || p.credentials != f.credentials || p.user != "engine-warehouse" ||
+	if p.name != "warehouse" || p.binding != "postgres@"+digestOf(restrictedBinding) || p.credentials["history"] != f.credentials || p.credentials["live"] != f.credentials || p.user != "engine-warehouse" ||
 		p.endpoint != "warehouse.internal:5432" || strings.Join(p.environment, ",") != "DOCKER_HOST=unix:///run/user/1001/docker.sock" || !p.write {
 		t.Fatalf("the entry as requested: %+v", p)
 	}
@@ -137,14 +137,15 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	if argv := strings.Join(live.argv, " "); !strings.HasSuffix(argv, " -- --access-mode=restricted") {
 		t.Fatalf("serve derives the server's arguments from the written entry: %s", argv)
 	}
-	if entries, _ := os.ReadDir(f.dir); len(entries) != 1 {
-		t.Fatalf("nothing is left beside the file: %v", entries)
+	// Beside the file: its lock, and nothing else -- no temporary file.
+	if entries, _ := os.ReadDir(f.dir); len(entries) != 2 || entries[0].Name() != "engine.json" || entries[1].Name() != "engine.json.lock" {
+		t.Fatalf("only the lock is left beside the file: %v", entries)
 	}
 	if info, _ := os.Stat(f.config); runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("the file keeps its mode: %v", info.Mode())
 	}
 	// The other members survive as written, in canonical order.
-	if !strings.Contains(after, "\n  \"catalog\": ") || !strings.Contains(after, "\n  \"engineVersion\": \"1\",\n") || !strings.Contains(after, "\n  \"platforms\": {\n    \"warehouse\": {\n      \"binding\": \"postgres@") {
+	if !strings.Contains(after, "\n  \"catalog\": ") || !strings.Contains(after, "\n  \"engineVersion\": \"1\",\n") || !strings.Contains(after, "\n  \"platforms\": {\n    \"warehouse\": {\n      \"binding\": \"postgres@") || !strings.Contains(after, "\n      \"credentials\": {\n        \"history\": {\n          \"file\": ") {
 		t.Fatalf("members in canonical order: %s", after)
 	}
 }
@@ -187,7 +188,19 @@ func TestConnectRefusesBeforeAnyCheck(t *testing.T) {
 		{"a binding not in the catalog", func(f *connectFixture, req *connectRequest) { req.binding = "jira" }, "binding jira is not in the catalog"},
 		{"a binding name that is a path", func(f *connectFixture, req *connectRequest) { req.binding = "../postgres" }, `binding "../postgres" is not a catalog name`},
 		{"a platform name with a separator", func(f *connectFixture, req *connectRequest) { req.platform = "ware/house" }, "platform name"},
-		{"a relative credentials path", func(f *connectFixture, req *connectRequest) { req.credentials = "secrets/warehouse" }, "credentials-file must be an absolute path"},
+		{"a relative credentials path", func(f *connectFixture, req *connectRequest) {
+			req.credentials = map[string]string{"history": "secrets/warehouse", "live": f.credentials}
+		}, "credentials-file history must be an absolute path"},
+		{"credentials for an operation the binding lacks", func(f *connectFixture, req *connectRequest) {
+			req.credentials["write"] = f.credentials
+		}, "credentials name a write file but the binding offers no write"},
+		{"credentials missing an operation the binding offers", func(f *connectFixture, req *connectRequest) {
+			delete(req.credentials, "live")
+		}, "the binding offers live but credentials name no live file"},
+		{"a credentials path that is not UTF-8", func(f *connectFixture, req *connectRequest) {
+			req.credentials["live"] = f.credentials + "\xff"
+		}, "not valid UTF-8"},
+		{"an endpoint that is not UTF-8", func(f *connectFixture, req *connectRequest) { req.endpoint = "h\xff" }, "not valid UTF-8"},
 		{"an environment that sets HOME", func(f *connectFixture, req *connectRequest) { req.environment = []string{"HOME=/tmp"} }, "environment may not set HOME"},
 		{"an environment without a value", func(f *connectFixture, req *connectRequest) { req.environment = []string{"DEBUG"} }, "is not KEY=VALUE"},
 		{"an unknown user", func(f *connectFixture, req *connectRequest) { req.user = "nobody-here" }, "platform warehouse: file does not exist"},
@@ -260,7 +273,7 @@ func TestConnectWritesNothingWhenAnOperationCannotAnswer(t *testing.T) {
 
 func TestConnectFindsAStalePinAmongThePlatformsAlreadyConfigured(t *testing.T) {
 	docs := filepath.Join(filepath.VolumeName(t.TempDir())+string(filepath.Separator), "run", "secrets", "docs")
-	f := newConnectFixture(t, restrictedBinding, `"docs":{"binding":"postgres@`+digestOf(postgresBinding)+`","credentials":{"file":"`+escapePath(docs)+`"},"user":"engine-docs"}`)
+	f := newConnectFixture(t, restrictedBinding, `"docs":{"binding":"postgres@`+digestOf(postgresBinding)+`","credentials":{"history":{"file":"`+escapePath(docs)+`"},"live":{"file":"`+escapePath(docs)+`"}},"user":"engine-docs"}`)
 	_, err := connect(context.Background(), f.request(), f.host, f.check)
 	if err == nil || !strings.Contains(err.Error(), "platform docs") || !strings.Contains(err.Error(), "does not digest to the pinned") {
 		t.Fatalf("a pin the catalog no longer digests to is found at connect, not at the next start: %v", err)
@@ -292,13 +305,15 @@ func TestServeRefusesAConfigurationWithNoPlatform(t *testing.T) {
 }
 
 func TestParseConnectArgs(t *testing.T) {
-	want := connectRequest{config: "e.json", platform: "warehouse", binding: "postgres", credentials: "/run/secrets/w", user: "engine-warehouse", endpoint: "h:1", environment: []string{"A=1", "B=2"}, write: true, replace: true}
+	want := connectRequest{config: "e.json", platform: "warehouse", binding: "postgres", user: "engine-warehouse", endpoint: "h:1", environment: []string{"A=1", "B=2"}, write: true, replace: true}
 	for _, args := range [][]string{
-		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "/run/secrets/w", "--user", "engine-warehouse", "--endpoint", "h:1", "--environment", "A=1", "--environment", "B=2", "--write", "--replace"},
-		{"--config", "e.json", "--binding", "postgres", "--credentials-file", "/run/secrets/w", "--user", "engine-warehouse", "--endpoint", "h:1", "--environment", "A=1", "--environment", "B=2", "--write", "--replace", "warehouse"},
+		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "history=/run/secrets/w", "--credentials-file", "live=/run/secrets/e", "--user", "engine-warehouse", "--endpoint", "h:1", "--environment", "A=1", "--environment", "B=2", "--write", "--replace"},
+		{"--config", "e.json", "--binding", "postgres", "--credentials-file", "history=/run/secrets/w", "--credentials-file", "live=/run/secrets/e", "--user", "engine-warehouse", "--endpoint", "h:1", "--environment", "A=1", "--environment", "B=2", "--write", "--replace", "warehouse"},
+		// The documented form: the platform among the flags.
+		{"--config", "e.json", "warehouse", "--binding", "postgres", "--credentials-file", "history=/run/secrets/w", "--credentials-file", "live=/run/secrets/e", "--user", "engine-warehouse", "--endpoint", "h:1", "--environment", "A=1", "--environment", "B=2", "--write", "--replace"},
 	} {
 		got, msg, ok := parseConnectArgs(args)
-		if !ok || got.config != want.config || got.platform != want.platform || got.binding != want.binding || got.credentials != want.credentials || got.user != want.user ||
+		if !ok || got.config != want.config || got.platform != want.platform || got.binding != want.binding || got.credentials["history"] != "/run/secrets/w" || got.credentials["live"] != "/run/secrets/e" || len(got.credentials) != 2 || got.user != want.user ||
 			got.endpoint != want.endpoint || strings.Join(got.environment, ",") != "A=1,B=2" || !got.write || !got.replace {
 			t.Fatalf("%v: %+v %q", args, got, msg)
 		}
@@ -306,10 +321,13 @@ func TestParseConnectArgs(t *testing.T) {
 	for _, args := range [][]string{
 		{},
 		{"warehouse"},
-		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "/x"},
-		{"--config", "e.json", "--binding", "postgres", "--credentials-file", "/x", "--user", "u"},
-		{"warehouse", "extra", "--config", "e.json", "--binding", "postgres", "--credentials-file", "/x", "--user", "u"},
-		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "/x", "--user", "u", "--unknown"},
+		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "live=/x"},
+		{"--config", "e.json", "--binding", "postgres", "--credentials-file", "live=/x", "--user", "u"},
+		{"warehouse", "extra", "--config", "e.json", "--binding", "postgres", "--credentials-file", "live=/x", "--user", "u"},
+		{"--config", "e.json", "warehouse", "--binding", "postgres", "extra", "--credentials-file", "live=/x", "--user", "u"},
+		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "live=/x", "--user", "u", "--unknown"},
+		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "/x", "--user", "u"},
+		{"warehouse", "--config", "e.json", "--binding", "postgres", "--credentials-file", "live=/x", "--credentials-file", "live=/y", "--user", "u"},
 	} {
 		if _, msg, ok := parseConnectArgs(args); ok || !strings.HasPrefix(msg, "usage: gateway connect") {
 			t.Fatalf("%v: accepted, or no usage: %q", args, msg)
@@ -354,4 +372,74 @@ func TestDescribeCheckShapes(t *testing.T) {
 			t.Fatalf("%s is not a failed report", text)
 		}
 	}
+}
+
+func TestConnectRefusesAConfigurationThatWouldExceedTheBound(t *testing.T) {
+	// Another platform's environment fills the file to just under what
+	// serve reads; the entry would take it past, and nothing is asked.
+	docs := filepath.Join(filepath.VolumeName(t.TempDir())+string(filepath.Separator), "run", "secrets", "docs")
+	entry := func(filler string) string {
+		return `"docs":{"binding":"postgres@` + digestOf(restrictedBinding) + `","credentials":{"history":{"file":"` + escapePath(docs) + `"},"live":{"file":"` + escapePath(docs) + `"}},"user":"engine-docs","environment":{"FILLER":"` + filler + `"}}`
+	}
+	// Measured: the file lands 64 bytes under the bound, so it reads, and
+	// the entry -- a few hundred bytes -- takes it past.
+	probe := newConnectFixture(t, restrictedBinding, entry(""))
+	filler := strings.Repeat("x", maxEngineConfigBytes-64-len(probe.fileText(t)))
+	f := newConnectFixture(t, restrictedBinding, entry(filler))
+	if size := len(f.fileText(t)); size > maxEngineConfigBytes || size < maxEngineConfigBytes-128 {
+		t.Fatalf("the fixture is %d bytes", size)
+	}
+	f.fs[docs] = fileOwnership{uid: 1002, mode: 0o600}
+	before := f.fileText(t)
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "would exceed") || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatalf("refused before any check, nothing written: %v (asked %d)", err, len(f.asked))
+	}
+}
+
+func TestConnectRefusesToWriteOverAFileThatChangedMeanwhile(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	before := f.fileText(t)
+	changed := false
+	check := func(ctx context.Context, spec sourceSpec) ([]byte, error) {
+		if !changed {
+			// Someone edits the file while the checks run.
+			if err := os.WriteFile(f.config, []byte(strings.Replace(before, `"gateway:acme"`, `"gateway:other"`, 1)), 0o640); err != nil {
+				t.Fatal(err)
+			}
+			changed = true
+		}
+		return f.check(ctx, spec)
+	}
+	_, err := connect(context.Background(), f.request(), f.host, check)
+	if err == nil || !strings.Contains(err.Error(), "the file changed while the checks ran") {
+		t.Fatalf("not written over: %v", err)
+	}
+	if !strings.Contains(f.fileText(t), `"gateway:other"`) || strings.Contains(f.fileText(t), "warehouse") {
+		t.Fatal("the edit stands and the entry was not written")
+	}
+}
+
+func TestReplaceRepairsAStalePinOfTheEntryReplaced(t *testing.T) {
+	// The entry being replaced pins a digest the catalog no longer has;
+	// --replace is how that is repaired, so the old entry is not resolved.
+	f := newConnectFixture(t, restrictedBinding, `"warehouse":{"binding":"postgres@`+digestOf(postgresBinding)+`","credentials":{"history":{"file":"`+escapePath(f0(t))+`"},"live":{"file":"`+escapePath(f0(t))+`"}},"user":"engine-warehouse"}`)
+	req := f.request()
+	if _, err := connect(context.Background(), req, f.host, f.check); err == nil || !strings.Contains(err.Error(), "already configured") {
+		t.Fatalf("without --replace the entry stands: %v", err)
+	}
+	req.replace = true
+	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
+		t.Fatalf("--replace repairs the pin: %v", err)
+	}
+	cfg, _, err := loadEngineConfig(f.config, stubAccounts(stubUsers))
+	if err != nil || len(cfg.platforms) != 1 || cfg.platforms[0].binding != "postgres@"+digestOf(restrictedBinding) {
+		t.Fatalf("the new pin is written: %v %+v", err, cfg.platforms)
+	}
+}
+
+// f0 is a rooted synthetic path for an entry that is never resolved.
+func f0(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(filepath.VolumeName(t.TempDir())+string(filepath.Separator), "run", "secrets", "old")
 }
