@@ -418,6 +418,13 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	if resolved.platforms[0].credentials != target {
 		t.Fatalf("the path used from here on is the resolved one: %s", resolved.platforms[0].credentials)
 	}
+	// The resolved chain is held too: a root-owned link whose target's
+	// directory another user owns is refused for that directory.
+	badTarget := goodFilesystem(plainSeed, target, 1000, 1001)
+	badTarget[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	badTarget[filepath.Join(root, "var", "secrets")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	badTarget[filepath.Join(root, "private", "var", "secrets")] = fileOwnership{uid: 1002, mode: 0o755, dir: true}
+	expect("a root-owned link into another user's directory", host(1000, badTarget, noSockets, noCaps), linkedCfg, "/private/var/secrets is owned by uid 1002")
 	viaLink[filepath.Join(root, "var")] = fileOwnership{uid: 1002, mode: 0o755, link: true}
 	expect("a link owned by another user", host(1000, viaLink, noSockets, noCaps), linkedCfg, "symbolic link owned by uid 1002, not root")
 	ownLink := filepath.Join(root, "home", "other", "link", "warehouse")
