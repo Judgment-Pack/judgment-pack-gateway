@@ -113,7 +113,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	if env := strings.Join(f.asked[1].env, " "); !strings.Contains(env, "HOME=") || !strings.Contains(env, "DOCKER_HOST=unix:///run/user/1001/docker.sock") {
 		t.Fatalf("the check runs in the derived environment: %v", f.asked[1].env)
 	}
-	if argv := strings.Join(f.asked[1].argv, " "); !strings.HasSuffix(argv, " --endpoint warehouse.internal:5432 -- --access-mode=restricted") || !strings.Contains(argv, "--credentials "+f.credentials+" ") {
+	if argv := strings.Join(f.asked[1].argv, " "); !strings.HasSuffix(argv, " --endpoint=warehouse.internal:5432 -- --access-mode=restricted") || !strings.Contains(argv, "--credentials="+f.credentials+" ") {
 		t.Fatalf("the derived command line carries the binding's server arguments after --: %s", argv)
 	}
 	if strings.Join(f.asked[1].check, " ") != "--probe=query --probe-failure=Error:" || len(f.asked[0].check) != 0 {
@@ -523,6 +523,19 @@ func TestConnectJudgesThePathsServeMakes(t *testing.T) {
 		t.Fatalf("a store serve could not make is refused before any check: %v (asked %d)", err, len(f.asked))
 	}
 	os.Remove(store)
+	// The store's own directories, which serve makes on start.
+	for _, child := range []string{"artifacts", "receipts"} {
+		if err := os.MkdirAll(store, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(store, child), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "store "+store+": "+child+" is not a directory") {
+			t.Fatalf("a file in the place of %s: %v", child, err)
+		}
+		os.RemoveAll(store)
+	}
 	registry := strings.TrimSuffix(store, "store") + "registry.jsonl"
 	if err := os.Mkdir(registry, 0o700); err != nil {
 		t.Fatal(err)

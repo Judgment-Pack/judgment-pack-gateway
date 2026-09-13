@@ -569,16 +569,19 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		b := bindings[p.name]
 		env := append([]string{"HOME=" + p.home}, p.environment...)
 		if b.history != nil {
-			argv := []string{adapter("adapter-airbyte"), "--image", b.history.image, "--credentials", p.credentials["history"], "--runtime", cfg.runtime}
+			// Every flag and its value as one word, flag=value: a value that
+			// is "--" would otherwise be the delimiter the adapter splits its
+			// line at, and a tool, an endpoint or a runtime can be so named.
+			argv := []string{adapter("adapter-airbyte"), "--image=" + b.history.image, "--credentials=" + p.credentials["history"], "--runtime=" + cfg.runtime}
 			if p.endpoint != "" {
-				argv = append(argv, "--endpoint", p.endpoint)
+				argv = append(argv, "--endpoint="+p.endpoint)
 			}
 			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
 		}
 		if b.live != nil {
-			argv := []string{adapter("adapter-mcp"), "--image", b.live.image, "--credentials", p.credentials["live"], "--runtime", cfg.runtime, "--tools", strings.Join(b.live.tools, ",")}
+			argv := []string{adapter("adapter-mcp"), "--image=" + b.live.image, "--credentials=" + p.credentials["live"], "--runtime=" + cfg.runtime, "--tools=" + strings.Join(b.live.tools, ",")}
 			if p.endpoint != "" {
-				argv = append(argv, "--endpoint", p.endpoint)
+				argv = append(argv, "--endpoint="+p.endpoint)
 			}
 			// Each as one word, flag=value: a value of "--" as its own word
 			// would be the delimiter the adapter splits its line at.
@@ -625,6 +628,13 @@ func preflightPaths(store, registry, decisionRecords string) error {
 	}
 	if err := judge("store", store, true); err != nil {
 		return err
+	}
+	// The store's own directories, which serve makes on start: a file in
+	// the place of either is a start that fails, whatever the store is.
+	for _, child := range []string{"artifacts", "receipts"} {
+		if info, err := os.Stat(filepath.Join(store, child)); err == nil && !info.IsDir() {
+			return fmt.Errorf("store %s: %s is not a directory", store, child)
+		}
 	}
 	if err := judge("registry", registry, false); err != nil {
 		return err

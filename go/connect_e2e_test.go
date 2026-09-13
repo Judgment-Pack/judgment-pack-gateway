@@ -221,7 +221,7 @@ func main() {
 		t.Fatalf("the written file is what serve reads: %v %+v", err, cfg.platforms)
 	}
 	if sources := deriveSources(cfg, bindings); len(sources) != 2 || !strings.HasSuffix(strings.Join(sources["warehouse/live"].argv, " "), " -- --access-mode=restricted") ||
-		!strings.Contains(strings.Join(sources["warehouse/history"].argv, " "), "--credentials "+connector+" ") || !strings.Contains(strings.Join(sources["warehouse/live"].argv, " "), "--credentials "+credentials+" ") {
+		!strings.Contains(strings.Join(sources["warehouse/history"].argv, " "), "--credentials="+connector+" ") || !strings.Contains(strings.Join(sources["warehouse/live"].argv, " "), "--credentials="+credentials+" ") {
 		t.Fatalf("serve derives both sources from the written entry: %v", sources)
 	}
 	// A platform that does not answer is not configured: replacing the

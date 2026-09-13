@@ -133,13 +133,13 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 	env := []string{"HOME=/home/engine-warehouse", "DOCKER_HOST=unix:///run/user/1001/docker.sock"}
 	want := map[string]sourceSpec{
 		"warehouse/history": {
-			argv: []string{filepath.Join(binDir, "adapter-airbyte"), "--image", "airbyte/source-postgres:3.6.1@" + testImageDigest,
-				"--credentials", p.credentials["history"], "--runtime", "podman", "--endpoint", "warehouse.internal:5432"},
+			argv: []string{filepath.Join(binDir, "adapter-airbyte"), "--image=airbyte/source-postgres:3.6.1@" + testImageDigest,
+				"--credentials=" + p.credentials["history"], "--runtime=podman", "--endpoint=warehouse.internal:5432"},
 			env: env, user: "engine-warehouse", shape: "airbyte",
 		},
 		"warehouse/live": {
-			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image", "ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
-				"--credentials", p.credentials["live"], "--runtime", "podman", "--tools", "query,explain", "--endpoint", "warehouse.internal:5432"},
+			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image=ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
+				"--credentials=" + p.credentials["live"], "--runtime=podman", "--tools=query,explain", "--endpoint=warehouse.internal:5432"},
 			env: env, user: "engine-warehouse", shape: "mcp",
 		},
 	}
@@ -155,7 +155,7 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sources) != 1 || sources["policy-documents/history"].argv[0] != "adapter-airbyte" || sources["policy-documents/history"].argv[6] != "docker" ||
+	if len(sources) != 1 || sources["policy-documents/history"].argv[0] != "adapter-airbyte" || sources["policy-documents/history"].argv[3] != "--runtime=docker" ||
 		!reflect.DeepEqual(sources["policy-documents/history"].env, []string{"HOME=/home/engine-docs"}) {
 		t.Fatalf("one source, adapter on PATH, docker by default, HOME alone: %+v", sources)
 	}
@@ -666,5 +666,17 @@ func TestAProbeFailureOfTwoDashesReachesTheAdapter(t *testing.T) {
 	}
 	if got := strings.Join(sources["warehouse/live"].check, " "); got != "--probe=q --probe-failure=--" {
 		t.Fatalf("check arguments: %q", got)
+	}
+	// A tool named "--" likewise: one word with its flag, never the
+	// delimiter.
+	binding = `{"bindingVersion":"1","platform":"postgres","operations":{"live":{"shape":"mcp","server":{"image":"x/mcp@` + testImageDigest + `"},"tools":["--","q"],"probe":{"tool":"--"},"licence":"MIT"}}}`
+	catalog = catalogWith(t, map[string]string{"postgres": binding})
+	_, sources, err = load(t, engineJSON(t, catalog, ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(binding), "engine-warehouse", ``, "live")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	argv := strings.Join(sources["warehouse/live"].argv, " ")
+	if !strings.Contains(argv, " --tools=--,q ") && !strings.HasSuffix(argv, " --tools=--,q") || strings.Join(sources["warehouse/live"].check, " ") != "--probe=--" {
+		t.Fatalf("a tool named --: %s %q", argv, sources["warehouse/live"].check)
 	}
 }

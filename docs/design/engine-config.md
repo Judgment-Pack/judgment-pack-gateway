@@ -107,8 +107,12 @@ way:
 
 | Source | Adapter | Command line |
 |---|---|---|
-| `<platform>/history` | `adapter-airbyte` | `--image <history.image> --credentials <credentials.history.file> --runtime <runtime> [--endpoint <endpoint>]` |
-| `<platform>/live` | `adapter-mcp` | `--image <live.server.image> --credentials <credentials.live.file> --runtime <runtime> --tools <live.tools, comma-joined> [--endpoint <endpoint>] [-- <live.server.args>]` |
+| `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
+| `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
+
+Every flag and its value are one word, `flag=value`: a value that is `--` on its own would be
+the delimiter the adapter splits its line at, and a tool, an endpoint or a runtime can be so
+named.
 
 A binding's `write` operation derives nothing: the executor that performs writes does not
 exist yet, and a source that could be asked to write would be a read that writes.

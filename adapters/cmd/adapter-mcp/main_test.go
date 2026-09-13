@@ -119,6 +119,17 @@ func TestRunCheck(t *testing.T) {
 			t.Fatalf("%v: exit %d %s", args, code, stderr.String())
 		}
 	}
+	// A tool named "--", allowed and probed, is a value like any other.
+	tools := filepath.Join(dir, "tools.json")
+	if err := os.WriteFile(tools, []byte(`[{"name":"--","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvTools, tools)
+	stdout.Reset()
+	if code := run([]string{"--check", "--tools=--", "--probe=--", "--credentials", credentials, "--", os.Args[0]}, strings.NewReader(""), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"tools":["--"],"probe":{"tool":"--","answered":true}`) {
+		t.Fatalf("a tool named --: exit %d %s %s", code, stderr.String(), stdout.String())
+	}
+	t.Setenv(fakemcp.EnvTools, "")
 	// As flag=value, a value of "--" is one word and not the delimiter.
 	stdout.Reset()
 	if code := run([]string{"--check", "--probe=query", "--probe-failure=--", "--credentials", credentials, "--", os.Args[0]}, strings.NewReader(""), &stdout, &stderr); code != 0 || !strings.Contains(stdout.String(), `"probe":{"tool":"query","answered":true}`) {

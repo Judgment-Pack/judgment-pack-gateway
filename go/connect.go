@@ -347,7 +347,7 @@ func runCheck(ctx context.Context, spec sourceSpec) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("adapter could not be started: %v", err)
 	}
-	argv := append(append([]string{spec.argv[0], "--check", "--timeout", checkTimeout.String()}, spec.check...), spec.argv[1:]...)
+	argv := append(append([]string{spec.argv[0], "--check", "--timeout=" + checkTimeout.String()}, spec.check...), spec.argv[1:]...)
 	cmd := exec.CommandContext(ctx, path, argv[1:]...)
 	cmd.Args = argv
 	cmd.Stdin = bytes.NewReader(nil)
