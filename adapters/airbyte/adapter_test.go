@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ const testDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef01234
 
 const discoverFixture = `{"type":"LOG","log":{"level":"INFO","message":"starting"}}
 not a message line
+{"level":"INFO","message":"a JSON line that is not a message"}
 {"type":"CATALOG","catalog":{"streams":[{"name":"decisions","json_schema":{"type":"object","properties":{"id":{"type":"integer"},"amount":{"type":"number","multipleOf":0.01},"status":{"type":"string"}}},"supported_sync_modes":["full_refresh","incremental"],"default_cursor_field":["updated_at"],"source_defined_primary_key":[["id"]]},{"name":"audit","json_schema":{"type":"object"},"supported_sync_modes":["full_refresh"]}]}}
 `
 
@@ -36,19 +39,22 @@ const canonicalSchema = `{"properties":{"amount":{"multipleOf":"0.01","type":"nu
 const state1 = `{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions"},"stream_state":{"updated_at":"2026-09-12T10:00:02Z"}}}`
 const state2 = `{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions"},"stream_state":{"updated_at":"2026-09-12T10:00:04Z"}}}`
 
-const readFixture = `{"type":"LOG","log":{"level":"INFO","message":"reading"}}
-{"type":"RECORD","record":{"stream":"decisions","emitted_at":1757671200000,"data":{"id":101,"status":"approved","amount":12.50,"note":"café <b>","big":9007199254740993}}}
-{"type":"RECORD","record":{"stream":"audit","emitted_at":1,"data":{"id":1}}}
-{"type":"RECORD","record":{"stream":"decisions","emitted_at":1757671200001,"data":{"id":102,"status":"denied","amount":7}}}
-{"type":"RECORD","record":{"stream":"decisions","emitted_at":1757671200002,"data":{"id":103,"status":"approved","nested":{"z":1,"a":[true,null]}}}}
-{"type":"STATE","state":{"type":"STREAM","stream":{"stream_descriptor":{"name":"other"},"stream_state":{"x":1}}}}
-{"type":"STATE","state":` + state1 + `}
-{"type":"RECORD","record":{"stream":"decisions","emitted_at":1757671200003,"data":{"id":104,"status":"denied"}}}
-{"type":"RECORD","record":{"stream":"decisions","emitted_at":1757671200004,"data":{"id":105,"status":"approved"}}}
-{"type":"STATE","state":` + state2 + `}
-`
+func rec(id int, at string, rest string) string {
+	return `{"type":"RECORD","record":{"stream":"decisions","emitted_at":` + strconv.Itoa(id) + `,"data":{"id":` + strconv.Itoa(id) + `,"updated_at":"2026-09-12T10:00:0` + at + `Z"` + rest + `}}}` + "\n"
+}
 
-const credentialsFixture = `{"host":"warehouse.internal","port":5432,"password":"hunter2"}`
+var readFixture = `{"type":"LOG","log":{"level":"INFO","message":"reading"}}` + "\n" +
+	rec(101, "0", `,"status":"approved","amount":12.50,"note":"café <b>","big":9007199254740993`) +
+	`{"type":"RECORD","record":{"stream":"audit","emitted_at":1,"data":{"id":1}}}` + "\n" +
+	rec(102, "1", `,"status":"denied","amount":7`) +
+	rec(103, "2", `,"status":"approved","nested":{"z":1,"a":[true,null]}`) +
+	`{"type":"STATE","state":{"type":"STREAM","stream":{"stream_descriptor":{"name":"other"},"stream_state":{"x":1}}}}` + "\n" +
+	`{"type":"STATE","state":` + state1 + `}` + "\n" +
+	rec(104, "3", `,"status":"denied"`) +
+	rec(105, "4", `,"status":"approved"`) +
+	`{"type":"STATE","state":` + state2 + `}` + "\n"
+
+const credentialsFixture = `{"host":"warehouse.internal","port":5432,"password":"hunter2","ssl":{"mode":"require"}}`
 
 var stampForm = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$`)
 
@@ -65,14 +71,16 @@ func fake(t *testing.T, discover, read string) Config {
 		}
 		return path
 	}
+	for _, name := range []string{fakeruntime.EnvStderr, fakeruntime.EnvExit, fakeruntime.EnvHang, fakeruntime.EnvHold,
+		fakeruntime.EnvKillExit, fakeruntime.EnvKillDelay, fakeruntime.EnvInspectExit} {
+		t.Setenv(name, "")
+	}
 	t.Setenv(fakeruntime.EnvActivate, "1")
 	t.Setenv(fakeruntime.EnvTrace, filepath.Join(dir, "trace.jsonl"))
 	t.Setenv(fakeruntime.EnvKills, filepath.Join(dir, "kills"))
+	t.Setenv(fakeruntime.EnvHolderPid, filepath.Join(dir, "holder"))
 	t.Setenv(fakeruntime.EnvDiscover, write("discover.out", discover))
 	t.Setenv(fakeruntime.EnvRead, write("read.out", read))
-	t.Setenv(fakeruntime.EnvStderr, "")
-	t.Setenv(fakeruntime.EnvExit, "")
-	t.Setenv(fakeruntime.EnvHang, "")
 	return Config{
 		Runtime:     os.Args[0],
 		Image:       "airbyte/source-postgres:3.6.1@" + testDigest,
@@ -111,6 +119,15 @@ func kills(t *testing.T) []string {
 	return strings.Split(strings.TrimSpace(string(data)), "\n")
 }
 
+// containerNames are the names the runs were given, in order.
+func containerNames(inv []fakeruntime.Invocation) []string {
+	var names []string
+	for _, i := range inv {
+		names = append(names, i.Argv[3])
+	}
+	return names
+}
+
 type decodedEnvelope struct {
 	Acquisition map[string]any    `json:"acquisition"`
 	Result      []json.RawMessage `json:"result"`
@@ -133,27 +150,40 @@ func decode(t *testing.T, out []byte) decodedEnvelope {
 	return env
 }
 
-// One page: the records of the requested stream up to the limit and the
-// checkpoint that covers them, carried into the canon domain; the
-// acquisition as §1.2a's envelope states it.
-func TestAcquireReadsOnePageAndRecordsTheAcquisition(t *testing.T) {
-	cfg := fake(t, discoverFixture, readFixture)
-	cfg.Endpoint = "warehouse.internal:5432"
-	out, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 3})
+func acquire(t *testing.T, cfg Config, req Request) decodedEnvelope {
+	t.Helper()
+	out, err := Acquire(context.Background(), cfg, req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	env := decode(t, out)
+	return decode(t, out)
+}
+
+func mustFail(t *testing.T, cfg Config, req Request, want string) {
+	t.Helper()
+	_, err := Acquire(context.Background(), cfg, req)
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("want an error containing %q, got %v", want, err)
+	}
+}
+
+// One page: the records of the requested stream up to the limit and the
+// checkpoint that covers them, carried into the canon domain; the
+// acquisition as §1.2a's envelope states it; both containers told to stop.
+func TestAcquireReadsOnePageAndRecordsTheAcquisition(t *testing.T) {
+	cfg := fake(t, discoverFixture, readFixture)
+	cfg.Endpoint = "warehouse.internal:5432"
+	env := acquire(t, cfg, Request{Stream: "decisions", Limit: 3})
 	if !env.Page {
 		t.Fatal("a read is a page")
 	}
 	want := []string{
-		`{"amount":"12.50","big":"9007199254740993","id":101,"note":"café <b>","status":"approved"}`,
-		`{"amount":7,"id":102,"status":"denied"}`,
-		`{"id":103,"nested":{"a":[true,null],"z":1},"status":"approved"}`,
+		`{"amount":"12.50","big":"9007199254740993","id":101,"note":"café <b>","status":"approved","updated_at":"2026-09-12T10:00:00Z"}`,
+		`{"amount":7,"id":102,"status":"denied","updated_at":"2026-09-12T10:00:01Z"}`,
+		`{"id":103,"nested":{"a":[true,null],"z":1},"status":"approved","updated_at":"2026-09-12T10:00:02Z"}`,
 	}
 	if len(env.Result) != len(want) {
-		t.Fatalf("page has %d records, want %d: %s", len(env.Result), len(want), out)
+		t.Fatalf("page has %d records, want %d", len(env.Result), len(want))
 	}
 	for i := range want {
 		if string(env.Result[i]) != want[i] {
@@ -185,7 +215,7 @@ func TestAcquireReadsOnePageAndRecordsTheAcquisition(t *testing.T) {
 	}
 	statement, _ := acq["statement"].(string)
 	var stmt map[string]any
-	if err := json.Unmarshal([]byte(statement), &stmt); err != nil || stmt["stream"] != "decisions" || stmt["syncMode"] != "incremental" || stmt["state"] != nil {
+	if err := json.Unmarshal([]byte(statement), &stmt); err != nil || stmt["stream"] != "decisions" || stmt["namespace"] != nil || stmt["syncMode"] != "incremental" || stmt["state"] != nil {
 		t.Fatalf("statement names the read: %s", statement)
 	}
 	if !stampForm.MatchString(acq["observedAt"].(string)) {
@@ -199,6 +229,9 @@ func TestAcquireReadsOnePageAndRecordsTheAcquisition(t *testing.T) {
 	for _, i := range inv {
 		if i.Image != cfg.Image || i.Argv[0] != "run" || i.Argv[1] != "--rm" || i.Files["config.json"] != credentialsFixture {
 			t.Fatalf("the pinned image, removed after, with the credentials as its config: %+v", i)
+		}
+		if runtime.GOOS != "windows" && (i.Modes["dir"] != "0755" || i.Modes["config.json"] != "0644") {
+			t.Fatalf("the mount is readable by the connector's own user: %v", i.Modes)
 		}
 	}
 	var catalog struct {
@@ -215,40 +248,39 @@ func TestAcquireReadsOnePageAndRecordsTheAcquisition(t *testing.T) {
 	if _, present := inv[1].Files["state.json"]; present || strings.Contains(strings.Join(inv[1].Argv, " "), "--state") {
 		t.Fatal("a first page carries no state")
 	}
-	// The page was complete before the stream ended, so the container was
-	// told to stop by the name it was run under.
-	name := inv[1].Argv[3]
-	if got := kills(t); len(got) != 1 || got[0] != name {
-		t.Fatalf("the read container must be killed by name once the page is complete: %v (name %s)", got, name)
+	// Every container is told to stop by name, whether it ended on its own
+	// (discover) or was stopped once the page was complete (read).
+	if got, names := kills(t), containerNames(inv); len(got) != 2 || got[0] != names[0] || got[1] != names[1] {
+		t.Fatalf("both containers must be told to stop by name: %v vs %v", got, names)
 	}
 }
 
-// The previous snapshot resumes the read: it is written back in the form
-// the connector reads and named in the statement.
+// Two pages driven by the state: the first page's snapshot, handed back as
+// the request's state, is written for the connector in the form it reads
+// and yields exactly what follows it.
 func TestAcquireResumesFromTheSnapshot(t *testing.T) {
-	second := `{"type":"RECORD","record":{"stream":"decisions","emitted_at":3,"data":{"id":104,"status":"denied"}}}
-{"type":"RECORD","record":{"stream":"decisions","emitted_at":4,"data":{"id":105,"status":"approved"}}}
-{"type":"STATE","state":` + state2 + `}
-`
-	cfg := fake(t, discoverFixture, second)
-	state := state1
-	out, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 100, State: &state})
-	if err != nil {
-		t.Fatal(err)
+	cfg := fake(t, discoverFixture, readFixture)
+	first := acquire(t, cfg, Request{Stream: "decisions", Limit: 3})
+	state := first.Acquisition["snapshot"].(string)
+	second := acquire(t, cfg, Request{Stream: "decisions", Limit: 100, State: &state})
+	if len(second.Result) != 2 || !strings.Contains(string(second.Result[0]), `"id":104`) || !strings.Contains(string(second.Result[1]), `"id":105`) {
+		t.Fatalf("the second page is what follows the first's checkpoint: %s", second.Result)
 	}
-	env := decode(t, out)
-	if len(env.Result) != 2 || env.Acquisition["snapshot"] != state2 {
-		t.Fatalf("the second page: %s", out)
+	if second.Acquisition["snapshot"] != state2 {
+		t.Fatalf("the second page's snapshot: %v", second.Acquisition["snapshot"])
 	}
 	inv := invocations(t)
-	if inv[1].Files["state.json"] != "["+state1+"]" || !strings.Contains(strings.Join(inv[1].Argv, " "), "--state /secrets/state.json") {
-		t.Fatalf("the snapshot must be handed back as a state file: %+v", inv[1])
+	if inv[3].Files["state.json"] != "["+state1+"]" || !strings.Contains(strings.Join(inv[3].Argv, " "), "--state /secrets/state.json") {
+		t.Fatalf("the snapshot must be handed back as a state file: %+v", inv[3])
 	}
-	if !strings.Contains(env.Acquisition["statement"].(string), `"state":{"type":"STREAM"`) {
-		t.Fatalf("the statement names the state resumed from: %v", env.Acquisition["statement"])
+	if !strings.Contains(second.Acquisition["statement"].(string), `"state":{"type":"STREAM"`) {
+		t.Fatalf("the statement names the state resumed from: %v", second.Acquisition["statement"])
 	}
-	if len(kills(t)) != 0 {
-		t.Fatal("a stream that ended on its own is not killed")
+	// A legacy state is handed back as its data.
+	legacy := `{"type":"LEGACY","data":{"updated_at":"2026-09-12T10:00:03Z"}}`
+	third := acquire(t, cfg, Request{Stream: "decisions", Limit: 100, State: &legacy})
+	if len(third.Result) != 1 || invocations(t)[5].Files["state.json"] != `{"updated_at":"2026-09-12T10:00:03Z"}` {
+		t.Fatalf("a legacy state is handed back as its data: %s %+v", third.Result, invocations(t)[5].Files)
 	}
 }
 
@@ -256,55 +288,71 @@ func TestAcquireResumesFromTheSnapshot(t *testing.T) {
 // checkpoint that covers them, so a resume never repeats them.
 func TestAcquireWaitsForTheCoveringCheckpoint(t *testing.T) {
 	cfg := fake(t, discoverFixture, readFixture)
-	out, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := decode(t, out)
+	env := acquire(t, cfg, Request{Stream: "decisions", Limit: 2})
 	if len(env.Result) != 3 || env.Acquisition["snapshot"] != state1 {
 		t.Fatalf("limit 2 reads to the first covering checkpoint: %d records, snapshot %v", len(env.Result), env.Acquisition["snapshot"])
 	}
 }
 
-// A stream that ends without a checkpoint is one page with no snapshot; a
-// stream that offers none within the cap is given up on.
-func TestAcquireWithoutCheckpoints(t *testing.T) {
-	two := `{"type":"RECORD","record":{"stream":"decisions","emitted_at":1,"data":{"id":1}}}
-{"type":"RECORD","record":{"stream":"decisions","emitted_at":2,"data":{"id":2}}}
-`
+// A stream that ends without any checkpoint is one page with no snapshot; a
+// stream that offers none within the cap is given up on; a stream that ends
+// with records after its last checkpoint is refused, since a page
+// bookmarked there would repeat them on resume.
+func TestAcquireAtTheEndOfTheStream(t *testing.T) {
+	two := rec(1, "0", "") + rec(2, "1", "")
 	cfg := fake(t, discoverFixture, two)
-	out, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	env := decode(t, out)
+	env := acquire(t, cfg, Request{Stream: "decisions", Limit: 5})
 	if len(env.Result) != 2 || env.Acquisition["snapshot"] != nil {
-		t.Fatalf("a stream that ends without a checkpoint: %s", out)
+		t.Fatalf("a stream that ends without a checkpoint: %d records, snapshot %v", len(env.Result), env.Acquisition["snapshot"])
 	}
 	cfg.MaxRecords = 1
-	_, err = Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
-	if err == nil || !strings.Contains(err.Error(), "no checkpoint within 1 records") {
-		t.Fatalf("past the cap without a checkpoint the read is given up on: %v", err)
-	}
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "no checkpoint within 1 records")
+
+	tail := rec(1, "0", "") + `{"type":"STATE","state":` + state1 + `}` + "\n" + rec(2, "3", "")
+	cfg = fake(t, discoverFixture, tail)
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 5}, `ended stream "decisions" with 1 records after its last checkpoint`)
 }
 
-// Failures the connector or the operator can cause, each named.
+// A stream is identified by name and namespace: a name the catalog holds in
+// two namespaces is ambiguous without one, and with one only that
+// namespace's records and checkpoints count.
+func TestAcquireByNamespace(t *testing.T) {
+	catalog := `{"type":"CATALOG","catalog":{"streams":[` +
+		`{"name":"decisions","namespace":"public","json_schema":{"type":"object"},"supported_sync_modes":["incremental"],"default_cursor_field":["updated_at"]},` +
+		`{"name":"decisions","namespace":"archive","json_schema":{"type":"object"},"supported_sync_modes":["full_refresh"]}]}}` + "\n"
+	read := `{"type":"RECORD","record":{"stream":"decisions","namespace":"archive","emitted_at":1,"data":{"id":1}}}` + "\n" +
+		`{"type":"RECORD","record":{"stream":"decisions","namespace":"public","emitted_at":2,"data":{"id":2}}}` + "\n" +
+		`{"type":"STATE","state":{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions","namespace":"archive"},"stream_state":{"x":1}}}}` + "\n" +
+		`{"type":"STATE","state":{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions","namespace":"public"},"stream_state":{"updated_at":"2026-09-12T10:00:00Z"}}}}` + "\n"
+	cfg := fake(t, catalog, read)
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 5}, `exists in more than one namespace [public archive]`)
+	public := "public"
+	env := acquire(t, cfg, Request{Stream: "decisions", Namespace: &public, Limit: 1})
+	if len(env.Result) != 1 || string(env.Result[0]) != `{"id":2}` {
+		t.Fatalf("only the namespace's records: %s", env.Result)
+	}
+	if !strings.Contains(env.Acquisition["snapshot"].(string), `"namespace":"public"`) {
+		t.Fatalf("only the namespace's checkpoint: %v", env.Acquisition["snapshot"])
+	}
+	if !strings.Contains(env.Acquisition["statement"].(string), `"namespace":"public"`) {
+		t.Fatalf("the statement names the namespace: %v", env.Acquisition["statement"])
+	}
+	missing := "staging"
+	mustFail(t, cfg, Request{Stream: "decisions", Namespace: &missing, Limit: 1}, `stream "staging/decisions" is not one the connector offers: [public/decisions archive/decisions]`)
+}
+
+// Failures the connector or the operator can cause, each named, and none
+// disclosing the configuration.
 func TestAcquireRefusals(t *testing.T) {
 	t.Run("unknown stream", func(t *testing.T) {
-		cfg := fake(t, discoverFixture, readFixture)
-		_, err := Acquire(context.Background(), cfg, Request{Stream: "invoices", Limit: 1})
-		if err == nil || !strings.Contains(err.Error(), `stream "invoices" is not one the connector offers: [decisions audit]`) {
-			t.Fatalf("an unknown stream names the offered ones: %v", err)
-		}
+		mustFail(t, fake(t, discoverFixture, readFixture), Request{Stream: "invoices", Limit: 1}, `stream "invoices" is not one the connector offers: [decisions audit]`)
 	})
 	t.Run("unpinned image", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, readFixture)
 		cfg.Image = "airbyte/source-postgres:3.6.1"
-		if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "must be pinned") {
-			t.Fatalf("an unpinned image is refused: %v", err)
-		}
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "must be pinned")
 	})
-	t.Run("connector fails discover", func(t *testing.T) {
+	t.Run("connector fails discover without a catalog", func(t *testing.T) {
 		cfg := fake(t, "", readFixture)
 		t.Setenv(fakeruntime.EnvExit, "1")
 		t.Setenv(fakeruntime.EnvStderr, "boom: no such host\nmore\n")
@@ -313,27 +361,53 @@ func TestAcquireRefusals(t *testing.T) {
 			t.Fatalf("the connector's first line of stderr, not more: %v", err)
 		}
 	})
+	t.Run("connector fails discover after a catalog", func(t *testing.T) {
+		cfg := fake(t, discoverFixture, readFixture)
+		t.Setenv(fakeruntime.EnvExit, "1")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "connector discover failed")
+	})
 	t.Run("connector trace error", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, `{"type":"TRACE","trace":{"type":"ERROR","error":{"message":"permission denied for table decisions"}}}`+"\n")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "permission denied for table decisions")
+	})
+	t.Run("diagnostics are redacted", func(t *testing.T) {
+		cfg := fake(t, discoverFixture, `{"type":"TRACE","trace":{"type":"ERROR","error":{"message":"password hunter2 rejected by warehouse.internal"}}}`+"\n")
 		_, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
-		if err == nil || !strings.Contains(err.Error(), "permission denied for table decisions") {
-			t.Fatalf("a trace error is reported: %v", err)
+		if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") || !strings.Contains(err.Error(), "password [redacted] rejected by [redacted]") {
+			t.Fatalf("configured values are redacted from a trace: %v", err)
+		}
+		cfg = fake(t, "", readFixture)
+		t.Setenv(fakeruntime.EnvExit, "1")
+		t.Setenv(fakeruntime.EnvStderr, "FATAL: password authentication failed with hunter2\n")
+		_, err = Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
+		if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), "[redacted]") {
+			t.Fatalf("configured values are redacted from stderr: %v", err)
 		}
 	})
 	t.Run("duplicate member in a record", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, `{"type":"RECORD","record":{"stream":"decisions","emitted_at":1,"data":{"id":1,"id":2}}}`+"\n")
-		if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "duplicate member") {
-			t.Fatalf("a record outside the canon domain is refused: %v", err)
-		}
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "duplicate member")
+	})
+	t.Run("record data not an object", func(t *testing.T) {
+		cfg := fake(t, discoverFixture, `{"type":"RECORD","record":{"stream":"decisions","emitted_at":1,"data":null}}`+"\n")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "data is not an object")
+	})
+	t.Run("malformed record message", func(t *testing.T) {
+		cfg := fake(t, discoverFixture, `{"type":"RECORD","record":{"stream":5,"data":{"id":1}}}`+"\n")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed RECORD message")
+	})
+	t.Run("state without a state", func(t *testing.T) {
+		cfg := fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":null}`+"\n")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed STATE message")
+		cfg = fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":{"type":"STREAM"}}`+"\n")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "without a stream descriptor")
 	})
 	t.Run("output bound", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, readFixture)
 		cfg.MaxOutput = 64
 		// Refused while reading, at the record that crossed the bound --
 		// not after the whole page was held in memory.
-		if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 3}); err == nil || !strings.Contains(err.Error(), "the page exceeds the output bound of 64 bytes after 1 records") {
-			t.Fatalf("a page past the bound is refused at the record that crossed it: %v", err)
-		}
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "the page exceeds the output bound of 64 bytes after 1 records")
 	})
 	t.Run("credentials not JSON", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, readFixture)
@@ -348,23 +422,30 @@ func TestAcquireRefusals(t *testing.T) {
 	t.Run("state not a state", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, readFixture)
 		state := `{"cursor":1}`
-		if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1, State: &state}); err == nil || !strings.Contains(err.Error(), "neither a stream") {
-			t.Fatalf("a snapshot that is not a state message is refused: %v", err)
-		}
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1, State: &state}, "neither a stream")
+	})
+	t.Run("container that will not stop", func(t *testing.T) {
+		cfg := fake(t, discoverFixture, readFixture)
+		t.Setenv(fakeruntime.EnvKillExit, "1")
+		t.Setenv(fakeruntime.EnvInspectExit, "0")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "could not be stopped and is still known")
+		// A kill the runtime refuses because the container is already gone
+		// is not a failure.
+		t.Setenv(fakeruntime.EnvInspectExit, "1")
+		acquire(t, cfg, Request{Stream: "decisions", Limit: 3})
 	})
 }
 
 // A connector that hangs is stopped when the acquisition's time is up: the
-// runtime client is cancelled and the container is told to stop by name.
+// runtime client is cancelled and the container is told to stop by name;
+// the deadline is reported as one, with what had been read.
 func TestAcquireStopsAHangingConnector(t *testing.T) {
-	cfg := fake(t, discoverFixture, readFixture[:len(readFixture)-len("{\"type\":\"STATE\",\"state\":"+state2+"}\n")])
+	cfg := fake(t, discoverFixture, strings.TrimSuffix(readFixture, `{"type":"STATE","state":`+state2+`}`+"\n"))
 	t.Setenv(fakeruntime.EnvHang, "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	start := time.Now()
 	_, err := Acquire(ctx, cfg, Request{Stream: "decisions", Limit: 100})
-	// Reported as the deadline it was, with what had been read, not as a
-	// connector failure.
 	if err == nil || !strings.Contains(err.Error(), "connector read stopped after 5 records: context deadline exceeded") {
 		t.Fatalf("a hanging connector must fail the acquisition as a deadline: %v", err)
 	}
@@ -372,15 +453,76 @@ func TestAcquireStopsAHangingConnector(t *testing.T) {
 		t.Fatal("the acquisition did not end when its time was up")
 	}
 	inv := invocations(t)
-	if got := kills(t); len(got) != 1 || got[0] != inv[1].Argv[3] {
+	if got := kills(t); len(got) != 2 || got[1] != inv[1].Argv[3] {
 		t.Fatalf("the hanging read container must be killed by name: %v", got)
 	}
 }
 
+// A runtime client that exits leaving a descendant holding stdout does not
+// hold the adapter past its deadline: the reader is closed with the context.
+func TestAcquireIsNotHeldByADescendantOnStdout(t *testing.T) {
+	cfg := fake(t, discoverFixture, rec(1, "0", ""))
+	t.Setenv(fakeruntime.EnvHold, "1")
+	t.Cleanup(func() {
+		data, err := os.ReadFile(os.Getenv(fakeruntime.EnvHolderPid))
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			if pid, err := strconv.Atoi(line); err == nil {
+				if p, err := os.FindProcess(pid); err == nil {
+					p.Kill()
+					p.Wait()
+				}
+			}
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Acquire(ctx, cfg, Request{Stream: "decisions", Limit: 100})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("the deadline must end the acquisition: %v", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatal("a descendant on stdout held the acquisition past its deadline")
+	}
+}
+
+// Stopping a container is bounded: a kill the runtime does not answer is
+// given up on within the window, and the acquisition still ends.
+func TestStoppingIsBounded(t *testing.T) {
+	cfg := fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvKillDelay, "30")
+	start := time.Now()
+	acquire(t, cfg, Request{Stream: "decisions", Limit: 3})
+	// Two containers, each a kill window and an inspect window at most: the
+	// bound is written out so a widened window is caught, not absorbed.
+	if elapsed := time.Since(start); elapsed > 12*time.Second {
+		t.Fatalf("stopping two containers took %v", elapsed)
+	}
+}
+
+// A connector that floods stderr does not fail an acquisition that
+// succeeded, and its first line is still what a failure reports.
+func TestStderrIsBoundedWithoutBreakingThePipe(t *testing.T) {
+	cfg := fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvStderr, "first line\n"+strings.Repeat("x", 20000)+"\n")
+	acquire(t, cfg, Request{Stream: "decisions", Limit: 3})
+	t.Setenv(fakeruntime.EnvExit, "1")
+	cfg = fake(t, "", readFixture)
+	t.Setenv(fakeruntime.EnvExit, "1")
+	t.Setenv(fakeruntime.EnvStderr, "first line\n"+strings.Repeat("x", 20000)+"\n")
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "connector discover failed: first line")
+}
+
 func TestParseRequest(t *testing.T) {
 	good, err := ParseRequest(strings.NewReader(`{"stream":"decisions"}`), 10000)
-	if err != nil || good.Stream != "decisions" || good.Limit != defaultLimit || good.State != nil {
+	if err != nil || good.Stream != "decisions" || good.Limit != defaultLimit || good.State != nil || good.Namespace != nil {
 		t.Fatalf("defaults: %+v %v", good, err)
+	}
+	if r, err := ParseRequest(strings.NewReader(`{"stream":"decisions","namespace":"public","limit":2}`), 10000); err != nil || *r.Namespace != "public" || r.Limit != 2 {
+		t.Fatalf("namespace: %+v %v", r, err)
 	}
 	for in, want := range map[string]string{
 		`{"stream":"decisions","limit":3,"state":"{\"type\":\"LEGACY\",\"data\":{}}","extra":1}`: "unknown field",

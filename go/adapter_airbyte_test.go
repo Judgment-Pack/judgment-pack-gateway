@@ -1,12 +1,15 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -42,10 +45,15 @@ func TestGatewaySpawnsTheAirbyteAdapterEndToEnd(t *testing.T) {
 	if err := os.MkdirAll(fakeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// It answers kill and inspect as a runtime would for a container that is
+	// gone, and it reads the mounted configuration before it answers a run:
+	// a connector that could not read its config would say so.
 	fakeSource := `package main
 
 import (
+	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -55,6 +63,27 @@ const read = "{\"type\":\"RECORD\",\"record\":{\"stream\":\"decisions\",\"emitte
 	"{\"type\":\"STATE\",\"state\":{\"type\":\"STREAM\",\"stream\":{\"stream_descriptor\":{\"name\":\"decisions\"},\"stream_state\":{\"updated_at\":\"2026-09-12T10:00:02Z\"}}}}\n"
 
 func main() {
+	if len(os.Args) < 2 {
+		os.Exit(2)
+	}
+	switch os.Args[1] {
+	case "kill":
+		os.Exit(0)
+	case "inspect":
+		os.Exit(1)
+	}
+	dir := ""
+	for i, a := range os.Args {
+		if a == "-v" && i+1 < len(os.Args) {
+			dir = strings.TrimSuffix(os.Args[i+1], ":/secrets:ro")
+		}
+	}
+	var config struct{ Host string }
+	data, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	if err != nil || json.Unmarshal(data, &config) != nil || config.Host != "warehouse.internal" {
+		os.Stdout.WriteString("{\"type\":\"TRACE\",\"trace\":{\"type\":\"ERROR\",\"error\":{\"message\":\"config unreadable\"}}}\n")
+		os.Exit(1)
+	}
 	args := strings.Join(os.Args[1:], " ")
 	switch {
 	case strings.Contains(args, " discover "):
@@ -108,21 +137,28 @@ func main() {
 	if acquisition["shape"] != "airbyte" || adapterOut["name"] != "airbyte/source-postgres" || adapterOut["version"] != "3.6.1" || adapterOut["digest"] != digest {
 		t.Fatalf("the receipt names the pinned image under the declared shape: %v", acquisition)
 	}
-	if acquisition["endpoint"] != "warehouse.internal:5432" || acquisition["snapshot"] == nil || acquisition["schema"] == nil || acquisition["peerIdentity"] != nil {
-		t.Fatalf("endpoint, snapshot and schema as the adapter reported; peer identity null: %v", acquisition)
+	const snapshot = `{"type":"STREAM","stream":{"stream_descriptor":{"name":"decisions"},"stream_state":{"updated_at":"2026-09-12T10:00:02Z"}}}`
+	schemaSum := sha256.Sum256([]byte(`{"type":"object"}`))
+	if acquisition["endpoint"] != "warehouse.internal:5432" || acquisition["snapshot"] != snapshot ||
+		acquisition["schema"] != "sha256:"+hex.EncodeToString(schemaSum[:]) || acquisition["peerIdentity"] != nil || acquisition["upstreamToken"] != nil {
+		t.Fatalf("endpoint, snapshot and schema exactly as the adapter reported; peer identity and upstream token null: %v", acquisition)
 	}
-	if items, _ := acquisition["pageItems"].([]any); len(items) != 2 {
-		t.Fatalf("two page items: %v", acquisition["pageItems"])
+	items, _ := acquisition["pageItems"].([]any)
+	wantItems := []string{envelopeDigest(`{"amount":"12.5","id":101,"status":"approved"}`), envelopeDigest(`{"amount":7,"id":102,"status":"denied"}`)}
+	if len(items) != 2 || items[0] != wantItems[0] || items[1] != wantItems[1] {
+		t.Fatalf("page items are the gateway's digests of the records: %v", items)
 	}
 	if _, present := first["salts"].(map[string]any)["statement"]; !present {
 		t.Fatal("the statement's salt comes back")
 	}
-	if encoded, _ := json.Marshal(receipt); strings.Contains(string(encoded), "hunter2") || strings.Contains(string(encoded), "SELECT") {
-		t.Fatal("nothing of the credentials reaches the receipt")
+	if encoded, _ := json.Marshal(first); strings.Contains(string(encoded), "hunter2") {
+		t.Fatal("nothing of the credentials reaches the response")
 	}
-	result, _ := first["result"].([]any)
-	if len(result) != 2 || result[0].(map[string]any)["amount"] != "12.5" || result[1].(map[string]any)["amount"] != float64(7) {
-		t.Fatalf("the records, carried into the canon domain: %v", first["result"])
+	if !reflect.DeepEqual(first["result"], []any{
+		map[string]any{"amount": "12.5", "id": float64(101), "status": "approved"},
+		map[string]any{"amount": float64(7), "id": float64(102), "status": "denied"},
+	}) {
+		t.Fatalf("the records, carried into the canon domain, exactly: %v", first["result"])
 	}
 	if code, body := post(t, server, "/seal", `{"session":"e2e-1"}`); code != http.StatusOK {
 		t.Fatalf("seal failed: %d %v", code, body)

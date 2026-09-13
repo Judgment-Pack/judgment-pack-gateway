@@ -12,6 +12,15 @@ import (
 	"time"
 )
 
+// The budget for stopping a container once the acquisition is over, on top
+// of the acquisition's own timeout: the kill, and the inspect that follows
+// a failed kill. The command's default timeout leaves room for both under
+// the gateway's thirty seconds.
+const (
+	killWindow    = 3 * time.Second
+	inspectWindow = 2 * time.Second
+)
+
 // container is one connector command running inside the operator's
 // container runtime, its stdout a stream the caller drains.
 type container struct {
@@ -25,15 +34,20 @@ type container struct {
 	cancel  context.CancelFunc
 	waited  bool
 	waitErr error
-	killed  bool
+	stopped bool
 }
 
 // startContainer writes files into a private directory, mounts it read-only
 // at /secrets, and starts
 //
-//	RUNTIME run --rm --name NAME -v DIR:/secrets:ro IMAGE VERB ARGS...
+//	RUNTIME run --rm --name NAME -v DIR/secrets:/secrets:ro IMAGE VERB ARGS...
 //
-// The runtime inherits this process's environment: it is the adapter's own,
+// The private directory is this process's alone (0700); the directory
+// mounted is the one inside it, readable by any user (0755, files 0644), so
+// that a connector running as its image's non-root user under a rootless
+// runtime -- whose identity does not map to this process's -- can read its
+// configuration, while no other user on the host can reach the parent. The
+// runtime inherits this process's environment: it is the adapter's own,
 // declared by the operator when the gateway spawned it, and a runtime needs
 // its HOME and PATH. The connector sees only its files.
 func startContainer(ctx context.Context, runtime, image, verb string, files map[string][]byte, args []string) (*container, error) {
@@ -41,8 +55,13 @@ func startContainer(ctx context.Context, runtime, image, verb string, files map[
 	if err != nil {
 		return nil, fmt.Errorf("mount directory: %w", err)
 	}
+	mount := filepath.Join(dir, "secrets")
+	if err := os.Mkdir(mount, 0o755); err != nil {
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("mount directory: %w", err)
+	}
 	for name, data := range files {
-		if err := os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(mount, name), data, 0o644); err != nil {
 			os.RemoveAll(dir)
 			return nil, fmt.Errorf("mount directory: %w", err)
 		}
@@ -53,7 +72,7 @@ func startContainer(ctx context.Context, runtime, image, verb string, files map[
 		return nil, err
 	}
 	name := "jp-airbyte-" + hex.EncodeToString(suffix[:])
-	argv := append([]string{"run", "--rm", "--name", name, "-v", dir + ":/secrets:ro", image, verb}, args...)
+	argv := append([]string{"run", "--rm", "--name", name, "-v", mount + ":/secrets:ro", image, verb}, args...)
 	runCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(runCtx, runtime, argv...)
 	cmd.Env = os.Environ()
@@ -71,6 +90,13 @@ func startContainer(ctx context.Context, runtime, image, verb string, files map[
 		os.RemoveAll(dir)
 		return nil, fmt.Errorf("%s could not be started: %w", runtime, err)
 	}
+	// A reader blocked on stdout returns when the context ends, whoever
+	// holds the pipe's other end: a descendant of the runtime client that
+	// outlived it would otherwise hold the scanner past every deadline.
+	go func() {
+		<-runCtx.Done()
+		stdout.Close()
+	}()
 	return &container{runtime: runtime, name: name, dir: dir, cmd: cmd, stdout: stdout, stderr: stderr, ctx: runCtx, cancel: cancel}, nil
 }
 
@@ -83,29 +109,44 @@ func (c *container) wait() error {
 	return c.waitErr
 }
 
-// stop ends the container whether or not its command has finished, and
-// removes the mount directory. A runtime client that is killed leaves its
-// container running, so the container is told to stop by name whenever the
-// client did not end on its own: when it is still running here, or when
-// its context was cancelled -- by this adapter once the page was complete,
-// or by the caller's deadline -- before it was waited for. A client that
-// ran to its own end took its container with it. Safe to call twice.
-func (c *container) stop() {
-	ended := c.waited && c.ctx.Err() == nil
-	c.cancel()
-	if !ended && !c.killed {
-		c.killed = true
-		killCtx, cancelKill := context.WithTimeout(context.Background(), 10*time.Second)
-		kill := exec.CommandContext(killCtx, c.runtime, "kill", c.name)
-		kill.Env = os.Environ()
-		_ = kill.Run()
-		cancelKill()
+// stop ends the container and removes the mount directory, and establishes
+// that the container is gone: the client's exit says nothing certain about
+// its container, and a killed client leaves one running, so the container
+// is always told to stop by name, and a kill the runtime refuses is
+// followed by an inspect. A container the runtime still knows after that is
+// an error the acquisition must not hide -- it holds the credentials mount.
+// Safe to call twice; the second call does nothing and returns nil.
+func (c *container) stop() error {
+	if c.stopped {
+		return nil
 	}
+	c.stopped = true
+	c.cancel()
+	err := c.stopByName()
 	c.wait()
 	if c.dir != "" {
 		os.RemoveAll(c.dir)
 		c.dir = ""
 	}
+	return err
+}
+
+func (c *container) stopByName() error {
+	killCtx, cancelKill := context.WithTimeout(context.Background(), killWindow)
+	defer cancelKill()
+	kill := exec.CommandContext(killCtx, c.runtime, "kill", c.name)
+	kill.Env = os.Environ()
+	if kill.Run() == nil {
+		return nil
+	}
+	inspectCtx, cancelInspect := context.WithTimeout(context.Background(), inspectWindow)
+	defer cancelInspect()
+	inspect := exec.CommandContext(inspectCtx, c.runtime, "inspect", c.name)
+	inspect.Env = os.Environ()
+	if inspect.Run() != nil {
+		return nil // absent: it ended on its own, and --rm removed it
+	}
+	return fmt.Errorf("container %s could not be stopped and is still known to %s; stop it by hand -- it holds the credentials mount", c.name, c.runtime)
 }
 
 // firstLine is the first line of what the connector wrote on stderr, for an
@@ -120,7 +161,9 @@ func (c *container) firstLine() string {
 	return text
 }
 
-// boundedBuffer keeps the first limit bytes written to it and drops the rest.
+// boundedBuffer keeps the first limit bytes written to it and drops the
+// rest, reporting every write as complete: a writer that reported a short
+// write would have os/exec's copier stop and close the pipe on the child.
 type boundedBuffer struct {
 	limit int
 	buf   []byte
@@ -128,10 +171,11 @@ type boundedBuffer struct {
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	if room := b.limit - len(b.buf); room > 0 {
-		if len(p) > room {
-			p = p[:room]
+		kept := p
+		if len(kept) > room {
+			kept = kept[:room]
 		}
-		b.buf = append(b.buf, p...)
+		b.buf = append(b.buf, kept...)
 	}
 	return len(p), nil
 }

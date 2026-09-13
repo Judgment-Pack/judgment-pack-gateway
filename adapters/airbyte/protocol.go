@@ -12,6 +12,9 @@ type message struct {
 	State   json.RawMessage `json:"state"`
 	Catalog *catalog        `json:"catalog"`
 	Trace   *trace          `json:"trace"`
+	// malformed is set when a line names a type but does not decode as a
+	// message of it.
+	malformed error
 }
 
 type record struct {

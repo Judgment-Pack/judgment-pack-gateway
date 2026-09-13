@@ -29,7 +29,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	endpoint := fs.String("endpoint", "", "the host the connector reaches, as the operator names it; recorded as the receipt's endpoint")
 	maxRecords := fs.Int("max-records", 10000, "cap on records read in one acquisition")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
-	timeout := fs.Duration("timeout", 25*time.Second, "time allowed for the whole acquisition; below the gateway's thirty seconds, so a slow connector is reported rather than killed")
+	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for reading; stopping the container takes up to five seconds more, and the sum stays under the gateway's thirty, so a slow connector is reported rather than killed")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

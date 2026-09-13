@@ -73,3 +73,19 @@ func TestCanonicalizeCarriesNumbersAsText(t *testing.T) {
 		}
 	}
 }
+
+// -0 is an integer in the domain and is emitted as 0 (§1.1), under either
+// policy; a literal JSON forbids is refused.
+func TestCanonicalizeNormalizesNegativeZero(t *testing.T) {
+	for _, policy := range []numberPolicy{refuseNumbers, carryNumbersAsText} {
+		got, err := canonicalize([]byte(`{"n":-0,"m":[-0,0,-1]}`), policy)
+		if err != nil || string(got) != `{"m":[0,0,-1],"n":0}` {
+			t.Fatalf("policy %d: %q %v", policy, got, err)
+		}
+	}
+	for _, in := range []string{`{"n":01}`, `{"n":-}`, `{"n":+1}`} {
+		if _, err := canonicalize([]byte(in), carryNumbersAsText); err == nil {
+			t.Errorf("%s must be refused", in)
+		}
+	}
+}

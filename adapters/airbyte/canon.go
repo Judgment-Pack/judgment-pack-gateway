@@ -133,14 +133,17 @@ func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers numberPolicy) 
 		writeString(out, v)
 	case json.Number:
 		literal := v.String()
+		var n int64
 		inDomain := integerLiteral.MatchString(literal)
 		if inDomain {
-			n, err := strconv.ParseInt(literal, 10, 64)
+			var err error
+			n, err = strconv.ParseInt(literal, 10, 64)
 			inDomain = err == nil && n <= maxInteger && n >= -maxInteger
 		}
 		switch {
 		case inDomain:
-			out.WriteString(literal)
+			// Emitted from the parsed value, so -0 is 0 (§1.1).
+			out.WriteString(strconv.FormatInt(n, 10))
 		case numbers == carryNumbersAsText:
 			writeString(out, literal)
 		default:

@@ -43,12 +43,14 @@ type Config struct {
 }
 
 // Request is the canonical arguments the gateway hands the adapter on stdin:
-// which stream, how many records the page should hold, and the snapshot of
-// the previous page to resume from, exactly as its receipt recorded it.
+// which stream, in which namespace when the connector has more than one,
+// how many records the page should hold, and the snapshot of the previous
+// page to resume from, exactly as its receipt recorded it.
 type Request struct {
-	Stream string  `json:"stream"`
-	Limit  int     `json:"limit"`
-	State  *string `json:"state"`
+	Stream    string  `json:"stream"`
+	Namespace *string `json:"namespace"`
+	Limit     int     `json:"limit"`
+	State     *string `json:"state"`
 }
 
 const defaultLimit = 1000
@@ -121,7 +123,8 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if !json.Valid(config) {
 		return nil, errors.New("credentials file is not JSON")
 	}
-	strm, err := discover(ctx, cfg, req.Stream, config)
+	secrets := secretsOf(config)
+	strm, err := discover(ctx, cfg, req, config, secrets)
 	if err != nil {
 		return nil, err
 	}
@@ -134,27 +137,37 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stream %q: schema: %v", req.Stream, err)
 	}
-	p, err := readPage(ctx, cfg, req, config, catalogFile, stateFile)
+	p, err := readPage(ctx, cfg, req, strm, config, catalogFile, stateFile, secrets)
 	if err != nil {
 		return nil, err
 	}
-	return buildEnvelope(cfg, image, req, mode, cursor, schema, p)
+	return buildEnvelope(cfg, image, req, strm, mode, cursor, schema, p)
 }
 
 // discover runs the connector's discover and finds the requested stream in
-// the catalog it emits.
-func discover(ctx context.Context, cfg Config, name string, config []byte) (stream, error) {
+// the catalog it emits: by name, and by namespace when the request gives
+// one; a name the catalog holds in more than one namespace is ambiguous
+// without it.
+func discover(ctx context.Context, cfg Config, req Request, config []byte, secrets []string) (stream, error) {
 	c, err := startContainer(ctx, cfg.Runtime, cfg.Image, "discover",
 		map[string][]byte{"config.json": config}, []string{"--config", "/secrets/config.json"})
 	if err != nil {
 		return stream{}, err
 	}
-	defer c.stop()
+	finish := func(s stream, err error) (stream, error) {
+		if stopErr := c.stop(); stopErr != nil {
+			if err == nil {
+				return stream{}, stopErr
+			}
+			err = fmt.Errorf("%v; also: %v", err, stopErr)
+		}
+		return s, err
+	}
 	var found *catalog
 	scanner := newScanner(c.stdout)
 	for scanner.Scan() {
-		var m message
-		if json.Unmarshal(scanner.Bytes(), &m) != nil {
+		m, isMessage := parseMessage(scanner.Bytes())
+		if !isMessage {
 			continue
 		}
 		switch m.Type {
@@ -162,39 +175,66 @@ func discover(ctx context.Context, cfg Config, name string, config []byte) (stre
 			found = m.Catalog
 		case "TRACE":
 			if m.Trace != nil && m.Trace.Type == "ERROR" {
-				return stream{}, fmt.Errorf("connector reported an error during discover: %s", traceMessage(m.Trace))
+				return finish(stream{}, fmt.Errorf("connector reported an error during discover: %s", redact(traceMessage(m.Trace), secrets)))
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return stream{}, fmt.Errorf("reading the connector's catalog: %w", err)
-	}
+	scanErr := scanner.Err()
 	waitErr := c.wait()
 	if ctx.Err() != nil {
-		return stream{}, fmt.Errorf("connector discover stopped: %v", ctx.Err())
+		return finish(stream{}, fmt.Errorf("connector discover stopped: %v", ctx.Err()))
 	}
-	if waitErr != nil && found == nil {
-		return stream{}, fmt.Errorf("connector discover failed: %s", failure(c, waitErr))
+	if scanErr != nil {
+		return finish(stream{}, fmt.Errorf("reading the connector's catalog: %w", scanErr))
+	}
+	if waitErr != nil {
+		return finish(stream{}, fmt.Errorf("connector discover failed: %s", redact(failure(c, waitErr), secrets)))
 	}
 	if found == nil {
-		return stream{}, errors.New("the connector emitted no catalog")
+		return finish(stream{}, errors.New("the connector emitted no catalog"))
 	}
+	var candidates []stream
 	var names []string
 	for _, raw := range found.Streams {
 		var s stream
-		if err := json.Unmarshal(raw, &s); err != nil {
-			return stream{}, fmt.Errorf("the connector's catalog is malformed: %v", err)
+		if err := json.Unmarshal(raw, &s); err != nil || s.Name == "" {
+			return finish(stream{}, errors.New("the connector's catalog is malformed"))
 		}
-		if s.Name == name {
-			if len(s.JSONSchema) == 0 {
-				return stream{}, fmt.Errorf("stream %q has no schema", name)
-			}
-			s.raw = raw
-			return s, nil
+		s.raw = raw
+		names = append(names, describe(s.Name, s.Namespace))
+		if s.Name != req.Stream || (req.Namespace != nil && s.Namespace != *req.Namespace) {
+			continue
 		}
-		names = append(names, s.Name)
+		candidates = append(candidates, s)
 	}
-	return stream{}, fmt.Errorf("stream %q is not one the connector offers: %v", name, names)
+	switch len(candidates) {
+	case 0:
+		return finish(stream{}, fmt.Errorf("stream %q is not one the connector offers: %v", describe(req.Stream, deref(req.Namespace)), names))
+	case 1:
+		if len(candidates[0].JSONSchema) == 0 {
+			return finish(stream{}, fmt.Errorf("stream %q has no schema", req.Stream))
+		}
+		return finish(candidates[0], nil)
+	}
+	var namespaces []string
+	for _, s := range candidates {
+		namespaces = append(namespaces, s.Namespace)
+	}
+	return finish(stream{}, fmt.Errorf(`stream %q exists in more than one namespace %v; name one with "namespace"`, req.Stream, namespaces))
+}
+
+func describe(name, namespace string) string {
+	if namespace == "" {
+		return name
+	}
+	return namespace + "/" + name
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 // configuredCatalog is the ConfiguredAirbyteCatalog for one stream:
@@ -239,6 +279,24 @@ func stateFileFor(snapshot *string) ([]byte, error) {
 	return nil, errors.New(`request: "state" is neither a stream, a global nor a legacy state`)
 }
 
+// parseMessage tells a protocol message from a line that is not one. A
+// line that is not a JSON object with a string "type" is something the
+// connector printed, and is skipped; a line that is a message of a known
+// type but malformed is an error the caller must not skip.
+func parseMessage(line []byte) (message, bool) {
+	var probe struct {
+		Type *string `json:"type"`
+	}
+	if json.Unmarshal(line, &probe) != nil || probe.Type == nil {
+		return message{}, false
+	}
+	var m message
+	if err := json.Unmarshal(line, &m); err != nil {
+		return message{Type: *probe.Type, malformed: err}, true
+	}
+	return m, true
+}
+
 type page struct {
 	items      [][]byte
 	state      []byte
@@ -249,9 +307,12 @@ type page struct {
 // stream's records until the limit is reached and a checkpoint that covers
 // them has arrived, or until the stream ends. Records after the limit are
 // kept while waiting for the checkpoint, since the checkpoint covers them;
-// past MaxRecords without one, the read is given up on. The container is
-// stopped as soon as the page is complete.
-func readPage(ctx context.Context, cfg Config, req Request, config, catalogFile, stateFile []byte) (page, error) {
+// past MaxRecords without one, the read is given up on. A stream that ends
+// with records after its last checkpoint is refused: a page bookmarked by
+// that checkpoint would repeat them on resume, and the envelope has no
+// member to say so. The container is stopped as soon as the page is
+// complete, and stopping it is part of the acquisition's success.
+func readPage(ctx context.Context, cfg Config, req Request, strm stream, config, catalogFile, stateFile []byte, secrets []string) (page, error) {
 	files := map[string][]byte{"config.json": config, "catalog.json": catalogFile}
 	args := []string{"--config", "/secrets/config.json", "--catalog", "/secrets/catalog.json"}
 	if stateFile != nil {
@@ -262,86 +323,123 @@ func readPage(ctx context.Context, cfg Config, req Request, config, catalogFile,
 	if err != nil {
 		return page{}, err
 	}
-	defer c.stop()
+	finish := func(p page, err error) (page, error) {
+		if stopErr := c.stop(); stopErr != nil {
+			if err == nil {
+				return page{}, stopErr
+			}
+			err = fmt.Errorf("%v; also: %v", err, stopErr)
+		}
+		return p, err
+	}
 	var p page
 	var size int64
-	covered := true
+	uncovered := 0 // records since the last checkpoint
 	scanner := newScanner(c.stdout)
 	for scanner.Scan() {
-		var m message
-		if json.Unmarshal(scanner.Bytes(), &m) != nil {
+		m, isMessage := parseMessage(scanner.Bytes())
+		if !isMessage {
 			continue
 		}
 		switch m.Type {
 		case "RECORD":
-			if m.Record == nil || m.Record.Stream != req.Stream {
+			if m.malformed != nil || m.Record == nil || m.Record.Stream == "" {
+				return finish(page{}, errors.New("the connector emitted a malformed RECORD message"))
+			}
+			if m.Record.Stream != strm.Name || m.Record.Namespace != strm.Namespace {
 				continue
+			}
+			if !isObject(m.Record.Data) {
+				return finish(page{}, fmt.Errorf("record %d of stream %q: data is not an object", len(p.items)+1, req.Stream))
 			}
 			item, err := canonicalize(m.Record.Data, carryNumbersAsText)
 			if err != nil {
-				return page{}, fmt.Errorf("record %d of stream %q: %v", len(p.items)+1, req.Stream, err)
+				return finish(page{}, fmt.Errorf("record %d of stream %q: %v", len(p.items)+1, req.Stream, err))
 			}
 			p.items = append(p.items, item)
 			p.observedAt = time.Now().UTC().Truncate(time.Second).Format(stampLayout)
-			covered = false
+			uncovered++
 			size += int64(len(item)) + 1
 			if size > cfg.MaxOutput {
-				return page{}, fmt.Errorf("the page exceeds the output bound of %d bytes after %d records; lower the limit", cfg.MaxOutput, len(p.items))
+				return finish(page{}, fmt.Errorf("the page exceeds the output bound of %d bytes after %d records; lower the limit", cfg.MaxOutput, len(p.items)))
 			}
 			if len(p.items) > cfg.MaxRecords {
-				return page{}, fmt.Errorf("no checkpoint within %d records of stream %q; the stream cannot be paged", cfg.MaxRecords, req.Stream)
+				return finish(page{}, fmt.Errorf("no checkpoint within %d records of stream %q; the stream cannot be paged", cfg.MaxRecords, req.Stream))
 			}
 		case "STATE":
-			if !stateBelongsTo(m.State, req.Stream) {
+			belongs, err := stateBelongsTo(m, strm)
+			if err != nil {
+				return finish(page{}, err)
+			}
+			if !belongs {
 				continue
 			}
 			compacted, err := compact(m.State)
 			if err != nil {
-				return page{}, fmt.Errorf("the connector's state is malformed: %v", err)
+				return finish(page{}, fmt.Errorf("the connector's state is malformed: %v", err))
 			}
 			p.state = compacted
-			covered = true
+			uncovered = 0
 			if len(p.items) >= req.Limit {
 				if p.observedAt == "" {
 					p.observedAt = time.Now().UTC().Truncate(time.Second).Format(stampLayout)
 				}
-				c.stop()
-				return p, nil
+				return finish(p, nil)
 			}
 		case "TRACE":
 			if m.Trace != nil && m.Trace.Type == "ERROR" {
-				return page{}, fmt.Errorf("connector reported an error: %s", traceMessage(m.Trace))
+				return finish(page{}, fmt.Errorf("connector reported an error: %s", redact(traceMessage(m.Trace), secrets)))
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return page{}, fmt.Errorf("reading the connector's records: %w", err)
-	}
+	scanErr := scanner.Err()
 	waitErr := c.wait()
 	if ctx.Err() != nil {
-		return page{}, fmt.Errorf("connector read stopped after %d records: %v", len(p.items), ctx.Err())
+		return finish(page{}, fmt.Errorf("connector read stopped after %d records: %v", len(p.items), ctx.Err()))
+	}
+	if scanErr != nil {
+		return finish(page{}, fmt.Errorf("reading the connector's records: %w", scanErr))
 	}
 	if waitErr != nil {
-		return page{}, fmt.Errorf("connector read failed: %s", failure(c, waitErr))
+		return finish(page{}, fmt.Errorf("connector read failed: %s", redact(failure(c, waitErr), secrets)))
 	}
-	_ = covered // at the end of the stream the last bookmark is the snapshot, covering or not
+	if p.state != nil && uncovered > 0 {
+		return finish(page{}, fmt.Errorf("the connector ended stream %q with %d records after its last checkpoint; a page bookmarked there would repeat them on resume", req.Stream, uncovered))
+	}
 	if p.observedAt == "" {
 		p.observedAt = time.Now().UTC().Truncate(time.Second).Format(stampLayout)
 	}
-	return p, nil
+	return finish(p, nil)
 }
 
 // stateBelongsTo reports whether a state message bookmarks the stream: a
-// per-stream state names it; a global or legacy state covers every stream.
-func stateBelongsTo(raw json.RawMessage, stream string) bool {
+// per-stream state names it by name and namespace; a global or legacy
+// state covers every stream. A STATE message without a state object, or a
+// per-stream one without a descriptor, is malformed.
+func stateBelongsTo(m message, strm stream) (bool, error) {
+	if m.malformed != nil || !isObject(m.State) {
+		return false, errors.New("the connector emitted a malformed STATE message")
+	}
 	var sm stateMessage
-	if json.Unmarshal(raw, &sm) != nil {
-		return false
+	if err := json.Unmarshal(m.State, &sm); err != nil {
+		return false, errors.New("the connector emitted a malformed STATE message")
 	}
-	if sm.Type == "STREAM" {
-		return sm.Stream != nil && sm.Stream.Descriptor.Name == stream
+	switch sm.Type {
+	case "STREAM":
+		if sm.Stream == nil || sm.Stream.Descriptor.Name == "" {
+			return false, errors.New("the connector emitted a STREAM state without a stream descriptor")
+		}
+		return sm.Stream.Descriptor.Name == strm.Name && sm.Stream.Descriptor.Namespace == strm.Namespace, nil
+	case "GLOBAL", "LEGACY", "":
+		return true, nil
 	}
-	return true
+	return false, fmt.Errorf("the connector emitted a state of unknown type %q", sm.Type)
+}
+
+// isObject reports whether raw is a non-empty JSON object.
+func isObject(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	return len(trimmed) > 2 && trimmed[0] == '{' && json.Valid(trimmed)
 }
 
 func traceMessage(t *trace) string {
@@ -358,6 +456,53 @@ func failure(c *container, err error) string {
 		return line
 	}
 	return err.Error()
+}
+
+// secretsOf collects every string value of the connector's configuration,
+// at any depth, four bytes or longer -- a password, a token, a host -- so
+// that a diagnostic repeating one is redacted before it crosses the source
+// boundary, where the gateway returns it to whoever called /acquire. It is
+// as good as the connector's habit of quoting its configuration verbatim:
+// a secret it encodes or splits is not caught.
+func secretsOf(config []byte) []string {
+	var value any
+	if json.Unmarshal(config, &value) != nil {
+		return nil
+	}
+	var out []string
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			if len(x) >= 4 {
+				out = append(out, x)
+			}
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(value)
+	return out
+}
+
+const maxDiagnostic = 512
+
+// redact replaces every configured string value in a diagnostic and bounds
+// its length.
+func redact(text string, secrets []string) string {
+	for _, s := range secrets {
+		text = strings.ReplaceAll(text, s, "[redacted]")
+	}
+	if len(text) > maxDiagnostic {
+		text = text[:maxDiagnostic] + "…"
+	}
+	return text
 }
 
 func newScanner(r io.Reader) *bufio.Scanner {
@@ -395,12 +540,16 @@ type envelope struct {
 // checkpoint as the snapshot, the discovered schema's digest, and null for
 // what a connector inside a container cannot tell it: the peer's identity
 // and any token the upstream produced.
-func buildEnvelope(cfg Config, image imageRef, req Request, mode string, cursor []string, schema []byte, p page) ([]byte, error) {
+func buildEnvelope(cfg Config, image imageRef, req Request, strm stream, mode string, cursor []string, schema []byte, p page) ([]byte, error) {
 	statementValue := map[string]any{
-		"stream":      req.Stream,
+		"stream":      strm.Name,
+		"namespace":   nil,
 		"syncMode":    mode,
 		"cursorField": cursor,
 		"state":       nil,
+	}
+	if strm.Namespace != "" {
+		statementValue["namespace"] = strm.Namespace
 	}
 	if req.State != nil {
 		statementValue["state"] = json.RawMessage(*req.State)
