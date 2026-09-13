@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/user"
-	"path/filepath"
 	"strconv"
 	"syscall"
 )
@@ -70,7 +69,7 @@ func osEngineHost() engineHost {
 		sockets:      hostRuntimeSockets,
 		capabilities: processCapabilities,
 		fileOwner:    fileOwnerOf,
-		resolve:      filepath.EvalSymlinks,
+		readLink:     os.Readlink,
 		account:      accountOf,
 	}
 }

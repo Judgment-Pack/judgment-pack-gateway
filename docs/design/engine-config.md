@@ -121,12 +121,13 @@ engine refuses to start under a configuration the isolation claim of
   that user, or writable beyond its owner without the sticky bit (so someone else could
   replace the file under its name), or that the user cannot traverse (the adapter could not
   open its own credentials, judged by the owner bits when the directory is the user's and by
-  the other bits when it is root's). Both chains are held: the path as configured, in which a
-  symbolic link is allowed only when root owns it — a system's own, such as macOS's `/var` —
-  and its directory is held like any other, so nobody but root could have placed or could
-  retarget it; and the path with every link resolved, which is the path the adapter is then
-  given, so the file judged is the file it opens. The seed's directories are held to the
-  same, for the signer, and its path used resolved;
+  the other bits when it is root's). The path is walked component by component from the
+  root, and everything the walk meets is held: a symbolic link is allowed only when root owns
+  it — a system's own, such as macOS's `/var` — so nobody but root could have placed or could
+  retarget it, and the walk then continues through its target's components, each held in
+  turn, with a bound of thirty-two hops; the path with every link resolved is the path the
+  adapter is then given, so the file judged is the file it opens. The seed's directories are
+  held to the same, for the signer, and its path used resolved;
 - a signer that runs as **root**, which reads every credentials file whatever protects it,
   unless the operator sets `"rootSigner": "accepted"` — the engine then says in one line at
   startup that the separation between signer and adapters rests on the host, not on the

@@ -75,7 +75,7 @@ type engineHost struct {
 	sockets      func(runtime string) []string
 	capabilities func() capabilitySets
 	fileOwner    func(path string) (fileOwnership, error)
-	resolve      func(dir string) (string, error) // every symbolic link followed
+	readLink     func(path string) (string, error) // where a symbolic link points
 	account      func(name string) (uid int, home string, err error)
 }
 
@@ -619,77 +619,109 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 
 // trustedAncestors holds every directory on the way to a file to what the
 // file's owner needs and no more, and returns the path with every
-// symbolic link resolved, which is the path then used: owned by root or by
-// that user, writable by nobody else unless the sticky bit keeps others
-// from removing or renaming what they do not own (so nobody else can
-// replace the file under its name), and traversable by that user. Both
-// chains are held: the components of the path as configured, where a
-// symbolic link is allowed only when root owns it (a system's own, such as
-// macOS's /var) and its directory is held like any other, so nobody but
-// root could have placed or could retarget it; and the resolved chain, in
-// which no link remains. The file itself need not exist yet -- a seed does
-// not before keygen -- so it is the directory that is resolved.
+// symbolic link resolved, which is the path then used. The walk goes
+// component by component from the root, and every directory and every
+// link it meets is held: a directory must be owned by root or by that
+// user, writable by nobody else unless the sticky bit keeps others from
+// removing or renaming what they do not own (so nobody else can replace
+// what is under it), and traversable by that user; a link must be owned
+// by root -- a system's own, such as macOS's /var -- so nobody else could
+// have placed or could retarget it, and the walk then continues through
+// its target's components, each held in turn, with a bound on hops. The
+// file itself need not exist yet -- a seed does not before keygen -- so
+// it is the directory that is walked.
 func trustedAncestors(path string, uid int, host engineHost) (string, error) {
-	dir := filepath.Dir(path)
-	if err := holdChain(dir, uid, host.fileOwner, true); err != nil {
-		return "", err
-	}
-	resolved, err := host.resolve(dir)
+	resolved, err := walkHeld(filepath.Dir(path), uid, host)
 	if err != nil {
-		return "", fmt.Errorf("%s could not be resolved: %v", dir, err)
-	}
-	if resolved != dir {
-		if err := holdChain(resolved, uid, host.fileOwner, false); err != nil {
-			return "", err
-		}
+		return "", err
 	}
 	return filepath.Join(resolved, filepath.Base(path)), nil
 }
 
-// holdChain holds a directory and each of its ancestors, from the root
-// down, to the ancestor rules.
-func holdChain(dir string, uid int, fileOwner func(string) (fileOwnership, error), linksAllowed bool) error {
-	var chain []string
-	for d := dir; ; d = filepath.Dir(d) {
-		chain = append([]string{d}, chain...)
-		if filepath.Dir(d) == d {
-			break
-		}
+const maxLinkHops = 32
+
+func walkHeld(dir string, uid int, host engineHost) (string, error) {
+	root := filepath.VolumeName(dir) + string(filepath.Separator)
+	remaining := components(dir)
+	current := root
+	if err := holdDirectory(current, uid, host.fileOwner); err != nil {
+		return "", err
 	}
-	for _, d := range chain {
-		owner, err := fileOwner(d)
+	hops := 0
+	for len(remaining) > 0 {
+		next := filepath.Join(current, remaining[0])
+		remaining = remaining[1:]
+		owner, err := host.fileOwner(next)
 		if err != nil {
-			return fmt.Errorf("%s: %v", d, err)
+			return "", fmt.Errorf("%s: %v", next, err)
 		}
 		if owner.link {
-			if !linksAllowed {
-				return fmt.Errorf("%s is a symbolic link after resolution", d)
-			}
 			if owner.uid != 0 {
-				return fmt.Errorf("%s is a symbolic link owned by uid %d, not root, so its owner could retarget it", d, owner.uid)
+				return "", fmt.Errorf("%s is a symbolic link owned by uid %d, not root, so its owner could retarget it", next, owner.uid)
 			}
-			continue // its target's directories are held in the resolved chain
+			if hops++; hops > maxLinkHops {
+				return "", fmt.Errorf("%s: more than %d symbolic links on the way", next, maxLinkHops)
+			}
+			target, err := host.readLink(next)
+			if err != nil {
+				return "", fmt.Errorf("%s: %v", next, err)
+			}
+			if !filepath.IsAbs(target) {
+				target = filepath.Join(current, target)
+			}
+			// The walk restarts at the root of the target, holding each of
+			// its components before what remained of the configured path.
+			remaining = append(components(target), remaining...)
+			current = filepath.VolumeName(target) + string(filepath.Separator)
+			continue
 		}
-		if !owner.dir {
-			return fmt.Errorf("%s is not a directory", d)
+		if err := holdDirectory(next, uid, host.fileOwner); err != nil {
+			return "", err
 		}
-		if owner.uid != 0 && owner.uid != uid {
-			return fmt.Errorf("%s is owned by uid %d, neither root nor uid %d, so its owner could replace what is under it", d, owner.uid, uid)
-		}
-		if owner.mode&0o022 != 0 && !owner.sticky {
-			return fmt.Errorf("%s is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is under it", d, owner.mode)
-		}
-		// Traversal is judged by the class that applies to the user: the
-		// owner bits when the directory is the user's, the other bits when
-		// it is root's (the group bits would apply to a group the user is
-		// in, which is not known here and is not assumed).
-		traversable := owner.mode&0o001 != 0
-		if owner.uid == uid {
-			traversable = owner.mode&0o100 != 0
-		}
-		if !traversable {
-			return fmt.Errorf("%s (mode %04o) cannot be traversed by uid %d", d, owner.mode, uid)
-		}
+		current = next
+	}
+	return current, nil
+}
+
+// components are a path's elements below its root, in order.
+func components(path string) []string {
+	path = filepath.Clean(path)
+	rest := strings.TrimPrefix(path, filepath.VolumeName(path))
+	rest = strings.Trim(rest, string(filepath.Separator))
+	if rest == "" {
+		return nil
+	}
+	return strings.Split(rest, string(filepath.Separator))
+}
+
+// holdDirectory holds one directory to the ancestor rules.
+func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, error)) error {
+	owner, err := fileOwner(dir)
+	if err != nil {
+		return fmt.Errorf("%s: %v", dir, err)
+	}
+	if owner.link {
+		return fmt.Errorf("%s is a symbolic link where a directory was expected", dir)
+	}
+	if !owner.dir {
+		return fmt.Errorf("%s is not a directory", dir)
+	}
+	if owner.uid != 0 && owner.uid != uid {
+		return fmt.Errorf("%s is owned by uid %d, neither root nor uid %d, so its owner could replace what is under it", dir, owner.uid, uid)
+	}
+	if owner.mode&0o022 != 0 && !owner.sticky {
+		return fmt.Errorf("%s is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is under it", dir, owner.mode)
+	}
+	// Traversal is judged by the class that applies to the user: the owner
+	// bits when the directory is the user's, the other bits when it is
+	// root's (the group bits would apply to a group the user is in, which
+	// is not known here and is not assumed).
+	traversable := owner.mode&0o001 != 0
+	if owner.uid == uid {
+		traversable = owner.mode&0o100 != 0
+	}
+	if !traversable {
+		return fmt.Errorf("%s (mode %04o) cannot be traversed by uid %d", dir, owner.mode, uid)
 	}
 	return nil
 }

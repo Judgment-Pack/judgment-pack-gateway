@@ -248,28 +248,12 @@ func (o ownership) owner(path string) (fileOwnership, error) {
 	return fileOwnership{}, os.ErrNotExist
 }
 
-// resolve follows every link among a directory's components, as
-// filepath.EvalSymlinks would.
-func (o ownership) resolve(dir string) (string, error) {
-	var parts []string
-	for d := dir; ; d = filepath.Dir(d) {
-		parts = append([]string{d}, parts...)
-		if filepath.Dir(d) == d {
-			break
-		}
+// readLinkStub is where a stub link points.
+func readLinkStub(path string) (string, error) {
+	if target, ok := linkTargets[path]; ok {
+		return target, nil
 	}
-	resolved := parts[0]
-	for _, p := range parts[1:] {
-		candidate := filepath.Join(resolved, filepath.Base(p))
-		if fo, ok := o[candidate]; ok && fo.link {
-			candidate = linkTargets[candidate]
-		}
-		if _, ok := o[candidate]; !ok {
-			return "", os.ErrNotExist
-		}
-		resolved = candidate
-	}
-	return resolved, nil
+	return "", os.ErrNotExist
 }
 
 // A filesystem in which everything the configuration names is as it should
@@ -309,7 +293,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	// Links resolve as the stub filesystem says; a path with none resolves
 	// to itself.
 	host := func(euid int, fs ownership, sockets []string, caps func() capabilitySets) engineHost {
-		return engineHost{euid: euid, sockets: func(string) []string { return sockets }, capabilities: caps, fileOwner: fs.owner, resolve: fs.resolve}
+		return engineHost{euid: euid, sockets: func(string) []string { return sockets }, capabilities: caps, fileOwner: fs.owner, readLink: readLinkStub}
 	}
 	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
 	noCaps := func() capabilitySets { return capabilitySets{known: true, effective: three, permitted: three} }
@@ -402,12 +386,12 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	plainSeed := filepath.Join(root, "srv", "engine", "gateway.seed")
 	linked := filepath.Join(root, "var", "secrets", "warehouse")
 	target := filepath.Join(root, "private", "var", "secrets", "warehouse")
+	// /var is root's link to /private/var; the walk goes through the
+	// target's components, so the configured chain never looks under /var
+	// itself.
 	viaLink := goodFilesystem(plainSeed, target, 1000, 1001)
 	viaLink[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
 	linkTargets[filepath.Join(root, "var")] = filepath.Join(root, "private", "var")
-	// Lstat follows an intermediate link: the configured chain's directory
-	// behind the link is the target's.
-	viaLink[filepath.Join(root, "var", "secrets")] = viaLink[filepath.Join(root, "private", "var", "secrets")]
 	linkedCfg := cfg
 	linkedCfg.seed = plainSeed
 	linkedCfg.platforms = []platformConfig{{name: "warehouse", credentials: linked, user: "engine-warehouse", uid: 1001}}
@@ -418,13 +402,40 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	if resolved.platforms[0].credentials != target {
 		t.Fatalf("the path used from here on is the resolved one: %s", resolved.platforms[0].credentials)
 	}
-	// The resolved chain is held too: a root-owned link whose target's
-	// directory another user owns is refused for that directory.
+	// The target's components are held: a root-owned link into a directory
+	// another user owns is refused for that directory.
 	badTarget := goodFilesystem(plainSeed, target, 1000, 1001)
 	badTarget[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
-	badTarget[filepath.Join(root, "var", "secrets")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
-	badTarget[filepath.Join(root, "private", "var", "secrets")] = fileOwnership{uid: 1002, mode: 0o755, dir: true}
-	expect("a root-owned link into another user's directory", host(1000, badTarget, noSockets, noCaps), linkedCfg, filepath.Join(root, "private", "var", "secrets")+" is owned by uid 1002")
+	badTarget[filepath.Join(root, "private", "var")] = fileOwnership{uid: 1002, mode: 0o755, dir: true}
+	expect("a root-owned link into another user's directory", host(1000, badTarget, noSockets, noCaps), linkedCfg, filepath.Join(root, "private", "var")+" is owned by uid 1002")
+	// A root-owned link whose target passes through another user's link:
+	// every hop is held, and the second link's owner refuses it.
+	hops := goodFilesystem(plainSeed, target, 1000, 1001)
+	hops[filepath.Join(root, "entry")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "entry")] = filepath.Join(root, "home", "other", "hop")
+	hops[filepath.Join(root, "home")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	hops[filepath.Join(root, "home", "other")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	hops[filepath.Join(root, "home", "other", "hop")] = fileOwnership{uid: 1002, mode: 0o777, link: true}
+	linkTargets[filepath.Join(root, "home", "other", "hop")] = filepath.Join(root, "private", "var", "secrets")
+	hopCfg := cfg
+	hopCfg.seed = plainSeed
+	hopCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "entry", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	expect("a root-owned link through another user's link", host(1000, hops, noSockets, noCaps), hopCfg, filepath.Join(root, "home", "other", "hop")+" is a symbolic link owned by uid 1002, not root")
+	hops[filepath.Join(root, "home", "other", "hop")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	hops[filepath.Join(root, "home", "other")] = fileOwnership{uid: 1002, mode: 0o755, dir: true}
+	expect("a root-owned link through another user's directory", host(1000, hops, noSockets, noCaps), hopCfg, filepath.Join(root, "home", "other")+" is owned by uid 1002")
+	hops[filepath.Join(root, "home", "other")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	resolvedHops := ptr(hopCfg)
+	if _, err := engineRefusals(resolvedHops, host(1000, hops, noSockets, noCaps)); err != nil || resolvedHops.platforms[0].credentials != target {
+		t.Fatalf("two root-owned hops resolve to the target: %v %s", err, resolvedHops.platforms[0].credentials)
+	}
+	loop := goodFilesystem(plainSeed, target, 1000, 1001)
+	loop[filepath.Join(root, "loop")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "loop")] = filepath.Join(root, "loop")
+	loopCfg := cfg
+	loopCfg.seed = plainSeed
+	loopCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "loop", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	expect("a link loop", host(1000, loop, noSockets, noCaps), loopCfg, "more than 32 symbolic links")
 	viaLink[filepath.Join(root, "var")] = fileOwnership{uid: 1002, mode: 0o755, link: true}
 	expect("a link owned by another user", host(1000, viaLink, noSockets, noCaps), linkedCfg, "symbolic link owned by uid 1002, not root")
 	ownLink := filepath.Join(root, "home", "other", "link", "warehouse")
