@@ -93,11 +93,13 @@ The container's first process is `gateway serve`, reading the engine configurati
 
 Adapters are **spawned, never linked**. When a request names a platform, the gateway resolves
 its binding to an adapter binary and starts it over the source contract of SPEC.md §6:
-canonical arguments on stdin, one JSON result on stdout, thirty seconds. Today's `serve` bounds
-the incoming HTTP body at one mebibyte and does not bound a source's output; a bound on adapter
-output is part of the next phase, not a property of the current code. The spawn differs from
-today's in three ways that the isolation claim depends on: the environment is **empty** except
-for the credentials path, the adapter runs under a **distinct OS identity** where the platform
+canonical arguments on stdin, one JSON result on stdout, twenty seconds for an acquisition.
+`serve` bounds the incoming HTTP body at one mebibyte and a source's output at one mebibyte
+(`--source-max-output`; the engine's default), killing a source that crosses it. The spawn
+differs from a plain `serve` in three ways that the isolation claim depends on: the environment
+is **what is declared and no more** — `HOME` from the platform user's account, `PATH`, and the
+variables the platform's `environment` names, with the credentials path travelling in the
+adapter's arguments, never in the environment — the adapter runs under a **distinct OS identity** where the platform
 provides one, and the engine has already refused to start if the seed file is readable by that
 identity. The adapter reads its secret in its own process and the gateway never sees it. A
 connector image for a history read is run by the Airbyte adapter, not by the gateway.
@@ -190,5 +192,7 @@ a build is what a deployment pins, and this note is what it means.
 - No connector code. Connector images and MCP servers are pulled at run time by digest.
 - No policy, pack, or decision. Packs live in the application's own project; the runtime
   evaluates what it is handed.
-- No network listener beyond the configured `listen` address, which is loopback unless an
-  identity provider is configured.
+- No network listener beyond the configured `listen` address, which the engine holds to a
+  loopback address whatever else is configured; an identity decides who may call, never from
+  where, and reaching the engine from another host means a TLS-terminating front the operator
+  runs and trusts ([engine-config.md](engine-config.md)).

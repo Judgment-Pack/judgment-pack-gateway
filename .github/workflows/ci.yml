@@ -140,14 +140,20 @@ jobs:
           mkdir -p image && docker save engine:ci | tar -x -C image
           python3 .github/image_checks.py engine-export.tar engine-config.json . image
       # The root directory is not in an export; what it must be -- root's,
-      # writable by nobody else -- is held by the act: neither a platform
-      # user nor the signer may create a top-level path.
+      # writable by nobody else -- is held by the act, with a probe every
+      # identity can run (build/probe.go, built here with the image's own
+      # pinned builder, mounted read-only, never part of the image): the
+      # signer and each of the eight platform users are refused at the
+      # root, and root, as the control, is not.
       - name: Nobody but root may write the root directory
         run: |
-          for user in 65601 65532; do
-            if docker run --rm --user $user --entrypoint /usr/local/bin/gateway engine:ci keygen /probe-$user 2>/dev/null; then echo "uid $user wrote the root directory"; exit 1; fi
-            docker run --rm --user $user --entrypoint /usr/local/bin/gateway engine:ci keygen /probe-$user 2>&1 | grep -q 'permission denied' || { echo "uid $user was refused for another reason"; exit 1; }
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath -v "$PWD":/src -w /src docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 sh -c 'CGO_ENABLED=0 go build -o /src/probe build/probe.go'
+          for user in 65532 65601 65602 65603 65604 65605 65606 65607 65608; do
+            out=$(docker run --rm --user $user -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-$user 2>&1); code=$?
+            echo "uid $user: $out"
+            [ "$code" = "3" ] && echo "$out" | grep -q 'permission denied' || { echo "uid $user was not refused at the root as stated"; exit 1; }
           done
+          docker run --rm --user 0 -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-root | grep -q 'created' || { echo "the probe could not create even as root; it proves nothing"; exit 1; }
       - name: The image runs the adapters and starts the engine as built
         run: |
           docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }

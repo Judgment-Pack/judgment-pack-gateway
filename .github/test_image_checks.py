@@ -305,8 +305,27 @@ class Checks(unittest.TestCase):
     def test_a_group_named_twice(self):
         self.refused(good(**{"etc/group": dict(data=b"engine-2:x:65699:\n" + GROUP)}), "names engine-2 twice")
 
+    def test_a_passwd_line_with_leading_whitespace(self):
+        # The lookup trims and reads it as engine-4; the check refuses it.
+        self.refused(good(**{"etc/passwd": dict(data=b" engine-4:x:65699:65699:p:/home/wrong:/sbin/nologin\n" + PASSWD)}), "otherwise than written")
+
+    def test_a_passwd_comment_line(self):
+        self.refused(good(**{"etc/passwd": dict(data=b"# users\n" + PASSWD)}), "otherwise than written")
+
+    def test_a_uid_spelled_with_a_leading_zero(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD + b"other:x:065604:65699:o:/home/other:/sbin/nologin\n")}), "not a number as one is spelled")
+
+    def test_a_gid_spelled_with_a_leading_zero(self):
+        self.refused(good(**{"etc/group": dict(data=GROUP + b"other:x:065604:\n")}), "not a number as one is spelled")
+
+    def test_home_not_passable(self):
+        self.refused(good(**{"home": dict(kind="dir", mode=0o754)}), "home is mode 0754; it must be a directory passable by everyone")
+
+    def test_a_directory_in_the_catalog_the_checkout_lacks(self):
+        self.refused(good(**{"usr/share/engine/catalog/extra": dict(kind="dir")}), "a directory in the image and not in the checkout's catalog")
+
     def test_a_passwd_line_of_the_wrong_shape(self):
-        self.refused(good(**{"etc/passwd": dict(data=PASSWD + b"broken\n")}), "not seven fields")
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD + b"broken\n")}), "not 7 fields")
 
     def test_the_entrypoint(self):
         self.refused(good(), "the image starts", {"Entrypoint": ["/bin/sh"], "Cmd": CONFIG["Cmd"], "User": "engine"})

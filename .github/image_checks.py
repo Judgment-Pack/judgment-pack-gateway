@@ -129,7 +129,7 @@ def content(fs, archive, name):
     return archive.extractfile(e.member.name).read()
 
 
-def trusted_path(fs, name, readable=False):
+def trusted_path(fs, name, readable=False, passable=False):
     """Every directory on the way to name, and name itself, is root's and
     writable by root alone, none of them a link: what a platform user
     reaches under this name is what root put there, and nobody can rename
@@ -154,6 +154,33 @@ def trusted_path(fs, name, readable=False):
             fail("%s is mode %04o; every directory on the way to %s must be passable by everyone" % (prefix, e.mode, name))
         if i == len(parts) and readable and (e.mode & 0o004 == 0 or (e.isdir and e.mode & 0o001 == 0)):
             fail("%s is mode %04o; it must be readable by everyone" % (name, e.mode))
+        if i == len(parts) and passable and (not e.isdir or e.mode & 0o005 != 0o005):
+            fail("%s is mode %04o; it must be a directory passable by everyone" % (name, e.mode))
+
+
+def canonical_lines(data, what, fields):
+    """The lines of an account file, each exactly as the lookup would read
+    it: no surrounding whitespace, not blank, not a comment, the stated
+    number of fields, no field of a name empty."""
+    out = []
+    for raw in data.decode("utf-8", "surrogateescape").split("\n"):
+        if raw == "":
+            continue
+        if raw != raw.strip() or raw.startswith("#"):
+            fail("%s carries a line the lookup would read otherwise than written: %r" % (what, raw))
+        parts = raw.split(":")
+        if len(parts) != fields or parts[0] == "":
+            fail("%s carries a line that is not %d fields with a name: %r" % (what, fields, raw))
+        out.append(parts)
+    return out
+
+
+def canonical_id(text, what):
+    """A uid or gid spelled as a number is spelled: digits, no leading
+    zero, so that two spellings cannot name one id."""
+    if not (text == "0" or (text.isdigit() and text[0] != "0")):
+        fail("%s carries an id spelled %r, which is not a number as one is spelled" % (what, text))
+    return int(text)
 
 
 HOMES = {"home/engine": 65532}
@@ -180,7 +207,7 @@ def check(fs, archive, config, checkout):
             fail("%s carries a capability attribute; only the gateway binary may" % name)
         if not e.isdir and not e.islink and e.mode & 0o6000:
             fail("%s is set-user-id or set-group-id (mode %04o); nothing in the image may be" % (name, e.mode))
-    trusted_path(fs, "home")
+    trusted_path(fs, "home", passable=True)
     for name, uid in HOMES.items():
         e = entry(fs, name)
         if not e.isdir or e.mode != 0o700 or e.uid != uid or e.gid != uid:
@@ -200,12 +227,16 @@ def check(fs, archive, config, checkout):
         root = os.path.join(checkout, top)
         there_root = "usr/share/engine/" + top
         trusted_path(fs, there_root, readable=True)
-        expected = set()
-        for dirpath, _, files in os.walk(root):
+        expected_files, expected_dirs = set(), set()
+        for dirpath, dirs, files in os.walk(root):
+            for d in dirs:
+                rel = os.path.relpath(os.path.join(dirpath, d), root).replace(os.sep, "/")
+                expected_dirs.add(rel)
+                trusted_path(fs, there_root + "/" + rel, readable=True)
             for f in files:
                 here = os.path.join(dirpath, f)
                 rel = os.path.relpath(here, root).replace(os.sep, "/")
-                expected.add(rel)
+                expected_files.add(rel)
                 there = there_root + "/" + rel
                 trusted_path(fs, there, readable=True)
                 if content(fs, archive, there) != open(here, "rb").read():
@@ -213,9 +244,9 @@ def check(fs, archive, config, checkout):
         for name, e in fs.items():
             if name.startswith(there_root + "/"):
                 rel = name[len(there_root) + 1:]
-                if e.isdir:
-                    trusted_path(fs, name, readable=True)
-                elif rel not in expected:
+                if e.isdir and rel not in expected_dirs:
+                    fail("%s is a directory in the image and not in the checkout's %s" % (name, top))
+                if not e.isdir and rel not in expected_files:
                     fail("%s is in the image and not in the checkout's %s" % (name, top))
     # The users, as the engine looks them up: by the first line naming
     # them, so a name or a uid twice is refused rather than read
@@ -223,35 +254,36 @@ def check(fs, archive, config, checkout):
     # under /home; and the groups the supplementary lookup reads.
     trusted_path(fs, "etc/passwd", readable=True)
     trusted_path(fs, "etc/group", readable=True)
+    # The engine's lookup (Go's os/user) trims each line, skips blank and
+    # comment lines, takes the first line naming a user, and reads an id
+    # as a number. What is held here is stricter than what it reads: every
+    # line canonical -- no surrounding whitespace, no comment, ids spelled
+    # as numbers are, so no line can mean one thing to the lookup and
+    # another to this check -- and no name or id twice.
     names, uids = {}, {}
-    for line in content(fs, archive, "etc/passwd").decode().splitlines():
-        fields = line.split(":")
-        if len(fields) != 7:
-            fail("/etc/passwd carries a line that is not seven fields: %r" % line)
-        name, uid, gid, home = fields[0], fields[2], fields[3], fields[5]
+    for line in canonical_lines(content(fs, archive, "etc/passwd"), "/etc/passwd", 7):
+        name, uid, gid, home = line[0], canonical_id(line[2], "/etc/passwd"), canonical_id(line[3], "/etc/passwd"), line[5]
         if name in names:
             fail("/etc/passwd names %s twice" % name)
         if uid in uids:
-            fail("/etc/passwd gives uid %s to %s and to %s" % (uid, uids[uid], name))
+            fail("/etc/passwd gives uid %d to %s and to %s" % (uid, uids[uid], name))
         names[name], uids[uid] = (uid, gid, home), name
     for user, uid in USERS.items():
         if user not in names:
             fail("/etc/passwd does not name %s" % user)
         got_uid, got_gid, home = names[user]
-        if got_uid != str(uid) or got_gid != str(uid) or home != "/home/" + user:
-            fail("/etc/passwd has %s as uid %s gid %s home %s; it must be uid %d, gid %d, home /home/%s" % (user, got_uid, got_gid, home, uid, uid, user))
+        if got_uid != uid or got_gid != uid or home != "/home/" + user:
+            fail("/etc/passwd has %s as uid %d gid %d home %s; it must be uid %d, gid %d, home /home/%s" % (user, got_uid, got_gid, home, uid, uid, user))
     groups, gids = {}, {}
-    for line in content(fs, archive, "etc/group").decode().splitlines():
-        fields = line.split(":")
-        if len(fields) != 4:
-            fail("/etc/group carries a line that is not four fields: %r" % line)
-        if fields[0] in groups:
-            fail("/etc/group names %s twice" % fields[0])
-        if fields[2] in gids:
-            fail("/etc/group gives gid %s twice" % fields[2])
-        groups[fields[0]], gids[fields[2]] = fields[2], fields[0]
+    for line in canonical_lines(content(fs, archive, "etc/group"), "/etc/group", 4):
+        gid = canonical_id(line[2], "/etc/group")
+        if line[0] in groups:
+            fail("/etc/group names %s twice" % line[0])
+        if gid in gids:
+            fail("/etc/group gives gid %d twice" % gid)
+        groups[line[0]], gids[gid] = gid, line[0]
     for user, uid in USERS.items():
-        if groups.get(user) != str(uid):
+        if groups.get(user) != uid:
             fail("/etc/group has %s as gid %s, not %d" % (user, groups.get(user), uid))
     if config.get("Entrypoint") != ["/usr/local/bin/gateway"] or config.get("Cmd") != ["serve", "--config", "/etc/engine/engine.json"] or config.get("User") not in ("engine", "65532"):
         fail("the image starts %r %r as %r" % (config.get("Entrypoint"), config.get("Cmd"), config.get("User")))
