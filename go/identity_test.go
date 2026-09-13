@@ -13,8 +13,10 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +85,47 @@ func (i *testIssuer) mint(t *testing.T, kid string, header map[string]any, claim
 	return signed + "." + b64(sig)
 }
 
+// mintRaw signs a header and a payload written by hand, as text, so a
+// token can carry what json.Marshal would never write: a member twice, a
+// member by another case, a value of the wrong type.
+func (i *testIssuer) mintRaw(t *testing.T, kid, header, payload string) string {
+	t.Helper()
+	signed := b64([]byte(header)) + "." + b64([]byte(payload))
+	digest := sha256.Sum256([]byte(signed))
+	var sig []byte
+	switch kid {
+	case "rsa-1":
+		sig, _ = rsa.SignPKCS1v15(rand.Reader, i.rsaKey, crypto.SHA256, digest[:])
+	case "ec-1":
+		r, s, _ := ecdsa.Sign(rand.Reader, i.ecKey, digest[:])
+		sig = append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
+	case "ed-1":
+		sig = ed25519.Sign(i.edPriv, []byte(signed))
+	}
+	return signed + "." + b64(sig)
+}
+
+// withDirtyBits is the token with the unused bits of its signature's last
+// base64url character set: the same bytes, another spelling.
+func withDirtyBits(t *testing.T, token string) string {
+	t.Helper()
+	dot := strings.LastIndex(token, ".")
+	sig := token[dot+1:]
+	want, _ := base64.RawURLEncoding.DecodeString(sig)
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for _, c := range alphabet {
+		candidate := sig[:len(sig)-1] + string(c)
+		if candidate == sig {
+			continue
+		}
+		if got, err := base64.RawURLEncoding.DecodeString(candidate); err == nil && string(got) == string(want) {
+			return token[:dot+1] + candidate
+		}
+	}
+	t.Fatal("no other spelling of the signature decodes to the same bytes")
+	return ""
+}
+
 func identityFor(t *testing.T, issuer *testIssuer) identityConfig {
 	t.Helper()
 	keys, err := parseKeySet(issuer.keySet())
@@ -136,6 +179,11 @@ func TestVerifyTokenRefusals(t *testing.T) {
 		return c
 	}
 	good := issuer.mint(t, "rsa-1", nil, goodClaims(now))
+	exp := strconv.FormatInt(now.Add(time.Hour).Unix(), 10)
+	tamper := func(token string) string {
+		dot := strings.LastIndex(token, ".")
+		return token[:dot-1] + "x" + token[dot:]
+	}
 	for _, tc := range []struct {
 		name  string
 		token string
@@ -147,7 +195,26 @@ func TestVerifyTokenRefusals(t *testing.T) {
 		{"alg of another kind", issuer.mint(t, "rsa-1", map[string]any{"alg": "ES256"}, goodClaims(now)), `says alg "ES256"`},
 		{"critical header", issuer.mint(t, "rsa-1", map[string]any{"crit": []string{"b64"}}, goodClaims(now)), "critical extensions"},
 		{"another issuer's key", other.mint(t, "rsa-1", nil, goodClaims(now)), "signature does not verify"},
-		{"tampered payload", good[:strings.LastIndex(good, ".")-1] + "x" + good[strings.LastIndex(good, "."):], "signature does not verify"},
+		{"another issuer's EC key", other.mint(t, "ec-1", nil, goodClaims(now)), "signature does not verify"},
+		{"another issuer's Ed25519 key", other.mint(t, "ed-1", nil, goodClaims(now)), "signature does not verify"},
+		{"tampered payload", tamper(good), "signature does not verify"},
+		{"tampered payload under ES256", tamper(issuer.mint(t, "ec-1", nil, goodClaims(now))), "signature does not verify"},
+		{"tampered payload under EdDSA", tamper(issuer.mint(t, "ed-1", nil, goodClaims(now))), "signature does not verify"},
+		{"signature with its unused bits set", withDirtyBits(t, good), "signature is not canonical base64url"},
+		{"line break in the payload", good[:20] + "\n" + good[20:], "not canonical base64url"},
+		{"padded header", "=" + good, "header is not canonical base64url"},
+		{"audience by another case", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"other","AUD":"gateway:acme","exp":`+exp+`}`), "does not name this engine"},
+		{"subject twice", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"alice","sub":null,"aud":"gateway:acme","exp":`+exp+`}`), `duplicate member name "sub"`},
+		{"kid twice in the header", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"rsa-1","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"gateway:acme","exp":`+exp+`}`), `duplicate member name "kid"`},
+		{"expiry as a numeric string", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"gateway:acme","exp":"`+exp+`"}`), "expiry is not an integer"},
+		{"expiry as a float", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"gateway:acme","exp":`+exp+`.5}`), "token payload is not a JSON object this engine reads"},
+		{"not-before beyond the domain", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"gateway:acme","exp":`+exp+`,"nbf":9223372036854775807}`), "token payload is not a JSON object this engine reads"},
+		{"not-before at the edge of the domain", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"gateway:acme","exp":`+exp+`,"nbf":9007199254740991}`), "not yet valid"},
+		{"audience array with a null", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":[null,"gateway:acme"],"exp":`+exp+`}`), "audience is not a string or an array of strings"},
+		{"audience as an object", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":{"gateway:acme":true},"exp":`+exp+`}`), "audience is not a string or an array of strings"},
+		{"issuer as a number", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":7,"sub":"u","aud":"gateway:acme","exp":`+exp+`}`), "iss is not a string"},
+		{"alg as an array", issuer.mintRaw(t, "ec-1", `{"alg":["ES256"],"kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"gateway:acme","exp":`+exp+`}`), "alg is not a string"},
+		{"invalid UTF-8 in the payload", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, "{\"iss\":\"https://login.example\",\"sub\":\"u\xff\",\"aud\":\"gateway:acme\",\"exp\":"+exp+"}"), "token payload is not a JSON object this engine reads"},
 		{"wrong issuer", issuer.mint(t, "rsa-1", nil, with(func(c map[string]any) { c["iss"] = "https://evil.example" })), "not from the configured issuer"},
 		{"wrong audience", issuer.mint(t, "rsa-1", nil, with(func(c map[string]any) { c["aud"] = "gateway:other" })), "does not name this engine"},
 		{"audience array without it", issuer.mint(t, "rsa-1", nil, with(func(c map[string]any) { c["aud"] = []string{"a", "b"} })), "does not name this engine"},
@@ -158,7 +225,7 @@ func TestVerifyTokenRefusals(t *testing.T) {
 		{"not yet valid", issuer.mint(t, "rsa-1", nil, with(func(c map[string]any) { c["nbf"] = now.Add(time.Minute).Unix() })), "not yet valid"},
 		{"expiry not an integer", issuer.mint(t, "rsa-1", nil, with(func(c map[string]any) { c["exp"] = "soon" })), "expiry is not an integer"},
 		{"two parts", "a.b", "not three dot-separated parts"},
-		{"header not base64url", "!!.b.c", "header is not base64url"},
+		{"header not base64url", "!!.b.c", "header is not canonical base64url"},
 		{"header not an object", b64([]byte("[]")) + ".b.c", "header is not a JSON object"},
 		{"too long", strings.Repeat("a", maxTokenBytes+1), "longer than a token"},
 	} {
@@ -181,7 +248,7 @@ func TestParseKeySetRefusals(t *testing.T) {
 	small, _ := rsa.GenerateKey(rand.Reader, 1024)
 	for _, tc := range []struct{ name, set, want string }{
 		{"no keys", `{"keys":[]}`, "no keys"},
-		{"not a set", `[]`, "key set:"},
+		{"not a set", `[]`, "key set is not a JSON object"},
 		{"no kid", `{"keys":[{"kty":"OKP","crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, "has no kid"},
 		{"kid twice", `{"keys":[{"kty":"OKP","kid":"k","crv":"Ed25519","x":"` + b64(issuer.edPub) + `"},{"kty":"OKP","kid":"k","crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, `kid "k" appears twice`},
 		{"for encryption", `{"keys":[{"kty":"RSA","kid":"r","use":"enc","n":"` + rsaN + `","e":"` + rsaE + `"}]}`, `is for "enc", not signing`},
@@ -193,6 +260,17 @@ func TestParseKeySetRefusals(t *testing.T) {
 		{"OKP wrong size", `{"keys":[{"kty":"OKP","kid":"o","crv":"Ed25519","x":"AA"}]}`, "not an Ed25519 public key"},
 		{"unknown kty", `{"keys":[{"kty":"oct","kid":"s","k":"AA"}]}`, `has kty "oct"`},
 		{"alg not the kind's", `{"keys":[{"kty":"OKP","kid":"o","alg":"RS256","crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, `says alg "RS256"; its kind is for EdDSA`},
+		{"key operations without verify", `{"keys":[{"kty":"OKP","kid":"o","key_ops":["encrypt"],"crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, `is not for verifying (key_ops ["encrypt"])`},
+		{"key operations not strings", `{"keys":[{"kty":"OKP","kid":"o","key_ops":[1],"crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, "key_ops is not a string or an array of strings"},
+		{"use as a number", `{"keys":[{"kty":"OKP","kid":"o","use":1,"crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, "use is not a string"},
+		{"alg as an array", `{"keys":[{"kty":"OKP","kid":"o","alg":["EdDSA"],"crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, "alg is not a string"},
+		{"kid twice in one key", `{"keys":[{"kty":"OKP","kid":"o","kid":"p","crv":"Ed25519","x":"` + b64(issuer.edPub) + `"}]}`, `duplicate member name "kid"`},
+		{"keys not an array", `{"keys":{}}`, "keys is not an array"},
+		{"a key not an object", `{"keys":[1]}`, "key 0 is not an object"},
+		{"even RSA exponent", `{"keys":[{"kty":"RSA","kid":"r","n":"` + rsaN + `","e":"BA"}]}`, "exponent that is even or outside"},
+		{"RSA exponent beyond 2^31-1", `{"keys":[{"kty":"RSA","kid":"r","n":"` + rsaN + `","e":"` + b64([]byte{1, 0, 0, 0, 3}) + `"}]}`, "exponent that is even or outside"},
+		{"EC coordinate of 31 bytes", `{"keys":[{"kty":"EC","kid":"e","crv":"P-256","x":"` + b64(issuer.ecKey.X.FillBytes(make([]byte, 32))[1:]) + `","y":"` + b64(issuer.ecKey.Y.FillBytes(make([]byte, 32))) + `"}]}`, "coordinate that is not 32 bytes"},
+		{"padded base64 in a key", `{"keys":[{"kty":"OKP","kid":"o","crv":"Ed25519","x":"` + b64(issuer.edPub) + `="}]}`, "x is not base64url"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseKeySet([]byte(tc.set)); err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -202,6 +280,58 @@ func TestParseKeySetRefusals(t *testing.T) {
 	}
 	if keys, err := parseKeySet(issuer.keySet()); err != nil || len(keys) != 3 {
 		t.Fatalf("the issuer's set reads: %v %d", err, len(keys))
+	}
+	if keys, err := parseKeySet([]byte(`{"keys":[{"kty":"OKP","kid":"o","use":"sig","key_ops":["verify","sign"],"crv":"Ed25519","x":"` + b64(issuer.edPub) + `","x5c":["ignored"]}]}`)); err != nil || len(keys) != 1 {
+		t.Fatalf("key operations that include verify, and members not read, are allowed: %v", err)
+	}
+}
+
+// The identity a configuration names is what the service holds requests
+// to, through the same path serve takes: the configuration loaded, the
+// keys read at start, the options built, the service built.
+func TestConfiguredIdentityHoldsTheServiceThroughStart(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	issuer := newIssuer(t)
+	keys := filepath.Join(t.TempDir(), "keys.json")
+	if err := os.WriteFile(keys, issuer.keySet(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
+	cfg, _, err := load(t, engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"`+abs(t, keys)+`"}`, platformJSON(t, "warehouse", "postgres@"+digestOf(postgresBinding), "engine-warehouse", ``)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := loadIdentity(cfg.identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The test source stands in for the derived ones; the identity is
+	// what is under test.
+	sources := map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}}
+	service, err := buildService(cfg.store, testSeed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, identity))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(service.handler())
+	defer server.Close()
+	body := `{"session":"cfg-who-1","source":"screening","arguments":{"q":"x"}}`
+	if code, out := post(t, server, "/acquire", body); code != http.StatusUnauthorized {
+		t.Fatalf("without a token, through the configuration: %d %v", code, out)
+	}
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/acquire", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	token := issuer.mint(t, "ed-1", nil, goodClaims(time.Now()))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	json.NewDecoder(resp.Body).Decode(&out)
+	who, _ := out["receipt"].(map[string]any)["caller"].(map[string]any)
+	if resp.StatusCode != http.StatusOK || who["subject"] != "user-7" || who["tokenDigest"] != "sha256:"+hexOf([]byte(token)) {
+		t.Fatalf("with a token, the receipt names the caller: %d %v", resp.StatusCode, out)
 	}
 }
 

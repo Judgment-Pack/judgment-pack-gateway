@@ -258,6 +258,12 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if _, err := loadSeed(candidate.seed); err != nil {
 		return out, fmt.Errorf("seed: %v", err)
 	}
+	// The identity's key file, read as serve reads it at start, so a
+	// connect does not succeed where the next start would refuse; what
+	// is read is discarded.
+	if _, err := loadIdentity(candidate.identity); err != nil {
+		return out, err
+	}
 	// The paths serve makes, judged as serve would before making them.
 	if err := preflightPaths(candidate.store, candidate.registry, candidate.decisionRecords); err != nil {
 		return out, err
