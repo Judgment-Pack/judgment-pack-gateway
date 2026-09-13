@@ -103,3 +103,34 @@ jobs:
           go list -deps -f '{{.ImportPath}} {{.Dir}}' ./... \
             | awk -v core="$core" '$2 == core || index($2, core "/") == 1 { print "resolves into the core: " $0; bad = 1 } END { exit bad }'
           go list -deps ./... | grep -qx plugin && { echo "an adapter imports plugin"; exit 1; } || true
+
+  image:
+    name: engine image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The image is built from this commit and never pushed here; the
+      # release workflow is what publishes a digest. What is checked is that
+      # it builds from the pinned bases, and that the core inside it agrees
+      # with the frozen corpus it carries.
+      # BuildKit, stated rather than assumed: the legacy builder copies the
+      # gateway binary between stages without its capability attribute.
+      - name: Build
+        run: docker build --tag engine:ci .
+        env:
+          DOCKER_BUILDKIT: "1"
+      - name: The image's core agrees with the corpus it carries
+        run: docker run --rm engine:ci conform --corpus /usr/share/engine/corpus
+      # The capability travels as an attribute in the layer; a copy to the
+      # host would drop it, so the saved image's headers are read as they are.
+      - name: The signer binary holds exactly the three capabilities it needs, and nobody else may execute it
+        run: |
+          mkdir -p image && docker save engine:ci | tar -x -C image
+          python3 .github/capabilities.py image
+      - name: The image carries the adapters and the catalog
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp is not in the image"; exit 1; }
+          docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte is not in the image"; exit 1; }
+          docker run --rm -i --entrypoint /usr/local/bin/gateway engine:ci canon < catalog/postgres.json | grep -q '"bindingVersion":"1"' || { echo "the catalog is not read" ; exit 1; }
+          docker run --rm --entrypoint /usr/local/bin/gateway engine:ci serve --config /etc/engine/engine.json 2>&1 | grep -q 'engine configuration' || { echo "the image does not start the engine"; exit 1; }

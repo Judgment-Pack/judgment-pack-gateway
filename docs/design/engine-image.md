@@ -5,21 +5,45 @@
 
 ## What the image contains
 
+The `Dockerfile` at the repository root builds it: both modules with CGO disabled, so the
+binaries are static, on a base that carries no shell and no libc (distroless static), every
+base pinned by the digest of its manifest index as the catalog pins what it names. The three
+capabilities the signer needs to switch each adapter to its platform's user and stop it
+afterwards — `CAP_SETUID`, `CAP_SETGID`, `CAP_KILL` ([engine-config.md](engine-config.md)) — are
+file capabilities on the gateway binary, written in the builder stage by `build/setcap.go` as
+the kernel's own attribute, and nothing more: none that reads past permissions, none ambient or
+inheritable. Build with BuildKit, Docker's builder since 23.0: the legacy builder copies the
+binary between stages without that attribute, and the image it makes cannot switch a user,
+which is what CI's capability check exists to catch.
+
 | Path | What | Pinned how |
 |---|---|---|
-| `/usr/local/bin/gateway` | the core binary from `go/`: `serve`, `verify`, `canon`, `conform`, `keygen`, plus the engine's `connect` | built from this repository at the tagged commit |
+| `/usr/local/bin/gateway` | the core binary from `go/`: `serve`, `verify`, `canon`, `conform`, `keygen`, and the engine's `connect`; owned by `engine`, mode 0700, since it carries file capabilities | built from this repository at the tagged commit |
 | `/usr/local/bin/adapter-airbyte` | runs a connector image and reads its record stream | built from `adapters/` at the same commit |
 | `/usr/local/bin/adapter-mcp` | an MCP client: live reads and tool calls | same |
-| `/usr/local/bin/adapter-http` | the generic fallback | same |
-| `/usr/local/bin/executor` | performs an approved action through an adapter and returns the target's response bytes | same |
-| `/usr/local/bin/jpack` | the runtime | by the digest of the runtime release named in `RUNTIME_PIN` at the repository root |
-| `/usr/share/engine/catalog/` | the binding files | by content; each is referenced by digest from the configuration |
+| `/usr/share/engine/catalog/` | the binding files ([catalog/](../../catalog/README.md)) | by content; each is referenced by digest from the configuration |
 | `/usr/share/engine/corpus/` | the frozen corpus, so `gateway conform` runs inside the image | by content |
+| `/etc/passwd` | the signer's user `engine` (uid 65532) and eight platform users `engine-1` … `engine-8` (uids 65601 … 65608), each with a home of its own alone | written at build |
+
+Not yet in the image, and said so here rather than promised: `adapter-http` (the generic
+fallback the envelope contract names; not shipped by this release), an `executor` (nothing
+performs an action yet), the runtime `jpack` (no runtime pin exists yet), and a container
+runtime for the Airbyte connectors and MCP server images (the section below); the adapters
+find `docker` or `podman` on the engine's `PATH` or at the path the configuration names, which
+in this image means a runtime the deployment provides beside it.
 
 The image carries **no seed, no store, no registry, and no configuration**. All four live on a
-volume the operator mounts. A first run with no seed at the configured path generates one and
-prints the public key and key id, exactly as `keygen` does today, so pinning out of band stays
-the operator's explicit act.
+volume the operator mounts; the image's command is `serve --config /etc/engine/engine.json`,
+and it refuses to start until that file is there. A first run with no seed at the configured
+path is the operator's `keygen`, so pinning out of band stays the operator's explicit act. The
+platform users are a convention of the image: a configuration names one per platform, and an
+operator who needs more derives an image with more; the engine refuses a platform whose user is
+root, the signer's, or another platform's, whatever the image carries.
+
+CI builds the image from every commit and never pushes it: what it checks is that it builds
+from the pinned bases, that the core inside it agrees with the corpus it carries, that the
+gateway binary holds exactly its three capabilities, and that the adapters and the catalog are
+where the configuration expects them.
 
 ## The processes
 
