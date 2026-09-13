@@ -196,6 +196,9 @@ func main() {
 		readLink:     readLinkStub,
 		account:      stubAccounts(map[string]int{"engine-warehouse": 4242}),
 		switching:    stubSwitching(map[string]int{"engine-warehouse": 4242}, nil),
+		executable: func() (exeFacts, error) {
+			return exeFacts{path: "/usr/local/bin/gateway", mode: 0o700, capabilities: true}, nil
+		},
 	}
 	asSelf := func(ctx context.Context, spec sourceSpec) ([]byte, error) {
 		spec.user = ""

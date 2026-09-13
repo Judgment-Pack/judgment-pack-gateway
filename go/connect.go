@@ -19,6 +19,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -75,18 +76,59 @@ func cmdConnect(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	outcome, err := connect(ctx, req, osEngineHost(), runCheck)
-	for _, statement := range outcome.statements {
-		fmt.Fprintln(os.Stderr, "connect:", statement)
+	return printOutcome(os.Stdout, os.Stderr, req.platform, outcome, err)
+}
+
+// printOutcome writes what a connect produced -- each statement and each
+// answer as one line whatever the platform answered (printable), then the
+// error or what was written -- and returns the exit status.
+func printOutcome(stdout, stderr io.Writer, platform string, out connectOutcome, err error) int {
+	for _, statement := range out.statements {
+		fmt.Fprintln(stderr, "connect:", printable(statement))
 	}
-	for _, answer := range outcome.answers {
-		fmt.Fprintln(os.Stdout, answer)
+	for _, answer := range out.answers {
+		fmt.Fprintln(stdout, printable(answer))
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "connect:", err)
+		fmt.Fprintln(stderr, "connect:", printable(err.Error()))
 		return 1
 	}
-	fmt.Fprintf(os.Stdout, "%s: written to %s\n", req.platform, outcome.written)
+	fmt.Fprintf(stdout, "%s: written to %s\n", platform, printable(out.written))
 	return 0
+}
+
+// printable is text for one line of a terminal: every character that is
+// not graphic -- a newline, a carriage return, the escape that starts a
+// terminal control sequence, an invalid byte -- is written in its escaped
+// form, and a backslash as two, so what a platform or an adapter answered
+// cannot end the line, forge another, or move the cursor, and what is
+// printed reads back unambiguously. Applied after redaction, at the point
+// of printing, and nowhere else.
+func printable(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			fmt.Fprintf(&b, `\x%02x`, s[i])
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r == '\n':
+			b.WriteString(`\n`)
+		case r == '\r':
+			b.WriteString(`\r`)
+		case r == '\t':
+			b.WriteString(`\t`)
+		case unicode.IsGraphic(r):
+			b.WriteRune(r)
+		case r > 0xffff:
+			fmt.Fprintf(&b, `\U%08x`, r)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+		i += size
+	}
+	return b.String()
 }
 
 // parseConnectArgs reads the command line; the platform is the one
@@ -357,7 +399,7 @@ func runCheck(ctx context.Context, spec sourceSpec) ([]byte, error) {
 	stdout := &boundedBuffer{limit: checkMaxOutput, stop: cancel}
 	stderr := &boundedBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	if err := cmd.Start(); err != nil {
+	if err := group.start(cmd); err != nil {
 		group.reap()
 		return nil, fmt.Errorf("adapter could not be started: %v", err)
 	}

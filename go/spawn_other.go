@@ -23,6 +23,8 @@ type sourceGroup struct{}
 
 func (*sourceGroup) reap() {}
 
+func (*sourceGroup) start(cmd *exec.Cmd) error { return cmd.Start() }
+
 func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
 	if name != "" {
 		return nil, fmt.Errorf("running a source as user %q is not supported on this platform", name)

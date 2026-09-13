@@ -339,7 +339,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// is reported as that, with the operating system's own reason, rather
 	// than as an empty "source failed".
 	g.started.Add(1)
-	if err := cmd.Start(); err != nil {
+	if err := group.start(cmd); err != nil {
 		group.reap()
 		return nil, fmt.Errorf("source could not be started: %v", err)
 	}

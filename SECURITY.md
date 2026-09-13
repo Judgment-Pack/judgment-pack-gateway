@@ -167,7 +167,10 @@ gateway's, and `serve` refuses to start rather than fall back to running the sou
 when it cannot switch: root may switch, and so may a process that is not root but holds
 `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` on Linux as file capabilities, holding nothing
 ambient or inheritable and nothing that reads past permissions, which is how the engine runs its
-signer as a user of its own; a process stripped of the capability to switch passes the startup
+signer as a user of its own. A source run as another user is started held to the kernel's
+`no_new_privs` on Linux, which it inherits and cannot clear, so executing the gateway binary — or
+any set-user-id file — grants it nothing; and the engine refuses to start when its binary carries
+file capabilities and is executable by anyone but its owner. A process stripped of the capability to switch passes the startup
 check only where capabilities cannot be read, and fails at its first acquisition, where the
 operating system's reason is reported. **A
 source's stdout is bounded** (`--source-max-output`, one mebibyte by default) and its stderr is

@@ -152,6 +152,16 @@ engine refuses to start under a configuration the isolation claim of
   per thread and cannot be verified for every thread the engine spawns from: the three
   capabilities are held as file capabilities on the gateway binary, which put them in the
   permitted and effective sets and nowhere else, and anything else is refused;
+- the **gateway binary itself carrying file capabilities while executable by others**: a
+  platform user's process that executed it would take them up and switch to the signer; it must
+  be executable by its owner alone (the image gives it mode 0700). Besides, every source that
+  runs as a platform's user is started held to the kernel's `no_new_privs`, which it inherits
+  and can never clear: an `execve` then grants it no privilege it does not have — no file
+  capability, no set-user-id bit — so an adapter cannot regain the signer's capabilities by
+  executing the gateway binary, nor anything else. The limit that buys: a source that must
+  itself gain privilege on exec, such as a rootless container runtime that needs `newuidmap`,
+  cannot run as a switched source; the runtime an adapter uses is one that listens on a socket
+  the platform user may reach;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
   the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),

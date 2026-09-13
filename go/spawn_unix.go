@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,8 +44,9 @@ func init() {
 // group would then reach. The anchor exists so that no kill is ever sent to
 // a group whose leader is gone.
 type sourceGroup struct {
-	anchor *exec.Cmd
-	stdin  io.Closer
+	anchor   *exec.Cmd
+	stdin    io.Closer
+	switched bool // the source runs as another user, and is started held (start)
 }
 
 // startAnchor runs this executable's own image where the kernel exposes it
@@ -107,6 +109,7 @@ func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
 			return nil, err
 		}
 		attr.Credential = credential
+		group.switched = true
 	}
 	cmd.SysProcAttr = attr
 	cmd.Cancel = func() error {
@@ -114,6 +117,28 @@ func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
 		return nil
 	}
 	return group, nil
+}
+
+// start starts the source. One that runs as another user is started from
+// a thread held to no_new_privs (denyNewPrivilegesHere), which the forked
+// process inherits and can never clear: an execve then grants it no
+// privilege it does not have, so it cannot take up the gateway's own file
+// capabilities by executing the gateway binary, nor a set-user-id bit on
+// any other file. The thread is held for the fork alone and stays marked
+// afterwards, which affects nothing but what it forks. The limit this
+// buys, stated in the design note: a source that must itself gain
+// privilege on exec -- a rootless container runtime that needs newuidmap,
+// say -- cannot run as a switched source.
+func (g *sourceGroup) start(cmd *exec.Cmd) error {
+	if !g.switched {
+		return cmd.Start()
+	}
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := denyNewPrivilegesHere(); err != nil {
+		return fmt.Errorf("holding the source to no_new_privs: %v", err)
+	}
+	return cmd.Start()
 }
 
 func lookupCredential(name string) (*syscall.Credential, error) {

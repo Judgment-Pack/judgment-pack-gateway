@@ -72,5 +72,6 @@ func osEngineHost() engineHost {
 		readLink:     os.Readlink,
 		account:      accountOf,
 		switching:    requireUserSwitching,
+		executable:   executableFacts,
 	}
 }

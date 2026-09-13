@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -367,6 +368,28 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	if statements, err := engineRefusals(ptr(accepted), host(0, asRoot, noSockets, noCaps)); err != nil || len(statements) != 1 || !strings.Contains(statements[0], "rootSigner accepted") {
 		t.Fatalf("an accepted root signer starts with a statement: %v %v", err, statements)
 	}
+	// The binary itself: with file capabilities, executable by its owner
+	// alone; without them, its mode is nobody's concern here.
+	exe := func(mode os.FileMode, capabilities bool) engineHost {
+		h := host(1000, good, noSockets, noCaps)
+		h.executable = func() (exeFacts, error) {
+			return exeFacts{path: "/usr/local/bin/gateway", mode: mode, capabilities: capabilities}, nil
+		}
+		return h
+	}
+	expect("a capability-bearing binary others may execute", exe(0o755, true), cfg, "carries file capabilities and is executable by others (mode 0755)")
+	expect("a capability-bearing binary the group may execute", exe(0o710, true), cfg, "executable by others (mode 0710)")
+	for _, h := range []engineHost{exe(0o700, true), exe(0o755, false)} {
+		if _, err := engineRefusals(ptr(cfg), h); err != nil {
+			t.Fatalf("a binary others cannot execute, or one without capabilities: %v", err)
+		}
+	}
+	asRootExe := exe(0o755, true)
+	asRootExe.euid, asRootExe.fileOwner = 0, asRoot.owner
+	expect("root's capability-bearing binary others may execute", asRootExe, accepted, "carries file capabilities and is executable by others")
+	failing := host(1000, good, noSockets, noCaps)
+	failing.executable = func() (exeFacts, error) { return exeFacts{}, errors.New("stat: gone") }
+	expect("a binary that cannot be looked at", failing, cfg, "the gateway binary: stat: gone")
 	expect("effective DAC capability", host(1000, good, noSockets, func() capabilitySets {
 		return capabilitySets{known: true, effective: three | 1<<capDacOverride, permitted: three}
 	}), cfg, "CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH")

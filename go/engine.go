@@ -88,6 +88,17 @@ type engineHost struct {
 	// users they name -- the requirement serve holds every source to
 	// at start (requireUserSwitching) -- or nil.
 	switching func(sources map[string]sourceSpec) error
+	// executable is this binary as the kernel sees it (exeFacts).
+	executable func() (exeFacts, error)
+}
+
+// exeFacts is what the engine knows about its own binary: its path, its
+// permission bits, and whether it carries file capabilities, which make it
+// a file that grants privilege to whoever executes it.
+type exeFacts struct {
+	path         string
+	mode         os.FileMode
+	capabilities bool
 }
 
 type fileOwnership struct {
@@ -771,7 +782,8 @@ func capabilityRefusal(sets capabilitySets) error {
 // platform's; no credentials file, and no directory on the way to one, can
 // be read or replaced by anyone but its owner and root; the signer holds no
 // capability that reads past permissions and none an adapter could take
-// up. A signer that holds CAP_SETUID can assume any
+// up, and its binary, where it carries file capabilities, is executable by
+// nobody else. A signer that holds CAP_SETUID can assume any
 // user, so a compromised signer is not held out of credentials by this;
 // the design note says which separation would.
 func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
@@ -787,6 +799,21 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 	} else if host.capabilities != nil {
 		if err := capabilityRefusal(host.capabilities()); err != nil {
 			return nil, err
+		}
+	}
+	// The gateway binary itself, when it carries file capabilities: a
+	// process that executes it takes them up, so it must be executable by
+	// its owner alone. Every switched source is held to no_new_privs
+	// besides (sourceGroup.start), which denies the same to anything the
+	// engine started; this holds it against a platform user's process
+	// that the engine did not start.
+	if host.executable != nil {
+		exe, err := host.executable()
+		if err != nil {
+			return nil, fmt.Errorf("the gateway binary: %v", err)
+		}
+		if exe.capabilities && exe.mode&0o011 != 0 {
+			return nil, fmt.Errorf("the gateway binary %s carries file capabilities and is executable by others (mode %04o): a platform user's process that executed it would take them up; make it executable by the signer alone (chmod 0700)", exe.path, exe.mode)
 		}
 	}
 	// The seed's own file is held by loadSeed; the directories on the way

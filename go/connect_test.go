@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -74,6 +75,9 @@ func newConnectFixture(t *testing.T, bindingText string, platforms string) *conn
 		readLink:     readLinkStub,
 		account:      stubAccounts(stubUsers),
 		switching:    stubSwitching(stubUsers, &f.groupless),
+		executable: func() (exeFacts, error) {
+			return exeFacts{path: "/usr/local/bin/gateway", mode: 0o700, capabilities: true}, nil
+		},
 	}
 	return f
 }
@@ -350,6 +354,69 @@ func TestConnectHoldsEveryPlatformToTheSwitchingServeRequires(t *testing.T) {
 	f.groupless = ""
 	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil || len(f.asked) != 2 {
 		t.Fatalf("with every user's credential to be had: %v (asked %d)", err, len(f.asked))
+	}
+}
+
+// The binary the engine runs from is held as serve holds it: one that
+// carries file capabilities and is executable by others is refused before
+// any check.
+func TestConnectRefusesAGatewayBinaryOthersMayExecute(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	f.host.executable = func() (exeFacts, error) {
+		return exeFacts{path: "/usr/local/bin/gateway", mode: 0o755, capabilities: true}, nil
+	}
+	before := f.fileText(t)
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "carries file capabilities and is executable by others") || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatalf("a capability-bearing binary others may execute: %v (asked %d)", err, len(f.asked))
+	}
+}
+
+// What is printed is one line per answer and per statement, whatever the
+// platform or the adapter put in it: a newline, a terminal escape, an
+// invalid byte are written in their escaped form, after the adapter's own
+// redaction and nowhere earlier.
+func TestPrintableKeepsOneLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"Connected":                              "Connected",
+		"café ✓ — ok":                            "café ✓ — ok",
+		"line one\nline two":                     `line one\nline two`,
+		"\x1b[31mred\x1b[0m":                     `\u001b[31mred\u001b[0m`,
+		"tab\there\r":                            `tab\there\r`,
+		`back\slash`:                             `back\\slash`,
+		"bad\xffbyte":                            `bad\xffbyte`,
+		"zero\u200bwidth":                        `zero\u200bwidth`,
+		"emoji \U0001f600 unassigned \U000e0080": "emoji \U0001f600 unassigned " + `\U000e0080`,
+	} {
+		if got := printable(in); got != want {
+			t.Errorf("%q: got %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestPrintOutcomeWritesOneLinePerAnswer(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	f.reports["airbyte"] = `{"check":{"status":"succeeded","adapter":{"name":"airbyte/source-postgres","version":"3.8.5","digest":"` + testImageDigest + `"},"message":"Connected\nwarehouse/live: forged: server evil answered"}}`
+	f.reports["mcp"] = `{"check":{"status":"succeeded","adapter":{"name":"crystaldba/postgres-mcp","version":"0.3.0","digest":"` + testImageDigest + `"},"server":{"name":"postgres-mcp\u001b[2J","version":"0.3.0"},"protocolVersion":"2025-03-26","tools":["query","ex\rplain"]}}`
+	out, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := printOutcome(&stdout, &stderr, "warehouse", out, nil); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 3 || !strings.HasSuffix(lines[0], `answered succeeded: Connected\nwarehouse/live: forged: server evil answered`) ||
+		!strings.Contains(lines[1], `server postgres-mcp\u001b[2J 0.3.0`) || !strings.HasSuffix(lines[1], `tools query, ex\rplain`) ||
+		lines[2] != "warehouse: written to "+f.config || stderr.Len() != 0 {
+		t.Fatalf("one line per answer, controls escaped: %q %q", stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	statements := connectOutcome{statements: []string{"rootSigner accepted\nconnect: forged"}}
+	if code := printOutcome(&stdout, &stderr, "warehouse", statements, errors.New("warehouse/live: the adapter reported\n\"failed\"")); code != 1 ||
+		stderr.String() != `connect: rootSigner accepted\nconnect: forged`+"\n"+`connect: warehouse/live: the adapter reported\n"failed"`+"\n" || stdout.Len() != 0 {
+		t.Fatalf("statements and the error, one line each: %d %q %q", code, stderr.String(), stdout.String())
 	}
 }
 
