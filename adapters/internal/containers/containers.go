@@ -37,7 +37,7 @@ const (
 // container runtime: its stdout a stream the caller drains, its stdin a
 // pipe the caller writes when it asked for one.
 type Container struct {
-	redact func(string) string
+	redact func(text string, truncated bool) string
 	// Name is the name the container was run under.
 	Name string
 	// Stdout is the container's standard output, closed with the context.
@@ -69,9 +69,11 @@ type Spec struct {
 	Args    []string
 	Stdin   bool
 	// Redact is applied to everything the runtime or the container wrote
-	// before any of it is cut to a line or a length for a diagnostic, so
-	// a credential longer than the cut, or spanning lines, still matches.
-	Redact func(string) string
+	// before any of it is cut to a line for a diagnostic, so a credential
+	// longer than the cut, or spanning lines, still matches; truncated
+	// says the buffer overflowed, so what ends it may be the start of a
+	// credential whose rest was dropped.
+	Redact func(text string, truncated bool) string
 }
 
 // startContainer writes files into a private directory, mounts it read-only
@@ -169,7 +171,7 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 	}()
 	redactor := spec.Redact
 	if redactor == nil {
-		redactor = func(text string) string { return text }
+		redactor = func(text string, truncated bool) string { return text }
 	}
 	return &Container{Name: name, Stdout: stdout, Stdin: stdin, runtime: runtime, dir: dir, cmd: cmd, stderr: stderr, ctx: runCtx, cancel: cancel, redact: redactor}, nil
 }
@@ -252,7 +254,7 @@ func (c *Container) stopByName() error {
 	case SaysAbsent(answer.String(), c.Name):
 		return nil // absent: it ended on its own, and --rm removed it
 	}
-	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.Name, c.runtime, firstLineOf(c.redact(answer.String()), err))
+	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.Name, c.runtime, firstLineOf(c.redact(answer.String(), answer.overflowed()), err))
 }
 
 // SaysAbsent reports whether an inspect's answer is the runtime saying the
@@ -291,7 +293,7 @@ const DiagnosticBytes = 64 << 10
 // FirstLine is the first line of what the connector wrote on stderr,
 // redacted before the cut, for an error message; never the whole of it.
 func (c *Container) FirstLine() string {
-	text := c.redact(c.stderr.String())
+	text := c.redact(c.stderr.String(), c.stderr.overflowed())
 	for i, r := range text {
 		if r == '\n' {
 			return text[:i]
@@ -305,15 +307,20 @@ func (c *Container) FirstLine() string {
 // write would have os/exec's copier stop and close the pipe on the child.
 // It is written by that copier and read for a diagnostic, so it locks.
 type boundedBuffer struct {
-	mu    sync.Mutex
-	limit int
-	buf   []byte
+	mu      sync.Mutex
+	limit   int
+	buf     []byte
+	dropped bool
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if room := b.limit - len(b.buf); room > 0 {
+	room := b.limit - len(b.buf)
+	if room < len(p) {
+		b.dropped = true
+	}
+	if room > 0 {
 		kept := p
 		if len(kept) > room {
 			kept = kept[:room]
@@ -321,6 +328,13 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		b.buf = append(b.buf, kept...)
 	}
 	return len(p), nil
+}
+
+// overflowed reports whether anything written was dropped.
+func (b *boundedBuffer) overflowed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped
 }
 
 func (b *boundedBuffer) String() string {

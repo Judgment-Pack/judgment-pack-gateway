@@ -31,17 +31,12 @@ func TestStoppingACommandReachesItsDescendants(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
-		if err != nil || strings.Contains(string(stat), ") Z ") {
-			return // gone, or a zombie its parent has yet to reap
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the descendant %d survived the check with the credentials: %s", pid, stat)
-		}
-		time.Sleep(20 * time.Millisecond)
+	// Gone, and reaped: the stop rescans until no descendant is alive
+	// and reaps the ones it adopted, so nothing of it is left in /proc.
+	if stat, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat"); err == nil {
+		t.Fatalf("the descendant %d survived the check with the credentials, or was left unreaped: %s", pid, stat)
 	}
+	_ = time.Second
 }
 
 // A command server stays in the adapter's own process group -- under the

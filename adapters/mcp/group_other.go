@@ -6,6 +6,6 @@ package mcp
 // when it is stopped: --image is the shape that keeps the lifecycle under
 // a name, and under the gateway the source group's kill reaches what
 // stayed in the group.
-func adoptOrphans() {}
+func adoptOrphans() error { return nil }
 
-func killDescendants() {}
+func killDescendants() error { return nil }

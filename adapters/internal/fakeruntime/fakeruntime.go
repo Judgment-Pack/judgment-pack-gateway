@@ -34,8 +34,10 @@ const (
 	// EnvCheck names a file whose contents are the connector's stdout for
 	// check.
 	EnvCheck = "AIRBYTE_FAKE_CHECK"
-	// EnvStderr is written to stderr by every run.
-	EnvStderr = "AIRBYTE_FAKE_STDERR"
+	// EnvStderr is written to stderr by every run; EnvStderrFile names a
+	// file whose contents are, for text too long for a variable.
+	EnvStderr     = "AIRBYTE_FAKE_STDERR"
+	EnvStderrFile = "AIRBYTE_FAKE_STDERR_FILE"
 	// EnvExit is the exit status of every run, 0 when unset.
 	EnvExit = "AIRBYTE_FAKE_EXIT"
 	// EnvHang makes a read sleep after its output until it is killed.
@@ -186,6 +188,10 @@ func Run(args []string) int {
 		os.Stdout.Write(out)
 		if text := os.Getenv(EnvStderr); text != "" {
 			os.Stderr.WriteString(text)
+		}
+		if path := os.Getenv(EnvStderrFile); path != "" {
+			data, _ := os.ReadFile(path)
+			os.Stderr.Write(data)
 		}
 		if inv.Verb == "read" && (os.Getenv(EnvHold) == "1" || os.Getenv(EnvHoldStderr) == "1") {
 			child := exec.Command(os.Args[0])

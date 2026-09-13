@@ -39,3 +39,25 @@ func TestSecretsOfQueryWithoutUserInfoAndNestedNumbers(t *testing.T) {
 		t.Fatalf("redaction: %q from %v", got, secrets)
 	}
 }
+
+func TestTrimPartialSecret(t *testing.T) {
+	secrets := []string{"hunter2", "abcabd", "k"}
+	for text, want := range map[string]string{
+		"refused: hunt":    "refused: ",
+		"refused: hunter2": "refused: hunter2", // whole, not partial: Redact's job
+		"refused: hunter":  "refused: ",
+		"no trace here":    "no trace here",
+		"x abcab":          "x ",
+		"x abcabcab":       "x abc",
+		"ends with h":      "ends with ",
+		"":                 "",
+		"ab":               "",
+	} {
+		if got := TrimPartialSecret(text, secrets); got != want {
+			t.Errorf("%q: got %q, want %q", text, got, want)
+		}
+	}
+	if got := TrimPartialSecret("anything", nil); got != "anything" {
+		t.Errorf("no secrets: %q", got)
+	}
+}

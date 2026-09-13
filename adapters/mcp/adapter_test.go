@@ -41,7 +41,7 @@ func fake(t *testing.T) Config {
 	for _, name := range []string{fakemcp.EnvTools, fakemcp.EnvResult, fakemcp.EnvHang, fakemcp.EnvExitBeforeCall, fakemcp.EnvStderr,
 		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck,
 		fakemcp.EnvPing, fakemcp.EnvWrongID, fakemcp.EnvHoldStdin, fakemcp.EnvConflict, fakemcp.EnvExitAtStart, fakemcp.EnvProtocol, fakemcp.EnvNoTools,
-		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw, fakemcp.EnvListLine} {
+		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw, fakemcp.EnvListLine, fakemcp.EnvStderrFile, fakemcp.EnvRequire} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")
@@ -363,11 +363,11 @@ func TestAcquireRefusals(t *testing.T) {
 	t.Run("credentials not an object of strings", func(t *testing.T) {
 		cfg := fake(t)
 		os.WriteFile(cfg.Credentials, []byte(`{"PORT":5432}`), 0o600)
-		mustFail(t, cfg, query("select 1"), "not a JSON object of strings")
+		mustFail(t, cfg, query("select 1"), "credentials member 'PORT' is not a string")
 		os.WriteFile(cfg.Credentials, []byte(`{"KEY":"a\nb"}`), 0o600)
-		mustFail(t, cfg, query("select 1"), `credentials member "KEY" cannot be carried`)
+		mustFail(t, cfg, query("select 1"), "credentials member 'KEY' has a value an environment cannot carry")
 		os.WriteFile(cfg.Credentials, []byte(`{"A=B":"x"}`), 0o600)
-		mustFail(t, cfg, query("select 1"), `credentials member "A=B" cannot be carried`)
+		mustFail(t, cfg, query("select 1"), "credentials member 'A=B' is not an environment variable name")
 	})
 	t.Run("neither or both servers", func(t *testing.T) {
 		cfg := fake(t)
@@ -623,6 +623,9 @@ func TestCheckReportsTheServerAndItsTools(t *testing.T) {
 	cfg := image(fake(t))
 	cfg.Args = []string{"--access-mode=restricted"}
 	cfg.Tools = []string{"query"}
+	// The server answers only with its credential in the env file it was
+	// run with: a check that did not hand it over does not succeed.
+	t.Setenv(fakemcp.EnvRequire, "PGSSLMODE=require")
 	out, err := Check(context.Background(), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -648,6 +651,8 @@ func TestCheckReportsTheServerAndItsTools(t *testing.T) {
 
 func TestCheckListsEveryPage(t *testing.T) {
 	cfg := fake(t)
+	// As a command, the credential must be in the server's environment.
+	t.Setenv(fakemcp.EnvRequire, "PGSSLMODE=require")
 	tools := filepath.Join(t.TempDir(), "tools.json")
 	if err := os.WriteFile(tools, []byte(`[{"name":"query","inputSchema":{"type":"object"}},{"name":"other","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
 		t.Fatal(err)
@@ -938,5 +943,68 @@ func TestStderrIsRedactedBeforeItIsCut(t *testing.T) {
 	_, err := Check(context.Background(), cfg)
 	if err == nil || !strings.Contains(err.Error(), "refused: [redacted]") || strings.Contains(err.Error(), strings.Repeat("k", 64)) {
 		t.Fatalf("redacted whole: %.120v", err)
+	}
+}
+
+func TestATruncatedDiagnosticDoesNotEndWithTheStartOfACredential(t *testing.T) {
+	// The server writes more than the buffer holds, and a credential
+	// begins just before the cut: what remains of it is cut off too.
+	cfg := fake(t)
+	secret := strings.Repeat("k", 70000) // longer than the buffer holds
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	text := filepath.Join(t.TempDir(), "stderr.txt")
+	if err := os.WriteFile(text, []byte("refused: "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvStderrFile, text)
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "initialize: refused: ") || strings.Contains(err.Error(), "kkkkkkkk") {
+		t.Fatalf("the start of the credential is cut off: %.120v", err)
+	}
+}
+
+func TestCredentialsAreHeldToWhatAnEnvironmentCarries(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{`{"TOKEN":"hunter2\r"}`, "has a value an environment cannot carry"},
+		{`{"TOKEN":"a\nb"}`, "has a value an environment cannot carry"},
+		{`{"#TOKEN":"x"}`, "is not an environment variable name"},
+		{`{" TOKEN":"x"}`, "is not an environment variable name"},
+		{`{"TO KEN":"x"}`, "is not an environment variable name"},
+		{`{"1TOKEN":"x"}`, "is not an environment variable name"},
+		{`{"TO=KEN":"x"}`, "is not an environment variable name"},
+		{`{"TOKEN":null}`, "is not a string"},
+		{`{"TOKEN":1}`, "is not a string"},
+		{`{"TOKEN":["x"]}`, "is not a string"},
+		{`null`, "is not a JSON object of strings"},
+		{`[]`, "is not a JSON object of strings"},
+		{`"x"`, "is not a JSON object of strings"},
+		{`{"a":"1","\u0061":"2"}`, "not JSON: duplicate member name 'a'"},
+		{`{"a":"\xff"}`, "credentials file is not JSON"},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			cfg := fake(t)
+			credentials := filepath.Join(t.TempDir(), "credentials.json")
+			if err := os.WriteFile(credentials, []byte(tc.text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Credentials = credentials
+			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+	cfg := fake(t)
+	big := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(big, []byte(`{"TOKEN":"`+strings.Repeat("k", 1<<20)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = big
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file exceeds 1 MiB") {
+		t.Fatalf("bounded: %v", err)
 	}
 }

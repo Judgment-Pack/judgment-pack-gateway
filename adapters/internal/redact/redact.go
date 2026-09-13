@@ -6,7 +6,11 @@ package redact
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 )
@@ -148,4 +152,93 @@ func Redact(text string, secrets []string) string {
 		return out.String()[:MaxDiagnostic] + "…"
 	}
 	return out.String()
+}
+
+// MaxCredentialBytes bounds a credentials file: a diagnostic buffer holds
+// less than this, and a value that could not fit one whole is not let in.
+const MaxCredentialBytes = 1 << 20
+
+// ReadCredentials reads a credentials file of at most MaxCredentialBytes.
+func ReadCredentials(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("credentials could not be read: %w", err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, MaxCredentialBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("credentials could not be read: %w", err)
+	}
+	if len(data) > MaxCredentialBytes {
+		return nil, errors.New("credentials file exceeds 1 MiB")
+	}
+	return data, nil
+}
+
+// TrimPartialSecret cuts from the end of a text that was truncated any
+// suffix that is a proper prefix of a secret: what was cut off may have
+// been the rest of it, and the start of a credential is a leak of it.
+// Applied before Redact, on the text as written.
+func TrimPartialSecret(text string, secrets []string) string {
+	cut := 0
+	for _, s := range secrets {
+		if k := longestPrefixAtEnd(text, s); k > cut {
+			cut = k
+		}
+	}
+	return text[:len(text)-cut]
+}
+
+// longestPrefixAtEnd is the length of the longest proper prefix of s that
+// text ends with, found by running s's prefix automaton over the tail of
+// text: linear in the two lengths.
+func longestPrefixAtEnd(text, s string) int {
+	if len(s) < 2 {
+		return 0
+	}
+	pattern := s[:len(s)-1]
+	// The failure table: fail[i] is the length of the longest proper
+	// prefix of pattern[:i+1] that is also its suffix.
+	fail := make([]int, len(pattern))
+	for i, k := 1, 0; i < len(pattern); i++ {
+		for k > 0 && pattern[i] != pattern[k] {
+			k = fail[k-1]
+		}
+		if pattern[i] == pattern[k] {
+			k++
+		}
+		fail[i] = k
+	}
+	tail := text
+	if len(tail) > len(pattern) {
+		tail = tail[len(tail)-len(pattern):]
+	}
+	k := 0
+	for i := 0; i < len(tail); i++ {
+		for k > 0 && tail[i] != pattern[k] {
+			k = fail[k-1]
+		}
+		if tail[i] == pattern[k] {
+			k++
+		}
+		if k == len(pattern) {
+			// The whole proper prefix matched somewhere in the tail;
+			// only a match ending at the end counts, so keep scanning.
+			k = fail[k-1]
+			if i == len(tail)-1 {
+				return len(pattern)
+			}
+		}
+	}
+	return k
+}
+
+// MalformedCredentials says a credentials file is not well-formed JSON,
+// naming a duplicate member -- structure, not a value -- and echoing
+// nothing else of the file: a syntax error's detail quotes what it found.
+func MalformedCredentials(err error) error {
+	if strings.Contains(err.Error(), "duplicate member name") {
+		return fmt.Errorf("credentials file is not JSON: %v", err)
+	}
+	return errors.New("credentials file is not JSON")
 }

@@ -88,6 +88,13 @@ const (
 	// EnvListLine names a file whose contents are the whole line written
 	// in answer to tools/list, with {id} replaced by the request's id.
 	EnvListLine = "MCP_FAKE_LIST_LINE"
+	// EnvStderrFile names a file whose contents are written to stderr at
+	// start, for text too long for a variable.
+	EnvStderrFile = "MCP_FAKE_STDERR_FILE"
+	// EnvRequire is a KEY=VALUE the server requires -- in its environment
+	// as a command, in the env file it was run with as an image -- or it
+	// ends before answering, as a server without its credential would.
+	EnvRequire = "MCP_FAKE_REQUIRE"
 
 	envSleep = "MCP_FAKE_SLEEP"
 )
@@ -100,6 +107,9 @@ type Invocation struct {
 }
 
 // Run acts as the runtime when args name a runtime verb, else as the server.
+// envFile is what the runtime form was handed as --env-file.
+var envFile string
+
 func Run(args []string) int {
 	if len(args) > 0 {
 		switch args[0] {
@@ -125,6 +135,7 @@ func Run(args []string) int {
 				if a == "--env-file" && i+1 < len(args) {
 					data, _ := os.ReadFile(args[i+1])
 					inv.EnvFile = string(data)
+					envFile = inv.EnvFile
 				}
 			}
 			line, _ := json.Marshal(map[string]any{"run": inv})
@@ -143,8 +154,19 @@ func serve() int {
 	if text := os.Getenv(EnvStderr); text != "" {
 		os.Stderr.WriteString(text)
 	}
+	if path := os.Getenv(EnvStderrFile); path != "" {
+		data, _ := os.ReadFile(path)
+		os.Stderr.Write(data)
+	}
 	if os.Getenv(EnvExitAtStart) == "1" {
 		return 1
+	}
+	if required := os.Getenv(EnvRequire); required != "" {
+		key, value, _ := strings.Cut(required, "=")
+		if os.Getenv(key) != value && !strings.Contains(envFile, key+"="+value+"\n") {
+			os.Stderr.WriteString("credential missing\n")
+			return 1
+		}
 	}
 	env := map[string]string{}
 	for _, key := range strings.Split(os.Getenv(EnvEnvKeys), ",") {

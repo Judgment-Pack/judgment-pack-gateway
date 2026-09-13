@@ -32,7 +32,15 @@ type server struct {
 // beside this process's own environment, which is what the operator
 // declared for the adapter and what a command like npx needs.
 func startServer(ctx context.Context, cfg Config, env, secrets []string) (*server, error) {
-	redactor := func(s string) string { return redact.Redact(s, secrets) }
+	// Everything a server or a runtime wrote is redacted before it is
+	// cut; when the buffer overflowed, what ends it may be the start of
+	// a credential whose rest was dropped, and that is cut off first.
+	redactor := func(text string, truncated bool) string {
+		if truncated {
+			text = redact.TrimPartialSecret(text, secrets)
+		}
+		return redact.Redact(text, secrets)
+	}
 	if cfg.Image != "" {
 		image, err := containers.ParseImage(cfg.Image)
 		if err != nil {
@@ -74,7 +82,10 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 	// -- the gateway's, when this adapter is ended -- reaches it and what
 	// it started; what it leaves behind is adopted here (Linux) and
 	// reached when it is stopped.
-	adoptOrphans()
+	if err := adoptOrphans(); err != nil {
+		cancel()
+		return nil, err
+	}
 	stderr := &boundedBuffer{limit: containers.DiagnosticBytes}
 	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
@@ -128,8 +139,10 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 			<-done
 		}
 		cancel()
-		killDescendants()
-		return nil
+		// A descendant that could not be established gone fails the
+		// stop, and with it the check or the acquisition: it may hold
+		// the credentials.
+		return killDescendants()
 	}
 	return &server{stdin: stdin, stdout: stdout, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
 		identity: adapterIdentity{Name: cfg.Command[0], Digest: digest}}, nil
@@ -160,15 +173,20 @@ func executableDigest(path string) (string, error) {
 // boundedBuffer keeps the first limit bytes and reports every write whole.
 // It is written by os/exec's copier and read for a diagnostic, so it locks.
 type boundedBuffer struct {
-	mu    sync.Mutex
-	limit int
-	buf   []byte
+	mu      sync.Mutex
+	limit   int
+	buf     []byte
+	dropped bool
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if room := b.limit - len(b.buf); room > 0 {
+	room := b.limit - len(b.buf)
+	if room < len(p) {
+		b.dropped = true
+	}
+	if room > 0 {
 		kept := p
 		if len(kept) > room {
 			kept = kept[:room]
@@ -180,9 +198,9 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 
 // firstLine is the first line of what was written, redacted before the
 // cut so a credential longer than a line, or spanning lines, is matched.
-func (b *boundedBuffer) firstLine(redactor func(string) string) string {
+func (b *boundedBuffer) firstLine(redactor func(string, bool) string) string {
 	b.mu.Lock()
-	text := redactor(string(b.buf))
+	text := redactor(string(b.buf), b.dropped)
 	b.mu.Unlock()
 	for i, r := range text {
 		if r == '\n' {

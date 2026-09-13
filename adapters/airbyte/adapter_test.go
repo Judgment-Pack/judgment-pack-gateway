@@ -1010,3 +1010,57 @@ func TestStderrIsRedactedBeforeTheFirstLineIsCut(t *testing.T) {
 		t.Fatalf("the runtime's answer is redacted whole: %.160v", err)
 	}
 }
+
+func TestConfigIsHeldToOneReadingAndOneSize(t *testing.T) {
+	cfg := checkFake(t, checkSucceeded)
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"password":"first-secret","\u0070assword":"second-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file is not JSON: duplicate member name 'password'") {
+		t.Fatalf("a duplicate member, spelled with an escape, is refused: %v", err)
+	}
+	for _, text := range []string{`[]`, `"x"`, `null`, `{"a":"\xff"}`} {
+		if err := os.WriteFile(cfg.Credentials, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file is not") {
+			t.Fatalf("%s: %v", text, err)
+		}
+		if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "credentials file is not") {
+			t.Fatalf("acquire %s: %v", text, err)
+		}
+	}
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"`+strings.Repeat("h", 1<<20)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file exceeds 1 MiB") {
+		t.Fatalf("bounded: %v", err)
+	}
+}
+
+func TestATruncatedConnectorDiagnosticDoesNotEndWithTheStartOfACredential(t *testing.T) {
+	cfg := checkFake(t, checkSucceeded)
+	secret := strings.Repeat("k", 70000) // longer than the buffer holds
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","password":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text := filepath.Join(t.TempDir(), "stderr.txt")
+	if err := os.WriteFile(text, []byte("refused: "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvStderrFile, text)
+	t.Setenv(fakeruntime.EnvExit, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "connector check failed: refused: ") || strings.Contains(err.Error(), "kkkkkkkk") {
+		t.Fatalf("the start of the credential is cut off: %.120v", err)
+	}
+}
+
+func TestACheckWithoutAStatusReportsWhatTheConnectorSaid(t *testing.T) {
+	cfg := checkFake(t, `{"type":"LOG","log":{"level":"INFO","message":"checking"}}`+"\n")
+	t.Setenv(fakeruntime.EnvStderr, "authentication failed for app with hunter2\n")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "the connector answered no connection status: authentication failed for app with [redacted]") {
+		t.Fatalf("the connector's own line, redacted: %v", err)
+	}
+}

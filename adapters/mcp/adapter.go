@@ -16,7 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -95,6 +95,11 @@ func ParseRequest(r io.Reader) (Request, error) {
 	return req, nil
 }
 
+func malformedCredentials(err error) error { return redact.MalformedCredentials(err) }
+
+// envName is the shape of an environment variable's name.
+var envName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // credentialsEnv reads the credentials file as a JSON object of strings and
 // returns them as KEY=VALUE pairs, with every value for redaction. A value
 // with a newline cannot be carried in an env file and is refused.
@@ -102,24 +107,42 @@ func credentialsEnv(path string) (env []string, secrets []string, err error) {
 	if path == "" {
 		return nil, nil, nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := redact.ReadCredentials(path)
 	if err != nil {
-		return nil, nil, fmt.Errorf("credentials could not be read: %w", err)
+		return nil, nil, err
 	}
-	var values map[string]string
-	if err := json.Unmarshal(data, &values); err != nil {
+	// Held to exact member names with a duplicate refused, so that every
+	// value is one the redactor knows; each value a string, so a null or
+	// a number is not carried as an empty or a spelled-out variable.
+	if _, err := canon.Canonicalize(data, canon.CarryNumbersAsText); err != nil {
+		return nil, nil, malformedCredentials(err)
+	}
+	members, err := exactMembers(data)
+	if err != nil {
 		return nil, nil, errors.New("credentials file is not a JSON object of strings")
 	}
-	keys := make([]string, 0, len(values))
-	for k := range values {
+	keys := make([]string, 0, len(members))
+	for k := range members {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		if k == "" || strings.ContainsAny(k, "=\n\x00") || strings.ContainsAny(values[k], "\n\x00") {
-			return nil, nil, fmt.Errorf("credentials member %q cannot be carried as an environment variable", k)
+		var value string
+		if raw := bytes.TrimSpace(members[k]); !bytes.HasPrefix(raw, []byte(`"`)) || json.Unmarshal(raw, &value) != nil {
+			return nil, nil, fmt.Errorf("credentials member '%s' is not a string", k)
 		}
-		env = append(env, k+"="+values[k])
+		// A name an environment and an env file both carry unchanged:
+		// a runtime's env-file parser drops a line that begins with a
+		// comment mark or whitespace, and a shell refuses other names.
+		if !envName.MatchString(k) {
+			return nil, nil, fmt.Errorf("credentials member '%s' is not an environment variable name", k)
+		}
+		// A value both carry unchanged: an env file is read by lines,
+		// and a carriage return before the newline is dropped with it.
+		if strings.ContainsAny(value, "\n\r\x00") {
+			return nil, nil, fmt.Errorf("credentials member '%s' has a value an environment cannot carry", k)
+		}
+		env = append(env, k+"="+value)
 	}
 	return env, redact.SecretsOf(data), nil
 }

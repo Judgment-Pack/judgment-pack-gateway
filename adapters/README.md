@@ -33,7 +33,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   argument is read as an option.
 - `--credentials` is the connector's configuration JSON, a file the adapter's identity
   can read and the signer's cannot ([SECURITY.md](../SECURITY.md)). It is mounted
-  read-only into the connector's container and never passed through an environment.
+  read-only into the connector's container and never passed through an environment. It is
+  at most 1 MiB and an object, held to exact member names with a duplicate refused, so every
+  value in it is one the redactor knows.
 - `--runtime` is `docker` by default; `podman` works the same. The runtime inherits
   the adapter's environment, which is what the operator declared with `--source-env`:
   a runtime needs its `HOME`, and `PATH` is copied by default.
@@ -115,9 +117,12 @@ it leaves the adapter. That is as
 good as the connector's habit of quoting its configuration verbatim: a secret it encodes
 or splits is not caught, and a one-letter value redacts every letter like it. What the
 connector or the runtime writes on stderr is kept up to 64 KiB and redacted before its first
-line is cut, so a key spanning lines, or a value longer than a line, is matched whole; a
-message with a duplicate member anywhere in it is refused before it is classified, since a
-second `type` spelled with an escape would otherwise decide what the line is.
+line is cut, so a key spanning lines, or a value longer than a line, is matched whole; when
+the buffer overflowed, whatever ends it that is the start of a credential is cut off first,
+since the rest of it may be what was dropped. A message with a duplicate member anywhere in
+it is refused before it is classified, since a second `type` spelled with an escape would
+otherwise decide what the line is. A check the connector ends without a status reports the
+connector's first line of stderr, when it wrote one.
 
 Two honest bounds. The record data are the connector's: a record with a duplicate
 member name or invalid UTF-8 fails the acquisition rather than being repaired. And the
@@ -164,8 +169,13 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
 - `--credentials` is a JSON object of strings that become the server's environment — a
   token, a connection string — and nothing else is added: a container gets them through an
   env file in its private mount; a command gets them beside the adapter's own environment,
-  which is what the operator declared and what a launcher like `npx` needs. A value with a
-  newline cannot be carried and is refused.
+  which is what the operator declared and what a launcher like `npx` needs. The file is at
+  most 1 MiB and is held to exact member names with a duplicate refused, so every value in it
+  is one the redactor knows; each member is an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`,
+  since an env file drops a line that begins with `#` or whitespace) with a string value
+  holding no newline, carriage return or NUL, since an env file is read by lines and a
+  carriage return before the newline is dropped with it — a value the container would see
+  differently from the adapter is refused rather than carried.
 - `--tools` names the only tools a request may call; a request outside it is refused before
   any server starts.
 - `--check` starts the server with the credentials, completes the handshake and lists its
@@ -224,8 +234,9 @@ a writer holds the adapter past it; and the command stays in the adapter's own p
 so that under the gateway the source group's kill reaches it and what it started. On Linux the
 adapter also adopts the orphans its descendants leave (`PR_SET_CHILD_SUBREAPER`) and kills every
 descendant last, found through `/proc`, so a process the server left behind — holding the
-credentials in its environment — does not keep them; a descendant that made a session of its own
-is not found, and elsewhere than Linux only the server itself is reached. `--image` is the shape
+credentials in its environment — does not keep them, rescanning until none is alive and failing
+the stop — and with it the check or the acquisition — when one survives; a descendant that made
+a session of its own is not found, and elsewhere than Linux only the server itself is reached. `--image` is the shape
 that keeps the lifecycle under a name. Every diagnostic
 that crosses the source boundary — the server's, the runtime's, and this adapter's own about
 what the server said, offered tool names included — is redacted and bounded as
@@ -233,5 +244,6 @@ what the server said, offered tool names included — is redacted and bounded as
 as secrets in their own right, encoded and decoded, and a credential value that is itself
 JSON is walked. A token inside a format the redactor does not parse is not caught. What a server or a runtime
 writes on stderr is kept up to 64 KiB and redacted before its first line is cut, so a credential
-longer than a line, or spanning lines, is matched whole; a duplicate member name in a message,
+longer than a line, or spanning lines, is matched whole, and when the buffer overflowed whatever
+ends it that is the start of a credential is cut off first; a duplicate member name in a message,
 which the diagnostic names, is written as it is rather than quoted with an escape.

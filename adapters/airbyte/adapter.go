@@ -18,7 +18,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"time"
 )
 
@@ -127,14 +126,10 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if cfg.Runtime == "" {
 		return nil, errors.New("a container runtime is required")
 	}
-	config, err := os.ReadFile(cfg.Credentials)
+	config, secrets, err := readConfig(cfg.Credentials)
 	if err != nil {
-		return nil, fmt.Errorf("credentials could not be read: %w", err)
+		return nil, err
 	}
-	if !json.Valid(config) {
-		return nil, errors.New("credentials file is not JSON")
-	}
-	secrets := redact.SecretsOf(config)
 	strm, err := discover(ctx, cfg, req, config, secrets)
 	if err != nil {
 		return nil, err
@@ -186,16 +181,17 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if cfg.Runtime == "" {
 		return nil, errors.New("a container runtime is required")
 	}
-	config, err := os.ReadFile(cfg.Credentials)
+	config, secrets, err := readConfig(cfg.Credentials)
 	if err != nil {
-		return nil, fmt.Errorf("credentials could not be read: %w", err)
+		return nil, err
 	}
-	if !json.Valid(config) {
-		return nil, errors.New("credentials file is not JSON")
-	}
-	secrets := redact.SecretsOf(config)
 	c, err := containers.Start(ctx, containers.Spec{
-		Redact:  func(text string) string { return redact.Redact(text, secrets) },
+		Redact: func(text string, truncated bool) string {
+			if truncated {
+				text = redact.TrimPartialSecret(text, secrets)
+			}
+			return redact.Redact(text, secrets)
+		},
 		Runtime: cfg.Runtime, Image: cfg.Image,
 		Files: map[string][]byte{"config.json": config},
 		Args:  []string{"check", "--config", "/secrets/config.json"},
@@ -257,7 +253,13 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		return finish(nil, fmt.Errorf("connector check failed: %s", failure(c, waitErr)))
 	}
 	if answer == nil {
-		return finish(nil, errors.New("the connector answered no connection status"))
+		// The connector may have said why on stderr; that is the
+		// operator's to read, redacted as every diagnostic is.
+		reason := "the connector answered no connection status"
+		if line := c.FirstLine(); line != "" {
+			reason += ": " + line
+		}
+		return finish(nil, errors.New(reason))
 	}
 	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
 		Status:  "succeeded",
@@ -270,13 +272,35 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	return finish(report, nil)
 }
 
+// readConfig reads the connector's configuration: at most 1 MiB, an
+// object, held to exact member names with a duplicate refused, so that
+// every value in it is one the redactor knows.
+func readConfig(path string) (config []byte, secrets []string, err error) {
+	config, err = redact.ReadCredentials(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err := canon.Canonicalize(config, canon.CarryNumbersAsText); err != nil {
+		return nil, nil, redact.MalformedCredentials(err)
+	}
+	if !canon.IsObject(config) {
+		return nil, nil, errors.New("credentials file is not a JSON object")
+	}
+	return config, redact.SecretsOf(config), nil
+}
+
 // discover runs the connector's discover and finds the requested stream in
 // the catalog it emits: by name, and by namespace when the request gives
 // one; a name the catalog holds in more than one namespace is ambiguous
 // without it.
 func discover(ctx context.Context, cfg Config, req Request, config []byte, secrets []string) (stream, error) {
 	c, err := containers.Start(ctx, containers.Spec{
-		Redact:  func(text string) string { return redact.Redact(text, secrets) },
+		Redact: func(text string, truncated bool) string {
+			if truncated {
+				text = redact.TrimPartialSecret(text, secrets)
+			}
+			return redact.Redact(text, secrets)
+		},
 		Runtime: cfg.Runtime, Image: cfg.Image,
 		Files: map[string][]byte{"config.json": config},
 		Args:  []string{"discover", "--config", "/secrets/config.json"},
@@ -545,7 +569,12 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 		args = append(args, "--state", "/secrets/state.json")
 	}
 	c, err := containers.Start(ctx, containers.Spec{
-		Redact: func(text string) string { return redact.Redact(text, secrets) }, Runtime: cfg.Runtime, Image: cfg.Image, Files: files, Args: append([]string{"read"}, args...)})
+		Redact: func(text string, truncated bool) string {
+			if truncated {
+				text = redact.TrimPartialSecret(text, secrets)
+			}
+			return redact.Redact(text, secrets)
+		}, Runtime: cfg.Runtime, Image: cfg.Image, Files: files, Args: append([]string{"read"}, args...)})
 	if err != nil {
 		return page{}, err
 	}
