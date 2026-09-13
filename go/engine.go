@@ -695,7 +695,7 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 			// directory. Either way the target's components are put in
 			// front of what remained of the configured path as written,
 			// never joined and cleaned, so each is walked in turn.
-			if filepath.IsAbs(target) || strings.HasPrefix(target, string(filepath.Separator)) {
+			if filepath.IsAbs(target) || os.IsPathSeparator(target[0]) {
 				current = filepath.VolumeName(target) + string(filepath.Separator)
 			}
 			remaining = append(components(target), remaining...)
@@ -710,14 +710,12 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 }
 
 // components are a path's elements below its root, in order and as
-// written: nothing is cleaned away before it has been walked.
+// written: nothing is cleaned away before it has been walked. Every
+// separator the platform accepts splits, so a link target written with
+// "/" on Windows yields its elements rather than one token.
 func components(path string) []string {
 	rest := strings.TrimPrefix(path, filepath.VolumeName(path))
-	rest = strings.Trim(rest, string(filepath.Separator))
-	if rest == "" {
-		return nil
-	}
-	return strings.Split(rest, string(filepath.Separator))
+	return strings.FieldsFunc(rest, func(r rune) bool { return r < 0x80 && os.IsPathSeparator(uint8(r)) })
 }
 
 // holdDirectory holds one directory to the ancestor rules.

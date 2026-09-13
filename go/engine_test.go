@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -282,6 +283,19 @@ func ptr(c engineConfig) *engineConfig {
 	copied := c
 	copied.platforms = append([]platformConfig(nil), c.platforms...)
 	return &copied
+}
+
+func TestComponentsSplitOnEverySeparatorThePlatformAccepts(t *testing.T) {
+	// A link target may be written with "/" where the platform also
+	// accepts another separator; each element must still be walked.
+	root := filepath.VolumeName(abs(t, t.TempDir())) + string(filepath.Separator)
+	got := components(filepath.Join(root, "hop") + "/../secrets")
+	if want := []string{"hop", "..", "secrets"}; !slices.Equal(got, want) {
+		t.Fatalf("components = %q, want %q", got, want)
+	}
+	if got := components(root); len(got) != 0 {
+		t.Fatalf("the root has no components, got %q", got)
+	}
 }
 
 func TestEngineRefusalsForIsolation(t *testing.T) {
