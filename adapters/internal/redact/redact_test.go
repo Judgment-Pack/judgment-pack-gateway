@@ -143,3 +143,26 @@ func TestRedactIsBuiltBounded(t *testing.T) {
 		t.Fatalf("a diagnostic of a 32 MiB text allocated %d bytes; it is built bounded, never whole and then cut", allocated)
 	}
 }
+
+func TestOverlappingSecretsAreCoveredTogether(t *testing.T) {
+	for text, want := range map[string]string{
+		"alice-super-secret":         "[redacted]",
+		"user alice-super-secret ok": "user [redacted] ok",
+		"aaa":                        "[redacted]",
+		"alice":                      "[redacted]",
+		"ice-super-secret alice":     "[redacted] [redacted]",
+		"nothing here":               "nothing here",
+	} {
+		secrets := []string{"ice-super-secret", "alice", "aa"}
+		if got := Redact(text, secrets); got != want {
+			t.Errorf("Redact %q: got %q, want %q", text, got, want)
+		}
+		if got := Diagnostic(text, false, secrets); got != want {
+			t.Errorf("Diagnostic %q: got %q, want %q", text, got, want)
+		}
+	}
+	// A merged run the cut falls inside keeps its replacement.
+	if got := Diagnostic("x alice-super-secret", true, []string{"ice-super-secret", "alice"}); got != "x [redacted]" {
+		t.Fatalf("got %q", got)
+	}
+}

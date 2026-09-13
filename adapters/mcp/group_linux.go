@@ -35,9 +35,10 @@ const descendantsDeadline = 3 * time.Second
 // process's own group, so under the gateway the source group's kill
 // reaches all of it as well. A session or a group of its own does not
 // change a process's parentage, so it is found here -- it is the group's
-// kill, the fallback, that a new session escapes; a process in another
-// pid namespace is not seen. --image is the shape that keeps the
-// lifecycle under a name.
+// kill, the fallback, that a new session escapes. What is seen is what
+// this process's /proc shows: its descendants, those in child pid
+// namespaces included. --image is the shape that keeps the lifecycle
+// under a name.
 func killDescendants() error {
 	return stopDescendants(liveDescendants, func(pid int) { syscall.Kill(pid, syscall.SIGKILL) }, descendantsDeadline)
 }

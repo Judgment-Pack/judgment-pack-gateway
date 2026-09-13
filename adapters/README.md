@@ -242,8 +242,8 @@ reap none — so a process forked between a listing and the reading of its paren
 its parent is gone — and failing the stop — and with it the check or the acquisition — when one
 survives. A descendant is found through its
 parentage, whatever session or group it made itself — it is the source group's kill, the
-fallback, that a new session escapes — and a process in another pid namespace is not seen;
-elsewhere than Linux only the server itself is reached. `--image` is the shape
+fallback, that a new session escapes — as far as the adapter's `/proc` shows them, which
+includes child pid namespaces; elsewhere than Linux only the server itself is reached. `--image` is the shape
 that keeps the lifecycle under a name. Every diagnostic
 that crosses the source boundary — the server's, the runtime's, and this adapter's own about
 what the server said, offered tool names included — is redacted and bounded as

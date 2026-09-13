@@ -159,34 +159,76 @@ func Redact(text string, secrets []string) string {
 // span is a run of a text that is a whole secret.
 type span struct{ start, end int }
 
-// wholeSpans finds every whole secret in text, scanning left to right and
-// taking the longest at each position (the list is sorted so). With
-// bounded set, the scan stops once what it would render exceeds the
-// diagnostic bound, so a text of many megabytes costs no more than the
-// bound: a diagnostic is built bounded, never whole and then cut.
+// wholeSpans finds every run of text that whole secrets cover, scanning
+// left to right: the earliest secret to begin, and then every secret that
+// begins inside the run, each extending it -- so a secret that overlaps
+// another is covered with it, and neither's tail is left ("alice" inside
+// "alice-super-secret"). With bounded set, the scan stops once what it
+// would render exceeds the diagnostic bound, so a text of many megabytes
+// costs no more than the bound: a diagnostic is built bounded, never whole
+// and then cut.
 func wholeSpans(text string, secrets []string, bounded bool) []span {
+	longest := 0
+	for _, s := range secrets {
+		if len(s) > longest {
+			longest = len(s)
+		}
+	}
 	var spans []span
 	rendered := 0
 	for i := 0; i < len(text); {
 		if bounded && rendered > MaxDiagnostic {
 			break
 		}
-		matched := false
-		for _, s := range secrets {
-			if s != "" && strings.HasPrefix(text[i:], s) {
-				spans = append(spans, span{i, i + len(s)})
-				i += len(s)
-				rendered += len(replacement)
-				matched = true
+		start, stop := earliestSecret(text, secrets, i)
+		if start < 0 {
+			break
+		}
+		// Every secret that begins inside the run extends it.
+		for {
+			grown := stop
+			for _, s := range secrets {
+				window := text[start:min(len(text), stop+len(s))]
+				for at := 0; at < len(window); {
+					p := strings.Index(window[at:], s)
+					if p < 0 || start+at+p >= stop {
+						break
+					}
+					grown = max(grown, start+at+p+len(s))
+					at += p + 1
+				}
+			}
+			if grown == stop {
 				break
 			}
+			stop = grown
 		}
-		if !matched {
-			i++
-			rendered++
-		}
+		rendered += start - i + len(replacement)
+		spans = append(spans, span{start, stop})
+		i = stop
 	}
 	return spans
+}
+
+// earliestSecret is the first position at or after from where some secret
+// begins, with where that secret ends; -1 when none. A search is linear
+// and allocates nothing, so a text of many megabytes costs time, not
+// memory; what bounds the memory is the render.
+func earliestSecret(text string, secrets []string, from int) (int, int) {
+	start, stop := -1, 0
+	for _, s := range secrets {
+		if s == "" {
+			continue
+		}
+		p := strings.Index(text[from:], s)
+		if p < 0 {
+			continue
+		}
+		if start < 0 || from+p < start {
+			start, stop = from+p, from+p+len(s)
+		}
+	}
+	return start, stop
 }
 
 const replacement = "[redacted]"

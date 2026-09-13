@@ -1045,3 +1045,18 @@ func TestAValueUnderARepeatedNestedNameIsASecret(t *testing.T) {
 		t.Fatalf("both values are secrets: %v", err)
 	}
 }
+
+func TestACredentialAnotherOneBeginsInsideIsRedactedWhole(t *testing.T) {
+	cfg := fake(t)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"USER":"alice","PASSWORD":"ice-super-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvStderr, "rejected alice-super-secret\n")
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.HasSuffix(err.Error(), "rejected [redacted]") {
+		t.Fatalf("covered together: %v", err)
+	}
+}
