@@ -424,7 +424,7 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	badTarget[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
 	badTarget[filepath.Join(root, "var", "secrets")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
 	badTarget[filepath.Join(root, "private", "var", "secrets")] = fileOwnership{uid: 1002, mode: 0o755, dir: true}
-	expect("a root-owned link into another user's directory", host(1000, badTarget, noSockets, noCaps), linkedCfg, "/private/var/secrets is owned by uid 1002")
+	expect("a root-owned link into another user's directory", host(1000, badTarget, noSockets, noCaps), linkedCfg, filepath.Join(root, "private", "var", "secrets")+" is owned by uid 1002")
 	viaLink[filepath.Join(root, "var")] = fileOwnership{uid: 1002, mode: 0o755, link: true}
 	expect("a link owned by another user", host(1000, viaLink, noSockets, noCaps), linkedCfg, "symbolic link owned by uid 1002, not root")
 	ownLink := filepath.Join(root, "home", "other", "link", "warehouse")
