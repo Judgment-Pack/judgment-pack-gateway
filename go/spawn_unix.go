@@ -169,6 +169,12 @@ func requireUserSwitching(sources map[string]sourceSpec) error {
 		if len(missing) > 0 {
 			return fmt.Errorf("--source-user %s=%s: this process lacks %s; it could start the source as that user but not stop it, or not start it at all", name, spec.user, strings.Join(missing, ", "))
 		}
+		// A capability held ambiently would survive the switch into the
+		// source and the exec, and let the source switch back: the set is
+		// emptied here, and a set that cannot be emptied is refused.
+		if os.Geteuid() != 0 && !clearAmbientCapabilities() {
+			return fmt.Errorf("--source-user %s=%s: this process holds ambient capabilities that could not be cleared; hold them as file capabilities on the gateway binary instead", name, spec.user)
+		}
 		if _, err := lookupCredential(spec.user); err != nil {
 			return fmt.Errorf("--source-user %s: %w", name, err)
 		}

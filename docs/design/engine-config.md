@@ -52,22 +52,25 @@ duplicate member names refused, integers only, unknown members refused by name. 
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
 `runtime`, `adapters`, `rootSigner`, `hostRuntime` and `identity` are optional; within a
-platform, `binding`, `credentials` and `user` are required, `endpoint` and `write` optional.
+platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment` and
+`write` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
   takes today, named.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve
   an action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)).
-- `listen` is a loopback address, always, and the engine refuses any other. The gateway
-  speaks plain HTTP and a token presented over plain HTTP off the machine can be captured and
-  replayed; SECURITY.md lists authenticated transport as out of scope, and this design does
-  not change that. Reaching the engine from another host means a TLS-terminating front the
-  operator runs and trusts, outside this repository. `identity` decides who may call, never
-  from where.
+- `listen` is a literal loopback address with a port — `127.0.0.1:8787` or `[::1]:8787` —
+  and the engine refuses any other, a name such as `localhost` included, since a resolver may
+  map a name elsewhere. The gateway speaks plain HTTP and a token presented over plain HTTP
+  off the machine can be captured and replayed; SECURITY.md lists authenticated transport as
+  out of scope, and this design does not change that. Reaching the engine from another host
+  means a TLS-terminating front the operator runs and trusts, outside this repository.
+  `identity` decides who may call, never from where.
 - `catalog` is the directory of binding files (below). `runtime` is the container runtime
-  command the adapters use, `docker` by default or `podman`. `adapters` is the directory
-  holding the adapter binaries; when absent they are found on the engine's `PATH`.
+  command the adapters use, `docker` by default or `podman`, by name or by path. `adapters`
+  is the directory holding the adapter binaries; when absent they are found on the engine's
+  `PATH`.
 - `identity` names the token issuer, the audience the engine expects to be named as, and a
   local copy of the issuer's public keys. The engine verifies tokens with the standard library
   and never fetches keys over the network on the request path; refreshing the key file is the
@@ -78,16 +81,23 @@ platform, `binding`, `credentials` and `user` are required, `endpoint` and `writ
   claim.
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
   a receipt will carry — to a **binding** from the catalog, pinned by digest, to where its
-  credentials are, and to the OS **user** its adapters run as. `endpoint` is the host the
-  platform is reached at as the operator names it, recorded as the receipt's endpoint; the
-  adapters do not read it from the credentials. `write` defaults to false; a platform that is
-  not marked writable cannot be the target of an action no matter what its binding offers.
+  credentials are, and to the OS **user** its adapters run as, which must exist, must not be
+  root or the signer, and must be no other platform's. `endpoint` is the host the platform is
+  reached at as the operator names it, recorded as the receipt's endpoint; the adapters do not
+  read it from the credentials. `environment` is an object of string values the platform's
+  adapters receive beside their user's `HOME` and the engine's `PATH` — `DOCKER_HOST`,
+  `XDG_RUNTIME_DIR`, whatever selects that user's own runtime — and never a secret: a value
+  here is in the configuration and in the signer's memory. It may not set `HOME` or `PATH`.
+  `write` defaults to false; a platform that is not marked writable cannot be the target of an
+  action no matter what its binding offers.
 
 ## What the engine derives
 
 For each platform and each operation its binding offers, one source, declared with the
-shape the operation is served by, run as the platform's user, with an environment of `HOME`
-and `PATH` alone — a container runtime needs both, and a secret never travels this way:
+shape the operation is served by, run as the platform's user, with an environment of that
+user's `HOME` (from the user database), the engine's `PATH`, and the platform's
+`environment` — a container runtime needs the first two, and a secret never travels this
+way:
 
 | Source | Adapter | Command line |
 |---|---|---|
@@ -99,32 +109,48 @@ exist yet, and a source that could be asked to write would be a read that writes
 
 ## What the engine refuses
 
-Before anything is written — no store, no registry — the engine refuses to start under a
-configuration the isolation claim of [ADR-0001](../adr/0001-one-engine-four-processes.md)
-does not survive:
+Before anything is written — no store, no registry, before the seed is even loaded — the
+engine refuses to start under a configuration the isolation claim of
+[ADR-0001](../adr/0001-one-engine-four-processes.md) does not survive:
 
-- a platform without a `user`: an adapter running as the signer could read the seed;
-- a platform whose `user` is the signer's own, for the same reason;
-- a credentials file not owned by the platform's user, or readable beyond its owner
-  (mode other than `0600`): the signer, which runs as a user of its own without
-  `CAP_DAC_OVERRIDE`, must not be able to read it, and neither may another platform;
+- a platform without a `user`, or whose user does not exist, is **root** (an adapter running
+  as root reads the seed), is the **signer's own** (the same), or is **another platform's**
+  (one platform could read the other's credentials);
+- a credentials file not owned by the platform's user, or readable beyond its owner (mode
+  other than `0600`); and any directory on the way to it that is owned by neither root nor
+  that user, or writable beyond its owner without the sticky bit (so someone else could
+  replace the file under its name), or that the user cannot traverse (the adapter could not
+  open its own credentials); the seed's directories are held to the same, for the signer;
 - a signer that runs as **root**, which reads every credentials file whatever protects it,
   unless the operator sets `"rootSigner": "accepted"` — the engine then says in one line at
   startup that the separation between signer and adapters rests on the host, not on the
   configuration. The way to avoid it: run the signer as a user of its own holding
-  `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL`, which is what lets it switch adapters to their
-  users while it reads nothing of theirs;
+  `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` **as file capabilities on the gateway binary**,
+  which is what lets it switch adapters to their users;
+- a non-root signer holding **`CAP_DAC_OVERRIDE` or `CAP_DAC_READ_SEARCH`**, which read past
+  every permission, or holding any **ambient** capability, which would survive the switch into
+  an adapter and the exec and let the adapter switch back — the engine empties its ambient set
+  before it switches anyone, and refuses a set it cannot empty;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
-  the runtime is `docker` (or `podman`): an adapter that can reach it holds host authority,
-  which includes the seed ([engine-image.md](engine-image.md)), unless the operator sets
-  `"hostRuntime": "accepted"`, with the same one-line statement at startup;
+  the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
+  it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
+  unless the operator sets `"hostRuntime": "accepted"`, with the same one-line statement at
+  startup;
 - the seed file's own checks, as for any `serve`: a regular file, owned by the signer, readable
   by nobody else.
 
-What these checks do not see is stated with them: an access-control list that grants a read
-the mode bits do not show; a runtime reachable through a socket at another path; a platform
-user that is also in a group the signer's files admit. The engine holds the configuration to
-what the filesystem reports, and no further.
+What these checks establish, and no more: every adapter runs as a user that is neither root
+nor the signer nor another platform's; no credentials file, and no directory on the way to
+one, can be read or replaced by anyone but its owner and root; the signer holds no capability
+that reads past permissions and no capability an adapter would inherit. **A signer that holds
+`CAP_SETUID` can assume any user**, and so can read any credentials file by becoming its owner:
+what this configuration holds is the signer *as written* — it reads no credential — not a
+signer that has been compromised. Holding a compromised signer out of credentials takes a
+privileged launcher separate from an unprivileged signer, which is the engine image's job and
+not this file's. What the checks do not see is stated with them: an access-control list that
+grants a read the mode bits do not show; a runtime reachable through a socket at another path;
+a platform user that is also in a group the signer's files admit. The engine holds the
+configuration to what the filesystem and the kernel report, and no further.
 
 ## Credentials
 
@@ -165,8 +191,10 @@ running engine reaches:
 ```
 
 One binding per platform; one entry per operation it supports — `history`, `live`, `write` —
-each naming its shape, the pinned artifact that serves it, the tools or streams it may use, and
-the licence of the artifact it pulls. `history` is served by the `airbyte` shape and `live`
+each naming its shape, the pinned artifact that serves it, the tools it may call, and the
+licence of the artifact it pulls. A restriction of streams for the history operation is not yet
+applied at acquisition, so a binding may not declare one: a restriction accepted and not
+applied would read as applied. `history` is served by the `airbyte` shape and `live`
 and `write` by the `mcp` shape; the `http` shape is not shipped by this release, and a binding
 naming it is refused. The file is `catalog/<platform>.json`, it must name that platform, and
 the configuration pins it as `<platform>@sha256:<digest of the file's bytes>`; a file that

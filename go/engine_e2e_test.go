@@ -121,7 +121,7 @@ func main() {
 	}
 	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
 	escape := func(p string) string { return strings.ReplaceAll(p, `\`, `\\`) }
-	text := `{"engineVersion":"1","authority":"gateway:test","seed":"unused-here","store":"` + escape(filepath.Join(dir, "store")) + `",` +
+	text := `{"engineVersion":"1","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
 		`"registry":"` + escape(filepath.Join(dir, "registry.jsonl")) + `","decisionRecords":"` + escape(filepath.Join(dir, "decisions")) + `",` +
 		`"listen":"127.0.0.1:0","catalog":"` + escape(catalog) + `","runtime":"` + escape(fake) + `","adapters":"` + escape(bin) + `",` +
 		`"platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"file":"` + escape(credentials) + `"},"user":"engine-warehouse","endpoint":"warehouse.internal:5432"}}}`
@@ -129,7 +129,7 @@ func main() {
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg, sources, err := loadEngineConfig(path)
+	cfg, sources, err := loadEngineConfig(path, stubAccounts(map[string]int{"engine-warehouse": 1001}))
 	if err != nil {
 		t.Fatal(err)
 	}

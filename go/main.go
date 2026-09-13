@@ -246,23 +246,27 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: gateway serve --config <engine.json>")
 		return 2
 	}
-	cfg, sources, err := loadEngineConfig(args[0])
+	host := osEngineHost()
+	cfg, sources, err := loadEngineConfig(args[0], host.account)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
 	closeInheritedDescriptors()
+	// The isolation refusals come first, so a configuration is judged as a
+	// configuration whatever this process may do; then the seed, then
+	// whether the switching the configuration needs is available.
+	statements, err := engineRefusals(cfg, host)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "seed:", err)
 		return 1
 	}
 	if err := requireUserSwitching(sources); err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	statements, err := engineRefusals(cfg, engineEUID(), hostRuntimeSockets[cfg.runtime], credentialsOwnerOf, userIDOf)
-	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}

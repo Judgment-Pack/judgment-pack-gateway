@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -43,7 +45,10 @@ type platformConfig struct {
 	binding     string // name@sha256:hex
 	credentials string // a path, never a value
 	user        string
+	uid         int    // resolved from the user database
+	home        string // the user's home, from the user database
 	endpoint    string
+	environment []string // KEY=VALUE, for the runtime's selection, never a secret
 	write       bool
 }
 
@@ -62,6 +67,24 @@ type operation struct {
 	licence string
 }
 
+// engineHost is what the engine asks the operating system while it holds
+// a configuration to the isolation claim: who it runs as, what it may do,
+// who owns a file, who a user is. Tests stand each in.
+type engineHost struct {
+	euid         int
+	sockets      func(runtime string) []string
+	capabilities func() (effective, ambient uint64, known bool)
+	fileOwner    func(path string) (fileOwnership, error)
+	account      func(name string) (uid int, home string, err error)
+}
+
+type fileOwnership struct {
+	uid    int
+	mode   os.FileMode // permission bits
+	dir    bool
+	sticky bool // a directory in which only a file's owner may remove or rename it
+}
+
 // engineMembers lists every member the configuration may carry and whether
 // it must.
 var engineMembers = map[string]bool{
@@ -72,7 +95,7 @@ var engineMembers = map[string]bool{
 
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
-	"endpoint": false, "write": false,
+	"endpoint": false, "environment": false, "write": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -93,16 +116,23 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	if version != engineVersion {
 		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q", version, engineVersion)
 	}
+	authority, err := requireString(obj, "authority")
+	if err != nil || authority == "" {
+		return engineConfig{}, errors.New("engine configuration: authority must be a non-empty string")
+	}
+	cfg.authority = authority
+	// Every path is absolute: a path relative to wherever the engine was
+	// started names nothing an operator can reason about.
 	for _, m := range []struct {
 		name string
 		into *string
 	}{
-		{"authority", &cfg.authority}, {"seed", &cfg.seed}, {"store", &cfg.store}, {"registry", &cfg.registry},
-		{"decisionRecords", &cfg.decisionRecords}, {"listen", &cfg.listen}, {"catalog", &cfg.catalog},
+		{"seed", &cfg.seed}, {"store", &cfg.store}, {"registry", &cfg.registry},
+		{"decisionRecords", &cfg.decisionRecords}, {"catalog", &cfg.catalog},
 	} {
-		s, err := requireString(obj, m.name)
-		if err != nil || s == "" {
-			return engineConfig{}, fmt.Errorf("engine configuration: %s must be a non-empty string", m.name)
+		s, err := requireAbsolutePath(obj, m.name)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		*m.into = s
 	}
@@ -118,9 +148,9 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		cfg.runtime = s
 	}
 	if _, present := obj.get("adapters"); present {
-		s, err := requireString(obj, "adapters")
-		if err != nil || s == "" {
-			return engineConfig{}, errors.New("engine configuration: adapters must be a non-empty string, the directory holding the adapter binaries")
+		s, err := requireAbsolutePath(obj, "adapters")
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		cfg.adapters = s
 	}
@@ -138,7 +168,11 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			cfg.hostRuntime = true
 		}
 	}
-	if err := requireLoopback(cfg.listen); err != nil {
+	listen, err := requireString(obj, "listen")
+	if err != nil {
+		return engineConfig{}, errors.New("engine configuration: listen must be a string")
+	}
+	if cfg.listen, err = loopbackAddress(listen); err != nil {
 		return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 	}
 	platformsValue, _ := obj.get("platforms")
@@ -165,7 +199,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		pc := platformConfig{name: name}
 		if pc.binding, err = requireString(p, "binding"); err != nil || !isBindingRef(pc.binding) {
-			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: binding must be name@sha256:<64 hex>", name)
+			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: binding must be name@sha256:<64 hex>, the name a catalog file's without / or \\", name)
 		}
 		credentialsValue, _ := p.get("credentials")
 		credentials, err := requireObject(credentialsValue, "credentials")
@@ -175,8 +209,8 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if err := exactlyMembers(credentials, map[string]bool{"file": true}, "platform "+name+" credentials"); err != nil {
 			return engineConfig{}, err
 		}
-		if pc.credentials, err = requireString(credentials, "file"); err != nil || pc.credentials == "" {
-			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials.file must be a non-empty path", name)
+		if pc.credentials, err = requireAbsolutePath(credentials, "file"); err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: credentials.%v", name, err)
 		}
 		if pc.user, err = requireString(p, "user"); err != nil || pc.user == "" {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: user must name the OS user its adapters run as; an adapter running as the signer could read the seed", name)
@@ -184,6 +218,22 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if _, present := p.get("endpoint"); present {
 			if pc.endpoint, err = requireString(p, "endpoint"); err != nil || pc.endpoint == "" {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: endpoint, when present, is a non-empty string", name)
+			}
+		}
+		if envValue, present := p.get("environment"); present {
+			env, err := requireObject(envValue, "environment")
+			if err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
+			}
+			for _, key := range env.names {
+				value, ok := memberString(env, key)
+				if !ok || key == "" || strings.ContainsAny(key, "=\x00") || strings.ContainsAny(value, "\n\x00") {
+					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment.%s must be a string value under a variable name", name, key)
+				}
+				if sameEnvKey(key, "HOME") || sameEnvKey(key, "PATH") {
+					return engineConfig{}, fmt.Errorf("engine configuration: platform %s: environment may not set %s; HOME is the user's own and PATH the engine's", name, key)
+				}
+				pc.environment = append(pc.environment, key+"="+value)
 			}
 		}
 		if w, present := p.get("write"); present {
@@ -196,6 +246,17 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		cfg.platforms = append(cfg.platforms, pc)
 	}
 	return cfg, nil
+}
+
+func requireAbsolutePath(obj *vObject, name string) (string, error) {
+	s, err := requireString(obj, name)
+	if err != nil || s == "" {
+		return "", fmt.Errorf("%s must be a non-empty absolute path", name)
+	}
+	if !filepath.IsAbs(s) {
+		return "", fmt.Errorf("%s must be an absolute path, not %q", name, s)
+	}
+	return filepath.Clean(s), nil
 }
 
 // exactlyMembers refuses a member the shape does not name and a required
@@ -214,26 +275,29 @@ func exactlyMembers(obj *vObject, members map[string]bool, what string) error {
 	return nil
 }
 
-// requireLoopback holds listen to a loopback address: the gateway speaks
-// plain HTTP, and reaching it from another host is a front the operator runs.
-func requireLoopback(listen string) error {
+// loopbackAddress holds listen to a literal loopback address with a valid
+// port: 127.0.0.1 or ::1, never a name that a resolver may map elsewhere.
+// The gateway speaks plain HTTP, and reaching it from another host is a
+// front the operator runs.
+func loopbackAddress(listen string) (string, error) {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
-		return fmt.Errorf("listen %q is not host:port", listen)
+		return "", fmt.Errorf("listen %q is not host:port", listen)
 	}
 	ip := net.ParseIP(host)
-	if host == "localhost" || (ip != nil && ip.IsLoopback()) {
-		if port == "" {
-			return fmt.Errorf("listen %q names no port", listen)
-		}
-		return nil
+	if ip == nil || !ip.IsLoopback() {
+		return "", fmt.Errorf("listen %q is not a literal loopback address; the engine listens on 127.0.0.1 or ::1 only", listen)
 	}
-	return fmt.Errorf("listen %q is not a loopback address; the engine listens on 127.0.0.1 or ::1 only", listen)
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 0 || n > 65535 {
+		return "", fmt.Errorf("listen %q has no valid port", listen)
+	}
+	return net.JoinHostPort(ip.String(), port), nil
 }
 
 func isBindingRef(ref string) bool {
 	name, digest, ok := strings.Cut(ref, "@")
-	return ok && name != "" && !strings.ContainsAny(name, "/\\@") && isDigest(digest)
+	return ok && name != "" && name == filepath.Base(name) && !strings.ContainsAny(name, "/\\@") && name != "." && name != ".." && isDigest(digest)
 }
 
 // loadBinding reads the catalog entry a platform names and holds it to the
@@ -242,7 +306,7 @@ func isBindingRef(ref string) bool {
 func loadBinding(catalog, ref string) (binding, error) {
 	name, digest, _ := strings.Cut(ref, "@")
 	path := filepath.Join(catalog, name+".json")
-	data, err := os.ReadFile(path)
+	data, err := readBounded(path, maxEngineConfigBytes)
 	if err != nil {
 		return binding{}, fmt.Errorf("binding %s: %v", ref, err)
 	}
@@ -333,7 +397,10 @@ func parseOperation(op *vObject, name string) (operation, error) {
 	}
 	switch o.shape {
 	case "airbyte":
-		if err := exactlyMembers(op, map[string]bool{"shape": true, "image": true, "licence": true, "streams": false}, "operation "+name); err != nil {
+		// A streams restriction is not yet enforced at acquisition, so a
+		// binding may not declare one: a restriction accepted and not
+		// applied would read as applied.
+		if err := exactlyMembers(op, map[string]bool{"shape": true, "image": true, "licence": true}, "operation "+name); err != nil {
 			return o, err
 		}
 		if o.image, err = requireString(op, "image"); err != nil || !isPinnedImage(o.image) {
@@ -382,8 +449,9 @@ func isPinnedImage(ref string) bool {
 // deriveSources turns platforms and their bindings into the sources `serve`
 // runs: `<platform>/history` through adapter-airbyte, `<platform>/live`
 // through adapter-mcp, each with the adapter's command line, the platform's
-// user, and an environment of HOME and PATH alone -- a container runtime
-// needs both, and a secret never travels this way.
+// user, and an environment of the user's own HOME, the engine's PATH, and
+// what the platform declared for its runtime's selection -- a secret never
+// travels this way.
 func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sourceSpec {
 	sources := map[string]sourceSpec{}
 	adapter := func(name string) string {
@@ -394,73 +462,154 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 	}
 	for _, p := range cfg.platforms {
 		b := bindings[p.name]
+		env := append([]string{"HOME=" + p.home}, p.environment...)
 		if b.history != nil {
 			argv := []string{adapter("adapter-airbyte"), "--image", b.history.image, "--credentials", p.credentials, "--runtime", cfg.runtime}
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint", p.endpoint)
 			}
-			sources[p.name+"/history"] = sourceSpec{argv: argv, env: []string{"HOME"}, user: p.user, shape: "airbyte"}
+			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
 		}
 		if b.live != nil {
 			argv := []string{adapter("adapter-mcp"), "--image", b.live.image, "--credentials", p.credentials, "--runtime", cfg.runtime, "--tools", strings.Join(b.live.tools, ",")}
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint", p.endpoint)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: []string{"HOME"}, user: p.user, shape: "mcp"}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp"}
 		}
 	}
 	return sources
 }
 
 // hostRuntimeSockets are where a host container runtime listens when it is
-// present: a socket an adapter's user could reach is host authority, which
-// includes the seed (docs/design/engine-image.md).
-var hostRuntimeSockets = map[string][]string{
-	"docker": {"/var/run/docker.sock"},
-	"podman": {"/run/podman/podman.sock"},
+// present, by the runtime command's base name: a socket an adapter's user
+// could reach is host authority, which includes the seed
+// (docs/design/engine-image.md).
+func hostRuntimeSockets(runtime string) []string {
+	base := strings.TrimSuffix(filepath.Base(runtime), ".exe")
+	switch base {
+	case "docker":
+		return []string{"/var/run/docker.sock"}
+	case "podman":
+		return []string{"/run/podman/podman.sock"}
+	}
+	return nil
 }
 
+// Capability bits of Linux that the isolation claim turns on.
+const (
+	capDacOverride    = 1
+	capDacReadSearch  = 2
+	capSetgid         = 6
+	capSetuid         = 7
+	capKill           = 5
+	dacCapabilityBits = 1<<capDacOverride | 1<<capDacReadSearch
+)
+
 // engineRefusals are the conditions under which the engine does not start,
-// checked after the seed and the users and before anything is written:
-// each is a configuration the isolation claim does not survive, refused as
-// a configuration with nothing to clean up. The statements returned are
-// what the operator accepted by name, printed once at startup.
-func engineRefusals(cfg engineConfig, euid int, sockets []string, credentialsOwner func(path string) (uid int, mode os.FileMode, err error), userID func(name string) (int, error)) ([]string, error) {
+// checked before anything is written: each is a configuration the isolation
+// claim does not survive, refused as a configuration with nothing to clean
+// up. The statements returned are what the operator accepted by name,
+// printed once at startup. What the checks establish, and no more: every
+// adapter runs as a user that is neither root nor the signer nor another
+// platform's; no credentials file, and no directory on the way to one, can
+// be read or replaced by anyone but its owner and root; the signer holds no
+// capability that reads past permissions and no ambient capability an
+// adapter would inherit. A signer that holds CAP_SETUID can assume any
+// user, so a compromised signer is not held out of credentials by this;
+// the design note says which separation would.
+func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 	var statements []string
-	if euid == 0 {
+	if host.euid == 0 {
 		if !cfg.rootSigner {
-			return nil, errors.New("the signer runs as root, which reads every credentials file whatever protects it; run it as a user holding CAP_SETUID, CAP_SETGID and CAP_KILL, or accept this by setting rootSigner to \"accepted\"")
+			return nil, errors.New("the signer runs as root, which reads every credentials file whatever protects it; run it as a user holding CAP_SETUID, CAP_SETGID and CAP_KILL as file capabilities, or accept this by setting rootSigner to \"accepted\"")
 		}
 		statements = append(statements, "rootSigner accepted: the signer runs as root and can read every platform's credentials; the separation between signer and adapters rests on the host, not on this configuration")
-	}
-	for _, p := range cfg.platforms {
-		uid, err := userID(p.user)
-		if err != nil {
-			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+	} else if host.capabilities != nil {
+		if effective, ambient, known := host.capabilities(); known {
+			if effective&dacCapabilityBits != 0 {
+				return nil, errors.New("the signer holds CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH, which read past every permission; it needs CAP_SETUID, CAP_SETGID and CAP_KILL and nothing more")
+			}
+			if ambient != 0 {
+				return nil, errors.New("the signer holds ambient capabilities, which survive the switch into an adapter and let it switch back; hold the capabilities as file capabilities on the gateway binary instead")
+			}
 		}
-		if euid != 0 && uid == euid {
+	}
+	// The seed's own file is held by loadSeed; the directories on the way
+	// to it must not let another user replace it.
+	if err := trustedAncestors(cfg.seed, host.euid, host.fileOwner); err != nil {
+		return nil, fmt.Errorf("seed: %v", err)
+	}
+	seen := map[int]string{}
+	for _, p := range cfg.platforms {
+		uid := p.uid
+		if uid == 0 {
+			return nil, fmt.Errorf("platform %s: user %s is root; an adapter running as root reads the seed", p.name, p.user)
+		}
+		if uid == host.euid {
 			return nil, fmt.Errorf("platform %s: user %s is the signer's own; an adapter running as the signer could read the seed", p.name, p.user)
 		}
-		owner, mode, err := credentialsOwner(p.credentials)
+		if other, dup := seen[uid]; dup {
+			return nil, fmt.Errorf("platform %s: user %s is also platform %s's; each platform's adapters run as a user of their own, or one could read the other's credentials", p.name, p.user, other)
+		}
+		seen[uid] = p.name
+		owner, err := host.fileOwner(p.credentials)
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
 		}
-		if owner != uid {
+		if owner.dir {
+			return nil, fmt.Errorf("platform %s: credentials %s is a directory", p.name, p.credentials)
+		}
+		if owner.uid != uid {
 			return nil, fmt.Errorf("platform %s: credentials %s must be owned by %s, the user its adapters run as", p.name, p.credentials, p.user)
 		}
-		if mode&0o077 != 0 {
-			return nil, fmt.Errorf("platform %s: credentials %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, p.credentials, mode, p.credentials)
+		if owner.mode&0o077 != 0 {
+			return nil, fmt.Errorf("platform %s: credentials %s is readable beyond its owner (mode %04o); chmod 600 %s", p.name, p.credentials, owner.mode, p.credentials)
+		}
+		if err := trustedAncestors(p.credentials, uid, host.fileOwner); err != nil {
+			return nil, fmt.Errorf("platform %s: credentials: %v", p.name, err)
 		}
 	}
-	for _, socket := range sockets {
-		if _, err := os.Stat(socket); err == nil {
-			if !cfg.hostRuntime {
-				return nil, fmt.Errorf("a host container runtime socket is present at %s; an adapter that can reach it holds host authority, which includes the seed; use a rootless runtime, or accept this by setting hostRuntime to \"accepted\"", socket)
+	if host.sockets != nil {
+		for _, socket := range host.sockets(cfg.runtime) {
+			if _, err := os.Stat(socket); err == nil {
+				if !cfg.hostRuntime {
+					return nil, fmt.Errorf("a host container runtime socket is present at %s; an adapter that can reach it holds host authority, which includes the seed; use a rootless runtime, or accept this by setting hostRuntime to \"accepted\"", socket)
+				}
+				statements = append(statements, "hostRuntime accepted: the host runtime socket at "+socket+" is reachable, and an adapter that uses it holds authority equivalent to the signer's; the seed's protection rests on the host")
 			}
-			statements = append(statements, "hostRuntime accepted: the host runtime socket at "+socket+" is reachable, and an adapter that uses it holds authority equivalent to the signer's; the seed's protection rests on the host")
 		}
 	}
 	return statements, nil
+}
+
+// trustedAncestors holds every directory on the way to a file to what the
+// file's owner needs and no more: owned by root or by that user, writable
+// by nobody else unless the sticky bit keeps others from removing or
+// renaming what they do not own (so nobody else can replace the file under
+// its name), and traversable by that user.
+func trustedAncestors(path string, uid int, fileOwner func(string) (fileOwnership, error)) error {
+	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+		owner, err := fileOwner(dir)
+		if err != nil {
+			return fmt.Errorf("%s: %v", dir, err)
+		}
+		if !owner.dir {
+			return fmt.Errorf("%s is not a directory", dir)
+		}
+		if owner.uid != 0 && owner.uid != uid {
+			return fmt.Errorf("%s is owned by uid %d, neither root nor uid %d, so its owner could replace what is under it", dir, owner.uid, uid)
+		}
+		if owner.mode&0o022 != 0 && !owner.sticky {
+			return fmt.Errorf("%s is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is under it", dir, owner.mode)
+		}
+		if owner.uid != uid && owner.mode&0o001 == 0 {
+			return fmt.Errorf("%s (mode %04o) cannot be traversed by uid %d", dir, owner.mode, uid)
+		}
+		if parent := filepath.Dir(dir); parent == dir {
+			return nil
+		}
+	}
 }
 
 // engineServeOptions is what `serve` runs for a configuration: the derived
@@ -470,8 +619,8 @@ func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec) serveOp
 }
 
 // loadEngineConfig reads and resolves a configuration file: the file, every
-// binding it pins, and the sources they derive.
-func loadEngineConfig(path string) (engineConfig, map[string]sourceSpec, error) {
+// platform's user, every binding it pins, and the sources they derive.
+func loadEngineConfig(path string, account func(name string) (int, string, error)) (engineConfig, map[string]sourceSpec, error) {
 	data, err := readBounded(path, maxEngineConfigBytes)
 	if err != nil {
 		return engineConfig{}, nil, fmt.Errorf("engine configuration: %v", err)
@@ -481,7 +630,13 @@ func loadEngineConfig(path string) (engineConfig, map[string]sourceSpec, error) 
 		return engineConfig{}, nil, err
 	}
 	bindings := map[string]binding{}
-	for _, p := range cfg.platforms {
+	for i := range cfg.platforms {
+		p := &cfg.platforms[i]
+		uid, home, err := account(p.user)
+		if err != nil {
+			return engineConfig{}, nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		p.uid, p.home = uid, home
 		b, err := loadBinding(cfg.catalog, p.binding)
 		if err != nil {
 			return engineConfig{}, nil, fmt.Errorf("platform %s: %v", p.name, err)
@@ -491,6 +646,11 @@ func loadEngineConfig(path string) (engineConfig, map[string]sourceSpec, error) 
 	return cfg, deriveSources(cfg, bindings), nil
 }
 
+// readBounded reads a regular file of at most limit bytes through one
+// descriptor: judged as the file that was opened, then read at most one
+// byte past the limit, so a file that grew or was replaced between a look
+// and a read is not read in part. A special file is refused by the first
+// look without being opened, since opening a FIFO would block.
 func readBounded(path string, limit int) ([]byte, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -499,8 +659,20 @@ func readBounded(path string, limit int) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%s is not a regular file", path)
 	}
-	if info.Size() > int64(limit) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	if info, err = file.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	data, err := io.ReadAll(io.LimitReader(file, int64(limit)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > limit {
 		return nil, fmt.Errorf("%s is larger than %d bytes", path, limit)
 	}
-	return os.ReadFile(path)
+	return data, nil
 }

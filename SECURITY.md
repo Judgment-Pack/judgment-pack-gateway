@@ -191,10 +191,17 @@ was given, can read what that user can read, including the seed; and a gateway t
 can read the files a source user holds. The separation is only as strong as the identities the
 operator gives the two sides. **`serve --config`** holds a configuration to both sides at once
 ([docs/design/engine-config.md](docs/design/engine-config.md)): every platform's adapters run as
-a user of their own, a credentials file must be owned by that user and readable by nobody else,
-a signer that is root must be accepted by name, and so must a host container-runtime socket an
-adapter could reach; the checks hold the configuration to what the filesystem reports, and an
-access-control list or a socket at another path is not seen.
+a user of their own that is neither root nor the signer nor another platform's, a credentials
+file must be owned by that user and readable by nobody else under directories nobody else can
+replace it in, a signer that is root must be accepted by name, and so must a host
+container-runtime socket an adapter could reach; a non-root signer may hold no capability that
+reads past permissions, and its ambient set is emptied before it switches anyone, since an
+ambient capability would survive into the adapter and let it switch back. What that holds is
+the signer as written: a signer holding `CAP_SETUID` can assume any user, so a compromised
+signer is not held out of credentials by the configuration — that takes a privileged launcher
+separate from the signer, which is the engine image's job. The checks hold the configuration
+to what the filesystem and the kernel report; an access-control list or a socket at another
+path is not seen.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
