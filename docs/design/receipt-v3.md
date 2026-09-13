@@ -113,7 +113,8 @@ made that way says so.
 any artifact. The receipt records that an executor was asked, by which authenticated identity,
 citing which decision, and what the target answered. It does not say the action was right, and
 it does not say the identity approved it. The verifier hashes the decision record's bytes and
-compares them with `recordDigest`; it interprets nothing inside the record.
+compares them with `recordDigest`; it interprets nothing inside the record for that step; step 7 reads a record for its own
+`cites` member and for nothing else.
 
 ## Verification
 

@@ -318,26 +318,26 @@ func validateAction(v value) ([]citation, string, error) {
 // later, unreadable is no verdict here -- and the directory is judged whether
 // or not any action receipt needs it, since an unreadable input is no verdict
 // regardless. Only the wanted digests are retained, so a large archive costs
-// its bytes once and its digests never.
-func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, []citingRecord, bool, error) {
+// its bytes once and its digests never; a candidate that cites (step 7) is
+// handed to onRecord as it is found and retained no more than the rest.
+func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citingRecord)) (map[string]bool, bool, error) {
 	if dir == "" {
-		return nil, nil, false, nil
+		return nil, false, nil
 	}
 	if err := registryContainerReachable(dir); err != nil {
-		return nil, nil, false, fmt.Errorf("decision-record directory: %w", err)
+		return nil, false, fmt.Errorf("decision-record directory: %w", err)
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil, false, nil
+			return nil, false, nil
 		}
-		return nil, nil, false, err
+		return nil, false, err
 	}
 	if !info.IsDir() {
-		return nil, nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
+		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
 	}
 	found := map[string]bool{}
-	var records []citingRecord
 	// note hashes a candidate for step 6; read reads it for step 7 as well,
 	// which a .jsonl file's lines get and the file whole does not, so that a
 	// record is judged once and not also as the file it is the only line of.
@@ -352,9 +352,12 @@ func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, []
 	}
 	read := func(data []byte) {
 		note(data)
+		if onRecord == nil {
+			return
+		}
 		if cites, cited, malformed := recordCitations(data); cited {
 			sum := sha256.Sum256(data)
-			records = append(records, citingRecord{digest: "sha256:" + hex.EncodeToString(sum[:]), cites: cites, malformed: malformed})
+			onRecord(citingRecord{digest: "sha256:" + hex.EncodeToString(sum[:]), cites: cites, malformed: malformed})
 		}
 	}
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
@@ -395,9 +398,9 @@ func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, []
 		return nil
 	})
 	if err != nil {
-		return nil, nil, false, err
+		return nil, false, err
 	}
-	return found, records, true, nil
+	return found, true, nil
 }
 
 // parseCitations holds a cites member to the shape §1.2a gives action.cites
@@ -469,7 +472,7 @@ func recordCitations(data []byte) (cites []citation, cited bool, malformed bool)
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return nil, false, false
 	}
-	var raw json.RawMessage
+	var raw []byte
 	seen, twice := false, false
 	for dec.More() {
 		keyTok, err := dec.Token()
@@ -480,15 +483,23 @@ func recordCitations(data []byte) (cites []citation, cited bool, malformed bool)
 		if !ok {
 			return nil, false, false
 		}
-		var v json.RawMessage
-		if err := dec.Decode(&v); err != nil {
+		// The value is passed over token by token, never copied: a
+		// record's facts may be large, and only the one member is read.
+		// The cites member is taken as the bytes between the offsets the
+		// decoder reports, out of the input itself.
+		start := dec.InputOffset()
+		if !skipValue(dec) {
 			return nil, false, false
 		}
 		if key == "cites" {
 			if seen {
 				twice = true
 			}
-			seen, raw = true, v
+			seen = true
+			raw = data[start:dec.InputOffset()]
+			if i := bytes.IndexByte(raw, ':'); i >= 0 {
+				raw = raw[i+1:]
+			}
 		}
 	}
 	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
@@ -503,7 +514,7 @@ func recordCitations(data []byte) (cites []citation, cited bool, malformed bool)
 	if twice {
 		return nil, true, true
 	}
-	v, err := parseJSON(raw)
+	v, err := parseJSON(bytes.TrimSpace(raw))
 	if err != nil {
 		return nil, true, true
 	}
@@ -512,4 +523,26 @@ func recordCitations(data []byte) (cites []citation, cited bool, malformed bool)
 		return nil, true, true
 	}
 	return cites, true, false
+}
+
+// skipValue passes over one JSON value in the decoder's stream, whatever
+// its depth, materialising nothing but the tokens as they go by; false
+// when the stream is not JSON.
+func skipValue(dec *json.Decoder) bool {
+	depth := 0
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
+		if depth == 0 {
+			return true
+		}
+	}
 }

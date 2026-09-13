@@ -286,7 +286,7 @@ func TestDecisionCandidatesFollowTheByteRule(t *testing.T) {
 		hexOf([]byte(`{"b":2}`)):        true, // NOT a candidate: the line keeps one CR
 		hexOf([]byte("")):               true, // NOT a candidate: empty pieces are skipped
 	}
-	found, _, present, err := decisionCandidates(dir, wanted)
+	found, present, err := decisionCandidates(dir, wanted, nil)
 	if err != nil || !present {
 		t.Fatalf("present=%v err=%v", present, err)
 	}
@@ -303,24 +303,24 @@ func TestDecisionCandidatesFollowTheByteRule(t *testing.T) {
 }
 
 func TestDecisionCandidatesDirectoryOutcomes(t *testing.T) {
-	if _, _, present, err := decisionCandidates("", nil); present || err != nil {
+	if _, present, err := decisionCandidates("", nil, nil); present || err != nil {
 		t.Fatalf("no directory given must be absent: present=%v err=%v", present, err)
 	}
-	if _, _, present, err := decisionCandidates(filepath.Join(t.TempDir(), "missing"), nil); present || err != nil {
+	if _, present, err := decisionCandidates(filepath.Join(t.TempDir(), "missing"), nil, nil); present || err != nil {
 		t.Fatalf("a missing directory must be absent: present=%v err=%v", present, err)
 	}
 	empty := t.TempDir()
-	if found, _, present, err := decisionCandidates(empty, map[string]bool{"x": true}); !present || err != nil || len(found) != 0 {
+	if found, present, err := decisionCandidates(empty, map[string]bool{"x": true}, nil); !present || err != nil || len(found) != 0 {
 		t.Fatalf("an empty directory is present with no candidates: present=%v err=%v found=%v", present, err, found)
 	}
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := decisionCandidates(file, nil); err == nil {
+	if _, _, err := decisionCandidates(file, nil, nil); err == nil {
 		t.Fatal("a regular file at the path must be no verdict")
 	}
-	if _, _, _, err := decisionCandidates(filepath.Join(file, "records"), nil); err == nil {
+	if _, _, err := decisionCandidates(filepath.Join(file, "records"), nil, nil); err == nil {
 		t.Fatal("an obstructing parent component must be no verdict")
 	}
 	if runtime.GOOS != "windows" {
@@ -333,7 +333,7 @@ func TestDecisionCandidatesDirectoryOutcomes(t *testing.T) {
 			t.Skip("symlinks not available")
 		}
 		wanted := map[string]bool{hexOf([]byte(`{"linked":true}`)): true}
-		found, _, _, err := decisionCandidates(dir, wanted)
+		found, _, err := decisionCandidates(dir, wanted, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -346,7 +346,7 @@ func TestDecisionCandidatesDirectoryOutcomes(t *testing.T) {
 		}
 		t.Cleanup(func() { os.Chmod(unreadable, 0o755) })
 		if os.Geteuid() != 0 {
-			if _, _, _, err := decisionCandidates(unreadable, nil); err == nil {
+			if _, _, err := decisionCandidates(unreadable, nil, nil); err == nil {
 				t.Fatal("an unreadable directory must be no verdict")
 			}
 		}
