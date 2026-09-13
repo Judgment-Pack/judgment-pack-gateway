@@ -375,7 +375,8 @@ func TestConnectRefusesAGatewayBinaryOthersMayExecute(t *testing.T) {
 // What is printed is one line per answer and per statement, whatever the
 // platform or the adapter put in it: a newline, a terminal escape, an
 // invalid byte are written in their escaped form, after the adapter's own
-// redaction and nowhere earlier.
+// redaction and nowhere earlier; a backslash, which a Windows path is made
+// of, is left as it is.
 func TestPrintableKeepsOneLine(t *testing.T) {
 	for in, want := range map[string]string{
 		"Connected":                              "Connected",
@@ -383,7 +384,7 @@ func TestPrintableKeepsOneLine(t *testing.T) {
 		"line one\nline two":                     `line one\nline two`,
 		"\x1b[31mred\x1b[0m":                     `\u001b[31mred\u001b[0m`,
 		"tab\there\r":                            `tab\there\r`,
-		`back\slash`:                             `back\\slash`,
+		`back\slash`:                             `back\slash`,
 		"bad\xffbyte":                            `bad\xffbyte`,
 		"zero\u200bwidth":                        `zero\u200bwidth`,
 		"emoji \U0001f600 unassigned \U000e0080": "emoji \U0001f600 unassigned " + `\U000e0080`,
