@@ -7,6 +7,9 @@
 package airbyte
 
 import (
+	"adapters/internal/canon"
+	"adapters/internal/containers"
+	"adapters/internal/redact"
 	"bufio"
 	"bytes"
 	"context"
@@ -17,7 +20,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"sort"
 	"strings"
 	"time"
 )
@@ -121,7 +123,7 @@ type imageRef struct{ name, version, digest string }
 // receipt names, not whatever a tag resolved to at pull time.
 func parseImage(ref string) (imageRef, error) {
 	name, digest, ok := strings.Cut(ref, "@")
-	if !ok || !isDigestString(digest) {
+	if !ok || !canon.IsDigestString(digest) {
 		return imageRef{}, fmt.Errorf("image %q must be pinned: name[:tag]@sha256:<64 hex>", ref)
 	}
 	version := ""
@@ -153,7 +155,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if !json.Valid(config) {
 		return nil, errors.New("credentials file is not JSON")
 	}
-	secrets := secretsOf(config)
+	secrets := redact.SecretsOf(config)
 	strm, err := discover(ctx, cfg, req, config, secrets)
 	if err != nil {
 		return nil, err
@@ -163,7 +165,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	schema, err := canonicalize(strm.JSONSchema, carryNumbersAsText)
+	schema, err := canon.Canonicalize(strm.JSONSchema, canon.CarryNumbersAsText)
 	if err != nil {
 		return nil, fmt.Errorf("stream %q: schema: %v", req.Stream, err)
 	}
@@ -179,13 +181,16 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 // one; a name the catalog holds in more than one namespace is ambiguous
 // without it.
 func discover(ctx context.Context, cfg Config, req Request, config []byte, secrets []string) (stream, error) {
-	c, err := startContainer(ctx, cfg.Runtime, cfg.Image, "discover",
-		map[string][]byte{"config.json": config}, []string{"--config", "/secrets/config.json"})
+	c, err := containers.Start(ctx, containers.Spec{
+		Runtime: cfg.Runtime, Image: cfg.Image,
+		Files: map[string][]byte{"config.json": config},
+		Args:  []string{"discover", "--config", "/secrets/config.json"},
+	})
 	if err != nil {
 		return stream{}, err
 	}
 	finish := func(s stream, err error) (stream, error) {
-		if stopErr := c.stop(); stopErr != nil {
+		if stopErr := c.Stop(); stopErr != nil {
 			// The container that needs a hand comes first: the gateway
 			// keeps only the start of a source's diagnostic.
 			if err == nil {
@@ -196,7 +201,7 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 		return s, err
 	}
 	var found *catalog
-	scanner := newScanner(c.stdout)
+	scanner := newScanner(c.Stdout)
 	for scanner.Scan() {
 		m, isMessage, err := parseMessage(scanner.Bytes())
 		if err != nil {
@@ -210,12 +215,12 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 			found = m.Catalog
 		case "TRACE":
 			if m.Trace != nil && m.Trace.Type == "ERROR" {
-				return finish(stream{}, fmt.Errorf("connector reported an error during discover: %s", redact(traceMessage(m.Trace), secrets)))
+				return finish(stream{}, fmt.Errorf("connector reported an error during discover: %s", redact.Redact(traceMessage(m.Trace), secrets)))
 			}
 		}
 	}
 	scanErr := scanner.Err()
-	waitErr := c.wait()
+	waitErr := c.Wait()
 	if ctx.Err() != nil {
 		return finish(stream{}, fmt.Errorf("connector discover stopped: %v", ctx.Err()))
 	}
@@ -223,7 +228,7 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 		return finish(stream{}, fmt.Errorf("reading the connector's catalog: %w", scanErr))
 	}
 	if waitErr != nil {
-		return finish(stream{}, fmt.Errorf("connector discover failed: %s", redact(failure(c, waitErr), secrets)))
+		return finish(stream{}, fmt.Errorf("connector discover failed: %s", redact.Redact(failure(c, waitErr), secrets)))
 	}
 	if found == nil {
 		return finish(stream{}, errors.New("the connector emitted no catalog"))
@@ -384,12 +389,12 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 		files["state.json"] = stateFile
 		args = append(args, "--state", "/secrets/state.json")
 	}
-	c, err := startContainer(ctx, cfg.Runtime, cfg.Image, "read", files, args)
+	c, err := containers.Start(ctx, containers.Spec{Runtime: cfg.Runtime, Image: cfg.Image, Files: files, Args: append([]string{"read"}, args...)})
 	if err != nil {
 		return page{}, err
 	}
 	finish := func(p page, err error) (page, error) {
-		if stopErr := c.stop(); stopErr != nil {
+		if stopErr := c.Stop(); stopErr != nil {
 			if err == nil {
 				return page{}, stopErr
 			}
@@ -400,7 +405,7 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 	var p page
 	var size int64
 	uncovered := 0 // records since the last checkpoint
-	scanner := newScanner(c.stdout)
+	scanner := newScanner(c.Stdout)
 	for scanner.Scan() {
 		m, isMessage, err := parseMessage(scanner.Bytes())
 		if err != nil {
@@ -414,10 +419,10 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 			if m.Record.Stream != strm.Name || !sameNamespace(m.Record.Namespace, strm.Namespace) {
 				continue
 			}
-			if !isObject(m.Record.Data) {
+			if !canon.IsObject(m.Record.Data) {
 				return finish(page{}, fmt.Errorf("record %d of stream %q: data is not an object", len(p.items)+1, req.Stream))
 			}
-			item, err := canonicalize(m.Record.Data, carryNumbersAsText)
+			item, err := canon.Canonicalize(m.Record.Data, canon.CarryNumbersAsText)
 			if err != nil {
 				return finish(page{}, fmt.Errorf("record %d of stream %q: %v", len(p.items)+1, req.Stream, err))
 			}
@@ -439,7 +444,7 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 			if !belongs {
 				continue
 			}
-			compacted, err := compact(m.State)
+			compacted, err := canon.Compact(m.State)
 			if err != nil {
 				return finish(page{}, fmt.Errorf("the connector's state is malformed: %v", err))
 			}
@@ -453,12 +458,12 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 			}
 		case "TRACE":
 			if m.Trace != nil && m.Trace.Type == "ERROR" {
-				return finish(page{}, fmt.Errorf("connector reported an error: %s", redact(traceMessage(m.Trace), secrets)))
+				return finish(page{}, fmt.Errorf("connector reported an error: %s", redact.Redact(traceMessage(m.Trace), secrets)))
 			}
 		}
 	}
 	scanErr := scanner.Err()
-	waitErr := c.wait()
+	waitErr := c.Wait()
 	if ctx.Err() != nil {
 		return finish(page{}, fmt.Errorf("connector read stopped after %d records: %v", len(p.items), ctx.Err()))
 	}
@@ -466,7 +471,7 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 		return finish(page{}, fmt.Errorf("reading the connector's records: %w", scanErr))
 	}
 	if waitErr != nil {
-		return finish(page{}, fmt.Errorf("connector read failed: %s", redact(failure(c, waitErr), secrets)))
+		return finish(page{}, fmt.Errorf("connector read failed: %s", redact.Redact(failure(c, waitErr), secrets)))
 	}
 	if p.state != nil && uncovered > 0 {
 		return finish(page{}, fmt.Errorf("the connector ended stream %q with %d records after its last checkpoint; a page bookmarked there would repeat them on resume", req.Stream, uncovered))
@@ -483,7 +488,7 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 // its global object, a LEGACY or untyped state its data object. A state of
 // any other type is refused.
 func validState(raw json.RawMessage) bool {
-	if members, ok := objectMembers(raw); !ok || members == 0 {
+	if members, ok := canon.ObjectMembers(raw); !ok || members == 0 {
 		return false
 	}
 	var sm stateMessage
@@ -494,10 +499,10 @@ func validState(raw json.RawMessage) bool {
 	case "STREAM":
 		return sm.Stream != nil && sm.Stream.Descriptor.Name != ""
 	case "GLOBAL":
-		_, ok := objectMembers(sm.Global)
+		_, ok := canon.ObjectMembers(sm.Global)
 		return ok
 	case "LEGACY", "":
-		_, ok := objectMembers(sm.Data)
+		_, ok := canon.ObjectMembers(sm.Data)
 		return ok
 	}
 	return false
@@ -517,26 +522,6 @@ func stateBelongsTo(m message, strm stream) (bool, error) {
 	return true, nil
 }
 
-// objectMembers reports whether raw is a JSON object, and how many members
-// it has: structurally, so {} and { } are the same empty object.
-func objectMembers(raw json.RawMessage) (int, bool) {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return 0, false
-	}
-	var members map[string]json.RawMessage
-	if json.Unmarshal(trimmed, &members) != nil {
-		return 0, false
-	}
-	return len(members), true
-}
-
-// isObject reports whether raw is a JSON object, empty or not.
-func isObject(raw json.RawMessage) bool {
-	_, ok := objectMembers(raw)
-	return ok
-}
-
 func traceMessage(t *trace) string {
 	if t.Error != nil && t.Error.Message != "" {
 		return t.Error.Message
@@ -546,89 +531,11 @@ func traceMessage(t *trace) string {
 
 // failure names why a connector command failed: the connector's own first
 // line of stderr when it wrote one, otherwise the runtime's error.
-func failure(c *container, err error) string {
-	if line := c.firstLine(); line != "" {
+func failure(c *containers.Container, err error) string {
+	if line := c.FirstLine(); line != "" {
 		return line
 	}
 	return err.Error()
-}
-
-// secretsOf collects every scalar of the connector's configuration, at any
-// depth -- every non-empty string and every number, as written, each once
-// -- so that a diagnostic repeating one is redacted before it crosses the
-// source boundary, where the gateway returns it to whoever called
-// /acquire. The list is sorted longest first so a value that contains
-// another is replaced whole. It is as good as the connector's habit of
-// quoting its configuration verbatim: a secret it encodes or splits is not
-// caught, and a one-letter value redacts every letter like it.
-func secretsOf(config []byte) []string {
-	dec := json.NewDecoder(bytes.NewReader(config))
-	dec.UseNumber()
-	var value any
-	if dec.Decode(&value) != nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	var out []string
-	add := func(s string) {
-		if s != "" && !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	var walk func(v any)
-	walk = func(v any) {
-		switch x := v.(type) {
-		case string:
-			add(x)
-		case json.Number:
-			add(x.String())
-		case map[string]any:
-			for _, e := range x {
-				walk(e)
-			}
-		case []any:
-			for _, e := range x {
-				walk(e)
-			}
-		}
-	}
-	walk(value)
-	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
-	return out
-}
-
-const maxDiagnostic = 512
-
-// redact rewrites a diagnostic in one pass over the original text: at each
-// position the longest configured value that starts there is replaced, and
-// what was written is never scanned again, so a replacement can neither
-// grow the text past its bound nor be re-matched. The output is bounded as
-// it is built.
-func redact(text string, secrets []string) string {
-	var out strings.Builder
-	for i := 0; i < len(text); {
-		if out.Len() > maxDiagnostic {
-			break
-		}
-		matched := false
-		for _, s := range secrets {
-			if strings.HasPrefix(text[i:], s) {
-				out.WriteString("[redacted]")
-				i += len(s)
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			out.WriteByte(text[i])
-			i++
-		}
-	}
-	if out.Len() > maxDiagnostic {
-		return out.String()[:maxDiagnostic] + "…"
-	}
-	return out.String()
 }
 
 func newScanner(r io.Reader) *bufio.Scanner {
