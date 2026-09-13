@@ -54,7 +54,8 @@ type stateMessage struct {
 			Namespace *string `json:"namespace"`
 		} `json:"stream_descriptor"`
 	} `json:"stream"`
-	Data json.RawMessage `json:"data"`
+	Global json.RawMessage `json:"global"`
+	Data   json.RawMessage `json:"data"`
 }
 
 // sameNamespace treats a null or absent namespace and an empty one as

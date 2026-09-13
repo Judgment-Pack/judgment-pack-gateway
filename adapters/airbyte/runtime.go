@@ -9,7 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"time"
 )
 
@@ -175,14 +175,24 @@ func (c *container) stopByName() error {
 	inspect.Stderr = answer
 	inspect.Stdout = io.Discard
 	err := inspect.Run()
-	said := strings.ToLower(answer.String())
 	switch {
 	case err == nil:
 		return fmt.Errorf("container %s could not be stopped and is still known to %s; stop it by hand -- it holds the credentials mount", c.name, c.runtime)
-	case strings.Contains(said, "no such") && strings.Contains(said, strings.ToLower(c.name)):
+	case saysAbsent(answer.String(), c.name):
 		return nil // absent: it ended on its own, and --rm removed it
 	}
 	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.name, c.runtime, firstLineOf(answer.String(), err))
+}
+
+// saysAbsent reports whether an inspect's answer is the runtime saying the
+// container itself does not exist: docker's "No such object: NAME" or "No
+// such container: NAME", podman's "no such container NAME" -- the absence
+// phrase immediately followed by the name. A transport failure that
+// mentions the name elsewhere, as a request URL does ("Get
+// .../containers/NAME/json: ... no such host"), is not that.
+func saysAbsent(answer, name string) bool {
+	pattern := regexp.MustCompile(`(?i)no such (?:object|container):?\s*"?` + regexp.QuoteMeta(name) + `"?(?:\s|$|[.,;])`)
+	return pattern.MatchString(answer)
 }
 
 func firstLineOf(text string, err error) string {

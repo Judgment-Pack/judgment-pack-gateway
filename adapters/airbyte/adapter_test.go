@@ -403,8 +403,10 @@ func TestAcquireRefusals(t *testing.T) {
 	t.Run("state without a state", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":null}`+"\n")
 		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed STATE message")
+		// A STREAM state without its descriptor lacks the payload its type
+		// needs, and is refused before it could be attributed to a stream.
 		cfg = fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":{"type":"STREAM"}}`+"\n")
-		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "without a stream descriptor")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed STATE message")
 	})
 	t.Run("output bound", func(t *testing.T) {
 		cfg := fake(t, discoverFixture, readFixture)
@@ -737,11 +739,44 @@ func TestInspectAbsenceNamesTheContainer(t *testing.T) {
 		t.Setenv(fakeruntime.EnvInspectStderr, wording)
 		acquire(t, cfg, Request{Stream: "decisions", Limit: 3})
 	}
-	cfg := fake(t, discoverFixture, readFixture)
-	t.Setenv(fakeruntime.EnvKillExit, "1")
-	t.Setenv(fakeruntime.EnvInspectExit, "1")
-	t.Setenv(fakeruntime.EnvInspectStderr, "error during connect: dial tcp: lookup dockerd: no such host")
-	mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "could not say whether it is gone (error during connect: dial tcp: lookup dockerd: no such host)")
+	// A transport failure names the container in its request URL and says
+	// "no such host": not an absence.
+	for _, wording := range []string{
+		"error during connect: dial tcp: lookup dockerd: no such host",
+		`Get "http://dockerd/v1.47/containers/{name}/json": dial tcp: lookup dockerd: no such host`,
+		"Error: No such object: some-other-container",
+	} {
+		cfg := fake(t, discoverFixture, readFixture)
+		t.Setenv(fakeruntime.EnvKillExit, "1")
+		t.Setenv(fakeruntime.EnvInspectExit, "1")
+		t.Setenv(fakeruntime.EnvInspectStderr, wording)
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "could not say whether it is gone")
+	}
+}
+
+func TestSaysAbsent(t *testing.T) {
+	const name = "jp-airbyte-0123456789abcdef"
+	for _, yes := range []string{
+		"Error: No such object: " + name,
+		"Error: No such container: " + name + "\n",
+		"Error: inspecting object: no such container " + name,
+		`Error: no such object: "` + name + `"`,
+	} {
+		if !saysAbsent(yes, name) {
+			t.Errorf("%q must read as absent", yes)
+		}
+	}
+	for _, no := range []string{
+		"Error: No such object: " + name + "x",
+		`Get "http://dockerd/v1.47/containers/` + name + `/json": dial tcp: lookup dockerd: no such host`,
+		"no such host " + name,
+		"Cannot connect to the Docker daemon",
+		"",
+	} {
+		if saysAbsent(no, name) {
+			t.Errorf("%q must not read as absent", no)
+		}
+	}
 }
 
 // An inspect whose output is held by a descendant is drained within its
@@ -772,6 +807,25 @@ func TestPayloadIsRequiredPerType(t *testing.T) {
 	mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "malformed CATALOG message")
 	cfg = fake(t, discoverFixture, `{"type":"RECORD","record":{"stream":"decisions"}}`+"\n")
 	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed RECORD message")
+	// A checkpoint that carries only its type could never be handed back:
+	// refused after the limit, where it would otherwise complete the page,
+	// and during discover alike.
+	for _, state := range []string{`{"type":"LEGACY"}`, `{"type":"GLOBAL"}`, `{"type":"STREAM"}`, `{"type":"OTHER","data":{"x":1}}`, `{"data":5}`} {
+		cfg = fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":`+state+`}`+"\n")
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed STATE message")
+		cfg = fake(t, `{"type":"STATE","state":`+state+`}`+"\n"+discoverFixture, readFixture)
+		mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed STATE message")
+	}
+	// The payloads that can be handed back are accepted: a global state and
+	// an untyped legacy one bookmark the page.
+	cfg = fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":{"type":"GLOBAL","global":{"shared_state":{"x":1}}}}`+"\n")
+	if env := acquire(t, cfg, Request{Stream: "decisions", Limit: 1}); env.Acquisition["snapshot"] != `{"type":"GLOBAL","global":{"shared_state":{"x":1}}}` {
+		t.Fatalf("a global state bookmarks the page: %v", env.Acquisition["snapshot"])
+	}
+	cfg = fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":{"data":{"cursor":1}}}`+"\n")
+	if env := acquire(t, cfg, Request{Stream: "decisions", Limit: 1}); env.Acquisition["snapshot"] != `{"data":{"cursor":1}}` {
+		t.Fatalf("an untyped legacy state bookmarks the page: %v", env.Acquisition["snapshot"])
+	}
 }
 
 // Redaction is one pass over the original text: a value that appears many

@@ -347,7 +347,7 @@ func parseMessage(line []byte) (message, bool, error) {
 			return message{}, true, malformed
 		}
 	case "STATE":
-		if members, ok := objectMembers(m.State); !ok || members == 0 {
+		if !validState(m.State) {
 			return message{}, true, malformed
 		}
 	case "TRACE":
@@ -477,26 +477,44 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 	return finish(p, nil)
 }
 
-// stateBelongsTo reports whether a state message bookmarks the stream: a
-// per-stream state names it by name and namespace; a global or legacy
-// state covers every stream. A STATE message whose state is not an object
-// with members, or a per-stream one without a descriptor, is malformed:
-// an empty bookmark could never be handed back.
+// validState reports whether a STATE message carries the payload its type
+// requires, so that every bookmark recorded can be handed back
+// (stateFileFor): a STREAM state its descriptor with a name, a GLOBAL state
+// its global object, a LEGACY or untyped state its data object. A state of
+// any other type is refused.
+func validState(raw json.RawMessage) bool {
+	if members, ok := objectMembers(raw); !ok || members == 0 {
+		return false
+	}
+	var sm stateMessage
+	if json.Unmarshal(raw, &sm) != nil {
+		return false
+	}
+	switch sm.Type {
+	case "STREAM":
+		return sm.Stream != nil && sm.Stream.Descriptor.Name != ""
+	case "GLOBAL":
+		_, ok := objectMembers(sm.Global)
+		return ok
+	case "LEGACY", "":
+		_, ok := objectMembers(sm.Data)
+		return ok
+	}
+	return false
+}
+
+// stateBelongsTo reports whether a state message, already known to be
+// valid, bookmarks the stream: a per-stream state names it by name and
+// namespace; a global or legacy state covers every stream.
 func stateBelongsTo(m message, strm stream) (bool, error) {
 	var sm stateMessage
 	if err := json.Unmarshal(m.State, &sm); err != nil {
 		return false, errors.New("the connector emitted a malformed STATE message")
 	}
-	switch sm.Type {
-	case "STREAM":
-		if sm.Stream == nil || sm.Stream.Descriptor.Name == "" {
-			return false, errors.New("the connector emitted a STREAM state without a stream descriptor")
-		}
+	if sm.Type == "STREAM" {
 		return sm.Stream.Descriptor.Name == strm.Name && sameNamespace(sm.Stream.Descriptor.Namespace, strm.Namespace), nil
-	case "GLOBAL", "LEGACY", "":
-		return true, nil
 	}
-	return false, fmt.Errorf("the connector emitted a state of unknown type %q", sm.Type)
+	return true, nil
 }
 
 // objectMembers reports whether raw is a JSON object, and how many members

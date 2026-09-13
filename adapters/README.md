@@ -52,9 +52,10 @@ emits a checkpoint that covers them, so the next page never repeats a record; pa
 after its last checkpoint is refused rather than bookmarked there, since a resume would
 repeat them and the receipt has no member to say so. `state` is the previous page's
 `snapshot`, exactly as its receipt recorded it, and is handed back to the connector in
-the form it reads. A record whose data is not an object, and a `RECORD` or `STATE`
-message that does not have its stated shape, fail the acquisition; a line that is not a
-message at all — a connector's log — is skipped.
+the form it reads. A record whose data is not an object, and a `RECORD`, `STATE`,
+`TRACE` or `CATALOG` message that does not have its stated shape — a checkpoint without
+the payload its type needs to be handed back, among them — fail the acquisition; a line
+that is not a message at all — a connector's log — is skipped.
 
 What the envelope carries, and so what the receipt records:
 
@@ -79,8 +80,8 @@ mount is removed when the acquisition ends, and its modes are set after creation
 umask the adapter was launched under does not narrow them. Every container is told to
 stop by name when the acquisition ends, whether or not its client is still running,
 because a runtime client that is killed leaves its container running; a kill the runtime
-refuses is followed by an inspect, and only an inspect the runtime answers with "no such"
-and the container's own name counts as gone — a container it still knows, or a runtime
+refuses is followed by an inspect, and only an inspect the runtime answers with "no such
+object" or "no such container" followed by the container's own name counts as gone — a container it still knows, or a runtime
 that cannot say (a daemon that is down, a host that cannot be resolved), fails the
 acquisition and says so first, since the container holds the credentials mount.
 `--timeout` (twenty seconds) is the time for reading; stopping takes up to seven seconds
