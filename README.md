@@ -194,8 +194,9 @@ Stated plainly because the whole line is about being exact where proof stops:
 - The registry closes replay and rollback **relative to a verifier that trusts the
   gateway's registry over the store**. It does not defend a compromised gateway: key
   disclosure forges everything.
-- This is a **single-identity, single-operator reference**, localhost, no authn on
-  the HTTP surface, no HA. It is for self-hosting a trust root and demonstrating the
+- This is a **single-identity, single-operator reference**, localhost, no authentication
+  on the HTTP surface unless an `identity` is configured — and that decides who may call,
+  never from where — no authorization, no HA. It is for self-hosting a trust root and demonstrating the
   mechanism — not a hardened public deployment.
 
 ## Where this is going

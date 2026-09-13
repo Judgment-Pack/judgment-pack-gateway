@@ -105,25 +105,61 @@ func (i *testIssuer) mintRaw(t *testing.T, kid, header, payload string) string {
 	return signed + "." + b64(sig)
 }
 
+// mintSegments signs a header segment and a payload segment spelled as
+// given, so a token can be signed over a spelling the engine must refuse.
+func (i *testIssuer) mintSegments(t *testing.T, kid, headerSeg, payloadSeg string) string {
+	t.Helper()
+	signed := headerSeg + "." + payloadSeg
+	digest := sha256.Sum256([]byte(signed))
+	var sig []byte
+	switch kid {
+	case "rsa-1":
+		sig, _ = rsa.SignPKCS1v15(rand.Reader, i.rsaKey, crypto.SHA256, digest[:])
+	case "ec-1":
+		r, s, _ := ecdsa.Sign(rand.Reader, i.ecKey, digest[:])
+		sig = append(r.FillBytes(make([]byte, 32)), s.FillBytes(make([]byte, 32))...)
+	case "ed-1":
+		sig = ed25519.Sign(i.edPriv, []byte(signed))
+	}
+	return signed + "." + b64(sig)
+}
+
+// dirty is another spelling of a base64url segment that a permissive
+// decoder reads as the same bytes: its last character with the bits the
+// encoding does not read set otherwise.
+func dirty(t *testing.T, seg string) string {
+	t.Helper()
+	want, _ := base64.RawURLEncoding.DecodeString(seg)
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for _, c := range alphabet {
+		candidate := seg[:len(seg)-1] + string(c)
+		if candidate == seg {
+			continue
+		}
+		if got, err := base64.RawURLEncoding.DecodeString(candidate); err == nil && string(got) == string(want) {
+			return candidate
+		}
+	}
+	t.Fatalf("no other spelling of %q decodes to the same bytes", seg)
+	return ""
+}
+
 // withDirtyBits is the token with the unused bits of its signature's last
 // base64url character set: the same bytes, another spelling.
 func withDirtyBits(t *testing.T, token string) string {
 	t.Helper()
 	dot := strings.LastIndex(token, ".")
-	sig := token[dot+1:]
-	want, _ := base64.RawURLEncoding.DecodeString(sig)
-	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-	for _, c := range alphabet {
-		candidate := sig[:len(sig)-1] + string(c)
-		if candidate == sig {
-			continue
-		}
-		if got, err := base64.RawURLEncoding.DecodeString(candidate); err == nil && string(got) == string(want) {
-			return token[:dot+1] + candidate
-		}
+	return token[:dot+1] + dirty(t, token[dot+1:])
+}
+
+// unevenPayload is a payload whose base64url has unused bits, so that a
+// second spelling of it exists.
+func unevenPayload(exp string) string {
+	payload := `{"iss":"https://login.example","sub":"u","aud":"gateway:acme","exp":` + exp + `}`
+	for len(payload)%3 == 0 {
+		payload = payload[:len(payload)-1] + `,"pad":"a"}`
 	}
-	t.Fatal("no other spelling of the signature decodes to the same bytes")
-	return ""
+	return payload
 }
 
 func identityFor(t *testing.T, issuer *testIssuer) identityConfig {
@@ -201,7 +237,9 @@ func TestVerifyTokenRefusals(t *testing.T) {
 		{"tampered payload under ES256", tamper(issuer.mint(t, "ec-1", nil, goodClaims(now))), "signature does not verify"},
 		{"tampered payload under EdDSA", tamper(issuer.mint(t, "ed-1", nil, goodClaims(now))), "signature does not verify"},
 		{"signature with its unused bits set", withDirtyBits(t, good), "signature is not canonical base64url"},
-		{"line break in the payload", good[:20] + "\n" + good[20:], "not canonical base64url"},
+		{"payload with its unused bits set", issuer.mintSegments(t, "ec-1", b64([]byte(`{"alg":"ES256","kid":"ec-1"}`)), dirty(t, b64([]byte(unevenPayload(exp))))), "payload is not canonical base64url"},
+		{"line break inside the payload", issuer.mintSegments(t, "ec-1", b64([]byte(`{"alg":"ES256","kid":"ec-1"}`)), func() string { s := b64([]byte(unevenPayload(exp))); return s[:10] + "\n" + s[10:] }()), "payload is not canonical base64url"},
+		{"line break inside the header", func() string { h := b64([]byte(`{"alg":"ES256","kid":"ec-1"}`)); return issuer.mintSegments(t, "ec-1", h[:5]+"\n"+h[5:], b64([]byte(unevenPayload(exp)))) }(), "header is not canonical base64url"},
 		{"padded header", "=" + good, "header is not canonical base64url"},
 		{"audience by another case", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"u","aud":"other","AUD":"gateway:acme","exp":`+exp+`}`), "does not name this engine"},
 		{"subject twice", issuer.mintRaw(t, "ec-1", `{"alg":"ES256","kid":"ec-1"}`, `{"iss":"https://login.example","sub":"alice","sub":null,"aud":"gateway:acme","exp":`+exp+`}`), `duplicate member name "sub"`},
@@ -271,6 +309,8 @@ func TestParseKeySetRefusals(t *testing.T) {
 		{"RSA exponent beyond 2^31-1", `{"keys":[{"kty":"RSA","kid":"r","n":"` + rsaN + `","e":"` + b64([]byte{1, 0, 0, 0, 3}) + `"}]}`, "exponent that is even or outside"},
 		{"EC coordinate of 31 bytes", `{"keys":[{"kty":"EC","kid":"e","crv":"P-256","x":"` + b64(issuer.ecKey.X.FillBytes(make([]byte, 32))[1:]) + `","y":"` + b64(issuer.ecKey.Y.FillBytes(make([]byte, 32))) + `"}]}`, "coordinate that is not 32 bytes"},
 		{"padded base64 in a key", `{"keys":[{"kty":"OKP","kid":"o","crv":"Ed25519","x":"` + b64(issuer.edPub) + `="}]}`, "x is not base64url"},
+		{"key material with its unused bits set", `{"keys":[{"kty":"OKP","kid":"o","crv":"Ed25519","x":"` + dirty(t, b64(issuer.edPub)) + `"}]}`, "x is not base64url"},
+		{"line break inside key material", `{"keys":[{"kty":"OKP","kid":"o","crv":"Ed25519","x":"` + b64(issuer.edPub)[:10] + `\n` + b64(issuer.edPub)[10:] + `"}]}`, "x is not base64url"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseKeySet([]byte(tc.set)); err == nil || !strings.Contains(err.Error(), tc.want) {
