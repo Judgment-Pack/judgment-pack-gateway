@@ -142,10 +142,24 @@ bytes. Whether the record cites the same receipts the action does, whether it wa
 the pack the action names, and whether the facts justified the action are not findings here
 (open question 5).
 
+Two more, per decision record, from the record's side of the join (§4 step 7): a candidate
+under the decision-record directory that is one JSON object carrying a `cites` member of the
+shape `action.cites` has — a record the runtime wrote with the citations its caller gave it —
+is read for that member and for nothing else:
+
+- `record-citation-unresolved`: one of the record's citations does not resolve as an action
+  receipt's would.
+- `record-citation-malformed`: the record's `cites` is not of the shape, or is given twice.
+
+Reported as `{recordDigest, status}`, once per record, whether or not any action receipt names
+it; a candidate that is not one JSON object, or carries no `cites`, is not interpreted at all.
+
 ## Corpus impact
 
 - `canon.json`: no change.
-- `stores/`: one new vector per new status (`citation-unresolved`, `decision-record-mismatch`),
+- `stores/`: one new vector per new status (`citation-unresolved`, `decision-record-mismatch`,
+  and from the record's side `record-citation-unresolved`, `record-citation-malformed`, with a
+  record that cites and resolves),
   one per new `malformed` condition, one version 2 store verified by the version 3 verifier,
   and one mixed store.
 - `teeth_test.go`: a member appended inside `acquisition` must invalidate the signature; a

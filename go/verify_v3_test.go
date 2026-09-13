@@ -286,7 +286,7 @@ func TestDecisionCandidatesFollowTheByteRule(t *testing.T) {
 		hexOf([]byte(`{"b":2}`)):        true, // NOT a candidate: the line keeps one CR
 		hexOf([]byte("")):               true, // NOT a candidate: empty pieces are skipped
 	}
-	found, present, err := decisionCandidates(dir, wanted)
+	found, _, present, err := decisionCandidates(dir, wanted)
 	if err != nil || !present {
 		t.Fatalf("present=%v err=%v", present, err)
 	}
@@ -303,24 +303,24 @@ func TestDecisionCandidatesFollowTheByteRule(t *testing.T) {
 }
 
 func TestDecisionCandidatesDirectoryOutcomes(t *testing.T) {
-	if _, present, err := decisionCandidates("", nil); present || err != nil {
+	if _, _, present, err := decisionCandidates("", nil); present || err != nil {
 		t.Fatalf("no directory given must be absent: present=%v err=%v", present, err)
 	}
-	if _, present, err := decisionCandidates(filepath.Join(t.TempDir(), "missing"), nil); present || err != nil {
+	if _, _, present, err := decisionCandidates(filepath.Join(t.TempDir(), "missing"), nil); present || err != nil {
 		t.Fatalf("a missing directory must be absent: present=%v err=%v", present, err)
 	}
 	empty := t.TempDir()
-	if found, present, err := decisionCandidates(empty, map[string]bool{"x": true}); !present || err != nil || len(found) != 0 {
+	if found, _, present, err := decisionCandidates(empty, map[string]bool{"x": true}); !present || err != nil || len(found) != 0 {
 		t.Fatalf("an empty directory is present with no candidates: present=%v err=%v found=%v", present, err, found)
 	}
 	file := filepath.Join(t.TempDir(), "file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := decisionCandidates(file, nil); err == nil {
+	if _, _, _, err := decisionCandidates(file, nil); err == nil {
 		t.Fatal("a regular file at the path must be no verdict")
 	}
-	if _, _, err := decisionCandidates(filepath.Join(file, "records"), nil); err == nil {
+	if _, _, _, err := decisionCandidates(filepath.Join(file, "records"), nil); err == nil {
 		t.Fatal("an obstructing parent component must be no verdict")
 	}
 	if runtime.GOOS != "windows" {
@@ -333,7 +333,7 @@ func TestDecisionCandidatesDirectoryOutcomes(t *testing.T) {
 			t.Skip("symlinks not available")
 		}
 		wanted := map[string]bool{hexOf([]byte(`{"linked":true}`)): true}
-		found, _, err := decisionCandidates(dir, wanted)
+		found, _, _, err := decisionCandidates(dir, wanted)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -346,7 +346,7 @@ func TestDecisionCandidatesDirectoryOutcomes(t *testing.T) {
 		}
 		t.Cleanup(func() { os.Chmod(unreadable, 0o755) })
 		if os.Geteuid() != 0 {
-			if _, _, err := decisionCandidates(unreadable, nil); err == nil {
+			if _, _, _, err := decisionCandidates(unreadable, nil); err == nil {
 				t.Fatal("an unreadable directory must be no verdict")
 			}
 		}
@@ -400,5 +400,38 @@ func TestUnreadableDecisionRecordPathRefusesEvenWithoutActions(t *testing.T) {
 	}
 	if rep, err := verifyWithRegistryAndRecords(store, filepath.Join(dir, "registry.jsonl"), "gateway:test", filepath.Join(dir, "absent"), publicKey); err != nil || !rep.OK {
 		t.Fatalf("an absent directory over an empty store is a clean verdict: %v %v", err, rep)
+	}
+}
+
+// A candidate is read for its cites member and for nothing else (SPEC.md §4
+// step 7): the object as JSON, floats and all, the member by the canonical
+// parser, exact names, once.
+func TestRecordCitationsReadOneMemberAndNothingElse(t *testing.T) {
+	sig := strings.Repeat("ab", 64)
+	for name, tc := range map[string]struct {
+		data      string
+		cited     bool
+		malformed bool
+		count     int
+	}{
+		"not JSON":                     {"not a record\n", false, false, 0},
+		"an array":                     {"[]", false, false, 0},
+		"two texts":                    {`{"cites":[]} {}`, false, false, 0},
+		"no cites":                     {`{"recordVersion":"1","inputs":{"facts":{"amount":12.5}}}`, false, false, 0},
+		"cites resolved beside floats": {`{"inputs":{"facts":{"amount":12.5}},"cites":[{"sessionId":"s","callIndex":1,"signature":"` + sig + `"}]}`, true, false, 1},
+		"cites empty":                  {`{"cites":[]}`, true, false, 0},
+		"cites not an array":           {`{"cites":{}}`, true, true, 0},
+		"cites twice":                  {`{"cites":[{"sessionId":"s","callIndex":1,"signature":"` + sig + `"}],"cites":[]}`, true, true, 0},
+		"a member by another case":     {`{"cites":[{"SessionId":"s","callIndex":1,"signature":"` + sig + `"}]}`, true, true, 0},
+		"a member twice in a citation": {`{"cites":[{"sessionId":"s","sessionId":"t","callIndex":1,"signature":"` + sig + `"}]}`, true, true, 0},
+		"an index as a float":          {`{"cites":[{"sessionId":"s","callIndex":1.0,"signature":"` + sig + `"}]}`, true, true, 0},
+		"an index as a string":         {`{"cites":[{"sessionId":"s","callIndex":"1","signature":"` + sig + `"}]}`, true, true, 0},
+		"a signature not 128 hex":      {`{"cites":[{"sessionId":"s","callIndex":1,"signature":"x"}]}`, true, true, 0},
+		"a session that is not flat":   {`{"cites":[{"sessionId":"../s","callIndex":1,"signature":"` + sig + `"}]}`, true, true, 0},
+	} {
+		cites, cited, malformed := recordCitations([]byte(tc.data))
+		if cited != tc.cited || malformed != tc.malformed || len(cites) != tc.count {
+			t.Errorf("%s: cited=%v malformed=%v cites=%d, want %v %v %d", name, cited, malformed, len(cites), tc.cited, tc.malformed, tc.count)
+		}
 	}
 }

@@ -470,7 +470,7 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 	for _, r := range actions {
 		wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
 	}
-	candidates, recordsPresent, err := decisionCandidates(decisionRecords, wanted)
+	candidates, citing, recordsPresent, err := decisionCandidates(decisionRecords, wanted)
 	if err != nil {
 		return nil, err
 	}
@@ -488,6 +488,24 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-record-mismatch",
 			})
+		}
+	}
+
+	// SPEC.md §4 step 7: a decision record that cites -- a candidate that is
+	// one JSON object carrying a cites member -- has each citation resolved
+	// exactly as an action's is, against the same enumeration; a member not
+	// of the shape is malformed. Once per record, by the digest of its bytes.
+	for _, r := range citing {
+		if r.malformed {
+			rep.Findings = append(rep.Findings, finding{"recordDigest": r.digest, "status": "record-citation-malformed"})
+			continue
+		}
+		for _, c := range r.cites {
+			stem := strconv.FormatInt(c.callIndex, 10)
+			if signature, ok := signatures[c.sessionID][stem]; !ok || signature != c.signature {
+				rep.Findings = append(rep.Findings, finding{"recordDigest": r.digest, "status": "record-citation-unresolved"})
+				break
+			}
 		}
 	}
 

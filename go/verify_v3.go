@@ -11,8 +11,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -272,39 +274,9 @@ func validateAction(v value) ([]citation, string, error) {
 	if !ok {
 		return nil, "", errors.New(`action: missing member "cites"`)
 	}
-	citesArr, ok := citesV.(vArray)
-	if !ok {
-		return nil, "", errors.New("action: cites is not an array")
-	}
-	cites := make([]citation, 0, len(citesArr))
-	for _, entry := range citesArr {
-		c, err := requireObject(entry, "action.cites[]")
-		if err != nil {
-			return nil, "", err
-		}
-		sessionID, err := requireString(c, "sessionId")
-		if err != nil {
-			return nil, "", fmt.Errorf("action.cites[]: %w", err)
-		}
-		if err := requireSession(sessionID); err != nil {
-			return nil, "", fmt.Errorf("action.cites[]: sessionId is not a flat token")
-		}
-		indexV, ok := c.get("callIndex")
-		if !ok {
-			return nil, "", errors.New(`action.cites[]: missing member "callIndex"`)
-		}
-		index, ok := indexV.(vInt)
-		if !ok || index < 0 {
-			return nil, "", errors.New("action.cites[]: callIndex is not a non-negative integer")
-		}
-		signature, err := requireString(c, "signature")
-		if err != nil {
-			return nil, "", fmt.Errorf("action.cites[]: %w", err)
-		}
-		if !isSignature3(signature) {
-			return nil, "", errors.New("action.cites[]: signature is not 128 lowercase hex characters")
-		}
-		cites = append(cites, citation{sessionID: sessionID, callIndex: int64(index), signature: signature})
+	cites, err := parseCitations(citesV, "action")
+	if err != nil {
+		return nil, "", err
 	}
 	toolV, ok := obj.get("tool")
 	if !ok {
@@ -347,24 +319,28 @@ func validateAction(v value) ([]citation, string, error) {
 // or not any action receipt needs it, since an unreadable input is no verdict
 // regardless. Only the wanted digests are retained, so a large archive costs
 // its bytes once and its digests never.
-func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, bool, error) {
+func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, []citingRecord, bool, error) {
 	if dir == "" {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	if err := registryContainerReachable(dir); err != nil {
-		return nil, false, fmt.Errorf("decision-record directory: %w", err)
+		return nil, nil, false, fmt.Errorf("decision-record directory: %w", err)
 	}
 	info, err := os.Stat(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, false, nil
+			return nil, nil, false, nil
 		}
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if !info.IsDir() {
-		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
+		return nil, nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
 	}
 	found := map[string]bool{}
+	var records []citingRecord
+	// note hashes a candidate for step 6; read reads it for step 7 as well,
+	// which a .jsonl file's lines get and the file whole does not, so that a
+	// record is judged once and not also as the file it is the only line of.
 	note := func(data []byte) {
 		if len(wanted) == 0 {
 			return
@@ -372,6 +348,13 @@ func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, bo
 		sum := sha256.Sum256(data)
 		if h := hex.EncodeToString(sum[:]); wanted[h] {
 			found[h] = true
+		}
+	}
+	read := func(data []byte) {
+		note(data)
+		if cites, cited, malformed := recordCitations(data); cited {
+			sum := sha256.Sum256(data)
+			records = append(records, citingRecord{digest: "sha256:" + hex.EncodeToString(sum[:]), cites: cites, malformed: malformed})
 		}
 	}
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
@@ -388,8 +371,10 @@ func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, bo
 		if err != nil {
 			return err
 		}
-		note(data)
-		if strings.HasSuffix(d.Name(), ".jsonl") {
+		if !strings.HasSuffix(d.Name(), ".jsonl") {
+			read(data)
+		} else {
+			note(data)
 			// One candidate per line: split on 0x0A, one trailing 0x0D removed,
 			// empty pieces skipped, the unterminated final piece kept. Walked by
 			// index so a file of newlines allocates nothing per line.
@@ -403,14 +388,128 @@ func decisionCandidates(dir string, wanted map[string]bool) (map[string]bool, bo
 				}
 				line = bytes.TrimSuffix(line, []byte{'\r'})
 				if len(line) > 0 {
-					note(line)
+					read(line)
 				}
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
-	return found, true, nil
+	return found, records, true, nil
+}
+
+// parseCitations holds a cites member to the shape §1.2a gives action.cites
+// -- an array of objects each with a sessionId that is a flat token, a
+// callIndex that is a non-negative integer, and a signature of 128
+// lowercase hex characters -- and returns the citations. The same shape
+// is what a decision record cites in (§4 step 7), read by the same code.
+func parseCitations(citesV value, what string) ([]citation, error) {
+	citesArr, ok := citesV.(vArray)
+	if !ok {
+		return nil, fmt.Errorf("%s: cites is not an array", what)
+	}
+	cites := make([]citation, 0, len(citesArr))
+	for _, entry := range citesArr {
+		c, err := requireObject(entry, what+".cites[]")
+		if err != nil {
+			return nil, err
+		}
+		sessionID, err := requireString(c, "sessionId")
+		if err != nil {
+			return nil, fmt.Errorf("%s.cites[]: %w", what, err)
+		}
+		if err := requireSession(sessionID); err != nil {
+			return nil, fmt.Errorf("%s.cites[]: sessionId is not a flat token", what)
+		}
+		indexV, ok := c.get("callIndex")
+		if !ok {
+			return nil, fmt.Errorf(`%s.cites[]: missing member "callIndex"`, what)
+		}
+		index, ok := indexV.(vInt)
+		if !ok || index < 0 {
+			return nil, fmt.Errorf("%s.cites[]: callIndex is not a non-negative integer", what)
+		}
+		signature, err := requireString(c, "signature")
+		if err != nil {
+			return nil, fmt.Errorf("%s.cites[]: %w", what, err)
+		}
+		if !isSignature3(signature) {
+			return nil, fmt.Errorf("%s.cites[]: signature is not 128 lowercase hex characters", what)
+		}
+		cites = append(cites, citation{sessionID: sessionID, callIndex: int64(index), signature: signature})
+	}
+	return cites, nil
+}
+
+// citingRecord is a decision-record candidate that carries a cites member
+// (SPEC.md §4 step 7): the digest of the candidate's bytes, and its
+// citations as read -- or malformed, when the member is not of the stated
+// shape or is given twice.
+type citingRecord struct {
+	digest    string
+	cites     []citation
+	malformed bool
+}
+
+// recordCitations reads a candidate for its cites member and for nothing
+// else. One JSON object carrying a top-level cites member is a decision
+// record that cites; anything that is not one JSON object, or carries no
+// cites, is not interpreted. The object is walked with encoding/json,
+// since a record carries whatever its writer's facts carried -- floats
+// included -- which the canonical parser refuses; the member itself is
+// then read by the canonical parser and held to the shape an action
+// receipt's citations take, so a member twice, a member by another case,
+// or a number that is not an integer literal is malformed, not read
+// leniently.
+func recordCitations(data []byte) (cites []citation, cited bool, malformed bool) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, false, false
+	}
+	var raw json.RawMessage
+	seen, twice := false, false
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, false, false
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, false, false
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return nil, false, false
+		}
+		if key == "cites" {
+			if seen {
+				twice = true
+			}
+			seen, raw = true, v
+		}
+	}
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
+		return nil, false, false
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, false, false
+	}
+	if !seen {
+		return nil, false, false
+	}
+	if twice {
+		return nil, true, true
+	}
+	v, err := parseJSON(raw)
+	if err != nil {
+		return nil, true, true
+	}
+	cites, err = parseCitations(v, "record")
+	if err != nil {
+		return nil, true, true
+	}
+	return cites, true, false
 }

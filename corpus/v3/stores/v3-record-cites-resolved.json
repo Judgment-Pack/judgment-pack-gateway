@@ -1,0 +1,31 @@
+{
+  "name": "v3-record-cites-resolved",
+  "note": "A decision record under the decision-record directory -- one line of a .jsonl file, its facts carrying a float the canonical domain refuses -- cites both acquisition receipts of the session with their signatures. §4 step 7 reads the record for its cites and resolves each against the enumeration; nothing fires. Beside it, a line that carries no cites and a file that is not JSON are not interpreted.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/114411cb1bc822d55cc1b3ad3b75b342fcc94907bf149763fa511759bb05af3c": "{\"n\":0,\"session\":\"s4\"}",
+    "artifacts/5eaff1b17897dd1559831e0c5d948f093cb46ba2c0e63423fa7e5c09c34aff65": "{\"n\":1,\"session\":\"s4\"}",
+    "receipts/s4/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:114411cb1bc822d55cc1b3ad3b75b342fcc94907bf149763fa511759bb05af3c\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s4\",\"signature\":\"9111ee152febf89eecc1d7847531600e621980cfa1d30d74d3730de250ee60fef79d742590b8e06083768edefd1e3e5769c8014ae44c61a4167ac03567bec602\",\"source\":\"corpus\"}\n",
+    "receipts/s4/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:c23782a881a4d73007b9154c0e278949f83938bb75bc506d21d849d92b4eb054\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:710b94cc4ef897c021e70817373c64efe775a9193fbba3cbfcde0cb722635e91\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"9111ee152febf89eecc1d7847531600e621980cfa1d30d74d3730de250ee60fef79d742590b8e06083768edefd1e3e5769c8014ae44c61a4167ac03567bec602\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:5eaff1b17897dd1559831e0c5d948f093cb46ba2c0e63423fa7e5c09c34aff65\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s4\",\"signature\":\"f9e8231678e45e7a86ef3da4978708b3c2297814e54658d26d502d72f8e20eb5e565cc605fe7561c79f5a0c68f44437c7cb6eda4a9a7eadaf5272dc54b30d801\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s4\",\"signature\":\"8fc3cbd6f5384e56c1f23c84da20ed3963bbc652f368bc7b5f413d3cfee04de3b7be1e14b4f58988a798c8d92a4778cbb61df36c5234666626e25e67120ce600\"}\n",
+  "decisionRecords": {
+    "audit/evaluations.jsonl": "{\"recordVersion\":\"1\",\"run\":\"run-2\",\"at\":\"2026-09-12T00:00:02Z\",\"kind\":\"evaluation\",\"inputs\":{\"facts\":{\"amount\":12.5},\"evidence\":null,\"evidenceSupplied\":false},\"cites\":[{\"sessionId\":\"s4\",\"callIndex\":0,\"signature\":\"9111ee152febf89eecc1d7847531600e621980cfa1d30d74d3730de250ee60fef79d742590b8e06083768edefd1e3e5769c8014ae44c61a4167ac03567bec602\"},{\"sessionId\":\"s4\",\"callIndex\":1,\"signature\":\"f9e8231678e45e7a86ef3da4978708b3c2297814e54658d26d502d72f8e20eb5e565cc605fe7561c79f5a0c68f44437c7cb6eda4a9a7eadaf5272dc54b30d801\"}],\"disposition\":{\"kind\":\"outcome\",\"outcomeId\":\"approve\",\"reasons\":[],\"handoff\":{\"state\":\"none\"}}}\n{\"recordVersion\":\"1\",\"run\":\"run-1\",\"at\":\"2026-09-12T00:00:01Z\",\"kind\":\"evaluation\",\"disposition\":{\"kind\":\"outcome\",\"outcomeId\":\"approve\",\"reasons\":[],\"handoff\":{\"state\":\"none\"}}}\n",
+    "notes.txt": "not a record\n"
+  },
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s4",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s4",
+        "status": "ok"
+      }
+    ]
+  }
+}

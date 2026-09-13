@@ -1,0 +1,27 @@
+{
+  "name": "v3-record-citation-unresolved",
+  "note": "A decision record cites receipts/s4/0.json with a signature that is not that receipt's. §4 step 7 reports record-citation-unresolved once, naming the record by the SHA-256 of the line's bytes, beside the receipt's own ok; no action receipt names the record, and none is needed.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/114411cb1bc822d55cc1b3ad3b75b342fcc94907bf149763fa511759bb05af3c": "{\"n\":0,\"session\":\"s4\"}",
+    "receipts/s4/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:114411cb1bc822d55cc1b3ad3b75b342fcc94907bf149763fa511759bb05af3c\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s4\",\"signature\":\"9111ee152febf89eecc1d7847531600e621980cfa1d30d74d3730de250ee60fef79d742590b8e06083768edefd1e3e5769c8014ae44c61a4167ac03567bec602\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s4\",\"signature\":\"118ea205f7c3f4ffd954d04aeb377c9006e5b38c8798ccfc40431e9dcf459ac344ee11113a47a3d9b393c244b2d0b542088b3b2515eb21e29d67964c123fe209\"}\n",
+  "decisionRecords": {
+    "audit/evaluations.jsonl": "{\"recordVersion\":\"1\",\"run\":\"run-2\",\"at\":\"2026-09-12T00:00:02Z\",\"kind\":\"evaluation\",\"inputs\":{\"facts\":{\"amount\":12.5},\"evidence\":null,\"evidenceSupplied\":false},\"cites\":[{\"sessionId\":\"s4\",\"callIndex\":0,\"signature\":\"abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab\"}],\"disposition\":{\"kind\":\"outcome\",\"outcomeId\":\"approve\",\"reasons\":[],\"handoff\":{\"state\":\"none\"}}}\n"
+  },
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s4",
+        "status": "ok"
+      },
+      {
+        "recordDigest": "sha256:cae3e68fa9fbd08b44bba998a36f24e0747e9044ad1f66ce55323f179814ef05",
+        "status": "record-citation-unresolved"
+      }
+    ]
+  }
+}

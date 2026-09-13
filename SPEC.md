@@ -230,8 +230,11 @@ target's response bytes, retained like any artifact.
 
 `decision.packDigest` and `cites` are assertions the requester supplied. §4
 checks that the cited receipts exist and that a decision record with the stated
-digest exists; it does not compare the record's contents with either, and it does
-not read them. An action receipt does not say the action was right, and it does
+digest exists; it does not compare the record's contents with either. A decision
+record that itself carries a `cites` member of this same shape — a record the
+runtime wrote with the citations its caller gave it — has those resolved by §4
+step 7 on the record's own behalf, and that is the only member of a record §4
+reads. An action receipt does not say the action was right, and it does
 not say the identity approved it: it is lineage of a request and a response.
 
 **What the signature covers** — `"judgment-pack-gateway/receipt/3:"` followed by
@@ -434,14 +437,33 @@ not rest on the HTTP layer alone.
    absent anchor, and every action receipt is then `decision-record-mismatch`;
    present and unreadable, in any of the forms the table lists, is no verdict.
    A verifier given no directory at all treats it as absent.
+7. For each candidate step 6 enumerated — a regular file whole, or for a `.jsonl`
+   file each line and **not** the file whole — that is one JSON object carrying a
+   top-level `cites` member, the candidate is a **decision record that cites**, and
+   each entry of `cites` must resolve exactly as step 5 resolves an action
+   receipt's, by the same three string comparisons against the same enumeration →
+   otherwise **`record-citation-unresolved`**. A `cites` member that is not an
+   array of objects of the shape §1.2a gives `action.cites`, or that is given
+   twice, → **`record-citation-malformed`**. Either is reported once per record, as
+   `{recordDigest, status}` where `recordDigest` is `"sha256:"` + hex of the
+   candidate's bytes, the same digest an action receipt would name it by. A
+   candidate that is not one JSON object, or carries no `cites`, is not
+   interpreted: the verifier reads a candidate for this member and for nothing
+   else, and hashes it as before — a record's facts may carry what its writer
+   chose, floats included, and the object is read as JSON for the one member
+   while the member itself is held to the canonical domain. This is the join from
+   the record's side; step 6 is the join from the action's side, and neither says
+   the record cited the receipts the action did.
 
 Steps 5 and 6 each report their finding once per action receipt, as
 `{sessionId, callIndex, status}` with the action receipt's own session and
 index, beside that receipt's `ok`; both may fire for one receipt, and they are
-independent of each other and of every other finding.
+independent of each other and of every other finding. Step 7 reports once per
+citing record, as `{recordDigest, status}`, independent of every other finding
+and of whether any action receipt names that record.
 
 `ok` is true only if the inline verify passed **and** no registry finding fired
-**and** no citation or decision-record finding fired.
+**and** no citation, decision-record or record-citation finding fired.
 
 The verifier must obtain the registry from the gateway (the key holder), **not** from
 the untrusted store. That is the whole point: the anchor's authority comes from being
