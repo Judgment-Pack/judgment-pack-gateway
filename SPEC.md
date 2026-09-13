@@ -562,13 +562,20 @@ session it acts on:
 - it is registered: no `unregistered-session` finding names it;
 - its seal holds: no `tail-rollback`, `count-exceeds-seal`, or
   `sealed-session-missing` finding names it;
-- its chain holds: no `sequence-broken` or `chain-broken` finding names it.
+- its chain holds: no `sequence-broken` or `chain-broken` finding names it;
+- no decision record fails to cite: no `record-citation-unresolved` or
+  `record-citation-malformed` finding fired **at all** (§4 step 7). A record
+  finding names a record by `recordDigest` and no session, since one record may
+  cite receipts of several sessions and a malformed one names none; a consumer
+  scoped to a session therefore refuses on any record finding, whichever session
+  it scopes to.
 
 Session-scoping is a choice with a name, made deliberately in the consumer's code or
 configuration. Silence means store-wide. The list above leans on an invariant of
-this verifier's report: **every finding carries `sessionId` and `status`.** A
-verifier extended with a store-level finding that names no session must extend this
-list with it, or the scoped check goes blind to it.
+this verifier's report: **every finding carries `status`; a receipt or session
+finding carries `sessionId`, and a record finding carries `recordDigest` and no
+`sessionId`.** A verifier extended with a finding that names no session must extend
+this list with it, as step 7's is listed here, or the scoped check goes blind to it.
 
 **5a.2 The verdict is the JSON, never the exit code.** Per §4.1 a verifier that
 reached a verdict exits `0` whether the verdict is good or bad; non-zero is reserved

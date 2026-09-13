@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -432,6 +433,60 @@ func TestRecordCitationsReadOneMemberAndNothingElse(t *testing.T) {
 		cites, cited, malformed := recordCitations([]byte(tc.data))
 		if cited != tc.cited || malformed != tc.malformed || len(cites) != tc.count {
 			t.Errorf("%s: cited=%v malformed=%v cites=%d, want %v %v %d", name, cited, malformed, len(cites), tc.cited, tc.malformed, tc.count)
+		}
+	}
+}
+
+// The scanner passes over a record's values by their extent: a large
+// facts string costs its bytes once, nested values are bounded as the
+// canonical parser bounds them, and a string is validated as it lies.
+func TestRecordCitationsPassOverValuesWithoutCopying(t *testing.T) {
+	sig := strings.Repeat("ab", 64)
+	big := strings.Repeat("x", 8<<20)
+	data := []byte(`{"inputs":{"facts":{"blob":"` + big + `","n":[1,2.5,-3e2,true,null]}},"cites":[{"sessionId":"s","callIndex":1,"signature":"` + sig + `"}]}`)
+	debug.SetGCPercent(-1)
+	defer debug.SetGCPercent(100)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	cites, cited, malformed := recordCitations(data)
+	runtime.ReadMemStats(&after)
+	if !cited || malformed || len(cites) != 1 {
+		t.Fatalf("read: %v %v %d", cited, malformed, len(cites))
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > uint64(len(data))/8 {
+		t.Fatalf("reading an %d-byte record allocated %d bytes; the values are to be passed over, not copied", len(data), allocated)
+	}
+	// Nesting: at the bound the record is read; past it, not.
+	deep := func(levels int) []byte {
+		return []byte(`{"cites":[],"facts":` + strings.Repeat("[", levels) + strings.Repeat("]", levels) + `}`)
+	}
+	if _, cited, _ := recordCitations(deep(maxNesting - 1)); !cited {
+		t.Fatal("a record nested to the bound is read")
+	}
+	if _, cited, _ := recordCitations(deep(maxNesting)); cited {
+		t.Fatal("a record nested past the bound is not read")
+	}
+	for name, tc := range map[string]struct {
+		data  string
+		cited bool
+	}{
+		"a string with every escape":    {`{"s":"a\"b\\c\/d\b\f\n\r\té","cites":[]}`, true},
+		"a string with a bad escape":    {`{"s":"\x","cites":[]}`, false},
+		"a string with a short escape":  {`{"s":"\u00","cites":[]}`, false},
+		"a raw control in a string":     {"{\"s\":\"a\tb\",\"cites\":[]}", false},
+		"invalid UTF-8 in a string":     {"{\"s\":\"\xff\",\"cites\":[]}", false},
+		"a number with a leading zero":  {`{"n":01,"cites":[]}`, false},
+		"a number with a bare point":    {`{"n":1.,"cites":[]}`, false},
+		"a number with a bare exponent": {`{"n":1e,"cites":[]}`, false},
+		"a trailing comma":              {`{"cites":[],}`, false},
+		"a missing colon":               {`{"cites" []}`, false},
+		"text after the object":         {`{"cites":[]} x`, false},
+		"a literal misspelt":            {`{"t":tru,"cites":[]}`, false},
+		"an empty object":               {`{}`, false},
+		"whitespace around everything":  {" \t{ \"cites\" : [ ] , \"n\" : { } }\r\n", true},
+	} {
+		if _, cited, _ := recordCitations([]byte(tc.data)); cited != tc.cited {
+			t.Errorf("%s: cited=%v, want %v", name, cited, tc.cited)
 		}
 	}
 }

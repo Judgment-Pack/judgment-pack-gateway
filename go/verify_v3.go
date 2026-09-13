@@ -14,11 +14,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -459,36 +459,48 @@ type citingRecord struct {
 // recordCitations reads a candidate for its cites member and for nothing
 // else. One JSON object carrying a top-level cites member is a decision
 // record that cites; anything that is not one JSON object, or carries no
-// cites, is not interpreted. The object is walked with encoding/json,
-// since a record carries whatever its writer's facts carried -- floats
-// included -- which the canonical parser refuses; the member itself is
+// cites, is not interpreted. The object is walked by a scanner over the
+// bytes as they lie -- a record's facts may be large and may carry what
+// its writer chose, floats included, which the canonical parser refuses --
+// and nothing but the member names is ever decoded: a value is passed
+// over by its extent, a string's bytes validated and never copied, the
+// nesting bounded as the canonical parser bounds it. The cites member is
 // then read by the canonical parser and held to the shape an action
 // receipt's citations take, so a member twice, a member by another case,
 // or a number that is not an integer literal is malformed, not read
 // leniently.
 func recordCitations(data []byte) (cites []citation, cited bool, malformed bool) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+	pos := skipSpace(data, 0)
+	if pos >= len(data) || data[pos] != '{' {
 		return nil, false, false
 	}
+	pos++
 	var raw []byte
 	seen, twice := false, false
-	for dec.More() {
-		keyTok, err := dec.Token()
-		if err != nil {
+	for {
+		pos = skipSpace(data, pos)
+		if pos >= len(data) {
 			return nil, false, false
 		}
-		key, ok := keyTok.(string)
+		if data[pos] == '}' {
+			pos++
+			break
+		}
+		keyEnd, ok := scanString(data, pos)
 		if !ok {
 			return nil, false, false
 		}
-		// The value is passed over token by token, never copied: a
-		// record's facts may be large, and only the one member is read.
-		// The cites member is taken as the bytes between the offsets the
-		// decoder reports, out of the input itself.
-		start := dec.InputOffset()
-		if !skipValue(dec) {
+		var key string
+		if json.Unmarshal(data[pos:keyEnd], &key) != nil {
+			return nil, false, false
+		}
+		pos = skipSpace(data, keyEnd)
+		if pos >= len(data) || data[pos] != ':' {
+			return nil, false, false
+		}
+		valueStart := skipSpace(data, pos+1)
+		valueEnd, ok := scanValue(data, valueStart, 1)
+		if !ok {
 			return nil, false, false
 		}
 		if key == "cites" {
@@ -496,16 +508,25 @@ func recordCitations(data []byte) (cites []citation, cited bool, malformed bool)
 				twice = true
 			}
 			seen = true
-			raw = data[start:dec.InputOffset()]
-			if i := bytes.IndexByte(raw, ':'); i >= 0 {
-				raw = raw[i+1:]
+			raw = data[valueStart:valueEnd]
+		}
+		pos = skipSpace(data, valueEnd)
+		if pos >= len(data) {
+			return nil, false, false
+		}
+		switch data[pos] {
+		case ',':
+			pos++
+			// A comma must be followed by a member, not the closing brace.
+			if next := skipSpace(data, pos); next < len(data) && data[next] == '}' {
+				return nil, false, false
 			}
+		case '}':
+		default:
+			return nil, false, false
 		}
 	}
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
-		return nil, false, false
-	}
-	if _, err := dec.Token(); err != io.EOF {
+	if skipSpace(data, pos) != len(data) {
 		return nil, false, false
 	}
 	if !seen {
@@ -514,7 +535,7 @@ func recordCitations(data []byte) (cites []citation, cited bool, malformed bool)
 	if twice {
 		return nil, true, true
 	}
-	v, err := parseJSON(bytes.TrimSpace(raw))
+	v, err := parseJSON(raw)
 	if err != nil {
 		return nil, true, true
 	}
@@ -525,24 +546,170 @@ func recordCitations(data []byte) (cites []citation, cited bool, malformed bool)
 	return cites, true, false
 }
 
-// skipValue passes over one JSON value in the decoder's stream, whatever
-// its depth, materialising nothing but the tokens as they go by; false
-// when the stream is not JSON.
-func skipValue(dec *json.Decoder) bool {
-	depth := 0
-	for {
-		tok, err := dec.Token()
-		if err != nil {
-			return false
-		}
-		switch tok {
-		case json.Delim('{'), json.Delim('['):
-			depth++
-		case json.Delim('}'), json.Delim(']'):
-			depth--
-		}
-		if depth == 0 {
-			return true
+// skipSpace is the position of the first byte at or after pos that is not
+// JSON whitespace.
+func skipSpace(data []byte, pos int) int {
+	for pos < len(data) && (data[pos] == ' ' || data[pos] == '\t' || data[pos] == '\r' || data[pos] == '\n') {
+		pos++
+	}
+	return pos
+}
+
+// scanString is the position just past the JSON string starting at pos,
+// its escapes well formed, no raw control character in it and its bytes
+// valid UTF-8; nothing is copied.
+func scanString(data []byte, pos int) (int, bool) {
+	if pos >= len(data) || data[pos] != '"' {
+		return 0, false
+	}
+	start := pos + 1
+	pos++
+	for pos < len(data) {
+		c := data[pos]
+		switch {
+		case c == '"':
+			return pos + 1, utf8.Valid(data[start:pos])
+		case c == '\\':
+			if pos+1 >= len(data) {
+				return 0, false
+			}
+			switch data[pos+1] {
+			case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+				pos += 2
+			case 'u':
+				if pos+5 >= len(data) || !isHex4(data[pos+2:pos+6]) {
+					return 0, false
+				}
+				pos += 6
+			default:
+				return 0, false
+			}
+		case c < 0x20:
+			return 0, false
+		default:
+			pos++
 		}
 	}
+	return 0, false
+}
+
+func isHex4(b []byte) bool {
+	for _, c := range b {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
+// scanValue is the position just past the JSON value starting at pos --
+// a string, a number, a literal, an object or an array -- with the
+// nesting from depth bounded as the canonical parser bounds it
+// (maxNesting); false when it is not one, or nests deeper.
+func scanValue(data []byte, pos int, depth int) (int, bool) {
+	if pos >= len(data) {
+		return 0, false
+	}
+	switch c := data[pos]; {
+	case c == '"':
+		return scanString(data, pos)
+	case c == '{' || c == '[':
+		if depth >= maxNesting {
+			return 0, false
+		}
+		closing := byte('}')
+		if c == '[' {
+			closing = ']'
+		}
+		pos = skipSpace(data, pos+1)
+		if pos < len(data) && data[pos] == closing {
+			return pos + 1, true
+		}
+		for {
+			if c == '{' {
+				keyEnd, ok := scanString(data, pos)
+				if !ok {
+					return 0, false
+				}
+				pos = skipSpace(data, keyEnd)
+				if pos >= len(data) || data[pos] != ':' {
+					return 0, false
+				}
+				pos = skipSpace(data, pos+1)
+			}
+			end, ok := scanValue(data, pos, depth+1)
+			if !ok {
+				return 0, false
+			}
+			pos = skipSpace(data, end)
+			if pos >= len(data) {
+				return 0, false
+			}
+			if data[pos] == closing {
+				return pos + 1, true
+			}
+			if data[pos] != ',' {
+				return 0, false
+			}
+			pos = skipSpace(data, pos+1)
+		}
+	case c == 't':
+		return literal(data, pos, "true")
+	case c == 'f':
+		return literal(data, pos, "false")
+	case c == 'n':
+		return literal(data, pos, "null")
+	case c == '-' || (c >= '0' && c <= '9'):
+		return scanNumber(data, pos)
+	}
+	return 0, false
+}
+
+func literal(data []byte, pos int, word string) (int, bool) {
+	if len(data)-pos < len(word) || string(data[pos:pos+len(word)]) != word {
+		return 0, false
+	}
+	return pos + len(word), true
+}
+
+// scanNumber is the position just past a JSON number (RFC 8259 §6) at pos.
+func scanNumber(data []byte, pos int) (int, bool) {
+	digits := func(p int) int {
+		for p < len(data) && data[p] >= '0' && data[p] <= '9' {
+			p++
+		}
+		return p
+	}
+	if pos < len(data) && data[pos] == '-' {
+		pos++
+	}
+	if pos >= len(data) {
+		return 0, false
+	}
+	if data[pos] == '0' {
+		pos++
+	} else if data[pos] >= '1' && data[pos] <= '9' {
+		pos = digits(pos)
+	} else {
+		return 0, false
+	}
+	if pos < len(data) && data[pos] == '.' {
+		next := digits(pos + 1)
+		if next == pos+1 {
+			return 0, false
+		}
+		pos = next
+	}
+	if pos < len(data) && (data[pos] == 'e' || data[pos] == 'E') {
+		pos++
+		if pos < len(data) && (data[pos] == '+' || data[pos] == '-') {
+			pos++
+		}
+		next := digits(pos)
+		if next == pos {
+			return 0, false
+		}
+		pos = next
+	}
+	return pos, true
 }
