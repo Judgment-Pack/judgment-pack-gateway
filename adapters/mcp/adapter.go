@@ -34,6 +34,10 @@ type Config struct {
 	// Command is a local server command with its arguments, instead of
 	// Image.
 	Command []string
+	// Args are the server's own arguments when Image is given: what
+	// follows the image on the runtime's command line. A command carries
+	// its own, and Args with Command is refused.
+	Args []string
 	// Credentials is the path of a JSON object of strings that become the
 	// server's environment; empty for a server that needs none.
 	Credentials string
@@ -124,8 +128,8 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if (cfg.Image == "") == (len(cfg.Command) == 0) {
 		return nil, errNoServer
 	}
-	if cfg.Image != "" && cfg.Runtime == "" {
-		return nil, errors.New("a container runtime is required to run a server image")
+	if err := cfg.serverRefusal(); err != nil {
+		return nil, err
 	}
 	if cfg.MaxOutput < 1 {
 		return nil, errors.New("max-output must be positive")
@@ -232,8 +236,123 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	return out, nil
 }
 
+// serverRefusal is why the configuration names no server to run, or nil:
+// exactly one of an image and a command, a runtime for an image, and
+// arguments only beside an image.
+func (cfg Config) serverRefusal() error {
+	if (cfg.Image == "") == (len(cfg.Command) == 0) {
+		return errNoServer
+	}
+	if cfg.Image != "" && cfg.Runtime == "" {
+		return errors.New("a container runtime is required to run a server image")
+	}
+	if len(cfg.Command) > 0 && len(cfg.Args) > 0 {
+		return errors.New("a server command carries its own arguments; args are for an image")
+	}
+	return nil
+}
+
+// checkReport is what Check writes: the server as it identified itself,
+// the protocol version it answered with, and every tool it offers. It is
+// for the operator who is connecting a platform, and it is not an
+// envelope: nothing is minted from it.
+type checkReport struct {
+	Adapter         adapterIdentity `json:"adapter"`
+	Server          serverIdentity  `json:"server"`
+	ProtocolVersion string          `json:"protocolVersion"`
+	Tools           []string        `json:"tools"`
+}
+
+type serverIdentity struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// Check starts the server with the credentials, completes the handshake,
+// lists its tools, and reports; it calls nothing. A tool the configuration
+// allows (Tools) that the server does not offer fails the check, so a
+// binding that names a tool the pinned server lacks is found out when the
+// platform is connected, not at the first acquisition.
+func Check(ctx context.Context, cfg Config) ([]byte, error) {
+	if err := cfg.serverRefusal(); err != nil {
+		return nil, err
+	}
+	env, secrets, err := credentialsEnv(cfg.Credentials)
+	if err != nil {
+		return nil, err
+	}
+	srv, err := startServer(ctx, cfg, env)
+	if err != nil {
+		return nil, err
+	}
+	finish := func(out []byte, err error) ([]byte, error) {
+		if stopErr := srv.stop(); stopErr != nil {
+			if err == nil {
+				err = stopErr
+			} else {
+				err = fmt.Errorf("%v; the check had also failed: %v", stopErr, err)
+			}
+		}
+		if err != nil {
+			return nil, errors.New(redact.Redact(err.Error(), secrets))
+		}
+		return out, nil
+	}
+	fail := func(err error) ([]byte, error) {
+		if ctx.Err() != nil {
+			return finish(nil, fmt.Errorf("the server did not answer in time: %v", ctx.Err()))
+		}
+		stopErr := srv.stop()
+		message := withStderr(err, srv)
+		if stopErr != nil {
+			message = stopErr.Error() + "; the check had also failed: " + message
+		}
+		return nil, errors.New(redact.Redact(message, secrets))
+	}
+	rpc := newClient(srv.stdin, srv.stdout)
+	raw, err := rpc.call(ctx, "initialize", map[string]any{
+		"protocolVersion": protocolVersion,
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": clientName, "version": "0"},
+	})
+	if err != nil {
+		return fail(err)
+	}
+	initialized, err := parseInitialize(raw)
+	if err != nil {
+		return finish(nil, err)
+	}
+	if err := rpc.notify("notifications/initialized", map[string]any{}); err != nil {
+		return fail(err)
+	}
+	names, err := listTools(ctx, rpc)
+	if err != nil {
+		return fail(err)
+	}
+	for _, allowed := range cfg.Tools {
+		if !contains(names, allowed) {
+			return finish(nil, fmt.Errorf("tool %q is allowed by the configuration but not offered by the server: %v", allowed, names))
+		}
+	}
+	identity := srv.identity
+	if identity.Version == "" {
+		identity.Version = initialized.version
+	}
+	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
+		Adapter:         identity,
+		Server:          serverIdentity{Name: initialized.name, Version: initialized.version},
+		ProtocolVersion: initialized.protocol,
+		Tools:           names,
+	}})
+	if err != nil {
+		return finish(nil, err)
+	}
+	return finish(report, nil)
+}
+
 type initializeResult struct {
 	protocol string
+	name     string
 	version  string
 }
 
@@ -260,12 +379,13 @@ func parseInitialize(raw json.RawMessage) (initializeResult, error) {
 		return initializeResult{}, errors.New("initialize: the server offers no tools capability")
 	}
 	var info struct {
+		Name    string `json:"name"`
 		Version string `json:"version"`
 	}
 	if serverInfo, ok := members["serverInfo"]; ok {
 		json.Unmarshal(serverInfo, &info)
 	}
-	return initializeResult{protocol: protocol, version: info.Version}, nil
+	return initializeResult{protocol: protocol, name: info.Name, version: info.Version}, nil
 }
 
 // exactMembers decodes an object by its members' exact names -- Go's
@@ -363,38 +483,78 @@ func findTool(ctx context.Context, rpc *client, name string) (json.RawMessage, [
 	var names []string
 	params := map[string]any{}
 	for page := 0; page < maxToolPages; page++ {
-		raw, err := rpc.call(ctx, "tools/list", params)
+		tools, next, err := toolPage(ctx, rpc, params)
 		if err != nil {
 			return nil, nil, err
 		}
-		var listed struct {
-			Tools      []json.RawMessage `json:"tools"`
-			NextCursor string            `json:"nextCursor"`
-		}
-		if !canon.IsObject(raw) || json.Unmarshal(raw, &listed) != nil {
-			return nil, nil, errors.New("tools/list: the server's answer is not a tool list")
-		}
-		for _, tool := range listed.Tools {
-			var head struct {
-				Name string `json:"name"`
+		for _, tool := range tools {
+			if tool.name == name {
+				return tool.descriptor, nil, nil
 			}
-			if json.Unmarshal(tool, &head) != nil || head.Name == "" {
-				return nil, nil, errors.New("tools/list: a tool without a name")
-			}
-			if head.Name == name {
-				return tool, nil, nil
-			}
-			names = append(names, head.Name)
+			names = append(names, tool.name)
 		}
-		if listed.NextCursor == "" {
+		if next == "" {
 			if names == nil {
 				names = []string{}
 			}
 			return nil, names, errors.New("not offered")
 		}
-		params = map[string]any{"cursor": listed.NextCursor}
+		params = map[string]any{"cursor": next}
 	}
 	return nil, nil, fmt.Errorf("tools/list did not end within %d pages", maxToolPages)
+}
+
+// listTools is every tool the server offers, by name, in the order the
+// server lists them across its pages.
+func listTools(ctx context.Context, rpc *client) ([]string, error) {
+	names := []string{}
+	params := map[string]any{}
+	for page := 0; page < maxToolPages; page++ {
+		tools, next, err := toolPage(ctx, rpc, params)
+		if err != nil {
+			return nil, err
+		}
+		for _, tool := range tools {
+			names = append(names, tool.name)
+		}
+		if next == "" {
+			return names, nil
+		}
+		params = map[string]any{"cursor": next}
+	}
+	return nil, fmt.Errorf("tools/list did not end within %d pages", maxToolPages)
+}
+
+type listedTool struct {
+	name       string
+	descriptor json.RawMessage
+}
+
+// toolPage is one page of tools/list: the tools it names and the cursor
+// of the next page, empty on the last.
+func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listedTool, string, error) {
+	raw, err := rpc.call(ctx, "tools/list", params)
+	if err != nil {
+		return nil, "", err
+	}
+	var listed struct {
+		Tools      []json.RawMessage `json:"tools"`
+		NextCursor string            `json:"nextCursor"`
+	}
+	if !canon.IsObject(raw) || json.Unmarshal(raw, &listed) != nil {
+		return nil, "", errors.New("tools/list: the server's answer is not a tool list")
+	}
+	var tools []listedTool
+	for _, tool := range listed.Tools {
+		var head struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(tool, &head) != nil || head.Name == "" {
+			return nil, "", errors.New("tools/list: a tool without a name")
+		}
+		tools = append(tools, listedTool{name: head.Name, descriptor: tool})
+	}
+	return tools, listed.NextCursor, nil
 }
 
 // textOf joins the text parts of a tool result's content, for an error

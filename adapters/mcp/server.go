@@ -45,6 +45,7 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 			Runtime: cfg.Runtime, Image: cfg.Image,
 			Files: map[string][]byte{"env": envFile},
 			Flags: []string{"--env-file", "{mount}/env"},
+			Args:  cfg.Args,
 			Stdin: true,
 		})
 		if err != nil {

@@ -31,6 +31,9 @@ const (
 	// records and states past the state's cursor (an "updated_at" string).
 	EnvDiscover = "AIRBYTE_FAKE_DISCOVER"
 	EnvRead     = "AIRBYTE_FAKE_READ"
+	// EnvCheck names a file whose contents are the connector's stdout for
+	// check.
+	EnvCheck = "AIRBYTE_FAKE_CHECK"
 	// EnvStderr is written to stderr by every run.
 	EnvStderr = "AIRBYTE_FAKE_STDERR"
 	// EnvExit is the exit status of every run, 0 when unset.
@@ -157,6 +160,8 @@ func Run(args []string) int {
 		appendLine(os.Getenv(EnvTrace), string(line))
 		var out []byte
 		switch inv.Verb {
+		case "check":
+			out, _ = os.ReadFile(os.Getenv(EnvCheck))
 		case "discover":
 			out, _ = os.ReadFile(os.Getenv(EnvDiscover))
 		case "read":

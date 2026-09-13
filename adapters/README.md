@@ -35,6 +35,13 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   a runtime needs its `HOME`, and `PATH` is copied by default.
 - `--endpoint` is the host the connector reaches, as the operator names it; the
   connector's own configuration is not read for it.
+- `--check` runs the connector's `check` with the credentials instead of a read, and
+  reports on stdout what the platform answered — `{"check": {"adapter", "status":
+  "succeeded", "message"}}`, the message redacted as every diagnostic is — without reading
+  stdin. A connector that answers `FAILED`, reports an error, or answers nothing fails the
+  check with its own message, and a connector exits 0 whichever way it answers, so the
+  answer is read from the message and never from the exit status. The report is for the
+  operator connecting a platform (`gateway connect`); nothing is minted from it.
 
 The request, as canonical arguments on stdin:
 
@@ -129,11 +136,13 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   --source-env live=HOME
 ```
 
-- `--image` runs a pinned server image with stdin attached. A local server instead — one
-  installed beside the gateway, or a launcher like `npx` — is given after `--`, word by
-  word: `adapter-mcp --credentials … -- npx -y @example/mcp-server --flag`. The gateway
-  splits a source on whitespace and parses no quotes, which is why the command is not a
-  quoted value. Exactly one of the two forms.
+- `--image` runs a pinned server image with stdin attached; what follows `--` are then the
+  server's own arguments inside the container, after the image on the runtime's command
+  line: `adapter-mcp --image …@sha256:… -- --access-mode=restricted`. A local server
+  instead — one installed beside the gateway, or a launcher like `npx` — is given after
+  `--`, word by word, with its arguments: `adapter-mcp --credentials … -- npx -y
+  @example/mcp-server --flag`. The gateway splits a source on whitespace and parses no
+  quotes, which is why neither is a quoted value. Exactly one of the two forms.
 - `--credentials` is a JSON object of strings that become the server's environment — a
   token, a connection string — and nothing else is added: a container gets them through an
   env file in its private mount; a command gets them beside the adapter's own environment,
@@ -141,6 +150,13 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   newline cannot be carried and is refused.
 - `--tools` names the only tools a request may call; a request outside it is refused before
   any server starts.
+- `--check` starts the server with the credentials, completes the handshake and lists its
+  tools, then reports on stdout — `{"check": {"adapter", "server": {"name", "version"},
+  "protocolVersion", "tools"}}` — calling nothing and reading no stdin. A tool named by
+  `--tools` that the server does not offer fails the check, so a binding that names a tool
+  the pinned server lacks is found out when the platform is connected, not at the first
+  acquisition. The report is for the operator (`gateway connect`); nothing is minted from
+  it.
 
 The request, as canonical arguments on stdin:
 

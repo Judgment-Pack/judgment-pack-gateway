@@ -31,32 +31,52 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	tools := fs.String("tools", "", "the only tools a request may name, comma-separated; all offered when empty")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
 	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; stopping the server takes up to seven seconds more, under the gateway's thirty")
+	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	// The gateway splits a source command on whitespace and parses no
-	// quotes, so a server command with arguments is given after "--",
-	// word by word, and nothing else is positional.
-	command := fs.Args()
-	if (*image == "") == (len(command) == 0) {
-		fmt.Fprintln(stderr, "usage: adapter-mcp (--image REF@sha256:HEX | [options] -- CMD ARGS...) [--credentials FILE] [--runtime docker|podman] [--endpoint HOST] [--tools A,B] [--max-output BYTES] [--timeout D]")
+	// quotes, so what comes after "--" is given word by word: a server
+	// command with its arguments, or, with --image, the server's own
+	// arguments inside the container. Nothing else is positional.
+	positional := fs.Args()
+	if *image == "" && len(positional) == 0 {
+		fmt.Fprintln(stderr, "usage: adapter-mcp (--image REF@sha256:HEX [-- SERVER ARGS...] | [options] -- CMD ARGS...) [--check] [--credentials FILE] [--runtime docker|podman] [--endpoint HOST] [--tools A,B] [--max-output BYTES] [--timeout D]")
 		return 2
 	}
-	req, err := mcp.ParseRequest(stdin)
-	if err != nil {
-		fmt.Fprintln(stderr, "adapter-mcp:", err)
-		return 1
+	cfg := mcp.Config{Runtime: *runtime, Image: *image, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
+	if *image != "" {
+		cfg.Args = positional
+	} else {
+		cfg.Command = positional
 	}
-	cfg := mcp.Config{Runtime: *runtime, Image: *image, Command: command, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
 	if *tools != "" {
 		cfg.Tools = strings.Split(*tools, ",")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	out, err := mcp.Acquire(ctx, cfg, req)
-	if err != nil {
-		fmt.Fprintln(stderr, "adapter-mcp:", err)
-		return 1
+	var out []byte
+	if *check {
+		// No request is read: the check is the operator's, not an
+		// acquisition, and stdin is whatever they left attached.
+		report, err := mcp.Check(ctx, cfg)
+		if err != nil {
+			fmt.Fprintln(stderr, "adapter-mcp: check:", err)
+			return 1
+		}
+		out = report
+	} else {
+		req, err := mcp.ParseRequest(stdin)
+		if err != nil {
+			fmt.Fprintln(stderr, "adapter-mcp:", err)
+			return 1
+		}
+		envelope, err := mcp.Acquire(ctx, cfg, req)
+		if err != nil {
+			fmt.Fprintln(stderr, "adapter-mcp:", err)
+			return 1
+		}
+		out = envelope
 	}
 	if _, err := stdout.Write(out); err != nil {
 		fmt.Fprintln(stderr, "adapter-mcp: write stdout:", err)

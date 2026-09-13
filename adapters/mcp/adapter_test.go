@@ -580,3 +580,139 @@ func TestParseRequest(t *testing.T) {
 		}
 	}
 }
+
+func decodeCheck(t *testing.T, out []byte) (adapter, server map[string]string, protocol string, tools []string) {
+	t.Helper()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out, &top); err != nil || len(top) != 1 {
+		t.Fatalf("a check report is one member, check: %s", out)
+	}
+	var report struct {
+		Adapter         map[string]string `json:"adapter"`
+		Server          map[string]string `json:"server"`
+		ProtocolVersion string            `json:"protocolVersion"`
+		Tools           []string          `json:"tools"`
+	}
+	if err := json.Unmarshal(top["check"], &report); err != nil {
+		t.Fatalf("check: %v\n%s", err, out)
+	}
+	return report.Adapter, report.Server, report.ProtocolVersion, report.Tools
+}
+
+// runArgv is the runtime command line the stand-in recorded for its run.
+func runArgv(t *testing.T) []string {
+	t.Helper()
+	var argv []string
+	for _, m := range trace(t) {
+		run, ok := m["run"].(map[string]any)
+		if !ok {
+			continue
+		}
+		argv = nil
+		for _, a := range run["argv"].([]any) {
+			argv = append(argv, a.(string))
+		}
+	}
+	if argv == nil {
+		t.Fatal("the stand-in recorded no run")
+	}
+	return argv
+}
+
+func TestCheckReportsTheServerAndItsTools(t *testing.T) {
+	cfg := image(fake(t))
+	cfg.Args = []string{"--access-mode=restricted"}
+	cfg.Tools = []string{"query"}
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, server, protocol, tools := decodeCheck(t, out)
+	if adapter["name"] != "ghcr.io/example/mcp-postgres" || adapter["version"] != "2.1" || adapter["digest"] != testDigest {
+		t.Fatalf("the report names the pinned image: %s", out)
+	}
+	if server["name"] != "fake-mcp" || server["version"] != "1.0" || protocol != "2025-06-18" || len(tools) != 1 || tools[0] != "query" {
+		t.Fatalf("the report carries the server's identity, protocol and tools: %s", out)
+	}
+	if got := methods(trace(t)); strings.Join(got, " ") != "initialize notifications/initialized tools/list" {
+		t.Fatalf("a check completes the handshake and lists, and calls nothing: %v", got)
+	}
+	argv := runArgv(t)
+	if n := len(argv); n < 2 || argv[n-2] != cfg.Image || argv[n-1] != "--access-mode=restricted" {
+		t.Fatalf("the server's own arguments follow the image on the runtime's command line: %v", argv)
+	}
+	if data, _ := os.ReadFile(os.Getenv(fakemcp.EnvKills)); len(strings.TrimSpace(string(data))) == 0 {
+		t.Fatal("the container is told to stop by name after a check as after an acquisition")
+	}
+}
+
+func TestCheckListsEveryPage(t *testing.T) {
+	cfg := fake(t)
+	tools := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(tools, []byte(`[{"name":"query","inputSchema":{"type":"object"}},{"name":"other","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvTools, tools)
+	t.Setenv(fakemcp.EnvPagedTools, "1")
+	cfg.Tools = []string{"other"}
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, listed := decodeCheck(t, out)
+	if strings.Join(listed, ",") != "query,other" {
+		t.Fatalf("every page's tools are listed in the server's order: %v", listed)
+	}
+}
+
+func TestCheckRefusesAnAllowedToolTheServerDoesNotOffer(t *testing.T) {
+	cfg := fake(t)
+	cfg.Tools = []string{"query", "drop_table"}
+	out, err := Check(context.Background(), cfg)
+	if err == nil || out != nil || !strings.Contains(err.Error(), `tool "drop_table" is allowed by the configuration but not offered by the server: [query]`) {
+		t.Fatalf("a binding naming a tool the server lacks is found out at connect time: %v %s", err, out)
+	}
+}
+
+func TestCheckFailsAsAcquireDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		args []string
+		want string
+	}{
+		{"initialize refused", map[string]string{fakemcp.EnvInitError: "1"}, nil, "initialize"},
+		{"no tools capability", map[string]string{fakemcp.EnvNoTools: "1"}, nil, "offers no tools capability"},
+		{"server exits with its reason redacted", map[string]string{fakemcp.EnvExitAtStart: "1", fakemcp.EnvStderr: "cannot connect as app with hunter2\n"}, nil, "cannot connect as [redacted] with [redacted]"},
+		{"args with a command", nil, []string{"--flag"}, "a server command carries its own arguments"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := fake(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cfg.Args = tc.args
+			out, err := Check(context.Background(), cfg)
+			if err == nil || out != nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "hunter2") {
+				t.Fatalf("want %q, redacted: %v %s", tc.want, err, out)
+			}
+		})
+	}
+}
+
+func TestImageArgumentsFollowTheImageOnAcquire(t *testing.T) {
+	cfg := image(fake(t))
+	cfg.Args = []string{"--access-mode=restricted", "--transport=stdio"}
+	if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{"sql":"select 1"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	argv := runArgv(t)
+	if n := len(argv); n < 3 || argv[n-3] != cfg.Image || argv[n-2] != "--access-mode=restricted" || argv[n-1] != "--transport=stdio" {
+		t.Fatalf("the server's own arguments follow the image, in order: %v", argv)
+	}
+	cfg = fake(t)
+	cfg.Args = []string{"--flag"}
+	if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), "a server command carries its own arguments") {
+		t.Fatalf("args beside a command are refused: %v", err)
+	}
+}

@@ -810,3 +810,91 @@ func TestRedactionIsOnePass(t *testing.T) {
 		t.Fatalf("bounded as it is built: %d bytes", len(got))
 	}
 }
+
+const checkSucceeded = `{"type":"LOG","log":{"level":"INFO","message":"checking"}}` + "\n" +
+	`not a message line` + "\n" +
+	`{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":"Connected to warehouse.internal:5432 as app"}}` + "\n"
+
+// checkFake installs the connector's check output beside the fake runtime.
+func checkFake(t *testing.T, check string) Config {
+	t.Helper()
+	cfg := fake(t, discoverFixture, readFixture)
+	path := filepath.Join(t.TempDir(), "check.out")
+	if err := os.WriteFile(path, []byte(check), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvCheck, path)
+	return cfg
+}
+
+func TestCheckReportsTheConnection(t *testing.T) {
+	cfg := checkFake(t, checkSucceeded)
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out, &top); err != nil || len(top) != 1 {
+		t.Fatalf("a check report is one member, check: %s", out)
+	}
+	var report struct {
+		Adapter map[string]string `json:"adapter"`
+		Status  string            `json:"status"`
+		Message string            `json:"message"`
+	}
+	if err := json.Unmarshal(top["check"], &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Adapter["name"] != "airbyte/source-postgres" || report.Adapter["version"] != "3.6.1" || report.Adapter["digest"] != testDigest || report.Status != "succeeded" {
+		t.Fatalf("the report names the pinned image and the answer: %s", out)
+	}
+	// The connector's message is the platform's answer, with every scalar
+	// of the credentials redacted from it: the host is one.
+	if !strings.HasPrefix(report.Message, "Connected to ") || strings.Contains(report.Message, "warehouse.internal") {
+		t.Fatalf("the message is carried, redacted: %q", report.Message)
+	}
+	inv := invocations(t)
+	if len(inv) != 1 || inv[0].Verb != "check" || !strings.Contains(strings.Join(inv[0].Argv, " "), "check --config /secrets/config.json") || inv[0].Files["config.json"] != credentialsFixture {
+		t.Fatalf("one run, the connector's check with the credentials mounted: %+v", inv)
+	}
+	if got := kills(t); len(got) != 1 || got[0] != inv[0].Argv[3] {
+		t.Fatalf("the container is told to stop by name after the check: %v", got)
+	}
+}
+
+func TestCheckRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check string
+		env   map[string]string
+		want  string
+	}{
+		{"FAILED is the connector's answer", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"password hunter2 rejected by warehouse.internal"}}` + "\n", nil, "the connector could not connect (FAILED): password "},
+		{"no answer", `{"type":"LOG","log":{"level":"INFO","message":"checking"}}` + "\n", nil, "the connector answered no connection status"},
+		{"an error trace", `{"type":"TRACE","trace":{"type":"ERROR","error":{"message":"cannot reach warehouse.internal with hunter2"}}}` + "\n", nil, "connector reported an error during check: cannot reach "},
+		{"a status without its payload", `{"type":"CONNECTION_STATUS","connectionStatus":{"message":"x"}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"a status that is not an object", `{"type":"CONNECTION_STATUS","connectionStatus":"ok"}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"the runtime fails", checkSucceeded, map[string]string{fakeruntime.EnvExit: "1", fakeruntime.EnvStderr: "daemon refused hunter2\n"}, "connector check failed: daemon refused "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := checkFake(t, tc.check)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			out, err := Check(context.Background(), cfg)
+			if err == nil || out != nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") {
+				t.Fatalf("want %q, redacted: %v %s", tc.want, err, out)
+			}
+		})
+	}
+	cfg := checkFake(t, checkSucceeded)
+	cfg.Runtime = ""
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "a container runtime is required") {
+		t.Fatalf("no runtime: %v", err)
+	}
+	cfg = checkFake(t, checkSucceeded)
+	cfg.Credentials = filepath.Join(t.TempDir(), "missing")
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials could not be read") {
+		t.Fatalf("missing credentials: %v", err)
+	}
+}

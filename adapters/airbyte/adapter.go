@@ -155,6 +155,103 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	return buildEnvelope(cfg, image, req, strm, mode, cursor, schema, p)
 }
 
+// checkReport is what Check writes: the pinned image and what the
+// connector answered. It is for the operator who is connecting a platform,
+// and it is not an envelope: nothing is minted from it.
+type checkReport struct {
+	Adapter adapterIdentity `json:"adapter"`
+	Status  string          `json:"status"`
+	Message string          `json:"message"`
+}
+
+// Check runs the connector's check with the credentials and reports what
+// the platform answered; it reads nothing. A connector that answers FAILED,
+// reports an error, or answers nothing fails the check with the connector's
+// own message, redacted; a connector exits 0 whichever way it answers, so
+// the answer is read from the message and never from the exit status.
+func Check(ctx context.Context, cfg Config) ([]byte, error) {
+	image, err := containers.ParseImage(cfg.Image)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Runtime == "" {
+		return nil, errors.New("a container runtime is required")
+	}
+	config, err := os.ReadFile(cfg.Credentials)
+	if err != nil {
+		return nil, fmt.Errorf("credentials could not be read: %w", err)
+	}
+	if !json.Valid(config) {
+		return nil, errors.New("credentials file is not JSON")
+	}
+	secrets := redact.SecretsOf(config)
+	c, err := containers.Start(ctx, containers.Spec{
+		Runtime: cfg.Runtime, Image: cfg.Image,
+		Files: map[string][]byte{"config.json": config},
+		Args:  []string{"check", "--config", "/secrets/config.json"},
+	})
+	if err != nil {
+		return nil, err
+	}
+	finish := func(out []byte, err error) ([]byte, error) {
+		if stopErr := c.Stop(); stopErr != nil {
+			if err == nil {
+				return nil, stopErr
+			}
+			err = fmt.Errorf("%v; the check had also failed: %v", stopErr, err)
+		}
+		if err != nil {
+			return nil, errors.New(redact.Redact(err.Error(), secrets))
+		}
+		return out, nil
+	}
+	var answer *connectionStatus
+	scanner := newScanner(c.Stdout)
+	for scanner.Scan() {
+		m, isMessage, err := parseMessage(scanner.Bytes())
+		if err != nil {
+			return finish(nil, err)
+		}
+		if !isMessage {
+			continue
+		}
+		switch m.Type {
+		case "CONNECTION_STATUS":
+			answer = m.ConnectionStatus
+		case "TRACE":
+			if m.Trace != nil && m.Trace.Type == "ERROR" {
+				return finish(nil, fmt.Errorf("connector reported an error during check: %s", traceMessage(m.Trace)))
+			}
+		}
+	}
+	scanErr := scanner.Err()
+	waitErr := c.Wait()
+	if ctx.Err() != nil {
+		return finish(nil, fmt.Errorf("connector check stopped: %v", ctx.Err()))
+	}
+	if scanErr != nil {
+		return finish(nil, fmt.Errorf("reading the connector's answer: %w", scanErr))
+	}
+	if waitErr != nil {
+		return finish(nil, fmt.Errorf("connector check failed: %s", failure(c, waitErr)))
+	}
+	if answer == nil {
+		return finish(nil, errors.New("the connector answered no connection status"))
+	}
+	if answer.Status != "SUCCEEDED" {
+		return finish(nil, fmt.Errorf("the connector could not connect (%s): %s", answer.Status, answer.Message))
+	}
+	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
+		Adapter: adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest},
+		Status:  "succeeded",
+		Message: redact.Redact(answer.Message, secrets),
+	}})
+	if err != nil {
+		return finish(nil, err)
+	}
+	return finish(report, nil)
+}
+
 // discover runs the connector's discover and finds the requested stream in
 // the catalog it emits: by name, and by namespace when the request gives
 // one; a name the catalog holds in more than one namespace is ambiguous
@@ -317,7 +414,7 @@ func parseMessage(line []byte) (message, bool, error) {
 	var m message
 	if err := json.Unmarshal(line, &m); err != nil {
 		switch *probe.Type {
-		case "RECORD", "STATE", "TRACE", "CATALOG":
+		case "RECORD", "STATE", "TRACE", "CATALOG", "CONNECTION_STATUS":
 			return message{}, true, malformed
 		}
 		return message{}, false, nil
@@ -340,6 +437,10 @@ func parseMessage(line []byte) (message, bool, error) {
 		}
 	case "CATALOG":
 		if m.Catalog == nil {
+			return message{}, true, malformed
+		}
+	case "CONNECTION_STATUS":
+		if m.ConnectionStatus == nil || m.ConnectionStatus.Status == "" {
 			return message{}, true, malformed
 		}
 	}

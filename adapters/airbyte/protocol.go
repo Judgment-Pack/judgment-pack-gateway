@@ -7,11 +7,19 @@ import "encoding/json"
 // are not messages are what connectors print when they log to stdout, and
 // are skipped.
 type message struct {
-	Type    string          `json:"type"`
-	Record  *record         `json:"record"`
-	State   json.RawMessage `json:"state"`
-	Catalog *catalog        `json:"catalog"`
-	Trace   *trace          `json:"trace"`
+	Type             string            `json:"type"`
+	Record           *record           `json:"record"`
+	State            json.RawMessage   `json:"state"`
+	Catalog          *catalog          `json:"catalog"`
+	Trace            *trace            `json:"trace"`
+	ConnectionStatus *connectionStatus `json:"connectionStatus"`
+}
+
+// connectionStatus is what a connector's check answers: SUCCEEDED or
+// FAILED, with a message the connector chose.
+type connectionStatus struct {
+	Status  string `json:"status"`
+	Message string `json:"message"`
 }
 
 type record struct {
