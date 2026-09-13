@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A connection string's user name and password are secrets in their own
@@ -163,6 +164,25 @@ func TestOverlappingSecretsAreCoveredTogether(t *testing.T) {
 	}
 	// A merged run the cut falls inside keeps its replacement.
 	if got := Diagnostic("x alice-super-secret", true, []string{"ice-super-secret", "alice"}); got != "x [redacted]" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestASecretOverlappingItselfIsCoveredInLinearTime(t *testing.T) {
+	// A mebibyte of "a" with the secret "aa": one run, found by examining
+	// each position once, not by rescanning the run as it grows.
+	text := strings.Repeat("a", 1<<20)
+	done := make(chan string, 1)
+	go func() { done <- Redact(text, []string{"aa"}) }()
+	select {
+	case got := <-done:
+		if got != "[redacted]" {
+			t.Fatalf("got %.40q", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("covering a self-overlapping secret took more than ten seconds")
+	}
+	if got := Diagnostic("x "+text[:100]+" y", false, []string{"aa"}); got != "x [redacted] y" {
 		t.Fatalf("got %q", got)
 	}
 }

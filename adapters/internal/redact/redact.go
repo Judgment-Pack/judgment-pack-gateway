@@ -184,24 +184,27 @@ func wholeSpans(text string, secrets []string, bounded bool) []span {
 		if start < 0 {
 			break
 		}
-		// Every secret that begins inside the run extends it.
-		for {
+		// Every secret that begins inside the run extends it. Each pass
+		// examines only the positions the last pass added, so the run is
+		// examined once over, however far a secret overlapping itself
+		// carries it: linear, never a rescan of the growing run.
+		for examined := start; examined < stop; {
 			grown := stop
 			for _, s := range secrets {
-				window := text[start:min(len(text), stop+len(s))]
+				if s == "" {
+					continue
+				}
+				window := text[examined:min(len(text), stop+len(s)-1)]
 				for at := 0; at < len(window); {
 					p := strings.Index(window[at:], s)
-					if p < 0 || start+at+p >= stop {
+					if p < 0 || examined+at+p >= stop {
 						break
 					}
-					grown = max(grown, start+at+p+len(s))
+					grown = max(grown, examined+at+p+len(s))
 					at += p + 1
 				}
 			}
-			if grown == stop {
-				break
-			}
-			stop = grown
+			examined, stop = stop, grown
 		}
 		rendered += start - i + len(replacement)
 		spans = append(spans, span{start, stop})
