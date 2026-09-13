@@ -37,6 +37,7 @@ const (
 // container runtime: its stdout a stream the caller drains, its stdin a
 // pipe the caller writes when it asked for one.
 type Container struct {
+	redact func(text string, truncated bool) string
 	// Name is the name the container was run under.
 	Name string
 	// Stdout is the container's standard output, closed with the context.
@@ -67,6 +68,12 @@ type Spec struct {
 	Flags   []string
 	Args    []string
 	Stdin   bool
+	// Redact is applied to everything the runtime or the container wrote
+	// before any of it is cut to a line for a diagnostic, so a credential
+	// longer than the cut, or spanning lines, still matches; truncated
+	// says the buffer overflowed, so what ends it may be the start of a
+	// credential whose rest was dropped.
+	Redact func(text string, truncated bool) string
 }
 
 // startContainer writes files into a private directory, mounts it read-only
@@ -123,7 +130,9 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 	if spec.Stdin {
 		argv = append(argv, "-i")
 	}
-	argv = append(argv, image)
+	// The runtime's option parsing ends here: what follows is the image
+	// and the container's arguments, whatever they look like.
+	argv = append(argv, "--", image)
 	argv = append(argv, spec.Args...)
 	runCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(runCtx, runtime, argv...)
@@ -135,7 +144,7 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 		os.RemoveAll(dir)
 		return nil, err
 	}
-	stderr := &boundedBuffer{limit: 4096}
+	stderr := &boundedBuffer{limit: DiagnosticBytes}
 	cmd.Stderr = stderr
 	var stdin io.WriteCloser
 	if spec.Stdin {
@@ -160,7 +169,11 @@ func Start(ctx context.Context, spec Spec) (*Container, error) {
 			stdin.Close()
 		}
 	}()
-	return &Container{Name: name, Stdout: stdout, Stdin: stdin, runtime: runtime, dir: dir, cmd: cmd, stderr: stderr, ctx: runCtx, cancel: cancel}, nil
+	redactor := spec.Redact
+	if redactor == nil {
+		redactor = func(text string, truncated bool) string { return text }
+	}
+	return &Container{Name: name, Stdout: stdout, Stdin: stdin, runtime: runtime, dir: dir, cmd: cmd, stderr: stderr, ctx: runCtx, cancel: cancel, redact: redactor}, nil
 }
 
 // Wait waits once for the runtime client and returns its error; a second
@@ -231,7 +244,7 @@ func (c *Container) stopByName() error {
 	// holding one would otherwise hold this past the window: the drain is
 	// bounded too.
 	inspect.WaitDelay = InspectDrain
-	answer := &boundedBuffer{limit: 4096}
+	answer := &boundedBuffer{limit: DiagnosticBytes}
 	inspect.Stderr = answer
 	inspect.Stdout = io.Discard
 	err := inspect.Run()
@@ -241,7 +254,7 @@ func (c *Container) stopByName() error {
 	case SaysAbsent(answer.String(), c.Name):
 		return nil // absent: it ended on its own, and --rm removed it
 	}
-	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.Name, c.runtime, firstLineOf(answer.String(), err))
+	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.Name, c.runtime, firstLineOf(c.redact(answer.String(), answer.overflowed()), err))
 }
 
 // SaysAbsent reports whether an inspect's answer is the runtime saying the
@@ -272,10 +285,15 @@ func firstLineOf(text string, err error) string {
 	return text
 }
 
-// FirstLine is the first line of what the connector wrote on stderr, for an
-// error message; never the whole of it.
+// diagnosticBytes is how much of what a runtime or a container writes is
+// kept for a diagnostic: enough that a credential echoed whole is still
+// whole when the redactor sees it, before the first line is cut.
+const DiagnosticBytes = 64 << 10
+
+// FirstLine is the first line of what the connector wrote on stderr,
+// redacted before the cut, for an error message; never the whole of it.
 func (c *Container) FirstLine() string {
-	text := c.stderr.String()
+	text := c.redact(c.stderr.String(), c.stderr.overflowed())
 	for i, r := range text {
 		if r == '\n' {
 			return text[:i]
@@ -289,15 +307,20 @@ func (c *Container) FirstLine() string {
 // write would have os/exec's copier stop and close the pipe on the child.
 // It is written by that copier and read for a diagnostic, so it locks.
 type boundedBuffer struct {
-	mu    sync.Mutex
-	limit int
-	buf   []byte
+	mu      sync.Mutex
+	limit   int
+	buf     []byte
+	dropped bool
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if room := b.limit - len(b.buf); room > 0 {
+	room := b.limit - len(b.buf)
+	if room < len(p) {
+		b.dropped = true
+	}
+	if room > 0 {
 		kept := p
 		if len(kept) > room {
 			kept = kept[:room]
@@ -305,6 +328,13 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 		b.buf = append(b.buf, kept...)
 	}
 	return len(p), nil
+}
+
+// overflowed reports whether anything written was dropped.
+func (b *boundedBuffer) overflowed() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped
 }
 
 func (b *boundedBuffer) String() string {
@@ -317,11 +347,20 @@ func (b *boundedBuffer) String() string {
 // what a receipt names, not whatever a tag resolved to at pull time.
 type Image struct{ Name, Version, Digest string }
 
-// ParseImage requires name[:tag]@sha256:<64 hex>.
+// imageReference is the shape of name[:tag]: a registry with an optional
+// port, path components, and a tag, every component beginning with a
+// letter or digit -- so nothing that is handed to a runtime as an image
+// can be read by it as an option.
+var imageReference = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*(?::[0-9]+)?(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})?$`)
+
+// ParseImage requires name[:tag]@sha256:<64 hex>, the name a reference.
 func ParseImage(ref string) (Image, error) {
 	name, digest, ok := strings.Cut(ref, "@")
 	if !ok || !isDigest(digest) {
 		return Image{}, fmt.Errorf("image %q must be pinned: name[:tag]@sha256:<64 hex>", ref)
+	}
+	if !imageReference.MatchString(name) {
+		return Image{}, fmt.Errorf("image %q is not a reference: registry, path and tag components, each beginning with a letter or digit", ref)
 	}
 	version := ""
 	if i := strings.LastIndex(name, ":"); i > strings.LastIndex(name, "/") {

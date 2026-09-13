@@ -68,6 +68,9 @@ const (
 	EnvLinger = "MCP_FAKE_LINGER"
 	// EnvHolderPid is the file the descendant's pid is written to.
 	EnvHolderPid = "MCP_FAKE_HOLDER_PID"
+	// EnvHoldFork makes the descendant itself fork a sleeper and exit at
+	// once, so what holds on is a grandchild whose parent is gone.
+	EnvHoldFork = "MCP_FAKE_HOLD_FORK"
 	// EnvConflict makes tools/call answer with both a result and an error;
 	// EnvNullError with a result and an error member that is null.
 	EnvConflict  = "MCP_FAKE_CONFLICT"
@@ -79,6 +82,22 @@ const (
 	EnvProtocol = "MCP_FAKE_PROTOCOL"
 	// EnvNoTools makes initialize answer without a tools capability.
 	EnvNoTools = "MCP_FAKE_NO_TOOLS"
+	// EnvServerInfo replaces initialize's serverInfo with the JSON given,
+	// or omits it when "absent".
+	EnvServerInfo = "MCP_FAKE_SERVER_INFO"
+	// EnvListRaw names a file whose contents are the raw result of every
+	// tools/list, as given.
+	EnvListRaw = "MCP_FAKE_LIST_RAW"
+	// EnvListLine names a file whose contents are the whole line written
+	// in answer to tools/list, with {id} replaced by the request's id.
+	EnvListLine = "MCP_FAKE_LIST_LINE"
+	// EnvStderrFile names a file whose contents are written to stderr at
+	// start, for text too long for a variable.
+	EnvStderrFile = "MCP_FAKE_STDERR_FILE"
+	// EnvRequire is a KEY=VALUE the server requires -- in its environment
+	// as a command, in the env file it was run with as an image -- or it
+	// ends before answering, as a server without its credential would.
+	EnvRequire = "MCP_FAKE_REQUIRE"
 
 	envSleep = "MCP_FAKE_SLEEP"
 )
@@ -91,6 +110,9 @@ type Invocation struct {
 }
 
 // Run acts as the runtime when args name a runtime verb, else as the server.
+// envFile is what the runtime form was handed as --env-file.
+var envFile string
+
 func Run(args []string) int {
 	if len(args) > 0 {
 		switch args[0] {
@@ -116,6 +138,7 @@ func Run(args []string) int {
 				if a == "--env-file" && i+1 < len(args) {
 					data, _ := os.ReadFile(args[i+1])
 					inv.EnvFile = string(data)
+					envFile = inv.EnvFile
 				}
 			}
 			line, _ := json.Marshal(map[string]any{"run": inv})
@@ -128,14 +151,34 @@ func Run(args []string) int {
 
 func serve() int {
 	if os.Getenv(envSleep) == "1" {
+		if os.Getenv(EnvHoldFork) == "1" {
+			child := exec.Command(os.Args[0])
+			child.Env = append(os.Environ(), EnvHoldFork+"=0")
+			child.Stdin = os.Stdin
+			if err := child.Start(); err == nil {
+				appendLine(os.Getenv(EnvHolderPid), strconv.Itoa(child.Process.Pid))
+			}
+			return 0
+		}
 		time.Sleep(60 * time.Second)
 		return 0
 	}
 	if text := os.Getenv(EnvStderr); text != "" {
 		os.Stderr.WriteString(text)
 	}
+	if path := os.Getenv(EnvStderrFile); path != "" {
+		data, _ := os.ReadFile(path)
+		os.Stderr.Write(data)
+	}
 	if os.Getenv(EnvExitAtStart) == "1" {
 		return 1
+	}
+	if required := os.Getenv(EnvRequire); required != "" {
+		key, value, _ := strings.Cut(required, "=")
+		if os.Getenv(key) != value && !strings.Contains(envFile, key+"="+value+"\n") {
+			os.Stderr.WriteString("credential missing\n")
+			return 1
+		}
 	}
 	env := map[string]string{}
 	for _, key := range strings.Split(os.Getenv(EnvEnvKeys), ",") {
@@ -143,7 +186,7 @@ func serve() int {
 			env[key] = os.Getenv(key)
 		}
 	}
-	line, _ := json.Marshal(map[string]any{"env": env, "argv": os.Args})
+	line, _ := json.Marshal(map[string]any{"env": env, "argv": os.Args, "pgid": processGroup()})
 	appendLine(os.Getenv(EnvTrace), string(line))
 	tools := json.RawMessage(`[{"name":"query","description":"Run a read-only query","inputSchema":{"type":"object","properties":{"sql":{"type":"string"}},"required":["sql"]},"outputSchema":{"type":"object","properties":{"rows":{"type":"array"}}}}]`)
 	if path := os.Getenv(EnvTools); path != "" {
@@ -194,11 +237,28 @@ func serve() int {
 			if os.Getenv(EnvNoTools) == "1" {
 				capabilities = map[string]any{"prompts": map[string]any{}}
 			}
-			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": map[string]any{
-				"protocolVersion": protocol, "capabilities": capabilities,
-				"serverInfo": map[string]any{"name": "fake-mcp", "version": "1.0"}}})
+			result := map[string]any{"protocolVersion": protocol, "capabilities": capabilities,
+				"serverInfo": map[string]any{"name": "fake-mcp", "version": "1.0"}}
+			switch v := os.Getenv(EnvServerInfo); {
+			case v == "absent":
+				delete(result, "serverInfo")
+			case v != "":
+				result["serverInfo"] = json.RawMessage(v)
+			}
+			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
 		case "notifications/initialized":
 		case "tools/list":
+			if path := os.Getenv(EnvListLine); path != "" {
+				raw, _ := os.ReadFile(path)
+				out.WriteString(strings.ReplaceAll(strings.TrimSpace(string(raw)), "{id}", string(m.ID)) + "\n")
+				out.Flush()
+				continue
+			}
+			if path := os.Getenv(EnvListRaw); path != "" {
+				raw, _ := os.ReadFile(path)
+				emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": json.RawMessage(raw)})
+				continue
+			}
 			if os.Getenv(EnvPagedTools) == "1" && len(toolList) > 1 {
 				page := 0
 				if m.Params.Cursor != "" {
@@ -218,6 +278,18 @@ func serve() int {
 				child.Stdin = os.Stdin
 				if err := child.Start(); err == nil {
 					appendLine(os.Getenv(EnvHolderPid), strconv.Itoa(child.Process.Pid))
+					if os.Getenv(EnvHoldFork) == "1" {
+						// Stay until the holder has forked its child and
+						// written its pid, so the grandchild exists before
+						// the adapter stops anything.
+						for i := 0; i < 300; i++ {
+							data, _ := os.ReadFile(os.Getenv(EnvHolderPid))
+							if strings.Count(string(data), "\n") >= 2 {
+								break
+							}
+							time.Sleep(10 * time.Millisecond)
+						}
+					}
 				}
 				return 0
 			}

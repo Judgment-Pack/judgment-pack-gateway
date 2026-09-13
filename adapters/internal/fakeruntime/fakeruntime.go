@@ -31,8 +31,13 @@ const (
 	// records and states past the state's cursor (an "updated_at" string).
 	EnvDiscover = "AIRBYTE_FAKE_DISCOVER"
 	EnvRead     = "AIRBYTE_FAKE_READ"
-	// EnvStderr is written to stderr by every run.
-	EnvStderr = "AIRBYTE_FAKE_STDERR"
+	// EnvCheck names a file whose contents are the connector's stdout for
+	// check.
+	EnvCheck = "AIRBYTE_FAKE_CHECK"
+	// EnvStderr is written to stderr by every run; EnvStderrFile names a
+	// file whose contents are, for text too long for a variable.
+	EnvStderr     = "AIRBYTE_FAKE_STDERR"
+	EnvStderrFile = "AIRBYTE_FAKE_STDERR_FILE"
 	// EnvExit is the exit status of every run, 0 when unset.
 	EnvExit = "AIRBYTE_FAKE_EXIT"
 	// EnvHang makes a read sleep after its output until it is killed.
@@ -98,6 +103,13 @@ func Run(args []string) int {
 		return code
 	case "inspect":
 		if len(args) > 1 && stuck(args[1]) {
+			// A stuck container is still known to the runtime; with
+			// EnvInspectStderr set, the runtime instead cannot say, and
+			// says that.
+			if text := os.Getenv(EnvInspectStderr); text != "" {
+				os.Stderr.WriteString(strings.ReplaceAll(text, "{name}", args[1]) + "\n")
+				return 1
+			}
 			return 0
 		}
 		code := 1
@@ -131,10 +143,16 @@ func Run(args []string) int {
 		inv := Invocation{Argv: args, Files: map[string]string{}, Modes: map[string]string{}}
 		dir := ""
 		for i, a := range args {
-			if a == "-v" && i+3 < len(args) {
+			if a == "-v" && i+1 < len(args) {
 				dir = strings.TrimSuffix(args[i+1], ":/secrets:ro")
-				inv.Image = args[i+2]
-				inv.Verb = args[i+3]
+				j := i + 2
+				if j < len(args) && args[j] == "--" {
+					j++
+				}
+				if j+1 < len(args) {
+					inv.Image = args[j]
+					inv.Verb = args[j+1]
+				}
 			}
 		}
 		if dir != "" {
@@ -157,6 +175,8 @@ func Run(args []string) int {
 		appendLine(os.Getenv(EnvTrace), string(line))
 		var out []byte
 		switch inv.Verb {
+		case "check":
+			out, _ = os.ReadFile(os.Getenv(EnvCheck))
 		case "discover":
 			out, _ = os.ReadFile(os.Getenv(EnvDiscover))
 		case "read":
@@ -168,6 +188,10 @@ func Run(args []string) int {
 		os.Stdout.Write(out)
 		if text := os.Getenv(EnvStderr); text != "" {
 			os.Stderr.WriteString(text)
+		}
+		if path := os.Getenv(EnvStderrFile); path != "" {
+			data, _ := os.ReadFile(path)
+			os.Stderr.Write(data)
 		}
 		if inv.Verb == "read" && (os.Getenv(EnvHold) == "1" || os.Getenv(EnvHoldStderr) == "1") {
 			child := exec.Command(os.Args[0])

@@ -56,3 +56,17 @@ func TestParseImage(t *testing.T) {
 		}
 	}
 }
+
+func TestParseImageHoldsTheReferenceShape(t *testing.T) {
+	digest := "@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	for _, ref := range []string{"alpine", "airbyte/source-postgres:3.8.5", "ghcr.io/example/mcp-postgres:2.1", "localhost:5000/x/y:v1.0-rc_2", "a.b-c_d/e"} {
+		if _, err := ParseImage(ref + digest); err != nil {
+			t.Errorf("%s: %v", ref, err)
+		}
+	}
+	for _, ref := range []string{"--label=probe=value", "-x", "ghcr.io/-example/mcp", "a/b:-tag", "a b", "a//b", "/a", "a/", "a:b:c", ""} {
+		if _, err := ParseImage(ref + digest); err == nil {
+			t.Errorf("%q: accepted", ref)
+		}
+	}
+}

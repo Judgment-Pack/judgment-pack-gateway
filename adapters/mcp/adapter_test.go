@@ -41,7 +41,7 @@ func fake(t *testing.T) Config {
 	for _, name := range []string{fakemcp.EnvTools, fakemcp.EnvResult, fakemcp.EnvHang, fakemcp.EnvExitBeforeCall, fakemcp.EnvStderr,
 		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck,
 		fakemcp.EnvPing, fakemcp.EnvWrongID, fakemcp.EnvHoldStdin, fakemcp.EnvConflict, fakemcp.EnvExitAtStart, fakemcp.EnvProtocol, fakemcp.EnvNoTools,
-		fakemcp.EnvLinger, fakemcp.EnvNullError} {
+		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw, fakemcp.EnvListLine, fakemcp.EnvStderrFile, fakemcp.EnvRequire} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")
@@ -216,7 +216,7 @@ func TestAcquireThroughTheRuntime(t *testing.T) {
 		joined[i] = a.(string)
 	}
 	line := strings.Join(joined, " ")
-	if joined[0] != "run" || joined[1] != "--rm" || !strings.Contains(line, " --env-file ") || !strings.Contains(line, " -i "+cfg.Image) ||
+	if joined[0] != "run" || joined[1] != "--rm" || !strings.Contains(line, " --env-file ") || !strings.Contains(line, " -i -- "+cfg.Image) ||
 		strings.Index(line, " --env-file ") > strings.Index(line, cfg.Image) {
 		t.Fatalf("run --rm --name NAME -v MOUNT:/secrets:ro --env-file MOUNT/env -i IMAGE, the env file before the image: %s", line)
 	}
@@ -284,7 +284,7 @@ func TestAcquireRefusals(t *testing.T) {
 	t.Run("unsupported protocol version", func(t *testing.T) {
 		cfg := fake(t)
 		t.Setenv(fakemcp.EnvProtocol, "1999-01-01")
-		mustFail(t, cfg, query("select 1"), `speaks protocol version "1999-01-01", which this client does not`)
+		mustFail(t, cfg, query("select 1"), `speaks protocol version '1999-01-01', which this client does not`)
 	})
 	t.Run("no tools capability", func(t *testing.T) {
 		cfg := fake(t)
@@ -311,7 +311,7 @@ func TestAcquireRefusals(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "tools.json")
 		os.WriteFile(path, []byte(`[{"name":"query","inputSchema":{"type":"object"},"outputSchema":{"type":"object"},"outputSchema":null}]`), 0o600)
 		t.Setenv(fakemcp.EnvTools, path)
-		mustFail(t, cfg, query("select 1"), `tool "query": descriptor: duplicate member name "outputSchema"`)
+		mustFail(t, cfg, query("select 1"), `JSON-RPC message that is malformed: duplicate member name 'outputSchema'`)
 	})
 	t.Run("tool results held to their shape", func(t *testing.T) {
 		for text, want := range map[string]string{
@@ -356,18 +356,18 @@ func TestAcquireRefusals(t *testing.T) {
 		os.WriteFile(result, []byte(`{"content":[],"hunter2":0,"hunter2":1}`), 0o600)
 		t.Setenv(fakemcp.EnvResult, result)
 		_, err = Acquire(context.Background(), cfg, query("select 1"))
-		if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `duplicate member name "[redacted]"`) {
+		if err == nil || strings.Contains(err.Error(), "hunter2") || !strings.Contains(err.Error(), `duplicate member name '[redacted]'`) {
 			t.Fatalf("a canonicalization diagnostic is redacted: %v", err)
 		}
 	})
 	t.Run("credentials not an object of strings", func(t *testing.T) {
 		cfg := fake(t)
 		os.WriteFile(cfg.Credentials, []byte(`{"PORT":5432}`), 0o600)
-		mustFail(t, cfg, query("select 1"), "not a JSON object of strings")
+		mustFail(t, cfg, query("select 1"), "a credentials member is not a string")
 		os.WriteFile(cfg.Credentials, []byte(`{"KEY":"a\nb"}`), 0o600)
-		mustFail(t, cfg, query("select 1"), `credentials member "KEY" cannot be carried`)
+		mustFail(t, cfg, query("select 1"), "a credentials member has a value an environment cannot carry")
 		os.WriteFile(cfg.Credentials, []byte(`{"A=B":"x"}`), 0o600)
-		mustFail(t, cfg, query("select 1"), `credentials member "A=B" cannot be carried`)
+		mustFail(t, cfg, query("select 1"), "a credentials member is not an environment variable name")
 	})
 	t.Run("neither or both servers", func(t *testing.T) {
 		cfg := fake(t)
@@ -578,5 +578,485 @@ func TestParseRequest(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: got %v, want %q", in, err, want)
 		}
+	}
+}
+
+func decodeCheck(t *testing.T, out []byte) (adapter, server map[string]string, protocol string, tools []string) {
+	t.Helper()
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out, &top); err != nil || len(top) != 1 {
+		t.Fatalf("a check report is one member, check: %s", out)
+	}
+	var report struct {
+		Adapter         map[string]string `json:"adapter"`
+		Server          map[string]string `json:"server"`
+		ProtocolVersion string            `json:"protocolVersion"`
+		Tools           []string          `json:"tools"`
+	}
+	if err := json.Unmarshal(top["check"], &report); err != nil {
+		t.Fatalf("check: %v\n%s", err, out)
+	}
+	return report.Adapter, report.Server, report.ProtocolVersion, report.Tools
+}
+
+// runArgv is the runtime command line the stand-in recorded for its run.
+func runArgv(t *testing.T) []string {
+	t.Helper()
+	var argv []string
+	for _, m := range trace(t) {
+		run, ok := m["run"].(map[string]any)
+		if !ok {
+			continue
+		}
+		argv = nil
+		for _, a := range run["argv"].([]any) {
+			argv = append(argv, a.(string))
+		}
+	}
+	if argv == nil {
+		t.Fatal("the stand-in recorded no run")
+	}
+	return argv
+}
+
+func TestCheckReportsTheServerAndItsTools(t *testing.T) {
+	cfg := image(fake(t))
+	cfg.Args = []string{"--access-mode=restricted"}
+	cfg.Tools = []string{"query"}
+	// The server answers only with its credential in the env file it was
+	// run with: a check that did not hand it over does not succeed.
+	t.Setenv(fakemcp.EnvRequire, "PGSSLMODE=require")
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, server, protocol, tools := decodeCheck(t, out)
+	if adapter["name"] != "ghcr.io/example/mcp-postgres" || adapter["version"] != "2.1" || adapter["digest"] != testDigest {
+		t.Fatalf("the report names the pinned image: %s", out)
+	}
+	if server["name"] != "fake-mcp" || server["version"] != "1.0" || protocol != "2025-06-18" || len(tools) != 1 || tools[0] != "query" {
+		t.Fatalf("the report carries the server's identity, protocol and tools: %s", out)
+	}
+	if got := methods(trace(t)); strings.Join(got, " ") != "initialize notifications/initialized tools/list" {
+		t.Fatalf("a check completes the handshake and lists, and calls nothing: %v", got)
+	}
+	argv := runArgv(t)
+	if n := len(argv); n < 2 || argv[n-2] != cfg.Image || argv[n-1] != "--access-mode=restricted" {
+		t.Fatalf("the server's own arguments follow the image on the runtime's command line: %v", argv)
+	}
+	if data, _ := os.ReadFile(os.Getenv(fakemcp.EnvKills)); len(strings.TrimSpace(string(data))) == 0 {
+		t.Fatal("the container is told to stop by name after a check as after an acquisition")
+	}
+}
+
+func TestCheckListsEveryPage(t *testing.T) {
+	cfg := fake(t)
+	// As a command, the credential must be in the server's environment.
+	t.Setenv(fakemcp.EnvRequire, "PGSSLMODE=require")
+	tools := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(tools, []byte(`[{"name":"query","inputSchema":{"type":"object"}},{"name":"other","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvTools, tools)
+	t.Setenv(fakemcp.EnvPagedTools, "1")
+	cfg.Tools = []string{"other"}
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, listed := decodeCheck(t, out)
+	if strings.Join(listed, ",") != "query,other" {
+		t.Fatalf("every page's tools are listed in the server's order: %v", listed)
+	}
+}
+
+func TestCheckRefusesAnAllowedToolTheServerDoesNotOffer(t *testing.T) {
+	cfg := fake(t)
+	cfg.Tools = []string{"query", "drop_table"}
+	out, err := Check(context.Background(), cfg)
+	if err == nil || out != nil || !strings.Contains(err.Error(), `tool "drop_table" is allowed by the configuration but not offered by the server: [query]`) {
+		t.Fatalf("a binding naming a tool the server lacks is found out at connect time: %v %s", err, out)
+	}
+}
+
+func TestCheckFailsAsAcquireDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  map[string]string
+		args []string
+		want string
+	}{
+		{"initialize refused", map[string]string{fakemcp.EnvInitError: "1"}, nil, "initialize"},
+		{"no tools capability", map[string]string{fakemcp.EnvNoTools: "1"}, nil, "offers no tools capability"},
+		{"server exits with its reason redacted", map[string]string{fakemcp.EnvExitAtStart: "1", fakemcp.EnvStderr: "cannot connect as app with hunter2\n"}, nil, "cannot connect as [redacted] with [redacted]"},
+		{"args with a command", nil, []string{"--flag"}, "a server command carries its own arguments"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := fake(t)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			cfg.Args = tc.args
+			out, err := Check(context.Background(), cfg)
+			if err == nil || out != nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "hunter2") {
+				t.Fatalf("want %q, redacted: %v %s", tc.want, err, out)
+			}
+		})
+	}
+}
+
+func TestImageArgumentsFollowTheImageOnAcquire(t *testing.T) {
+	cfg := image(fake(t))
+	cfg.Args = []string{"--access-mode=restricted", "--transport=stdio"}
+	if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{"sql":"select 1"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	argv := runArgv(t)
+	if n := len(argv); n < 3 || argv[n-3] != cfg.Image || argv[n-2] != "--access-mode=restricted" || argv[n-1] != "--transport=stdio" {
+		t.Fatalf("the server's own arguments follow the image, in order: %v", argv)
+	}
+	cfg = fake(t)
+	cfg.Args = []string{"--flag"}
+	if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), "a server command carries its own arguments") {
+		t.Fatalf("args beside a command are refused: %v", err)
+	}
+}
+
+func TestCheckRedactsWhatTheServerSaysOfItself(t *testing.T) {
+	cfg := fake(t)
+	// The server echoes the credential in its name, its version and a
+	// tool's name; none of it reaches the report as written.
+	t.Setenv(fakemcp.EnvServerInfo, `{"name":"server for app","version":"1.0+hunter2"}`)
+	tools := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(tools, []byte(`[{"name":"query_hunter2","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvTools, tools)
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, server, _, listed := decodeCheck(t, out)
+	if strings.Contains(string(out), "hunter2") || strings.Contains(string(out), "app") {
+		t.Fatalf("the report carries no credential: %s", out)
+	}
+	if server["name"] != "server for [redacted]" || server["version"] != "1.0+[redacted]" || adapter["version"] != "1.0+[redacted]" || strings.Join(listed, ",") != "query_[redacted]" {
+		t.Fatalf("every field the server said is redacted: %s", out)
+	}
+	// The same version goes into an acquisition's envelope for a command,
+	// redacted there too.
+	envelope, err := Acquire(context.Background(), cfg, Request{Tool: "query_hunter2", Arguments: json.RawMessage(`{}`)})
+	if err == nil || !strings.Contains(err.Error(), "not one the server offers") {
+		// The tool's own name carries the secret and the request names it
+		// verbatim, which the server matches; the envelope must not carry it.
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The statement names the tool as the caller asked for it; the
+		// adapter's version is the server's word and is redacted.
+		acq, _ := decode(t, envelope)
+		if acq["adapter"].(map[string]any)["version"] != "1.0+[redacted]" {
+			t.Fatalf("the envelope's adapter version is redacted: %s", envelope)
+		}
+	}
+}
+
+func TestInitializeRequiresTheServersIdentity(t *testing.T) {
+	for _, tc := range []struct{ info, want string }{
+		{"absent", "the server's answer carries no serverInfo object"},
+		{`null`, "the server's answer carries no serverInfo object"},
+		{`"pg"`, "the server's answer carries no serverInfo object"},
+		{`{"version":"1"}`, "serverInfo names no server"},
+		{`{"name":"","version":"1"}`, "serverInfo names no server"},
+		{`{"name":"pg"}`, "serverInfo carries no version string"},
+		{`{"name":"pg","version":null}`, "serverInfo carries no version string"},
+		{`{"name":"pg","version":3}`, "serverInfo carries no version string"},
+	} {
+		t.Run(tc.info, func(t *testing.T) {
+			cfg := fake(t)
+			t.Setenv(fakemcp.EnvServerInfo, tc.info)
+			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("check: want %q, got %v", tc.want, err)
+			}
+			if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("acquire: want %q, got %v", tc.want, err)
+			}
+		})
+	}
+	cfg := fake(t)
+	t.Setenv(fakemcp.EnvServerInfo, `{"name":"pg","version":""}`)
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatalf("an empty version string is a version string: %v", err)
+	}
+}
+
+func TestToolListMustBeAPage(t *testing.T) {
+	for _, tc := range []struct{ raw, want string }{
+		{`{}`, "carries no tools array"},
+		{`{"tools":null}`, "carries no tools array"},
+		{`{"tools":{}}`, "carries no tools array"},
+		{`{"TOOLS":[]}`, "carries no tools array"},
+		{`{"tools":[],"nextCursor":""}`, "nextCursor, when present, is a non-empty string"},
+		{`{"tools":[],"nextCursor":5}`, "nextCursor, when present, is a non-empty string"},
+		{`[]`, "is not a tool list"},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			cfg := fake(t)
+			raw := filepath.Join(t.TempDir(), "list.json")
+			if err := os.WriteFile(raw, []byte(tc.raw), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(fakemcp.EnvListRaw, raw)
+			// No allowed tools, so an empty page would otherwise succeed.
+			if out, err := Check(context.Background(), cfg); err == nil || out != nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v %s", tc.want, err, out)
+			}
+			if _, err := Acquire(context.Background(), cfg, Request{Tool: "query", Arguments: json.RawMessage(`{}`)}); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("acquire: want %q, got %v", tc.want, err)
+			}
+		})
+	}
+	cfg := fake(t)
+	raw := filepath.Join(t.TempDir(), "list.json")
+	if err := os.WriteFile(raw, []byte(`{"tools":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvListRaw, raw)
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, listed := decodeCheck(t, out); len(listed) != 0 || !strings.Contains(string(out), `"tools":[]`) {
+		t.Fatalf("a server offering no tool is reported as offering none: %s", out)
+	}
+}
+
+func TestAnImageShapedLikeAnOptionIsRefused(t *testing.T) {
+	cfg := image(fake(t))
+	for _, ref := range []string{"--label=probe=value@" + testDigest, "-x@" + testDigest, "ghcr.io/-example/mcp@" + testDigest, "a/b:-tag@" + testDigest, "a b@" + testDigest} {
+		cfg.Image = ref
+		if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "is not a reference") {
+			t.Fatalf("%s: %v", ref, err)
+		}
+	}
+	// The runtime's option parsing is ended before the image, so a server
+	// argument shaped like an option is the server's.
+	cfg = image(fake(t))
+	cfg.Args = []string{"--name", "stray"}
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	argv := runArgv(t)
+	if n := len(argv); n < 4 || argv[n-4] != "--" || argv[n-3] != cfg.Image || argv[n-2] != "--name" || argv[n-1] != "stray" {
+		t.Fatalf("-- ends the runtime's options before the image and the server's arguments: %v", argv)
+	}
+}
+
+func TestAServerEchoingACredentialWithQuotesIsRedacted(t *testing.T) {
+	cfg := fake(t)
+	// A credential with a quote and a backslash: quoted with %q it would
+	// be escaped past the redactor.
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"ab\"cd\\e"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvProtocol, `ab"cd\e`)
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "protocol version '[redacted]'") || strings.Contains(err.Error(), "cd") {
+		t.Fatalf("the server's word is redacted as it said it: %v", err)
+	}
+}
+
+func TestAResponseIsReadByExactMemberNames(t *testing.T) {
+	for _, tc := range []struct{ line, want string }{
+		{`{"jsonrpc":"2.0","id":{id},"result":null,"RESULT":{"tools":[]}}`, "is not a tool list"},
+		{`{"jsonrpc":"2.0","id":{id},"result":{"tools":[]},"result":{"tools":[{"name":"query"}]}}`, `malformed: duplicate member name 'result'`},
+		{`{"jsonrpc":"2.0","ID":{id},"result":{"tools":[]}}`, "neither a request, a notification nor a response"},
+		{`{"JSONRPC":"2.0","id":{id},"result":{"tools":[]}}`, "is not a JSON-RPC message"},
+		{`{"jsonrpc":"2.0","id":{id},"error":null,"ERROR":{"code":1,"message":"x"}}`, "an error that is not an object"},
+	} {
+		t.Run(tc.line, func(t *testing.T) {
+			cfg := fake(t)
+			line := filepath.Join(t.TempDir(), "line.json")
+			if err := os.WriteFile(line, []byte(tc.line), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(fakemcp.EnvListLine, line)
+			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want %q, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestAToolIsNamedByItsExactMember(t *testing.T) {
+	cfg := fake(t)
+	tools := filepath.Join(t.TempDir(), "tools.json")
+	if err := os.WriteFile(tools, []byte(`[{"name":"other","NAME":"query","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvTools, tools)
+	cfg.Tools = []string{"query"}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `tool "query" is allowed by the configuration but not offered by the server: [other]`) {
+		t.Fatalf("NAME does not stand in for name: %v", err)
+	}
+	if err := os.WriteFile(tools, []byte(`[{"name":"a","name":"query","inputSchema":{"type":"object"}}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `malformed: duplicate member name 'name'`) {
+		t.Fatalf("a duplicate name is refused: %v", err)
+	}
+}
+
+func TestADuplicateMemberEchoingACredentialIsRedacted(t *testing.T) {
+	cfg := fake(t)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"ab\"cd\\e"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	line := filepath.Join(t.TempDir(), "line.json")
+	if err := os.WriteFile(line, []byte(`{"jsonrpc":"2.0","id":{id},"result":{"tools":[]},"ab\"cd\\e":1,"ab\"cd\\e":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvListLine, line)
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "duplicate member name '[redacted]'") || strings.Contains(err.Error(), "cd") {
+		t.Fatalf("a duplicate name is written as it is and redacted: %v", err)
+	}
+}
+
+func TestStderrIsRedactedBeforeItIsCut(t *testing.T) {
+	// A credential longer than a line's worth, echoed whole on stderr,
+	// is matched whole: the buffer is redacted before the first line is
+	// taken, and it holds more than a few kilobytes.
+	cfg := fake(t)
+	secret := strings.Repeat("k", 5000)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	t.Setenv(fakemcp.EnvStderr, "refused: "+secret+"\n")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "refused: [redacted]") || strings.Contains(err.Error(), strings.Repeat("k", 64)) {
+		t.Fatalf("redacted whole: %.120v", err)
+	}
+}
+
+func TestATruncatedDiagnosticDoesNotEndWithTheStartOfACredential(t *testing.T) {
+	// The server writes more than the buffer holds, and a credential
+	// begins just before the cut: what remains of it is cut off too.
+	cfg := fake(t)
+	secret := strings.Repeat("k", 70000) // longer than the buffer holds
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	text := filepath.Join(t.TempDir(), "stderr.txt")
+	if err := os.WriteFile(text, []byte("refused: "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvStderrFile, text)
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "initialize: refused: ") || strings.Contains(err.Error(), "kkkkkkkk") {
+		t.Fatalf("the start of the credential is cut off: %.120v", err)
+	}
+}
+
+func TestCredentialsAreHeldToWhatAnEnvironmentCarries(t *testing.T) {
+	for _, tc := range []struct{ text, want string }{
+		{`{"TOKEN":"hunter2\r"}`, "has a value an environment cannot carry"},
+		{`{"TOKEN":"a\nb"}`, "has a value an environment cannot carry"},
+		{`{"#TOKEN":"x"}`, "is not an environment variable name"},
+		{`{" TOKEN":"x"}`, "is not an environment variable name"},
+		{`{"TO KEN":"x"}`, "is not an environment variable name"},
+		{`{"1TOKEN":"x"}`, "is not an environment variable name"},
+		{`{"TO=KEN":"x"}`, "is not an environment variable name"},
+		{`{"TOKEN":null}`, "is not a string"},
+		{`{"TOKEN":1}`, "is not a string"},
+		{`{"TOKEN":["x"]}`, "is not a string"},
+		{`null`, "is not a JSON object of strings"},
+		{`[]`, "is not a JSON object of strings"},
+		{`"x"`, "is not a JSON object of strings"},
+		{`{"a":"1","\u0061":"2"}`, "credentials file has a member name twice"},
+		{`{"TOKEN":"hunter2","hunter2":"x","hunter2":"y"}`, "credentials file has a member name twice"},
+		{`{"a":"\xff"}`, "credentials file is not JSON"},
+	} {
+		t.Run(tc.text, func(t *testing.T) {
+			cfg := fake(t)
+			credentials := filepath.Join(t.TempDir(), "credentials.json")
+			if err := os.WriteFile(credentials, []byte(tc.text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg.Credentials = credentials
+			if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "hunter2") {
+				t.Fatalf("want %q, naming nothing of the file: %v", tc.want, err)
+			}
+		})
+	}
+	cfg := fake(t)
+	big := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(big, []byte(`{"TOKEN":"`+strings.Repeat("k", 1<<20)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = big
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file exceeds 1 MiB") {
+		t.Fatalf("bounded: %v", err)
+	}
+}
+
+func TestAWholeCredentialWhoseEndRepeatsItsStartIsRedactedWhole(t *testing.T) {
+	cfg := fake(t)
+	secret := "TOPSECRET" + strings.Repeat("x", 64<<10-9-18) + "TOPSECRET"
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	text := filepath.Join(t.TempDir(), "stderr.txt")
+	// Exactly the buffer's worth, and the newline overflows it.
+	if err := os.WriteFile(text, []byte("refused: "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvStderrFile, text)
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.HasSuffix(err.Error(), "refused: [redacted]") {
+		t.Fatalf("whole before prefix: %.120v", err)
+	}
+}
+
+func TestAValueUnderARepeatedNestedNameIsASecret(t *testing.T) {
+	cfg := fake(t)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"BLOB":"{\"token\":\"first-secret\",\"token\":\"second-secret\"}"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvStderr, "rejected first-secret and second-secret\n")
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "rejected [redacted] and [redacted]") {
+		t.Fatalf("both values are secrets: %v", err)
+	}
+}
+
+func TestACredentialAnotherOneBeginsInsideIsRedactedWhole(t *testing.T) {
+	cfg := fake(t)
+	credentials := filepath.Join(t.TempDir(), "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"USER":"alice","PASSWORD":"ice-super-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Credentials = credentials
+	t.Setenv(fakemcp.EnvStderr, "rejected alice-super-secret\n")
+	t.Setenv(fakemcp.EnvExitAtStart, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.HasSuffix(err.Error(), "rejected [redacted]") {
+		t.Fatalf("covered together: %v", err)
 	}
 }

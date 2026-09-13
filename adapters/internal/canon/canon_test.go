@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -87,5 +88,19 @@ func TestCanonicalizeNormalizesNegativeZero(t *testing.T) {
 		if _, err := Canonicalize([]byte(in), CarryNumbersAsText); err == nil {
 			t.Errorf("%s must be refused", in)
 		}
+	}
+}
+
+func TestNestingIsBoundedAsADecoderReads(t *testing.T) {
+	deep := func(n int) []byte { return []byte(strings.Repeat("[", n) + strings.Repeat("]", n)) }
+	if _, err := Canonicalize(deep(10000), RefuseNumbers); err != nil {
+		t.Fatalf("10000 levels are read: %v", err)
+	}
+	if _, err := Canonicalize(deep(10001), RefuseNumbers); err == nil || !strings.Contains(err.Error(), "nesting deeper than 10000 levels") {
+		t.Fatalf("10001 levels are refused: %v", err)
+	}
+	var v any
+	if json.Unmarshal(deep(10000), &v) != nil || json.Unmarshal(deep(10001), &v) == nil {
+		t.Fatal("the bound is the decoder's")
 	}
 }

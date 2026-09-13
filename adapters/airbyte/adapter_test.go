@@ -810,3 +810,281 @@ func TestRedactionIsOnePass(t *testing.T) {
 		t.Fatalf("bounded as it is built: %d bytes", len(got))
 	}
 }
+
+const checkSucceeded = `{"type":"LOG","log":{"level":"INFO","message":"checking"}}` + "\n" +
+	`not a message line` + "\n" +
+	`{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":"Connected to warehouse.internal:5432 as app"}}` + "\n"
+
+// checkFake installs the connector's check output beside the fake runtime.
+func checkFake(t *testing.T, check string) Config {
+	t.Helper()
+	cfg := fake(t, discoverFixture, readFixture)
+	path := filepath.Join(t.TempDir(), "check.out")
+	if err := os.WriteFile(path, []byte(check), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvCheck, path)
+	return cfg
+}
+
+func TestCheckReportsTheConnection(t *testing.T) {
+	cfg := checkFake(t, checkSucceeded)
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(out, &top); err != nil || len(top) != 1 {
+		t.Fatalf("a check report is one member, check: %s", out)
+	}
+	var report struct {
+		Adapter map[string]string `json:"adapter"`
+		Status  string            `json:"status"`
+		Message string            `json:"message"`
+	}
+	if err := json.Unmarshal(top["check"], &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Adapter["name"] != "airbyte/source-postgres" || report.Adapter["version"] != "3.6.1" || report.Adapter["digest"] != testDigest || report.Status != "succeeded" {
+		t.Fatalf("the report names the pinned image and the answer: %s", out)
+	}
+	// The connector's message is the platform's answer, with every scalar
+	// of the credentials redacted from it: the host is one.
+	if !strings.HasPrefix(report.Message, "Connected to ") || strings.Contains(report.Message, "warehouse.internal") {
+		t.Fatalf("the message is carried, redacted: %q", report.Message)
+	}
+	inv := invocations(t)
+	if len(inv) != 1 || inv[0].Verb != "check" || !strings.Contains(strings.Join(inv[0].Argv, " "), "check --config /secrets/config.json") || inv[0].Files["config.json"] != credentialsFixture {
+		t.Fatalf("one run, the connector's check with the credentials mounted: %+v", inv)
+	}
+	if got := kills(t); len(got) != 1 || got[0] != inv[0].Argv[3] {
+		t.Fatalf("the container is told to stop by name after the check: %v", got)
+	}
+}
+
+func TestCheckRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		check string
+		env   map[string]string
+		want  string
+	}{
+		{"FAILED is the connector's answer", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"password hunter2 rejected by warehouse.internal"}}` + "\n", nil, "the connector could not connect (FAILED): password "},
+		{"no answer", `{"type":"LOG","log":{"level":"INFO","message":"checking"}}` + "\n", nil, "the connector answered no connection status"},
+		{"an error trace", `{"type":"TRACE","trace":{"type":"ERROR","error":{"message":"cannot reach warehouse.internal with hunter2"}}}` + "\n", nil, "connector reported an error during check: cannot reach "},
+		{"a status without its payload", `{"type":"CONNECTION_STATUS","connectionStatus":{"message":"x"}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"a status that is not an object", `{"type":"CONNECTION_STATUS","connectionStatus":"ok"}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"the runtime fails", checkSucceeded, map[string]string{fakeruntime.EnvExit: "1", fakeruntime.EnvStderr: "daemon refused hunter2\n"}, "connector check failed: daemon refused "},
+		{"a status under another case", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","STATUS":"SUCCEEDED","message":"x"}}` + "\n", nil, "the connector could not connect (FAILED)"},
+		{"a status stated twice", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","status":"SUCCEEDED"}}` + "\n", nil, "the connector emitted a malformed message: duplicate member name 'status'"},
+		{"a message that is not a string", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":{"text":"x"}}}` + "\n", nil, "the connector emitted a malformed CONNECTION_STATUS message"},
+		{"a failure a later success cannot revise", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"no"}}` + "\n" + checkSucceeded, nil, "the connector could not connect (FAILED): no"},
+		{"two answers", checkSucceeded + checkSucceeded, nil, "the connector answered more than once"},
+		{"a container that would not stop, its answer redacted", checkSucceeded, map[string]string{fakeruntime.EnvKillExit: "1", fakeruntime.EnvInspectStderr: "daemon busy with hunter2 at warehouse.internal"}, "[redacted]"},
+		{"a type under another case cannot hide a failure", `{"type":"CONNECTION_STATUS","TYPE":"LOG","connectionStatus":{"status":"FAILED","message":"no"}}` + "\n" + checkSucceeded, nil, "the connector could not connect (FAILED): no"},
+		{"a trace type under another case cannot hide an error", `{"type":"TRACE","TYPE":"LOG","trace":{"type":"ERROR","TYPE":"INFO","error":{"message":"boom"}}}` + "\n" + checkSucceeded, nil, "connector reported an error during check: boom"},
+		{"a duplicate member anywhere in a message", `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"SUCCEEDED","message":"a","message":"b"}}` + "\n", nil, "the connector emitted a malformed message: duplicate member name 'message'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := checkFake(t, tc.check)
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			out, err := Check(context.Background(), cfg)
+			if err == nil || out != nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") {
+				t.Fatalf("want %q, redacted: %v %s", tc.want, err, out)
+			}
+		})
+	}
+	cfg := checkFake(t, checkSucceeded)
+	cfg.Runtime = ""
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "a container runtime is required") {
+		t.Fatalf("no runtime: %v", err)
+	}
+	cfg = checkFake(t, checkSucceeded)
+	cfg.Credentials = filepath.Join(t.TempDir(), "missing")
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials could not be read") {
+		t.Fatalf("missing credentials: %v", err)
+	}
+}
+
+func TestAcquireRedactsAContainerThatWouldNotStop(t *testing.T) {
+	// A stop failure after discover, and one after a successful read
+	// with discover's container stopped cleanly, both cross the
+	// redaction.
+	cfg := fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvKillExit, "1")
+	t.Setenv(fakeruntime.EnvInspectStderr, "daemon busy with hunter2 at warehouse.internal")
+	_, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 2})
+	if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("after discover: %v", err)
+	}
+	if inv := invocations(t); len(inv) != 1 || inv[0].Verb != "discover" {
+		t.Fatalf("discover's stop failed before any read: %+v", inv)
+	}
+	cfg = fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvStuckOnRead, "1")
+	t.Setenv(fakeruntime.EnvInspectStderr, "daemon busy with hunter2 at warehouse.internal")
+	_, err = Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 2})
+	if err == nil || strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "warehouse.internal") || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("after read: %v", err)
+	}
+	if inv := invocations(t); len(inv) != 2 || inv[1].Verb != "read" {
+		t.Fatalf("the read was reached and its container's stop failed: %+v", inv)
+	}
+}
+
+func TestExactMemberNamesDecideTheRecord(t *testing.T) {
+	// A record whose "STREAM" says otherwise still belongs to its
+	// "stream"; a record with "stream" stated twice is malformed.
+	read := rec(101, "0", `,"status":"approved"`) + `{"type":"RECORD","record":{"stream":"decisions","STREAM":"audit","emitted_at":2,"data":{"id":102}}}` + "\n" + `{"type":"STATE","state":` + state1 + `}` + "\n"
+	cfg := fake(t, discoverFixture, read)
+	out, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `{"id":102}`) {
+		t.Fatalf("the record is the stream's: %s", out)
+	}
+	read = `{"type":"RECORD","record":{"stream":"audit","stream":"decisions","emitted_at":2,"data":{"id":102}}}` + "\n"
+	cfg = fake(t, discoverFixture, read)
+	if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "malformed message: duplicate member name 'stream'") {
+		t.Fatalf("a duplicate member is refused: %v", err)
+	}
+	// A line whose type is not spelled "type" is something printed, not
+	// a message; a message whose type is not one read here is skipped.
+	read = `{"TYPE":"RECORD","record":{"stream":"decisions","emitted_at":2,"data":{"id":103}}}` + "\n" + `{"type":"SPEC","spec":{}}` + "\n" + rec(104, "0", ``) + `{"type":"STATE","state":` + state1 + `}` + "\n"
+	cfg = fake(t, discoverFixture, read)
+	out, err = Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
+	if err != nil || strings.Contains(string(out), `"id":103`) || !strings.Contains(string(out), `"id":104`) {
+		t.Fatalf("only exact messages are read: %v %s", err, out)
+	}
+}
+
+func TestAnEscapedDuplicateTypeCannotHideAFailure(t *testing.T) {
+	// "\u0074ype" is "type": a duplicate spelled with an escape would be
+	// read as the line's type before a duplicate check that ran later.
+	cfg := checkFake(t, `{"type":"CONNECTION_STATUS","\u0074ype":"LOG","connectionStatus":{"status":"FAILED","message":"no"}}`+"\n"+checkSucceeded)
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "the connector emitted a malformed message: duplicate member name 'type'") {
+		t.Fatalf("refused before it is classified: %v", err)
+	}
+	cfg = checkFake(t, `{"type":"CONNECTION_STATUS","\u0074ype":null,"connectionStatus":{"status":"FAILED","message":"no"}}`+"\n"+checkSucceeded)
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "duplicate member name 'type'") {
+		t.Fatalf("a null duplicate too: %v", err)
+	}
+	// A duplicate whose name echoes a credential with a quote is written
+	// as it is, and redacted.
+	cfg = checkFake(t, `{"type":"CONNECTION_STATUS","wa\"re":1,"wa\"re":2,"connectionStatus":{"status":"SUCCEEDED"}}`+"\n")
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"wa\"re","password":"hunter2"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "duplicate member name '[redacted]'") || strings.Contains(err.Error(), `wa"re`) || strings.Contains(err.Error(), `wa\"re`) {
+		t.Fatalf("redacted as written: %v", err)
+	}
+}
+
+func TestStderrIsRedactedBeforeTheFirstLineIsCut(t *testing.T) {
+	// A multi-line credential -- a key -- echoed on stderr is matched
+	// whole before the first line is taken; so is one longer than a few
+	// kilobytes in the runtime's answer about a container.
+	key := "-----BEGIN KEY-----\nAAAA\nBBBB\n-----END KEY-----"
+	cfg := checkFake(t, checkSucceeded)
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","key":"`+strings.ReplaceAll(key, "\n", `\n`)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvExit, "1")
+	t.Setenv(fakeruntime.EnvStderr, "rejected "+key+"\n")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "connector check failed: rejected [redacted]") || strings.Contains(err.Error(), "BEGIN") {
+		t.Fatalf("redacted before the cut: %v", err)
+	}
+	long := strings.Repeat("k", 5000)
+	cfg = checkFake(t, checkSucceeded)
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","password":"`+long+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvKillExit, "1")
+	t.Setenv(fakeruntime.EnvInspectStderr, "daemon busy with "+long)
+	_, err = Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "daemon busy with [redacted]") || strings.Contains(err.Error(), strings.Repeat("k", 64)) {
+		t.Fatalf("the runtime's answer is redacted whole: %.160v", err)
+	}
+}
+
+func TestConfigIsHeldToOneReadingAndOneSize(t *testing.T) {
+	cfg := checkFake(t, checkSucceeded)
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"password":"first-secret","\u0070assword":"second-secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file has a member name twice") {
+		t.Fatalf("a duplicate member, spelled with an escape, is refused: %v", err)
+	}
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"password":"hunter2","hunter2":"x","hunter2":"y"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file has a member name twice") || strings.Contains(err.Error(), "hunter2") {
+		t.Fatalf("the refusal names nothing of the file: %v", err)
+	}
+	for _, text := range []string{`[]`, `"x"`, `null`, `{"a":"\xff"}`} {
+		if err := os.WriteFile(cfg.Credentials, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file is not") {
+			t.Fatalf("%s: %v", text, err)
+		}
+		if _, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1}); err == nil || !strings.Contains(err.Error(), "credentials file is not") {
+			t.Fatalf("acquire %s: %v", text, err)
+		}
+	}
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"`+strings.Repeat("h", 1<<20)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "credentials file exceeds 1 MiB") {
+		t.Fatalf("bounded: %v", err)
+	}
+}
+
+func TestATruncatedConnectorDiagnosticDoesNotEndWithTheStartOfACredential(t *testing.T) {
+	cfg := checkFake(t, checkSucceeded)
+	secret := strings.Repeat("k", 70000) // longer than the buffer holds
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","password":"`+secret+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text := filepath.Join(t.TempDir(), "stderr.txt")
+	if err := os.WriteFile(text, []byte("refused: "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvStderrFile, text)
+	t.Setenv(fakeruntime.EnvExit, "1")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "connector check failed: refused: ") || strings.Contains(err.Error(), "kkkkkkkk") {
+		t.Fatalf("the start of the credential is cut off: %.120v", err)
+	}
+}
+
+func TestACheckWithoutAStatusReportsWhatTheConnectorSaid(t *testing.T) {
+	cfg := checkFake(t, `{"type":"LOG","log":{"level":"INFO","message":"checking"}}`+"\n")
+	t.Setenv(fakeruntime.EnvStderr, "authentication failed for app with hunter2\n")
+	_, err := Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "the connector answered no connection status: authentication failed for app with [redacted]") {
+		t.Fatalf("the connector's own line, redacted: %v", err)
+	}
+}
+
+func TestAMessageTooDeepToReadCannotHideAFailure(t *testing.T) {
+	deep := strings.Repeat("[", 10001) + strings.Repeat("]", 10001)
+	cfg := checkFake(t, `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"no"},"extra":`+deep+`}`+"\n"+checkSucceeded)
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "malformed message: nesting deeper than 10000 levels") {
+		t.Fatalf("refused, not skipped: %v", err)
+	}
+}
+
+func TestAValueUnderARepeatedNestedNameIsASecretToo(t *testing.T) {
+	cfg := checkFake(t, `{"type":"CONNECTION_STATUS","connectionStatus":{"status":"FAILED","message":"rejected first-secret and second-secret"}}`+"\n")
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"warehouse","blob":"{\"token\":\"first-secret\",\"token\":\"second-secret\"}"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "rejected [redacted] and [redacted]") {
+		t.Fatalf("both values are secrets: %v", err)
+	}
+}

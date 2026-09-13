@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"adapters/internal/containers"
+	"adapters/internal/redact"
 )
 
 // server is a running MCP server reached over stdio: a pinned image in the
@@ -30,7 +31,11 @@ type server struct {
 // them through an env file in its private mount; a command gets them
 // beside this process's own environment, which is what the operator
 // declared for the adapter and what a command like npx needs.
-func startServer(ctx context.Context, cfg Config, env []string) (*server, error) {
+func startServer(ctx context.Context, cfg Config, env, secrets []string) (*server, error) {
+	// Everything a server or a runtime wrote is redacted before it is
+	// cut; when the buffer overflowed, what ends it may be the start of
+	// a credential whose rest was dropped, and that is cut off first.
+	redactor := func(text string, truncated bool) string { return redact.Diagnostic(text, truncated, secrets) }
 	if cfg.Image != "" {
 		image, err := containers.ParseImage(cfg.Image)
 		if err != nil {
@@ -43,9 +48,11 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 		}
 		c, err := containers.Start(ctx, containers.Spec{
 			Runtime: cfg.Runtime, Image: cfg.Image,
-			Files: map[string][]byte{"env": envFile},
-			Flags: []string{"--env-file", "{mount}/env"},
-			Stdin: true,
+			Files:  map[string][]byte{"env": envFile},
+			Flags:  []string{"--env-file", "{mount}/env"},
+			Args:   cfg.Args,
+			Stdin:  true,
+			Redact: redactor,
 		})
 		if err != nil {
 			return nil, err
@@ -66,7 +73,15 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 	cmd.Args[0] = cfg.Command[0]
 	cmd.Env = append(os.Environ(), env...)
 	cmd.WaitDelay = containers.WaitDelay
-	stderr := &boundedBuffer{limit: 4096}
+	// The server stays in this process's group, so a kill of the group
+	// -- the gateway's, when this adapter is ended -- reaches it and what
+	// it started; what it leaves behind is adopted here (Linux) and
+	// reached when it is stopped.
+	if err := adoptOrphans(); err != nil {
+		cancel()
+		return nil, err
+	}
+	stderr := &boundedBuffer{limit: containers.DiagnosticBytes}
 	cmd.Stderr = stderr
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -106,9 +121,9 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 		}
 		stopped = true
 		// End of input ends a well-behaved server; one that lingers is
-		// killed after the wait delay. A descendant the command left
-		// behind is not reached: --image is the shape that keeps the
-		// lifecycle under a name.
+		// killed after the wait delay; and every descendant still here
+		// is killed last, so a process the command left behind does not
+		// keep the credentials.
 		stdin.Close()
 		done := make(chan error, 1)
 		go func() { done <- wait() }()
@@ -119,9 +134,12 @@ func startServer(ctx context.Context, cfg Config, env []string) (*server, error)
 			<-done
 		}
 		cancel()
-		return nil
+		// A descendant that could not be established gone fails the
+		// stop, and with it the check or the acquisition: it may hold
+		// the credentials.
+		return killDescendants()
 	}
-	return &server{stdin: stdin, stdout: stdout, stop: stop, firstLine: stderr.firstLine,
+	return &server{stdin: stdin, stdout: stdout, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
 		identity: adapterIdentity{Name: cfg.Command[0], Digest: digest}}, nil
 }
 
@@ -150,15 +168,20 @@ func executableDigest(path string) (string, error) {
 // boundedBuffer keeps the first limit bytes and reports every write whole.
 // It is written by os/exec's copier and read for a diagnostic, so it locks.
 type boundedBuffer struct {
-	mu    sync.Mutex
-	limit int
-	buf   []byte
+	mu      sync.Mutex
+	limit   int
+	buf     []byte
+	dropped bool
 }
 
 func (b *boundedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if room := b.limit - len(b.buf); room > 0 {
+	room := b.limit - len(b.buf)
+	if room < len(p) {
+		b.dropped = true
+	}
+	if room > 0 {
 		kept := p
 		if len(kept) > room {
 			kept = kept[:room]
@@ -168,9 +191,11 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (b *boundedBuffer) firstLine() string {
+// firstLine is the first line of what was written, redacted before the
+// cut so a credential longer than a line, or spanning lines, is matched.
+func (b *boundedBuffer) firstLine(redactor func(string, bool) string) string {
 	b.mu.Lock()
-	text := string(b.buf)
+	text := redactor(string(b.buf), b.dropped)
 	b.mu.Unlock()
 	for i, r := range text {
 		if r == '\n' {
