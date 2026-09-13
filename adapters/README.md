@@ -186,7 +186,10 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   "protocolVersion", "tools"}}` — calling nothing and reading no stdin. A tool named by
   `--tools` that the server does not offer fails the check, so a binding that names a tool
   the pinned server lacks is found out when the platform is connected, not at the first
-  acquisition. What the server said of itself — its name and version, its tools' names — is
+  acquisition. A server that starts and lists its tools without a working connection to its
+  platform answers the handshake all the same, so `--probe TOOL` names a tool the check calls
+  once with no arguments — one of `--tools`, offered by the server — and requires it to answer
+  without an error; its result is discarded, and the report says which tool answered. What the server said of itself — its name and version, its tools' names — is
   redacted before it is reported, as every diagnostic is. The report carries `"status":
   "succeeded"`; a check that did not succeed writes `{"check": {"status": "failed",
   "message"}}` on stdout beside its exit status, so a caller reads one shape either way. The

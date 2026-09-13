@@ -56,6 +56,9 @@ type sourceSpec struct {
 	// shape is the adapter shape declared with --source-shape (SPEC.md §1.2a);
 	// empty for a bare command, whose stdout is the result itself.
 	shape string
+	// check are the arguments a check of this source adds to the adapter's
+	// command line, from the binding; nothing serve uses.
+	check []string
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of

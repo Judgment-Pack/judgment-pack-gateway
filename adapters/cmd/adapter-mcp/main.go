@@ -32,6 +32,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
 	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; stopping the server takes up to seven seconds more, under the gateway's thirty")
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
+	probe := fs.String("probe", "", "with --check, a tool to call once with no arguments, so a server that lists its tools without reaching its platform is found out; its result is read for an error and discarded")
 	// The gateway splits a source command on whitespace and parses no
 	// quotes, so what comes after "--" is given word by word: a server
 	// command with its arguments, or, with --image, the server's own
@@ -61,6 +62,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if *tools != "" {
 		cfg.Tools = strings.Split(*tools, ",")
 	}
+	if *probe != "" && !*check {
+		fmt.Fprintln(stderr, "adapter-mcp: --probe is for --check")
+		return 2
+	}
+	cfg.Probe = *probe
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	var out []byte

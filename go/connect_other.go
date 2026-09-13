@@ -11,6 +11,10 @@ type fileOwnerIDs struct{ known bool }
 
 func ownerIDsOf(info os.FileInfo) fileOwnerIDs { return fileOwnerIDs{} }
 
-func keepOwner(dir *os.Root, name string, owner fileOwnerIDs) error { return nil }
+func keepOwner(file *os.File, owner fileOwnerIDs) error { return nil }
 
-func lockBeside(dir *os.Root, name string) (func(), error) { return func() {}, nil }
+func openConfigForRead(dir *os.Root, name string) (*os.File, error) {
+	return dir.OpenFile(name, os.O_RDONLY, 0)
+}
+
+func lockBeside(dir *os.Root, name string, owner fileOwnerIDs) (func(), error) { return func() {}, nil }

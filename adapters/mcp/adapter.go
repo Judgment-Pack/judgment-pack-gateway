@@ -47,6 +47,12 @@ type Config struct {
 	Endpoint string
 	// Tools, when given, are the only tools a request may name.
 	Tools []string
+	// Probe, when given, is a tool a check calls once with no arguments
+	// to establish that the server reaches its platform -- a server that
+	// starts and lists its tools without a working connection answers the
+	// handshake all the same. The result is read for an error and
+	// discarded; nothing is minted from a check.
+	Probe string
 	// MaxOutput bounds the envelope in bytes.
 	MaxOutput int64
 }
@@ -290,6 +296,13 @@ type checkReport struct {
 	Server          serverIdentity  `json:"server"`
 	ProtocolVersion string          `json:"protocolVersion"`
 	Tools           []string        `json:"tools"`
+	Probe           *probeReport    `json:"probe,omitempty"`
+}
+
+// probeReport says which tool the check called and that it answered.
+type probeReport struct {
+	Tool     string `json:"tool"`
+	Answered bool   `json:"answered"`
 }
 
 // FailedCheck is the report of a check that did not succeed, for stdout
@@ -372,6 +385,29 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return finish(nil, fmt.Errorf("tool %q is allowed by the configuration but not offered by the server: %v", allowed, names))
 		}
 	}
+	var probe *probeReport
+	if cfg.Probe != "" {
+		// The probe is one of the tools this source may call, offered by
+		// the server, and it must answer without an error: a connection
+		// the server could not make is what it answers with.
+		if len(cfg.Tools) > 0 && !contains(cfg.Tools, cfg.Probe) {
+			return finish(nil, fmt.Errorf("probe %q is not one this source may call: %v", cfg.Probe, cfg.Tools))
+		}
+		if !contains(names, cfg.Probe) {
+			return finish(nil, fmt.Errorf("probe %q is not one the server offers: %v", cfg.Probe, names))
+		}
+		raw, err := rpc.call(ctx, "tools/call", map[string]any{"name": cfg.Probe, "arguments": map[string]any{}})
+		if err != nil {
+			return fail(err)
+		}
+		if int64(len(raw)) > cfg.MaxOutput {
+			return finish(nil, fmt.Errorf("the probe's result exceeds the output bound of %d bytes", cfg.MaxOutput))
+		}
+		if _, err := parseToolResult(raw); err != nil {
+			return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
+		}
+		probe = &probeReport{Tool: cfg.Probe, Answered: true}
+	}
 	// Everything the server said of itself is redacted before it is
 	// reported, as every diagnostic is: a server echoes what it was given.
 	identity := srv.identity
@@ -388,6 +424,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		Server:          serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)},
 		ProtocolVersion: initialized.protocol,
 		Tools:           redacted,
+		Probe:           probe,
 	}})
 	if err != nil {
 		return finish(nil, err)

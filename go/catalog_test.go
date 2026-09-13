@@ -39,7 +39,7 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 			}
 		}
 		if name == "postgres" {
-			if b.history == nil || b.live == nil || strings.Join(b.live.args, " ") != "--access-mode=restricted" || !strings.HasPrefix(b.history.image, "airbyte/source-postgres:") || !strings.HasPrefix(b.live.image, "crystaldba/postgres-mcp:") {
+			if b.history == nil || b.live == nil || strings.Join(b.live.args, " ") != "--access-mode=restricted" || b.live.probe != "list_schemas" || !strings.HasPrefix(b.history.image, "airbyte/source-postgres:") || !strings.HasPrefix(b.live.image, "crystaldba/postgres-mcp:") {
 				t.Fatalf("catalog/postgres.json: history through the Airbyte connector, live through the restricted MCP server: %+v %+v", b.history, b.live)
 			}
 			for _, tool := range b.live.tools {

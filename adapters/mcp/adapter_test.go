@@ -1060,3 +1060,48 @@ func TestACredentialAnotherOneBeginsInsideIsRedactedWhole(t *testing.T) {
 		t.Fatalf("covered together: %v", err)
 	}
 }
+
+func TestCheckProbesThePlatform(t *testing.T) {
+	cfg := fake(t)
+	cfg.Tools = []string{"query"}
+	cfg.Probe = "query"
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"probe":{"tool":"query","answered":true}`) {
+		t.Fatalf("the report says the probe answered: %s", out)
+	}
+	if got := methods(trace(t)); strings.Join(got, " ") != "initialize notifications/initialized tools/list tools/call" {
+		t.Fatalf("the probe is one call: %v", got)
+	}
+	// A probe the server answers with an error is a platform not reached.
+	result := filepath.Join(t.TempDir(), "result.json")
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"connection refused for app"}],"isError":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvResult, result)
+	_, err = Check(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), `probe "query": the tool reported an error: connection refused for [redacted]`) {
+		t.Fatalf("an error answer fails the check, redacted: %v", err)
+	}
+	t.Setenv(fakemcp.EnvResult, "")
+	cfg.Probe = "drop_table"
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "drop_table" is not one this source may call`) {
+		t.Fatalf("a probe outside the allowed tools: %v", err)
+	}
+	cfg.Tools = nil
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "drop_table" is not one the server offers`) {
+		t.Fatalf("a probe the server lacks: %v", err)
+	}
+	// Without a probe, nothing is called.
+	cfg.Probe = ""
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	// Across the five runs above, only the two with an offered probe
+	// called anything.
+	if got := strings.Join(methods(trace(t)), " "); strings.Count(got, "tools/call") != 2 {
+		t.Fatalf("a call only for an offered probe: %v", got)
+	}
+}

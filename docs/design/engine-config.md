@@ -212,7 +212,10 @@ each naming its shape, the pinned artifact that serves it, the tools it may call
 licence of the artifact it pulls. An `mcp` entry's `server.args`, when present, are the
 server's own arguments inside its container — the mode a server runs in, say — each one word
 as written: the engine builds the adapter's command line and splits nothing, and the adapter
-hands them to the runtime after the image. A restriction of streams for the history operation is not yet
+hands them to the runtime after the image. Its `probe`, when present, is one of its `tools`
+that a check calls once with no arguments: a server that starts and lists its tools without a
+working connection to its platform answers the handshake all the same, and the probe is what
+establishes the connection; its result is discarded. A restriction of streams for the history operation is not yet
 applied at acquisition, so a binding may not declare one: a restriction accepted and not
 applied would read as applied. `history` is served by the `airbyte` shape and `live`
 and `write` by the `mcp` shape; the `http` shape is not shipped by this release, and a binding
@@ -250,7 +253,8 @@ under directories nobody else can replace it in, and so on through the list abov
 each of the platform's derived sources is run once in check mode, as the platform's user, in
 the environment `serve` would give it: `adapter-airbyte --check` runs the connector's own
 `check` with the credentials; `adapter-mcp --check` starts the server, completes the handshake
-and lists its tools, failing when a tool the binding names is not offered. What each answered
+and lists its tools, failing when a tool the binding names is not offered, and calls the
+binding's `probe` once when it names one. What each answered
 is printed, one line per operation; the first that cannot answer ends the connect with the
 adapter's reason. Nothing is acquired and no receipt is minted. An image the runtime does not
 hold yet is pulled during the check, which is why a check is given five minutes where an
@@ -263,9 +267,14 @@ link, and a configuration that with the entry would exceed the size `serve` read
 before any check runs. The file's directory is held open from the first read to the rename, so
 what is read, written beside it and put in place is in that directory whatever a path component
 is swapped for meanwhile; one connect at a time holds `<file>.lock` beside it, and a second
-refuses rather than waits; the file is put in place only if it still holds what was read, so
-a connect that raced this one is not written over; and the new file keeps the old one's mode
-and owner, or is not put in place. The file is rewritten whole, in the engine's own form —
+refuses rather than waits; the file is put in place only if, read again just before the rename, it
+still holds what the checks were run against — which holds against another connect, since
+one takes the lock, while an editor that does not is not held out, and its save in the
+instant between that read and the rename would be written over; the new file is written in
+a directory of the connect's own beside the configuration, so no other user can swap it
+before the rename, and it keeps the old one's mode and owner, set through the open
+descriptor, or is not put in place; and the seed is judged as `serve` judges it before any
+adapter is run, so a connect does not succeed where the next start would refuse. The file is rewritten whole, in the engine's own form —
 members in canonical order, indented — and put in place by a rename, so a reader sees the old
 file or the new and never a partial one. Every value written is valid UTF-8, since the file
 is JSON; a path that is not is refused rather than written as something else. A configuration

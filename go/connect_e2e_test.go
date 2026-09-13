@@ -123,6 +123,14 @@ func main() {
 			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "standin", "version": "0.1"}}
 		case "tools/list":
 			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "explain", "inputSchema": map[string]any{"type": "object"}}}}
+		case "tools/call":
+			// The probe: a server that could not reach its database says
+			// so here, whatever the handshake said.
+			if os.Getenv("PROBE_FAILS") == "1" {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "connection refused"}}, "isError": true}
+			} else {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "public"}}}
+			}
 		default:
 			continue
 		}
@@ -163,6 +171,9 @@ func main() {
 		t.Fatal(err)
 	}
 	seed := filepath.Join(signerDir, "gateway.seed")
+	if err := os.WriteFile(seed, testSeed, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	config := filepath.Join(dir, "engine.json")
 	text := `{"engineVersion":"1","authority":"gateway:test","seed":"` + escapePath(seed) + `","store":"` + abs(t, dir, "store") + `",` +
 		`"registry":"` + abs(t, dir, "registry.jsonl") + `","decisionRecords":"` + abs(t, dir, "decisions") + `",` +
@@ -194,7 +205,7 @@ func main() {
 		t.Fatalf("connect: %v", err)
 	}
 	if len(out.answers) != 2 || !strings.HasPrefix(out.answers[0], "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: checked with ") || strings.Contains(out.answers[0], "hunter2") ||
-		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server standin 0.1, protocol 2025-06-18, tools query, explain" {
+		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server standin 0.1, protocol 2025-06-18, tools query, explain; query answered" {
 		t.Fatalf("both adapters reported, the connector's message redacted: %q", out.answers)
 	}
 	traced, _ := os.ReadFile(trace)
@@ -228,5 +239,15 @@ func main() {
 	after, _ := os.ReadFile(config)
 	if strings.Count(string(traced), "\n") != 1 || string(after) != string(before) {
 		t.Fatalf("the server is not asked after the connector failed, and nothing is written:\n%s", traced)
+	}
+	// A server that answers the handshake but cannot reach its platform
+	// is found out by the probe, and nothing is written.
+	req.environment = []string{"FAKE_TRACE=" + trace, "PROBE_FAILS=1"}
+	_, err = connect(context.Background(), req, host, asSelf)
+	if err == nil || !strings.Contains(err.Error(), `warehouse/live: probe "query": the tool reported an error`) {
+		t.Fatalf("the probe's error ends the connect: %v", err)
+	}
+	if after, _ := os.ReadFile(config); string(after) != string(before) {
+		t.Fatal("nothing is written when the probe fails")
 	}
 }

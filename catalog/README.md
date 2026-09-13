@@ -18,7 +18,9 @@ file name.
 | `live` | `crystaldba/postgres-mcp:0.3.0` with `--access-mode=restricted` | index digest `dbbd3468…b6e6b`, read from Docker Hub 2026-09-13 | MIT | `LICENSE` in the crystaldba/postgres-mcp repository |
 | `write` | the same server with `--access-mode=unrestricted` | the same digest | MIT | the same |
 
-The `live` entry names the server's read tools — schemas, objects, object details, SQL
+The `live` entry's `probe`, `list_schemas`, is what a check calls once: this server starts
+and lists its tools whether or not it could reach the database, so the handshake alone
+establishes nothing about the connection, and a schema listing does. The `live` entry names the server's read tools — schemas, objects, object details, SQL
 under the server's restricted mode, query plans — and not its workload-analysis tools,
 which read `pg_stat_statements` and are an operator's, not a decision's. The two operations
 read different files: the server takes its connection string from the environment

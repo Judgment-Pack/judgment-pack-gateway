@@ -66,6 +66,7 @@ type operation struct {
 	image   string
 	args    []string // the server's own arguments inside its container (mcp)
 	tools   []string
+	probe   string // a tool a check calls once to reach the platform (mcp)
 	licence string
 }
 
@@ -452,7 +453,7 @@ func parseOperation(op *vObject, name string) (operation, error) {
 			return o, fmt.Errorf("operation %s: image must be pinned, name[:tag]@sha256:<64 hex>", name)
 		}
 	case "mcp":
-		if err := exactlyMembers(op, map[string]bool{"shape": true, "server": true, "licence": true, "tools": true}, "operation "+name); err != nil {
+		if err := exactlyMembers(op, map[string]bool{"shape": true, "server": true, "licence": true, "tools": true, "probe": false}, "operation "+name); err != nil {
 			return o, err
 		}
 		serverValue, _ := op.get("server")
@@ -494,6 +495,23 @@ func parseOperation(op *vObject, name string) (operation, error) {
 				return o, fmt.Errorf("operation %s: tools must be non-empty names without commas", name)
 			}
 			o.tools = append(o.tools, string(s))
+		}
+		// The probe is the tool a check calls once to establish that the
+		// server reaches its platform: one of the tools the operation may
+		// call, so a check calls nothing an acquisition could not.
+		if _, present := op.get("probe"); present {
+			probe, err := requireString(op, "probe")
+			if err != nil || probe == "" {
+				return o, fmt.Errorf("operation %s: probe, when present, names a tool", name)
+			}
+			found := false
+			for _, t := range o.tools {
+				found = found || t == probe
+			}
+			if !found {
+				return o, fmt.Errorf("operation %s: probe %q is not one of its tools", name, probe)
+			}
+			o.probe = probe
 		}
 	case "http":
 		return o, fmt.Errorf("operation %s: the http shape is not shipped by this release", name)
@@ -543,10 +561,14 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint", p.endpoint)
 			}
+			var check []string
+			if b.live.probe != "" {
+				check = []string{"--probe", b.live.probe}
+			}
 			if len(b.live.args) > 0 {
 				argv = append(append(argv, "--"), b.live.args...)
 			}
-			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp"}
+			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", check: check}
 		}
 	}
 	return sources

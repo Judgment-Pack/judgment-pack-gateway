@@ -16,7 +16,7 @@ const restrictedBinding = `{
   "platform": "postgres",
   "operations": {
     "history": {"shape": "airbyte", "image": "airbyte/source-postgres:3.8.5@` + testImageDigest + `", "licence": "ELv2"},
-    "live": {"shape": "mcp", "server": {"image": "crystaldba/postgres-mcp:0.3.0@` + testImageDigest + `", "args": ["--access-mode=restricted"]}, "tools": ["query"], "licence": "MIT"}
+    "live": {"shape": "mcp", "server": {"image": "crystaldba/postgres-mcp:0.3.0@` + testImageDigest + `", "args": ["--access-mode=restricted"]}, "tools": ["query"], "probe": "query", "licence": "MIT"}
   }
 }`
 
@@ -43,7 +43,16 @@ func newConnectFixture(t *testing.T, bindingText string, platforms string) *conn
 	// Synthetic paths, rooted on the platform's volume so they are absolute
 	// on Windows too; the stub filesystem is what holds them.
 	root := filepath.VolumeName(f.dir) + string(filepath.Separator)
-	f.seed = filepath.Join(root, "var", "lib", "engine", "gateway.seed")
+	// The seed is real, judged as serve judges it; the credentials are
+	// synthetic, held by the stub filesystem.
+	signer := filepath.Join(t.TempDir(), "signer")
+	if err := os.MkdirAll(signer, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	f.seed = filepath.Join(signer, "gateway.seed")
+	if err := os.WriteFile(f.seed, testSeed, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	f.credentials = filepath.Join(root, "run", "secrets", "warehouse")
 	f.config = filepath.Join(f.dir, "engine.json")
 	text := `{"engineVersion":"1","authority":"gateway:acme","seed":"` + escapePath(f.seed) + `","store":"` + abs(t, f.dir, "store") + `",` +
@@ -106,6 +115,9 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	}
 	if argv := strings.Join(f.asked[1].argv, " "); !strings.HasSuffix(argv, " --endpoint warehouse.internal:5432 -- --access-mode=restricted") || !strings.Contains(argv, "--credentials "+f.credentials+" ") {
 		t.Fatalf("the derived command line carries the binding's server arguments after --: %s", argv)
+	}
+	if strings.Join(f.asked[1].check, " ") != "--probe query" || len(f.asked[0].check) != 0 {
+		t.Fatalf("the check carries the binding's probe: %q %q", f.asked[0].check, f.asked[1].check)
 	}
 	if len(out.answers) != 2 || out.answers[0] != "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: Connected" ||
 		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server postgres-mcp 0.3.0, protocol 2025-03-26, tools query, explain" {
@@ -452,4 +464,34 @@ func TestReplaceRepairsAStalePinOfTheEntryReplaced(t *testing.T) {
 func f0(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(filepath.VolumeName(t.TempDir())+string(filepath.Separator), "run", "secrets", "old")
+}
+
+func TestConnectJudgesTheSeedAsServeDoes(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("file modes are not judged on Windows")
+	}
+	f := newConnectFixture(t, restrictedBinding, ``)
+	if err := os.Chmod(f.seed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := f.fileText(t)
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "seed:") || !strings.Contains(err.Error(), "chmod 0600") || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatalf("a seed serve would refuse ends the connect before any check: %v (asked %d)", err, len(f.asked))
+	}
+	os.Remove(f.seed)
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "seed:") {
+		t.Fatalf("an absent seed too: %v", err)
+	}
+}
+
+func TestDescribeCheckReportsTheProbe(t *testing.T) {
+	report := `{"check":{"status":"succeeded","adapter":{"name":"crystaldba/postgres-mcp","version":"0.3.0","digest":"` + testImageDigest + `"},"server":{"name":"postgres-mcp","version":"0.3.0"},"protocolVersion":"2025-03-26","tools":["list_schemas"],"probe":{"tool":"list_schemas","answered":true}}}`
+	got, err := describeCheck("mcp", []byte(report))
+	if err != nil || !strings.HasSuffix(got, "tools list_schemas; list_schemas answered") {
+		t.Fatalf("%q %v", got, err)
+	}
+	if _, err := describeCheck("mcp", []byte(strings.Replace(report, `"answered":true`, `"answered":false`, 1))); err == nil || !strings.Contains(err.Error(), `the probe "list_schemas" did not answer`) {
+		t.Fatalf("a probe that did not answer: %v", err)
+	}
 }

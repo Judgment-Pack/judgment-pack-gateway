@@ -211,6 +211,12 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		return out, err
 	}
 	out.statements = statements
+	// The seed as serve judges it -- owned by this process, private,
+	// regular, a seed -- so a connect does not succeed where the next
+	// start would refuse; what is read is discarded.
+	if _, err := loadSeed(candidate.seed); err != nil {
+		return out, fmt.Errorf("seed: %v", err)
+	}
 	// The platform's own sources, each asked once; the first that cannot
 	// answer ends the connect, and nothing is written.
 	sources := deriveSources(candidate, bindings)
@@ -337,7 +343,7 @@ func runCheck(ctx context.Context, spec sourceSpec) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("adapter could not be started: %v", err)
 	}
-	argv := append([]string{spec.argv[0], "--check", "--timeout", checkTimeout.String()}, spec.argv[1:]...)
+	argv := append(append([]string{spec.argv[0], "--check", "--timeout", checkTimeout.String()}, spec.check...), spec.argv[1:]...)
 	cmd := exec.CommandContext(ctx, path, argv[1:]...)
 	cmd.Args = argv
 	cmd.Stdin = bytes.NewReader(nil)
@@ -418,6 +424,10 @@ func describeCheck(shape string, report []byte) (string, error) {
 		} `json:"server"`
 		ProtocolVersion string   `json:"protocolVersion"`
 		Tools           []string `json:"tools"`
+		Probe           *struct {
+			Tool     string `json:"tool"`
+			Answered bool   `json:"answered"`
+		} `json:"probe"`
 	}
 	if err := json.Unmarshal(top["check"], &check); err != nil || check.Adapter.Name == "" || check.Adapter.Digest == "" {
 		return "", errors.New("the adapter's report is not a check report")
@@ -441,7 +451,14 @@ func describeCheck(shape string, report []byte) (string, error) {
 		if server == "" {
 			server = "an unnamed server"
 		}
-		return who + ": server " + server + ", protocol " + check.ProtocolVersion + ", tools " + strings.Join(check.Tools, ", "), nil
+		line := who + ": server " + server + ", protocol " + check.ProtocolVersion + ", tools " + strings.Join(check.Tools, ", ")
+		if check.Probe != nil {
+			if !check.Probe.Answered {
+				return "", fmt.Errorf("the probe %q did not answer", check.Probe.Tool)
+			}
+			line += "; " + check.Probe.Tool + " answered"
+		}
+		return line, nil
 	}
 	return "", fmt.Errorf("no check for shape %q", shape)
 }
@@ -525,7 +542,7 @@ func openConfigFile(path string) (*configFile, error) {
 	}
 	f.mode = info.Mode().Perm()
 	f.owner = ownerIDsOf(info)
-	unlock, err := lockBeside(dir, f.base)
+	unlock, err := lockBeside(dir, f.base, f.owner)
 	if err != nil {
 		dir.Close()
 		return nil, fmt.Errorf("engine configuration: %v", err)
@@ -551,12 +568,29 @@ func (f *configFile) regular() (os.FileInfo, error) {
 	return info, nil
 }
 
+// read opens the file in the held directory without blocking, and reads
+// the descriptor it holds only when that descriptor is the directory
+// entry's own regular file: the entry judged and the file read are the
+// same inode, so neither a link put in the file's place -- which the held
+// directory would follow, within itself -- nor a FIFO, which would block,
+// is read.
 func (f *configFile) read() ([]byte, error) {
-	file, err := f.dir.OpenFile(f.base, os.O_RDONLY, 0)
+	file, err := openConfigForRead(f.dir, f.base)
 	if err != nil {
 		return nil, fmt.Errorf("engine configuration: %v", err)
 	}
 	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("engine configuration: %v", err)
+	}
+	entry, err := f.regular()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(entry, info) {
+		return nil, fmt.Errorf("engine configuration: %s is not the regular file it was", filepath.Join(f.dir.Name(), f.base))
+	}
 	data, err := readBoundedFrom(file, f.base, maxEngineConfigBytes)
 	if err != nil {
 		return nil, fmt.Errorf("engine configuration: %v", err)
@@ -564,32 +598,34 @@ func (f *configFile) read() ([]byte, error) {
 	return data, nil
 }
 
-// replace writes content beside the file and renames it into place, with
-// the file's mode and owner kept, provided the file still holds what was
-// read: a connect that raced this one is not written over.
+// replace writes the content into a directory of this process's own,
+// made beside the file for the purpose (0700, so no other user can swap
+// what is in it), gives the new file the old one's mode and owner through
+// the open descriptor, and renames it into place -- provided, read again
+// just before the rename, the file still holds what the checks were run
+// against. That holds against another connect, which takes the lock; an
+// editor that does not is not held out, and its save in the instant
+// between that read and the rename would be written over.
 func (f *configFile) replace(read, content []byte) error {
 	if _, err := f.regular(); err != nil {
 		return err
-	}
-	current, err := f.read()
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(current, read) {
-		return errors.New("engine configuration: the file changed while the checks ran; run connect again")
 	}
 	var suffix [4]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
 		return err
 	}
-	tmp := f.base + ".connect-" + hex.EncodeToString(suffix[:])
+	private := f.base + ".connect-" + hex.EncodeToString(suffix[:])
+	if err := f.dir.Mkdir(private, 0o700); err != nil {
+		return fmt.Errorf("engine configuration: %v", err)
+	}
+	defer f.dir.RemoveAll(private)
+	tmp := private + "/new"
 	file, err := f.dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, f.mode)
 	if err != nil {
 		return fmt.Errorf("engine configuration: %v", err)
 	}
 	fail := func(err error) error {
 		file.Close()
-		f.dir.Remove(tmp)
 		return fmt.Errorf("engine configuration: %v", err)
 	}
 	if _, err := file.Write(content); err != nil {
@@ -598,21 +634,29 @@ func (f *configFile) replace(read, content []byte) error {
 	if err := file.Sync(); err != nil {
 		return fail(err)
 	}
-	// The mode as it was, whatever the umask narrowed it to at creation;
-	// the owner as it was, or the rename does not happen: a file the
-	// signer could read must stay one it can read.
-	if err := f.dir.Chmod(tmp, f.mode); err != nil {
+	// The mode as it was, whatever the umask narrowed it to at creation,
+	// and the owner as it was -- a directory with the setgid bit would
+	// otherwise give the file its group -- both through the descriptor,
+	// so they land on the file written and not on a name; or the rename
+	// does not happen: a file the signer could read must stay one it can
+	// read.
+	if err := file.Chmod(f.mode); err != nil {
 		return fail(err)
 	}
-	if err := keepOwner(f.dir, tmp, f.owner); err != nil {
+	if err := keepOwner(file, f.owner); err != nil {
 		return fail(err)
 	}
 	if err := file.Close(); err != nil {
-		f.dir.Remove(tmp)
 		return fmt.Errorf("engine configuration: %v", err)
 	}
+	current, err := f.read()
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(current, read) {
+		return errors.New("engine configuration: the file changed while the checks ran; run connect again")
+	}
 	if err := f.dir.Rename(tmp, f.base); err != nil {
-		f.dir.Remove(tmp)
 		return fmt.Errorf("engine configuration: %v", err)
 	}
 	return nil
