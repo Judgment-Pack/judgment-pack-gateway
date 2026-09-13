@@ -614,8 +614,11 @@ func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 // under; a link somebody else placed sits in a directory these rules
 // refuse, since they could write there.
 func trustedAncestors(path string, uid int, fileOwner func(string) (fileOwnership, error)) error {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		path = resolved
+	// The directory is what is resolved: the file itself may not exist
+	// yet, as a seed does not before keygen, and its directories must be
+	// held either way.
+	if resolved, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil {
+		path = filepath.Join(resolved, filepath.Base(path))
 	}
 	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
 		owner, err := fileOwner(dir)
