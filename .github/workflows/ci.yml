@@ -122,18 +122,22 @@ jobs:
           DOCKER_BUILDKIT: "1"
       - name: The image's core agrees with the corpus it carries
         run: docker run --rm engine:ci conform --corpus /usr/share/engine/corpus
-      # The capability travels as an attribute in the layer; a copy to the
-      # host would drop it, so the saved image's layers are read as they
-      # are, applied in the manifest's order, and the final filesystem is
-      # held to the design: the gateway's capabilities, mode and owner;
-      # nothing else privileged; the homes; the adapters; the catalog and
-      # corpus byte for byte; the users; the entrypoint and command.
-      - name: The image check reads layers as an unpacker would
+      # The filesystem the runtime itself unpacks -- a container created
+      # from the image, exported whole -- is what is held to the design,
+      # not a model of the layers: the gateway's capabilities (an attribute
+      # the export carries), mode and owner on a root-owned unlinked path;
+      # nothing else privileged; the homes and their parent; the adapters,
+      # catalog and corpus root's and unwritable, byte for byte; the users;
+      # the entrypoint and command from the image's configuration.
+      - name: The image check holds each invariant, one negative case each
         run: python3 .github/test_image_checks.py
-      - name: The image's final filesystem is what the design states
+      - name: The image's unpacked filesystem is what the design states
         run: |
-          mkdir -p image && docker save engine:ci | tar -x -C image
-          python3 .github/image_checks.py image .
+          docker create --name engine-export engine:ci
+          docker export engine-export > engine-export.tar
+          docker rm engine-export
+          docker image inspect engine:ci > engine-config.json
+          python3 .github/image_checks.py engine-export.tar engine-config.json .
       - name: The image runs the adapters and starts the engine as built
         run: |
           docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }

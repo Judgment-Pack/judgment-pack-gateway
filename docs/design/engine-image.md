@@ -42,18 +42,20 @@ root, the signer's, or another platform's, whatever the image carries.
 
 CI builds the image from every commit and never pushes it: what it checks is that it builds
 from the pinned bases, that the core inside it agrees with the corpus it carries, and that the
-image's final filesystem — its layers applied in the manifest's order, whiteouts honoured — is
-what this note states: the gateway binary with exactly its three capabilities (read from the v2
+filesystem a container created from the image unpacks to — `docker export`, the runtime's own
+unpacking, not a model of the layers, so that what is judged is what runs and a bypass would have
+to be the unpacker's own — is what this note states: the gateway binary with exactly its three capabilities (read from the v2
 or the v3 attribute, not compared as bytes), mode 0700 and the signer's, reached through
 directories that are root's and that nobody else may write, with no link on the way; nothing
 else carrying a capability or a set-user-id or set-group-id bit, hard links included; every
 home its user's alone at 0700; the adapters, the catalog and the corpus root's, unwritable by
-others, reached the same way, the last two byte for byte the checkout's; the users by uid; the
-helper that made the homes gone; and the entrypoint and command. The check reads the layers as
-an unpacker would — names normalised, a whiteout removing what earlier layers left and never
-what its own layer adds, a path replaced by a file or a link losing its descendants, a hard
-link sharing its target's bits — and its own tests hold it to that, one fixture per way a wrong
-image was once found to pass. It then starts the image as built, with no
+others, reached the same way, the last two byte for byte the checkout's; every home under a root-owned
+`/home` that nobody else may write, so no home can be renamed away; the users by uid; the helper
+that made the homes gone; and the entrypoint and command from the image's configuration. The
+check's own tests hold each invariant with a negative case of its own, one thing wrong per case,
+so that no other refusal can mask the one under test. The image is unpacked and run on a
+case-sensitive filesystem: a case-folding one, under which two spellings name one directory, is
+not supported, and the check does not model it. It then starts the image as built, with no
 override, and holds the two launch overrides below to what is stated here.
 
 **Launch overrides.** With every capability dropped (`--cap-drop ALL`) the kernel refuses to
@@ -142,9 +144,10 @@ protection rests on the host, not on this design — a seed held in a hardware m
 service the host cannot read is what makes that acceptable. **3** is not pursued: it would make
 the adapter's behaviour depend on which connector language it met.
 
-MCP servers are pulled the same way, as pinned container images run as sibling processes, or
-reached as remote servers over HTTPS with a token the adapter holds. `npx`-style installation
-at run time is refused: nothing runs that was not pinned by digest.
+MCP servers are pulled the same way, as pinned container images run as sibling processes, and
+the adapter speaks to them over stdio — a container's or a command's; a remote server reached
+over HTTPS with a token the adapter holds is not in this release, and is future work. `npx`-style
+installation at run time is refused: nothing runs that was not pinned by digest.
 
 ## What `verify` reads
 
@@ -163,10 +166,12 @@ digest-shaped filename satisfies nothing. The verdict is the JSON, never the exi
 
 ## Provenance
 
-The release workflow publishes the image digest, a software bill of materials for both modules,
-and the runtime pin, in the same `checksums.txt` that names the binaries. An operator pins the
-image by digest and can name the tagged state it was built from, as [CONTRIBUTING.md](../../CONTRIBUTING.md#tags)
-already says of the binary.
+No release workflow publishes the image yet: CI builds it from every commit and never pushes it.
+When one does, it is to publish the image digest, a software bill of materials for both modules,
+and the runtime pin, in the same `checksums.txt` that names the binaries, so that an operator pins
+the image by digest and can name the tagged state it was built from, as
+[CONTRIBUTING.md](../../CONTRIBUTING.md#tags) already says of the binary. Until then the digest of
+a build is what a deployment pins, and this note is what it means.
 
 ## What is deliberately not in the image
 
