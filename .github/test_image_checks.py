@@ -11,6 +11,7 @@ CAPS = struct.pack("<IIIII", 0x02000001, 1 << 5 | 1 << 6 | 1 << 7, 0, 0, 0)
 CONFIG = {"Entrypoint": ["/usr/local/bin/gateway"], "Cmd": ["serve", "--config", "/etc/engine/engine.json"], "User": "engine"}
 PASSWD = b"root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:e:/home/engine:/sbin/nologin\n" + b"".join(
     b"engine-%d:x:%d:%d:p:/home/engine-%d:/sbin/nologin\n" % (n, 65600 + n, 65600 + n, n) for n in range(1, 9))
+GROUP = b"root:x:0:\nengine:x:65532:\n" + b"".join(b"engine-%d:x:%d:\n" % (n, 65600 + n) for n in range(1, 9))
 
 
 class Export:
@@ -67,6 +68,7 @@ def good(**over):
     spec["usr/share/engine/catalog/postgres.json"] = dict(kind="file", data=b'{"bindingVersion":"1"}')
     spec["usr/share/engine/corpus/canon.json"] = dict(kind="file", data=b"[]")
     spec["etc/passwd"] = dict(kind="file", data=PASSWD)
+    spec["etc/group"] = dict(kind="file", data=GROUP)
     spec["home/engine"] = dict(kind="dir", mode=0o700, uid=65532, gid=65532)
     for n in range(1, 9):
         spec["home/engine-%d" % n] = dict(kind="dir", mode=0o700, uid=65600 + n, gid=65600 + n)
@@ -110,10 +112,20 @@ class Checks(unittest.TestCase):
         self.refused(good(**{"usr/local/bin/gateway": dict(mode=0o750)}), "must be 0700")
 
     def test_gateway_owner(self):
-        self.refused(good(**{"usr/local/bin/gateway": dict(uid=0, gid=0)}), "the signer's (65532)")
+        # The uid alone: the group stays the signer's.
+        self.refused(good(**{"usr/local/bin/gateway": dict(uid=0, gid=65532)}), "the signer's (65532)")
 
     def test_gateway_group(self):
-        self.refused(good(**{"usr/local/bin/gateway": dict(gid=0)}), "the signer's (65532)")
+        # The group alone: the uid stays the signer's.
+        self.refused(good(**{"usr/local/bin/gateway": dict(uid=65532, gid=0)}), "the signer's (65532)")
+
+    def test_gateway_capabilities_upper_permitted_word(self):
+        caps = struct.pack("<IIIII", 0x02000001, 1 << 5 | 1 << 6 | 1 << 7, 0, 1, 0)
+        self.refused(good(**{"usr/local/bin/gateway": dict(caps=caps)}), "capabilities are")
+
+    def test_gateway_capabilities_upper_inheritable_word(self):
+        caps = struct.pack("<IIIII", 0x02000001, 1 << 5 | 1 << 6 | 1 << 7, 0, 0, 1)
+        self.refused(good(**{"usr/local/bin/gateway": dict(caps=caps)}), "capabilities are")
 
     def test_gateway_without_capabilities(self):
         self.refused(good(**{"usr/local/bin/gateway": dict(caps=None)}), "carries no capability attribute")
@@ -160,6 +172,16 @@ class Checks(unittest.TestCase):
         e.hardlink("opt/link", "opt/evil")
         self.refused(e, "set-user-id")
 
+    def test_a_hard_link_takes_its_targets_entry(self):
+        # Read directly: the link's entry is the target's, bits and all,
+        # whatever its own header said.
+        e = good(**{"opt/target": dict(mode=0o640, uid=65601, gid=65601)})
+        e.hardlink("opt/link", "opt/target", mode=0o777, uid=0)
+        fs, _ = ic.read_export(e.done())
+        link, target = fs["opt/link"], fs["opt/target"]
+        self.assertIs(link, target)
+        self.assertEqual((link.mode, link.uid, link.gid, link.capability), (0o640, 65601, 65601, None))
+
     def test_a_hard_link_whose_own_header_claims_capabilities(self):
         e = good()
         e.hardlink("usr/local/bin/other", "usr/local/bin/adapter-mcp", caps=CAPS)
@@ -172,13 +194,40 @@ class Checks(unittest.TestCase):
 
     # The way to what runs.
     def test_a_writable_directory_on_the_way(self):
-        self.refused(good(**{"usr/local/bin": dict(kind="dir", mode=0o777)}), "usr/local/bin is uid 0 gid 0 mode 0777")
+        self.refused(good(**{"usr/local/bin": dict(kind="dir", mode=0o777)}), "usr/local/bin is mode 0777")
 
     def test_a_group_writable_directory_on_the_way(self):
         self.refused(good(**{"usr/local": dict(kind="dir", mode=0o775)}), "unwritable by others")
 
     def test_a_directory_on_the_way_owned_by_the_signer(self):
-        self.refused(good(**{"usr/local": dict(kind="dir", uid=65532, gid=65532)}), "must be root's")
+        self.refused(good(**{"usr/local": dict(kind="dir", uid=65532, gid=0)}), "must be root's")
+
+    def test_a_directory_on_the_way_with_another_group(self):
+        self.refused(good(**{"usr/local": dict(kind="dir", uid=0, gid=65601)}), "must be root's group")
+
+    def test_a_directory_on_the_way_not_passable(self):
+        self.refused(good(**{"usr/share/engine": dict(kind="dir", mode=0o750)}), "passable by everyone")
+
+    def test_a_catalog_directory_not_readable(self):
+        self.refused(good(**{"usr/share/engine/catalog": dict(kind="dir", mode=0o700)}), "readable by everyone")
+
+    def test_a_catalog_file_not_readable(self):
+        self.refused(good(**{"usr/share/engine/catalog/postgres.json": dict(mode=0o600)}), "readable by everyone")
+
+    def test_an_adapter_not_readable(self):
+        self.refused(good(**{"usr/local/bin/adapter-mcp": dict(mode=0o711)}), "readable by everyone")
+
+    def test_a_file_in_the_catalog_the_checkout_lacks(self):
+        self.refused(good(**{"usr/share/engine/catalog/extra.json": dict(data=b"{}", mode=0o666, uid=65601)}), "not in the checkout's catalog")
+
+    def test_a_corpus_file_writable(self):
+        self.refused(good(**{"usr/share/engine/corpus/canon.json": dict(mode=0o666)}), "unwritable by others")
+
+    def test_the_passwd_file_writable(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD, mode=0o666)}), "unwritable by others")
+
+    def test_the_group_file_writable(self):
+        self.refused(good(**{"etc/group": dict(data=GROUP, mode=0o666)}), "unwritable by others")
 
     def test_a_link_on_the_way(self):
         self.refused(good(**{"usr/local": dict(kind="link", target="/nowhere")}), "usr/local is a symbolic link")
@@ -206,7 +255,7 @@ class Checks(unittest.TestCase):
 
     # The homes.
     def test_a_writable_home_parent(self):
-        self.refused(good(**{"home": dict(kind="dir", mode=0o777)}), "home is uid 0 gid 0 mode 0777")
+        self.refused(good(**{"home": dict(kind="dir", mode=0o777)}), "home is mode 0777")
 
     def test_a_home_parent_owned_by_a_platform(self):
         self.refused(good(**{"home": dict(kind="dir", uid=65601, gid=65601)}), "must be root's")
@@ -228,10 +277,36 @@ class Checks(unittest.TestCase):
 
     # The users, and what the image starts.
     def test_a_user_with_another_uid(self):
-        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"engine-4:x:65604:65604", b"engine-4:x:65614:65604"))}), "names engine-4 as uid 65614")
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"engine-4:x:65604:65604", b"engine-4:x:65614:65604"))}), "has engine-4 as uid 65614")
+
+    def test_a_user_with_another_primary_group(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"engine-4:x:65604:65604", b"engine-4:x:65604:0"))}), "has engine-4 as uid 65604 gid 0")
+
+    def test_a_user_with_another_home(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"/home/engine-4", b"/home/engine-3"))}), "home /home/engine-3")
 
     def test_a_user_missing(self):
-        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"engine:x:65532:65532:e:/home/engine:/sbin/nologin\n", b""))}), "names engine as uid None")
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"engine:x:65532:65532:e:/home/engine:/sbin/nologin\n", b""))}), "does not name engine")
+
+    def test_a_user_named_twice_is_not_read_last_wins(self):
+        # The engine reads the first line naming a user; a first line giving
+        # engine-4 uid 0 would be what it reads, whatever a later one said.
+        self.refused(good(**{"etc/passwd": dict(data=b"engine-4:x:65699:65699:p:/home/engine-4:/sbin/nologin\n" + PASSWD)}), "names engine-4 twice")
+
+    def test_a_uid_given_twice(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD + b"other:x:65604:65604:o:/home/other:/sbin/nologin\n")}), "gives uid 65604 to engine-4 and to other")
+
+    def test_a_group_with_another_gid(self):
+        self.refused(good(**{"etc/group": dict(data=GROUP.replace(b"engine-2:x:65602:", b"engine-2:x:65612:"))}), "has engine-2 as gid 65612")
+
+    def test_a_group_missing(self):
+        self.refused(good(**{"etc/group": dict(data=GROUP.replace(b"engine:x:65532:\n", b""))}), "has engine as gid None")
+
+    def test_a_group_named_twice(self):
+        self.refused(good(**{"etc/group": dict(data=b"engine-2:x:65699:\n" + GROUP)}), "names engine-2 twice")
+
+    def test_a_passwd_line_of_the_wrong_shape(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD + b"broken\n")}), "not seven fields")
 
     def test_the_entrypoint(self):
         self.refused(good(), "the image starts", {"Entrypoint": ["/bin/sh"], "Cmd": CONFIG["Cmd"], "User": "engine"})
@@ -252,6 +327,46 @@ class Checks(unittest.TestCase):
         e = good()
         e.dir("home/./engine-9", 0o777, 65601, 65601)
         self.refused(e, "not a normalised path")
+
+
+class Layers(unittest.TestCase):
+    """The layer scan: the capability attribute as each layer wrote it."""
+
+    def saved(self, layers):
+        image = tempfile.mkdtemp()
+        names = []
+        for i, entries in enumerate(layers):
+            path = os.path.join(image, "layer-%d.tar" % i)
+            t = tarfile.open(path, "w")
+            for name, caps in entries:
+                info = tarfile.TarInfo(name)
+                info.type, info.size = tarfile.REGTYPE, 0
+                if caps is not None:
+                    info.pax_headers = {"SCHILY.xattr.security.capability": caps.decode("utf-8", "surrogateescape")}
+                t.addfile(info, io.BytesIO(b""))
+            t.close()
+            names.append("layer-%d.tar" % i)
+        open(os.path.join(image, "manifest.json"), "w").write('[{"Config":"c","Layers":%s}]' % str(names).replace("'", '"'))
+        return image
+
+    def test_the_gateway_alone_as_stated(self):
+        self.assertIn("gateway alone", ic.scan_layers(self.saved([[("usr/local/bin/gateway", CAPS), ("usr/local/bin/adapter-mcp", None)]])))
+
+    def test_a_v3_attribute_rooted_elsewhere_is_seen_as_written(self):
+        rooted = struct.pack("<IIIIII", 0x03000001, 1 << 5 | 1 << 6 | 1 << 7, 0, 0, 0, 1000)
+        with self.assertRaises(ic.Failure) as refused:
+            ic.scan_layers(self.saved([[("usr/local/bin/gateway", rooted)]]))
+        self.assertIn("as written", str(refused.exception))
+
+    def test_another_file_in_any_layer(self):
+        with self.assertRaises(ic.Failure) as refused:
+            ic.scan_layers(self.saved([[("usr/local/bin/gateway", CAPS)], [("opt/evil", CAPS)]]))
+        self.assertIn("opt/evil a capability attribute", str(refused.exception))
+
+    def test_no_layer_giving_the_attribute(self):
+        with self.assertRaises(ic.Failure) as refused:
+            ic.scan_layers(self.saved([[("usr/local/bin/gateway", None)]]))
+        self.assertIn("no layer", str(refused.exception))
 
 
 if __name__ == "__main__":

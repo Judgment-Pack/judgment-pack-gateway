@@ -131,13 +131,23 @@ jobs:
       # the entrypoint and command from the image's configuration.
       - name: The image check holds each invariant, one negative case each
         run: python3 .github/test_image_checks.py
-      - name: The image's unpacked filesystem is what the design states
+      - name: The image's unpacked filesystem is what the design states, and its layers give the attribute as stated
         run: |
           docker create --name engine-export engine:ci
           docker export engine-export > engine-export.tar
           docker rm engine-export
           docker image inspect engine:ci > engine-config.json
-          python3 .github/image_checks.py engine-export.tar engine-config.json .
+          mkdir -p image && docker save engine:ci | tar -x -C image
+          python3 .github/image_checks.py engine-export.tar engine-config.json . image
+      # The root directory is not in an export; what it must be -- root's,
+      # writable by nobody else -- is held by the act: neither a platform
+      # user nor the signer may create a top-level path.
+      - name: Nobody but root may write the root directory
+        run: |
+          for user in 65601 65532; do
+            if docker run --rm --user $user --entrypoint /usr/local/bin/gateway engine:ci keygen /probe-$user 2>/dev/null; then echo "uid $user wrote the root directory"; exit 1; fi
+            docker run --rm --user $user --entrypoint /usr/local/bin/gateway engine:ci keygen /probe-$user 2>&1 | grep -q 'permission denied' || { echo "uid $user was refused for another reason"; exit 1; }
+          done
       - name: The image runs the adapters and starts the engine as built
         run: |
           docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }

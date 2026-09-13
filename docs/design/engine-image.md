@@ -50,8 +50,18 @@ directories that are root's and that nobody else may write, with no link on the 
 else carrying a capability or a set-user-id or set-group-id bit, hard links included; every
 home its user's alone at 0700; the adapters, the catalog and the corpus root's, unwritable by
 others, reached the same way, the last two byte for byte the checkout's; every home under a root-owned
-`/home` that nobody else may write, so no home can be renamed away; the users by uid; the helper
-that made the homes gone; and the entrypoint and command from the image's configuration. The
+`/home` that nobody else may write, so no home can be renamed away; every such path passable and
+readable by everyone, since the signer and the platform users are not root; the catalog and the
+corpus trees exactly the checkout's, nothing more; the users and groups as the engine reads them
+— by the first line naming them, a name or an id twice refused, each user's own group primary
+and its home under `/home`; the helper that made the homes gone; and the entrypoint and command
+from the image's configuration. Two things an export cannot show are held otherwise: the root
+directory, which the exporter omits, by the act — neither a platform user nor the signer may
+create a top-level path — and the capability attribute's revision and root id, which the exporter
+normalises to revision 2, by a scan of the saved image's layer headers for that one attribute:
+every entry carrying it, in any layer, must be the gateway with exactly the stated capabilities,
+which needs no model of how layers combine, since a later layer cannot make an earlier attribute
+more than it was. The
 check's own tests hold each invariant with a negative case of its own, one thing wrong per case,
 so that no other refusal can mask the one under test. The image is unpacked and run on a
 case-sensitive filesystem: a case-folding one, under which two spellings name one directory, is

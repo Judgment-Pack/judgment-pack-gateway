@@ -19,7 +19,17 @@ user's alone at 0700; the users are in /etc/passwd with their uids; the
 helper that made the homes is gone; and the image's configuration starts
 the gateway as engine with serve --config /etc/engine/engine.json.
 
-Usage: image_checks.py <export.tar> <image config json> <repository checkout>
+The exporter omits the root directory itself and normalises a revision-3
+capability attribute to revision 2, so two things are held elsewhere: the
+root's ownership and mode by CI's write probes as a platform user and as
+the signer (neither may create a top-level path), and the attribute's
+revision and root id by a scan of the saved image's layer headers for
+that one attribute -- every entry that carries it, in any layer, must be
+the gateway with exactly the stated capabilities, which needs no model of
+how the layers combine, since a later layer cannot make an earlier
+attribute more than it was.
+
+Usage: image_checks.py <export.tar> <image config json> <repository checkout> [<docker save dir>]
 The invariants are each held by a negative case in test_image_checks.py.
 """
 import json, os, posixpath, struct, sys, tarfile
@@ -119,11 +129,13 @@ def content(fs, archive, name):
     return archive.extractfile(e.member.name).read()
 
 
-def trusted_path(fs, name):
+def trusted_path(fs, name, readable=False):
     """Every directory on the way to name, and name itself, is root's and
     writable by root alone, none of them a link: what a platform user
     reaches under this name is what root put there, and nobody can rename
-    it away."""
+    it away. Every directory on the way is passable by everyone, since the
+    signer and the platform users are not root; with readable, the leaf is
+    readable by everyone too."""
     parts = name.split("/")
     for i in range(1, len(parts) + 1):
         prefix = "/".join(parts[:i])
@@ -132,8 +144,16 @@ def trusted_path(fs, name):
             fail("%s is a symbolic link; the image must not reach %s through one" % (prefix, name))
         if i < len(parts) and not e.isdir:
             fail("%s is not a directory on the way to %s" % (prefix, name))
-        if e.uid != 0 or e.gid != 0 or e.mode & 0o022:
-            fail("%s is uid %d gid %d mode %04o; every path to %s must be root's and unwritable by others" % (prefix, e.uid, e.gid, e.mode, name))
+        if e.uid != 0:
+            fail("%s is uid %d; every path to %s must be root's" % (prefix, e.uid, name))
+        if e.gid != 0:
+            fail("%s is gid %d; every path to %s must be root's group" % (prefix, e.gid, name))
+        if e.mode & 0o022:
+            fail("%s is mode %04o; every path to %s must be unwritable by others" % (prefix, e.mode, name))
+        if i < len(parts) and e.mode & 0o005 != 0o005:
+            fail("%s is mode %04o; every directory on the way to %s must be passable by everyone" % (prefix, e.mode, name))
+        if i == len(parts) and readable and (e.mode & 0o004 == 0 or (e.isdir and e.mode & 0o001 == 0)):
+            fail("%s is mode %04o; it must be readable by everyone" % (name, e.mode))
 
 
 HOMES = {"home/engine": 65532}
@@ -168,28 +188,108 @@ def check(fs, archive, config, checkout):
     if any(name == "mkhomes" or name.endswith("/mkhomes") for name in fs):
         fail("the mkhomes helper is still in the image")
     for name in ADAPTERS:
-        trusted_path(fs, name)
+        trusted_path(fs, name, readable=True)
         e = entry(fs, name)
         if not e.isfile or e.mode & 0o111 != 0o111:
             fail("%s is type %r mode %04o; it must be a regular file executable by every user" % (name, e.type, e.mode))
+    # The catalog and the corpus: the checkout's trees exactly -- every
+    # file of the checkout there and identical, and nothing there that the
+    # checkout does not have -- each entry root's, unwritable by others and
+    # readable by everyone, since the signer reads them and is not root.
     for top in ("catalog", "corpus"):
         root = os.path.join(checkout, top)
-        trusted_path(fs, "usr/share/engine/" + top)
+        there_root = "usr/share/engine/" + top
+        trusted_path(fs, there_root, readable=True)
+        expected = set()
         for dirpath, _, files in os.walk(root):
             for f in files:
                 here = os.path.join(dirpath, f)
-                there = "usr/share/engine/%s/%s" % (top, os.path.relpath(here, root).replace(os.sep, "/"))
-                trusted_path(fs, there)
+                rel = os.path.relpath(here, root).replace(os.sep, "/")
+                expected.add(rel)
+                there = there_root + "/" + rel
+                trusted_path(fs, there, readable=True)
                 if content(fs, archive, there) != open(here, "rb").read():
                     fail("%s differs from %s" % (there, here))
-    trusted_path(fs, "etc/passwd")
-    passwd = {line.split(":")[0]: int(line.split(":")[2]) for line in content(fs, archive, "etc/passwd").decode().splitlines() if line.count(":") >= 6}
+        for name, e in fs.items():
+            if name.startswith(there_root + "/"):
+                rel = name[len(there_root) + 1:]
+                if e.isdir:
+                    trusted_path(fs, name, readable=True)
+                elif rel not in expected:
+                    fail("%s is in the image and not in the checkout's %s" % (name, top))
+    # The users, as the engine looks them up: by the first line naming
+    # them, so a name or a uid twice is refused rather than read
+    # last-wins; each with its own group as its primary and its home
+    # under /home; and the groups the supplementary lookup reads.
+    trusted_path(fs, "etc/passwd", readable=True)
+    trusted_path(fs, "etc/group", readable=True)
+    names, uids = {}, {}
+    for line in content(fs, archive, "etc/passwd").decode().splitlines():
+        fields = line.split(":")
+        if len(fields) != 7:
+            fail("/etc/passwd carries a line that is not seven fields: %r" % line)
+        name, uid, gid, home = fields[0], fields[2], fields[3], fields[5]
+        if name in names:
+            fail("/etc/passwd names %s twice" % name)
+        if uid in uids:
+            fail("/etc/passwd gives uid %s to %s and to %s" % (uid, uids[uid], name))
+        names[name], uids[uid] = (uid, gid, home), name
     for user, uid in USERS.items():
-        if passwd.get(user) != uid:
-            fail("/etc/passwd names %s as uid %s, not %d" % (user, passwd.get(user), uid))
+        if user not in names:
+            fail("/etc/passwd does not name %s" % user)
+        got_uid, got_gid, home = names[user]
+        if got_uid != str(uid) or got_gid != str(uid) or home != "/home/" + user:
+            fail("/etc/passwd has %s as uid %s gid %s home %s; it must be uid %d, gid %d, home /home/%s" % (user, got_uid, got_gid, home, uid, uid, user))
+    groups, gids = {}, {}
+    for line in content(fs, archive, "etc/group").decode().splitlines():
+        fields = line.split(":")
+        if len(fields) != 4:
+            fail("/etc/group carries a line that is not four fields: %r" % line)
+        if fields[0] in groups:
+            fail("/etc/group names %s twice" % fields[0])
+        if fields[2] in gids:
+            fail("/etc/group gives gid %s twice" % fields[2])
+        groups[fields[0]], gids[fields[2]] = fields[2], fields[0]
+    for user, uid in USERS.items():
+        if groups.get(user) != str(uid):
+            fail("/etc/group has %s as gid %s, not %d" % (user, groups.get(user), uid))
     if config.get("Entrypoint") != ["/usr/local/bin/gateway"] or config.get("Cmd") != ["serve", "--config", "/etc/engine/engine.json"] or config.get("User") not in ("engine", "65532"):
         fail("the image starts %r %r as %r" % (config.get("Entrypoint"), config.get("Cmd"), config.get("User")))
-    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, catalog and corpus root's, unwritable by others, as in the checkout; users; entrypoint and command" % len(HOMES)
+    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them; entrypoint and command" % len(HOMES)
+
+
+def scan_layers(image_dir):
+    """Every entry in every layer of a saved image that carries the
+    capability attribute: each must be the gateway's path with exactly the
+    stated capabilities, revision 2 or 3 with a root id of 0. This reads
+    the attribute as the layer wrote it, which the exporter normalises,
+    and needs no model of how layers combine: an attribute an earlier
+    layer carried and a later one removed is refused too, which is the
+    safe side."""
+    manifest = json.load(open(os.path.join(image_dir, "manifest.json")))
+    if len(manifest) != 1:
+        fail("the save holds %d images, not one" % len(manifest))
+    seen = 0
+    for layer in manifest[0]["Layers"]:
+        try:
+            t = tarfile.open(os.path.join(image_dir, layer), "r:*")
+        except tarfile.ReadError:
+            fail("layer %s is not a tar archive" % layer)
+        for m in t.getmembers():
+            raw = m.pax_headers.get("SCHILY.xattr.security.capability")
+            if raw is None:
+                continue
+            name = m.name.strip("/")
+            name = name[2:] if name.startswith("./") else name
+            if name != GATEWAY:
+                fail("layer %s gives %s a capability attribute; only the gateway binary may carry one" % (layer, name))
+            decoded = decode_capability(raw.encode("utf-8", "surrogateescape"))
+            if decoded["permitted"] != 1 << 5 | 1 << 6 | 1 << 7 or decoded["inheritable"] != 0 or not decoded["effective"] or decoded["rootid"] != 0:
+                fail("layer %s gives the gateway capabilities %r as written" % (layer, decoded))
+            seen += 1
+    if seen == 0:
+        fail("no layer gives the gateway a capability attribute")
+    return "the layers give the capability attribute to the gateway alone, as stated, revision and root id included"
 
 
 def load_config(path):
@@ -201,13 +301,16 @@ def load_config(path):
     return data.get("Config") or data.get("config")
 
 
-def main(export, config_path, checkout):
+def main(export, config_path, checkout, saved=None):
     fs, archive = read_export(export)
-    return check(fs, archive, load_config(config_path), checkout)
+    report = check(fs, archive, load_config(config_path), checkout)
+    if saved:
+        report += "; " + scan_layers(saved)
+    return report
 
 
 if __name__ == "__main__":
     try:
-        print(main(sys.argv[1], sys.argv[2], sys.argv[3]))
+        print(main(*sys.argv[1:5]))
     except Failure as failure:
         sys.exit(str(failure))
