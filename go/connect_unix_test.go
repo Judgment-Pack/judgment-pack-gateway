@@ -230,3 +230,78 @@ func TestAnExistingLockIsJudged(t *testing.T) {
 		t.Fatalf("an existing lock of this user's is taken: %v", err)
 	}
 }
+
+// Where serve must make or write something, this process must be
+// allowed to: a store it may not write in, or a registry it may not
+// write, ends the connect before any check; a store, registry or
+// decision-record directory to be made in a directory this process may
+// not write in is refused the same.
+func TestConnectJudgesWhatServeMayWrite(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root may write anything")
+	}
+	f := newConnectFixture(t, restrictedBinding, ``)
+	store := storeOf(t, f)
+	if err := os.MkdirAll(store, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	before := f.fileText(t)
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "store "+store+": artifacts cannot be made: this process may not write in the store") || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatalf("a store this process may not write in: %v (asked %d)", err, len(f.asked))
+	}
+	os.Chmod(store, 0o700)
+	// A store directory that is there but not writable.
+	if err := os.Mkdir(filepath.Join(store, "artifacts"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "store "+store+": this process may not write in artifacts") || len(f.asked) != 0 {
+		t.Fatalf("an artifacts directory this process may not write in: %v", err)
+	}
+	os.Chmod(filepath.Join(store, "artifacts"), 0o700)
+	os.RemoveAll(store)
+	registry := strings.TrimSuffix(store, "store") + "registry.jsonl"
+	if err := os.WriteFile(registry, nil, 0o400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "registry "+registry+": this process may not write it") || len(f.asked) != 0 {
+		t.Fatalf("a registry this process may not write: %v", err)
+	}
+	os.Remove(registry)
+	// Absent, to be made in a directory this process may not write in.
+	held := filepath.Join(t.TempDir(), "held")
+	if err := os.Mkdir(held, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(held, 0o700)
+	decisions := strings.TrimSuffix(store, "store") + "decisions"
+	for name, args := range map[string][3]string{
+		"store":           {filepath.Join(held, "store"), registry, decisions},
+		"registry":        {store, filepath.Join(held, "registry.jsonl"), decisions},
+		"decisionRecords": {store, registry, filepath.Join(held, "decisions")},
+	} {
+		err := preflightPaths(args[0], args[1], args[2])
+		if err == nil || !strings.Contains(err.Error(), name+" "+filepath.Join(held, filepath.Base(args[map[string]int{"store": 0, "registry": 1, "decisionRecords": 2}[name]]))+" cannot be made: this process may not write in its directory") {
+			t.Fatalf("%s to be made where this process may not write: %v", name, err)
+		}
+	}
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil || len(f.asked) != 2 {
+		t.Fatalf("with everything to be made or written: %v (asked %d)", err, len(f.asked))
+	}
+}
+
+// A lookup that fails for another reason than absence -- a path under a
+// regular file -- is not absence: it is reported as it failed, not taken
+// for a path to be made.
+func TestPreflightReportsALookupThatFails(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := filepath.Join(file, "store")
+	err := preflightPaths(store, filepath.Join(dir, "registry.jsonl"), filepath.Join(dir, "decisions"))
+	if err == nil || !strings.HasPrefix(err.Error(), "store "+store+": ") || !strings.Contains(err.Error(), "not a directory") || strings.Contains(err.Error(), "cannot be made") {
+		t.Fatalf("a lookup under a file: %v", err)
+	}
+}

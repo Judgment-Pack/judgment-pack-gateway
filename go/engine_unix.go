@@ -71,5 +71,6 @@ func osEngineHost() engineHost {
 		fileOwner:    fileOwnerOf,
 		readLink:     os.Readlink,
 		account:      accountOf,
+		switching:    requireUserSwitching,
 	}
 }

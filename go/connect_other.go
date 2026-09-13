@@ -13,6 +13,9 @@ func ownerIDsOf(info os.FileInfo) fileOwnerIDs { return fileOwnerIDs{} }
 
 func parentHeld(info os.FileInfo) error { return nil }
 
+// Elsewhere than Unix, whether this process may write is not judged.
+func canWrite(path string) bool { return true }
+
 func keepOwner(file *os.File, owner fileOwnerIDs) error { return nil }
 
 func openConfigForRead(dir *os.Root, name string) (*os.File, error) {

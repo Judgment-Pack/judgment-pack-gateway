@@ -32,5 +32,5 @@ func accountOf(name string) (int, string, error) {
 }
 
 func osEngineHost() engineHost {
-	return engineHost{euid: -1, sockets: hostRuntimeSockets, fileOwner: fileOwnerOf, readLink: os.Readlink, account: accountOf}
+	return engineHost{euid: -1, sockets: hostRuntimeSockets, fileOwner: fileOwnerOf, readLink: os.Readlink, account: accountOf, switching: requireUserSwitching}
 }

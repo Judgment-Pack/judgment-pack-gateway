@@ -84,6 +84,10 @@ type engineHost struct {
 	fileOwner    func(path string) (fileOwnership, error)
 	readLink     func(path string) (string, error) // where a symbolic link points
 	account      func(name string) (uid int, home string, err error)
+	// switching is why this process could not run the sources as the
+	// users they name -- the requirement serve holds every source to
+	// at start (requireUserSwitching) -- or nil.
+	switching func(sources map[string]sourceSpec) error
 }
 
 type fileOwnership struct {
@@ -604,42 +608,107 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 // preflightPaths is why serve could not make what the configuration
 // names, or nil: the store must be a directory or absent with a parent to
 // make it in, the registry a regular file or absent likewise, and the
-// decision-record directory a directory or absent likewise. Connect judges
+// decision-record directory a directory or absent likewise; a link to
+// nothing, or a lookup that fails for any reason but absence, is refused
+// rather than taken for absence, since making a directory over a dangling
+// link fails; and where serve must make or write something, this process
+// must be allowed to, judged as the kernel would (canWrite). Connect judges
 // the same before any adapter is run, so it does not succeed where the
 // next start would fail. Nothing is made here.
 func preflightPaths(store, registry, decisionRecords string) error {
-	judge := func(name, path string, dir bool) error {
-		info, err := os.Stat(path)
+	// present is what is at a path -- the target of a link, when it is
+	// one that leads somewhere -- or nil for absence; anything else that
+	// goes wrong on the way is an error.
+	present := func(name, path string) (os.FileInfo, error) {
+		entry, err := os.Lstat(path)
 		switch {
-		case err == nil && dir && !info.IsDir():
-			return fmt.Errorf("%s %s is not a directory", name, path)
-		case err == nil && !dir && !info.Mode().IsRegular():
-			return fmt.Errorf("%s %s is not a regular file", name, path)
-		case err == nil:
-			return nil
-		case !errors.Is(err, os.ErrNotExist):
-			return fmt.Errorf("%s %s: %v", name, path, err)
+		case errors.Is(err, os.ErrNotExist):
+			return nil, nil
+		case err != nil:
+			return nil, fmt.Errorf("%s %s: %v", name, path, err)
+		case entry.Mode()&os.ModeSymlink == 0:
+			return entry, nil
 		}
-		parent, err := os.Stat(filepath.Dir(path))
-		if err != nil || !parent.IsDir() {
+		target, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s is a link that leads nowhere: %v", name, path, err)
+		}
+		return target, nil
+	}
+	// makeable holds a path that must be made to a parent that is there
+	// and that this process may write into.
+	makeable := func(name, path string) error {
+		parent, err := present(name, filepath.Dir(path))
+		if err != nil {
+			return err
+		}
+		if parent == nil || !parent.IsDir() {
 			return fmt.Errorf("%s %s cannot be made: its directory is not there", name, path)
+		}
+		if !canWrite(filepath.Dir(path)) {
+			return fmt.Errorf("%s %s cannot be made: this process may not write in its directory", name, path)
 		}
 		return nil
 	}
-	if err := judge("store", store, true); err != nil {
+	info, err := present("store", store)
+	if err != nil {
 		return err
 	}
-	// The store's own directories, which serve makes on start: a file in
-	// the place of either is a start that fails, whatever the store is.
-	for _, child := range []string{"artifacts", "receipts"} {
-		if info, err := os.Stat(filepath.Join(store, child)); err == nil && !info.IsDir() {
-			return fmt.Errorf("store %s: %s is not a directory", store, child)
+	switch {
+	case info == nil:
+		if err := makeable("store", store); err != nil {
+			return err
+		}
+	case !info.IsDir():
+		return fmt.Errorf("store %s is not a directory", store)
+	default:
+		// The store's own directories, which serve makes on start and
+		// writes into: a file or a dangling link in the place of either
+		// is a start that fails, and so is one this process may not
+		// write in, or may not make.
+		for _, child := range []string{"artifacts", "receipts"} {
+			path := filepath.Join(store, child)
+			info, err := present("store", path)
+			if err != nil {
+				return err
+			}
+			switch {
+			case info == nil:
+				if !canWrite(store) {
+					return fmt.Errorf("store %s: %s cannot be made: this process may not write in the store", store, child)
+				}
+			case !info.IsDir():
+				return fmt.Errorf("store %s: %s is not a directory", store, child)
+			case !canWrite(path):
+				return fmt.Errorf("store %s: this process may not write in %s", store, child)
+			}
 		}
 	}
-	if err := judge("registry", registry, false); err != nil {
+	info, err = present("registry", registry)
+	if err != nil {
 		return err
 	}
-	return judge("decisionRecords", decisionRecords, true)
+	switch {
+	case info == nil:
+		if err := makeable("registry", registry); err != nil {
+			return err
+		}
+	case !info.Mode().IsRegular():
+		return fmt.Errorf("registry %s is not a regular file", registry)
+	case !canWrite(registry):
+		return fmt.Errorf("registry %s: this process may not write it", registry)
+	}
+	info, err = present("decisionRecords", decisionRecords)
+	if err != nil {
+		return err
+	}
+	switch {
+	case info == nil:
+		return makeable("decisionRecords", decisionRecords)
+	case !info.IsDir():
+		return fmt.Errorf("decisionRecords %s is not a directory", decisionRecords)
+	}
+	return nil
 }
 
 // hostRuntimeSockets are where a host container runtime listens when it is

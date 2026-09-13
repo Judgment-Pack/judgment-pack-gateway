@@ -22,6 +22,24 @@ func ownerIDsOf(info os.FileInfo) fileOwnerIDs {
 	return fileOwnerIDs{}
 }
 
+// The access(2) modes, which the syscall package does not name.
+const (
+	accessWrite   = 2 // W_OK
+	accessExecute = 1 // X_OK
+)
+
+// canWrite reports whether this process may write at the path -- and
+// pass through it, for a directory -- as the kernel judges it for the
+// process's real ids, which are its effective ones: the gateway is not
+// a set-user-id program and never switches itself. Nothing is written.
+func canWrite(path string) bool {
+	mode := uint32(accessWrite)
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		mode |= accessExecute
+	}
+	return syscall.Access(path, mode) == nil
+}
+
 // parentHeld is why another user could replace an entry of the
 // configuration's directory, or nil: the rule the credentials' directories
 // are held to (holdDirectory), on the directory as the kernel reports it.

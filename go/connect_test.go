@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -34,6 +36,7 @@ type connectFixture struct {
 	asked                                   []sourceSpec
 	reports                                 map[string]string // by shape
 	fail                                    map[string]string // by shape: an error instead
+	groupless                               string            // a user whose groups cannot be read
 }
 
 func newConnectFixture(t *testing.T, bindingText string, platforms string) *connectFixture {
@@ -70,8 +73,36 @@ func newConnectFixture(t *testing.T, bindingText string, platforms string) *conn
 		fileOwner:    func(path string) (fileOwnership, error) { return f.fs.owner(path) },
 		readLink:     readLinkStub,
 		account:      stubAccounts(stubUsers),
+		switching:    stubSwitching(stubUsers, &f.groupless),
 	}
 	return f
+}
+
+// stubSwitching judges sources as requireUserSwitching does, against
+// stub accounts: a user the accounts do not hold, or the one named as
+// groupless, is a credential that cannot be taken. Sources are judged in
+// name order, so the refusal is the same every time.
+func stubSwitching(users map[string]int, groupless *string) func(map[string]sourceSpec) error {
+	return func(sources map[string]sourceSpec) error {
+		var names []string
+		for name := range sources {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			user := sources[name].user
+			if user == "" {
+				continue
+			}
+			if _, ok := users[user]; !ok {
+				return fmt.Errorf("--source-user %s: user %s: unknown", name, user)
+			}
+			if groupless != nil && user == *groupless {
+				return fmt.Errorf("--source-user %s: user %s: groups: lookup failed", name, user)
+			}
+		}
+		return nil
+	}
 }
 
 func escapePath(p string) string { return strings.ReplaceAll(p, `\`, `\\`) }
@@ -299,6 +330,26 @@ func TestConnectFindsAStalePinAmongThePlatformsAlreadyConfigured(t *testing.T) {
 	_, err := connect(context.Background(), f.request(), f.host, f.check)
 	if err == nil || !strings.Contains(err.Error(), "platform docs") || !strings.Contains(err.Error(), "does not digest to the pinned") {
 		t.Fatalf("a pin the catalog no longer digests to is found at connect, not at the next start: %v", err)
+	}
+}
+
+// The users serve switches to are judged for every platform, not the
+// one being written: an existing account whose groups can no longer be
+// read is a start that refuses, so the connect refuses first, before any
+// adapter is run.
+func TestConnectHoldsEveryPlatformToTheSwitchingServeRequires(t *testing.T) {
+	docs := filepath.Join(filepath.VolumeName(t.TempDir())+string(filepath.Separator), "run", "secrets", "docs")
+	f := newConnectFixture(t, restrictedBinding, `"docs":{"binding":"postgres@`+digestOf(restrictedBinding)+`","credentials":{"history":{"file":"`+escapePath(docs)+`"},"live":{"file":"`+escapePath(docs)+`"}},"user":"engine-docs"}`)
+	f.fs[docs] = fileOwnership{uid: 1002, mode: 0o600}
+	f.groupless = "engine-docs"
+	before := f.fileText(t)
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || err.Error() != "--source-user docs/history: user engine-docs: groups: lookup failed" || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatalf("an existing platform's user this process cannot switch to: %v (asked %d)", err, len(f.asked))
+	}
+	f.groupless = ""
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil || len(f.asked) != 2 {
+		t.Fatalf("with every user's credential to be had: %v (asked %d)", err, len(f.asked))
 	}
 }
 
@@ -558,6 +609,29 @@ func TestConnectJudgesThePathsServeMakes(t *testing.T) {
 	if err := preflightPaths(filepath.Join(t.TempDir(), "missing", "store"), registry, decisions); err == nil || !strings.Contains(err.Error(), "cannot be made: its directory is not there") {
 		t.Fatalf("a store with no directory to make it in: %v", err)
 	}
+	// A link that leads nowhere is not absence: making a directory over
+	// it fails.
+	if err := os.MkdirAll(store, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("gone", filepath.Join(store, "artifacts")); err == nil {
+		// The entry the connect above wrote, taken back.
+		if err := os.WriteFile(f.config, []byte(before), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		asked := len(f.asked)
+		if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "artifacts is a link that leads nowhere") || len(f.asked) != asked || f.fileText(t) != before {
+			t.Fatalf("a dangling link in the place of artifacts: %v (asked %d)", err, len(f.asked)-asked)
+		}
+		os.Remove(filepath.Join(store, "artifacts"))
+		// A loop is a lookup that fails for another reason than absence.
+		os.Symlink("loop-b", filepath.Join(store, "loop-a"))
+		os.Symlink("loop-a", filepath.Join(store, "loop-b"))
+		if err := preflightPaths(filepath.Join(store, "loop-a"), registry, decisions); err == nil || !strings.Contains(err.Error(), "store "+filepath.Join(store, "loop-a")+" is a link that leads nowhere") {
+			t.Fatalf("a link loop: %v", err)
+		}
+	}
+	os.RemoveAll(store)
 }
 
 // storeOf is the store path the fixture's configuration names.

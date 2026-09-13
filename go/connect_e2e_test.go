@@ -195,6 +195,7 @@ func main() {
 		fileOwner:    fs.owner,
 		readLink:     readLinkStub,
 		account:      stubAccounts(map[string]int{"engine-warehouse": 4242}),
+		switching:    stubSwitching(map[string]int{"engine-warehouse": 4242}, nil),
 	}
 	asSelf := func(ctx context.Context, spec sourceSpec) ([]byte, error) {
 		spec.user = ""

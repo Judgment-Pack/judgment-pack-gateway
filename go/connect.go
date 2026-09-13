@@ -60,7 +60,8 @@ const connectUsage = "usage: gateway connect --config <engine.json> <platform> -
 
 // cmdConnect writes a platform entry into the engine's configuration:
 // after holding the configuration it would produce to every refusal
-// `serve` applies, and after each of the platform's adapters, run once in
+// `serve` applies -- the paths it makes and the users it switches to
+// included -- and after each of the platform's adapters, run once in
 // check mode as the platform's user, has reported that the platform
 // answered. Nothing is acquired and no receipt is minted; a platform that
 // cannot be reached is not silently configured.
@@ -73,7 +74,7 @@ func cmdConnect(args []string) int {
 	closeInheritedDescriptors()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	outcome, err := connect(ctx, req, osEngineHost(), checkAsUser)
+	outcome, err := connect(ctx, req, osEngineHost(), runCheck)
 	for _, statement := range outcome.statements {
 		fmt.Fprintln(os.Stderr, "connect:", statement)
 	}
@@ -221,9 +222,15 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err := preflightPaths(candidate.store, candidate.registry, candidate.decisionRecords); err != nil {
 		return out, err
 	}
+	sources := deriveSources(candidate, bindings)
+	// Every source's user, held as serve holds them at start -- the
+	// platforms already configured included, whose accounts may have
+	// changed since they were written -- before any adapter is run.
+	if err := host.switching(sources); err != nil {
+		return out, err
+	}
 	// The platform's own sources, each asked once; the first that cannot
 	// answer ends the connect, and nothing is written.
-	sources := deriveSources(candidate, bindings)
 	var names []string
 	for name := range sources {
 		if strings.HasPrefix(name, req.platform+"/") {
@@ -324,16 +331,6 @@ func newPlatformEntry(req connectRequest, ref string, b binding, account func(na
 	}
 	p.uid, p.home = uid, home
 	return p, nil
-}
-
-// checkAsUser runs an adapter's check as the platform's user, as serve
-// would run its acquisitions, refusing first when this process cannot
-// switch.
-func checkAsUser(ctx context.Context, spec sourceSpec) ([]byte, error) {
-	if err := requireUserSwitching(map[string]sourceSpec{"check": spec}); err != nil {
-		return nil, err
-	}
-	return runCheck(ctx, spec)
 }
 
 // runCheck starts the derived source's adapter with --check in front of
