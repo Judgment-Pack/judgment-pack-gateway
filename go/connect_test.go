@@ -137,9 +137,19 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	if argv := strings.Join(live.argv, " "); !strings.HasSuffix(argv, " -- --access-mode=restricted") {
 		t.Fatalf("serve derives the server's arguments from the written entry: %s", argv)
 	}
-	// Beside the file: its lock, and nothing else -- no temporary file.
-	if entries, _ := os.ReadDir(f.dir); len(entries) != 2 || entries[0].Name() != "engine.json" || entries[1].Name() != "engine.json.lock" {
-		t.Fatalf("only the lock is left beside the file: %v", entries)
+	// Beside the file: its lock where a lock is taken (Unix), and nothing
+	// else -- no temporary file.
+	var names []string
+	entries, _ := os.ReadDir(f.dir)
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	want := "engine.json,engine.json.lock"
+	if runtime.GOOS == "windows" {
+		want = "engine.json"
+	}
+	if strings.Join(names, ",") != want {
+		t.Fatalf("beside the file: %v, want %s", names, want)
 	}
 	if info, _ := os.Stat(f.config); runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("the file keeps its mode: %v", info.Mode())

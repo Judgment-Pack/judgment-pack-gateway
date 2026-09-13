@@ -199,7 +199,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"credentials one file for all", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"/f"},"user":"u"}`), `unknown member "file"`},
 		{"credentials naming no operation", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{},"user":"u"}`), "credentials names no operation"},
 		{"credentials relative", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"history":{"file":"secrets/w"},"live":{"file":"/f"}},"user":"engine-warehouse"}`), "credentials.history.file must be an absolute path"},
-		{"credentials for an operation the binding lacks", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"history":{"file":"/f"}},"user":"engine-warehouse"}`), "the binding offers live but credentials name no live file"},
+		{"credentials for an operation the binding lacks", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"history":{"file":"`+abs(t, t.TempDir(), "f")+`"}},"user":"engine-warehouse"}`), "the binding offers live but credentials name no live file"},
 		{"binding unpinned", engineJSON(t, catalog, ``, `"warehouse":{"binding":"postgres","credentials":{"history":{"file":"/f"},"live":{"file":"/f"}},"user":"u"}`), "binding must be name@sha256"},
 		{"binding traversal", engineJSON(t, catalog, ``, `"warehouse":{"binding":"../postgres@`+digestOf(postgresBinding)+`","credentials":{"history":{"file":"/f"},"live":{"file":"/f"}},"user":"u"}`), "binding must be name@sha256"},
 		{"binding digest mismatch", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", "postgres@"+testImageDigest, "engine-warehouse", ``)), "does not digest to the pinned"},
