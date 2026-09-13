@@ -1,4 +1,4 @@
-package airbyte
+package canon
 
 import (
 	"encoding/hex"
@@ -11,7 +11,7 @@ import (
 // core's (corpus/canon.json), read from disk and never linked: every
 // accepted vector renders byte-for-byte, every rejected one is refused.
 func TestCanonicalizeAnswersToTheFrozenCorpus(t *testing.T) {
-	data, err := os.ReadFile("../../corpus/canon.json")
+	data, err := os.ReadFile("../../../corpus/canon.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestCanonicalizeAnswersToTheFrozenCorpus(t *testing.T) {
 		t.Fatalf("expected the whole corpus, read %d vectors", len(corpus.Vectors))
 	}
 	for _, v := range corpus.Vectors {
-		got, err := canonicalize([]byte(v.InputJSON), refuseNumbers)
+		got, err := Canonicalize([]byte(v.InputJSON), RefuseNumbers)
 		if v.Reject {
 			if err == nil {
 				t.Errorf("%s: %q must be refused, produced %q", v.Note, v.InputJSON, got)
@@ -62,13 +62,13 @@ func TestCanonicalizeCarriesNumbersAsText(t *testing.T) {
 		`{"b":[0.5,2],"a":{"x":-0.0}}`: `{"a":{"x":"-0.0"},"b":["0.5",2]}`,
 	}
 	for in, want := range cases {
-		got, err := canonicalize([]byte(in), carryNumbersAsText)
+		got, err := Canonicalize([]byte(in), CarryNumbersAsText)
 		if err != nil || string(got) != want {
 			t.Errorf("%s: got %q (%v), want %q", in, got, err, want)
 		}
 	}
 	for _, in := range []string{`{"a":1,"a":2}`, `{"k":"\ud800"}`, "{\"k\":\"\xff\"}", `{"a":1}{"b":2}`, `[1,`} {
-		if _, err := canonicalize([]byte(in), carryNumbersAsText); err == nil {
+		if _, err := Canonicalize([]byte(in), CarryNumbersAsText); err == nil {
 			t.Errorf("%q must be refused under either policy", in)
 		}
 	}
@@ -77,14 +77,14 @@ func TestCanonicalizeCarriesNumbersAsText(t *testing.T) {
 // -0 is an integer in the domain and is emitted as 0 (§1.1), under either
 // policy; a literal JSON forbids is refused.
 func TestCanonicalizeNormalizesNegativeZero(t *testing.T) {
-	for _, policy := range []numberPolicy{refuseNumbers, carryNumbersAsText} {
-		got, err := canonicalize([]byte(`{"n":-0,"m":[-0,0,-1]}`), policy)
+	for _, policy := range []NumberPolicy{RefuseNumbers, CarryNumbersAsText} {
+		got, err := Canonicalize([]byte(`{"n":-0,"m":[-0,0,-1]}`), policy)
 		if err != nil || string(got) != `{"m":[0,0,-1],"n":0}` {
 			t.Fatalf("policy %d: %q %v", policy, got, err)
 		}
 	}
 	for _, in := range []string{`{"n":01}`, `{"n":-}`, `{"n":+1}`} {
-		if _, err := canonicalize([]byte(in), carryNumbersAsText); err == nil {
+		if _, err := Canonicalize([]byte(in), CarryNumbersAsText); err == nil {
 			t.Errorf("%s must be refused", in)
 		}
 	}

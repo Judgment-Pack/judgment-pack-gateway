@@ -1,4 +1,7 @@
-package airbyte
+// Package canon renders JSON in the form SPEC.md §1.1 states and carries a
+// connector's records into that domain, answering to corpus/canon.json
+// without importing the core module.
+package canon
 
 import (
 	"bytes"
@@ -13,25 +16,25 @@ import (
 	"unicode/utf8"
 )
 
-// numberPolicy says what canonicalize does with a number the canon domain of
+// NumberPolicy says what Canonicalize does with a number the canon domain of
 // SPEC.md §1.1 does not admit -- one with a fraction or an exponent, or an
 // integer past ±(2^53-1).
-type numberPolicy int
+type NumberPolicy int
 
 const (
-	// refuseNumbers refuses such a number, as the gateway's own parser does.
-	refuseNumbers numberPolicy = iota
-	// carryNumbersAsText carries it as a JSON string holding its literal
+	// RefuseNumbers refuses such a number, as the gateway's own parser does.
+	RefuseNumbers NumberPolicy = iota
+	// CarryNumbersAsText carries it as a JSON string holding its literal
 	// exactly as the connector wrote it: lossless, deterministic, and
 	// visibly a string to whoever derives from the record.
-	carryNumbersAsText
+	CarryNumbersAsText
 )
 
 var integerLiteral = regexp.MustCompile(`^-?(0|[1-9][0-9]*)$`)
 
 const maxInteger = 1<<53 - 1
 
-// canonicalize renders one JSON document in the form SPEC.md §1.1 states --
+// Canonicalize renders one JSON document in the form SPEC.md §1.1 states --
 // member names sorted by code point, no insignificant whitespace, strings
 // with the short escapes, lowercase \u00xx for the other control characters
 // and everything else raw, integers as written -- refusing duplicate member
@@ -40,7 +43,7 @@ const maxInteger = 1<<53 - 1
 // code, and what carries a connector's records into the domain the gateway
 // attests. The core module has its own canonicalizer; this one answers to
 // the same frozen vectors (corpus/canon.json) without importing it.
-func canonicalize(raw []byte, numbers numberPolicy) ([]byte, error) {
+func Canonicalize(raw []byte, numbers NumberPolicy) ([]byte, error) {
 	if !utf8.Valid(raw) {
 		return nil, errors.New("not valid UTF-8")
 	}
@@ -59,7 +62,7 @@ func canonicalize(raw []byte, numbers numberPolicy) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers numberPolicy) error {
+func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers NumberPolicy) error {
 	tok, err := dec.Token()
 	if err != nil {
 		if err == io.EOF {
@@ -144,7 +147,7 @@ func writeCanonical(dec *json.Decoder, out *bytes.Buffer, numbers numberPolicy) 
 		case inDomain:
 			// Emitted from the parsed value, so -0 is 0 (§1.1).
 			out.WriteString(strconv.FormatInt(n, 10))
-		case numbers == carryNumbersAsText:
+		case numbers == CarryNumbersAsText:
 			writeString(out, literal)
 		default:
 			return fmt.Errorf("number %s is outside the canon domain", literal)
@@ -253,10 +256,10 @@ func hexRune(raw []byte, at int) (rune, bool) {
 	return rune(n), true
 }
 
-// compact removes insignificant whitespace and nothing else: the form a
+// Compact removes insignificant whitespace and nothing else: the form a
 // state bookmark is carried in, exactly as the connector emitted it, so it
 // can be handed back.
-func compact(raw []byte) ([]byte, error) {
+func Compact(raw []byte) ([]byte, error) {
 	var out bytes.Buffer
 	if err := json.Compact(&out, raw); err != nil {
 		return nil, err
@@ -264,8 +267,8 @@ func compact(raw []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// isDigestString reports whether s is "sha256:" and 64 lowercase hex.
-func isDigestString(s string) bool {
+// IsDigestString reports whether s is "sha256:" and 64 lowercase hex.
+func IsDigestString(s string) bool {
 	h, ok := strings.CutPrefix(s, "sha256:")
 	if !ok || len(h) != 64 {
 		return false
@@ -276,4 +279,37 @@ func isDigestString(s string) bool {
 		}
 	}
 	return true
+}
+
+// ObjectMembers reports whether raw is a JSON object, and how many members
+// it has: structurally, so {} and { } are the same empty object.
+func ObjectMembers(raw json.RawMessage) (int, bool) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return 0, false
+	}
+	var members map[string]json.RawMessage
+	if json.Unmarshal(trimmed, &members) != nil {
+		return 0, false
+	}
+	return len(members), true
+}
+
+// IsObject reports whether raw is a JSON object, empty or not.
+func IsObject(raw json.RawMessage) bool {
+	_, ok := ObjectMembers(raw)
+	return ok
+}
+
+// EncodeJSON marshals without HTML escaping and without a trailing newline:
+// ordinary JSON for an envelope or a statement, which the gateway
+// canonicalizes itself.
+func EncodeJSON(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
 }

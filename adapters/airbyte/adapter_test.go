@@ -1,6 +1,7 @@
 package airbyte
 
 import (
+	"adapters/internal/redact"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -561,25 +562,6 @@ func TestParseRequest(t *testing.T) {
 	}
 }
 
-func TestParseImage(t *testing.T) {
-	for ref, want := range map[string]imageRef{
-		"airbyte/source-postgres:3.6.1@" + testDigest: {"airbyte/source-postgres", "3.6.1", testDigest},
-		"airbyte/source-postgres@" + testDigest:       {"airbyte/source-postgres", "", testDigest},
-		"registry.example:5000/x/y:v1@" + testDigest:  {"registry.example:5000/x/y", "v1", testDigest},
-		"registry.example:5000/x/y@" + testDigest:     {"registry.example:5000/x/y", "", testDigest},
-	} {
-		got, err := parseImage(ref)
-		if err != nil || got != want {
-			t.Errorf("%s: %+v %v, want %+v", ref, got, err, want)
-		}
-	}
-	for _, ref := range []string{"airbyte/source-postgres:3.6.1", "airbyte/source-postgres@sha256:abc", "@" + testDigest, "x@md5:" + testDigest[7:]} {
-		if _, err := parseImage(ref); err == nil {
-			t.Errorf("%s must be refused", ref)
-		}
-	}
-}
-
 // Absence is established positively: an inspect the runtime cannot answer
 // leaves the question open, and an open question fails the acquisition.
 func TestStopRequiresAPositiveAnswerFromInspect(t *testing.T) {
@@ -675,7 +657,7 @@ func TestContainerWarningComesFirst(t *testing.T) {
 	cfg := fake(t, discoverFixture, `{"type":"TRACE","trace":{"type":"ERROR","error":{"message":"permission denied"}}}`+"\n")
 	t.Setenv(fakeruntime.EnvStuckOnRead, "1")
 	_, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
-	if err == nil || !strings.HasPrefix(err.Error(), "container jp-airbyte-") || !strings.Contains(err.Error(), "could not be stopped and is still known") ||
+	if err == nil || !strings.HasPrefix(err.Error(), "container jp-adapter-") || !strings.Contains(err.Error(), "could not be stopped and is still known") ||
 		!strings.Contains(err.Error(), "the acquisition had also failed: connector reported an error: permission denied") {
 		t.Fatalf("the container warning must lead: %v", err)
 	}
@@ -754,38 +736,6 @@ func TestInspectAbsenceNamesTheContainer(t *testing.T) {
 	}
 }
 
-func TestSaysAbsent(t *testing.T) {
-	const name = "jp-airbyte-0123456789abcdef"
-	for _, yes := range []string{
-		"Error: No such object: " + name,
-		"error: NO SUCH OBJECT: " + name,
-		"Error: No such container: " + name + "\n",
-		"Error: inspecting object: no such container " + name,
-		`Error: no such object: "` + name + `"`,
-	} {
-		if !saysAbsent(yes, name) {
-			t.Errorf("%q must read as absent", yes)
-		}
-	}
-	for _, no := range []string{
-		"Error: No such object: " + name + "x",
-		"Error: No such object: " + name + ".other",
-		`Error: no such container "` + name + `.other"`,
-		"Error: No such container: " + name + "-2",
-		"Error: No such container: " + name + "_b",
-		"Error: No such object: " + strings.ToUpper(name),
-		`Error: no such container "` + strings.ToUpper(name) + `"`,
-		`Get "http://dockerd/v1.47/containers/` + name + `/json": dial tcp: lookup dockerd: no such host`,
-		"no such host " + name,
-		"Cannot connect to the Docker daemon",
-		"",
-	} {
-		if saysAbsent(no, name) {
-			t.Errorf("%q must not read as absent", no)
-		}
-	}
-}
-
 // An inspect whose output is held by a descendant is drained within its
 // own bound, so stopping stays inside the budget.
 func TestInspectDrainIsBounded(t *testing.T) {
@@ -846,17 +796,17 @@ func TestRedactionIsOnePass(t *testing.T) {
 		fmt.Fprintf(&config, `,"k%d":"e"`, i)
 	}
 	config.WriteString(`,"long":"red"}`)
-	secrets := secretsOf([]byte(config.String()))
+	secrets := redact.SecretsOf([]byte(config.String()))
 	if len(secrets) != 2 || secrets[0] != "red" || secrets[1] != "e" {
 		t.Fatalf("deduplicated, longest first: %v", secrets)
 	}
-	if got := redact("e", secrets); got != "[redacted]" {
+	if got := redact.Redact("e", secrets); got != "[redacted]" {
 		t.Fatalf("one occurrence, one marker: %q", got)
 	}
-	if got := redact("see red", secrets); got != "s[redacted][redacted] [redacted]" {
+	if got := redact.Redact("see red", secrets); got != "s[redacted][redacted] [redacted]" {
 		t.Fatalf("each occurrence once, longest first: %q", got)
 	}
-	if got := redact(strings.Repeat("e", 10000), secrets); len(got) > maxDiagnostic+len("…")+len("[redacted]") {
+	if got := redact.Redact(strings.Repeat("e", 10000), secrets); len(got) > redact.MaxDiagnostic+len("…")+len("[redacted]") {
 		t.Fatalf("bounded as it is built: %d bytes", len(got))
 	}
 }

@@ -198,10 +198,11 @@ the tests cannot: what each process may read, and which deployment choices would
 The receipt format
 this needs, version 3, is normative in [SPEC.md §1.2a](SPEC.md) with vectors under
 `corpus/v3/`, and is what `serve` mints; its design record is
-[docs/design/receipt-v3.md](docs/design/receipt-v3.md). The first adapter,
-`adapter-airbyte`, is in [adapters/](adapters/README.md): a pinned connector image run
-through the operator's container runtime, one page of one stream per acquisition, wired
-to `serve` with `--source-shape NAME=airbyte`.
+[docs/design/receipt-v3.md](docs/design/receipt-v3.md). The first two adapters are in
+[adapters/](adapters/README.md): `adapter-airbyte`, a pinned connector image run through
+the operator's container runtime, one page of one stream per acquisition, and
+`adapter-mcp`, a client of a vendor's MCP server over stdio, one tool call per
+acquisition — wired to `serve` with `--source-shape NAME=airbyte` and `NAME=mcp`.
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only

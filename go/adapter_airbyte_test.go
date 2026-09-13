@@ -182,7 +182,7 @@ func main() {
 	// diagnostic: the caller learns which container needs a hand.
 	t.Setenv("FAKE_STUCK", "1")
 	code, body := post(t, server, "/acquire", `{"session":"e2e-2","source":"history","arguments":{"stream":"decisions","limit":10}}`)
-	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "container jp-airbyte-") || !strings.Contains(fmt.Sprint(body["error"]), "could not be stopped") {
+	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "container jp-adapter-") || !strings.Contains(fmt.Sprint(body["error"]), "could not be stopped") {
 		t.Fatalf("the container warning must reach the caller: %d %v", code, body)
 	}
 }
