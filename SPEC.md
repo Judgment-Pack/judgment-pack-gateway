@@ -194,6 +194,25 @@ a source that vouches for itself and a source that vouches for nothing read the
 same, and never lets bytes attested through a bare command read as bytes whose
 acquisition was recorded.
 
+**Where the members come from.** For the `"command"` shape the gateway records
+what it alone can: the command as its adapter, `null` for every member a
+command cannot report, and its own `observedAt`. For every other shape the
+gateway records what the adapter reported in the envelope it wrote on stdout
+(§6, "Adapter sources"), with three exceptions: `shape` is what the operator
+declared for the source, never what the adapter says; `statement` is the
+gateway's own commitment (above) to the statement text the adapter reported,
+whose salt the acquire response returns; and `pageItems` is computed by the
+gateway over the items of the result it attests. An acquisition record of any
+adapter shape is therefore the adapter's testimony under the gateway's
+signature: what a compromised adapter can do is misreport its acquisition, as
+it can misreport its bytes, and the receipt names the source it was configured
+as. What it cannot do is sign — provided it cannot read the seed, which is the
+separation SECURITY.md describes and the operator establishes: an adapter run
+as the signer's own identity can read what the signer can, as any source can.
+Only `statement` is committed; what an adapter writes into `endpoint`,
+`snapshot`, `peerIdentity`, `upstreamToken` or the result itself is in the
+receipt or the artifact in the clear.
+
 **`action`** — present when `kind` is `"action"`. An action receipt records that
 an executor was asked to perform something, by which authenticated identity,
 citing which decision, and what the target answered. `resultDigest` is over the
@@ -493,6 +512,12 @@ not itself a finding.
   that the action was right. Version 3's commitments close version 2's equality
   oracle for every party but the caller, who holds the salt, and open nothing
   to a party holding the store.
+- The reference parses nothing nested deeper than **ten thousand levels** — the
+  bound `encoding/json` applies on the way out — and refuses a deeper document as
+  unparseable before it descends, so a source cannot make the gateway recurse
+  through its whole output bound in brackets. A document inside the canon domain
+  but past this bound is a divergence this reference accepts: no receipt, seal or
+  argument the gateway produces comes near it.
 
 ## 5a. Consuming an attestation
 
@@ -596,6 +621,40 @@ A `source` is an operator-configured subprocess that reads the canonical argumen
 stdin and emits a JSON result on stdout. The gateway attaches no transport of its own
 — it attests whatever bytes a configured source returns, which is exactly the inline
 core's boundary: **proof of the bytes, not proof of their truth.**
+
+### Adapter sources
+
+`--source-shape NAME=airbyte|mcp|http` declares a configured source to be an adapter
+of that shape (§1.2a). An adapter's stdout is not the result but an **envelope**: an
+object whose members are exactly `acquisition`, `result` and, optionally, `page`.
+
+- `result` is the value the gateway attests: `resultDigest` is over its canonical
+  form, it is retained as the artifact, and it is what the acquire response returns
+  as `result`.
+- `acquisition` is an object whose members are exactly `adapter`, `endpoint`,
+  `statement`, `snapshot`, `peerIdentity`, `schema`, `upstreamToken` and
+  `observedAt`, each of the type and form §1.2a states for the receipt member of
+  that name, except that `statement` is the statement text itself — the query,
+  resource path or tool call — as a string, or `null`; `adapter` carries exactly
+  `name`, `version` and `digest`; and `observedAt` is of the form
+  `YYYY-MM-DDThh:mm:ssZ` — UTC, whole seconds, the form `servedAt` takes — which
+  is what this gateway accepts from an adapter, beyond the string a verifier
+  checks for. It carries neither `shape` nor `pageItems`. (A
+  verifier tolerates a member it does not know at any depth, since a signed one is
+  the signer's own; the signer, reading an envelope, tolerates nothing it did not
+  ask for.)
+- `page`, when present, is `true`, and `result` is then an array of items: the
+  receipt carries `pageItems`, the digest of each item's canonical form, in order.
+
+The gateway refuses an envelope that departs from this in any way — not an object,
+a member missing or unlisted at either level, a member of another type or form,
+`page` other than `true`, a page whose result is not an array — and the acquisition
+fails with nothing minted and nothing retained. An adapter source requires version 3
+receipts: a gateway asked for `--receipt-version 2` refuses to start with one
+declared, and refuses the acquisition if one is configured in process. The envelope
+keeps the contract of one request and one result: what an adapter reports rides
+inside the result it was always allowed to write, and the gateway, not the adapter,
+decides what of it is signed.
 
 ## 7. Conformance
 

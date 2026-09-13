@@ -25,6 +25,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -52,7 +53,14 @@ type sourceSpec struct {
 	argv []string
 	env  []string
 	user string
+	// shape is the adapter shape declared with --source-shape (SPEC.md §1.2a);
+	// empty for a bare command, whose stdout is the result itself.
+	shape string
 }
+
+// adapterShapes are the shapes --source-shape may declare: every shape of
+// SPEC.md §1.2a but "command", which is what an undeclared source is.
+var adapterShapes = map[string]bool{"airbyte": true, "mcp": true, "http": true}
 
 // defaultMaxSourceOutput bounds what a source may write on stdout before the
 // acquisition fails and the source is killed. One mebibyte matches
@@ -72,6 +80,9 @@ type gatewayService struct {
 	keyID           string
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
+	// started counts the sources this service has started; a test reads it
+	// to prove that a refusal came before any source ran.
+	started atomic.Int64
 	// receiptVersion is what acquire mints: "3" unless the operator asked
 	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
 	receiptVersion string
@@ -93,6 +104,14 @@ type gatewayService struct {
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
 	sources map[string]sourceSpec) (*gatewayService, error) {
+	// A shape is one of §1.2a's or nothing: a receipt minted under any other
+	// would be malformed to every verifier, so it is refused here, whatever
+	// built the configuration.
+	for name, spec := range sources {
+		if spec.shape != "" && !adapterShapes[spec.shape] {
+			return nil, fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
+		}
+	}
 	st, err := newStore(storeRoot, seed, authority)
 	if err != nil {
 		return nil, err
@@ -255,6 +274,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	if !known {
 		return nil, badRequest{fmt.Errorf("unknown source: %s", source)}
 	}
+	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
+		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
+	}
 	canonicalArgs := canon(arguments)
 
 	// Admission happens BEFORE the source exists. Sources are slow, cost money
@@ -280,7 +302,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 		return nil, fmt.Errorf("source could not be started: %v", err)
 	}
 	var adapterDigest string
-	if g.receiptVersion == receiptVersion3 {
+	if g.receiptVersion == receiptVersion3 && spec.shape == "" {
 		// Digested before anything is started, so a failure here leaves
 		// nothing to reap. It is the file at that path at that moment: a
 		// replacement between this read and the start is not detected.
@@ -313,6 +335,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// at all -- the command gone, or the user switch refused by the kernel --
 	// is reported as that, with the operating system's own reason, rather
 	// than as an empty "source failed".
+	g.started.Add(1)
 	if err := cmd.Start(); err != nil {
 		group.reap()
 		return nil, fmt.Errorf("source could not be started: %v", err)
@@ -352,6 +375,29 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	// sealed since: sealing refuses while an acquisition is in flight.
 	state := g.sessions[sessionID]
 
+	// An adapter's stdout is an envelope (SPEC.md §6): the result to attest
+	// and the acquisition as the adapter recorded it. A defective envelope
+	// fails the acquisition before anything is retained.
+	var adapterEnvelope *envelope
+	if spec.shape != "" {
+		adapterEnvelope, err = parseEnvelope(result)
+		if err != nil {
+			return nil, fmt.Errorf("source %s: the adapter's result is not an envelope: %v", source, err)
+		}
+		result = adapterEnvelope.result
+	}
+	// The response carries the result as ordinary JSON. A result the
+	// response cannot carry -- nested deeper than encoding/json will decode
+	// -- is refused here, before anything is retained or minted, so no
+	// receipt is ever stamped for an acquisition the caller cannot receive.
+	var resultOut any
+	if err := json.Unmarshal(canon(result), &resultOut); err != nil {
+		return nil, fmt.Errorf("source %s: the result cannot be returned: %v", source, err)
+	}
+	// An artifact is content-addressed and may be shared by receipts, so
+	// a failure after this point leaves it in place rather than removing
+	// what another receipt may cite; nothing cites it until a receipt is
+	// stamped.
 	resultDigest, err := g.store.retain(canon(result))
 	if err != nil {
 		return nil, err
@@ -383,8 +429,19 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 		core.set("argumentsCommitment", vString(commitmentOver(salt, "args:", canonicalArgs)))
 		core.set("kind", vString("acquisition"))
 		core.set("caller", vNull{})
-		core.set("acquisition", commandAcquisition(spec, adapterDigest, observedAt))
 		salts = map[string]any{"args": hex.EncodeToString(salt)}
+		if adapterEnvelope == nil {
+			core.set("acquisition", commandAcquisition(spec, adapterDigest, observedAt))
+		} else {
+			acquisition, statementSalt, err := adapterAcquisition(spec.shape, adapterEnvelope)
+			if err != nil {
+				return nil, err
+			}
+			core.set("acquisition", acquisition)
+			if statementSalt != nil {
+				salts["statement"] = hex.EncodeToString(statementSalt)
+			}
+		}
 	} else {
 		mac := hmac.New(sha256.New, argumentsKey(g.store.seed))
 		mac.Write(append([]byte("args:"), canonicalArgs...))
@@ -398,10 +455,6 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value) (map
 	state.index++
 	state.prev = signature
 
-	var resultOut any
-	if err := json.Unmarshal(canon(result), &resultOut); err != nil {
-		return nil, err
-	}
 	// The receipt in the response is the stored receipt, whole: the same
 	// members written under receipts/<session>/<index>.json, so the caller
 	// holds everything the signature covers and can check it without reaching
@@ -462,6 +515,143 @@ func commandAcquisition(spec sourceSpec, digest, observedAt string) *vObject {
 	a.set("upstreamToken", vNull{})
 	a.set("observedAt", vString(observedAt))
 	return a
+}
+
+// envelope is what an adapter source writes on stdout (SPEC.md §6, "Adapter
+// sources"): the result the gateway attests, the acquisition as the adapter
+// recorded it, and whether the result is a page of items.
+type envelope struct {
+	result      value
+	acquisition *vObject
+	statement   *string
+	page        bool
+}
+
+// envelopeMembers are the acquisition members an adapter reports. shape is
+// the operator's and pageItems the gateway's; an envelope naming either is
+// refused.
+var envelopeMembers = map[string]bool{
+	"adapter": true, "endpoint": true, "statement": true, "snapshot": true,
+	"peerIdentity": true, "schema": true, "upstreamToken": true, "observedAt": true,
+}
+
+// parseEnvelope holds an adapter's stdout to SPEC.md §6 exactly: the three
+// envelope members and no other, the eight acquisition members and no other,
+// each of its stated type and form. Anything else is a refusal, never a
+// member silently dropped or defaulted.
+func parseEnvelope(v value) (*envelope, error) {
+	obj, ok := v.(*vObject)
+	if !ok {
+		return nil, errors.New("not an object")
+	}
+	for _, name := range obj.names {
+		switch name {
+		case "acquisition", "result", "page":
+		default:
+			return nil, fmt.Errorf("unknown member %q", name)
+		}
+	}
+	result, ok := obj.get("result")
+	if !ok {
+		return nil, errors.New(`missing member "result"`)
+	}
+	raw, ok := obj.get("acquisition")
+	if !ok {
+		return nil, errors.New(`missing member "acquisition"`)
+	}
+	acquisition, err := requireObject(raw, "acquisition")
+	if err != nil {
+		return nil, err
+	}
+	e := &envelope{result: result, acquisition: acquisition}
+	if p, ok := obj.get("page"); ok {
+		if b, isBool := p.(vBool); !isBool || !bool(b) {
+			return nil, errors.New(`member "page" must be true when present`)
+		}
+		if _, isArray := result.(vArray); !isArray {
+			return nil, errors.New("a page's result must be an array of items")
+		}
+		e.page = true
+	}
+	for _, name := range acquisition.names {
+		if !envelopeMembers[name] {
+			return nil, fmt.Errorf("acquisition member %q is not one an adapter reports", name)
+		}
+	}
+	adapter, ok := acquisition.get("adapter")
+	if !ok {
+		return nil, errors.New(`missing member "adapter"`)
+	}
+	if err := validateAdapter(adapter, "adapter"); err != nil {
+		return nil, err
+	}
+	// The verifier tolerates a member it does not know, since a signed one is
+	// the signer's own; the signer tolerates nothing it did not ask for.
+	for _, name := range adapter.(*vObject).names {
+		switch name {
+		case "name", "version", "digest":
+		default:
+			return nil, fmt.Errorf("adapter member %q is not one an adapter reports", name)
+		}
+	}
+	for _, name := range []string{"endpoint", "snapshot", "peerIdentity", "upstreamToken", "statement"} {
+		if err := nullableString(acquisition, name, nil); err != nil {
+			return nil, err
+		}
+	}
+	if err := nullableString(acquisition, "schema", isDigest); err != nil {
+		return nil, err
+	}
+	if text, ok := memberString(acquisition, "statement"); ok {
+		e.statement = &text
+	}
+	observedAt, err := requireString(acquisition, "observedAt")
+	if err != nil {
+		return nil, err
+	}
+	if !isStamp(observedAt) {
+		return nil, errors.New(`member "observedAt" is not a stamp`)
+	}
+	return e, nil
+}
+
+// isStamp is the form nowStamp produces: UTC, whole seconds, fixed width.
+func isStamp(s string) bool {
+	t, err := time.Parse("2006-01-02T15:04:05Z", s)
+	return err == nil && t.UTC().Format("2006-01-02T15:04:05Z") == s
+}
+
+// adapterAcquisition is the acquisition record for an adapter source
+// (SPEC.md §1.2a, "Where the members come from"): the envelope's members as
+// the adapter reported them, the shape as the operator declared it, the
+// statement committed under a fresh salt, and the page items digested here.
+func adapterAcquisition(shape string, e *envelope) (*vObject, []byte, error) {
+	a := newObject()
+	for _, name := range []string{"adapter", "endpoint", "snapshot", "peerIdentity", "schema", "upstreamToken", "observedAt"} {
+		v, _ := e.acquisition.get(name)
+		a.set(name, v)
+	}
+	a.set("shape", vString(shape))
+	var salt []byte
+	if e.statement == nil {
+		a.set("statement", vNull{})
+	} else {
+		var err error
+		if salt, err = newSalt(); err != nil {
+			return nil, nil, err
+		}
+		a.set("statement", vString(commitmentOver(salt, "statement:", canon(vString(*e.statement)))))
+	}
+	if e.page {
+		items := e.result.(vArray)
+		digests := make(vArray, 0, len(items))
+		for _, item := range items {
+			sum := sha256.Sum256(canon(item))
+			digests = append(digests, vString("sha256:"+hex.EncodeToString(sum[:])))
+		}
+		a.set("pageItems", digests)
+	}
+	return a, salt, nil
 }
 
 // executableDigest is the SHA-256 of the regular file at path, streamed, as a

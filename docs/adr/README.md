@@ -95,3 +95,4 @@ no conformance status on anything.
 | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | -------- |
 | [0000](0000-record-decisions-with-madr.md)          | Record gateway decisions with MADR-format ADRs, and place this repository under the interim review regime | accepted |
 | [0001](0001-one-engine-four-processes.md)           | One engine, four processes: ship adapters and the runtime with the gateway, out of process, in one repository | accepted |
+| [0002](0002-adapters-report-in-the-envelope.md)     | Adapters report their acquisition inside the result envelope; the gateway keeps shape, statement commitment and page items its own | accepted |

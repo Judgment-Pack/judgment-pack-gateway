@@ -120,6 +120,15 @@ argument the record does not repeat; `observedAt` is the gateway's own stamp of 
 it had read the source's output in full, since a command records nothing.
 `--receipt-version 2` keeps the version 2 form for a consumer not yet updated.
 
+A source declared with `--source-shape NAME=airbyte|mcp|http` is an adapter
+([ADR-0002](docs/adr/0002-adapters-report-in-the-envelope.md)): its stdout is an
+envelope, `{acquisition, result, page?}`, and the receipt records the acquisition as the
+adapter reported it — endpoint, snapshot, schema, the adapter that fetched — under the
+shape the operator declared, with the statement committed under its own salt
+(`salts.statement`) and, for a page, the digest of every item. A defective envelope
+fails the acquisition; nothing is minted. What that record is, exactly, is the
+adapter's testimony under the gateway's signature, and SECURITY.md says so.
+
 A consumer does not stop at those endpoints: it runs `gateway verify` itself, over
 a store it holds, under the key it pinned from `keygen`'s output, then binds the
 receipt and re-digests the artifact before using a byte — the normative sequence

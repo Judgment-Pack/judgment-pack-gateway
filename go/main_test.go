@@ -1019,3 +1019,63 @@ func TestCmdVerifyArgumentForms(t *testing.T) {
 		in.Close()
 	}
 }
+
+// --source-shape declares a configured source an adapter, and is refused for
+// an undeclared source, an unknown shape, a duplicate, and a version 2 gateway.
+func TestParseSourceShape(t *testing.T) {
+	base := []string{"store", "seed", "authority", "registry", "--source", "screening=go"}
+	opts, msg, ok := parseServeOptions(append(append([]string{}, base...), "--source-shape", "screening=airbyte"))
+	if !ok || opts.sources["screening"].shape != "airbyte" {
+		t.Fatalf("shape not applied: ok=%v msg=%q %+v", ok, msg, opts.sources)
+	}
+	// Declaration order is free: the shape may precede the source it names,
+	// and it keeps the source's user and environment beside it.
+	opts, msg, ok = parseServeOptions([]string{
+		"store", "seed", "authority", "registry",
+		"--source-shape", "screening=mcp", "--source-user", "screening=someone",
+		"--source-env", "screening=FOO=bar", "--source", "screening=go",
+	})
+	if !ok {
+		t.Fatal(msg)
+	}
+	if spec := opts.sources["screening"]; spec.shape != "mcp" || spec.user != "someone" || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {
+		t.Fatalf("shape before source, or beside user and env, not applied: %+v", spec)
+	}
+	for _, tc := range []struct {
+		name  string
+		extra []string
+		want  string
+	}{
+		{"unknown shape", []string{"--source-shape", "screening=sql"}, "--source-shape expects"},
+		{"undeclared source", []string{"--source-shape", "history=airbyte"}, "undeclared source"},
+		{"duplicate", []string{"--source-shape", "screening=airbyte", "--source-shape", "screening=mcp"}, "duplicate --source-shape"},
+		{"missing value", []string{"--source-shape"}, "requires a following"},
+		{"version 2 after", []string{"--source-shape", "screening=airbyte", "--receipt-version", "2"}, "needs --receipt-version 3"},
+		{"version 2 before", []string{"--receipt-version", "2", "--source-shape", "screening=mcp"}, "needs --receipt-version 3"},
+	} {
+		_, msg, ok := parseServeOptions(append(append([]string{}, base...), tc.extra...))
+		if ok || !strings.Contains(msg, tc.want) {
+			t.Fatalf("%s: ok=%v msg=%q, want %q", tc.name, ok, msg, tc.want)
+		}
+	}
+}
+
+// The declared shape reaches the service through buildService.
+func TestBuildServiceAppliesTheSourceShape(t *testing.T) {
+	dir := t.TempDir()
+	args := []string{
+		filepath.Join(dir, "store"), "seed", "gateway:test", filepath.Join(dir, "registry.jsonl"),
+		"--source", "screening=go", "--source-shape", "screening=mcp", "--source-env", "screening=FOO=bar",
+	}
+	opts, msg, ok := parseServeOptions(args)
+	if !ok {
+		t.Fatal(msg)
+	}
+	service, err := buildService(args[0], testSeed, args[2], args[3], opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec := service.sources["screening"]; spec.shape != "mcp" || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {
+		t.Fatalf("shape, or the environment beside it, did not reach the service: %+v", spec)
+	}
+}

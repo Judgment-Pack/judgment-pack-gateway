@@ -36,7 +36,10 @@ const (
 	// the source's environment; and it can write a body of a stated size, so
 	// a test can cross the output bound.
 	envSourceEcho = "GATEWAY_TEST_SOURCE_ECHO"
-	envSourceBig  = "GATEWAY_TEST_SOURCE_BIG"
+	// envSourceEnvelope makes the helper write its value verbatim on stdout:
+	// an adapter's envelope, or whatever a test needs a source to say.
+	envSourceEnvelope = "GATEWAY_TEST_SOURCE_ENVELOPE"
+	envSourceBig      = "GATEWAY_TEST_SOURCE_BIG"
 	// After writing its body the helper can stay alive (hold), or leave a
 	// grandchild behind that inherits stdout and stays alive (holder); it can
 	// flood stderr with a stated number of bytes and fail; and it can report
@@ -78,7 +81,7 @@ func recordPid(path string, pid int) {
 // longer hands a source its own environment (ADR-0001), so every variable the
 // helper reads is declared here by name and copied at spawn time -- which is
 // what keeps t.Setenv working between acquisitions.
-var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid, envSourceQuiet, envSourceDelay, envSourceParentPid}
+var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceEnvelope, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid, envSourceQuiet, envSourceDelay, envSourceParentPid}
 
 // A barrier named in the ARGUMENTS rather than the environment. Every helper
 // this process starts inherits the same environment, so an environment-named
@@ -150,6 +153,10 @@ func TestMain(m *testing.M) {
 		if os.Getenv(envSourceFail) == "1" {
 			fmt.Fprintln(os.Stderr, "source refused")
 			os.Exit(1)
+		}
+		if text := os.Getenv(envSourceEnvelope); text != "" {
+			os.Stdout.WriteString(text)
+			os.Exit(0)
 		}
 		if name := os.Getenv(envSourceEcho); name != "" {
 			value, present := os.LookupEnv(name)
