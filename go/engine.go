@@ -258,7 +258,12 @@ func requireAbsolutePath(obj *vObject, name string) (string, error) {
 	if !filepath.IsAbs(s) {
 		return "", fmt.Errorf("%s must be an absolute path, not %q", name, s)
 	}
-	return filepath.Clean(s), nil
+	// Clean as written: a "." or ".." component, or a doubled separator,
+	// would be resolved by a walk in a way a reader of the file cannot see.
+	if filepath.Clean(s) != s {
+		return "", fmt.Errorf("%s must be a clean path, without . or .. components or a trailing separator, not %q", name, s)
+	}
+	return s, nil
 }
 
 // exactlyMembers refuses a member the shape does not name and a required
@@ -627,7 +632,8 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 // what is under it), and traversable by that user; a link must be owned
 // by root -- a system's own, such as macOS's /var -- so nobody else could
 // have placed or could retarget it, and the walk then continues through
-// its target's components, each held in turn, with a bound on hops. The
+// its target's components as written, each held in turn, with a bound on
+// hops. The
 // file itself need not exist yet -- a seed does not before keygen -- so
 // it is the directory that is walked.
 func trustedAncestors(path string, uid int, host engineHost) (string, error) {
@@ -649,8 +655,22 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 	}
 	hops := 0
 	for len(remaining) > 0 {
-		next := filepath.Join(current, remaining[0])
+		token := remaining[0]
 		remaining = remaining[1:]
+		// A link's target is walked as written: "." stays, ".." goes to
+		// the parent of what has been resolved so far -- after a link in
+		// front of it was followed, as the kernel does -- and never past
+		// the root.
+		switch token {
+		case "", ".":
+			continue
+		case "..":
+			if parent := filepath.Dir(current); parent != current {
+				current = parent
+			}
+			continue
+		}
+		next := filepath.Join(current, token)
 		owner, err := host.fileOwner(next)
 		if err != nil {
 			return "", fmt.Errorf("%s: %v", next, err)
@@ -666,16 +686,19 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 			if err != nil {
 				return "", fmt.Errorf("%s: %v", next, err)
 			}
-			// A target that starts at a root -- absolute, or rooted on the
-			// current volume where volumes exist -- is walked from that
-			// root; a relative one from the link's own directory.
-			if !filepath.IsAbs(target) && !strings.HasPrefix(target, string(filepath.Separator)) {
-				target = filepath.Join(current, target)
+			if target == "" {
+				return "", fmt.Errorf("%s is a symbolic link with an empty target", next)
 			}
-			// The walk restarts at the root of the target, holding each of
-			// its components before what remained of the configured path.
+			// A target that starts at a root -- absolute, or rooted on the
+			// current volume where volumes exist -- restarts the walk at
+			// that root; a relative one continues from the link's own
+			// directory. Either way the target's components are put in
+			// front of what remained of the configured path as written,
+			// never joined and cleaned, so each is walked in turn.
+			if filepath.IsAbs(target) || strings.HasPrefix(target, string(filepath.Separator)) {
+				current = filepath.VolumeName(target) + string(filepath.Separator)
+			}
 			remaining = append(components(target), remaining...)
-			current = filepath.VolumeName(target) + string(filepath.Separator)
 			continue
 		}
 		if err := holdDirectory(next, uid, host.fileOwner); err != nil {
@@ -686,9 +709,9 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 	return current, nil
 }
 
-// components are a path's elements below its root, in order.
+// components are a path's elements below its root, in order and as
+// written: nothing is cleaned away before it has been walked.
 func components(path string) []string {
-	path = filepath.Clean(path)
 	rest := strings.TrimPrefix(path, filepath.VolumeName(path))
 	rest = strings.Trim(rest, string(filepath.Separator))
 	if rest == "" {

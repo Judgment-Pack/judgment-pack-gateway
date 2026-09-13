@@ -169,6 +169,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"listen port out of range", replace(`"listen":"127.0.0.1:8787"`, `"listen":"127.0.0.1:65536"`), "has no valid port"},
 		{"relative seed", replace(`"seed":"`, `"seed":"relative/`), "seed must be an absolute path"},
 		{"relative catalog", replace(`"catalog":"`, `"catalog":"./`), "catalog must be an absolute path"},
+		{"unclean store", replace(`"store":"`, `"store":"`+abs(t, t.TempDir())+`/../`), "store must be a clean path"},
 		{"relative adapters", engineJSON(t, catalog, `,"adapters":"."`, good), "adapters must be an absolute path"},
 		{"rootSigner not accepted", engineJSON(t, catalog, `,"rootSigner":true`, good), `rootSigner, when present, is the string "accepted"`},
 		{"hostRuntime wrong word", engineJSON(t, catalog, `,"hostRuntime":"yes"`, good), `hostRuntime, when present, is the string "accepted"`},
@@ -429,6 +430,45 @@ func TestEngineRefusalsForIsolation(t *testing.T) {
 	if _, err := engineRefusals(resolvedHops, host(1000, hops, noSockets, noCaps)); err != nil || resolvedHops.platforms[0].credentials != target {
 		t.Fatalf("two root-owned hops resolve to the target: %v %s", err, resolvedHops.platforms[0].credentials)
 	}
+	// A link the platform's own user placed, in the user's own directory,
+	// is refused as a link: only root's links are a system's own.
+	owned := goodFilesystem(plainSeed, target, 1000, 1001)
+	owned[filepath.Join(root, "srv")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	owned[filepath.Join(root, "srv", "mine")] = fileOwnership{uid: 1001, mode: 0o700, dir: true}
+	owned[filepath.Join(root, "srv", "mine", "link")] = fileOwnership{uid: 1001, mode: 0o777, link: true}
+	linkTargets[filepath.Join(root, "srv", "mine", "link")] = filepath.Join(root, "private", "var", "secrets")
+	ownedCfg := cfg
+	ownedCfg.seed = plainSeed
+	ownedCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "srv", "mine", "link", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	expect("a link owned by the platform's own user", host(1000, owned, noSockets, noCaps), ownedCfg, filepath.Join(root, "srv", "mine", "link")+" is a symbolic link owned by uid 1001, not root")
+	// A target is walked as written, never cleaned first: "hop/../secrets"
+	// follows hop (a link elsewhere) before ".." applies, so the walk
+	// arrives where the kernel would and holds what it passes through.
+	written := goodFilesystem(plainSeed, filepath.Join(root, "opt", "release", "secrets", "warehouse"), 1000, 1001)
+	written[filepath.Join(root, "srv")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	written[filepath.Join(root, "srv", "entry")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "srv", "entry")] = "hop" + string(filepath.Separator) + ".." + string(filepath.Separator) + "secrets"
+	written[filepath.Join(root, "srv", "hop")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "srv", "hop")] = filepath.Join(root, "opt", "release", "subdir")
+	written[filepath.Join(root, "opt", "release", "subdir")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	written[filepath.Join(root, "srv", "secrets")] = fileOwnership{uid: 1002, mode: 0o755, dir: true} // where cleaning first would wrongly arrive
+	writtenCfg := cfg
+	writtenCfg.seed = plainSeed
+	writtenCfg.platforms = []platformConfig{{name: "warehouse", credentials: filepath.Join(root, "srv", "entry", "warehouse"), user: "engine-warehouse", uid: 1001}}
+	arrived := ptr(writtenCfg)
+	if _, err := engineRefusals(arrived, host(1000, written, noSockets, noCaps)); err != nil {
+		t.Fatalf("a target with .. after a link is walked as the kernel walks it: %v", err)
+	}
+	if arrived.platforms[0].credentials != filepath.Join(root, "opt", "release", "secrets", "warehouse") {
+		t.Fatalf("the walk must arrive where the kernel would: %s", arrived.platforms[0].credentials)
+	}
+	written[filepath.Join(root, "srv", "hop")] = fileOwnership{uid: 1002, mode: 0o755, link: true}
+	expect("a hop that cleaning would erase is held", host(1000, written, noSockets, noCaps), writtenCfg, filepath.Join(root, "srv", "hop")+" is a symbolic link owned by uid 1002")
+	empty := goodFilesystem(plainSeed, target, 1000, 1001)
+	empty[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "var")] = ""
+	expect("a link with an empty target", host(1000, empty, noSockets, noCaps), cfg, filepath.Join(root, "var")+" is a symbolic link with an empty target")
+	linkTargets[filepath.Join(root, "var")] = filepath.Join(root, "private", "var")
 	loop := goodFilesystem(plainSeed, target, 1000, 1001)
 	loop[filepath.Join(root, "loop")] = fileOwnership{uid: 0, mode: 0o755, link: true}
 	linkTargets[filepath.Join(root, "loop")] = filepath.Join(root, "loop")
