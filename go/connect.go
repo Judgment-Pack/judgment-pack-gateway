@@ -100,10 +100,10 @@ func printOutcome(stdout, stderr io.Writer, platform string, out connectOutcome,
 // printable is text for one line of a terminal: every character that is
 // not graphic -- a newline, a carriage return, the escape that starts a
 // terminal control sequence, an invalid byte -- is written in its escaped
-// form, and a backslash as two, so what a platform or an adapter answered
-// cannot end the line, forge another, or move the cursor, and what is
-// printed reads back unambiguously. Applied after redaction, at the point
-// of printing, and nowhere else.
+// form, so what a platform or an adapter answered cannot end the line,
+// forge another, or move the cursor. A backslash is left as it is: it
+// forges nothing, and a Windows path is made of them. Applied after
+// redaction, at the point of printing, and nowhere else.
 func printable(s string) string {
 	var b strings.Builder
 	for i := 0; i < len(s); {
@@ -111,8 +111,6 @@ func printable(s string) string {
 		switch {
 		case r == utf8.RuneError && size == 1:
 			fmt.Fprintf(&b, `\x%02x`, s[i])
-		case r == '\\':
-			b.WriteString(`\\`)
 		case r == '\n':
 			b.WriteString(`\n`)
 		case r == '\r':
