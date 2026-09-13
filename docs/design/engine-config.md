@@ -120,7 +120,9 @@ engine refuses to start under a configuration the isolation claim of
   other than `0600`); and any directory on the way to it that is owned by neither root nor
   that user, or writable beyond its owner without the sticky bit (so someone else could
   replace the file under its name), or that the user cannot traverse (the adapter could not
-  open its own credentials); the seed's directories are held to the same, for the signer;
+  open its own credentials) — the path resolved first, so a system's own link such as
+  macOS's `/var` is not refused, and the directories held are those the file is actually
+  under; the seed's directories are held to the same, for the signer;
 - a signer that runs as **root**, which reads every credentials file whatever protects it,
   unless the operator sets `"rootSigner": "accepted"` — the engine then says in one line at
   startup that the separation between signer and adapters rests on the host, not on the

@@ -173,7 +173,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"platform name with slash", engineJSON(t, catalog, ``, `"a/b":{"binding":"`+ref+`","credentials":{"file":"/f"},"user":"u"}`), `platform name "a/b"`},
 		{"platform unknown member", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", ref, "engine-warehouse", `,"command":"x"`)), `unknown member "command"`},
 		{"platform without user", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"/f"}}`), `missing member "user"`},
-		{"platform empty user", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"/f"},"user":""}`), "an adapter running as the signer could read the seed"},
+		{"platform empty user", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"`+abs(t, t.TempDir(), "f")+`"},"user":""}`), "an adapter running as the signer could read the seed"},
 		{"platform unknown user", engineJSON(t, catalog, ``, platformJSON(t, "warehouse", ref, "nobody-here", ``)), "platform warehouse: file does not exist"},
 		{"credentials as a value", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"env":"DATABASE_URL"},"user":"u"}`), `unknown member "env"`},
 		{"credentials relative", engineJSON(t, catalog, ``, `"warehouse":{"binding":"`+ref+`","credentials":{"file":"secrets/w"},"user":"engine-warehouse"}`), "credentials.file must be an absolute path"},

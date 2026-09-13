@@ -587,8 +587,15 @@ func engineRefusals(cfg engineConfig, host engineHost) ([]string, error) {
 // file's owner needs and no more: owned by root or by that user, writable
 // by nobody else unless the sticky bit keeps others from removing or
 // renaming what they do not own (so nobody else can replace the file under
-// its name), and traversable by that user.
+// its name), and traversable by that user. The path is resolved first --
+// a system's own links, /var to /private/var, are not somebody's choice --
+// and the directories held are those of the path the file is actually
+// under; a link somebody else placed sits in a directory these rules
+// refuse, since they could write there.
 func trustedAncestors(path string, uid int, fileOwner func(string) (fileOwnership, error)) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
 		owner, err := fileOwner(dir)
 		if err != nil {
