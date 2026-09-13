@@ -43,7 +43,8 @@ The request, as canonical arguments on stdin:
 ```
 
 A stream is named by `stream` and, when the connector offers that name in more than one
-namespace, by `namespace`; a name that is ambiguous without one is refused. `limit` is
+namespace, by `namespace` — a null namespace and an empty one are distinct, as the
+protocol has them; a name that is ambiguous without one is refused. `limit` is
 the page's floor, not a cut: once it is reached, records are kept until the connector
 emits a checkpoint that covers them, so the next page never repeats a record; past
 `--max-records` without one, the read is given up on. A stream that ends with records
@@ -73,20 +74,24 @@ user can enter (`0700`); inside it, the directory mounted read-only at `/secrets
 readable by any user (`0755`, files `0644`), so a connector running as its image's
 non-root user under a rootless runtime — whose identity does not map to the adapter's
 — can read its configuration while no other user on the host can reach the parent. The
-mount is removed when the acquisition ends. Every container is told to stop by name
-when the acquisition ends, whether or not its client is still running, because a
-runtime client that is killed leaves its container running; a kill the runtime refuses
-is followed by an inspect, and a container the runtime still knows after that fails the
-acquisition and says so, since it holds the credentials mount. `--timeout` (twenty
-seconds) is the time for reading; stopping takes up to five seconds more, and the sum
-stays under the gateway's thirty, so a slow connector is reported as a deadline rather
-than killed mid-report.
+mount is removed when the acquisition ends, and its modes are set after creation so the
+umask the adapter was launched under does not narrow them. Every container is told to
+stop by name when the acquisition ends, whether or not its client is still running,
+because a runtime client that is killed leaves its container running; a kill the runtime
+refuses is followed by an inspect, and only an inspect the runtime answers with "no such"
+counts as gone — a container it still knows, or a runtime that cannot say, fails the
+acquisition and says so first, since the container holds the credentials mount.
+`--timeout` (twenty seconds) is the time for reading; stopping takes up to seven seconds
+more (a kill, an inspect, and the wait for the client's pipes), and the sum stays under
+the gateway's thirty, so a slow connector is reported as a deadline rather than killed
+mid-report.
 
 **Diagnostics.** A connector's error — the first line of its stderr, or a `TRACE`
 message — is reported to the gateway, which returns it to whoever called `/acquire`.
-Every string value of the credentials file, four bytes or longer, is redacted from it
-first. That is as good as the connector's habit of quoting its configuration verbatim;
-a secret it encodes or splits is not caught.
+Every scalar of the credentials file — each non-empty string and each number, as
+written, longest first — is redacted from it before it leaves the adapter. That is as
+good as the connector's habit of quoting its configuration verbatim: a secret it encodes
+or splits is not caught, and a one-letter value redacts every letter like it.
 
 Two honest bounds. The record data are the connector's: a record with a duplicate
 member name or invalid UTF-8 fails the acquisition rather than being repaired. And the

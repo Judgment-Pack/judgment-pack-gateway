@@ -37,17 +37,23 @@ const (
 	EnvExit = "AIRBYTE_FAKE_EXIT"
 	// EnvHang makes a read sleep after its output until it is killed.
 	EnvHang = "AIRBYTE_FAKE_HANG"
-	// EnvHold makes a read leave a descendant holding stdout and exit.
-	EnvHold = "AIRBYTE_FAKE_HOLD"
+	// EnvHold makes a read leave a descendant holding stdout and exit;
+	// EnvHoldStderr makes it hold stderr instead.
+	EnvHold       = "AIRBYTE_FAKE_HOLD"
+	EnvHoldStderr = "AIRBYTE_FAKE_HOLD_STDERR"
 	// EnvHolderPid is the file the descendant's pid is written to.
 	EnvHolderPid = "AIRBYTE_FAKE_HOLDER_PID"
 	// EnvKillExit is the exit status of a kill, 0 when unset.
 	EnvKillExit = "AIRBYTE_FAKE_KILL_EXIT"
 	// EnvKillDelay is the seconds a kill sleeps before answering.
 	EnvKillDelay = "AIRBYTE_FAKE_KILL_DELAY"
-	// EnvInspectExit is the exit status of an inspect: 1 (absent) when
-	// unset, 0 for a container the runtime still knows.
+	// EnvInspectExit is the exit status of an inspect: 1 with "No such
+	// object" on stderr (absent) when unset or 1, 0 for a container the
+	// runtime still knows, any other value for a runtime that cannot say.
 	EnvInspectExit = "AIRBYTE_FAKE_INSPECT_EXIT"
+	// EnvStuckOnRead makes the container run for a read refuse its kill and
+	// answer inspect as present, while discover's stops normally.
+	EnvStuckOnRead = "AIRBYTE_FAKE_STUCK_ON_READ"
 
 	envSleep = "AIRBYTE_FAKE_SLEEP"
 )
@@ -79,14 +85,29 @@ func Run(args []string) int {
 		if d, _ := strconv.Atoi(os.Getenv(EnvKillDelay)); d > 0 {
 			time.Sleep(time.Duration(d) * time.Second)
 		}
+		if len(args) > 1 && stuck(args[1]) {
+			return 1
+		}
 		code, _ := strconv.Atoi(os.Getenv(EnvKillExit))
 		return code
 	case "inspect":
-		if v := os.Getenv(EnvInspectExit); v != "" {
-			code, _ := strconv.Atoi(v)
-			return code
+		if len(args) > 1 && stuck(args[1]) {
+			return 0
 		}
-		return 1
+		code := 1
+		if v := os.Getenv(EnvInspectExit); v != "" {
+			code, _ = strconv.Atoi(v)
+		}
+		switch code {
+		case 0:
+		case 1:
+			if len(args) > 1 {
+				os.Stderr.WriteString("Error: No such object: " + args[1] + "\n")
+			}
+		default:
+			os.Stderr.WriteString("Cannot connect to the Docker daemon\n")
+		}
+		return code
 	case "run":
 		inv := Invocation{Argv: args, Files: map[string]string{}, Modes: map[string]string{}}
 		dir := ""
@@ -100,6 +121,9 @@ func Run(args []string) int {
 		if dir != "" {
 			if info, err := os.Stat(dir); err == nil {
 				inv.Modes["dir"] = fmt.Sprintf("%04o", info.Mode().Perm())
+			}
+			if info, err := os.Stat(filepath.Dir(dir)); err == nil {
+				inv.Modes["parent"] = fmt.Sprintf("%04o", info.Mode().Perm())
 			}
 			entries, _ := os.ReadDir(dir)
 			for _, e := range entries {
@@ -126,10 +150,14 @@ func Run(args []string) int {
 		if text := os.Getenv(EnvStderr); text != "" {
 			os.Stderr.WriteString(text)
 		}
-		if inv.Verb == "read" && os.Getenv(EnvHold) == "1" {
+		if inv.Verb == "read" && (os.Getenv(EnvHold) == "1" || os.Getenv(EnvHoldStderr) == "1") {
 			child := exec.Command(os.Args[0])
 			child.Env = append(os.Environ(), envSleep+"=1")
-			child.Stdout = os.Stdout
+			if os.Getenv(EnvHold) == "1" {
+				child.Stdout = os.Stdout
+			} else {
+				child.Stderr = os.Stderr
+			}
 			if err := child.Start(); err == nil {
 				appendLine(os.Getenv(EnvHolderPid), strconv.Itoa(child.Process.Pid))
 			}
@@ -200,6 +228,25 @@ func cursorOf(stateFile string) string {
 		return legacy.UpdatedAt
 	}
 	return ""
+}
+
+// stuck reports whether the named container is the one a read ran, when
+// EnvStuckOnRead is set: the trace says which verb each name was run for.
+func stuck(name string) bool {
+	if os.Getenv(EnvStuckOnRead) != "1" {
+		return false
+	}
+	data, err := os.ReadFile(os.Getenv(EnvTrace))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var inv Invocation
+		if json.Unmarshal([]byte(line), &inv) == nil && inv.Verb == "read" && len(inv.Argv) > 3 && inv.Argv[3] == name {
+			return true
+		}
+	}
+	return false
 }
 
 func appendLine(path, line string) {

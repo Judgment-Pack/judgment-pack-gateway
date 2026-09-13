@@ -9,16 +9,20 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
 // The budget for stopping a container once the acquisition is over, on top
-// of the acquisition's own timeout: the kill, and the inspect that follows
-// a failed kill. The command's default timeout leaves room for both under
-// the gateway's thirty seconds.
+// of the acquisition's own timeout: the kill, the inspect that follows a
+// refused kill, and the wait for the client's pipes after it, which a
+// descendant holding stderr can stretch to the wait delay. Seven seconds
+// at most; the command's default timeout of twenty leaves that room, and
+// some to report, under the gateway's thirty.
 const (
 	killWindow    = 3 * time.Second
 	inspectWindow = 2 * time.Second
+	waitDelay     = 2 * time.Second
 )
 
 // container is one connector command running inside the operator's
@@ -55,13 +59,24 @@ func startContainer(ctx context.Context, runtime, image, verb string, files map[
 	if err != nil {
 		return nil, fmt.Errorf("mount directory: %w", err)
 	}
+	// The modes are set after creation, so the process's umask -- which
+	// a restrictive launcher may have set to 077 -- does not narrow them.
 	mount := filepath.Join(dir, "secrets")
 	if err := os.Mkdir(mount, 0o755); err != nil {
 		os.RemoveAll(dir)
 		return nil, fmt.Errorf("mount directory: %w", err)
 	}
+	if err := os.Chmod(mount, 0o755); err != nil {
+		os.RemoveAll(dir)
+		return nil, fmt.Errorf("mount directory: %w", err)
+	}
 	for name, data := range files {
-		if err := os.WriteFile(filepath.Join(mount, name), data, 0o644); err != nil {
+		path := filepath.Join(mount, name)
+		if err := os.WriteFile(path, data, 0o644); err != nil {
+			os.RemoveAll(dir)
+			return nil, fmt.Errorf("mount directory: %w", err)
+		}
+		if err := os.Chmod(path, 0o644); err != nil {
 			os.RemoveAll(dir)
 			return nil, fmt.Errorf("mount directory: %w", err)
 		}
@@ -76,7 +91,7 @@ func startContainer(ctx context.Context, runtime, image, verb string, files map[
 	runCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(runCtx, runtime, argv...)
 	cmd.Env = os.Environ()
-	cmd.WaitDelay = 5 * time.Second
+	cmd.WaitDelay = waitDelay
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()
@@ -131,6 +146,11 @@ func (c *container) stop() error {
 	return err
 }
 
+// stopByName kills the container and, when the runtime refuses, establishes
+// positively that the container is absent: an inspect that succeeds means
+// present; one the runtime answers with "no such" means absent; anything
+// else -- a timeout, a daemon that is down, a permission refused -- leaves
+// the question open, and an open question is an error, not an absence.
 func (c *container) stopByName() error {
 	killCtx, cancelKill := context.WithTimeout(context.Background(), killWindow)
 	defer cancelKill()
@@ -143,10 +163,30 @@ func (c *container) stopByName() error {
 	defer cancelInspect()
 	inspect := exec.CommandContext(inspectCtx, c.runtime, "inspect", c.name)
 	inspect.Env = os.Environ()
-	if inspect.Run() != nil {
+	answer := &boundedBuffer{limit: 4096}
+	inspect.Stderr = answer
+	inspect.Stdout = io.Discard
+	err := inspect.Run()
+	switch {
+	case err == nil:
+		return fmt.Errorf("container %s could not be stopped and is still known to %s; stop it by hand -- it holds the credentials mount", c.name, c.runtime)
+	case strings.Contains(strings.ToLower(answer.String()), "no such"):
 		return nil // absent: it ended on its own, and --rm removed it
 	}
-	return fmt.Errorf("container %s could not be stopped and is still known to %s; stop it by hand -- it holds the credentials mount", c.name, c.runtime)
+	return fmt.Errorf("container %s could not be stopped and %s could not say whether it is gone (%s); check it by hand -- it may hold the credentials mount", c.name, c.runtime, firstLineOf(answer.String(), err))
+}
+
+func firstLineOf(text string, err error) string {
+	for i, r := range text {
+		if r == '\n' {
+			text = text[:i]
+			break
+		}
+	}
+	if text == "" {
+		return err.Error()
+	}
+	return text
 }
 
 // firstLine is the first line of what the connector wrote on stderr, for an

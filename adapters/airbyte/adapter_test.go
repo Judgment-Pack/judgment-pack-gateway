@@ -72,7 +72,7 @@ func fake(t *testing.T, discover, read string) Config {
 		return path
 	}
 	for _, name := range []string{fakeruntime.EnvStderr, fakeruntime.EnvExit, fakeruntime.EnvHang, fakeruntime.EnvHold,
-		fakeruntime.EnvKillExit, fakeruntime.EnvKillDelay, fakeruntime.EnvInspectExit} {
+		fakeruntime.EnvHoldStderr, fakeruntime.EnvKillExit, fakeruntime.EnvKillDelay, fakeruntime.EnvInspectExit, fakeruntime.EnvStuckOnRead} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakeruntime.EnvActivate, "1")
@@ -565,4 +565,129 @@ func TestParseImage(t *testing.T) {
 			t.Errorf("%s must be refused", ref)
 		}
 	}
+}
+
+// Absence is established positively: an inspect the runtime cannot answer
+// leaves the question open, and an open question fails the acquisition.
+func TestStopRequiresAPositiveAnswerFromInspect(t *testing.T) {
+	cfg := fake(t, discoverFixture, readFixture)
+	t.Setenv(fakeruntime.EnvKillExit, "1")
+	t.Setenv(fakeruntime.EnvInspectExit, "2")
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 3}, "could not say whether it is gone (Cannot connect to the Docker daemon)")
+}
+
+// Every scalar of the credentials is redacted, longest first: a short
+// password, a numeric one, and one that contains another value.
+func TestRedactionCoversEveryScalar(t *testing.T) {
+	cfg := fake(t, "", readFixture)
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"host":"host","password":"host-private-password","pin":123456,"short":"abc","port":5432}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakeruntime.EnvExit, "1")
+	t.Setenv(fakeruntime.EnvStderr, "FATAL: host-private-password rejected for host, pin 123456, key abc, port 5432\n")
+	_, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
+	if err == nil {
+		t.Fatal("expected a failure")
+	}
+	want := "FATAL: [redacted] rejected for [redacted], pin [redacted], key [redacted], port [redacted]"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("redaction: %v, want %q", err, want)
+	}
+}
+
+// A TRACE that names its type but is not a TRACE is an error, not a log
+// line: what it failed to say may have been an error.
+func TestMalformedTraceIsAnError(t *testing.T) {
+	cfg := fake(t, discoverFixture, rec(1, "0", "")+`{"type":"TRACE","trace":{"type":"ERROR","error":{"message":123}}}`+"\n"+`{"type":"STATE","state":`+state1+`}`+"\n")
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed TRACE message")
+	cfg = fake(t, `{"type":"TRACE","trace":{"type":"ERROR","error":{"message":123}}}`+"\n"+discoverFixture, readFixture)
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed TRACE message")
+}
+
+// An empty record is an object, with or without whitespace; an empty state
+// is no bookmark.
+func TestEmptyObjects(t *testing.T) {
+	cfg := fake(t, discoverFixture,
+		`{"type":"RECORD","record":{"stream":"decisions","emitted_at":1,"data":{}}}`+"\n"+
+			`{"type":"RECORD","record":{"stream":"decisions","emitted_at":2,"data":{ }}}`+"\n")
+	env := acquire(t, cfg, Request{Stream: "decisions", Limit: 5})
+	if len(env.Result) != 2 || string(env.Result[0]) != "{}" || string(env.Result[1]) != "{}" {
+		t.Fatalf("empty records: %s", env.Result)
+	}
+	cfg = fake(t, discoverFixture, rec(1, "0", "")+`{"type":"STATE","state":{ }}`+"\n")
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 1}, "malformed STATE message")
+}
+
+// A descendant holding stderr after the client exited stretches the wait
+// to the wait delay and no further: the acquisition still ends within its
+// deadline and the stopping budget.
+func TestAcquireIsNotHeldByADescendantOnStderr(t *testing.T) {
+	cfg := fake(t, discoverFixture, rec(1, "0", ""))
+	t.Setenv(fakeruntime.EnvHoldStderr, "1")
+	t.Cleanup(func() { killHolders(t) })
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := Acquire(ctx, cfg, Request{Stream: "decisions", Limit: 100})
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("the deadline must end the acquisition: %v", err)
+	}
+	// The kill is answered at once here, so what remains after the deadline
+	// is the wait delay alone: two seconds, written out so a longer one is
+	// caught rather than absorbed.
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond+4*time.Second {
+		t.Fatalf("a descendant on stderr held the acquisition for %v", elapsed)
+	}
+}
+
+func killHolders(t *testing.T) {
+	t.Helper()
+	data, err := os.ReadFile(os.Getenv(fakeruntime.EnvHolderPid))
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if pid, err := strconv.Atoi(line); err == nil {
+			if p, err := os.FindProcess(pid); err == nil {
+				p.Kill()
+				p.Wait()
+			}
+		}
+	}
+}
+
+// When the connector fails and its container will not stop, the container
+// comes first in the error, since the gateway keeps only the start of it.
+func TestContainerWarningComesFirst(t *testing.T) {
+	cfg := fake(t, discoverFixture, `{"type":"TRACE","trace":{"type":"ERROR","error":{"message":"permission denied"}}}`+"\n")
+	t.Setenv(fakeruntime.EnvStuckOnRead, "1")
+	_, err := Acquire(context.Background(), cfg, Request{Stream: "decisions", Limit: 1})
+	if err == nil || !strings.HasPrefix(err.Error(), "container jp-airbyte-") || !strings.Contains(err.Error(), "could not be stopped and is still known") ||
+		!strings.Contains(err.Error(), "the acquisition had also failed: connector reported an error: permission denied") {
+		t.Fatalf("the container warning must lead: %v", err)
+	}
+}
+
+// A null namespace and an empty one are distinct streams, as the protocol
+// says: only the matching one's records and checkpoints count, and the
+// statement keeps the distinction.
+func TestEmptyNamespaceIsNotNull(t *testing.T) {
+	catalog := `{"type":"CATALOG","catalog":{"streams":[` +
+		`{"name":"decisions","json_schema":{"type":"object"},"supported_sync_modes":["full_refresh"]},` +
+		`{"name":"decisions","namespace":"","json_schema":{"type":"object"},"supported_sync_modes":["full_refresh"]}]}}` + "\n"
+	read := `{"type":"RECORD","record":{"stream":"decisions","emitted_at":1,"data":{"id":1}}}` + "\n" +
+		`{"type":"RECORD","record":{"stream":"decisions","namespace":"","emitted_at":2,"data":{"id":2}}}` + "\n" +
+		`{"type":"RECORD","record":{"stream":"decisions","namespace":null,"emitted_at":3,"data":{"id":3}}}` + "\n"
+	cfg := fake(t, catalog, read)
+	mustFail(t, cfg, Request{Stream: "decisions", Limit: 5}, `exists in more than one namespace [null ]`)
+	empty := ""
+	env := acquire(t, cfg, Request{Stream: "decisions", Namespace: &empty, Limit: 5})
+	if len(env.Result) != 1 || string(env.Result[0]) != `{"id":2}` {
+		t.Fatalf("the empty namespace's records alone: %s", env.Result)
+	}
+	if !strings.Contains(env.Acquisition["statement"].(string), `"namespace":""`) {
+		t.Fatalf("the statement keeps the empty namespace: %v", env.Acquisition["statement"])
+	}
+	missing := "x"
+	mustFail(t, cfg, Request{Stream: "decisions", Namespace: &missing, Limit: 1}, `stream "x/decisions" is not one the connector offers: [decisions /decisions]`)
 }

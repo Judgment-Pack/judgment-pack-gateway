@@ -12,14 +12,11 @@ type message struct {
 	State   json.RawMessage `json:"state"`
 	Catalog *catalog        `json:"catalog"`
 	Trace   *trace          `json:"trace"`
-	// malformed is set when a line names a type but does not decode as a
-	// message of it.
-	malformed error
 }
 
 type record struct {
 	Stream    string          `json:"stream"`
-	Namespace string          `json:"namespace"`
+	Namespace *string         `json:"namespace"`
 	Data      json.RawMessage `json:"data"`
 }
 
@@ -32,7 +29,7 @@ type catalog struct {
 // catalog untouched.
 type stream struct {
 	Name               string          `json:"name"`
-	Namespace          string          `json:"namespace"`
+	Namespace          *string         `json:"namespace"`
 	JSONSchema         json.RawMessage `json:"json_schema"`
 	SupportedSyncModes []string        `json:"supported_sync_modes"`
 	DefaultCursorField []string        `json:"default_cursor_field"`
@@ -53,9 +50,18 @@ type stateMessage struct {
 	Type   string `json:"type"`
 	Stream *struct {
 		Descriptor struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
+			Name      string  `json:"name"`
+			Namespace *string `json:"namespace"`
 		} `json:"stream_descriptor"`
 	} `json:"stream"`
 	Data json.RawMessage `json:"data"`
+}
+
+// sameNamespace treats a null or absent namespace and an empty one as
+// distinct, as the protocol does.
+func sameNamespace(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -66,10 +67,18 @@ func main() {
 	if len(os.Args) < 2 {
 		os.Exit(2)
 	}
+	stuck := os.Getenv("FAKE_STUCK") == "1"
 	switch os.Args[1] {
 	case "kill":
+		if stuck {
+			os.Exit(1)
+		}
 		os.Exit(0)
 	case "inspect":
+		if stuck {
+			os.Exit(0)
+		}
+		os.Stderr.WriteString("Error: No such object: " + os.Args[2] + "\n")
 		os.Exit(1)
 	}
 	dir := ""
@@ -116,6 +125,7 @@ func main() {
 		"--source", "history=" + adapter + " --image airbyte/source-postgres:3.6.1@" + digest +
 			" --credentials " + credentials + " --runtime " + fake + " --endpoint warehouse.internal:5432",
 		"--source-shape", "history=airbyte",
+		"--source-env", "history=FAKE_STUCK",
 	}
 	opts, msg, ok := parseServeOptions(args)
 	if !ok {
@@ -166,5 +176,13 @@ func main() {
 	report, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
 	if err != nil || !report.OK {
 		t.Fatalf("the store must verify: %v %v", err, report)
+	}
+	// A container that will not stop fails the acquisition, and the
+	// warning that names it survives the gateway's bound on a source's
+	// diagnostic: the caller learns which container needs a hand.
+	t.Setenv("FAKE_STUCK", "1")
+	code, body := post(t, server, "/acquire", `{"session":"e2e-2","source":"history","arguments":{"stream":"decisions","limit":10}}`)
+	if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "container jp-airbyte-") || !strings.Contains(fmt.Sprint(body["error"]), "could not be stopped") {
+		t.Fatalf("the container warning must reach the caller: %d %v", code, body)
 	}
 }

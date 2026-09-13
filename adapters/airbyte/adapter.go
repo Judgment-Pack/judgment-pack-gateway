@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -156,17 +157,22 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 	}
 	finish := func(s stream, err error) (stream, error) {
 		if stopErr := c.stop(); stopErr != nil {
+			// The container that needs a hand comes first: the gateway
+			// keeps only the start of a source's diagnostic.
 			if err == nil {
 				return stream{}, stopErr
 			}
-			err = fmt.Errorf("%v; also: %v", err, stopErr)
+			err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
 		}
 		return s, err
 	}
 	var found *catalog
 	scanner := newScanner(c.stdout)
 	for scanner.Scan() {
-		m, isMessage := parseMessage(scanner.Bytes())
+		m, isMessage, err := parseMessage(scanner.Bytes())
+		if err != nil {
+			return finish(stream{}, err)
+		}
 		if !isMessage {
 			continue
 		}
@@ -202,14 +208,14 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 		}
 		s.raw = raw
 		names = append(names, describe(s.Name, s.Namespace))
-		if s.Name != req.Stream || (req.Namespace != nil && s.Namespace != *req.Namespace) {
+		if s.Name != req.Stream || (req.Namespace != nil && !sameNamespace(s.Namespace, req.Namespace)) {
 			continue
 		}
 		candidates = append(candidates, s)
 	}
 	switch len(candidates) {
 	case 0:
-		return finish(stream{}, fmt.Errorf("stream %q is not one the connector offers: %v", describe(req.Stream, deref(req.Namespace)), names))
+		return finish(stream{}, fmt.Errorf("stream %q is not one the connector offers: %v", describe(req.Stream, req.Namespace), names))
 	case 1:
 		if len(candidates[0].JSONSchema) == 0 {
 			return finish(stream{}, fmt.Errorf("stream %q has no schema", req.Stream))
@@ -218,23 +224,25 @@ func discover(ctx context.Context, cfg Config, req Request, config []byte, secre
 	}
 	var namespaces []string
 	for _, s := range candidates {
-		namespaces = append(namespaces, s.Namespace)
+		namespaces = append(namespaces, describeNamespace(s.Namespace))
 	}
 	return finish(stream{}, fmt.Errorf(`stream %q exists in more than one namespace %v; name one with "namespace"`, req.Stream, namespaces))
 }
 
-func describe(name, namespace string) string {
-	if namespace == "" {
+// describe names a stream for a message: namespace/name, or the name alone
+// when the namespace is null; an empty namespace shows as "/name".
+func describe(name string, namespace *string) string {
+	if namespace == nil {
 		return name
 	}
-	return namespace + "/" + name
+	return *namespace + "/" + name
 }
 
-func deref(s *string) string {
-	if s == nil {
-		return ""
+func describeNamespace(namespace *string) string {
+	if namespace == nil {
+		return "null"
 	}
-	return *s
+	return *namespace
 }
 
 // configuredCatalog is the ConfiguredAirbyteCatalog for one stream:
@@ -279,22 +287,28 @@ func stateFileFor(snapshot *string) ([]byte, error) {
 	return nil, errors.New(`request: "state" is neither a stream, a global nor a legacy state`)
 }
 
-// parseMessage tells a protocol message from a line that is not one. A
-// line that is not a JSON object with a string "type" is something the
-// connector printed, and is skipped; a line that is a message of a known
-// type but malformed is an error the caller must not skip.
-func parseMessage(line []byte) (message, bool) {
+// parseMessage tells a protocol message from a line that is not one, and
+// refuses a message of a known type that does not have its shape. A line
+// that is not a JSON object with a string "type" is something the
+// connector printed, and is skipped; a RECORD, STATE, TRACE or CATALOG
+// that does not decode as one is an error the caller must not skip, since
+// what it failed to say may have been an error.
+func parseMessage(line []byte) (message, bool, error) {
 	var probe struct {
 		Type *string `json:"type"`
 	}
 	if json.Unmarshal(line, &probe) != nil || probe.Type == nil {
-		return message{}, false
+		return message{}, false, nil
 	}
 	var m message
 	if err := json.Unmarshal(line, &m); err != nil {
-		return message{Type: *probe.Type, malformed: err}, true
+		switch *probe.Type {
+		case "RECORD", "STATE", "TRACE", "CATALOG":
+			return message{}, true, fmt.Errorf("the connector emitted a malformed %s message", *probe.Type)
+		}
+		return message{}, false, nil
 	}
-	return m, true
+	return m, true, nil
 }
 
 type page struct {
@@ -328,7 +342,7 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 			if err == nil {
 				return page{}, stopErr
 			}
-			err = fmt.Errorf("%v; also: %v", err, stopErr)
+			err = fmt.Errorf("%v; the acquisition had also failed: %v", stopErr, err)
 		}
 		return p, err
 	}
@@ -337,16 +351,19 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 	uncovered := 0 // records since the last checkpoint
 	scanner := newScanner(c.stdout)
 	for scanner.Scan() {
-		m, isMessage := parseMessage(scanner.Bytes())
+		m, isMessage, err := parseMessage(scanner.Bytes())
+		if err != nil {
+			return finish(page{}, err)
+		}
 		if !isMessage {
 			continue
 		}
 		switch m.Type {
 		case "RECORD":
-			if m.malformed != nil || m.Record == nil || m.Record.Stream == "" {
+			if m.Record == nil || m.Record.Stream == "" {
 				return finish(page{}, errors.New("the connector emitted a malformed RECORD message"))
 			}
-			if m.Record.Stream != strm.Name || m.Record.Namespace != strm.Namespace {
+			if m.Record.Stream != strm.Name || !sameNamespace(m.Record.Namespace, strm.Namespace) {
 				continue
 			}
 			if !isObject(m.Record.Data) {
@@ -414,10 +431,12 @@ func readPage(ctx context.Context, cfg Config, req Request, strm stream, config,
 
 // stateBelongsTo reports whether a state message bookmarks the stream: a
 // per-stream state names it by name and namespace; a global or legacy
-// state covers every stream. A STATE message without a state object, or a
-// per-stream one without a descriptor, is malformed.
+// state covers every stream. A STATE message whose state is not an object
+// with members, or a per-stream one without a descriptor, is malformed:
+// an empty bookmark could never be handed back.
 func stateBelongsTo(m message, strm stream) (bool, error) {
-	if m.malformed != nil || !isObject(m.State) {
+	members, ok := objectMembers(m.State)
+	if !ok || members == 0 {
 		return false, errors.New("the connector emitted a malformed STATE message")
 	}
 	var sm stateMessage
@@ -429,17 +448,31 @@ func stateBelongsTo(m message, strm stream) (bool, error) {
 		if sm.Stream == nil || sm.Stream.Descriptor.Name == "" {
 			return false, errors.New("the connector emitted a STREAM state without a stream descriptor")
 		}
-		return sm.Stream.Descriptor.Name == strm.Name && sm.Stream.Descriptor.Namespace == strm.Namespace, nil
+		return sm.Stream.Descriptor.Name == strm.Name && sameNamespace(sm.Stream.Descriptor.Namespace, strm.Namespace), nil
 	case "GLOBAL", "LEGACY", "":
 		return true, nil
 	}
 	return false, fmt.Errorf("the connector emitted a state of unknown type %q", sm.Type)
 }
 
-// isObject reports whether raw is a non-empty JSON object.
-func isObject(raw json.RawMessage) bool {
+// objectMembers reports whether raw is a JSON object, and how many members
+// it has: structurally, so {} and { } are the same empty object.
+func objectMembers(raw json.RawMessage) (int, bool) {
 	trimmed := bytes.TrimSpace(raw)
-	return len(trimmed) > 2 && trimmed[0] == '{' && json.Valid(trimmed)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return 0, false
+	}
+	var members map[string]json.RawMessage
+	if json.Unmarshal(trimmed, &members) != nil {
+		return 0, false
+	}
+	return len(members), true
+}
+
+// isObject reports whether raw is a JSON object, empty or not.
+func isObject(raw json.RawMessage) bool {
+	_, ok := objectMembers(raw)
+	return ok
 }
 
 func traceMessage(t *trace) string {
@@ -458,15 +491,19 @@ func failure(c *container, err error) string {
 	return err.Error()
 }
 
-// secretsOf collects every string value of the connector's configuration,
-// at any depth, four bytes or longer -- a password, a token, a host -- so
-// that a diagnostic repeating one is redacted before it crosses the source
-// boundary, where the gateway returns it to whoever called /acquire. It is
-// as good as the connector's habit of quoting its configuration verbatim:
-// a secret it encodes or splits is not caught.
+// secretsOf collects every scalar of the connector's configuration, at any
+// depth -- every non-empty string and every number, as written -- so that
+// a diagnostic repeating one is redacted before it crosses the source
+// boundary, where the gateway returns it to whoever called /acquire. The
+// list is sorted longest first so a value that contains another is
+// replaced whole. It is as good as the connector's habit of quoting its
+// configuration verbatim: a secret it encodes or splits is not caught, and
+// a one-letter value redacts every letter like it.
 func secretsOf(config []byte) []string {
+	dec := json.NewDecoder(bytes.NewReader(config))
+	dec.UseNumber()
 	var value any
-	if json.Unmarshal(config, &value) != nil {
+	if dec.Decode(&value) != nil {
 		return nil
 	}
 	var out []string
@@ -474,9 +511,11 @@ func secretsOf(config []byte) []string {
 	walk = func(v any) {
 		switch x := v.(type) {
 		case string:
-			if len(x) >= 4 {
+			if x != "" {
 				out = append(out, x)
 			}
+		case json.Number:
+			out = append(out, x.String())
 		case map[string]any:
 			for _, e := range x {
 				walk(e)
@@ -488,13 +527,14 @@ func secretsOf(config []byte) []string {
 		}
 	}
 	walk(value)
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
 	return out
 }
 
 const maxDiagnostic = 512
 
-// redact replaces every configured string value in a diagnostic and bounds
-// its length.
+// redact replaces every configured value in a diagnostic, longest first,
+// and bounds its length.
 func redact(text string, secrets []string) string {
 	for _, s := range secrets {
 		text = strings.ReplaceAll(text, s, "[redacted]")
@@ -548,8 +588,8 @@ func buildEnvelope(cfg Config, image imageRef, req Request, strm stream, mode st
 		"cursorField": cursor,
 		"state":       nil,
 	}
-	if strm.Namespace != "" {
-		statementValue["namespace"] = strm.Namespace
+	if strm.Namespace != nil {
+		statementValue["namespace"] = *strm.Namespace
 	}
 	if req.State != nil {
 		statementValue["state"] = json.RawMessage(*req.State)
