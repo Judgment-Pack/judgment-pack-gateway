@@ -414,7 +414,11 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
 		}
 		if cfg.ProbeFailure != "" {
-			if text, failed := answersFailure(result, cfg.ProbeFailure); failed {
+			text, failed, err := answersFailure(result, cfg.ProbeFailure)
+			if err != nil {
+				return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
+			}
+			if failed {
 				return finish(nil, fmt.Errorf("probe %q: the platform was not reached: %s", cfg.Probe, text))
 			}
 		}
@@ -685,27 +689,38 @@ func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listed
 }
 
 // answersFailure reports whether a tool result, isError or not, carries a
-// text item beginning with the failure text the binding named, and that
-// item's text.
-func answersFailure(result []byte, failure string) (string, bool) {
+// text item beginning with the failure text the binding named -- as
+// written, neither trimmed -- and that item's text. Items are read by
+// their exact member names: struct decoding would let a "Text" beside
+// "text" make the item unreadable and so passed over, and a text item
+// that cannot be read is an error rather than an answer.
+func answersFailure(result []byte, failure string) (text string, failed bool, err error) {
 	members, err := exactMembers(result)
 	if err != nil {
-		return "", false
+		return "", false, errors.New("the answer is not an object")
 	}
 	var content []json.RawMessage
 	if json.Unmarshal(members["content"], &content) != nil {
-		return "", false
+		return "", false, errors.New("the answer carries no content array")
 	}
 	for _, item := range content {
-		var text struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+		fields, err := exactMembers(item)
+		if err != nil {
+			return "", false, errors.New("a content item is not an object")
 		}
-		if json.Unmarshal(item, &text) == nil && text.Type == "text" && strings.HasPrefix(strings.TrimSpace(text.Text), failure) {
-			return strings.TrimSpace(text.Text), true
+		var kind string
+		if json.Unmarshal(fields["type"], &kind) != nil || kind != "text" {
+			continue
+		}
+		var body string
+		if raw, ok := fields["text"]; !ok || json.Unmarshal(raw, &body) != nil {
+			return "", false, errors.New("a text item's text is not a string")
+		}
+		if strings.HasPrefix(body, failure) {
+			return body, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // textOf joins the text parts of a tool result's content, for an error

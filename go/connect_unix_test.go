@@ -193,3 +193,40 @@ func TestReadingTheConfigurationJudgesTheEntryItOpened(t *testing.T) {
 		t.Fatalf("the descriptor and the entry differ: %v", err)
 	}
 }
+
+// A lock already there is trusted only as the regular file it names: a
+// link, or a file put in its place between the open and the judgment, is
+// refused. (A lock owned by another user is refused by the same rule and
+// cannot be made without root.)
+func TestAnExistingLockIsJudged(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	lock := f.config + ".lock"
+	if err := os.WriteFile(filepath.Join(f.dir, "elsewhere.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("elsewhere.lock", lock); err != nil {
+		t.Skipf("no symbolic links here: %v", err)
+	}
+	_, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "engine.json.lock is not the regular file it names") || len(f.asked) != 0 {
+		t.Fatalf("a link is not a lock: %v", err)
+	}
+	os.Remove(lock)
+	if err := os.WriteFile(lock, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lockOpened = func() {
+		lockOpened = nil
+		os.Remove(lock)
+		os.WriteFile(lock, nil, 0o600) // another inode in its place
+	}
+	defer func() { lockOpened = nil }()
+	_, err = connect(context.Background(), f.request(), f.host, f.check)
+	if err == nil || !strings.Contains(err.Error(), "engine.json.lock is not the regular file it names") {
+		t.Fatalf("a lock replaced under the open is not held: %v", err)
+	}
+	// The lock as it should be, left by an earlier connect, is taken.
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatalf("an existing lock of this user's is taken: %v", err)
+	}
+}

@@ -525,6 +525,11 @@ func parseOperation(op *vObject, name string) (operation, error) {
 				if o.probeFailure, err = requireString(probe, "failure"); err != nil || o.probeFailure == "" {
 					return o, fmt.Errorf("operation %s: probe.failure, when present, is the text a failed answer begins with", name)
 				}
+				// Matched as written on both sides; a prefix that begins or
+				// ends with whitespace is one the operator did not mean.
+				if strings.TrimSpace(o.probeFailure) != o.probeFailure {
+					return o, fmt.Errorf("operation %s: probe.failure may not begin or end with whitespace", name)
+				}
 			}
 		}
 	case "http":

@@ -1119,3 +1119,43 @@ func TestCheckProbesThePlatform(t *testing.T) {
 		t.Fatalf("a call only for an offered probe: %v", got)
 	}
 }
+
+func TestAProbeAnswerIsReadByExactMembers(t *testing.T) {
+	cfg := fake(t)
+	cfg.Tools = []string{"query"}
+	cfg.Probe = "query"
+	cfg.ProbeFailure = "Error:"
+	result := filepath.Join(t.TempDir(), "result.json")
+	t.Setenv(fakemcp.EnvResult, result)
+	// A "Text" beside "text" would make struct decoding fail and the
+	// item be passed over; read exactly, the item says Error:.
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"Error: refused","Text":0}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "query": the platform was not reached: Error: refused`) {
+		t.Fatalf("the failure text is seen through an extra member: %v", err)
+	}
+	// A text item whose text is not a string fails the check rather than
+	// being passed over.
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":0}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), `probe "query": a text item's text is not a string`) {
+		t.Fatalf("a text item that cannot be read fails: %v", err)
+	}
+	// The prefix is matched as written: a leading space on either side
+	// counts.
+	cfg.ProbeFailure = " Error:"
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":" Error: refused"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "the platform was not reached:  Error: refused") {
+		t.Fatalf("matched as written: %v", err)
+	}
+	if err := os.WriteFile(result, []byte(`{"content":[{"type":"text","text":"Error: refused"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatalf("an answer without the space does not begin with the prefix: %v", err)
+	}
+}

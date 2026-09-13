@@ -270,7 +270,9 @@ link, and a configuration that with the entry would exceed the size `serve` read
 before any check runs. The file's directory is held open from the first read to the rename, so
 what is read, written beside it and put in place is in that directory whatever a path component
 is swapped for meanwhile; one connect at a time holds `<file>.lock` beside it, and a second
-refuses rather than waits; the file is put in place only if, read again just before the rename, it
+refuses rather than waits — a lock already there is trusted only as a regular file owned by
+root, the connect's user or the configuration's owner, since in a sticky directory another
+user's file can be unlinked by that user and replaced; the file is put in place only if, read again just before the rename, it
 still holds what the checks were run against — which holds against another connect, since
 one takes the lock, while an editor that does not is not held out, and its save in the
 instant between that read and the rename would be written over; the new file is written in
