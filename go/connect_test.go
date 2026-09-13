@@ -40,8 +40,11 @@ func newConnectFixture(t *testing.T, bindingText string, platforms string) *conn
 	t.Helper()
 	f := &connectFixture{dir: t.TempDir(), reports: map[string]string{"airbyte": airbyteReport, "mcp": mcpReport}, fail: map[string]string{}}
 	f.catalog = catalogWith(t, map[string]string{"postgres": bindingText})
-	f.seed = filepath.Join(string(filepath.Separator), "var", "lib", "engine", "gateway.seed")
-	f.credentials = filepath.Join(string(filepath.Separator), "run", "secrets", "warehouse")
+	// Synthetic paths, rooted on the platform's volume so they are absolute
+	// on Windows too; the stub filesystem is what holds them.
+	root := filepath.VolumeName(f.dir) + string(filepath.Separator)
+	f.seed = filepath.Join(root, "var", "lib", "engine", "gateway.seed")
+	f.credentials = filepath.Join(root, "run", "secrets", "warehouse")
 	f.config = filepath.Join(f.dir, "engine.json")
 	text := `{"engineVersion":"1","authority":"gateway:acme","seed":"` + escapePath(f.seed) + `","store":"` + abs(t, f.dir, "store") + `",` +
 		`"registry":"` + abs(t, f.dir, "registry.jsonl") + `","decisionRecords":"` + abs(t, f.dir, "decisions") + `","listen":"127.0.0.1:0",` +
@@ -256,7 +259,8 @@ func TestConnectWritesNothingWhenAnOperationCannotAnswer(t *testing.T) {
 }
 
 func TestConnectFindsAStalePinAmongThePlatformsAlreadyConfigured(t *testing.T) {
-	f := newConnectFixture(t, restrictedBinding, `"docs":{"binding":"postgres@`+digestOf(postgresBinding)+`","credentials":{"file":"`+escapePath(filepath.Join(string(filepath.Separator), "run", "secrets", "docs"))+`"},"user":"engine-docs"}`)
+	docs := filepath.Join(filepath.VolumeName(t.TempDir())+string(filepath.Separator), "run", "secrets", "docs")
+	f := newConnectFixture(t, restrictedBinding, `"docs":{"binding":"postgres@`+digestOf(postgresBinding)+`","credentials":{"file":"`+escapePath(docs)+`"},"user":"engine-docs"}`)
 	_, err := connect(context.Background(), f.request(), f.host, f.check)
 	if err == nil || !strings.Contains(err.Error(), "platform docs") || !strings.Contains(err.Error(), "does not digest to the pinned") {
 		t.Fatalf("a pin the catalog no longer digests to is found at connect, not at the next start: %v", err)
