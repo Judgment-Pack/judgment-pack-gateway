@@ -437,6 +437,7 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	// the directory, so the session is not an action's, and an action into
 	// it is refused at the session step with nothing run. Ownership taken
 	// at admission would have called it this process's own.
+	var before int64
 	for _, foreign := range []struct {
 		session string
 		receipt bool
@@ -458,13 +459,40 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 		if err := <-done; (err != nil) != foreign.receipt {
 			t.Fatalf("a read into %s with a foreign directory (receipt in it: %v) finished with %v", foreign.session, foreign.receipt, err)
 		}
-		before := service.started.Load()
+		before = service.started.Load()
 		if code, body := authed(t, server, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"`+foreign.session+`"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
 			t.Fatalf("an action into %s, a session another process put there during a read: %d %v", foreign.session, code, body)
 		}
 		if service.started.Load() != before {
 			t.Fatalf("an executor ran into %s, a session another process put there during a read", foreign.session)
 		}
+	}
+	// The same, in the last moment before the stamp -- after the source has
+	// run, under the lock the stamp holds: a session another process put
+	// there with a receipt of its own at index 1. The stamp lands this
+	// read's receipt at index 0 beside it, but the stamp's own exclusive
+	// Mkdir found the directory rather than made it, so the session is not
+	// this process's, and an action into it is refused with nothing run.
+	// Ownership from absence read before the stamp would have missed it.
+	service.beforeStamp = func() {
+		dir := filepath.Join(service.storeRoot, "receipts", "act-13")
+		if err := os.Mkdir(dir, 0o755); err != nil {
+			t.Error(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "1.json"), []byte("{}"), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	if code, body := authed(t, server, "/acquire", `{"session":"act-13","source":"screening","arguments":{"q":"a"}}`, token); code != http.StatusOK {
+		t.Fatalf("a read whose session appeared in the last moment before the stamp: %d %v", code, body)
+	}
+	service.beforeStamp = nil
+	before = service.started.Load()
+	if code, body := authed(t, server, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-13"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
+		t.Fatalf("an action into a session that appeared in the last moment before a read's stamp: %d %v", code, body)
+	}
+	if service.started.Load() != before {
+		t.Fatal("an executor ran into a session that appeared in the last moment before a read's stamp")
 	}
 	// A seal landing between the evidence checks and admission -- the
 	// session open at the session step, sealed by the time the action is
@@ -478,7 +506,7 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	before := service.started.Load()
+	before = service.started.Load()
 	if code, body := authed(t, server, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-12"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "sealed") {
 		t.Fatalf("a session sealed between the evidence checks and admission: %d %v", code, body)
 	}

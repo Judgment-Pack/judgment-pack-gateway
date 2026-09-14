@@ -18,12 +18,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -111,6 +109,11 @@ type gatewayService struct {
 	// have put the session on disk or sealed it, which admission's own
 	// recheck must catch.
 	beforeAdmit func()
+	// beforeStamp, when a test sets it, runs in the last moment before a
+	// read's stamp, under the lock: the window in which another process may
+	// have put the session on disk, which the stamp's own exclusive Mkdir
+	// must find rather than claim.
+	beforeStamp func()
 	// identity is who may call (serveOptions.identity); nil when no
 	// issuer is configured, and every receipt then carries caller null.
 	identity *identityConfig
@@ -333,10 +336,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// The session exists because admission created it, and it cannot have been
-	// sealed since: sealing refuses while an acquisition is in flight.
+	// The session is known because admission reserved it, and it cannot have
+	// been sealed since: sealing refuses while an acquisition is in flight.
 	state := g.sessions[sessionID]
-	absent := g.sessionAbsent(sessionID)
 
 	// An adapter's stdout is an envelope (SPEC.md §6): the result to attest
 	// and the acquisition as the adapter recorded it. A defective envelope
@@ -420,16 +422,21 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 		core.set("argumentsDigest", vString("hmac-sha256:"+hex.EncodeToString(mac.Sum(nil))))
 	}
 
-	stored, signature, err := g.store.stamp(core)
+	if g.beforeStamp != nil {
+		g.beforeStamp()
+	}
+	stored, signature, made, err := g.store.stampOwning(core)
 	if err != nil {
 		return nil, err
 	}
 	state.index++
 	state.prev = signature
-	if absent {
-		// The stamp made the session's directory, under this lock, in a
-		// store this process serves alone: the session is this process's
-		// own from here (sessionState.created).
+	if made {
+		// The stamp made the session's directory, exclusively: the session
+		// is this process's own from here (sessionState.created). A
+		// directory another process put there at any moment before the
+		// stamp -- absence read earlier would not have seen it -- is found
+		// by the same Mkdir and never taken for this process's own.
 		state.created = true
 	}
 
@@ -765,15 +772,6 @@ func (g *gatewayService) admit(sessionID string) error {
 	}
 	state.inFlight++
 	return nil
-}
-
-// sessionAbsent reports whether nothing at all is in the store where the
-// session's receipts would be -- read with Lstat, so a link counts as
-// something, and a lookup that fails for any reason but absence counts as
-// something too, never as absence.
-func (g *gatewayService) sessionAbsent(sessionID string) bool {
-	_, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", sessionID))
-	return errors.Is(err, fs.ErrNotExist)
 }
 
 // release drops the reservation admit took.

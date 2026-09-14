@@ -48,9 +48,10 @@ that what they name exists and compares nothing inside it, which is §4's standa
    cannot have its chain continued from an empty memory, and a write that ran and could not be
    receipted is the outcome this design exists to refuse, so an action after a restart opens a
    session of its own. "Did not mint" is judged by whether this process made the session's
-   directory — an action's admission makes it, a read's stamp makes it when none was there —
-   never by absence at admission, which another process can end before the stamp, and never
-   by a receipt count, since a read into an old session can recreate a receipt that session
+   directory — an action's admission makes it, a read's stamp makes it, each by an exclusive
+   `Mkdir` that finds a directory another process put there first, at any moment before it,
+   rather than claims it — never by absence read at admission or before the stamp, which
+   another process can end in between, and never by a receipt count, since a read into an old session can recreate a receipt that session
    lost and count on from there; an entry of any kind — a directory, a link, a file — is such a
    session, and a lookup that fails for any reason but absence refuses rather than passes.
    (`/acquire` is unchanged: it admits by memory alone, runs its source, and then stamps a
@@ -144,9 +145,10 @@ nothing.
 ## How it is held
 
 - The refusal ladder above, each step with a test that reaches it and a mutation that
-  removes it; the two interleavings the session step cannot see — a session another process
-  puts in the store while a read into it is admitted and running, and a seal landing between
-  the evidence checks and admission — each held to a session refusal with nothing run.
+  removes it; the interleavings the session step cannot see — a session another process puts
+  in the store while a read into it is admitted and running, or in the last moment before the
+  read's stamp, and a seal landing between the evidence checks and admission — each held to a
+  session refusal with nothing run.
 - An end-to-end test: an acquisition, a decision record written beside it citing the
   receipt, an `/act` that cites both, then `gateway verify` over the store, the registry and
   the decision-record directory reporting every receipt `ok` — the vector
