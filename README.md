@@ -238,7 +238,8 @@ both the connector and the MCP paths derives to the same facts is checked on a g
 tool reaches the same surface through a client package under [plugins/](plugins/) — an n8n
 community node and an Activepieces piece, each carrying `result`, `receipt` and `salts` into
 the workflow as data and verifying nothing ([docs/design/plugins.md](docs/design/plugins.md));
-[plugins/smoke/](plugins/smoke/README.md) runs each inside its ecosystem against a live engine.
+[plugins/smoke/](plugins/smoke/README.md) runs the node inside n8n, and the piece's actions
+as the framework calls them, against a live engine.
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only

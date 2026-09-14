@@ -23,6 +23,11 @@ const session = `smoke-ap-${Date.now()}`;
 const acquired = await actions['acquire'].run(ctx({ session, source: 'screening', arguments: '{"subject": "acme"}' }));
 console.log('acquire receipt version:', acquired.receipt.receiptVersion, 'kind:', acquired.receipt.kind, 'callIndex:', acquired.receipt.callIndex, 'salts:', Object.keys(acquired.salts).join(','));
 assert.equal(String(acquired.receipt.receiptVersion), '3');
+assert.equal(acquired.receipt.kind, 'acquisition');
+assert.equal(acquired.receipt.callIndex, 0);
+assert.equal(acquired.receipt.sessionId, session);
+assert.match(acquired.salts.args, /^[0-9a-f]{64}$/);
+assert.match(acquired.receipt.signature, /^[0-9a-f]{128}$/);
 assert.deepEqual(acquired.result, { synthetic: true, arguments: { subject: 'acme' } });
 
 let refusal;
@@ -36,5 +41,7 @@ assert.match(refusal, /401/);
 
 const sealed = await actions['seal'].run(ctx({ session }));
 console.log('seal:', JSON.stringify(sealed).slice(0, 200));
-assert.equal(sealed.sessionId ?? sealed.session ?? session, session);
+assert.equal(sealed.sessionId, session);
+assert.equal(sealed.finalCount, 1);
+assert.match(sealed.signature, /^[0-9a-f]{128}$/);
 console.log('ACTIVEPIECES SMOKE OK');

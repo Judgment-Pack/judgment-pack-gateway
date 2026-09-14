@@ -11,8 +11,9 @@ happens and what it says.
 A local engine with one synthetic source, as the top-level README starts one:
 
 ```
-cd go && go build -o ../gateway .
-cd .. && ./gateway keygen gateway.seed          # prints the public key to pin
+(cd go && go build -o ../gateway .)
+./gateway keygen gateway.seed | tee keygen.out   # prints the public key to pin
+grep publicKey keygen.out | awk '{print $2}' > publickey.hex
 cat > my_source <<'EOF2'
 #!/bin/sh
 args=$(cat)
@@ -29,39 +30,43 @@ is read — which is one of the things the runs check.
 ## n8n — the node inside the official image
 
 ```
-cd plugins/n8n-nodes-judgment-pack && npm ci --ignore-scripts && npm run build && npm pack
+(cd plugins/n8n-nodes-judgment-pack && npm ci --ignore-scripts && npm run build && npm pack)
 plugins/smoke/n8n/run.sh plugins/n8n-nodes-judgment-pack/n8n-nodes-judgment-pack-0.1.0.tgz
 ```
 
-`run.sh` installs the packed package under a fresh n8n data directory the way n8n's own
-community-node installer lays it out, then runs `docker.n8n.io/n8nio/n8n` (`N8N_IMAGE` to
-choose another) on the host network three times: `import:credentials`, `import:workflow`,
-`execute`. The workflow is Start → Acquire → Act → Seal in one session named per run — the
+`run.sh` installs the packed package under a fresh, private data directory the way n8n's
+own community-node installer lays it out (removed at the end; `N8N_SMOKE_KEEP=1` keeps it,
+`N8N_SMOKE_DATA` names one), then runs the official image — pinned by digest to the version
+the checks were written against, `N8N_IMAGE` to run another on purpose — on the host
+network three times: `import:credentials`, `import:workflow`, `execute`. The workflow is Start → Acquire → Act → Seal in one session named per run — the
 runner writes a nonce into the workflow at import, so every node names the same literal and
 no run reuses a session the engine has sealed; Act is set to continue on error, since this
 engine refuses it. `check.py` then reads n8n's own record
 of the execution from its database — n8n prints nothing on a successful headless run — and
-requires: a version-3 acquisition receipt at index 0 whose `result` is the source's echo and
-whose `salts` carry `args`; an error item from Act; a seal of the acquisition's session at one
-receipt.
+requires, each member of its JSON type: a version-3 acquisition receipt at index 0, in the
+run's session, with a signature of the expected form, whose `result` is exactly the source's
+echo and whose `salts.args` is 64 hex characters; an error item from Act carrying the words
+this n8n version puts on the engine's 401 and nothing else (a citation the node refused
+before asking, or a 404, is not that); a seal of the run's session at one receipt, signed.
 
-Last run here: n8n 2.38.7, Node 22 host, engine at `0406128`: `n8n smoke ok: execution 1 —
-Acquire receipt smoke-n8n-1789419399-2167255/0, Act refused (Authorization failed - please
-check your credentials), Seal finalCount 1`. n8n wraps the engine's 401 in its own words; the engine's
+Last run here: n8n 2.38.7 (the pinned digest), Node 22 host, engine at `0406128`: `n8n smoke
+ok: execution 1 — Acquire receipt smoke-n8n-1789420001-2192058/0, Act refused (Authorization
+failed - please check your credentials), Seal finalCount 1`. n8n wraps the engine's 401 in its own words; the engine's
 text (`an action needs an authenticated requester; this engine has no identity configured`) is
 what the Activepieces run shows.
 
 ## Activepieces — the piece's actions as the framework calls them
 
 ```
-cd plugins/activepieces/judgment-pack && npm ci --ignore-scripts && npm run build
+(cd plugins/activepieces/judgment-pack && npm ci --ignore-scripts && npm run build)
 plugins/smoke/activepieces/run.sh
 ```
 
 `run.mjs` loads the built piece, runs the connection's `validate` as the framework does when a
 connection is saved, then each action's `run` with the context shape the framework hands it:
-Acquire (a version-3 receipt whose result is the echo), Act (the engine's 401 as the action's
-error), Seal (the seal record). This exercises the piece definition and its transport, not an
+Acquire (a version-3 acquisition receipt at index 0 in the run's session, signed, with a
+64-hex arguments salt, whose result is the echo), Act (the engine's 401 as the action's
+error), Seal (the run's session at one receipt, signed). This exercises the piece definition and its transport, not an
 Activepieces server; running the piece inside one is the monorepo's `AP_DEV_PIECES` flow, which
 needs the monorepo.
 
