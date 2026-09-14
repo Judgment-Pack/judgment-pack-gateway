@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"runtime"
 	"context"
 	"encoding/json"
 	"errors"
@@ -206,6 +207,9 @@ func TestMCPReachCheck(t *testing.T) {
 	// a readable one is refused, a missing one is refused
 	if os.Geteuid() == 0 {
 		t.Skip("root can open anything; the filesystem case needs an unprivileged user")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("mode bits do not deny a file's owner on Windows, so the fixture cannot express a denial; the stand-in cases above hold the check, and the process runs in the engine's Linux image")
 	}
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "seed")
