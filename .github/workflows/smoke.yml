@@ -1,0 +1,57 @@
+name: plugin smoke
+
+# On demand: the packages under plugins/ run the way their ecosystems run
+# them, against a real engine (plugins/smoke/README.md). Not a pull-request
+# check -- it pulls the n8n image and takes minutes -- and it publishes nothing.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: n8n and Activepieces against a live engine
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.26"
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Build the engine and start it with a synthetic source
+        run: |
+          (cd go && go build -o ../gateway .)
+          ./gateway keygen gateway.seed | tee keygen.out
+          grep publicKey keygen.out | awk '{print $2}' > publickey.hex
+          cat > my_source <<'EOF2'
+          #!/bin/sh
+          args=$(cat)
+          printf '{"synthetic":true,"arguments":%s}\n' "${args:-null}"
+          EOF2
+          chmod +x my_source
+          nohup ./gateway serve ./store gateway.seed gateway:smoke ./registry.jsonl --source screening=./my_source --port 8787 > serve.log 2>&1 &
+          for i in $(seq 1 20); do curl -sf localhost:8787/publickey >/dev/null && break; sleep 1; done
+          curl -sf localhost:8787/publickey
+      - name: Build and pack the n8n node
+        working-directory: plugins/n8n-nodes-judgment-pack
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build && npm pack
+      - name: Build the Activepieces piece
+        working-directory: plugins/activepieces/judgment-pack
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: The node inside n8n, against the engine
+        run: plugins/smoke/n8n/run.sh plugins/n8n-nodes-judgment-pack/n8n-nodes-judgment-pack-*.tgz
+      - name: The piece's actions as the framework calls them, against the engine
+        run: plugins/smoke/activepieces/run.sh
+      - name: Verify the store under the pinned key
+        run: |
+          ./gateway verify ./store ./registry.jsonl gateway:smoke < publickey.hex | tee verify.json
+          python3 -c "import json; v=json.load(open('verify.json')); assert v['ok'], v; print('ok, findings:', len(v['findings']))"
