@@ -1088,3 +1088,44 @@ func TestAValueUnderARepeatedNestedNameIsASecretToo(t *testing.T) {
 		t.Fatalf("both values are secrets: %v", err)
 	}
 }
+
+// A stream is configured incremental only when the connector names a default
+// cursor to bookmark by; a connector that offers incremental sync for a stream
+// with no default cursor expects the operator to name one, and configured
+// incremental without one refuses the read outright. Found by the both-paths
+// golden test on the World database's city table (docs/design/both-paths-agreement.md).
+func TestConfiguredCatalogNeedsACursorForIncremental(t *testing.T) {
+	cases := []struct {
+		name   string
+		modes  []string
+		cursor []string
+		mode   string
+	}{
+		{"incremental with a default cursor", []string{"full_refresh", "incremental"}, []string{"updated_at"}, "incremental"},
+		{"incremental offered, no default cursor", []string{"full_refresh", "incremental"}, nil, "full_refresh"},
+		{"incremental offered, empty cursor list", []string{"full_refresh", "incremental"}, []string{}, "full_refresh"},
+		{"full refresh only, a cursor named", []string{"full_refresh"}, []string{"updated_at"}, "full_refresh"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := stream{Name: "city", SupportedSyncModes: c.modes, DefaultCursorField: c.cursor, raw: json.RawMessage(`{"name":"city"}`)}
+			file, mode, cursor := configuredCatalog(s)
+			if mode != c.mode {
+				t.Fatalf("mode %q, want %q", mode, c.mode)
+			}
+			var doc struct {
+				Streams []map[string]json.RawMessage `json:"streams"`
+			}
+			if err := json.Unmarshal(file, &doc); err != nil || len(doc.Streams) != 1 {
+				t.Fatalf("configured catalog: %v %s", err, file)
+			}
+			_, hasCursor := doc.Streams[0]["cursor_field"]
+			if mode == "incremental" && (!hasCursor || len(cursor) == 0) {
+				t.Fatalf("incremental without a cursor field: %s", file)
+			}
+			if mode == "full_refresh" && (hasCursor || cursor != nil) {
+				t.Fatalf("full refresh carries a cursor: %s %v", file, cursor)
+			}
+		})
+	}
+}

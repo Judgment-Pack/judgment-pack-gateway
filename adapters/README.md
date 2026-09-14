@@ -265,3 +265,18 @@ longer than a line, or spanning lines, is matched whole, and when the buffer ove
 ends it that is the start of a credential is cut off — after the whole ones were replaced, since a
 credential whose end repeats its start is whole before it is a prefix; a duplicate member name in a message,
 which the diagnostic names, is written as it is rather than quoted with an escape.
+
+## The both-paths agreement
+
+[ADR-0001](../docs/adr/0001-one-engine-four-processes.md) point 4 promises that a record reached
+through both shapes derives to byte-identical facts, and that a golden record per platform is
+checked both ways. `agreement/` is that check for the postgres platform: the rule by which each
+shape's envelope yields a record's facts (`facts.go`), the envelopes the two adapters wrote when
+they fetched the golden record — the World sample database's city with `id = 1` — under the
+artifacts `catalog/postgres.json` pins (`testdata/postgres/`), and the tests that hold them to
+each other, to the golden record and to the pins. With `AGREEMENT_RUNTIME=docker` (or `podman`)
+the test also starts the World database, fetches the record afresh through both adapters under a
+role held to reading, requires a write through that role to be refused, and holds the fresh facts
+to the fixtures'; the CI job "both paths agree" runs it. The rule, what the first capture found,
+and what the check does not establish are in
+[docs/design/both-paths-agreement.md](../docs/design/both-paths-agreement.md).

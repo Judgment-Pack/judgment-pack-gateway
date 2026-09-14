@@ -392,11 +392,16 @@ func describeNamespace(namespace *string) string {
 }
 
 // configuredCatalog is the ConfiguredAirbyteCatalog for one stream:
-// incremental when the connector supports it, with its default cursor.
+// incremental when the connector supports it AND names a default cursor
+// to bookmark by; otherwise full refresh. A connector that offers
+// incremental sync for a stream with no default cursor (a table without a
+// timestamp or serial column, say) expects the operator to name one, and
+// configured incremental without a cursor it refuses the read outright --
+// found by the both-paths golden test on the World database's city table.
 func configuredCatalog(s stream) (file []byte, mode string, cursor []string) {
 	mode = "full_refresh"
 	for _, m := range s.SupportedSyncModes {
-		if m == "incremental" {
+		if m == "incremental" && len(s.DefaultCursorField) > 0 {
 			mode = "incremental"
 		}
 	}
@@ -405,7 +410,7 @@ func configuredCatalog(s stream) (file []byte, mode string, cursor []string) {
 		"sync_mode":             mode,
 		"destination_sync_mode": "append",
 	}
-	if mode == "incremental" && len(s.DefaultCursorField) > 0 {
+	if mode == "incremental" {
 		cursor = s.DefaultCursorField
 		entry["cursor_field"] = cursor
 	}
