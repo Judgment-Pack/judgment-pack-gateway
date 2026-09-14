@@ -107,12 +107,15 @@ func (f *mcpFixture) call(t *testing.T, method, session, body string, headers ma
 	for k, v := range headers {
 		switch {
 		case k == "Accept-Second":
-			req.Header.Add("Accept", v)
+			// added below, after every Set, whatever order the map yields
 		case v == "":
 			req.Header.Del(k)
 		default:
 			req.Header.Set(k, v)
 		}
+	}
+	if second, ok := headers["Accept-Second"]; ok {
+		req.Header.Add("Accept", second)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

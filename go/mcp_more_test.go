@@ -485,7 +485,7 @@ func TestMCPCommandRefusals(t *testing.T) {
 		{"no mcp member", []string{"--config", write(engineJSON(t, catalog, ``, ``)), "--stdio"}, inPlace, 1, "no mcp member"},
 		{"http without a resource", []string{"--config", write(v2(`{"listen":"127.0.0.1:8788"}`, ``)), "--http"}, inPlace, 1, "--http needs mcp.resource"},
 		{"http without an identity", []string{"--config", write(v2(`{"listen":"127.0.0.1:8788","resource":"https://e/mcp"}`, ``)), "--http"}, inPlace, 1, "--http needs an identity"},
-		{"http with an issuer that is no identifier", []string{"--config", write(v2(`{"listen":"127.0.0.1:8788","resource":"https://e/mcp"}`, `,"identity":{"issuer":"login.example","audience":"gateway:acme","keys":"`+filepath.ToSlash(filepath.Join(t.TempDir(), "keys.json"))+`"}`)), "--http"}, inPlace, 1, "identity.issuer:"},
+		{"http with an issuer that is no identifier", []string{"--config", write(v2(`{"listen":"127.0.0.1:8788","resource":"https://e/mcp"}`, `,"identity":{"issuer":"login.example","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`)), "--http"}, inPlace, 1, "identity.issuer:"},
 		{"a process that is not the frontend's user", []string{"--config", write(v2(`{"listen":"127.0.0.1:8788"}`, ``)), "--stdio"}, elsewhere, 1, "runs as uid 1000"},
 	} {
 		var stderr bytes.Buffer
