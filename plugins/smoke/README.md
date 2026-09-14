@@ -35,9 +35,11 @@ plugins/smoke/n8n/run.sh plugins/n8n-nodes-judgment-pack/n8n-nodes-judgment-pack
 ```
 
 `run.sh` installs the packed package under a fresh, private data directory the way n8n's
-own community-node installer lays it out — without its `n8n-workflow` peer, so the node
-runs against the image's own copy and nothing floats between runs — and removes that
-directory at the end (`N8N_SMOKE_KEEP=1` keeps a generated one; a directory named by
+own community-node installer lays it out — without its `n8n-workflow` peer beside it, so
+that in a fresh data directory the node resolves the image's own copy rather than one npm
+would pull independently of the pinned image (the runner checks that no sibling copy was
+installed; it does not read back which module n8n loaded, and a reused `N8N_SMOKE_DATA` is
+the operator's to keep clean) — and removes that directory at the end (`N8N_SMOKE_KEEP=1` keeps a generated one; a directory named by
 `N8N_SMOKE_DATA`, existing or not, is always kept), then runs the official image — pinned by digest to the version
 the checks were written against, `N8N_IMAGE` to run another on purpose — on the host
 network three times: `import:credentials`, `import:workflow`, `execute`. The workflow is Start → Acquire → Act → Seal in one session named per run — the

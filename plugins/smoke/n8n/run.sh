@@ -18,9 +18,10 @@ trap cleanup EXIT
 mkdir -p "$data/nodes"
 # the package as n8n's community-node installer lays it out: a package.json
 # under ~/.n8n/nodes naming it, and node_modules beside. The package's peer,
-# n8n-workflow, is not installed here: the image's own copy is the one n8n
-# hands a community node, and a second copy pulled by npm would float
-# independently of the pinned image
+# n8n-workflow, is not installed beside it: n8n's loader puts its own module
+# paths first for a community node, and a second copy pulled by npm would
+# float independently of the pinned image. The check below is of this
+# directory alone; a reused data directory is the operator's to keep clean.
 (cd "$data/nodes" && npm init -y >/dev/null && npm install --ignore-scripts --legacy-peer-deps --no-audit --no-fund "$tarball" >/dev/null && test ! -e node_modules/n8n-workflow)
 # the container runs as this user, so the directory stays this user's alone
 chmod 700 "$data"
