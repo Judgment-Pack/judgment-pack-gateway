@@ -33,9 +33,12 @@ text) of one JSON object per record, keyed by column. Each shape yields that obj
   canonical bytes of the object the text holds.
 
 Every object on the way — the tool result, the server's answer, its statement, its row — is
-read by its members' exact names, nothing unknown tolerated and a duplicate refused, as the
-signer reads an envelope; and the envelope itself is held to §6's member set before either
-derivation reads it.
+read by its members' exact names, each of its type, nothing unknown tolerated and a duplicate
+refused, as the signer reads an envelope; the answer's echoed SQL must be the SQL the recorded
+statement names; and the envelope itself is read as the signer reads it — in the canon domain,
+no duplicate member anywhere, exactly §6's members in §1.2a's forms — before either derivation
+reads it, with the statement, a JSON text inside a string the envelope's check does not look
+into, checked for duplicates on its own.
 
 The rule's one substantive choice is that the database renders the row, as text, and the
 choice has two reasons, each pinned to a kept capture through the same server:
@@ -49,8 +52,9 @@ choice has two reasons, each pinned to a kept capture through the same server:
   integer past 2^53 comes back rounded: `9007199254740993` arrives as `9007199254740992`,
   where the same value carried as text keeps the database's spelling
   (`live-jsonb-past-2p53.json`, `live-text-past-2p53.json`). The canon carries an integer
-  past its domain as a string of that spelling, and the connector's record carries it the
-  same way, so the text path agrees where the JSON path cannot.
+  past its domain as a string of that spelling, and so does the connector's record of the
+  same row (`history-past-2p53.json`), so the text path agrees where the JSON path cannot;
+  that row is the platform's second golden record, below.
 
 Asking Postgres to render the row, and carrying the rendering as text, makes the typing on the
 live side the database's own — the same authority the connector's record derives from — with
@@ -63,7 +67,7 @@ past ±(2^53−1) — is carried as a string of its literal. The rule preserves 
 types: a numeric `1.5` and a string `"1.5"` derive to the same facts, and `1.0` and `1e0` to
 different ones. The golden record has no such member; the second golden record should.
 
-## The golden record
+## The golden records
 
 The postgres platform's golden record is the World sample database
 (`ghusta/postgres-world-db:2.15.1`, pinned by index digest in the test), table `city`, `id = 1`:
@@ -71,6 +75,15 @@ The postgres platform's golden record is the World sample database
 ```json
 {"country_code":"AFG","district":"Kabol","id":1,"local_name":null,"name":"Kabul","population":1780000}
 ```
+
+Its second is a one-row table the test adds to that database, `past (n bigint)` holding
+2^53 + 1, the first integer the canon domain does not admit:
+
+```json
+{"n":"9007199254740993"}
+```
+
+Both shapes carry the value as text spelled as the database spelled it, and agree.
 
 Six members, five types the platform draws — `bigint`, `text`, `character(3)`, a null —
 and no float, no timestamp, no array: the least room for two paths to disagree on rendering,
@@ -115,34 +128,40 @@ rule names.
 `adapters/agreement`:
 
 - **Offline, always**: the fixtures derive to the same facts through both rules, and to the
-  golden record; every fixture was captured under the artifact the binding pins for its
+  golden records; every fixture was captured under the artifact the binding pins for its
   operation (adapter digests compared with `catalog/postgres.json`) and records the statement
   the rule names (compared member by member); the driver-typed capture has the connector's
   member names and differs on `id` and `population` and on nothing else; the past-2^53
   captures derive as the note says; the derivations refuse an absent key, an ambiguous key, a
   history result that is not a page, an answer without the rendered record, a well-formed
-  answer marked as an error, a `success` that is not `true` however its case is spelled, a
-  duplicate member, an extra row member, a count or statement count other than one, a record
-  that is not an object, and an envelope with a member §6 does not name, without one it
-  does, or with `page` other than `true`.
+  answer marked as an error, a `success` that is not `true` however its case is spelled, an
+  answer to other SQL than the statement records, a duplicate member (under an escape too, in
+  the result, the answer or the statement), an extra row member, a member of the wrong type
+  (`messages`, `source_id`, `count`, `isError`, `structuredContent`), a count or statement
+  count other than one, a record that is not an object, a number past the canon domain
+  anywhere the signer would see it, and an envelope with a member §6 does not name, without
+  one it does, with `page` other than `true` or `page` over a result that is not an array,
+  with a `schema` that is not a digest, or with an `observedAt` that is not an instant of
+  §6's form; and they accept what the server may add (`messages`) and what §6 permits (an
+  empty adapter version).
 - **With a container runtime** (`AGREEMENT_RUNTIME=docker`, the CI job "both paths agree"):
   a World database is started from the pinned image (its removal, volume included,
-  registered before it starts, every runtime command bounded), the reading role is created,
-  the golden record is fetched both ways through the adapter implementations — the package
-  functions the binaries call, against real containers — the two writes above are required
-  to fail as Postgres's refusals, the fresh facts are held to each other, to the golden
-  record and to the fixtures', the fresh stream schema digest to the fixture's, the two
-  counterexamples are fetched again and held to what the fixtures show, and the stream is
-  read once more in xmin mode and held to incremental.
+  registered before it starts; every deadline derived from the test's own with time left to
+  remove it), the reading role and the `past` table are created, both golden records are
+  fetched both ways through the adapter implementations — the package functions the binaries
+  call, against real containers — the two writes above are required to fail as the tool's
+  own refusals (an acquisition that also failed to stop its server is not one), the fresh
+  facts are held to each other, to the golden records and to the fixtures', the fresh stream
+  schema digest to the fixture's, the two counterexamples are fetched again and held to what
+  the fixtures show, and the stream is read once more in xmin mode and held to incremental.
 
 ## What this establishes, and what it does not
 
-It establishes ADR-0001's point 4 for one platform and one record: under the stated rule the
-two shapes agree, and the rule's one choice is justified by two kept counterexamples. It does
-not establish agreement for types the golden record lacks — floats, numerics, timestamps,
-arrays, composite types — each of which is a rendering question the connector and `to_jsonb`
-may answer differently, and it does not establish it for an integer past 2^53 on the history
-side, where the connector's spelling has not been captured; the second golden record should
+It establishes ADR-0001's point 4 for one platform and two records: under the stated rule
+the two shapes agree, at the canon domain's edge too, and the rule's one choice is justified
+by two kept counterexamples. It does not establish agreement for types the golden records
+lack — floats, numerics, timestamps, arrays, composite types — each of which is a rendering
+question the connector and `to_jsonb` may answer differently; the next golden record should
 be a Sakila row, which has several of these. It exercises the adapter implementations, not
 the binaries' command lines or the signer's subprocess boundary, which the adapters' own
 tests and the fixtures' provenance cover. It is

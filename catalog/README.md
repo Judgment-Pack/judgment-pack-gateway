@@ -52,17 +52,17 @@ per operation, the `write` file only when the platform sets `write: true`. The `
 is derived only for such a platform, as `<platform>/write`, and only the executor runs it
 (`docs/design/executor.md`); `/acquire` never names it.
 
-**The golden record.** The both-paths agreement test (`adapters/agreement`) fetches one row
-of the World sample database (`ghusta/postgres-world-db:2.15.1`, `city` where `id = 1`)
-through both operations and holds the facts each yields to byte identity under the rule the
-design note states: the history path takes the connector's record, the live path asks the
+**The golden records.** The both-paths agreement test (`adapters/agreement`) fetches one row
+of the World sample database (`ghusta/postgres-world-db:2.15.1`, `city` where `id = 1`), and
+one row of a table it adds holding 2^53 + 1, through both operations and holds the facts each
+yields to byte identity under the rule the design note states: the history path takes the connector's record, the live path asks the
 database to render the row as JSON and hand it over as text (`SELECT to_jsonb(c)::text …`),
 so that the typing on both sides is Postgres's own and not a driver's. A plain `SELECT`
 through this server renders the `bigint` columns as strings (the Node driver's default for
 64-bit integers), and the same row then differs from the connector's on `id` and
 `population`; a `to_jsonb` column without the cast is parsed into JavaScript numbers, and an
-integer past 2^53 comes back rounded. Both captures are kept as fixtures, as the reasons for
-the rule.
+integer past 2^53 comes back rounded, where the connector and the text-carried rendering both
+keep the spelling. Both captures are kept as fixtures, as the reasons for the rule.
 
 ELv2 (the Elastic License 2.0) forbids providing the connector to third parties as a
 managed service; an operator hosting the engine for others should read it before enabling

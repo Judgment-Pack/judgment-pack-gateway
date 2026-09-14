@@ -252,12 +252,15 @@ jobs:
           go-version: "1.26"
       # ADR-0001 point 4, on a fresh fetch rather than the fixtures alone: a
       # World database is started from the pinned image, and the golden
-      # record is fetched through both adapters as the engine runs them --
-      # the connector image and the MCP server image the shipped binding
-      # pins -- under a role Postgres holds to reading, and the facts each
-      # shape derives are held to each other, to the golden record, and to
-      # the fixtures' (docs/design/both-paths-agreement.md).
-      - name: The golden record derives to the same facts through both shapes
-        run: go test -count=1 -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/
+      # records are fetched through the adapter implementations the
+      # binaries call -- against the connector image and the MCP server
+      # image the shipped binding pins -- under a role Postgres holds to
+      # reading, and the facts each shape derives are held to each other,
+      # to the golden records, and to the fixtures'
+      # (docs/design/both-paths-agreement.md). The test derives its own
+      # deadlines from this timeout, leaving itself time to remove what it
+      # started.
+      - name: The golden records derive to the same facts through both shapes
+        run: go test -count=1 -timeout 25m -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/
         env:
           AGREEMENT_RUNTIME: docker

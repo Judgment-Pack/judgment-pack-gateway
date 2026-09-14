@@ -25,16 +25,20 @@ const (
 	worldImage    = "ghusta/postgres-world-db:2.15.1@sha256:879d0919fdccb39a2508a21fe784d046f7a6f2b51ef4de5ba845eabdb93eb8c3"
 	goldenQuery   = "SELECT to_jsonb(c)::text AS record FROM city c WHERE id = 1"
 	untypedQuery  = "SELECT id, name, country_code, district, population, local_name FROM city WHERE id = 1"
-	textPastQuery = "SELECT to_jsonb(x)::text AS record FROM (SELECT 9007199254740993::bigint AS n) x"
-	jsonPastQuery = "SELECT to_jsonb(x) AS record FROM (SELECT 9007199254740993::bigint AS n) x"
 	goldenKey     = "id"
 	goldenKeyJSON = "1"
 	goldenFacts   = `{"country_code":"AFG","district":"Kabol","id":1,"local_name":null,"name":"Kabul","population":1780000}`
-	// past the canon domain, an integer is carried as text spelled as the
+	// The second golden record: a one-row table holding an integer past the
+	// canon domain, 2^53 + 1. Both shapes carry it as text spelled as the
 	// database spelled it; through a JSON column parsed by the driver it is
-	// rounded to the nearest double first
-	pastFacts    = `{"n":"9007199254740993"}`
-	roundedFacts = `{"record":{"n":"9007199254740992"}}`
+	// rounded to the nearest double first.
+	pastTable     = "CREATE TABLE past (n bigint); INSERT INTO past VALUES (9007199254740993); GRANT SELECT ON past TO reader;"
+	textPastQuery = "SELECT to_jsonb(p)::text AS record FROM past p"
+	jsonPastQuery = "SELECT to_jsonb(p) AS record FROM past p"
+	pastKey       = "n"
+	pastKeyJSON   = "9007199254740993"
+	pastFacts     = `{"n":"9007199254740993"}`
+	roundedFacts  = `{"record":{"n":"9007199254740992"}}`
 )
 
 func fixture(t *testing.T, name string) Envelope {
@@ -84,22 +88,19 @@ func digestOf(image string) string { return image[strings.LastIndex(image, "@")+
 // statementMembers reads a statement as the object the adapter recorded.
 func statementMembers(t *testing.T, e Envelope) map[string]json.RawMessage {
 	t.Helper()
-	if e.Acquisition.Statement == nil {
-		t.Fatal("no statement recorded")
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(*e.Acquisition.Statement), &m); err != nil {
-		t.Fatalf("statement is not an object: %v", err)
+	m, err := Statement(e)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return m
 }
 
 // requireHistoryStatement holds a history envelope to the read it claims: the
 // stream, the namespace, the sync mode and the cursor, and no state resumed.
-func requireHistoryStatement(t *testing.T, e Envelope, syncMode string) {
+func requireHistoryStatement(t *testing.T, e Envelope, stream, syncMode string) {
 	t.Helper()
 	m := statementMembers(t, e)
-	want := map[string]string{"stream": `"city"`, "namespace": `"public"`, "syncMode": `"` + syncMode + `"`, "cursorField": "null", "state": "null"}
+	want := map[string]string{"stream": `"` + stream + `"`, "namespace": `"public"`, "syncMode": `"` + syncMode + `"`, "cursorField": "null", "state": "null"}
 	if len(m) != len(want) {
 		t.Fatalf("history statement has %d members, want %d: %s", len(m), len(want), *e.Acquisition.Statement)
 	}
@@ -138,7 +139,7 @@ func TestTheGoldenRecordDerivesToTheSameFactsThroughBothShapes(t *testing.T) {
 	history, live := fixture(t, "history.json"), fixture(t, "live.json")
 	requireDigest(t, history, historyImage)
 	requireDigest(t, live, liveImage)
-	requireHistoryStatement(t, history, "full_refresh")
+	requireHistoryStatement(t, history, "city", "full_refresh")
 	requireLiveStatement(t, live, goldenQuery)
 	h, err := HistoryFacts(history, goldenKey, json.RawMessage(goldenKeyJSON))
 	if err != nil {
@@ -219,24 +220,31 @@ func requireDriverTypedDivergence(t *testing.T, connector, driver []byte) {
 	}
 }
 
-// The rule hands the rendered row over as text because a JSON column is
-// parsed by the driver as JavaScript numbers: an integer past 2^53 comes
-// back rounded, where the text keeps the database's spelling and the canon
-// carries it, past the domain, as that spelling. Kept so the rule's second
-// reason is pinned to evidence.
-func TestAnIntegerPastTheCanonDomainSurvivesOnlyAsText(t *testing.T) {
-	_, liveImage := binding(t)
-	text, rounded := fixture(t, "live-text-past-2p53.json"), fixture(t, "live-jsonb-past-2p53.json")
+// The second golden record, past the canon domain: the connector carries
+// 2^53 + 1 as text spelled as the database spelled it, and so does the
+// rendered row handed over as text, and the two agree. The rule hands the
+// row over as text because a JSON column is parsed by the driver as
+// JavaScript numbers and the same integer comes back rounded. Kept so the
+// rule's second reason is pinned to evidence.
+func TestAnIntegerPastTheCanonDomainAgreesOnlyAsText(t *testing.T) {
+	historyImage, liveImage := binding(t)
+	history, text, rounded := fixture(t, "history-past-2p53.json"), fixture(t, "live-text-past-2p53.json"), fixture(t, "live-jsonb-past-2p53.json")
+	requireDigest(t, history, historyImage)
 	requireDigest(t, text, liveImage)
 	requireDigest(t, rounded, liveImage)
+	requireHistoryStatement(t, history, "past", "full_refresh")
 	requireLiveStatement(t, text, textPastQuery)
 	requireLiveStatement(t, rounded, jsonPastQuery)
+	h, err := HistoryFacts(history, pastKey, json.RawMessage(pastKeyJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
 	facts, err := LiveFacts(text)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(facts) != pastFacts {
-		t.Fatalf("the text-carried integer derived to %s, not %s", facts, pastFacts)
+	if string(h) != string(facts) || string(facts) != pastFacts {
+		t.Fatalf("the integer past 2^53 derived to\nhistory: %s\nlive:    %s\nwant:    %s", h, facts, pastFacts)
 	}
 	if _, err := LiveFacts(rounded); err == nil || !strings.Contains(err.Error(), "not text") {
 		t.Fatalf("a JSON column derived facts under the rule: %v", err)
@@ -274,6 +282,12 @@ func textOf(t *testing.T, e Envelope) string {
 	return r.Content[0].Text
 }
 
+// quote encodes a string as a JSON string.
+func quote(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func TestDerivationRefusals(t *testing.T) {
 	history := fixture(t, "history.json")
 	if _, err := HistoryFacts(history, goldenKey, json.RawMessage("999999")); err == nil || !strings.Contains(err.Error(), "no record has") {
@@ -296,12 +310,21 @@ func TestDerivationRefusals(t *testing.T) {
 	if _, err := LiveFacts(withText(live, good, false)); err != nil {
 		t.Fatalf("the rebuilt good answer: %v", err)
 	}
+	// what the pinned server may add is read as its type
+	withMessages := strings.Replace(good, `"source_id": "default"`, `"source_id": "default", "messages": ["NOTICE: fine"]`, 1)
+	if _, err := LiveFacts(withText(live, withMessages, false)); err != nil {
+		t.Fatalf("an answer with messages: %v", err)
+	}
 	cases := []struct {
 		name string
 		e    Envelope
 		want string
 	}{
 		{"a well-formed answer marked as an error", withText(live, good, true), "reports an error"},
+		{"messages that are not strings", withText(live, strings.Replace(good, `"source_id": "default"`, `"source_id": "default", "messages": [1]`, 1), false), "messages"},
+		{"a source_id that is not a string", withText(live, strings.Replace(good, `"source_id": "default"`, `"source_id": 1`, 1), false), "source_id"},
+		{"an answer to other SQL than the statement records", withText(live, strings.Replace(good, `"sql": "SELECT`, `"sql": "SELECT /* other */`, 1), false), "other SQL"},
+		{"a count that is not a number", withText(live, strings.Replace(good, `"count": 1`, `"count": "1"`, 1), false), "count of one"},
 		{"success false with Success true", withText(live, strings.Replace(good, `"success": true`, `"success": false, "Success": true`, 1), false), "not DBHub's answer"},
 		{"a duplicate wrapper member", withText(live, strings.Replace(good, `"success": true`, `"success": true, "success": true`, 1), false), "not well-formed"},
 		{"success not true", withText(live, strings.Replace(good, `"success": true`, `"success": false`, 1), false), "not a success"},
@@ -320,17 +343,78 @@ func TestDerivationRefusals(t *testing.T) {
 			t.Errorf("%s: the row derivation did not refuse it", c.name)
 		}
 	}
+	// the tool result around the text, as the signer reads it: an envelope
+	// built by hand is held to the same as one parsed
+	for name, result := range map[string]string{
+		"a duplicate isError, the last one false": `{"content":[{"type":"text","text":` + quote(good) + `}],"isError":true,"isError":false}`,
+		"an isError that is not a boolean":        `{"content":[{"type":"text","text":` + quote(good) + `}],"isError":"false"}`,
+		"a scalar structuredContent":              `{"content":[{"type":"text","text":` + quote(good) + `}],"structuredContent":1}`,
+		"a number past the canon domain":          `{"content":[{"type":"text","text":` + quote(good) + `}],"_meta":{"n":9007199254740993}}`,
+		"a duplicate member under an escape":      `{"content":[{"type":"text","text":` + quote(good) + `}],"isError":true,"isErr\u006fr":false}`,
+	} {
+		e := live
+		e.Result = json.RawMessage(result)
+		if _, err := LiveFacts(e); err == nil {
+			t.Errorf("%s: derived facts", name)
+		}
+		if _, err := LiveRowFacts(e); err == nil {
+			t.Errorf("%s: the row derivation did not refuse it", name)
+		}
+	}
+	// the statement is a JSON text inside a string, which the envelope's
+	// own check does not look into
+	for name, statement := range map[string]string{
+		"a duplicate member":                 `{"arguments":{"sql":"SELECT 1"},"tool":"execute_sql","tool":"execute_sql"}`,
+		"a duplicate member under an escape": `{"arguments":{"sql":"SELECT 1"},"tool":"execute_sql","to\u006fl":"execute_sql"}`,
+		"not an object":                      `["execute_sql"]`,
+	} {
+		e := live
+		e.Acquisition.Statement = &statement
+		if _, err := Statement(e); err == nil {
+			t.Errorf("statement with %s: read", name)
+		}
+		if _, err := LiveFacts(e); err == nil {
+			t.Errorf("statement with %s: derived facts", name)
+		}
+	}
+	// a history result built by hand is held to the same, as a whole: a
+	// duplicate or a number past the domain in another record of the page
+	// than the one asked for refuses the page
+	for name, result := range map[string]string{
+		"a duplicate member in another record":       `[{"id":2,"id":2},{"id":1}]`,
+		"a number past the domain in another record": `[{"id":2,"n":9007199254740993},{"id":1}]`,
+	} {
+		duplicated := history
+		duplicated.Result = json.RawMessage(result)
+		if _, err := HistoryFacts(duplicated, goldenKey, json.RawMessage(goldenKeyJSON)); err == nil {
+			t.Errorf("a history result with %s derived facts", name)
+		}
+	}
 
 	envelope, _ := os.ReadFile(filepath.Join("testdata", "postgres", "live.json"))
+	if _, err := Parse([]byte(strings.Replace(string(envelope), `"version":"1.2.3"`, `"version":""`, 1))); err != nil {
+		t.Errorf("an empty adapter version, which §6 permits: %v", err)
+	}
 	for name, mutate := range map[string]func(string) string{
 		"no adapter digest":               func(s string) string { return strings.Replace(s, `"digest":"sha256:`, `"digest":"`, 1) },
 		"a member the spec does not name": func(s string) string { return strings.Replace(s, `"endpoint":`, `"shape":"mcp","endpoint":`, 1) },
 		"a missing member":                func(s string) string { return regexp.MustCompile(`"peerIdentity":null,`).ReplaceAllString(s, "") },
 		"page not true":                   func(s string) string { return strings.Replace(s, `"result":`, `"page":false,"result":`, 1) },
+		"page true and a result that is not an array": func(s string) string {
+			return strings.Replace(s, `"result":`, `"page":true,"result":`, 1)
+		},
 		"observedAt with a zone offset": func(s string) string {
 			return regexp.MustCompile(`"observedAt":"([^"]*)Z"`).ReplaceAllString(s, `"observedAt":"${1}+00:00"`)
 		},
-		"a duplicate member": func(s string) string { return strings.Replace(s, `"endpoint":`, `"endpoint":"x","endpoint":`, 1) },
+		"observedAt that is no instant": func(s string) string {
+			return regexp.MustCompile(`"observedAt":"[^"]*"`).ReplaceAllString(s, `"observedAt":"2026-99-99T99:99:99Z"`)
+		},
+		"a schema that is not a digest": func(s string) string { return strings.Replace(s, `"schema":null`, `"schema":"x"`, 1) },
+		"an adapter name that is null":  func(s string) string { return strings.Replace(s, `"name":"bytebase/dbhub"`, `"name":null`, 1) },
+		"a duplicate member":            func(s string) string { return strings.Replace(s, `"endpoint":`, `"endpoint":"x","endpoint":`, 1) },
+		"a number past the canon domain, in the result": func(s string) string {
+			return strings.Replace(s, `"result":{"content":`, `"result":{"_meta":{"n":9007199254740993},"content":`, 1)
+		},
 	} {
 		mutated := mutate(string(envelope))
 		if mutated == string(envelope) {
@@ -342,7 +426,7 @@ func TestDerivationRefusals(t *testing.T) {
 	}
 }
 
-// TestBothPathsAgreeOnAFreshFetch fetches the golden record both ways
+// TestBothPathsAgreeOnAFreshFetch fetches the golden records both ways
 // against a World database started in the container runtime AGREEMENT_RUNTIME
 // names (docker or podman), through the adapter implementations as the
 // binaries call them, under a role Postgres holds to reading, and holds the
@@ -352,23 +436,38 @@ func TestDerivationRefusals(t *testing.T) {
 // whose cursor the connector defines, to hold that read to incremental.
 // Without the variable it is skipped: the fixtures above are the offline
 // record, and this is the test that keeps them honest wherever a runtime
-// is at hand (the CI job "both paths agree").
+// is at hand (the CI job "both paths agree"). Every deadline derives from
+// the test's own, with time left to remove what was started.
 func TestBothPathsAgreeOnAFreshFetch(t *testing.T) {
 	runtime := os.Getenv("AGREEMENT_RUNTIME")
 	if runtime == "" {
 		t.Skip("set AGREEMENT_RUNTIME=docker (or podman) to fetch the golden record both ways")
 	}
 	historyImage, liveImage := binding(t)
+	deadline := time.Now().Add(20 * time.Minute)
+	if d, ok := t.Deadline(); ok {
+		deadline = d.Add(-90 * time.Second)
+	}
+	bounded := func(limit time.Duration) (context.Context, context.CancelFunc) {
+		until := time.Now().Add(limit)
+		if until.After(deadline) {
+			until = deadline
+		}
+		return context.WithDeadline(context.Background(), until)
+	}
 	name := fmt.Sprintf("jp-agreement-%d-%d", os.Getpid(), time.Now().UnixNano())
-	run := func(timeout time.Duration, args ...string) ([]byte, error) {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	run := func(limit time.Duration, args ...string) ([]byte, error) {
+		ctx, cancel := bounded(limit)
 		defer cancel()
 		return exec.CommandContext(ctx, runtime, args...).CombinedOutput()
 	}
 	// registered before the database is started, so a container the runtime
-	// created and could not start is removed too, with its anonymous volume
+	// created and could not start is removed too, with its anonymous volume;
+	// removal runs on its own clock, past the test's deadline if need be
 	t.Cleanup(func() {
-		if out, err := run(time.Minute, "rm", "-fv", name); err != nil && !strings.Contains(string(out), "No such container") {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if out, err := exec.CommandContext(ctx, runtime, "rm", "-fv", name).CombinedOutput(); err != nil && !strings.Contains(string(out), "No such container") {
 			t.Errorf("removing the World database container: %v\n%s", err, out)
 		}
 	})
@@ -378,23 +477,27 @@ func TestBothPathsAgreeOnAFreshFetch(t *testing.T) {
 	// The image's first start loads the data through a temporary server
 	// that answers on the socket alone and then restarts; ready is when a
 	// query over TCP sees every city.
-	deadline := time.Now().Add(3 * time.Minute)
+	psql := func(sql string) ([]byte, error) {
+		return run(20*time.Second, "exec", name, "psql", "-h", "127.0.0.1", "-U", "world", "-d", "world-db", "-Atc", sql)
+	}
+	ready := time.Now().Add(3 * time.Minute)
 	for {
-		out, err := run(20*time.Second, "exec", name, "psql", "-h", "127.0.0.1", "-U", "world", "-d", "world-db", "-Atc", "SELECT count(*) FROM city")
+		out, err := psql("SELECT count(*) FROM city")
 		if err == nil && strings.TrimSpace(string(out)) == "4079" {
 			break
 		}
-		if time.Now().After(deadline) {
+		if time.Now().After(ready) || time.Now().After(deadline) {
 			t.Fatalf("the World database did not become ready: %v\n%s", err, out)
 		}
 		time.Sleep(time.Second)
 	}
 	// the reading role the binding's README requires of a live connection
-	// string: SELECT alone is what holds it to reading; the transaction
-	// default is a guard a session can lift, and the test shows both
-	grants := "CREATE ROLE reader LOGIN PASSWORD 'reader123'; GRANT CONNECT ON DATABASE \"world-db\" TO reader; GRANT USAGE ON SCHEMA public TO reader; GRANT SELECT ON ALL TABLES IN SCHEMA public TO reader; ALTER ROLE reader SET default_transaction_read_only = on;"
-	if out, err := run(20*time.Second, "exec", name, "psql", "-h", "127.0.0.1", "-U", "world", "-d", "world-db", "-Atc", grants); err != nil {
-		t.Fatalf("creating the reading role: %v\n%s", err, out)
+	// string -- SELECT alone is what holds it to reading; the transaction
+	// default is a guard a session can lift, and the test shows both -- and
+	// the second golden record's table
+	grants := "CREATE ROLE reader LOGIN PASSWORD 'reader123'; GRANT CONNECT ON DATABASE \"world-db\" TO reader; GRANT USAGE ON SCHEMA public TO reader; GRANT SELECT ON ALL TABLES IN SCHEMA public TO reader; ALTER ROLE reader SET default_transaction_read_only = on; " + pastTable
+	if out, err := psql(grants); err != nil {
+		t.Fatalf("creating the reading role and the past table: %v\n%s", err, out)
 	}
 	ipOut, err := run(20*time.Second, "inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name)
 	if err != nil {
@@ -416,7 +519,7 @@ func TestBothPathsAgreeOnAFreshFetch(t *testing.T) {
 		}
 		return path
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := bounded(15 * time.Minute)
 	defer cancel()
 
 	liveCfg := mcp.Config{Runtime: runtime, Image: liveImage, Args: []string{"--transport", "stdio"}, Credentials: liveCreds, Endpoint: ip, Tools: []string{"execute_sql", "search_objects"}, MaxOutput: 1 << 20}
@@ -438,11 +541,15 @@ func TestBothPathsAgreeOnAFreshFetch(t *testing.T) {
 		requireLiveStatement(t, e, sql)
 		return e
 	}
+	// a refusal is the tool's own error result and nothing else: an
+	// acquisition that also failed to stop its server reports the stop
+	// first, and is not a refusal
 	refused := func(sql, reason string) {
 		t.Helper()
 		req, _ := mcp.ParseRequest(strings.NewReader(fmt.Sprintf(`{"tool":"execute_sql","arguments":{"sql":%q}}`, sql)))
-		if _, err := mcp.Acquire(ctx, liveCfg, req); err == nil || !strings.Contains(err.Error(), reason) {
-			t.Fatalf("%q was not refused with %q: %v", sql, reason, err)
+		_, err := mcp.Acquire(ctx, liveCfg, req)
+		if err == nil || !strings.HasPrefix(err.Error(), "the tool reported an error: ") || !strings.Contains(err.Error(), reason) {
+			t.Fatalf("%q was not refused by the tool with %q: %v", sql, reason, err)
 		}
 	}
 	live := query(goldenQuery)
@@ -458,25 +565,25 @@ func TestBothPathsAgreeOnAFreshFetch(t *testing.T) {
 	refused("BEGIN READ WRITE; UPDATE city SET population = population WHERE id = 1; COMMIT", "permission denied for table city")
 
 	historyCfg := airbyte.Config{Runtime: runtime, Image: historyImage, Credentials: historyCreds("Standard"), Endpoint: ip, MaxRecords: 5000, MaxOutput: 8 << 20}
-	read := func(cfg airbyte.Config, syncMode string) Envelope {
+	read := func(cfg airbyte.Config, stream, syncMode string) Envelope {
 		t.Helper()
-		req, err := airbyte.ParseRequest(strings.NewReader(`{"stream":"city","namespace":"public","limit":5000}`), 5000)
+		req, err := airbyte.ParseRequest(strings.NewReader(fmt.Sprintf(`{"stream":%q,"namespace":"public","limit":5000}`, stream)), 5000)
 		if err != nil {
 			t.Fatal(err)
 		}
 		out, err := airbyte.Acquire(ctx, cfg, req)
 		if err != nil {
-			t.Fatalf("history fetch (%s): %v", syncMode, err)
+			t.Fatalf("history fetch of %s (%s): %v", stream, syncMode, err)
 		}
 		e, err := Parse(out)
 		if err != nil {
 			t.Fatal(err)
 		}
 		requireDigest(t, e, historyImage)
-		requireHistoryStatement(t, e, syncMode)
+		requireHistoryStatement(t, e, stream, syncMode)
 		return e
 	}
-	history := read(historyCfg, "full_refresh")
+	history := read(historyCfg, "city", "full_refresh")
 	h, err := HistoryFacts(history, goldenKey, json.RawMessage(goldenKeyJSON))
 	if err != nil {
 		t.Fatal(err)
@@ -492,17 +599,25 @@ func TestBothPathsAgreeOnAFreshFetch(t *testing.T) {
 		t.Fatalf("the stream's schema digest is %s afresh and %s in the fixture", *history.Acquisition.Schema, *fixtureHistory.Acquisition.Schema)
 	}
 
-	// the counterexamples, afresh: the driver still types a plain SELECT's
-	// bigints as strings, and still rounds a JSON column past 2^53, where
-	// the text keeps the spelling
+	// the second golden record, past 2^53, both ways as text; and the
+	// counterexamples afresh: the driver still types a plain SELECT's
+	// bigints as strings, and still rounds a JSON column past 2^53
+	past := read(historyCfg, "past", "full_refresh")
+	ph, err := HistoryFacts(past, pastKey, json.RawMessage(pastKeyJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pl, err := LiveFacts(query(textPastQuery)); err != nil || string(pl) != string(ph) || string(pl) != pastFacts {
+		t.Fatalf("the integer past 2^53 afresh:\nhistory: %s\nlive:    %s (%v)\nwant:    %s", ph, pl, err, pastFacts)
+	}
+	if fp, _ := HistoryFacts(fixture(t, "history-past-2p53.json"), pastKey, json.RawMessage(pastKeyJSON)); string(fp) != string(ph) {
+		t.Fatalf("the past-2^53 fixture no longer says what a fresh fetch says:\nfixture: %s\nfresh:   %s", fp, ph)
+	}
 	untyped, err := LiveRowFacts(query(untypedQuery))
 	if err != nil {
 		t.Fatal(err)
 	}
 	requireDriverTypedDivergence(t, h, untyped)
-	if facts, err := LiveFacts(query(textPastQuery)); err != nil || string(facts) != pastFacts {
-		t.Fatalf("the text-carried integer past 2^53: %s %v", facts, err)
-	}
 	if row, err := LiveRowFacts(query(jsonPastQuery)); err != nil || string(row) != roundedFacts {
 		t.Fatalf("the JSON column past 2^53 came back as %s (%v), not rounded as %s; the rule's reason has changed, revise the design note", row, err, roundedFacts)
 	}
@@ -511,7 +626,7 @@ func TestBothPathsAgreeOnAFreshFetch(t *testing.T) {
 	// field: the read is incremental, and the record is the same
 	xminCfg := historyCfg
 	xminCfg.Credentials = historyCreds("Xmin")
-	xmin := read(xminCfg, "incremental")
+	xmin := read(xminCfg, "city", "incremental")
 	if x, err := HistoryFacts(xmin, goldenKey, json.RawMessage(goldenKeyJSON)); err != nil || string(x) != goldenFacts {
 		t.Fatalf("the xmin-mode read: %s %v", x, err)
 	}
