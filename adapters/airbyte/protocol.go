@@ -42,8 +42,12 @@ type stream struct {
 	Namespace          *string
 	JSONSchema         json.RawMessage
 	SupportedSyncModes []string
-	DefaultCursorField []string
-	raw                json.RawMessage
+	// DefaultCursorField is the cursor the connector names for the stream;
+	// SourceDefinedCursor says the connector manages the cursor itself, in
+	// which case it may name none.
+	DefaultCursorField  []string
+	SourceDefinedCursor bool
+	raw                 json.RawMessage
 }
 
 type trace struct {
@@ -105,6 +109,20 @@ func (o object) optional(name string) (*string, bool) {
 	return &s, true
 }
 
+// boolean is the member's value when it is a boolean, false when absent,
+// and not ok otherwise.
+func (o object) boolean(name string) (bool, bool) {
+	raw, ok := o[name]
+	if !ok {
+		return false, true
+	}
+	var b bool
+	if string(raw) == "null" || json.Unmarshal(raw, &b) != nil {
+		return false, false
+	}
+	return b, true
+}
+
 // strings is the member's value when it is an array of strings, nil when
 // absent, and not ok otherwise.
 func (o object) strings(name string) ([]string, bool) {
@@ -137,6 +155,9 @@ func parseStream(raw json.RawMessage) (stream, bool) {
 		return stream{}, false
 	}
 	if s.DefaultCursorField, ok = o.strings("default_cursor_field"); !ok {
+		return stream{}, false
+	}
+	if s.SourceDefinedCursor, ok = o.boolean("source_defined_cursor"); !ok {
 		return stream{}, false
 	}
 	return s, true

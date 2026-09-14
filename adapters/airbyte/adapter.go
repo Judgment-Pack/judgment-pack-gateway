@@ -391,17 +391,20 @@ func describeNamespace(namespace *string) string {
 	return *namespace
 }
 
-// configuredCatalog is the ConfiguredAirbyteCatalog for one stream:
-// incremental when the connector supports it AND names a default cursor
-// to bookmark by; otherwise full refresh. A connector that offers
-// incremental sync for a stream with no default cursor (a table without a
-// timestamp or serial column, say) expects the operator to name one, and
-// configured incremental without a cursor it refuses the read outright --
-// found by the both-paths golden test on the World database's city table.
+// configuredCatalog writes the one-stream configured catalog the connector
+// reads. The stream is configured incremental when the connector offers it
+// and a cursor exists to bookmark by: one the connector names as the
+// default, or one the connector manages itself (source_defined_cursor, as
+// source-postgres does in xmin mode, naming no field). A connector that
+// offers incremental sync for a stream with neither expects the operator to
+// name a cursor, and configured incremental without one refuses the read
+// outright; such a stream is read full refresh, which the connector still
+// checkpoints when it can (found by the both-paths golden test on the World
+// database's city table, docs/design/both-paths-agreement.md).
 func configuredCatalog(s stream) (file []byte, mode string, cursor []string) {
 	mode = "full_refresh"
 	for _, m := range s.SupportedSyncModes {
-		if m == "incremental" && len(s.DefaultCursorField) > 0 {
+		if m == "incremental" && (s.SourceDefinedCursor || len(s.DefaultCursorField) > 0) {
 			mode = "incremental"
 		}
 	}
@@ -410,7 +413,7 @@ func configuredCatalog(s stream) (file []byte, mode string, cursor []string) {
 		"sync_mode":             mode,
 		"destination_sync_mode": "append",
 	}
-	if mode == "incremental" {
+	if mode == "incremental" && len(s.DefaultCursorField) > 0 {
 		cursor = s.DefaultCursorField
 		entry["cursor_field"] = cursor
 	}

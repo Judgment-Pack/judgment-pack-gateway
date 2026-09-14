@@ -36,11 +36,15 @@ credentials files are `{"DSN": "postgresql://…"}`, an object of strings. **Wha
 `live` operation to reading is the role the operator names in that connection string**, not
 the server: this server's own read-only switch is a `[[tools]]` entry in a `dbhub.toml` it
 reads from a path, and a binding hands a server an environment and arguments, never a file.
-The `live` role must hold `SELECT` alone and carry `default_transaction_read_only = on` (set
-on the role with `ALTER ROLE … SET`, which a connection string cannot override); the
-both-paths test's live fixtures were captured through such a role, its fresh fetch runs
-both operations through one, and an `UPDATE` through it is refused by Postgres ("cannot execute UPDATE in a read-only transaction"), which the
-server reports as an error result and the adapter as a failed acquisition. The `write` file
+The `live` role must hold `SELECT` alone — that is what holds it to reading — and should
+carry `default_transaction_read_only = on` (set on the role with `ALTER ROLE … SET`) as a
+guard on top, one a session may lift with `BEGIN READ WRITE` and a connection-string
+`options=` setting cannot set at all, since the driver does not carry it. The both-paths
+test's live fixtures were captured through such a role, its fresh fetch runs both operations
+through one, and an `UPDATE` through it is refused by Postgres — "cannot execute UPDATE in a
+read-only transaction" under the default, "permission denied for table city" once the session
+lifts it — which the server reports as an error result and the adapter as a failed
+acquisition. The `write` file
 names a role that may write. The connector's `history` file is the configuration its `spec`
 describes (`host`, `port` as a number, `database`, `username`, `password`, `ssl_mode` as an
 object, `replication_method` as an object, `schemas` as a list). A platform names one file
@@ -52,11 +56,13 @@ is derived only for such a platform, as `<platform>/write`, and only the executo
 of the World sample database (`ghusta/postgres-world-db:2.15.1`, `city` where `id = 1`)
 through both operations and holds the facts each yields to byte identity under the rule the
 design note states: the history path takes the connector's record, the live path asks the
-database to render the row as JSON (`SELECT to_jsonb(c) …`), so that the typing on both sides
-is Postgres's own and not a driver's. A plain `SELECT *` through this server renders the
-`bigint` columns as strings (the Node driver's default for 64-bit integers), and the same
-row then differs from the connector's on `id` and `population`; that capture is kept as a
-fixture too, as the reason for the rule.
+database to render the row as JSON and hand it over as text (`SELECT to_jsonb(c)::text …`),
+so that the typing on both sides is Postgres's own and not a driver's. A plain `SELECT`
+through this server renders the `bigint` columns as strings (the Node driver's default for
+64-bit integers), and the same row then differs from the connector's on `id` and
+`population`; a `to_jsonb` column without the cast is parsed into JavaScript numbers, and an
+integer past 2^53 comes back rounded. Both captures are kept as fixtures, as the reasons for
+the rule.
 
 ELv2 (the Elastic License 2.0) forbids providing the connector to third parties as a
 managed service; an operator hosting the engine for others should read it before enabling

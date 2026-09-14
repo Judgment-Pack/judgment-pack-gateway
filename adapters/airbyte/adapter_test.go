@@ -1089,26 +1089,35 @@ func TestAValueUnderARepeatedNestedNameIsASecretToo(t *testing.T) {
 	}
 }
 
-// A stream is configured incremental only when the connector names a default
-// cursor to bookmark by; a connector that offers incremental sync for a stream
-// with no default cursor expects the operator to name one, and configured
-// incremental without one refuses the read outright. Found by the both-paths
-// golden test on the World database's city table (docs/design/both-paths-agreement.md).
+// A stream is configured incremental when the connector offers it and a
+// cursor exists to bookmark by: a default the connector names, or one the
+// connector manages itself (source_defined_cursor, as source-postgres in
+// xmin mode: source_defined_cursor true, default_cursor_field empty). A
+// connector that offers incremental sync for a stream with neither expects
+// the operator to name a cursor, and configured incremental without one
+// refuses the read outright; such a stream is read full refresh. Found by
+// the both-paths golden test on the World database's city table
+// (docs/design/both-paths-agreement.md).
 func TestConfiguredCatalogNeedsACursorForIncremental(t *testing.T) {
 	cases := []struct {
-		name   string
-		modes  []string
-		cursor []string
-		mode   string
+		name          string
+		modes         []string
+		cursor        []string
+		sourceDefined bool
+		mode          string
+		cursorField   string // the serialized cursor_field member, "" when absent
 	}{
-		{"incremental with a default cursor", []string{"full_refresh", "incremental"}, []string{"updated_at"}, "incremental"},
-		{"incremental offered, no default cursor", []string{"full_refresh", "incremental"}, nil, "full_refresh"},
-		{"incremental offered, empty cursor list", []string{"full_refresh", "incremental"}, []string{}, "full_refresh"},
-		{"full refresh only, a cursor named", []string{"full_refresh"}, []string{"updated_at"}, "full_refresh"},
+		{"incremental with a default cursor", []string{"full_refresh", "incremental"}, []string{"updated_at"}, false, "incremental", `["updated_at"]`},
+		{"incremental, source-defined cursor, no default", []string{"full_refresh", "incremental"}, []string{}, true, "incremental", ""},
+		{"incremental, source-defined cursor and a default", []string{"full_refresh", "incremental"}, []string{"_ab_cdc_lsn"}, true, "incremental", `["_ab_cdc_lsn"]`},
+		{"incremental offered, no default cursor", []string{"full_refresh", "incremental"}, nil, false, "full_refresh", ""},
+		{"incremental offered, empty cursor list", []string{"full_refresh", "incremental"}, []string{}, false, "full_refresh", ""},
+		{"full refresh only, a cursor named", []string{"full_refresh"}, []string{"updated_at"}, false, "full_refresh", ""},
+		{"full refresh only, source-defined cursor", []string{"full_refresh"}, nil, true, "full_refresh", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s := stream{Name: "city", SupportedSyncModes: c.modes, DefaultCursorField: c.cursor, raw: json.RawMessage(`{"name":"city"}`)}
+			s := stream{Name: "city", SupportedSyncModes: c.modes, DefaultCursorField: c.cursor, SourceDefinedCursor: c.sourceDefined, raw: json.RawMessage(`{"name":"city"}`)}
 			file, mode, cursor := configuredCatalog(s)
 			if mode != c.mode {
 				t.Fatalf("mode %q, want %q", mode, c.mode)
@@ -1119,13 +1128,36 @@ func TestConfiguredCatalogNeedsACursorForIncremental(t *testing.T) {
 			if err := json.Unmarshal(file, &doc); err != nil || len(doc.Streams) != 1 {
 				t.Fatalf("configured catalog: %v %s", err, file)
 			}
-			_, hasCursor := doc.Streams[0]["cursor_field"]
-			if mode == "incremental" && (!hasCursor || len(cursor) == 0) {
-				t.Fatalf("incremental without a cursor field: %s", file)
+			if got := string(doc.Streams[0]["sync_mode"]); got != `"`+c.mode+`"` {
+				t.Fatalf("serialized sync_mode %s, want %q", got, c.mode)
 			}
-			if mode == "full_refresh" && (hasCursor || cursor != nil) {
-				t.Fatalf("full refresh carries a cursor: %s %v", file, cursor)
+			if got := string(doc.Streams[0]["cursor_field"]); got != c.cursorField {
+				t.Fatalf("serialized cursor_field %q, want %q", got, c.cursorField)
+			}
+			if want := c.cursorField != ""; (len(cursor) > 0) != want {
+				t.Fatalf("cursor %v recorded, serialized %q", cursor, c.cursorField)
 			}
 		})
+	}
+}
+
+// The parser reads the flag as the protocol types it: absent is false, a
+// boolean is itself, anything else is not a stream.
+func TestParseStreamReadsTheSourceDefinedCursorFlag(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		ok   bool
+		want bool
+	}{
+		{`{"name":"city","supported_sync_modes":["full_refresh","incremental"],"default_cursor_field":[]}`, true, false},
+		{`{"name":"city","supported_sync_modes":["full_refresh","incremental"],"default_cursor_field":[],"source_defined_cursor":true}`, true, true},
+		{`{"name":"city","supported_sync_modes":["full_refresh"],"source_defined_cursor":false}`, true, false},
+		{`{"name":"city","supported_sync_modes":["full_refresh"],"source_defined_cursor":"true"}`, false, false},
+		{`{"name":"city","supported_sync_modes":["full_refresh"],"source_defined_cursor":null}`, false, false},
+	} {
+		s, ok := parseStream(json.RawMessage(c.raw))
+		if ok != c.ok || (ok && s.SourceDefinedCursor != c.want) {
+			t.Fatalf("%s: ok=%v source-defined=%v, want ok=%v source-defined=%v", c.raw, ok, s.SourceDefinedCursor, c.ok, c.want)
+		}
 	}
 }
