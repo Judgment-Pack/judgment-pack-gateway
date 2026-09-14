@@ -65,9 +65,10 @@ that what they name exists and compares nothing inside it, which is §4's standa
    directory this one made — two engines on one store, which the design does not serve.
 3. The platform is unknown, or its binding declares no `write` operation, or the
    configuration does not set `write: true` for it → refused. `write: true` says an executor
-   may be pointed at the platform; it authorizes no particular write. The request's `decision`
-   and `cites` members are read at their own steps below — absent or unparseable is a refusal
-   at that step — so a request with several faults is answered by the earliest step it fell at.
+   may be pointed at the platform; it authorizes no particular write. Every member of the
+   request is read at its own step — `session` at step 2, `platform` here, `tool` at step 4,
+   `decision` and `cites` at theirs — absent, unparseable or of the wrong type is a refusal at
+   that step — so a request with several faults is answered by the earliest step it fell at.
 4. The tool is not one the `write` binding names → refused. The executor is spawned with
    `--tools=<that tool>` and nothing else — the binding's list narrowed to the one requested —
    so a server offering more cannot be asked for more. The arguments must be a JSON object:
@@ -143,7 +144,9 @@ nothing.
 ## How it is held
 
 - The refusal ladder above, each step with a test that reaches it and a mutation that
-  removes it.
+  removes it; the two interleavings the session step cannot see — a session another process
+  puts in the store while a read into it is admitted and running, and a seal landing between
+  the evidence checks and admission — each held to a session refusal with nothing run.
 - An end-to-end test: an acquisition, a decision record written beside it citing the
   receipt, an `/act` that cites both, then `gateway verify` over the store, the registry and
   the decision-record directory reporting every receipt `ok` — the vector

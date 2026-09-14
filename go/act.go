@@ -30,12 +30,19 @@ type actRefusal struct {
 func (r actRefusal) Error() string { return r.step + ": " + r.reason }
 
 // act performs one write for an authenticated requester, or refuses it.
-func (g *gatewayService) act(sessionID, platform, tool string, argumentsRaw, decisionRaw, citesRaw json.RawMessage, who *caller) (map[string]any, error) {
+func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, decisionRaw, citesRaw json.RawMessage, who *caller) (map[string]any, error) {
 	if who == nil {
 		return nil, actRefusal{"requester", errNoRequester.Error() + "; this engine has no identity configured"}
 	}
 	if g.receiptVersion != receiptVersion3 {
 		return nil, actRefusal{"receipt-version", "an action receipt is a version 3 receipt; this engine mints version " + g.receiptVersion}
+	}
+	// Each member is read at its own step, so a request with several
+	// faults -- a member of the wrong type among them -- is answered by
+	// the earliest step it fell at.
+	sessionID, err := parseString("session", sessionRaw)
+	if err != nil {
+		return nil, actRefusal{"session", err.Error()}
 	}
 	if err := requireSession(sessionID); err != nil {
 		return nil, actRefusal{"session", err.Error()}
@@ -43,10 +50,18 @@ func (g *gatewayService) act(sessionID, platform, tool string, argumentsRaw, dec
 	if reason := g.sessionOpen(sessionID); reason != "" {
 		return nil, actRefusal{"session", reason}
 	}
+	platform, err := parseString("platform", platformRaw)
+	if err != nil {
+		return nil, actRefusal{"platform", err.Error()}
+	}
 	source := platform + "/write"
 	spec, known := g.sources[source]
 	if !known {
 		return nil, actRefusal{"platform", fmt.Sprintf("platform %s allows no writes: a write source is derived only for a platform whose configuration sets write: true and whose binding states a write operation", platform)}
+	}
+	tool, err := parseString("tool", toolRaw)
+	if err != nil {
+		return nil, actRefusal{"tool", err.Error()}
 	}
 	if !contains(spec.tools, tool) {
 		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", tool)}
@@ -356,6 +371,20 @@ func parseMember(name string, raw json.RawMessage) (value, error) {
 		return nil, fmt.Errorf("%s: %v", name, err)
 	}
 	return parsed, nil
+}
+
+// parseString is a member of the request that must be a JSON string, read
+// at the step that uses it.
+func parseString(name string, raw json.RawMessage) (string, error) {
+	parsed, err := parseMember(name, raw)
+	if err != nil {
+		return "", err
+	}
+	s, ok := parsed.(vString)
+	if !ok {
+		return "", fmt.Errorf("%s must be a JSON string", name)
+	}
+	return string(s), nil
 }
 
 // identityObject is a token identity as a receipt names it.

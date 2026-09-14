@@ -955,10 +955,13 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		limitBody(w, r)
+		// Every member is read at its own step of the ladder (act), the
+		// string-valued ones included: a member of the wrong type is a
+		// refusal at that step, not a decoding error ahead of the session's.
 		var body struct {
-			Session   string          `json:"session"`
-			Platform  string          `json:"platform"`
-			Tool      string          `json:"tool"`
+			Session   json.RawMessage `json:"session"`
+			Platform  json.RawMessage `json:"platform"`
+			Tool      json.RawMessage `json:"tool"`
 			Arguments json.RawMessage `json:"arguments"`
 			Decision  json.RawMessage `json:"decision"`
 			Cites     json.RawMessage `json:"cites"`

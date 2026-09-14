@@ -225,6 +225,24 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if code, body := authed(t, server, "/act", `{"session":"act-1","platform":"docs","tool":"x","arguments":{"n":1.5},"decision":{},"cites":[]}`, token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
 		t.Fatalf("a request faulty at every step is answered by the earliest: %d %v", code, body)
 	}
+	// A member of the wrong type is a fault at that member's own step, not
+	// a decoding error ahead of the ladder: on the sealed session a tool or
+	// a platform that is not a string is still answered as the session.
+	for _, tc := range []struct{ name, body, step, reason string }{
+		{"a tool that is not a string, on a sealed session", `{"session":"act-1","platform":"tickets","tool":7,"arguments":{},"decision":{},"cites":[]}`, "session", "sealed"},
+		{"a platform that is not a string, on a sealed session", `{"session":"act-1","platform":7,"tool":"update_ticket","arguments":{},"decision":{},"cites":[]}`, "session", "sealed"},
+		{"a session that is not a string", `{"session":7,"platform":"tickets","tool":"update_ticket","arguments":{},"decision":{},"cites":[]}`, "session", "session must be a JSON string"},
+		{"a session absent", `{"platform":"tickets","tool":"update_ticket","arguments":{},"decision":{},"cites":[]}`, "session", "session is required"},
+		{"a tool that is not a string, on an unknown platform", `{"session":"act-4","platform":"docs","tool":7,"arguments":{},"decision":{},"cites":[]}`, "platform", "allows no writes"},
+		{"a platform that is not a string, on an open session", `{"session":"act-4","platform":7,"tool":"update_ticket","arguments":{},"decision":{},"cites":[]}`, "platform", "platform must be a JSON string"},
+		{"a tool that is not a string, on a writable platform", `{"session":"act-4","platform":"tickets","tool":7,"arguments":{"n":1.5},"decision":{},"cites":[]}`, "tool", "tool must be a JSON string"},
+		{"a tool absent", `{"session":"act-4","platform":"tickets","arguments":{"n":1.5},"decision":{},"cites":[]}`, "tool", "tool is required"},
+	} {
+		code, body := authed(t, server, "/act", tc.body, token)
+		if code != http.StatusBadRequest || body["refusedAt"] != tc.step || !strings.Contains(fmt.Sprint(body["error"]), tc.reason) {
+			t.Fatalf("%s: want the %s step (%s), got %d %v", tc.name, tc.step, tc.reason, code, body)
+		}
+	}
 	if service.started.Load() != started+1 {
 		t.Fatal("an executor ran for a request refused at the session step")
 	}
@@ -412,6 +430,62 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"arguments":{"id":"T-1"}`, `"arguments":["T-1"]`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "arguments" {
 		t.Fatalf("array arguments: %d %v", code, body)
 	}
+	// A session another process puts in the store while a read into it is
+	// admitted and running -- absent at admission, present at the stamp.
+	// The stamp finds it there: it fails on a receipt already in place, or
+	// lands beside an empty directory; either way this process did not make
+	// the directory, so the session is not an action's, and an action into
+	// it is refused at the session step with nothing run. Ownership taken
+	// at admission would have called it this process's own.
+	for _, foreign := range []struct {
+		session string
+		receipt bool
+	}{{"act-10", true}, {"act-11", false}} {
+		dir := t.TempDir()
+		done := make(chan error, 1)
+		go func() { _, err := service.acquire(foreign.session, "screening", barrierArg(dir), nil); done <- err }()
+		waitForFile(t, filepath.Join(dir, startedFile))
+		sessionDir := filepath.Join(service.storeRoot, "receipts", foreign.session)
+		if err := os.Mkdir(sessionDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if foreign.receipt {
+			if err := os.WriteFile(filepath.Join(sessionDir, "0.json"), []byte("{}"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		openBarrier(t, filepath.Join(dir, releaseFile))
+		if err := <-done; (err != nil) != foreign.receipt {
+			t.Fatalf("a read into %s with a foreign directory (receipt in it: %v) finished with %v", foreign.session, foreign.receipt, err)
+		}
+		before := service.started.Load()
+		if code, body := authed(t, server, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"`+foreign.session+`"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
+			t.Fatalf("an action into %s, a session another process put there during a read: %d %v", foreign.session, code, body)
+		}
+		if service.started.Load() != before {
+			t.Fatalf("an executor ran into %s, a session another process put there during a read", foreign.session)
+		}
+	}
+	// A seal landing between the evidence checks and admission -- the
+	// session open at the session step, sealed by the time the action is
+	// admitted -- is caught by admission's own check under the lock, and
+	// nothing runs.
+	if code, body := authed(t, server, "/acquire", `{"session":"act-12","source":"screening","arguments":{"q":"a"}}`, token); code != http.StatusOK {
+		t.Fatalf("acquire into act-12: %d %v", code, body)
+	}
+	service.beforeAdmit = func() {
+		if _, err := service.sealSession("act-12"); err != nil {
+			t.Error(err)
+		}
+	}
+	before := service.started.Load()
+	if code, body := authed(t, server, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-12"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "sealed") {
+		t.Fatalf("a session sealed between the evidence checks and admission: %d %v", code, body)
+	}
+	service.beforeAdmit = nil
+	if service.started.Load() != before {
+		t.Fatal("an executor ran into a session sealed before its admission")
+	}
 }
 
 // With no identity configured nobody is a requester, and the refusal comes
@@ -432,7 +506,7 @@ func TestActWithoutAnIdentityReadsNoBody(t *testing.T) {
 	if reader.reads.Load() != 0 {
 		t.Fatalf("the body was read %d times before the requester was refused", reader.reads.Load())
 	}
-	if _, err := service.act("s", "tickets", "update_ticket", json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`[]`), nil); err == nil || !strings.Contains(err.Error(), "requester") {
+	if _, err := service.act(json.RawMessage(`"s"`), json.RawMessage(`"tickets"`), json.RawMessage(`"update_ticket"`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`[]`), nil); err == nil || !strings.Contains(err.Error(), "requester") {
 		t.Fatalf("act refuses a nil requester on its own: %v", err)
 	}
 }
