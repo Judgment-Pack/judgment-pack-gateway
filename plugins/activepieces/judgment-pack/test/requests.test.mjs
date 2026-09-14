@@ -183,25 +183,67 @@ test('the engine’s answer comes back as the JSON it is, and the connection is 
 	}
 });
 
-test('an answer that switches protocols, which Node closes on its own, still settles the call', async () => {
+// rawServer answers every request with the bytes given and keeps the socket
+// open until the test closes it: a peer that ignores what the client asked.
+async function rawServer(answer) {
 	const net = await import('node:net');
-	// not an http server: Node's client closes the request on a 101 without
-	// reaching a response or error handler
+	const sockets = new Set();
 	const server = net.createServer((socket) => {
-		socket.on('data', () => {
-			socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: nothing\r\nConnection: Upgrade\r\n\r\n');
-		});
+		sockets.add(socket);
+		socket.on('close', () => sockets.delete(socket));
+		socket.on('data', () => socket.write(answer));
 	});
 	const port = await listening(server);
+	return {
+		port,
+		sockets,
+		async close() {
+			for (const socket of sockets) {
+				socket.destroy();
+			}
+			await closed(server);
+		},
+	};
+}
+
+// watched fails a promise that has not settled within the given time, so a
+// regression hangs no test
+function watched(promise, ms) {
+	let timer;
+	const watchdog = new Promise((_, reject) => {
+		timer = setTimeout(() => reject(new Error(`the call did not settle within ${ms} ms`)), ms);
+	});
+	return Promise.race([promise, watchdog]).finally(() => clearTimeout(timer));
+}
+
+test('an answer that switches protocols, which Node closes on its own, still settles the call', async () => {
+	// not an http server: Node's client closes the request on a 101 without
+	// reaching a response or error handler
+	const server = await rawServer('HTTP/1.1 101 Switching Protocols\r\nUpgrade: nothing\r\nConnection: Upgrade\r\n\r\n');
 	try {
-		const started = Date.now();
 		await assert.rejects(
-			send(sealRequest({ engine_url: `http://127.0.0.1:${port}` }, { session: 's1' }), 200),
+			watched(send(sealRequest({ engine_url: `http://127.0.0.1:${server.port}` }, { session: 's1' }), 200), 5000),
 			/closed the connection without answering|did not answer within 200 ms/,
 		);
-		assert.ok(Date.now() - started < 5000, 'settled without waiting on anything but the deadline');
 	} finally {
-		await closed(server);
+		await server.close();
+	}
+});
+
+test('an engine that ignores the request to close the connection is closed on anyway', async () => {
+	const body = '{"sealed": true}';
+	const server = await rawServer(`HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: ${body.length}\r\nConnection: keep-alive\r\n\r\n${body}`);
+	try {
+		const answer = await watched(send(sealRequest({ engine_url: `http://127.0.0.1:${server.port}` }, { session: 's1' })), 5000);
+		assert.deepEqual(answer, { sealed: true });
+		// the client's side goes away, so the server's socket sees the end
+		const deadline = Date.now() + 2000;
+		while (server.sockets.size > 0 && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+		}
+		assert.equal(server.sockets.size, 0, 'the connection stayed open after the answer');
+	} finally {
+		await server.close();
 	}
 });
 

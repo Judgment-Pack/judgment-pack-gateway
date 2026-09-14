@@ -29,8 +29,11 @@ export function sendTo(
 	const target = new URL(url);
 	const options: https.RequestOptions = {
 		method: init.method,
-		// one connection per exchange, closed with the answer: nothing is
-		// pooled for a later call to find, and nothing outlives the answer
+		// one connection per exchange, closed with the answer, and no agent
+		// pool to return it to -- an engine that ignored the header would
+		// otherwise leave a socket in the default agent for a later call to
+		// find; nothing outlives the answer
+		agent: false,
 		headers: { ...init.headers, Connection: 'close' },
 		// explicit on every connection, so the process's default -- which
 		// another piece's transport may have turned off -- never decides
