@@ -192,7 +192,7 @@ HOMES = {"home/engine": 65532}
 HOMES.update({"home/engine-%d" % n: 65600 + n for n in range(1, 9)})
 USERS = {"engine": 65532, **{"engine-%d" % n: 65600 + n for n in range(1, 9)}}
 GATEWAY = "usr/local/bin/gateway"
-ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp")
+ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp", "usr/local/bin/adapter-http")
 RUNTIME = "usr/local/bin/jpack"
 RUNTIME_DOCUMENTS = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES", "usr/share/engine/runtime/CONFORMANCE.md")
 

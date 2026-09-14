@@ -242,8 +242,9 @@ with for a server that catches its own failure and answers it as ordinary text, 
 false; the result is discarded either way. A restriction of streams for the history operation is not yet
 applied at acquisition, so a binding may not declare one: a restriction accepted and not
 applied would read as applied. `history` is served by the `airbyte` shape and `live`
-and `write` by the `mcp` shape; the `http` shape is not shipped by this release, and a binding
-naming it is refused. The file is `catalog/<platform>.json`, it must name that platform, and
+and `write` by the `mcp` shape; the `http` shape is served by `adapter-http` as a standalone
+`--source` ([adapters/README.md](../../adapters/README.md)) and not yet by any binding operation,
+so a binding naming it is refused. The file is `catalog/<platform>.json`, it must name that platform, and
 the configuration pins it as `<platform>@sha256:<digest of the file's bytes>`; a file that
 does not digest to its pin is refused, since the catalog changed under the configuration. A
 binding with an unpinned image is refused when the engine starts. A binding without a

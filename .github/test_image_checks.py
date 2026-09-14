@@ -66,6 +66,7 @@ def good(**over):
     spec["usr/local/bin/gateway"] = dict(kind="file", data=b"g", mode=0o700, uid=65532, gid=65532, caps=CAPS)
     spec["usr/local/bin/adapter-airbyte"] = dict(kind="file", data=b"a", mode=0o755)
     spec["usr/local/bin/adapter-mcp"] = dict(kind="file", data=b"m", mode=0o755)
+    spec["usr/local/bin/adapter-http"] = dict(kind="file", data=b"h", mode=0o755)
     spec["usr/local/bin/jpack"] = dict(kind="file", data=RUNTIME, mode=0o755)
     for document in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "CONFORMANCE.md"):
         spec["usr/share/engine/runtime/" + document] = dict(kind="file", data=b"n")

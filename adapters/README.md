@@ -268,6 +268,101 @@ ends it that is the start of a credential is cut off — after the whole ones we
 credential whose end repeats its start is whole before it is a prefix; a duplicate member name in a message,
 which the diagnostic names, is written as it is rather than quoted with an escape.
 
+## adapter-http
+
+One bounded request over TLS to an endpoint the operator fixed — a search provider's JSON
+API, a reader service that renders a page or a PDF as text, any resource a URL names — with
+a credential this adapter holds: the answer as the result, and the acquisition as the adapter
+recorded it. It is the generic shape the envelope contract names, for a platform that has a
+plain HTTP API and neither a connector image nor an MCP server of its own. What the receipt
+then records is byte lineage from the endpoint's answer — which endpoint, over which TLS
+identity, answered what, when — and nothing about whether the answer is true, current, or
+the page its author meant.
+
+```
+gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-version 3 \
+  --source search='adapter-http --endpoint https://api.tavily.com --paths /search --credentials /run/secrets/tavily --bearer TAVILY_API_KEY' \
+  --source-shape search=http \
+  --source read='adapter-http --endpoint https://r.jina.ai --paths / --header Accept=application/json --max-output 8388608' \
+  --source-shape read=http \
+  --source-max-output 8388608
+```
+
+- `--endpoint` is the base URL every request is sent under: `https`, or `http` on a loopback
+  host only, since a credential sent in the clear is a credential given away. It carries no
+  user, no query and no fragment; a base path is allowed and a request's path follows it.
+- `--paths` names the only paths a request may name, each exactly as it will be sent under
+  the endpoint; a request outside them is refused before any connection is made. `--methods`
+  names the methods, `GET` and `POST`, and is `POST` alone by default.
+- `--credentials` is a JSON object of strings, a file the adapter's identity can read and the
+  signer's cannot ([SECURITY.md](../SECURITY.md)); it is at most 1 MiB and held to exact member
+  names with a duplicate refused, so every value in it is one the redactor knows. Exactly one
+  member is sent: `--bearer MEMBER` sends it as `Authorization: Bearer`, and
+  `--credential-header NAME=MEMBER` sends it under the header NAME, for an endpoint that takes
+  its key under a name of its own. A refusal names no member, since a member's name may be
+  another member's value. An endpoint that needs no credential is given none of the three.
+- `--header NAME=VALUE` is sent on every request as written and may be given more than once;
+  an `Accept`, a format selector. `Authorization`, `Proxy-Authorization` and `Cookie` are
+  refused here: a credential's place is the credentials file, not a command line a process
+  listing shows. The gateway splits a source on whitespace and parses no quotes, so a value
+  with a space in it cannot be given on a `--source` line.
+- `--ca-file` is a PEM file whose certificates are the only roots trusted for the endpoint,
+  instead of the system's — for a private endpoint, and for a test.
+- `--check` holds the configuration and the credentials to their rules, then reaches the
+  endpoint: the TLS handshake alone, which establishes the peer's identity and nothing about
+  the credential, or with `--check-path /p` one `GET` of that path with the credential, which
+  must answer 2xx. It reports on stdout — `{"check": {"status": "succeeded", "adapter",
+  "endpoint", "peerIdentity", "probe"?: {"path", "status"}}}` — reading no stdin; a check that
+  did not succeed writes `{"check": {"status": "failed", "message"}}` beside its exit status,
+  so a caller reads one shape either way. Nothing is minted from it.
+- A redirect is an answer from another resource than the one the operator fixed, and
+  following one would carry the credential there: it is reported and never followed. An
+  answer outside 2xx is a read that did not happen — nothing is minted, and the first bytes of
+  the answer are the diagnostic, redacted, since an endpoint may quote the credential it
+  refused. `--timeout` (twenty seconds) bounds the request under the gateway's thirty;
+  `--max-output` bounds the answer and the envelope, and an answer past it is refused, never
+  cut. Keep it at or below the gateway's `--source-max-output`: a reader service that renders
+  a long PDF answers megabytes, and both bounds are the operator's to raise together.
+
+The request, as canonical arguments on stdin:
+
+```json
+{"path": "/search", "method": "POST", "query": {"lang": "en"}, "body": {"query": "federal skilled worker eligibility", "max_results": 5}}
+```
+
+`path` is required and names a resource under the endpoint — it begins with `/`, and carries
+no query, no fragment, no dot segment and no empty segment; `method` is `POST` when absent;
+`query` is an object of strings, encoded onto the URL with its names sorted; `body`, any JSON
+value, is sent as `application/json` and refused beside a `GET`. The request is read by its
+members' exact names with a duplicate refused and held to the canonical domain first, so the
+body sent and the statement committed to are one spelling whoever wrote the request.
+
+What the envelope carries, and so what the receipt records:
+
+| Member | From |
+|---|---|
+| `adapter` | this adapter: its name, its version, and the digest of its own executable, which is what pins it |
+| `endpoint` | the URL the request was sent to, without its query |
+| `statement` | the request — method, path, query and body — as sent, which the gateway commits to under a salt: a search query or a page URL is in the receipt as a commitment, and in the clear only where the answer repeats it |
+| `snapshot` | the answer's `ETag`, or its `Last-Modified` when there is no `ETag`, or `null`: the endpoint's claim about currency, which for a reader service is the service's and not the page's |
+| `peerIdentity` | `tls:sha256:` the digest of the peer's leaf certificate; `null` over plaintext loopback |
+| `schema` | `null`: an HTTP answer declares none |
+| `upstreamToken` | `null`: no endpoint this adapter speaks to signs its answers |
+| `observedAt` | when the answer had been read whole |
+| `result` | `{status, headers, bodyEncoding, body}`: the status; of the headers, `cache-control`, `content-length`, `content-type`, `date`, `etag`, `expires` and `last-modified` when present, by their lowercase names, and never a cookie; and the body — an answer the endpoint sent as JSON (`application/json`, `text/json`, or a `+json` type) as a value carried into the canon domain, member names sorted and a number with a fraction or an exponent carried as a string holding its literal, so `"score": 0.98` reads back as `"score": "0.98"`; any other answer as `base64`, byte for byte — so a PDF is carried whole and a consumer re-digests the bytes it decodes |
+
+Two honest bounds. A reader service is the source of the bytes it renders: `peerIdentity`
+names the service, `endpoint` names the service, and the page's own origin, title and dates
+are what the service reported in the body, established by nothing here — a consumer that
+needs the page itself fetches the page itself, as its own source. And a diagnostic is
+redacted against the credentials file as every adapter's is: a token inside a format the
+redactor does not parse is not caught.
+
+Tests run the adapter against a TLS server in the test process, with its certificate as the
+adapter's `--ca-file`, so no network is needed and none is used in CI; the gateway's own
+end-to-end test (`go/adapter_http_test.go`) spawns the built adapter as a declared source and
+verifies the store that results.
+
 ## The both-paths agreement
 
 [ADR-0001](../docs/adr/0001-one-engine-four-processes.md) point 4 promises that a record reached
