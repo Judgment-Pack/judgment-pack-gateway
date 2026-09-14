@@ -135,7 +135,9 @@ the mount argument are exercised by the tests; the fake runtime reads what was m
 as the adapter's own user.
 
 Tests run the adapter against a stand-in for the container runtime
-(`internal/fakeruntime`), so no runtime is needed to test it and none is used in CI;
+(`internal/fakeruntime`), so no runtime is needed to test it; the both-paths agreement below
+is the adapters' one test that uses a runtime, gated on `AGREEMENT_RUNTIME` and run by a CI
+job of its own;
 the adapter's canonicalizer answers to the same frozen vectors as the core's
 (`corpus/canon.json`), read from disk and never linked.
 
@@ -265,3 +267,20 @@ longer than a line, or spanning lines, is matched whole, and when the buffer ove
 ends it that is the start of a credential is cut off — after the whole ones were replaced, since a
 credential whose end repeats its start is whole before it is a prefix; a duplicate member name in a message,
 which the diagnostic names, is written as it is rather than quoted with an escape.
+
+## The both-paths agreement
+
+[ADR-0001](../docs/adr/0001-one-engine-four-processes.md) point 4 promises that a record reached
+through both shapes derives to byte-identical facts, and that a golden record per platform is
+checked both ways. `agreement/` is that check for the postgres platform: the rule by which each
+shape's envelope yields a record's facts (`facts.go`), the envelopes the two adapter binaries
+wrote when they fetched the golden records — the World sample database's city with `id = 1`, and
+a one-row table holding 2^53 + 1 — under the artifacts `catalog/postgres.json` pins, with two
+counterexample captures (`testdata/postgres/`), and the tests that hold them to each other, to the
+golden records, to the pins and to the statements the rule names. With `AGREEMENT_RUNTIME=docker`
+(or `podman`) the test also starts the World database, fetches both records afresh through the
+adapter implementations under a role held to reading, requires two writes through that role to be
+refused, fetches the counterexamples again, reads the stream in the connector's xmin mode, and
+holds the fresh facts to the fixtures'; the CI job "both paths agree" runs it. The rule, what the first capture found,
+and what the check does not establish are in
+[docs/design/both-paths-agreement.md](../docs/design/both-paths-agreement.md).

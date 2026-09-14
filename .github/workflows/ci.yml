@@ -234,3 +234,33 @@ jobs:
           if docker run --rm --cap-drop ALL engine:ci >out.txt 2>&1; then echo "started with every capability dropped"; cat out.txt; exit 1; fi
           grep -qi 'operation not permitted\|permission denied' out.txt || { echo "refused for another reason:"; cat out.txt; exit 1; }
           docker run --rm --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the three capabilities alone do not start the engine"; exit 1; }
+
+  agreement:
+    name: both paths agree
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: adapters
+    env:
+      GOWORK: off
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.26"
+      # ADR-0001 point 4, on a fresh fetch rather than the fixtures alone: a
+      # World database is started from the pinned image, and the golden
+      # records are fetched through the adapter implementations the
+      # binaries call -- against the connector image and the MCP server
+      # image the shipped binding pins -- under a role Postgres holds to
+      # reading, and the facts each shape derives are held to each other,
+      # to the golden records, and to the fixtures'
+      # (docs/design/both-paths-agreement.md). The test derives its own
+      # deadlines from this timeout, leaving itself time to remove what it
+      # started.
+      - name: The golden records derive to the same facts through both shapes
+        run: go test -count=1 -timeout 25m -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/
+        env:
+          AGREEMENT_RUNTIME: docker

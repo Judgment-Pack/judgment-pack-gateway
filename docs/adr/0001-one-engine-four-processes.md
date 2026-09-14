@@ -156,4 +156,6 @@ user one thing to run. The determinations this record settles:
 [SPEC.md §6](../../SPEC.md) for the source contract this record keeps. [SECURITY.md](../../SECURITY.md)
 for the trust boundary it protects. The runtime's ADR-0013 for the precedent of shipping a
 release as an OCI image. Design notes: [receipt-v3.md](../design/receipt-v3.md),
-[engine-config.md](../design/engine-config.md), [engine-image.md](../design/engine-image.md).
+[engine-config.md](../design/engine-config.md), [engine-image.md](../design/engine-image.md),
+[both-paths-agreement.md](../design/both-paths-agreement.md) for point 4's check on the first
+platform.

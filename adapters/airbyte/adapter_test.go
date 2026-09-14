@@ -1088,3 +1088,76 @@ func TestAValueUnderARepeatedNestedNameIsASecretToo(t *testing.T) {
 		t.Fatalf("both values are secrets: %v", err)
 	}
 }
+
+// A stream is configured incremental when the connector offers it and a
+// cursor exists to bookmark by: a default the connector names, or one the
+// connector manages itself (source_defined_cursor, as source-postgres in
+// xmin mode: source_defined_cursor true, default_cursor_field empty). A
+// connector that offers incremental sync for a stream with neither expects
+// the operator to name a cursor, and configured incremental without one
+// refuses the read outright; such a stream is read full refresh. Found by
+// the both-paths golden test on the World database's city table
+// (docs/design/both-paths-agreement.md).
+func TestConfiguredCatalogNeedsACursorForIncremental(t *testing.T) {
+	cases := []struct {
+		name          string
+		modes         []string
+		cursor        []string
+		sourceDefined bool
+		mode          string
+		cursorField   string // the serialized cursor_field member, "" when absent
+	}{
+		{"incremental with a default cursor", []string{"full_refresh", "incremental"}, []string{"updated_at"}, false, "incremental", `["updated_at"]`},
+		{"incremental, source-defined cursor, no default", []string{"full_refresh", "incremental"}, []string{}, true, "incremental", ""},
+		{"incremental, source-defined cursor and a default", []string{"full_refresh", "incremental"}, []string{"_ab_cdc_lsn"}, true, "incremental", `["_ab_cdc_lsn"]`},
+		{"incremental offered, no default cursor", []string{"full_refresh", "incremental"}, nil, false, "full_refresh", ""},
+		{"incremental offered, empty cursor list", []string{"full_refresh", "incremental"}, []string{}, false, "full_refresh", ""},
+		{"full refresh only, a cursor named", []string{"full_refresh"}, []string{"updated_at"}, false, "full_refresh", ""},
+		{"full refresh only, source-defined cursor", []string{"full_refresh"}, nil, true, "full_refresh", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s := stream{Name: "city", SupportedSyncModes: c.modes, DefaultCursorField: c.cursor, SourceDefinedCursor: c.sourceDefined, raw: json.RawMessage(`{"name":"city"}`)}
+			file, mode, cursor := configuredCatalog(s)
+			if mode != c.mode {
+				t.Fatalf("mode %q, want %q", mode, c.mode)
+			}
+			var doc struct {
+				Streams []map[string]json.RawMessage `json:"streams"`
+			}
+			if err := json.Unmarshal(file, &doc); err != nil || len(doc.Streams) != 1 {
+				t.Fatalf("configured catalog: %v %s", err, file)
+			}
+			if got := string(doc.Streams[0]["sync_mode"]); got != `"`+c.mode+`"` {
+				t.Fatalf("serialized sync_mode %s, want %q", got, c.mode)
+			}
+			if got := string(doc.Streams[0]["cursor_field"]); got != c.cursorField {
+				t.Fatalf("serialized cursor_field %q, want %q", got, c.cursorField)
+			}
+			if want := c.cursorField != ""; (len(cursor) > 0) != want {
+				t.Fatalf("cursor %v recorded, serialized %q", cursor, c.cursorField)
+			}
+		})
+	}
+}
+
+// The parser reads the flag as the protocol types it: absent is false, a
+// boolean is itself, anything else is not a stream.
+func TestParseStreamReadsTheSourceDefinedCursorFlag(t *testing.T) {
+	for _, c := range []struct {
+		raw  string
+		ok   bool
+		want bool
+	}{
+		{`{"name":"city","supported_sync_modes":["full_refresh","incremental"],"default_cursor_field":[]}`, true, false},
+		{`{"name":"city","supported_sync_modes":["full_refresh","incremental"],"default_cursor_field":[],"source_defined_cursor":true}`, true, true},
+		{`{"name":"city","supported_sync_modes":["full_refresh"],"source_defined_cursor":false}`, true, false},
+		{`{"name":"city","supported_sync_modes":["full_refresh"],"source_defined_cursor":"true"}`, false, false},
+		{`{"name":"city","supported_sync_modes":["full_refresh"],"source_defined_cursor":null}`, false, false},
+	} {
+		s, ok := parseStream(json.RawMessage(c.raw))
+		if ok != c.ok || (ok && s.SourceDefinedCursor != c.want) {
+			t.Fatalf("%s: ok=%v source-defined=%v, want ok=%v source-defined=%v", c.raw, ok, s.SourceDefinedCursor, c.ok, c.want)
+		}
+	}
+}

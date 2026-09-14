@@ -229,7 +229,9 @@ this needs, version 3, is normative in [SPEC.md §1.2a](SPEC.md) with vectors un
 [adapters/](adapters/README.md): `adapter-airbyte`, a pinned connector image run through
 the operator's container runtime, one page of one stream per acquisition, and
 `adapter-mcp`, a client of a vendor's MCP server over stdio, one tool call per
-acquisition — wired to `serve` with `--source-shape NAME=airbyte` and `NAME=mcp`.
+acquisition — wired to `serve` with `--source-shape NAME=airbyte` and `NAME=mcp`. That a
+record reached through both derives to the same facts is checked on a golden record
+([docs/design/both-paths-agreement.md](docs/design/both-paths-agreement.md)).
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only

@@ -391,12 +391,20 @@ func describeNamespace(namespace *string) string {
 	return *namespace
 }
 
-// configuredCatalog is the ConfiguredAirbyteCatalog for one stream:
-// incremental when the connector supports it, with its default cursor.
+// configuredCatalog writes the one-stream configured catalog the connector
+// reads. The stream is configured incremental when the connector offers it
+// and a cursor exists to bookmark by: one the connector names as the
+// default, or one the connector manages itself (source_defined_cursor, as
+// source-postgres does in xmin mode, naming no field). A connector that
+// offers incremental sync for a stream with neither expects the operator to
+// name a cursor, and configured incremental without one refuses the read
+// outright; such a stream is read full refresh, which the connector still
+// checkpoints when it can (found by the both-paths golden test on the World
+// database's city table, docs/design/both-paths-agreement.md).
 func configuredCatalog(s stream) (file []byte, mode string, cursor []string) {
 	mode = "full_refresh"
 	for _, m := range s.SupportedSyncModes {
-		if m == "incremental" {
+		if m == "incremental" && (s.SourceDefinedCursor || len(s.DefaultCursorField) > 0) {
 			mode = "incremental"
 		}
 	}

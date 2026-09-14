@@ -39,8 +39,10 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 			}
 		}
 		if name == "postgres" {
-			if b.history == nil || b.live == nil || strings.Join(b.live.args, " ") != "--access-mode=restricted" || b.live.probe != "list_schemas" || b.live.probeFailure != "Error:" || !strings.HasPrefix(b.history.image, "airbyte/source-postgres:") || !strings.HasPrefix(b.live.image, "crystaldba/postgres-mcp:") {
-				t.Fatalf("catalog/postgres.json: history through the Airbyte connector, live through the restricted MCP server: %+v %+v", b.history, b.live)
+			// Live through DBHub, which connects as it starts (so no probe) and answers SQL as JSON text; the
+			// operator's read-only role, not the server, holds the live operation to reading (catalog/README.md).
+			if b.history == nil || b.live == nil || strings.Join(b.live.args, " ") != "--transport stdio" || b.live.probe != "" || b.live.probeFailure != "" || !strings.HasPrefix(b.history.image, "airbyte/source-postgres:") || !strings.HasPrefix(b.live.image, "bytebase/dbhub:") || strings.Join(b.live.tools, ",") != "execute_sql,search_objects" {
+				t.Fatalf("catalog/postgres.json: history through the Airbyte connector, live through DBHub over stdio: %+v %+v", b.history, b.live)
 			}
 			for _, tool := range b.live.tools {
 				if strings.HasPrefix(tool, "analyze_") || tool == "get_top_queries" {
