@@ -98,6 +98,14 @@ const (
 	// diagnosticBodyBytes is how much of a refusing answer's body is read
 	// for the diagnostic that names it.
 	diagnosticBodyBytes = 4 << 10
+	// maxOutputCeiling is the largest --max-output accepted: past it the
+	// sentinel byte the bounded read needs would overflow, and a bound that
+	// large is not a bound.
+	maxOutputCeiling = 1 << 40
+	// minRefusedSecret is the shortest credentials scalar an answer is
+	// refused for repeating: below it a value is a substring of ordinary
+	// text. The credential actually sent is refused at any length.
+	minRefusedSecret = 8
 )
 
 var (
@@ -112,7 +120,12 @@ var (
 	// set: a value there is a credential, and a credential's place is the
 	// credentials file, not a command line a process listing shows.
 	credentialHeaders = map[string]bool{"authorization": true, "proxy-authorization": true, "cookie": true}
-	allowedMethods    = map[string]bool{"GET": true, "POST": true}
+	// adapterHeaders are the request headers this adapter writes itself --
+	// from the body, from its own identity, from the transport -- so a fixed
+	// --header naming one would be silently overridden; it is refused instead.
+	adapterHeaders = map[string]bool{"content-type": true, "content-length": true, "user-agent": true,
+		"accept-encoding": true, "host": true, "transfer-encoding": true, "connection": true}
+	allowedMethods = map[string]bool{"GET": true, "POST": true}
 )
 
 // ParseRequest reads the request strictly: one JSON object in the
@@ -305,6 +318,9 @@ func fixedHeaders(pairs []string) (http.Header, error) {
 		if credentialHeaders[strings.ToLower(name)] {
 			return nil, fmt.Errorf("header %s is a credential's; it goes in the credentials file", name)
 		}
+		if adapterHeaders[strings.ToLower(name)] {
+			return nil, fmt.Errorf("header %s is written by the adapter itself and cannot be fixed", name)
+		}
 		if strings.ContainsAny(value, "\r\n\x00") {
 			return nil, fmt.Errorf("header %s carries a value a header line cannot", name)
 		}
@@ -404,8 +420,8 @@ func prepare(cfg Config) (*prepared, error) {
 			return nil, fmt.Errorf("--methods names %q; GET and POST are the methods", m)
 		}
 	}
-	if cfg.MaxOutput < 1 {
-		return nil, errors.New("max-output must be positive")
+	if cfg.MaxOutput < 1 || cfg.MaxOutput > maxOutputCeiling {
+		return nil, fmt.Errorf("max-output must be positive and at most %d bytes", maxOutputCeiling)
 	}
 	headers, err := fixedHeaders(cfg.Headers)
 	if err != nil {
@@ -434,6 +450,11 @@ func prepare(cfg Config) (*prepared, error) {
 		DisableKeepAlives:      true,
 		MaxResponseHeaderBytes: maxHeaderBytes,
 		TLSHandshakeTimeout:    10 * time.Second,
+		// No Accept-Encoding is added and nothing is decoded on the way in:
+		// the result carries the bytes the endpoint sent, and an answer the
+		// endpoint encoded anyway is refused below rather than carried as
+		// something it was not.
+		DisableCompression: true,
 	}
 	client := &http.Client{
 		Transport: transport,
@@ -562,6 +583,9 @@ func (p *prepared) send(ctx context.Context, cfg Config, req *http.Request) (*an
 	if int64(len(body)) > cfg.MaxOutput {
 		return nil, fmt.Errorf("the answer exceeds the output bound of %d bytes", cfg.MaxOutput)
 	}
+	if encoding := resp.Header.Get("Content-Encoding"); encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return nil, fmt.Errorf("the endpoint answered with content-encoding %q; this adapter asks for none and carries bytes as sent", encoding)
+	}
 	a := &answer{status: resp.StatusCode, header: resp.Header, body: body, observedAt: observedAt}
 	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
 		sum := sha256.Sum256(resp.TLS.PeerCertificates[0].Raw)
@@ -576,9 +600,11 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Every exit passes here: a diagnostic is redacted once and bounded
-	// before it crosses the source boundary, where the gateway returns
-	// it to whoever called /acquire.
+	// Every exit of the acquisition passes here: a diagnostic is redacted
+	// and bounded before it crosses the source boundary, where the gateway
+	// returns it to whoever called /acquire. What is raised before this --
+	// a request that would not parse, a configuration refused above -- is
+	// redacted by the command, against Secrets.
 	finish := func(out []byte, err error) ([]byte, error) {
 		if err != nil {
 			return nil, errors.New(redact.Diagnostic(err.Error(), false, p.secrets))
@@ -602,13 +628,71 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		if len(head) > diagnosticBodyBytes {
 			head, truncated = head[:diagnosticBodyBytes], true
 		}
-		return nil, errors.New(redact.Diagnostic(fmt.Sprintf("the endpoint answered %d %s: %s", a.status, http.StatusText(a.status), strings.TrimSpace(string(head))), truncated, p.secrets))
+		// Redacted on the bytes as answered, and only then trimmed: a
+		// credential that ends in whitespace is matched whole before the
+		// whitespace goes.
+		redacted := redact.Diagnostic(fmt.Sprintf("the endpoint answered %d %s: %s", a.status, http.StatusText(a.status), head), truncated, p.secrets)
+		return nil, errors.New(strings.TrimSpace(redacted))
 	}
 	result, err := resultOf(a)
 	if err != nil {
 		return finish(nil, err)
 	}
+	// An answer that repeats a credential would put it in the artifact and,
+	// through the ETag, in the receipt, both signed and in the clear. It is
+	// refused, never rewritten: a rewritten answer is not the endpoint's.
+	if repeatsCredential(a, result, p.secrets, p.credValue) {
+		return finish(nil, errors.New("the endpoint's answer repeats a credential, so nothing of it is carried and nothing is minted"))
+	}
 	return finish(buildEnvelope(cfg, p, httpReq, req, a, result))
+}
+
+// repeatsCredential reports whether the answer -- its body as sent, the
+// result as it would be carried (a JSON body unescaped into the canon
+// domain), or any header the result or the receipt would carry -- contains
+// the credential that was sent, at any length, or any other scalar of the
+// credentials file of at least minRefusedSecret bytes.
+func repeatsCredential(a *answer, result []byte, secrets []string, sent string) bool {
+	var texts []string
+	texts = append(texts, string(a.body), string(result))
+	for _, name := range carriedHeaders {
+		texts = append(texts, a.header.Values(name)...)
+	}
+	texts = append(texts, a.header.Values("ETag")...)
+	texts = append(texts, a.header.Values("Last-Modified")...)
+	var needles []string
+	if sent != "" {
+		needles = append(needles, strings.TrimPrefix(sent, "Bearer "))
+	}
+	for _, secret := range secrets {
+		if len(secret) >= minRefusedSecret {
+			needles = append(needles, secret)
+		}
+	}
+	for _, text := range texts {
+		for _, needle := range needles {
+			if needle != "" && strings.Contains(text, needle) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Secrets is every scalar of the credentials file the configuration names,
+// for redacting a diagnostic raised before an acquisition could be prepared
+// -- a request that would not parse, a configuration that was refused. A
+// file that cannot be read yields nothing; the refusal that names that is
+// raised where the file is read for real.
+func Secrets(cfg Config) []string {
+	if cfg.Credentials == "" {
+		return nil
+	}
+	data, err := redact.ReadCredentials(cfg.Credentials)
+	if err != nil {
+		return nil
+	}
+	return redact.SecretsOf(data)
 }
 
 // resultOf carries the answer into the canon domain: its status, the
@@ -779,7 +863,19 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		}
 		report.PeerIdentity = a.peerIdentity
 		report.Probe = &probeReport{Path: cfg.CheckPath, Status: a.status}
-	} else if !p.loopback {
+	} else if p.loopback {
+		// Plaintext on loopback establishes no identity, but a check that
+		// reached nothing must not say it succeeded: the port is dialled.
+		host := p.base.Host
+		if p.base.Port() == "" {
+			host = net.JoinHostPort(p.base.Hostname(), "80")
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", host)
+		if err != nil {
+			return finish(fmt.Errorf("the endpoint could not be reached: %v", err))
+		}
+		conn.Close()
+	} else {
 		dialer := &tls.Dialer{NetDialer: &net.Dialer{}, Config: p.transport.TLSClientConfig.Clone()}
 		host := p.base.Host
 		if p.base.Port() == "" {

@@ -270,6 +270,18 @@ class Checks(unittest.TestCase):
     def test_an_adapter_not_readable(self):
         self.refused(good(**{"usr/local/bin/adapter-mcp": dict(mode=0o711)}), "readable by everyone")
 
+    def test_the_http_adapter_missing(self):
+        self.refused(good(**{"usr/local/bin/adapter-http": None}), "usr/local/bin/adapter-http is not in the image")
+
+    def test_the_http_adapter_writable(self):
+        self.refused(good(**{"usr/local/bin/adapter-http": dict(mode=0o777)}), "unwritable by others")
+
+    def test_the_http_adapter_not_executable(self):
+        self.refused(good(**{"usr/local/bin/adapter-http": dict(mode=0o644)}), "executable by every user")
+
+    def test_the_http_adapter_with_capabilities(self):
+        self.refused(good(**{"usr/local/bin/adapter-http": dict(caps=CAPS)}), "adapter-http carries a capability attribute")
+
     def test_a_file_in_the_catalog_the_checkout_lacks(self):
         self.refused(good(**{"usr/share/engine/catalog/extra.json": dict(data=b"{}", mode=0o666, uid=65601)}), "not in the checkout's catalog")
 

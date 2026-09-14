@@ -1,13 +1,23 @@
 package httpsource
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -362,6 +372,10 @@ func TestConfigurationRefusals(t *testing.T) {
 		"bad path":                {func(c *Config) { c.Paths = []string{"search"} }, `--paths "search"`},
 		"bad method":              {func(c *Config) { c.Methods = []string{"PUT"} }, "GET and POST are the methods"},
 		"no bound":                {func(c *Config) { c.MaxOutput = 0 }, "max-output must be positive"},
+		"bound past the ceiling":  {func(c *Config) { c.MaxOutput = 1<<63 - 1 }, "at most"},
+		"content-type header":     {func(c *Config) { c.Headers = []string{"Content-Type=text/plain"} }, "written by the adapter itself"},
+		"user-agent header":       {func(c *Config) { c.Headers = []string{"User-Agent=custom"} }, "written by the adapter itself"},
+		"accept-encoding header":  {func(c *Config) { c.Headers = []string{"Accept-Encoding=gzip"} }, "written by the adapter itself"},
 		"credential header":       {func(c *Config) { c.Headers = []string{"Authorization=Bearer x"} }, "a credential's; it goes in the credentials file"},
 		"bad header":              {func(c *Config) { c.Headers = []string{"no-equals"} }, "is not NAME=VALUE"},
 		"both credential forms":   {func(c *Config) { c.CredentialHeader = "X-Api-Key=TOKEN" }, "not both"},
@@ -492,5 +506,177 @@ func TestCheckReachesTheEndpoint(t *testing.T) {
 	}
 	if !strings.HasPrefix(string(FailedCheck("why")), `{"check":{"message":"why","status":"failed"}}`) {
 		t.Fatalf("FailedCheck: %s", FailedCheck("why"))
+	}
+}
+
+func TestAcquireRefusesAnAnswerThatRepeatsTheCredential(t *testing.T) {
+	for name, handler := range map[string]http.HandlerFunc{
+		"in the JSON body": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"echo":"secret-token-value"}`)
+		},
+		"escaped in the JSON body": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"echo":"secret\u002dtoken\u002dvalue"}`)
+		},
+		"in the ETag": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("ETag", `"secret-token-value"`)
+			io.WriteString(w, `{}`)
+		},
+		"in raw bytes": func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/pdf")
+			io.WriteString(w, "%PDF secret-token-value")
+		},
+	} {
+		e := newEndpoint(t, handler)
+		out, err := Acquire(context.Background(), e.config(t), parseRequest(t, `{"path":"/search","body":{}}`))
+		if err == nil || out != nil || !strings.Contains(err.Error(), "repeats a credential") || strings.Contains(err.Error(), "secret-token") {
+			t.Fatalf("%s: %v %s", name, err, out)
+		}
+	}
+}
+
+func TestRefusalDiagnosticIsRedactedBeforeItIsTrimmed(t *testing.T) {
+	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		io.WriteString(w, "TOPSECRET ")
+	})
+	cfg := e.config(t)
+	cfg.Credentials = credentialsFile(t, `{"TOKEN":"TOPSECRET "}`)
+	_, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	if err == nil || strings.Contains(err.Error(), "TOPSECRET") || !strings.Contains(err.Error(), "[redacted]") {
+		t.Fatalf("a credential ending in whitespace is matched whole: %v", err)
+	}
+}
+
+func TestAcquireAsksForNoEncodingAndRefusesAnEncodedAnswer(t *testing.T) {
+	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		zw := gzip.NewWriter(w)
+		io.WriteString(zw, `{"ok":true}`)
+		zw.Close()
+	})
+	_, err := Acquire(context.Background(), e.config(t), parseRequest(t, `{"path":"/search","body":{}}`))
+	if err == nil || !strings.Contains(err.Error(), `content-encoding "gzip"`) {
+		t.Fatalf("an encoded answer is refused, never decoded: %v", err)
+	}
+	if sent := e.received(); sent[0].Header.Get("Accept-Encoding") != "" {
+		t.Fatalf("the adapter asked for an encoding: %v", sent[0].Header)
+	}
+}
+
+// untrustedEndpoint is a TLS server under a certificate freshly made here, so
+// it is trusted by no --ca-file a test wrote for another server: httptest's
+// own servers all share one certificate, and a second of those would be
+// trusted by the first's CA file.
+func untrustedEndpoint(t *testing.T) *endpoint {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "other"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses: []net.IP{net.IPv4(127, 0, 0, 1)},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := &endpoint{handler: func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"ok":true}`)
+	}}
+	e.server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		e.mu.Lock()
+		e.requests = append(e.requests, r.Clone(context.Background()))
+		e.mu.Unlock()
+		e.handler(w, r)
+	}))
+	e.server.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
+	e.server.StartTLS()
+	t.Cleanup(e.server.Close)
+	return e
+}
+
+func TestAcquireRefusesAnUntrustedCertificate(t *testing.T) {
+	trusted := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{}`) })
+	other := untrustedEndpoint(t)
+	cfg := trusted.config(t)
+	cfg.Endpoint = other.server.URL
+	_, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	if err == nil || !strings.Contains(err.Error(), "could not be reached") || !strings.Contains(strings.ToLower(err.Error()), "certificate") {
+		t.Fatalf("a certificate outside --ca-file is refused: %v", err)
+	}
+	if len(other.received()) != 0 {
+		t.Fatal("the request reached an endpoint whose certificate was not trusted")
+	}
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(strings.ToLower(err.Error()), "certificate") {
+		t.Fatalf("a check refuses it too: %v", err)
+	}
+}
+
+func TestReadingStopsAtTheBound(t *testing.T) {
+	var written int64
+	var mu sync.Mutex
+	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		chunk := bytes.Repeat([]byte("x"), 64<<10)
+		flusher, _ := w.(http.Flusher)
+		for {
+			n, err := w.Write(chunk)
+			mu.Lock()
+			written += int64(n)
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+		}
+	})
+	cfg := e.config(t)
+	cfg.MaxOutput = 256 << 10
+	_, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
+	if err == nil || !strings.Contains(err.Error(), "exceeds the output bound") {
+		t.Fatalf("%v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if written > 4<<20 {
+		t.Fatalf("the adapter kept reading past its bound: %d bytes were written", written)
+	}
+}
+
+func TestCheckDialsAPlaintextLoopbackEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") }))
+	cfg := Config{Endpoint: server.URL, Paths: []string{"/"}, MaxOutput: 1 << 20}
+	if _, err := Check(context.Background(), cfg); err != nil {
+		t.Fatalf("a listening port: %v", err)
+	}
+	server.Close()
+	if _, err := Check(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "could not be reached") {
+		t.Fatalf("a closed port fails the check: %v", err)
+	}
+}
+
+func TestSecretsReadsTheCredentialsFileForRedaction(t *testing.T) {
+	cfg := Config{Credentials: credentialsFile(t, `{"TOKEN":"secret-token-value","OTHER":"x"}`)}
+	secrets := Secrets(cfg)
+	if !contains(secrets, "secret-token-value") || !contains(secrets, "x") {
+		t.Fatalf("secrets: %v", secrets)
+	}
+	if Secrets(Config{}) != nil || Secrets(Config{Credentials: filepath.Join(t.TempDir(), "none")}) != nil {
+		t.Fatal("no file, no secrets")
 	}
 }

@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"adapters/httpsource"
+	"adapters/internal/redact"
 )
 
 func main() {
@@ -31,7 +33,17 @@ func (r *repeated) Set(v string) error { *r = append(*r, v); return nil }
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("adapter-http", flag.ContinueOnError)
-	fs.SetOutput(stderr)
+	// Flag diagnostics are the operator's own command line quoted back, and
+	// they are bounded before they are written: a credential belongs in the
+	// credentials file and never on this line, and the redactor cannot yet
+	// know one, since the file's path is what the flags name.
+	var flagOut bytes.Buffer
+	fs.SetOutput(&flagOut)
+	defer func() {
+		if flagOut.Len() > 0 {
+			fmt.Fprint(stderr, redact.Diagnostic(flagOut.String(), false, nil))
+		}
+	}()
 	endpoint := fs.String("endpoint", "", "base URL every request is sent under: https, or http on a loopback host (required)")
 	credentials := fs.String("credentials", "", "path of a JSON object of strings holding the endpoint's credential")
 	bearer := fs.String("bearer", "", "the credentials member sent as Authorization: Bearer")
@@ -63,6 +75,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
+	// One boundary for every diagnostic this command writes: redacted against
+	// every scalar of the credentials file, and bounded. A diagnostic raised
+	// before the acquisition was prepared -- a request naming a member after
+	// the credential, a configuration refused for a path -- crosses it too.
+	secrets := httpsource.Secrets(cfg)
+	diagnostic := func(err error) string { return redact.Diagnostic(err.Error(), false, secrets) }
 	var out []byte
 	if *check {
 		// No request is read: the check is the operator's, not an
@@ -72,20 +90,21 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 			// The reason goes to stdout as a report of the same shape,
 			// for the caller that reads reports, and to stderr for the
 			// operator; the exit status says the endpoint did not answer.
-			fmt.Fprintln(stderr, "adapter-http: check:", err)
-			stdout.Write(httpsource.FailedCheck(err.Error()))
+			reason := diagnostic(err)
+			fmt.Fprintln(stderr, "adapter-http: check:", reason)
+			stdout.Write(httpsource.FailedCheck(reason))
 			return 1
 		}
 		out = report
 	} else {
 		req, err := httpsource.ParseRequest(stdin)
 		if err != nil {
-			fmt.Fprintln(stderr, "adapter-http:", err)
+			fmt.Fprintln(stderr, "adapter-http:", diagnostic(err))
 			return 1
 		}
 		envelope, err := httpsource.Acquire(ctx, cfg, req)
 		if err != nil {
-			fmt.Fprintln(stderr, "adapter-http:", err)
+			fmt.Fprintln(stderr, "adapter-http:", diagnostic(err))
 			return 1
 		}
 		out = envelope

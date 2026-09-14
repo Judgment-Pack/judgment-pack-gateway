@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunUsage(t *testing.T) {
@@ -101,8 +102,9 @@ func TestRunCheck(t *testing.T) {
 	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// stdin is not read by a check: what is attached is the operator's.
-	stdin := strings.NewReader("not a request")
+	// stdin is not read by a check: what is attached is the operator's, and
+	// a reader that fails the test on any read is what holds that.
+	stdin := neverRead{t}
 	var stdout, stderr bytes.Buffer
 	args := []string{"--endpoint", server.URL, "--paths", "/search", "--ca-file", ca, "--check", "--check-path", "/health"}
 	if code := run(args, stdin, &stdout, &stderr); code != 0 || !strings.HasPrefix(stdout.String(), `{"check":{"status":"succeeded","adapter":{"name":"adapter-http"`) || !strings.Contains(stdout.String(), `"probe":{"path":"/health","status":200}`) {
@@ -112,5 +114,70 @@ func TestRunCheck(t *testing.T) {
 	args[len(args)-1] = "/missing"
 	if code := run(args, stdin, &stdout, &stderr); code != 1 || !strings.HasPrefix(stdout.String(), `{"check":{"message":"`) || !strings.Contains(stdout.String(), `"status":"failed"`) {
 		t.Fatalf("a failed check writes a report of the same shape beside exit 1: %d %s", code, stdout.String())
+	}
+}
+
+// neverRead fails the test on any read.
+type neverRead struct{ t *testing.T }
+
+func (n neverRead) Read([]byte) (int, error) {
+	n.t.Fatal("a check read stdin")
+	return 0, io.EOF
+}
+
+func TestRunRedactsAndBoundsEveryDiagnostic(t *testing.T) {
+	dir := t.TempDir()
+	credentials := filepath.Join(dir, "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"secret-token-value"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	args := []string{"--endpoint", "https://api.example", "--paths", "/search", "--credentials", credentials, "--bearer", "TOKEN"}
+	var stdout, stderr bytes.Buffer
+	// A request naming a member after the credential: refused before the
+	// acquisition is prepared, and the refusal does not repeat it.
+	if code := run(args, strings.NewReader(`{"path":"/search","secret-token-value":0}`), &stdout, &stderr); code != 1 ||
+		strings.Contains(stderr.String(), "secret-token-value") || !strings.Contains(stderr.String(), "[redacted]") {
+		t.Fatalf("%d %s", code, stderr.String())
+	}
+	stderr.Reset()
+	// A refusal of unbounded length is cut.
+	long := strings.Repeat("m", 60000)
+	if code := run(args, strings.NewReader(`{"path":"/search","`+long+`":0}`), &stdout, &stderr); code != 1 || stderr.Len() > 1024 {
+		t.Fatalf("%d: %d bytes of diagnostic", code, stderr.Len())
+	}
+	stderr.Reset()
+	// A configuration refused for a path that carries the credential, and a
+	// check that reports the same refusal: neither repeats it.
+	args = append(args, "--ca-file", filepath.Join(dir, "secret-token-value.pem"), "--check")
+	if code := run(args, neverRead{t}, &stdout, &stderr); code != 1 ||
+		strings.Contains(stderr.String(), "secret-token-value") || strings.Contains(stdout.String(), "secret-token-value") ||
+		!strings.HasPrefix(stdout.String(), `{"check":{"message":"`) {
+		t.Fatalf("%d %s %s", code, stderr.String(), stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	// A flag the command does not know: the usage that follows is bounded.
+	if code := run([]string{"--endpoint", "https://api.example", "--paths", "/", "--" + strings.Repeat("z", 5000)}, neverRead{t}, &stdout, &stderr); code != 2 || stderr.Len() > 1024 {
+		t.Fatalf("%d: %d bytes", code, stderr.Len())
+	}
+}
+
+func TestRunHoldsItsOwnTimeout(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+		}
+	}))
+	defer server.Close()
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	started := time.Now()
+	code := run([]string{"--endpoint", server.URL, "--paths", "/", "--ca-file", ca, "--timeout", "200ms"}, strings.NewReader(`{"path":"/","body":{}}`), &stdout, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "did not answer in time") || time.Since(started) > 2*time.Second {
+		t.Fatalf("%d %s after %v", code, stderr.String(), time.Since(started))
 	}
 }

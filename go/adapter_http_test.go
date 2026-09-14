@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -44,9 +45,13 @@ func TestGatewaySpawnsTheHTTPAdapterEndToEnd(t *testing.T) {
 	}
 	// The stand-in provider: a JSON answer only when the credential
 	// reached it under the header the configuration names.
+	var providerRequests atomic.Int64
 	provider := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		providerRequests.Add(1)
 		body, _ := io.ReadAll(r.Body)
-		if r.Header.Get("Authorization") != "Bearer secret-token" || r.URL.Path != "/read" || string(body) != `{"url":"https://example.org/policy"}` {
+		// Any path with the credential is answered, so a path the adapter
+		// should have refused would succeed if it were ever sent.
+		if r.Header.Get("Authorization") != "Bearer secret-token" || string(body) != `{"url":"https://example.org/policy"}` {
 			w.WriteHeader(http.StatusUnauthorized)
 			io.WriteString(w, "the request or its credential was not as configured")
 			return
@@ -116,9 +121,17 @@ func TestGatewaySpawnsTheHTTPAdapterEndToEnd(t *testing.T) {
 		t.Fatalf("the answer, carried into the canon domain: %v", result["body"])
 	}
 	// A request the configuration does not admit is refused by the adapter
-	// before any connection, and the gateway mints nothing.
-	if code, body := post(t, httpServer, "/acquire", `{"session":"http-1","source":"read","arguments":{"path":"/write","body":{}}}`); code == http.StatusOK {
+	// before any connection: the provider, which would have answered it,
+	// sees no second request, and the gateway mints nothing.
+	if code, body := post(t, httpServer, "/acquire", `{"session":"http-1","source":"read","arguments":{"path":"/write","body":{"url":"https://example.org/policy"}}}`); code == http.StatusOK {
 		t.Fatalf("a path outside --paths minted a receipt: %v", body)
+	}
+	if got := providerRequests.Load(); got != 1 {
+		t.Fatalf("the provider saw %d requests; the refused path reached it", got)
+	}
+	receipts, _ := os.ReadDir(filepath.Join(dir, "store", "receipts", "http-1"))
+	if len(receipts) != 1 {
+		t.Fatalf("%d receipts after a refused acquisition, want 1", len(receipts))
 	}
 	if code, body := post(t, httpServer, "/seal", `{"session":"http-1"}`); code != http.StatusOK {
 		t.Fatalf("seal failed: %d %v", code, body)

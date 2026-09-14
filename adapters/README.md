@@ -304,25 +304,41 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
 - `--header NAME=VALUE` is sent on every request as written and may be given more than once;
   an `Accept`, a format selector. `Authorization`, `Proxy-Authorization` and `Cookie` are
   refused here: a credential's place is the credentials file, not a command line a process
-  listing shows. The gateway splits a source on whitespace and parses no quotes, so a value
-  with a space in it cannot be given on a `--source` line.
+  listing shows. So are the headers the adapter writes itself — `Content-Type` (from the
+  body), `Content-Length`, `User-Agent`, `Accept-Encoding`, `Host`, `Transfer-Encoding` and
+  `Connection` — since a fixed value there would be silently overridden; `Accept` is the one
+  header with a default (`application/json`) that a fixed header replaces. The gateway splits
+  a source on whitespace and parses no quotes, so a value with a space in it cannot be given
+  on a `--source` line.
 - `--ca-file` is a PEM file whose certificates are the only roots trusted for the endpoint,
   instead of the system's — for a private endpoint, and for a test.
 - `--check` holds the configuration and the credentials to their rules, then reaches the
   endpoint: the TLS handshake alone, which establishes the peer's identity and nothing about
-  the credential, or with `--check-path /p` one `GET` of that path with the credential, which
-  must answer 2xx. It reports on stdout — `{"check": {"status": "succeeded", "adapter",
+  the credential — on a plaintext loopback endpoint, a TCP connection, which establishes only
+  that something answers — or with `--check-path /p` one `GET` of that path with the
+  credential, which must answer 2xx. It reports on stdout — `{"check": {"status": "succeeded", "adapter",
   "endpoint", "peerIdentity", "probe"?: {"path", "status"}}}` — reading no stdin; a check that
   did not succeed writes `{"check": {"status": "failed", "message"}}` beside its exit status,
   so a caller reads one shape either way. Nothing is minted from it.
 - A redirect is an answer from another resource than the one the operator fixed, and
   following one would carry the credential there: it is reported and never followed. An
   answer outside 2xx is a read that did not happen — nothing is minted, and the first bytes of
-  the answer are the diagnostic, redacted, since an endpoint may quote the credential it
-  refused. `--timeout` (twenty seconds) bounds the request under the gateway's thirty;
-  `--max-output` bounds the answer and the envelope, and an answer past it is refused, never
-  cut. Keep it at or below the gateway's `--source-max-output`: a reader service that renders
-  a long PDF answers megabytes, and both bounds are the operator's to raise together.
+  the answer are the diagnostic, redacted on the bytes as answered before anything trims them,
+  since an endpoint may quote the credential it refused. **An answer that repeats a credential
+  is refused too**, 2xx or not: the credential that was sent, at any length, or any other
+  scalar of the credentials file of eight bytes or more, found in the body as sent, in the
+  body as it would be carried (a JSON string unescaped), or in a header the result or the
+  receipt would carry — the `ETag` among them — fails the acquisition with nothing minted,
+  because an artifact and a receipt are signed and in the clear, and an answer rewritten to
+  hide it would not be the endpoint's. `--timeout` (twenty seconds) bounds the request under
+  the gateway's thirty; `--max-output` bounds the answer and the envelope (at most 1 TiB, so
+  the bounded read's sentinel byte cannot overflow), and an answer past it is refused, never
+  cut — the read stops at the bound rather than draining what follows. Keep it at or below the
+  gateway's `--source-max-output`: a reader service that renders a long PDF answers megabytes,
+  and both bounds are the operator's to raise together. The adapter asks for no content
+  encoding and decodes nothing on the way in; an answer the endpoint encoded anyway
+  (`Content-Encoding` other than `identity`) is refused rather than carried as something it
+  was not.
 
 The request, as canonical arguments on stdin:
 
@@ -351,12 +367,18 @@ What the envelope carries, and so what the receipt records:
 | `observedAt` | when the answer had been read whole |
 | `result` | `{status, headers, bodyEncoding, body}`: the status; of the headers, `cache-control`, `content-length`, `content-type`, `date`, `etag`, `expires` and `last-modified` when present, by their lowercase names, and never a cookie; and the body — an answer the endpoint sent as JSON (`application/json`, `text/json`, or a `+json` type) as a value carried into the canon domain, member names sorted and a number with a fraction or an exponent carried as a string holding its literal, so `"score": 0.98` reads back as `"score": "0.98"`; any other answer as `base64`, byte for byte — so a PDF is carried whole and a consumer re-digests the bytes it decodes |
 
-Two honest bounds. A reader service is the source of the bytes it renders: `peerIdentity`
+Three honest bounds. A reader service is the source of the bytes it renders: `peerIdentity`
 names the service, `endpoint` names the service, and the page's own origin, title and dates
 are what the service reported in the body, established by nothing here — a consumer that
-needs the page itself fetches the page itself, as its own source. And a diagnostic is
-redacted against the credentials file as every adapter's is: a token inside a format the
-redactor does not parse is not caught.
+needs the page itself fetches the page itself, as its own source. Every diagnostic the
+command writes — a request that would not parse, a configuration refused, a check that
+failed, an acquisition that failed — crosses one boundary that redacts it against every
+scalar of the credentials file and bounds it, and the answer-repeats-a-credential refusal
+holds the same list; but a token inside a format the redactor does not parse, encoded or
+split, is caught by neither. And a flag the command does not know is reported with the
+usage, bounded but not redacted, since the credentials file is named by the flags that
+failed to parse: the command line is the operator's own, and a credential does not belong on
+it.
 
 Tests run the adapter against a TLS server in the test process, with its certificate as the
 adapter's `--ca-file`, so no network is needed and none is used in CI; the gateway's own
