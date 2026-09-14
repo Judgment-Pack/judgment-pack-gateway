@@ -136,8 +136,10 @@ jobs:
       # here, by the digest the Dockerfile names, and handed to the check.
       - name: The image's unpacked filesystem is what the design states, and its layers give the attribute as stated
         run: |
-          pin=$(sed -n 's/^FROM \(ghcr\.io\/judgment-pack\/judgment-pack:[^ ]*\) AS runtime$/\1/p' Dockerfile)
-          [ -n "$pin" ] || { echo "the Dockerfile names no runtime pin"; exit 1; }
+          # Exactly one pin line, spelled as a version tag and a digest.
+          [ "$(grep -c '^FROM ghcr\.io/judgment-pack/judgment-pack:' Dockerfile)" = 1 ] || { echo "the Dockerfile must name the runtime pin exactly once"; exit 1; }
+          pin=$(sed -n 's/^FROM \(ghcr\.io\/judgment-pack\/judgment-pack:[0-9][0-9.]*[0-9]@sha256:[0-9a-f]\{64\}\) AS runtime$/\1/p' Dockerfile)
+          [ -n "$pin" ] || { echo "the Dockerfile's runtime pin is not <version>@sha256:<digest>"; exit 1; }
           docker create --name runtime-pinned "$pin"
           docker cp runtime-pinned:/jpack runtime-jpack
           docker rm runtime-pinned
@@ -175,11 +177,43 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }
           docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte does not run"; exit 1; }
           # The runtime reports the pinned release's version, as the signer
-          # and as a platform user: it is everyone's to run.
-          version=$(sed -n 's/^FROM ghcr\.io\/judgment-pack\/judgment-pack:\([^@ ]*\)@.* AS runtime$/\1/p' Dockerfile)
+          # and as a platform user: it is everyone's to run. The first line
+          # of its output is compared literally, and the run must succeed.
+          version=$(sed -n 's/^FROM ghcr\.io\/judgment-pack\/judgment-pack:\([0-9][0-9.]*[0-9]\)@sha256:[0-9a-f]\{64\} AS runtime$/\1/p' Dockerfile)
+          [ -n "$version" ] || { echo "the Dockerfile's runtime pin names no version"; exit 1; }
           for user in 65532 65601; do
-            docker run --rm --user $user --entrypoint /usr/local/bin/jpack engine:ci version 2>&1 | grep -q "^jpack $version\$" || { echo "the runtime does not run as uid $user, or is not $version"; exit 1; }
+            out=$(docker run --rm --user $user --entrypoint /usr/local/bin/jpack engine:ci version) || { echo "the runtime does not run as uid $user"; exit 1; }
+            [ "$(printf '%s\n' "$out" | head -n 1)" = "jpack $version" ] || { echo "uid $user: the runtime is not $version: $out"; exit 1; }
           done
+      # The runtime evaluates for whoever runs it, on a project that user
+      # owns: the image's working directory is the signer's home, which a
+      # platform user cannot enter, so the project is mounted and named --
+      # here as uid 65601, HOME and the working directory on the mount --
+      # and the decision record it appends carries the citations it was
+      # given, as given, which is what the engine's verify reads.
+      - name: The runtime evaluates as a platform user and its record cites receipts as given
+        run: |
+          mkdir -p project/packs project/audit
+          cp .github/fixtures/runtime/data-request-intake-triage.json project/packs/intake.json
+          printf '%s' '{"configVersion":"3","audit":{"dir":"audit"},"packs":{"intake":{"path":"packs/intake.json"}}}' > project/jpack.json
+          printf '%s' '{"request":{"type":"data-access","completeness":"complete","appropriateness":"hard-fail","embargoedInformationToUnauthorizedRecipients":false}}' > project/facts.json
+          signature=$(printf 'a%.0s' $(seq 128))
+          printf '[{"sessionId":"s-1","callIndex":0,"signature":"%s"}]' "$signature" > project/cites.json
+          sudo chown -R 65601:65601 project
+          docker run --rm --user 65601 -e HOME=/project -w /project -v "$PWD/project:/project" --entrypoint /usr/local/bin/jpack engine:ci \
+            experimental evaluate --pack-id intake --facts facts.json --cites cites.json --format json > result.json
+          # The record is that user's alone (the runtime writes it so);
+          # the project is handed back to the runner to read it.
+          sudo chown -R "$(id -u):$(id -g)" project
+          python3 - "$signature" <<'PY'
+          import json, sys
+          result = json.load(open("result.json"))
+          assert "disposition" in result, result
+          records = [json.loads(line) for line in open("project/audit/evaluations.jsonl") if line.strip()]
+          assert len(records) == 1, records
+          assert records[0]["cites"] == [{"sessionId": "s-1", "callIndex": 0, "signature": sys.argv[1]}], records[0].get("cites")
+          print("the record cites what it was given, as given")
+          PY
           # As built: no entrypoint or command override, so the default CMD is what runs.
           docker run --rm engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the image does not start the engine with its own command"; exit 1; }
       # The launch overrides the design note states: every capability

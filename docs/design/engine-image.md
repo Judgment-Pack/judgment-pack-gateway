@@ -122,7 +122,15 @@ the decision records it writes cite receipts by session, index and signature
 ([ADR-0033](https://github.com/Judgment-Pack/judgment-pack-runtime/blob/main/docs/adr/0033-a-record-cites-the-receipts-it-relied-on.md)
 in the runtime), recorded as given and verified by nothing in the runtime. The runtime holds no
 seed and no credential, so its identity is whoever runs it; it runs as the signer or as a
-platform user only if the caller chooses that user. Nothing about `verify` waits on it:
+platform user only if the caller chooses that user. What that caller provides: a project the
+chosen user owns, mounted where the caller says, with the working directory and `HOME` on
+that mount — the image's own working directory is the signer's home, which no other user may
+enter — as in `docker run --user 65601 -e HOME=/project -w /project -v <project>:/project
+--entrypoint /usr/local/bin/jpack <image> experimental evaluate --pack-id <id> --facts
+facts.json --cites cites.json`. The record the runtime appends to the project's audit directory
+carries the citations as given, and that directory is what `verify --decision-records` reads;
+CI runs exactly this as a platform user and holds the record to the citations. Nothing about
+`verify` waits on it:
 `gateway verify <store> <registry> <authority> --decision-records <dir>` takes the
 decision-record directory as an argument — it reads no engine configuration — hashes every
 candidate under it in its own process for the action receipts' `decision.recordDigest`, and
