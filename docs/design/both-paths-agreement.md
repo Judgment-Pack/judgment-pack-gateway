@@ -78,8 +78,8 @@ The postgres platform's golden record is the World sample database
 
 Its second is a one-row table the test adds to that database, `past (n bigint)` holding
 2^53 + 1 — the first positive integer a binary64 double cannot represent exactly, which is
-what a driver that parses JSON into doubles loses; the canon domain ends one earlier, at
-2^53 − 1, so the value lies outside it as well:
+what a driver that parses JSON into doubles loses; the canon domain ends at 2^53 − 1, so the
+value lies outside it as well:
 
 ```json
 {"n":"9007199254740993"}
