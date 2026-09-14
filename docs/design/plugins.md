@@ -94,8 +94,8 @@ ContextForge's plugin framework (the `cpex` package) runs a plugin at named hook
 hook answers with `continue_processing`, an optional `modified_payload` or a `violation`; a
 plugin runs in the gateway's process or as an external service over MCP (`kind: external`),
 in `enforce` or `permissive` mode. A receipting plugin is a `tool_post_invoke` hook that has
-seen the call and its answer and wants them signed. Two designs would serve it, and neither
-exists yet:
+seen the call and its answer and wants them signed. Two designs would serve it; the second
+is built ([mcp-server.md](mcp-server.md)), the first is not:
 
 1. **A remote-adapter surface on the engine.** A new `POST` that takes an envelope of §6's form
    from an authenticated remote party — the plugin's identity as the adapter, the MCP server

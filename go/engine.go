@@ -66,7 +66,8 @@ type engineConfig struct {
 type mcpConfig struct {
 	listen         string
 	resource       string   // the protected resource's identifier; "" when not given
-	origins        []string // exact origins; none means loopback origins
+	origins        []string // exact origins, when given
+	originsGiven   bool     // the member was present, even empty; absent means loopback origins
 	sessions       int
 	idleSeconds    int
 	concurrency    int
@@ -291,7 +292,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		}
 		// The frontend finds the signer by the configured address and
 		// nothing else, so an address the kernel picks is no address.
-		if _, port, _ := net.SplitHostPort(cfg.listen); port == "0" {
+		if portIsZero(cfg.listen) {
 			return engineConfig{}, errors.New("engine configuration: listen names port 0, which the MCP server cannot find the signer by; with mcp present the signer's port is explicit")
 		}
 		cfg.mcp = m
@@ -407,7 +408,7 @@ func parseMCPConfig(v value) (*mcpConfig, error) {
 	if m.listen, err = loopbackAddress(listen); err != nil {
 		return nil, fmt.Errorf("mcp.%v", err)
 	}
-	if _, port, _ := net.SplitHostPort(m.listen); port == "0" {
+	if portIsZero(m.listen) {
 		return nil, errors.New("mcp.listen names port 0; the MCP server's port is explicit, since the resource it is reached as names it")
 	}
 	if _, present := obj.get("resource"); present {
@@ -425,6 +426,8 @@ func parseMCPConfig(v value) (*mcpConfig, error) {
 		if !ok {
 			return nil, errors.New("mcp.origins must be an array of origins")
 		}
+		// present and empty is a statement: no origin at all is admitted
+		m.originsGiven = true
 		for _, item := range arr {
 			s, ok := item.(vString)
 			if !ok {
@@ -545,7 +548,8 @@ func exactlyMembers(obj *vObject, members map[string]bool, what string) error {
 // loopbackAddress holds listen to a literal loopback address with a valid
 // port: 127.0.0.1 or ::1, never a name that a resolver may map elsewhere.
 // The gateway speaks plain HTTP, and reaching it from another host is a
-// front the operator runs.
+// front the operator runs. The address comes back in one spelling: the
+// IP as the parser prints it, the port as a number.
 func loopbackAddress(listen string) (string, error) {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -556,10 +560,21 @@ func loopbackAddress(listen string) (string, error) {
 		return "", fmt.Errorf("listen %q is not a literal loopback address; the engine listens on 127.0.0.1 or ::1 only", listen)
 	}
 	n, err := strconv.Atoi(port)
-	if err != nil || n < 0 || n > 65535 {
+	if err != nil || n < 0 || n > 65535 || strings.TrimSpace(port) != port || strings.HasPrefix(port, "+") || strings.HasPrefix(port, "-") {
 		return "", fmt.Errorf("listen %q has no valid port", listen)
 	}
-	return net.JoinHostPort(ip.String(), port), nil
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
+}
+
+// portIsZero says whether a listen address names port zero, by its number
+// and not its spelling: "00" is as much port zero as "0".
+func portIsZero(listen string) bool {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n == 0
 }
 
 func isBindingRef(ref string) bool {

@@ -29,8 +29,19 @@ func TestVersionTwoCarriesTheMCPMember(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.mcp.resource != "https://engine.example.internal/mcp" || len(cfg.mcp.origins) != 2 || cfg.mcp.sessions != 1 || cfg.mcp.idleSeconds != 60 || cfg.mcp.concurrency != 64 || cfg.mcp.callsPerMinute != 6000 {
+	if cfg.mcp.resource != "https://engine.example.internal/mcp" || len(cfg.mcp.origins) != 2 || !cfg.mcp.originsGiven || cfg.mcp.sessions != 1 || cfg.mcp.idleSeconds != 60 || cfg.mcp.concurrency != 64 || cfg.mcp.callsPerMinute != 6000 {
 		t.Fatalf("mcp parsed as %+v", cfg.mcp)
+	}
+	// origins present and empty is kept apart from absent
+	if cfg, err := parseEngineConfig([]byte(v2(`{"listen":"127.0.0.1:8788","origins":[]}`))); err != nil || !cfg.mcp.originsGiven || len(cfg.mcp.origins) != 0 {
+		t.Fatalf("origins []: %v %+v", err, cfg.mcp)
+	}
+	if cfg, err := parseEngineConfig([]byte(v2(`{"listen":"127.0.0.1:8788"}`))); err != nil || cfg.mcp.originsGiven {
+		t.Fatalf("origins absent: %v %+v", err, cfg.mcp)
+	}
+	// a port is read by its number: "08788" is 8788, in one spelling
+	if cfg, err := parseEngineConfig([]byte(v2(`{"listen":"127.0.0.1:08788"}`))); err != nil || cfg.mcp.listen != "127.0.0.1:8788" {
+		t.Fatalf("a padded port: %v %+v", err, cfg.mcp)
 	}
 	// a version-1 file still loads without the member, and carries none
 	if cfg, err := parseEngineConfig([]byte(engineJSON(t, catalog, ``, ``))); err != nil || cfg.version != "1" || cfg.mcp != nil {
@@ -48,6 +59,8 @@ func TestVersionTwoCarriesTheMCPMember(t *testing.T) {
 		{"no listen", v2(`{"resource":"https://e/mcp"}`), "listen"},
 		{"listen not loopback", v2(`{"listen":"0.0.0.0:8788"}`), "loopback"},
 		{"listen port zero", v2(`{"listen":"127.0.0.1:0"}`), "port 0"},
+		{"listen port zero spelled 00", v2(`{"listen":"127.0.0.1:00"}`), "port 0"},
+		{"listen port with a sign", v2(`{"listen":"127.0.0.1:+80"}`), "no valid port"},
 		{"resource http", v2(`{"listen":"127.0.0.1:8788","resource":"http://engine/mcp"}`), "absolute https URL"},
 		{"resource with a fragment", v2(`{"listen":"127.0.0.1:8788","resource":"https://engine/mcp#x"}`), "fragment"},
 		{"resource without a host", v2(`{"listen":"127.0.0.1:8788","resource":"https:///mcp"}`), "absolute https URL"},
@@ -61,6 +74,7 @@ func TestVersionTwoCarriesTheMCPMember(t *testing.T) {
 		{"callsPerMinute above range", v2(`{"listen":"127.0.0.1:8788","callsPerMinute":6001}`), "callsPerMinute 6001 is outside 1 to 6000"},
 		{"a bound that is not an integer", v2(`{"listen":"127.0.0.1:8788","sessions":"64"}`), "must be an integer"},
 		{"the signer's listen at port zero", strings.Replace(v2(`{"listen":"127.0.0.1:8788"}`), `"listen":"127.0.0.1:8787"`, `"listen":"127.0.0.1:0"`, 1), "listen names port 0"},
+		{"the signer's listen at port zero spelled 000", strings.Replace(v2(`{"listen":"127.0.0.1:8788"}`), `"listen":"127.0.0.1:8787"`, `"listen":"127.0.0.1:000"`, 1), "listen names port 0"},
 	}
 	for _, c := range refused {
 		if _, err := parseEngineConfig([]byte(c.text)); err == nil || !strings.Contains(err.Error(), c.want) {

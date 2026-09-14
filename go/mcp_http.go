@@ -58,6 +58,7 @@ func (s *mcpServer) challenge(w http.ResponseWriter) {
 
 // serveMCP answers one request under the ordered checks.
 func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
+	arrived := s.now()
 	w.Header().Set("MCP-Protocol-Version", mcpProtocolVersion)
 	// 1. Origin: present and not admitted, 403 before the body is read
 	if origin := r.Header.Get("Origin"); origin != "" && !s.originAllowed(origin) {
@@ -76,44 +77,38 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 		mcpWriteJSON(w, http.StatusBadRequest, map[string]any{"error": "protocol version not supported: " + v + "; this server speaks " + mcpProtocolVersion})
 		return
 	}
-	// 4. the body bound
+	// 4. the body bound, on every method: what is over it is refused
+	// whether or not the method reads it
 	if r.ContentLength > mcpMaxMessageBytes {
 		mcpWriteJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "the message exceeds the bound"})
 		return
 	}
-	var body []byte
-	if r.Method == http.MethodPost {
-		var err error
-		body, err = io.ReadAll(io.LimitReader(r.Body, mcpMaxMessageBytes+1))
-		if err != nil {
-			mcpWriteJSON(w, http.StatusBadRequest, map[string]any{"error": "the body could not be read"})
-			return
-		}
-		if len(body) > mcpMaxMessageBytes {
-			mcpWriteJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "the message exceeds the bound"})
-			return
-		}
+	body, err := io.ReadAll(io.LimitReader(r.Body, mcpMaxMessageBytes+1))
+	if err != nil {
+		mcpWriteJSON(w, http.StatusBadRequest, map[string]any{"error": "the body could not be read"})
+		return
 	}
+	if len(body) > mcpMaxMessageBytes {
+		mcpWriteJSON(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "the message exceeds the bound"})
+		return
+	}
+	// 5 and 6. the transport session: absent on anything but a POST of
+	// initialize, 400; unknown, expired or ended, 404, on any method. An
+	// initialize that names a live session is a request on that session,
+	// which answers that it is initialized already.
+	sid := r.Header.Get("Mcp-Session-Id")
 	initializing := false
-	if r.Method == http.MethodPost {
+	if sid == "" && r.Method == http.MethodPost {
 		if req, perr := parseMCPMessage(body); perr == nil && req.method == "initialize" && req.id != nil {
 			initializing = true
 		}
 	}
-	// 5 and 6. the transport session: absent on anything but a POST of
-	// initialize, 400; unknown, expired or ended, 404
-	sid := r.Header.Get("Mcp-Session-Id")
 	var sess *mcpSession
-	if initializing {
-		if sid != "" {
-			mcpWriteJSON(w, http.StatusBadRequest, map[string]any{"error": "initialize opens a session; it carries no Mcp-Session-Id"})
-			return
-		}
-	} else {
-		if sid == "" {
-			mcpWriteJSON(w, http.StatusBadRequest, map[string]any{"error": "Mcp-Session-Id is required"})
-			return
-		}
+	if sid == "" && !initializing {
+		mcpWriteJSON(w, http.StatusBadRequest, map[string]any{"error": "Mcp-Session-Id is required"})
+		return
+	}
+	if sid != "" {
 		sess = s.lookupSession(sid)
 		if sess == nil {
 			mcpWriteJSON(w, http.StatusNotFound, map[string]any{"error": "no such session"})
@@ -138,20 +133,21 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 9. JSON must be acceptable
-	if !acceptsJSON(r.Header.Get("Accept")) {
+	if !acceptsJSON(r.Header.Values("Accept")) {
 		mcpWriteJSON(w, http.StatusNotAcceptable, map[string]any{"error": "this server answers application/json"})
 		return
 	}
-	// 10. initialize opens a session, unless the sessions are all open
+	// 10. initialize opens a session, unless the sessions are all open or
+	// admission is closed
 	if initializing {
 		sess = s.openSession()
 		if sess == nil {
-			mcpWriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "every transport session is open; try again later"})
+			mcpWriteJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "every transport session is open, or admission is closed; try again later"})
 			return
 		}
 		w.Header().Set("Mcp-Session-Id", sess.id)
 	}
-	outcome := s.handle(r.Context(), sess, token, body)
+	outcome := s.handle(r.Context(), sess, token, arrived, body)
 	if outcome.transport != nil {
 		// the signer's refusal of the token is the transport's refusal,
 		// with this server's challenge
@@ -171,9 +167,13 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 // originAllowed admits an origin the configuration names exactly, or,
-// when it names none, any loopback origin.
+// when the configuration names none at all, any loopback origin; an
+// origin that is not spelled as one is admitted by neither.
 func (s *mcpServer) originAllowed(origin string) bool {
-	if len(s.cfg.mcp.origins) > 0 {
+	if validOrigin(origin) != nil {
+		return false
+	}
+	if s.cfg.mcp.originsGiven {
 		for _, o := range s.cfg.mcp.origins {
 			if o == origin {
 				return true
@@ -181,10 +181,7 @@ func (s *mcpServer) originAllowed(origin string) bool {
 		}
 		return false
 	}
-	u, err := url.Parse(origin)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Path != "" {
-		return false
-	}
+	u, _ := url.Parse(origin)
 	host := u.Hostname()
 	if host == "localhost" {
 		return true
@@ -193,25 +190,44 @@ func (s *mcpServer) originAllowed(origin string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// acceptsJSON says whether application/json is acceptable under an Accept
-// header by RFC 9110's rules: the most specific matching range decides,
-// wildcards match, and a quality of zero excludes. No header accepts all.
-func acceptsJSON(accept string) bool {
-	if strings.TrimSpace(accept) == "" {
+// acceptsJSON says whether application/json is acceptable under the
+// Accept header's values by RFC 9110 §12.5.1: every field value is read,
+// a range's parameters other than q make it apply only to a response
+// with those parameters -- which this server's answer never has -- the
+// most specific applicable range decides, and a quality of zero
+// excludes. No header accepts all.
+func acceptsJSON(values []string) bool {
+	joined := strings.TrimSpace(strings.Join(values, ","))
+	if joined == "" {
 		return true
 	}
 	best, bestSpecificity := -1.0, -1
-	for _, part := range strings.Split(accept, ",") {
-		fields := strings.Split(strings.TrimSpace(part), ";")
+	for _, item := range splitQuoted(joined, ',') {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		fields := splitQuoted(item, ';')
 		mediaRange := strings.ToLower(strings.TrimSpace(fields[0]))
 		q := 1.0
+		parameterized := false
 		for _, p := range fields[1:] {
 			p = strings.TrimSpace(p)
-			if strings.HasPrefix(strings.ToLower(p), "q=") {
-				if v, err := strconv.ParseFloat(p[2:], 64); err == nil {
-					q = v
+			name, value, _ := strings.Cut(p, "=")
+			if strings.EqualFold(strings.TrimSpace(name), "q") {
+				v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+				if err != nil || v < 0 || v > 1 {
+					return false
 				}
+				q = v
+				continue
 			}
+			// a media-type parameter: the range is for a response that
+			// carries it, and none of this server's does
+			parameterized = true
+		}
+		if parameterized {
+			continue
 		}
 		specificity := -1
 		switch mediaRange {
@@ -229,16 +245,45 @@ func acceptsJSON(accept string) bool {
 	return bestSpecificity >= 0 && best > 0
 }
 
+// splitQuoted splits on a separator outside quoted strings.
+func splitQuoted(s string, sep byte) []string {
+	var parts []string
+	var b strings.Builder
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch {
+		case c == '\\' && inQuote && i+1 < len(s):
+			b.WriteByte(c)
+			i++
+			b.WriteByte(s[i])
+		case c == '"':
+			inQuote = !inQuote
+			b.WriteByte(c)
+		case c == sep && !inQuote:
+			parts = append(parts, b.String())
+			b.Reset()
+		default:
+			b.WriteByte(c)
+		}
+	}
+	parts = append(parts, b.String())
+	return parts
+}
+
 // --- transport sessions --------------------------------------------------
 
 func (s *mcpServer) idle() time.Duration { return time.Duration(s.cfg.mcp.idleSeconds) * time.Second }
 
 // openSession opens one, after dropping the expired, unless the bound is
-// reached.
+// reached or admission is closed.
 func (s *mcpServer) openSession() *mcpSession {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
 	for id, sess := range s.sessions {
 		if now.Sub(sess.lastUsed) > s.idle() {
 			delete(s.sessions, id)
@@ -276,6 +321,22 @@ func (s *mcpServer) endSession(id string) {
 	delete(s.sessions, id)
 }
 
+// httpServer is the transport's server with its own deadlines, which bound
+// a connection past the four configured bounds: a request's headers and
+// body may take no longer than the read timeout, an answer may not be held
+// open past the queue's wait, the forward's deadline and a margin, an idle
+// connection is closed after a minute, and the headers are bounded.
+func (s *mcpServer) httpServer() *http.Server {
+	return &http.Server{
+		Handler:           s.httpHandler(),
+		ReadHeaderTimeout: s.readTimeout / 3,
+		ReadTimeout:       s.readTimeout,
+		WriteTimeout:      s.queueWait + s.forwardTimeout + 15*time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
 // listenHTTP serves the transport on the configured address until the
 // context ends.
 func (s *mcpServer) listenHTTP(ctx context.Context) error {
@@ -283,7 +344,7 @@ func (s *mcpServer) listenHTTP(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	server := &http.Server{Handler: s.httpHandler(), ReadHeaderTimeout: 10 * time.Second}
+	server := s.httpServer()
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)

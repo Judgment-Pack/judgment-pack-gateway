@@ -36,13 +36,16 @@ func mcpTestConfig(t *testing.T, signer *httptest.Server, identity *identitySpec
 		authority: "gateway:test",
 		listen:    u.String(),
 		identity:  identity,
-		platforms: []platformConfig{{name: "screen", binding: "screen@sha256:" + strings.Repeat("ab", 32)}},
+		platforms: []platformConfig{{name: "other", binding: "other@sha256:" + strings.Repeat("cd", 32)}, {name: "screen", binding: "screen@sha256:" + strings.Repeat("ab", 32)}},
 		mcp:       &mcpConfig{listen: "127.0.0.1:0", resource: "https://engine.test/mcp", sessions: 4, idleSeconds: 60, concurrency: 2, callsPerMinute: 100},
 	}
 }
 
 func mcpBindings() map[string]binding {
-	return map[string]binding{"screen": {platform: "screen", live: &operation{shape: "mcp", tools: []string{"lookup", "search"}}}}
+	return map[string]binding{
+		"other":  {platform: "other", live: &operation{shape: "mcp", tools: []string{"lookup"}}},
+		"screen": {platform: "screen", live: &operation{shape: "mcp", tools: []string{"lookup", "search"}}},
+	}
 }
 
 // newMCPFixture builds the pair; with identity, the signer and the front
@@ -52,7 +55,7 @@ func newMCPFixture(t *testing.T, withIdentity bool) *mcpFixture {
 	t.Setenv(envSourceHelper, "1")
 	root := t.TempDir()
 	service, err := newGatewayService(filepath.Join(root, "store"), testSeed, "gateway:test", filepath.Join(root, "registry.jsonl"),
-		map[string]sourceSpec{"screen/live": {argv: []string{os.Args[0]}, env: helperEnv}})
+		map[string]sourceSpec{"screen/live": {argv: []string{os.Args[0]}, env: helperEnv}, "other/live": {argv: []string{os.Args[0]}, env: helperEnv}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,9 +105,12 @@ func (f *mcpFixture) call(t *testing.T, method, session, body string, headers ma
 		req.Header.Set("Mcp-Session-Id", session)
 	}
 	for k, v := range headers {
-		if v == "" {
+		switch {
+		case k == "Accept-Second":
+			req.Header.Add("Accept", v)
+		case v == "":
 			req.Header.Del(k)
-		} else {
+		default:
 			req.Header.Set(k, v)
 		}
 	}
@@ -138,6 +144,65 @@ func (f *mcpFixture) open(t *testing.T) string {
 		t.Fatalf("initialized notification answered %d", code)
 	}
 	return header.Get("Mcp-Session-Id")
+}
+
+// receiptsOf counts the receipt files the store holds for a session: what
+// reached the signer and was minted, which no size of any map stands in
+// for.
+func (f *mcpFixture) receiptsOf(session string) int {
+	entries, _ := os.ReadDir(filepath.Join(f.root, "store", "receipts", session))
+	n := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			n++
+		}
+	}
+	return n
+}
+
+// waitUntil polls a condition for up to five seconds, so a test that
+// needs a call to have taken its place waits for that and not for a clock.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("waited five seconds for %s", what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// resultOf is a message's result, or the test fails saying what came
+// instead.
+func resultOf(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	result, ok := body["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("no result: %v", body)
+	}
+	return result
+}
+
+// sameBothWays holds a tool result's text block to its structuredContent,
+// whole: the one decoded is the other.
+func sameBothWays(t *testing.T, result map[string]any) map[string]any {
+	t.Helper()
+	content := result["content"].([]any)
+	if len(content) != 1 || content[0].(map[string]any)["type"] != "text" {
+		t.Fatalf("the content is %v", content)
+	}
+	var fromText any
+	if err := json.Unmarshal([]byte(content[0].(map[string]any)["text"].(string)), &fromText); err != nil {
+		t.Fatalf("the text block is not JSON: %v", err)
+	}
+	structured := result["structuredContent"]
+	a, _ := json.Marshal(fromText)
+	b, _ := json.Marshal(structured)
+	if canonicalOf(t, a) != canonicalOf(t, b) {
+		t.Fatalf("the text block and structuredContent differ:\n%s\n%s", a, b)
+	}
+	return structured.(map[string]any)
 }
 
 func toolCall(id int, name, arguments, meta string) string {
@@ -197,7 +262,7 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 	for _, tool := range tools {
 		names = append(names, tool.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "engine.seal,screen.lookup,screen.search" {
+	if strings.Join(names, ",") != "engine.seal,other.lookup,screen.lookup,screen.search" {
 		t.Fatalf("tools/list: %v", names)
 	}
 	seal := tools[0].(map[string]any)["inputSchema"].(map[string]any)
@@ -215,19 +280,21 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 	if result["isError"] != nil {
 		t.Fatalf("the call errored: %v", result)
 	}
-	structured := result["structuredContent"].(map[string]any)
+	structured := sameBothWays(t, result)
 	session := structured["session"].(string)
 	if !regexp.MustCompile(`^mcp-[0-9a-f]{32}$`).MatchString(session) {
 		t.Fatalf("the generated session is %q", session)
 	}
 	receipt := structured["receipt"].(map[string]any)
-	if receipt["sessionId"] != session || receipt["callIndex"] != float64(0) || receipt["kind"] != "acquisition" {
+	if receipt["sessionId"] != session || receipt["callIndex"] != float64(0) || receipt["kind"] != "acquisition" || receipt["source"] != "screen/live" {
 		t.Fatalf("the receipt is %v", receipt)
 	}
-	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
-	var fromText map[string]any
-	if err := json.Unmarshal([]byte(text), &fromText); err != nil || fromText["session"] != session {
-		t.Fatalf("the text block does not carry the same object: %s", text)
+	// another platform's tool of the same name is that platform's source,
+	// not the first's: no substitution across the table
+	_, _, otherBody := f.call(t, http.MethodPost, sid, toolCall(40, "other.lookup", args, ""), nil)
+	otherReceipt := sameBothWays(t, otherBody["result"].(map[string]any))["receipt"].(map[string]any)
+	if otherReceipt["source"] != "other/live" || otherReceipt["callIndex"] != float64(1) {
+		t.Fatalf("the other platform's receipt is %v", otherReceipt)
 	}
 	onDisk, err := os.ReadFile(filepath.Join(f.root, "store", "receipts", session, "0.json"))
 	if err != nil {
@@ -269,8 +336,21 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 	if code != 200 || result["isError"] != true || result["structuredContent"].(map[string]any)["status"] != float64(400) {
 		t.Fatalf("a fraction was not the signer's refusal: %d %v", code, result)
 	}
-	if !strings.Contains(result["content"].([]any)[0].(map[string]any)["text"].(string), `"status":400`) {
+	if sameBothWays(t, result)["status"] != float64(400) {
 		t.Fatalf("the error's text block does not carry the object: %v", result["content"])
+	}
+	// and so do the numbers the frontend's own parser would refuse: an
+	// exponent past its range reaches the signer as bytes and is the
+	// signer's refusal too
+	_, _, body = f.call(t, http.MethodPost, sid, toolCall(41, "screen.lookup", `{"x": 1e400}`, ""), nil)
+	if result = body["result"].(map[string]any); result["isError"] != true || sameBothWays(t, result)["status"] != float64(400) {
+		t.Fatalf("1e400 was not the signer's refusal: %v", body)
+	}
+	// duplicate members inside the arguments are the signer's to judge as
+	// well, and a duplicate anywhere else in the message is this server's
+	_, _, body = f.call(t, http.MethodPost, sid, toolCall(42, "screen.lookup", `{"a":1,"a":2}`, ""), nil)
+	if result = body["result"].(map[string]any); result["isError"] != true || sameBothWays(t, result)["status"] != float64(400) {
+		t.Fatalf("a duplicate inside the arguments was not the signer's refusal: %v", body)
 	}
 	// absent arguments are the engine's default
 	if code, _, body = f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"screen.search"}}`, nil); code != 200 || body["result"].(map[string]any)["isError"] != nil {
@@ -286,14 +366,66 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 		{`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}`, rpcInvalidParams},
 		{`[{"jsonrpc":"2.0","id":10,"method":"ping"}]`, rpcInvalidRequest},
 		{`{"jsonrpc":"2.0","id":10,"method":"ping","method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"screen.lookup","arguments":{"a":1,"a":2}}}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"screen.lookup","_meta":{"a":1,"a":2}}}`, rpcInvalidRequest},
 		{`{"jsonrpc":"1.0","id":11,"method":"ping"}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":true,"method":"ping"}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":[1],"method":"ping"}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","result":{}}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":"x"}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","extra":1}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"method":""}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","arguments":[1]}}`, rpcInvalidParams},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"NAME":"screen.lookup"}}`, rpcInvalidParams},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":"x"}}`, rpcInvalidParams},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":{"` + mcpSessionMeta + `":1}}}`, rpcInvalidParams},
 		{`not json`, rpcParse},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping"} trailing`, rpcParse},
 	} {
 		code, _, body := f.call(t, http.MethodPost, sid, c.body, nil)
 		if code != 200 || body["error"] == nil || body["error"].(map[string]any)["code"] != c.code {
 			t.Fatalf("%s: %d %v", c.body, code, body)
 		}
+	}
+	// a message whose id is null is neither a request nor a notification
+	// under the pinned protocol's schema: refused, not taken for either
+	if _, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":null,"method":"ping"}`, nil); body["error"] == nil || body["error"].(map[string]any)["code"] != float64(rpcInvalidRequest) || body["result"] != nil {
+		t.Fatalf("id null: %v", body)
+	}
+	// the members are read by their exact names: METHOD is not method, and
+	// a message with no method is a response, acknowledged
+	if code, _, _ := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":1,"METHOD":"ping"}`, nil); code != http.StatusOK {
+		t.Fatalf("METHOD answered %d", code)
+	}
+	// a case-folded member inside a call is not the member: no session is
+	// named by _META, and the call lands in the generated session
+	_, _, body = f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":43,"method":"tools/call","params":{"name":"screen.lookup","_META":{"`+mcpSessionMeta+`":"named-x"}}}`, nil)
+	if body["error"] == nil || body["error"].(map[string]any)["code"] != float64(rpcInvalidParams) {
+		t.Fatalf("_META was read as _meta or tolerated: %v", body)
+	}
+	// initialize again on an initialized session is a lifecycle error, and
+	// a tool is not callable on a session that never initialized
+	if _, _, body = f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":44,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`, nil); body["error"] == nil || !strings.Contains(body["error"].(map[string]any)["message"].(string), "initialized already") {
+		t.Fatalf("a second initialize: %v", body)
+	}
+	for _, params := range []string{`{}`, `{"protocolVersion":"2025-06-18"}`, `{"protocolVersion":"2025-06-18","capabilities":{}}`, `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t"}}`, `{"protocolVersion":"2025-06-18","capabilities":[],"clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"},"x":1}`, `{"capabilities":{},"clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":"2025-06-18","clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":1,"capabilities":{},"clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":0}}`} {
+		code, header, body := f.call(t, http.MethodPost, "", `{"jsonrpc":"2.0","id":45,"method":"initialize","params":`+params+`}`, nil)
+		if code != http.StatusOK || body["error"] == nil || body["error"].(map[string]any)["code"] != float64(rpcInvalidParams) {
+			t.Fatalf("initialize with params %s: %d %v", params, code, body)
+		}
+		// the session it opened is not initialized: a call on it is refused
+		// and nothing reaches the signer
+		if _, _, body := f.call(t, http.MethodPost, header.Get("Mcp-Session-Id"), toolCall(46, "screen.lookup", `{}`, ""), nil); body["error"] == nil || !strings.Contains(body["error"].(map[string]any)["message"].(string), "initialize first") {
+			t.Fatalf("a call before initialization: %v", body)
+		}
+		f.call(t, http.MethodDelete, header.Get("Mcp-Session-Id"), "", nil)
+	}
+	// three receipts in the generated session: the first call, the other
+	// platform's, and the one with absent arguments; the refusals minted none
+	if f.receiptsOf(session) != 3 {
+		t.Fatalf("the generated session holds %d receipts, not the three minted above", f.receiptsOf(session))
 	}
 }
 
@@ -319,8 +451,25 @@ func TestMCPHTTPMatrix(t *testing.T) {
 		{"a body over the bound", http.MethodPost, sid, `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"` + strings.Repeat("x", mcpMaxMessageBytes) + `"}}`, nil, http.StatusRequestEntityTooLarge},
 		{"no session id", http.MethodPost, "", ping, nil, http.StatusBadRequest},
 		{"an unknown session id", http.MethodPost, "mcp-" + strings.Repeat("0", 32), ping, nil, http.StatusNotFound},
-		{"initialize with a session id", http.MethodPost, sid, init, nil, http.StatusBadRequest},
+		{"initialize with a live session id is a request on it", http.MethodPost, sid, init, nil, http.StatusOK},
+		{"initialize with an unknown session id", http.MethodPost, "mcp-" + strings.Repeat("1", 32), init, nil, http.StatusNotFound},
 		{"initialize proposing another version is answered this one", http.MethodPost, "", init, nil, http.StatusOK},
+		{"an origin that is no origin", http.MethodPost, sid, ping, map[string]string{"Origin": "null"}, http.StatusForbidden},
+		{"a loopback origin with userinfo", http.MethodPost, sid, ping, map[string]string{"Origin": "http://u@localhost"}, http.StatusForbidden},
+		{"a loopback origin with a query", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost?x"}, http.StatusForbidden},
+		{"an origin spelled as a host that resolves to loopback", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost.evil.example"}, http.StatusForbidden},
+		// combined failures: the first row that fails answers
+		{"a bad origin and no token", http.MethodPost, sid, ping, map[string]string{"Origin": "https://evil.example", "Authorization": ""}, http.StatusForbidden},
+		{"no token and a bad version", http.MethodPost, sid, ping, map[string]string{"Authorization": "", "MCP-Protocol-Version": "2024-11-05"}, http.StatusUnauthorized},
+		{"a bad version and a body over the bound", http.MethodPost, sid, `{"pad":"` + strings.Repeat("x", mcpMaxMessageBytes) + `"}`, map[string]string{"MCP-Protocol-Version": "2024-11-05"}, http.StatusBadRequest},
+		{"a body over the bound and no session", http.MethodPost, "", `{"pad":"` + strings.Repeat("x", mcpMaxMessageBytes) + `"}`, nil, http.StatusRequestEntityTooLarge},
+		{"DELETE with a body over the bound", http.MethodDelete, sid, `{"pad":"` + strings.Repeat("x", mcpMaxMessageBytes) + `"}`, nil, http.StatusRequestEntityTooLarge},
+		{"DELETE of an unknown session", http.MethodDelete, "mcp-" + strings.Repeat("2", 32), "", nil, http.StatusNotFound},
+		{"GET with an unknown session", http.MethodGet, "mcp-" + strings.Repeat("3", 32), "", nil, http.StatusNotFound},
+		{"GET accepting JSON is still no stream", http.MethodGet, sid, "", map[string]string{"Accept": "application/json"}, http.StatusMethodNotAllowed},
+		{"Accept on two lines, JSON on the second", http.MethodPost, sid, ping, map[string]string{"Accept": "text/event-stream\nAccept: application/json"}, http.StatusOK},
+		{"a media-type parameter on the JSON range", http.MethodPost, sid, ping, map[string]string{"Accept": "application/json;charset=utf-8"}, http.StatusNotAcceptable},
+		{"an invalid quality", http.MethodPost, sid, ping, map[string]string{"Accept": "application/json;q=x"}, http.StatusNotAcceptable},
 		{"GET", http.MethodGet, sid, "", map[string]string{"Accept": "text/event-stream"}, http.StatusMethodNotAllowed},
 		{"GET without a session", http.MethodGet, "", "", nil, http.StatusBadRequest},
 		{"SSE alone", http.MethodPost, sid, ping, map[string]string{"Accept": "text/event-stream"}, http.StatusNotAcceptable},
@@ -332,7 +481,12 @@ func TestMCPHTTPMatrix(t *testing.T) {
 		{"PUT", http.MethodPut, sid, ping, nil, http.StatusMethodNotAllowed},
 	}
 	for _, row := range rows {
-		code, header, body := f.call(t, row.method, row.session, row.body, row.headers)
+		headers := row.headers
+		if v, ok := headers["Accept"]; ok && strings.Contains(v, "\n") {
+			// two field lines, which the fixture's one header cannot say
+			headers = map[string]string{"Accept": strings.Split(v, "\n")[0], "Accept-Second": strings.TrimPrefix(strings.Split(v, "\n")[1], "Accept: ")}
+		}
+		code, header, body := f.call(t, row.method, row.session, row.body, headers)
 		if code != row.want {
 			t.Errorf("%s: %d, want %d: %v", row.name, code, row.want, body)
 		}
@@ -343,6 +497,22 @@ func TestMCPHTTPMatrix(t *testing.T) {
 			t.Errorf("%s: the response names no protocol version", row.name)
 		}
 	}
+	// origins given and empty admit no origin at all; given, the exact ones
+	f.server.cfg.mcp.originsGiven = true
+	if code, _, _ := f.call(t, http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost:5173"}); code != http.StatusForbidden {
+		t.Fatalf("a loopback origin under origins [] answered %d", code)
+	}
+	if code, _, _ := f.call(t, http.MethodPost, sid, ping, nil); code != http.StatusOK {
+		t.Fatalf("no origin under origins [] answered %d", code)
+	}
+	f.server.cfg.mcp.origins = []string{"https://desk.example"}
+	if code, _, _ := f.call(t, http.MethodPost, sid, ping, map[string]string{"Origin": "https://desk.example"}); code != http.StatusOK {
+		t.Fatalf("the configured origin answered %d", code)
+	}
+	if code, _, _ := f.call(t, http.MethodPost, sid, ping, map[string]string{"Origin": "https://desk.example:443"}); code != http.StatusForbidden {
+		t.Fatalf("an origin spelled otherwise answered %d", code)
+	}
+	f.server.cfg.mcp.originsGiven, f.server.cfg.mcp.origins = false, nil
 	// a body over the bound sent without a length -- chunked -- is refused
 	// by the read, not by the header
 	big := `{"jsonrpc":"2.0","id":1,"method":"ping","params":{"pad":"` + strings.Repeat("x", mcpMaxMessageBytes) + `"}}`
@@ -364,8 +534,11 @@ func TestMCPHTTPMatrix(t *testing.T) {
 	if strings.Contains(fmt.Sprint(body["error"]), f.token) {
 		t.Fatal("the refusal repeats the token")
 	}
-	// DELETE ends the transport session and seals nothing; afterwards 404
-	before := len(f.service.sessions)
+	// DELETE ends the transport session and seals nothing: the receipt
+	// session it generated still takes an acquisition afterwards, from
+	// another transport session that names it
+	_, _, body = f.call(t, http.MethodPost, sid, toolCall(2, "screen.lookup", `{}`, ""), nil)
+	generated := sameBothWays(t, body["result"].(map[string]any))["session"].(string)
 	if code, _, _ := f.call(t, http.MethodDelete, sid, "", nil); code != http.StatusOK {
 		t.Fatalf("DELETE answered %d", code)
 	}
@@ -375,9 +548,12 @@ func TestMCPHTTPMatrix(t *testing.T) {
 	if code, _, _ := f.call(t, http.MethodDelete, sid, "", nil); code != http.StatusNotFound {
 		t.Fatalf("DELETE of an ended session answered %d", code)
 	}
-	if len(f.service.sessions) != before {
-		t.Fatal("ending a transport session touched a receipt session")
+	another := f.open(t)
+	_, _, body = f.call(t, http.MethodPost, another, toolCall(3, "screen.lookup", `{}`, `{"`+mcpSessionMeta+`":"`+generated+`"}`), nil)
+	if chained := sameBothWays(t, body["result"].(map[string]any)); chained["session"] != generated || chained["receipt"].(map[string]any)["callIndex"] != float64(1) {
+		t.Fatalf("after DELETE the generated session did not take a receipt: %v", body)
 	}
+	f.call(t, http.MethodDelete, another, "", nil)
 	// idle expiry
 	sid = f.open(t)
 	later := time.Now().Add(61 * time.Second)
@@ -411,8 +587,52 @@ func TestMCPHTTPMatrix(t *testing.T) {
 	var doc map[string]any
 	json.NewDecoder(resp.Body).Decode(&doc)
 	resp.Body.Close()
-	if resp.StatusCode != 200 || doc["resource"] != "https://engine.test/mcp" || doc["authorization_servers"].([]any)[0] != f.server.cfg.identity.issuer {
+	if resp.StatusCode != 200 || doc["resource"] != "https://engine.test/mcp" || doc["authorization_servers"].([]any)[0] != f.server.cfg.identity.issuer || doc["bearer_methods_supported"].([]any)[0] != "header" {
 		t.Fatalf("the metadata document: %d %v", resp.StatusCode, doc)
+	}
+	if resp, _ := http.Post(f.front.URL+"/.well-known/oauth-protected-resource/mcp", "application/json", nil); resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST of the metadata document answered %d", resp.StatusCode)
+	}
+}
+
+// The signer is the one destination: a redirect from it is not followed,
+// and is answered as the status it is; and the answer that does not arrive
+// names no address.
+func TestMCPForwardFollowsNothingAndNamesNoAddress(t *testing.T) {
+	f := newMCPFixture(t, false)
+	sid := f.open(t)
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"result":{},"receipt":{"forged":true},"salts":{}}`))
+	}))
+	t.Cleanup(elsewhere.Close)
+	redirecting := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/acquire", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirecting.Close)
+	f.server.signer = redirecting.URL
+	_, _, body := f.call(t, http.MethodPost, sid, toolCall(1, "screen.lookup", `{}`, ""), nil)
+	result := body["result"].(map[string]any)
+	if result["isError"] != true || sameBothWays(t, result)["status"] != float64(http.StatusTemporaryRedirect) {
+		t.Fatalf("a redirect: %v", result)
+	}
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(2 * time.Second) }))
+	t.Cleanup(stalled.Close)
+	f.server.signer = stalled.URL
+	f.server.forwardTimeout = 100 * time.Millisecond
+	var diagnostics bytes.Buffer
+	f.server.log = &diagnostics
+	_, _, body = f.call(t, http.MethodPost, sid, toolCall(2, "screen.lookup", `{}`, ""), nil)
+	result = body["result"].(map[string]any)
+	structured := sameBothWays(t, result)
+	if result["isError"] != true || structured["outcome"] != "unknown" {
+		t.Fatalf("a stalled signer: %v", result)
+	}
+	if text := fmt.Sprint(structured["error"]); strings.Contains(text, stalled.URL) || strings.Contains(text, "127.0.0.1") {
+		t.Fatalf("the unknown outcome names the signer's address: %s", text)
+	}
+	if !strings.Contains(diagnostics.String(), "did not answer") {
+		t.Fatalf("the diagnostics stream did not record the failed forward: %q", diagnostics.String())
 	}
 }
 
@@ -457,18 +677,14 @@ func TestMCPRefusalKindsAndSessions(t *testing.T) {
 		t.Fatalf("a failed source: %v", result)
 	}
 	t.Setenv(envSourceFail, "")
-	// an outcome the server does not know: the signer accepts and stalls
-	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { time.Sleep(2 * time.Second) }))
-	t.Cleanup(stalled.Close)
-	f.server.signer = stalled.URL
-	f.server.forwardTimeout = 200 * time.Millisecond
-	_, _, body = f.call(t, http.MethodPost, sid, toolCall(17, "screen.lookup", `{}`, ""), nil)
-	result = body["result"].(map[string]any)
-	if result["isError"] != true || result["structuredContent"].(map[string]any)["outcome"] != "unknown" {
-		t.Fatalf("a stalled signer: %v", result)
+	// an empty session name is the signer's to refuse, as any name is
+	_, _, body = f.call(t, http.MethodPost, sid, toolCall(17, mcpSealTool, `{"session":""}`, ""), nil)
+	if result = body["result"].(map[string]any); result["isError"] != true || sameBothWays(t, result)["status"] != float64(400) {
+		t.Fatalf("sealing the empty session name: %v", body)
 	}
-	f.server.signer = f.signer.URL
-	f.server.forwardTimeout = mcpForwardTimeout
+	if f.receiptsOf("named-1") != 2 {
+		t.Fatalf("named-1 holds %d receipts, not 2", f.receiptsOf("named-1"))
+	}
 }
 
 // A token the front accepts and the signer refuses -- the two holding

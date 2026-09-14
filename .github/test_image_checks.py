@@ -192,6 +192,36 @@ class Checks(unittest.TestCase):
     def test_mcp_home_missing(self):
         self.refused(good(**{"home/engine-mcp": None}), "home/engine-mcp")
 
+    # What the MCP server's user must not reach: a closed file under another
+    # home holds, an open one, one owned by that user or its group, and a
+    # shipped seed, store, configuration or credential path are each refused
+    def test_a_closed_file_under_the_signers_home_holds(self):
+        self.run_check(good(**{"home/engine/gateway.seed": dict(data=b"s", mode=0o600, uid=65532, gid=65532)}))
+
+    def test_a_world_readable_seed_under_the_signers_home(self):
+        self.refused(good(**{"home/engine/gateway.seed": dict(data=b"s", mode=0o644, uid=65532, gid=65532)}), "home/engine/gateway.seed is mode 0644, open to others")
+
+    def test_a_world_readable_store_under_the_signers_home(self):
+        self.refused(good(**{"home/engine/store": dict(kind="dir", mode=0o755, uid=65532, gid=65532)}), "home/engine/store is mode 0755, open to others")
+
+    def test_a_world_readable_credentials_file_under_a_platform_home(self):
+        self.refused(good(**{"home/engine-1/credentials.json": dict(data=b"c", mode=0o604, uid=65601, gid=65601)}), "home/engine-1/credentials.json is mode 0604, open to others")
+
+    def test_a_file_owned_by_the_mcp_user_outside_its_home(self):
+        self.refused(good(**{"home/engine-1/credentials.json": dict(data=b"c", mode=0o600, uid=65533, gid=65601)}), "is owned by the MCP server's user or group (65533:65601)")
+
+    def test_a_file_in_the_mcp_users_group_outside_its_home(self):
+        self.refused(good(**{"home/engine/store": dict(kind="dir", mode=0o750, uid=65532, gid=65533)}), "is owned by the MCP server's user or group (65532:65533)")
+
+    def test_a_shipped_configuration(self):
+        self.refused(good(**{"etc/engine": dict(kind="dir"), "etc/engine/engine.json": dict(data=b"{}")}), "the image ships etc/engine")
+
+    def test_a_shipped_seed_path(self):
+        self.refused(good(**{"var": dict(kind="dir"), "var/lib": dict(kind="dir"), "var/lib/engine": dict(kind="dir", mode=0o700, uid=65532, gid=65532), "var/lib/engine/gateway.seed": dict(data=b"s", mode=0o600, uid=65532, gid=65532)}), "the image ships var/lib/engine")
+
+    def test_a_shipped_secret(self):
+        self.refused(good(**{"run": dict(kind="dir"), "run/secrets": dict(kind="dir"), "run/secrets/warehouse": dict(data=b"c", mode=0o600, uid=65601, gid=65601)}), "the image ships run/secrets")
+
     def test_gateway_mode(self):
         self.refused(good(**{"usr/local/bin/gateway": dict(mode=0o750)}), "must be 0700")
 

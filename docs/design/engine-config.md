@@ -64,12 +64,12 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
 - `mcp`, when present, is the MCP server's own settings ([mcp-server.md](mcp-server.md)):
   `listen`, a literal loopback address with an explicit port, where `gateway mcp --http`
   listens; `resource`, the absolute `https` URL the server is reached as, without a fragment,
-  required for `--http`; `origins`, the exact origins its HTTP transport admits, loopback
-  origins when absent; and four bounds with their ranges, `sessions` (`1` to `4096`, default
+  required for `--http`; `origins`, the exact origins its HTTP transport admits — loopback
+  origins when the member is absent, none at all when it is present and empty; and four bounds with their ranges, `sessions` (`1` to `4096`, default
   `64`), `idleSeconds` (`60` to `86400`, default `1800`), `concurrency` (`1` to `64`, default `8`)
   and `callsPerMinute` (`1` to `6000`, default `120`). With `mcp` present the signer's `listen`
-  may not name port `0`, since the MCP server finds the signer by that value and nothing
-  else. The signer reads the member and does nothing with it; the MCP server reads the whole
+  may not name port `0` — by its number, whatever its spelling — since the MCP server finds
+  the signer by that value and nothing else. The signer reads the member and does nothing with it; the MCP server reads the whole
   file as metadata and holds `identity.issuer`, when it serves HTTP, to an authorization
   server's identifier (an absolute `https` URL with no query and no fragment), which the
   signer does not demand.

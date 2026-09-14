@@ -22,17 +22,18 @@ cannot prove:
 - **The image** carries a second copy of the executable, `/usr/local/bin/engine-mcp`, mode
   `0755`, root-owned, with no file capability — the signer's `0700` binary with its
   capabilities is never the one this process runs — and a user `engine-mcp` (uid `65533`,
-  its own group, no supplementary group, home `/home/engine-mcp`) that no group of the
-  signer's or of a platform's admits. The image check holds the copy's mode and attributes,
-  the user's entry and groups, and that the seed, store and credentials *paths the image
-  ships* are unreadable to it — what an image check can prove, and no more: what an operator
-  mounts at deployment the image never sees.
+  its own group and no other, home `/home/engine-mcp`) that no group of the signer's or of a
+  platform's admits. The image check holds the copy's mode and attributes, the user's entry
+  and groups, that nothing outside that home is the user's or its group's, that every other
+  home's contents are closed to others, and that the paths a deployment mounts a seed, a
+  store, a configuration or a credential at are absent from the image — what an image check
+  can prove, and no more: what an operator mounts at deployment the image never sees.
 - **The launch** is the operator's. The executable is the gateway's, copied; the
   subcommand selects the role, as for every other command of the binary, and the one
   supported invocation is, in full:
 
   ```
-  # as uid 65533, gid 65533, no supplementary groups, no capability in any set,
+  # as uid 65533, gid 65533, no supplementary group but its own, no capability in any set,
   # HOME=/home/engine-mcp, working directory /home/engine-mcp
   /usr/local/bin/engine-mcp mcp --config /etc/engine/engine.json --http
   ```
@@ -41,8 +42,9 @@ cannot prove:
   own reach at start**, under the deployment assumptions the operator's note states — the
   configuration and the signer's mounts are in place before it starts, and are not changed
   while it runs — and refuses to run otherwise: its effective, permitted, inheritable and
-  ambient capability sets are empty; its uid and gid are the frontend's and its
-  supplementary groups are none; and opening the configured seed path, every configured
+  ambient capability sets are empty; its uid and gid are the frontend's (`65533`) and its
+  supplementary groups are none but its own — a container runtime lists the primary group
+  there, and that membership admits nothing the gid does not; and opening the configured seed path, every configured
   credentials file and the configured store for reading fails with permission denied — a
   path that does not exist, or any other answer than denial, is refused too, since it says
   nothing. What such a check proves is that this process cannot open those paths now: a
@@ -88,8 +90,10 @@ it — an absolute `https` URL with no query and no fragment — which the signe
 not demand and the frontend does. **There is no
 unprotected HTTP mode**: `--http` without an `identity` is a refusal to start. `--stdio`
 without one is allowed — a host spawning the process on the operator's own machine, the
-signer recording `caller: null`. `origins` are the exact origins the HTTP transport admits,
-loopback by default. The four bounds default as shown and take the ranges stated under
+signer recording `caller: null`. `origins` are the exact origins the HTTP transport admits:
+loopback origins when the member is absent; when it is present and empty, no origin at all,
+so a request carrying an `Origin` header is refused and a native client without one is
+admitted. The four bounds default as shown and take the ranges stated under
 Bounds. The endpoint path is `/mcp`; the transport is chosen at launch, never by a request.
 
 ## What a call becomes
@@ -202,7 +206,8 @@ changes neither until it restarts, and restarting one alone makes the two accept
 keys for as long as they differ. A signer restart also empties its session map and cancels a
 running source, so the sessions a consumer relies on are sealed first, and nothing may open
 or extend one between that sealing and the restart. The contract, in order: add the new key
-under a new `kid` beside the old; restart the frontend; **close admission** — the frontend
+under a new `kid` beside the old; restart the frontend; **close admission** — `SIGUSR1` to
+the frontend closes it and `SIGUSR2` reopens it; closed, the frontend
 answers a new `initialize` `503` and a new acquisition as an overload, and the operator
 closes every other ingress to `/acquire` and `/act` the same way — and wait for what is in
 flight; seal every session to be preserved **by `/seal` directly**, on the signer's loopback
@@ -286,7 +291,9 @@ next, and the first that fails answers:
 | `POST` a request | `200`, JSON body, `Content-Type: application/json` |
 | `POST` a notification or a response | `202`, no body |
 
-The response carries `MCP-Protocol-Version` too, an extra the specification permits. A
+The response carries `MCP-Protocol-Version` too, an extra the specification permits. An
+`initialize` that names a live transport session is a request on that session, answered
+`200` with an invalid-request error, since a session initializes once. A
 transport session expires after `mcp.idleSeconds` without a request, answering `404` after;
 expiry seals nothing. A cancelled call cancels nothing at the signer: an acquisition already
 started runs to its end and may mint a receipt the client never sees, and a retry mints
@@ -308,8 +315,9 @@ forwarded or refused — so a flood refused at the queue still spends its quota 
 call answered as an overload error naming the seconds until the window turns; and one
 deadline per forward, forty-five seconds — the signer's thirty-second source deadline, its
 five-second wait for the source's pipes, and a margin — after which the outcome is unknown
-as above. When admission closes for maintenance, a queued call is refused as an overload,
-not drained.
+as above, and eight mebibytes of the signer's answer — its own one-mebibyte output bound,
+the receipt, the salts and room — past which the outcome is unknown too. When admission
+closes for maintenance, a queued call is refused as an overload, not drained.
 
 What these bounds do not bound is the signer's work. A forward past its deadline releases
 its slot while the signer may still be running the source and writing the receipt, so zero
