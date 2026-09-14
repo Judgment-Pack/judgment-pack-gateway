@@ -213,9 +213,20 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 		t.Fatalf("a sealed session: %d %v", code, body)
 	}
 	// On a sealed session, a request missing its decision is refused at
-	// the session step: the ladder's order is the order of the answer.
+	// the session step: the ladder's order is the order of the answer. So
+	// is one whose arguments do not parse, and one faulty at every later
+	// step at once.
 	if code, body := authed(t, server, "/act", noDecision, token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
 		t.Fatalf("a sealed session names the session before the missing decision: %d %v", code, body)
+	}
+	if code, body := authed(t, server, "/act", strings.Replace(good("act-1", "0", signature, record), `"arguments":{"id":"T-1"}`, `"arguments":{"n":1.5}`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
+		t.Fatalf("a sealed session names the session before unparseable arguments: %d %v", code, body)
+	}
+	if code, body := authed(t, server, "/act", `{"session":"act-1","platform":"docs","tool":"x","arguments":{"n":1.5},"decision":{},"cites":[]}`, token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
+		t.Fatalf("a request faulty at every step is answered by the earliest: %d %v", code, body)
+	}
+	if service.started.Load() != started+1 {
+		t.Fatal("an executor ran for a request refused at the session step")
 	}
 	restarted, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
 	if err != nil {
@@ -256,6 +267,38 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if restarted.started.Load() != 0 {
 		t.Fatal("an executor ran into a session an acquisition had only reserved")
 	}
+	// An old session that lost its first receipt and kept its second: an
+	// acquisition into it after a restart recreates the first and counts
+	// on from there, and an action into it is still refused, since this
+	// process did not find the store empty there when it first admitted --
+	// ownership is not a receipt count.
+	if code, body := authed(t, server, "/acquire", `{"session":"act-6","source":"screening","arguments":{"q":"a"}}`, token); code != http.StatusOK {
+		t.Fatalf("acquire into act-6: %d %v", code, body)
+	}
+	if code, body := authed(t, server, "/acquire", `{"session":"act-6","source":"screening","arguments":{"q":"b"}}`, token); code != http.StatusOK {
+		t.Fatalf("second acquire into act-6: %d %v", code, body)
+	}
+	if err := os.Remove(filepath.Join(service.storeRoot, "receipts", "act-6", "0.json")); err != nil {
+		t.Fatal(err)
+	}
+	lost, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lost.identity = &id
+	lost.decisionRecords = records
+	lostServer := httptest.NewServer(lost.handler())
+	defer lostServer.Close()
+	if code, body := authed(t, lostServer, "/acquire", `{"session":"act-6","source":"screening","arguments":{"q":"c"}}`, token); code != http.StatusOK {
+		t.Fatalf("a read into the old session recreates its first receipt: %d %v", code, body)
+	}
+	lostBefore := lost.started.Load()
+	if code, body := authed(t, lostServer, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-6"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
+		t.Fatalf("an old session with a recreated receipt: %d %v", code, body)
+	}
+	if lost.started.Load() != lostBefore {
+		t.Fatal("an executor ran into an old session whose receipt count a read had raised")
+	}
 	// A session put on disk between the session step and admission -- an
 	// acquisition's stamp landing in the window the evidence checks open --
 	// is caught by admission's own recheck under the lock, and nothing runs.
@@ -289,8 +332,17 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"tool":"update_ticket"`, `"tool":"close_ticket"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "tool" {
 		t.Fatalf("a fresh session after a restart reaches the tool step: %d %v", code, body)
 	}
-	// Arguments that are not an object are refused before the executor:
-	// what is committed to is what is sent, and the adapter sends an object.
+	// Arguments that do not parse in the canonical domain, or are not an
+	// object, are refused at their own step, after the tool's: what is
+	// committed to is what is sent, and the adapter sends an object.
+	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"arguments":{"id":"T-1"}`, `"arguments":{"n":1.5}`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "arguments" {
+		t.Fatalf("unparseable arguments: %d %v", code, body)
+	}
+	// A citation with a member beyond its three is refused, not trimmed:
+	// what the receipt would carry is exactly what was given.
+	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"signature":"`+signature+`"}]`, `"signature":"`+signature+`","note":"x"}]`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "cites" || !strings.Contains(fmt.Sprint(body["error"]), "note") {
+		t.Fatalf("a citation with an extra member: %d %v", code, body)
+	}
 	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"arguments":{"id":"T-1"}`, `"arguments":null`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "arguments" {
 		t.Fatalf("null arguments: %d %v", code, body)
 	}
@@ -317,7 +369,7 @@ func TestActWithoutAnIdentityReadsNoBody(t *testing.T) {
 	if reader.reads.Load() != 0 {
 		t.Fatalf("the body was read %d times before the requester was refused", reader.reads.Load())
 	}
-	if _, err := service.act("s", "tickets", "update_ticket", newObject(), json.RawMessage(`{}`), json.RawMessage(`[]`), nil); err == nil || !strings.Contains(err.Error(), "requester") {
+	if _, err := service.act("s", "tickets", "update_ticket", json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`[]`), nil); err == nil || !strings.Contains(err.Error(), "requester") {
 		t.Fatalf("act refuses a nil requester on its own: %v", err)
 	}
 }

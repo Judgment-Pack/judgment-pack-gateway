@@ -18,10 +18,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -34,6 +36,13 @@ type sessionState struct {
 	prev     string
 	sealed   bool
 	inFlight int // admitted acquisitions whose source has not finished
+	// owned is whether this process found the session absent from the
+	// store when it first admitted into it -- so every receipt there is
+	// this process's own -- or found something there it did not mint. An
+	// action is minted only into an owned session (executor.md): a receipt
+	// count says nothing, since a read can recreate a receipt an old
+	// session lost and count up from there.
+	owned bool
 }
 
 // sourceSpec is what the operator declared for one source: the command, the
@@ -738,7 +747,7 @@ func (g *gatewayService) admit(sessionID string) error {
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
 	if !seen {
-		state = &sessionState{}
+		state = &sessionState{owned: g.sessionAbsent(sessionID)}
 		g.sessions[sessionID] = state
 	}
 	if state.sealed {
@@ -746,6 +755,15 @@ func (g *gatewayService) admit(sessionID string) error {
 	}
 	state.inFlight++
 	return nil
+}
+
+// sessionAbsent reports whether nothing at all is in the store where the
+// session's receipts would be -- read with Lstat, so a link counts as
+// something, and a lookup that fails for any reason but absence counts as
+// something too, never as absence.
+func (g *gatewayService) sessionAbsent(sessionID string) bool {
+	_, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", sessionID))
+	return errors.Is(err, fs.ErrNotExist)
 }
 
 // release drops the reservation admit took.
@@ -937,16 +955,7 @@ func (g *gatewayService) handler() http.Handler {
 			fail(w, badRequest{err})
 			return
 		}
-		arguments := value(newObject())
-		if len(body.Arguments) > 0 {
-			parsed, err := parseJSON(body.Arguments)
-			if err != nil {
-				fail(w, badRequest{err})
-				return
-			}
-			arguments = parsed
-		}
-		out, err := g.act(body.Session, body.Platform, body.Tool, arguments, body.Decision, body.Cites, who)
+		out, err := g.act(body.Session, body.Platform, body.Tool, body.Arguments, body.Decision, body.Cites, who)
 		if err != nil {
 			var refusal actRefusal
 			if errors.As(err, &refusal) {

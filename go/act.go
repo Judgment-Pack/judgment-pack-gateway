@@ -30,7 +30,7 @@ type actRefusal struct {
 func (r actRefusal) Error() string { return r.step + ": " + r.reason }
 
 // act performs one write for an authenticated requester, or refuses it.
-func (g *gatewayService) act(sessionID, platform, tool string, arguments value, decisionRaw, citesRaw json.RawMessage, who *caller) (map[string]any, error) {
+func (g *gatewayService) act(sessionID, platform, tool string, argumentsRaw, decisionRaw, citesRaw json.RawMessage, who *caller) (map[string]any, error) {
 	if who == nil {
 		return nil, actRefusal{"requester", errNoRequester.Error() + "; this engine has no identity configured"}
 	}
@@ -54,6 +54,14 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments value, 
 	// The executor is started for this tool alone (executor.md): a binding
 	// naming several write tools offers each request one of them.
 	spec = narrowTools(spec, tool)
+	arguments := value(newObject())
+	if len(argumentsRaw) > 0 {
+		parsed, err := parseJSON(argumentsRaw)
+		if err != nil {
+			return nil, actRefusal{"arguments", "arguments: " + err.Error()}
+		}
+		arguments = parsed
+	}
 	if _, isObject := arguments.(*vObject); !isObject {
 		return nil, actRefusal{"arguments", "arguments must be a JSON object: the executor sends the request as an object, and the commitment is over what is sent"}
 	}
@@ -68,6 +76,19 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments value, 
 	citesV, err := parseMember("cites", citesRaw)
 	if err != nil {
 		return nil, actRefusal{"cites", err.Error()}
+	}
+	// The verifier tolerates members it does not know inside a signed
+	// receipt (signed extensibility); a requester's citation is not signed
+	// yet, and what the receipt will carry is exactly what was given, so a
+	// citation is exactly its three members or it is refused.
+	if arr, ok := citesV.(vArray); ok {
+		for i, entry := range arr {
+			if obj, ok := entry.(*vObject); ok {
+				if err := exactlyMembers(obj, map[string]bool{"sessionId": true, "callIndex": true, "signature": true}, fmt.Sprintf("cites[%d]", i)); err != nil {
+					return nil, actRefusal{"cites", err.Error()}
+				}
+			}
+		}
 	}
 	cites, err := parseCitations(citesV, "action")
 	if err != nil {
@@ -232,17 +253,22 @@ func (g *gatewayService) sessionOpen(sessionID string) string {
 }
 
 // sessionMintedHere is why a session is not one this process may continue,
-// or "": under the lock, a session into which this process has minted
-// nothing -- unknown to it, or reserved by an admission that has minted
-// nothing yet -- must have nothing in the store either. An entry there of
-// any kind (a directory, a link, a file) is a session this engine did not
-// mint; a lookup that fails for any reason but absence is refused as such,
-// never taken for absence, since a dangling link reports absent to a stat
-// that follows it. Called by the session step and again by admission, so a
-// reservation made between the two changes nothing.
+// or "": under the lock, a session this process knows is one it owns only
+// if it found the store empty there when it first admitted into it -- a
+// receipt count says nothing, since a read into an old session can recreate
+// a receipt that session lost and count from there; a session it does not
+// know must have nothing in the store either. An entry there of any kind (a
+// directory, a link, a file) is a session this engine did not mint; a lookup
+// that fails for any reason but absence is refused as such, never taken for
+// absence, since a dangling link reports absent to a stat that follows it.
+// Called by the session step and again by admission, so a reservation made
+// between the two changes nothing.
 func (g *gatewayService) sessionMintedHere(sessionID string) string {
-	if state, seen := g.sessions[sessionID]; seen && state.index > 0 {
-		return ""
+	if state, seen := g.sessions[sessionID]; seen {
+		if state.owned {
+			return ""
+		}
+		return "session " + sessionID + " exists in the store as something this engine did not mint; it predates this start, and an action opens a session of its own"
 	}
 	_, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", sessionID))
 	switch {
@@ -268,7 +294,9 @@ func (g *gatewayService) admitAction(sessionID string) error {
 	}
 	state, seen := g.sessions[sessionID]
 	if !seen {
-		state = &sessionState{}
+		// sessionMintedHere found nothing in the store: the session is this
+		// process's own from here.
+		state = &sessionState{owned: true}
 		g.sessions[sessionID] = state
 	}
 	if state.sealed {

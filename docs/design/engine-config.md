@@ -317,6 +317,8 @@ parses, and `serve` refuses to start on it.
 - **Not a policy.** It says which systems may be reached, never what a pack means or which
   pack decides what. Selection stays the application's.
 - **Not an authorization.** `write: true` says an executor may be pointed at the platform; a
-  write still happens only for an approved action citing a decision record.
+  write still happens only on an authenticated request that cites a decision record and receipts
+  the engine finds where it looks ([executor.md](executor.md)). That a person approved the write
+  is not established by anything here: the receipt says who asked.
 - **Not portable across engines.** It names local paths and local secrets; the receipts are
   what travel.

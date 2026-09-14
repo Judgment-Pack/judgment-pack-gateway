@@ -47,10 +47,12 @@ that what they name exists and compares nothing inside it, which is §4's standa
    not mint → refused. The last is what a restart means: a session the store already holds
    cannot have its chain continued from an empty memory, and a write that ran and could not be
    receipted is the outcome this design exists to refuse, so an action after a restart opens a
-   session of its own. "Did not mint" is judged by what this process has minted, not by what it
-   has reserved: an acquisition admitted into such a session, with nothing minted yet, leaves it
-   one the action may not enter; an entry of any kind — a directory, a link, a file — is such a
-   session, and a lookup that fails for any reason but absence refuses rather than passes.
+   session of its own. "Did not mint" is judged by whether this process found the store empty
+   there when it first admitted into the session — never by a receipt count, since a read into
+   an old session can recreate a receipt that session lost and count on from there — so an
+   acquisition admitted into such a session leaves it one the action may not enter; an entry of
+   any kind — a directory, a link, a file — is such a session, and a lookup that fails for any
+   reason but absence refuses rather than passes.
    (`/acquire` admits by memory alone, as it always has; a read against such a session fails at
    the stamp with no receipt and nothing done.) Admission itself — the atomic reservation
    against sealing — happens once the evidence below is held, as it does for a read, and judges
@@ -65,14 +67,20 @@ that what they name exists and compares nothing inside it, which is §4's standa
    `--tools=<that tool>` and nothing else — the binding's list narrowed to the one requested —
    so a server offering more cannot be asked for more. The arguments must be a JSON object:
    the executor sends `{tool, arguments}` as an object, and the commitment is over what is
-   sent, so nothing is sent that is not what was committed to.
-5. Each citation must resolve in the engine's store by §4 step 5's rule — its `sessionId`
-   exactly a session directory name, its `callIndex` exactly a file stem, its `signature` the
-   same string as that file's — and that receipt must pass the ladder under the engine's key.
-   A citation that does not resolve, or a cited receipt that does not verify, refuses the
-   request and names the citation. An empty `cites` is refused: a judgment that relied on no
-   receipt is not one this engine can stand behind.
-6. `decision.recordDigest` must equal the SHA-256 of some candidate under the configured
+   sent, so nothing is sent that is not what was committed to; arguments that do not parse
+   are refused at this step.
+5. The decision claim must have its shape — exactly `recordDigest` and `packDigest`, each a
+   digest — or the request is refused here, before any citation is read.
+6. Each citation must be exactly its three members and resolve in the engine's store by §4
+   step 5's rule — its `sessionId` exactly a session directory name, its `callIndex` exactly a
+   file stem, its `signature` the same string as that file's — and that receipt must pass the
+   ladder under the engine's key. A citation that does not resolve, or a cited receipt that
+   does not verify, refuses the request and names the citation. An empty `cites` is refused: a
+   judgment that relied on no receipt is not one this engine can stand behind. (The verifier
+   tolerates members it does not know inside a signed receipt; a requester's citation is not
+   signed yet, and what the receipt will carry is exactly what was given, so a citation with
+   more than its three members is refused rather than trimmed.)
+7. `decision.recordDigest` must equal the SHA-256 of some candidate under the configured
    `decisionRecords` directory by §4 step 6's rule — every regular file as its whole bytes,
    and every line of a `.jsonl` file — or the request is refused. `packDigest` is recorded as
    given and checked against nothing: the record's contents are the runtime's, and the engine
