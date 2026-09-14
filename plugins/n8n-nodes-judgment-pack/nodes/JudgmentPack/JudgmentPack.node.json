@@ -1,0 +1,18 @@
+{
+	"node": "n8n-nodes-judgment-pack",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Development", "Developer Tools"],
+	"resources": {
+		"credentialDocumentation": [
+			{
+				"url": "https://github.com/Judgment-Pack/judgment-pack-gateway/tree/main/plugins/n8n-nodes-judgment-pack#credentials"
+			}
+		],
+		"primaryDocumentation": [
+			{
+				"url": "https://github.com/Judgment-Pack/judgment-pack-gateway/tree/main/plugins/n8n-nodes-judgment-pack"
+			}
+		]
+	}
+}

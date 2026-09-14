@@ -1,0 +1,48 @@
+{
+	"name": "n8n-nodes-judgment-pack",
+	"version": "0.1.0",
+	"description": "n8n node for the Judgment Pack engine: acquire facts with a signed receipt, perform an approved write as an action, seal a session",
+	"license": "MIT",
+	"homepage": "https://github.com/Judgment-Pack/judgment-pack-gateway/tree/main/plugins/n8n-nodes-judgment-pack",
+	"keywords": [
+		"n8n-community-node-package"
+	],
+	"author": {
+		"name": "kikashy",
+		"email": "35789537+kikashy@users.noreply.github.com"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Judgment-Pack/judgment-pack-gateway.git",
+		"directory": "plugins/n8n-nodes-judgment-pack"
+	},
+	"scripts": {
+		"build": "n8n-node build",
+		"dev": "n8n-node dev",
+		"lint": "n8n-node lint",
+		"lint:fix": "n8n-node lint --fix",
+		"test": "node --test test/*.test.mjs",
+		"prepublishOnly": "n8n-node prerelease"
+	},
+	"files": [
+		"dist"
+	],
+	"n8n": {
+		"n8nNodesApiVersion": 1,
+		"strict": true,
+		"credentials": [
+			"dist/credentials/JudgmentPackEngineApi.credentials.js"
+		],
+		"nodes": [
+			"dist/nodes/JudgmentPack/JudgmentPack.node.js"
+		]
+	},
+	"devDependencies": {
+		"@n8n/node-cli": "0.47.2",
+		"n8n-workflow": "2.16.0",
+		"typescript": "5.9.3"
+	},
+	"peerDependencies": {
+		"n8n-workflow": "*"
+	}
+}

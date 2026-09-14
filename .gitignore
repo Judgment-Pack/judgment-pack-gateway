@@ -4,3 +4,8 @@ store/
 *.key
 *.seed
 go/gateway
+
+# ecosystem packages under plugins/ build into dist/ and install into node_modules/
+plugins/**/node_modules/
+plugins/**/dist/
+plugins/**/*.tsbuildinfo
