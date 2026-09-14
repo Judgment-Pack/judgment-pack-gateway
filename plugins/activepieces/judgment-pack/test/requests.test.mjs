@@ -60,27 +60,47 @@ test('the engine URL is required and must be http or https', () => {
 	assert.throws(() => sealRequest({ engine_url: 'ftp://x' }, { session: 's1' }), RequestError);
 });
 
-test('over https, a certificate the process has been told to ignore is still refused', async (t) => {
+// selfSigned mints a certificate for 127.0.0.1 with openssl. Only a missing
+// openssl is a reason to skip -- and not on CI, where the check must run;
+// any other failure is a broken fixture and fails the test.
+async function selfSigned(t) {
 	const { execFileSync } = await import('node:child_process');
-	const { mkdtempSync, readFileSync } = await import('node:fs');
+	const { mkdtempSync, readFileSync, rmSync } = await import('node:fs');
 	const { tmpdir } = await import('node:os');
 	const { join } = await import('node:path');
-	let key, cert;
+	const dir = mkdtempSync(join(tmpdir(), 'jp-tls-'));
+	t.after(() => rmSync(dir, { recursive: true, force: true }));
 	try {
-		const dir = mkdtempSync(join(tmpdir(), 'jp-tls-'));
 		execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem'), '-days', '1', '-subj', '/CN=127.0.0.1'], { stdio: 'ignore' });
-		key = readFileSync(join(dir, 'key.pem'));
-		cert = readFileSync(join(dir, 'cert.pem'));
-	} catch {
-		t.skip('openssl is not available to mint a self-signed certificate');
+	} catch (error) {
+		if (error.code === 'ENOENT' && !process.env.CI) {
+			t.skip('openssl is not installed, so no certificate can be minted');
+			return undefined;
+		}
+		throw error;
+	}
+	return { key: readFileSync(join(dir, 'key.pem')), cert: readFileSync(join(dir, 'cert.pem')) };
+}
+
+async function listening(server) {
+	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+	return server.address().port;
+}
+
+async function closed(server) {
+	await new Promise((resolve) => server.close(resolve));
+}
+
+test('over https, a certificate the process has been told to ignore is still refused', async (t) => {
+	const pair = await selfSigned(t);
+	if (pair === undefined) {
 		return;
 	}
-	const server = (await import('node:https')).createServer({ key, cert }, (req, res) => {
+	const server = (await import('node:https')).createServer(pair, (req, res) => {
 		res.statusCode = 200;
 		res.end('{"leaked": true}');
 	});
-	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-	const port = server.address().port;
+	const port = await listening(server);
 	const before = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
 	// what the framework's client leaves behind for the whole process
 	process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -95,7 +115,38 @@ test('over https, a certificate the process has been told to ignore is still ref
 		} else {
 			process.env.NODE_TLS_REJECT_UNAUTHORIZED = before;
 		}
-		server.close();
+		await closed(server);
+	}
+});
+
+test('an engine that accepts the connection and stops answering does not hold the flow', async () => {
+	const http = await import('node:http');
+	// headers never sent
+	const silent = http.createServer(() => {});
+	const silentPort = await listening(silent);
+	try {
+		await assert.rejects(
+			send(sealRequest({ engine_url: `http://127.0.0.1:${silentPort}` }, { session: 's1' }), 200),
+			/did not answer within 200 ms/,
+		);
+	} finally {
+		silent.closeAllConnections();
+		await closed(silent);
+	}
+	// headers sent, the body never finished
+	const partial = http.createServer((req, res) => {
+		res.statusCode = 200;
+		res.write('{"result": ');
+	});
+	const partialPort = await listening(partial);
+	try {
+		await assert.rejects(
+			send(sealRequest({ engine_url: `http://127.0.0.1:${partialPort}` }, { session: 's1' }), 200),
+			/did not answer within 200 ms/,
+		);
+	} finally {
+		partial.closeAllConnections();
+		await closed(partial);
 	}
 });
 
@@ -105,15 +156,14 @@ test('sending leaves the process’s certificate verification alone, and a refus
 		res.statusCode = 401;
 		res.end('{"error":"no requester"}');
 	});
-	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-	const port = server.address().port;
+	const port = await listening(server);
 	try {
 		await assert.rejects(
 			send(sealRequest({ engine_url: `http://127.0.0.1:${port}` }, { session: 's1' })),
 			/answered 401: \{"error":"no requester"\}/,
 		);
 	} finally {
-		server.close();
+		await closed(server);
 	}
 	assert.equal(process.env.NODE_TLS_REJECT_UNAUTHORIZED, before);
 	assert.notEqual(process.env.NODE_TLS_REJECT_UNAUTHORIZED, '0');
