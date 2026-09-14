@@ -104,13 +104,15 @@ provides one, and the engine has already refused to start if the seed file is re
 identity. The adapter reads its secret in its own process and the gateway never sees it. A
 connector image for a history read is run by the Airbyte adapter, not by the gateway.
 
-The runtime runs on request as its own process, for evaluation and for the decision-record
-half of `verify`. It holds no seed and no credential.
-
-`gateway verify` reads the store and the registry and, with the engine configuration, the
-decision records. It needs the public key and nothing else, and it runs the same way outside the
-image, on a copy of the store, which is the only way its verdict is evidence
-([SPEC.md §5a.3](../../SPEC.md)).
+The runtime is not in this image and is not launched by it (the table above says so); running
+it as its own process beside the signer, for evaluation, is future work. Nothing about `verify`
+waits on it: `gateway verify <store> <registry> <authority> --decision-records <dir>` takes the
+decision-record directory as an argument — it reads no engine configuration — hashes every
+candidate under it in its own process for the action receipts' `decision.recordDigest`, and
+reads a candidate that carries a `cites` member for that member alone, resolving each citation
+as an action receipt's ([SPEC.md §4](../../SPEC.md) steps 6 and 7). It needs the public key and
+nothing else, and it runs the same way outside the image, on a copy of the store, which is the
+only way its verdict is evidence ([SPEC.md §5a.3](../../SPEC.md)).
 
 ## The container runtime problem
 
