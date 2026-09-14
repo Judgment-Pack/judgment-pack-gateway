@@ -1,6 +1,6 @@
 import { PieceAuth, Property } from '@activepieces/pieces-framework';
-import { httpClient, HttpMethod } from '@activepieces/pieces-common';
 import { engineBase, engineHeaders } from './common/requests';
+import { sendTo } from './common/send';
 
 // The engine's URL and, when the engine is configured with an identity, a
 // bearer token its issuer signed: the token names the caller on every
@@ -26,14 +26,11 @@ export const judgmentPackAuth = PieceAuth.CustomAuth({
 		}),
 	},
 	// A public key answers at every engine: this establishes that an engine
-	// listens at the URL, and nothing about the key's authenticity (SPEC §5).
+	// listens at the URL, and nothing about the key's authenticity (SPEC §5)
+	// nor about the token, which /publickey does not read.
 	validate: async ({ auth }) => {
 		try {
-			await httpClient.sendRequest({
-				method: HttpMethod.GET,
-				url: `${engineBase(auth)}/publickey`,
-				headers: engineHeaders(auth),
-			});
+			await sendTo(`${engineBase(auth)}/publickey`, { method: 'GET', headers: engineHeaders(auth) });
 			return { valid: true };
 		} catch (e) {
 			return { valid: false, error: `No engine answered at the URL: ${(e as Error).message}` };

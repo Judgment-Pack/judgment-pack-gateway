@@ -22,9 +22,9 @@ export const acquire = createAction({
 		}),
 		arguments: Property.Json({
 			displayName: 'Arguments',
-			description: 'The canonical arguments the source receives, as a JSON object',
-			required: true,
-			defaultValue: {},
+			description:
+				'The canonical arguments the source receives: any JSON value; leave empty for the engine’s default, an empty object',
+			required: false,
 		}),
 	},
 	async run(context) {

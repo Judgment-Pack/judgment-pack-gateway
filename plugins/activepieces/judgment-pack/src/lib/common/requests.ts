@@ -73,6 +73,23 @@ function array(value: unknown, name: string): unknown[] {
 	return value;
 }
 
+// /acquire takes any value in the canonical JSON domain as the arguments,
+// and an absent member as {}: a string is read as JSON, and an empty one
+// leaves the member out for the engine's default.
+function anyValue(value: unknown, name: string): { present: boolean; value?: unknown } {
+	if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+		return { present: false };
+	}
+	if (typeof value === 'string') {
+		try {
+			return { present: true, value: JSON.parse(value) };
+		} catch {
+			throw new RequestError(`${name} is not valid JSON`);
+		}
+	}
+	return { present: true, value };
+}
+
 function text(value: unknown, name: string): string {
 	if (typeof value !== 'string' || value.trim() === '') {
 		throw new RequestError(`${name} must be a non-empty string`);
@@ -84,15 +101,19 @@ export function acquireRequest(
 	credentials: EngineCredentials,
 	input: { session: unknown; source: unknown; arguments: unknown },
 ): EngineRequest {
+	const body: Record<string, unknown> = {
+		session: session(input.session),
+		source: text(input.source, 'the source'),
+	};
+	const args = anyValue(input.arguments, 'the arguments');
+	if (args.present) {
+		body['arguments'] = args.value;
+	}
 	return {
 		method: 'POST',
 		url: `${engineBase(credentials)}/acquire`,
 		headers: engineHeaders(credentials),
-		body: {
-			session: session(input.session),
-			source: text(input.source, 'the source'),
-			arguments: object(input.arguments, 'the arguments'),
-		},
+		body,
 	};
 }
 

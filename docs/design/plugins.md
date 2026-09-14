@@ -50,13 +50,20 @@ when a token is given; the credential's test calls `GET /publickey`, which estab
 engine answers at the URL and nothing about the key's authenticity (§5).
 
 **What the packages do not do.** They do not verify. A receipt's verification is `gateway
-verify` over the store, the registry and the pinned key (§4), run by whoever needs the verdict,
-never by the party that minted the receipt and never by the workflow that asked for it; the
-packages hand the receipt on and say so. They do not hold a session for the caller: the session
+verify` over the store, the registry and the pinned key (§4), and it is the consumer's (§5a):
+whoever relies on the bytes — the workflow itself, as often as not — checks the store-wide JSON
+verdict before relying, and never takes the engine's own `GET /verify` for it (§5a.3); the
+packages hand the receipt on and say so, and their examples seal and verify an acquisition
+session before an action session begins. They do not hold a session for the caller: the session
 is a flat token the workflow chooses (§3a), and sealing it is an operation the workflow calls.
 They take no dependency beyond each framework's own (n8n's verification rules forbid runtime
 dependencies, environment variables and files; Activepieces pieces take the framework and
-`tslib`), and they read nothing the caller did not pass as a parameter.
+`tslib`), and they read nothing the caller did not pass as a parameter. One thing of the
+framework's the piece does not use: `@activepieces/pieces-common`'s HTTP client, at the pinned
+version, sets `NODE_TLS_REJECT_UNAUTHORIZED` to `0` for the whole process before every request,
+which would let an impersonating engine over https collect the bearer; the piece sends through
+Node's own `fetch`, which verifies certificates and touches no process state, and leaves the
+framework's custom-call action out for the same reason. A test holds the transport to that.
 
 **n8n** (`plugins/n8n-nodes-judgment-pack`): one node, `Judgment Pack`, with the three
 operations; one credential, `Judgment Pack Engine`; built with `@n8n/node-cli`, which is also
@@ -66,11 +73,12 @@ orchestrator's place in the plan's second figure — it can ask, it cannot sign 
 from an agent still needs a person's token and passes the engine's judgment gate like any other.
 
 **Activepieces** (`plugins/activepieces/judgment-pack`): one piece,
-`@activepieces/piece-judgment-pack`, with the three actions and the framework's custom-call
-action; a custom auth of URL and token. Its source is laid out as the Activepieces monorepo
-expects (`src/index.ts`, `src/lib/auth.ts`, `src/lib/actions/`), so the upstream contribution
-is a copy plus the repository's registration line; here it builds standalone against the
-framework's published packages, pinned.
+`@activepieces/piece-judgment-pack`, with the three actions; a custom auth of URL and token.
+Its source is laid out as the Activepieces monorepo's pieces are (`src/index.ts`,
+`src/lib/auth.ts`, `src/lib/actions/`) and builds standalone here against the framework's
+published packages, pinned. The upstream contribution is not a copy: the monorepo generates a
+piece's scaffold with workspace dependencies and its own lint rules, so the source is copied
+into that scaffold and adapted to the revision it targets.
 
 ## The witness: what a ContextForge plugin would need
 

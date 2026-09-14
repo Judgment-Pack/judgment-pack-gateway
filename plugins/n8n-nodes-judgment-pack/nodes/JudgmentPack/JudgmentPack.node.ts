@@ -87,9 +87,18 @@ export class JudgmentPack implements INodeType {
 				displayName: 'Arguments',
 				name: 'arguments',
 				type: 'json',
+				default: '',
+				displayOptions: { show: { operation: ['acquire'] } },
+				description:
+					'The canonical arguments the source receives: any JSON value; leave empty for the engine’s default, an empty object',
+			},
+			{
+				displayName: 'Arguments',
+				name: 'arguments',
+				type: 'json',
 				default: '{}',
-				displayOptions: { show: { operation: ['acquire', 'act'] } },
-				description: 'The canonical arguments the source or tool receives, as a JSON object',
+				displayOptions: { show: { operation: ['act'] } },
+				description: 'The tool’s arguments, as a JSON object',
 			},
 			{
 				displayName: 'Platform',
@@ -132,58 +141,70 @@ export class JudgmentPack implements INodeType {
 		const items = this.getInputData();
 		const returned: INodeExecutionData[] = [];
 		for (let i = 0; i < items.length; i++) {
-			const operation = this.getNodeParameter('operation', i) as string;
-			let built: Built;
-			switch (operation) {
-				case 'acquire':
-					built = acquireRequest({
-						session: this.getNodeParameter('session', i),
-						source: this.getNodeParameter('source', i),
-						arguments: this.getNodeParameter('arguments', i),
-					});
-					break;
-				case 'act':
-					built = actRequest({
-						session: this.getNodeParameter('session', i),
-						platform: this.getNodeParameter('platform', i),
-						tool: this.getNodeParameter('tool', i),
-						arguments: this.getNodeParameter('arguments', i),
-						decision: this.getNodeParameter('decision', i),
-						cites: this.getNodeParameter('cites', i),
-					});
-					break;
-				case 'seal':
-					built = sealRequest({ session: this.getNodeParameter('session', i) });
-					break;
-				default:
-					throw new NodeOperationError(this.getNode(), `Unknown operation ${operation}`, {
-						itemIndex: i,
-					});
-			}
-			if (built.request === undefined) {
-				throw new NodeOperationError(this.getNode(), built.refusal, { itemIndex: i });
-			}
-			// the credential resolves the path against the engine's URL and
-			// adds the bearer when it holds one
+			// everything an item can fail on -- its parameters, the request it
+			// builds, the engine's answer -- is under one handler, so that with
+			// continueOnFail the next item still runs
+			let failure: Error | undefined;
 			try {
-				const answer = await this.helpers.httpRequestWithAuthentication.call(this, 'judgmentPackEngineApi', {
-					method: built.request.method,
-					url: built.request.path,
-					body: built.request.body,
-					json: true,
-				});
-				returned.push({ json: answer as IDataObject, pairedItem: { item: i } });
+				returned.push({ json: (await perform(this, i)) as IDataObject, pairedItem: { item: i } });
 			} catch (error) {
 				if (this.continueOnFail()) {
-					returned.push({
-						json: { error: (error as Error).message },
-						pairedItem: { item: i },
-					});
+					returned.push({ json: { error: (error as Error).message }, pairedItem: { item: i } });
 					continue;
 				}
-				throw new NodeApiError(this.getNode(), error as JsonObject, { itemIndex: i });
+				failure = error as Error;
+			}
+			if (failure !== undefined) {
+				// perform threw the node's own error or an API error; nothing is re-wrapped
+				throw failure;
 			}
 		}
 		return [returned];
+	}
+}
+
+// perform builds one item's request and sends it: a refusal before asking is
+// the node's own error, the engine's refusal or absence is an API error, and
+// the credential resolves the path against the engine's URL and adds the
+// bearer when it holds one.
+async function perform(ctx: IExecuteFunctions, i: number): Promise<unknown> {
+	const operation = ctx.getNodeParameter('operation', i) as string;
+	let built: Built;
+	switch (operation) {
+		case 'acquire':
+			built = acquireRequest({
+				session: ctx.getNodeParameter('session', i),
+				source: ctx.getNodeParameter('source', i),
+				arguments: ctx.getNodeParameter('arguments', i, ''),
+			});
+			break;
+		case 'act':
+			built = actRequest({
+				session: ctx.getNodeParameter('session', i),
+				platform: ctx.getNodeParameter('platform', i),
+				tool: ctx.getNodeParameter('tool', i),
+				arguments: ctx.getNodeParameter('arguments', i),
+				decision: ctx.getNodeParameter('decision', i),
+				cites: ctx.getNodeParameter('cites', i),
+			});
+			break;
+		case 'seal':
+			built = sealRequest({ session: ctx.getNodeParameter('session', i) });
+			break;
+		default:
+			throw new NodeOperationError(ctx.getNode(), `Unknown operation ${operation}`, { itemIndex: i });
+	}
+	if (built.request === undefined) {
+		throw new NodeOperationError(ctx.getNode(), built.refusal, { itemIndex: i });
+	}
+	try {
+		return await ctx.helpers.httpRequestWithAuthentication.call(ctx, 'judgmentPackEngineApi', {
+			method: built.request.method,
+			url: built.request.path,
+			body: built.request.body,
+			json: true,
+		});
+	} catch (error) {
+		throw new NodeApiError(ctx.getNode(), error as JsonObject, { itemIndex: i });
 	}
 }

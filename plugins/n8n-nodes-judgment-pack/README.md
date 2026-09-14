@@ -6,15 +6,16 @@ seal a session — the engine's HTTP surface (`SPEC.md` §6) as a node.
 
 The node is a client. The engine's own adapters fetch the bytes and the engine's own key signs;
 the node carries the answer — `result`, `receipt`, `salts` — into the workflow as data. **It
-verifies nothing.** A receipt is worth what `gateway verify` says about it later, over the store,
-the registry and a public key pinned out of band (`SPEC.md` §4, §5); that is run by whoever needs
-the verdict, never by the workflow that asked.
+verifies nothing.** A receipt is worth what `gateway verify` says about it, over the store, the
+registry and a public key pinned out of band (`SPEC.md` §4, §5), and the consumer — the workflow
+itself, or whoever relies on the bytes — checks that verdict before relying on them (§5a): the
+verdict is store-wide and it is the JSON, never an exit code.
 
 ## Operations
 
 | Operation | Calls | Parameters |
 |---|---|---|
-| Acquire | `POST /acquire` | Session, Source, Arguments (JSON object) |
+| Acquire | `POST /acquire` | Session, Source, Arguments (any JSON value; empty for the engine's default, `{}`) |
 | Act | `POST /act` | Session, Platform, Tool, Arguments, Decision (`recordDigest`, `packDigest`), Cites (array of `{sessionId, callIndex, signature}`) |
 | Seal | `POST /seal` | Session |
 
@@ -41,11 +42,17 @@ about the key's authenticity.
 ## Example
 
 1. **Acquire** with source `tickets/live`, arguments `{"tool": "get_ticket", "arguments": {"id": "T-1"}}`.
-2. Evaluate the facts with the runtime, which writes a decision record citing the receipt.
-3. After a person approves, **Act** on platform `tickets`, tool `update_ticket`, citing the
-   decision record's digest and the receipt from step 1.
-4. **Seal** the session.
-5. Elsewhere: `gateway verify --store … --registry … --key …` over the three ledgers.
+2. **Seal** the acquisition session.
+3. Verify the store: `gateway verify <store-root> <registry-path> <authority> < publickey.raw`,
+   with the public key pinned out of band, and read the JSON verdict; rely on the bytes only then.
+4. Evaluate the facts with the runtime, which writes a decision record citing the receipt.
+5. After a person approves, **Act** in a new session on platform `tickets`, tool `update_ticket`,
+   citing the decision record's digest and the receipt from step 1; **Seal** that session too.
+6. Verify again, now with `--decision-records <dir>`, so the action receipt's citations and its
+   decision record are checked.
+
+With **Continue On Fail** set, an item the node refuses before asking, or one the engine
+refuses, yields an error item and the next item still runs.
 
 ## Development
 

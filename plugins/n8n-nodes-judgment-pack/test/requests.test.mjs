@@ -13,8 +13,13 @@ test('acquire sends what a curl of /acquire sends', () => {
 	assert.equal(request.path, '/acquire');
 	assert.deepEqual(request.body, { session: 's1', source: 'tickets/live', arguments: { id: 1 } });
 	assert.match(acquireRequest({ session: 's1', source: 'x', arguments: 'not json' }).refusal, /not valid JSON/);
-	assert.match(acquireRequest({ session: 's1', source: 'x', arguments: '[1]' }).refusal, /JSON object/);
 	assert.match(acquireRequest({ session: 's1', source: '', arguments: {} }).refusal, /the source/);
+	// any value in the canonical JSON domain, and an empty one left to the engine's default
+	assert.deepEqual(acquireRequest({ session: 's1', source: 'x', arguments: '[1, 2]' }).request.body.arguments, [1, 2]);
+	assert.equal(acquireRequest({ session: 's1', source: 'x', arguments: '"acme"' }).request.body.arguments, 'acme');
+	assert.equal(acquireRequest({ session: 's1', source: 'x', arguments: 7 }).request.body.arguments, 7);
+	assert.equal('arguments' in acquireRequest({ session: 's1', source: 'x', arguments: '' }).request.body, false);
+	assert.equal('arguments' in acquireRequest({ session: 's1', source: 'x', arguments: undefined }).request.body, false);
 });
 
 test('act carries the requester’s assertions as given and refuses what the engine would refuse anyway', () => {

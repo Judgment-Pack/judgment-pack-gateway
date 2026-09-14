@@ -69,6 +69,17 @@ class check {
 		return v;
 	}
 
+	// /acquire takes any value in the canonical JSON domain as the
+	// arguments, and an absent member as {}: a string is read as JSON, and
+	// an empty one leaves the member out for the engine's default.
+	anyValue(value: unknown, name: string): { present: boolean; value?: unknown } {
+		if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+			return { present: false };
+		}
+		const v = this.parsed(value, name);
+		return { present: this.refusal === undefined, value: v };
+	}
+
 	built(request: EngineRequest): Built {
 		return this.refusal === undefined ? { request } : { refusal: this.refusal };
 	}
@@ -76,11 +87,14 @@ class check {
 
 export function acquireRequest(input: { session: unknown; source: unknown; arguments: unknown }): Built {
 	const c = new check();
-	const body = {
+	const body: Record<string, unknown> = {
 		session: c.session(input.session),
 		source: c.text(input.source, 'the source'),
-		arguments: c.object(input.arguments, 'the arguments'),
 	};
+	const args = c.anyValue(input.arguments, 'the arguments');
+	if (args.present) {
+		body.arguments = args.value;
+	}
 	return c.built({ method: 'POST', path: '/acquire', body });
 }
 
