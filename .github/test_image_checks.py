@@ -315,6 +315,12 @@ class Checks(unittest.TestCase):
     def test_a_uid_spelled_with_a_leading_zero(self):
         self.refused(good(**{"etc/passwd": dict(data=PASSWD + b"other:x:065604:65699:o:/home/other:/sbin/nologin\n")}), "not a number as one is spelled")
 
+    def test_a_uid_spelled_in_fullwidth_digits(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"engine-4:x:65604:65604", "engine-4:x:６５６０４:65604".encode("utf-8")))}), "not a number as one is spelled")
+
+    def test_a_gid_spelled_in_fullwidth_digits(self):
+        self.refused(good(**{"etc/group": dict(data=GROUP.replace(b"engine-4:x:65604:", "engine-4:x:６５６０４:".encode("utf-8")))}), "not a number as one is spelled")
+
     def test_a_gid_spelled_with_a_leading_zero(self):
         self.refused(good(**{"etc/group": dict(data=GROUP + b"other:x:065604:\n")}), "not a number as one is spelled")
 

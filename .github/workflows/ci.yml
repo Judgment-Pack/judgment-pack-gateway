@@ -155,7 +155,13 @@ jobs:
             echo "uid $user: exit $code: $out"
             if [ "$code" != "3" ] || ! echo "$out" | grep -q 'permission denied'; then echo "uid $user was not refused at the root as stated"; exit 1; fi
           done
-          docker run --rm --user 0 -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-root | grep -q 'created' || { echo "the probe could not create even as root; it proves nothing"; exit 1; }
+          out=$(docker run --rm --user 0 -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-root 2>&1)
+          echo "root: $out"
+          echo "$out" | grep -q 'created' || { echo "the probe could not create even as root; it proves nothing"; exit 1; }
+          # The root directory itself: root's, its group root's, passable by
+          # everyone and writable by nobody else -- what a refusal alone
+          # cannot show, since a platform user that owned it could chmod it.
+          echo "$out" | grep -q 'root uid=0 gid=0 mode=0755' || { echo "the root directory is not root's at 0755"; exit 1; }
       - name: The image runs the adapters and starts the engine as built
         run: |
           docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }

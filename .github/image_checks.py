@@ -32,7 +32,7 @@ attribute more than it was.
 Usage: image_checks.py <export.tar> <image config json> <repository checkout> [<docker save dir>]
 The invariants are each held by a negative case in test_image_checks.py.
 """
-import json, os, posixpath, struct, sys, tarfile
+import json, os, posixpath, re, struct, sys, tarfile
 
 
 class Failure(Exception):
@@ -176,9 +176,11 @@ def canonical_lines(data, what, fields):
 
 
 def canonical_id(text, what):
-    """A uid or gid spelled as a number is spelled: digits, no leading
-    zero, so that two spellings cannot name one id."""
-    if not (text == "0" or (text.isdigit() and text[0] != "0")):
+    """A uid or gid spelled as a number is spelled: ASCII digits, no
+    leading zero, so that two spellings cannot name one id and no
+    spelling passes here that the engine's lookup (strconv.Atoi) would
+    refuse -- str.isdigit would take a fullwidth digit."""
+    if not re.fullmatch(r"0|[1-9][0-9]*", text):
         fail("%s carries an id spelled %r, which is not a number as one is spelled" % (what, text))
     return int(text)
 

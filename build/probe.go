@@ -11,9 +11,17 @@ package main
 import (
 	"fmt"
 	"os"
+	"syscall"
 )
 
 func main() {
+	// What the root directory is, as this identity sees it: owner, group
+	// and mode -- an export carries none of them -- so that a root a
+	// platform user owned could not pass by merely refusing writes.
+	if info, err := os.Stat("/"); err == nil {
+		st := info.Sys().(*syscall.Stat_t)
+		fmt.Printf("probe: root uid=%d gid=%d mode=%04o\n", st.Uid, st.Gid, info.Mode().Perm())
+	}
 	f, err := os.OpenFile(os.Args[1], os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		fmt.Println("probe: refused:", err)
