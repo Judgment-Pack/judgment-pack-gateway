@@ -241,6 +241,7 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	service.maxSourceOutput = opts.maxSourceOutput
 	service.receiptVersion = opts.receiptVersion
 	service.identity = opts.identity
+	service.decisionRecords = opts.decisionRecords
 	return service, nil
 }
 
@@ -370,6 +371,12 @@ type serveOptions struct {
 	// seals or verifies carries a bearer token this issuer signed, and a
 	// receipt names the caller it proved. Nil records caller null.
 	identity *identityConfig
+	// decisionRecords is the directory the runtime's audit trail is
+	// expected in, from the engine configuration; an action's cited
+	// decision record must be found under it before any executor runs
+	// (executor.md). Empty when serve was not started from a
+	// configuration, and every /act is then refused.
+	decisionRecords string
 }
 
 // validateEnvKey accepts what an environment variable name can be on the

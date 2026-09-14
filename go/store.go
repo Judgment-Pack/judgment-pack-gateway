@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -137,16 +138,32 @@ func (s *store) retain(canonical []byte) (string, error) {
 // stamp signs a receipt core and appends it to its session. The caller supplies
 // every member except keyId and signature.
 func (s *store) stamp(core *vObject) (*vObject, string, error) {
+	stored, signature, _, err := s.stampOwning(core)
+	return stored, signature, err
+}
+
+// stampOwning is stamp, reporting as well whether this call made the
+// session's directory: it is made exclusively, so a directory another
+// process put there first -- at any moment before this call -- is found and
+// never taken for this call's own. What a session's owner means is the
+// gateway's business (sessionState.created); the store only says what it
+// made.
+func (s *store) stampOwning(core *vObject) (*vObject, string, bool, error) {
+	stored, signature, made, err := s.stampInto(core)
+	return stored, signature, made, err
+}
+
+func (s *store) stampInto(core *vObject) (*vObject, string, bool, error) {
 	sessionValue, ok := core.get("sessionId")
 	if !ok {
-		return nil, "", errors.New("receipt core has no sessionId")
+		return nil, "", false, errors.New("receipt core has no sessionId")
 	}
 	sessionID, ok := sessionValue.(vString)
 	if !ok {
-		return nil, "", errors.New("sessionId is not a string")
+		return nil, "", false, errors.New("sessionId is not a string")
 	}
 	if err := requireSession(string(sessionID)); err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	receiptsRoot := filepath.Join(s.root, "receipts")
 	sessionDir := filepath.Join(receiptsRoot, string(sessionID))
@@ -154,32 +171,43 @@ func (s *store) stamp(core *vObject) (*vObject, string, error) {
 	// token rule above is ever loosened.
 	resolved, err := filepath.Abs(sessionDir)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	rootAbs, err := filepath.Abs(receiptsRoot)
 	if err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
 	if filepath.Dir(resolved) != rootAbs {
-		return nil, "", errors.New("session directory escapes the receipt store")
+		return nil, "", false, errors.New("session directory escapes the receipt store")
 	}
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		return nil, "", err
+	if err := os.MkdirAll(receiptsRoot, 0o755); err != nil {
+		return nil, "", false, err
+	}
+	made := false
+	switch err := os.Mkdir(sessionDir, 0o755); {
+	case err == nil:
+		made = true
+	case errors.Is(err, fs.ErrExist):
+		// Something is there already: a session this process or another
+		// one made, or an entry of another kind, which the write below
+		// answers for. Not this call's own either way.
+	default:
+		return nil, "", false, err
 	}
 
 	indexValue, ok := core.get("callIndex")
 	if !ok {
-		return nil, "", errors.New("receipt core has no callIndex")
+		return nil, "", false, errors.New("receipt core has no callIndex")
 	}
 	index, ok := indexValue.(vInt)
 	if !ok {
-		return nil, "", errors.New("callIndex is not an integer")
+		return nil, "", false, errors.New("callIndex is not an integer")
 	}
 	// The canonical domain is ±(2⁵³−1) (SPEC.md §1.1). The parser enforces it
 	// for incoming text; an internally constructed integer must be held to the
 	// same bound, or the gateway would sign bytes its own format refuses.
 	if int64(index) > maxSafeInteger || int64(index) < minSafeInteger {
-		return nil, "", errors.New("callIndex is outside the canonical integer domain")
+		return nil, "", false, errors.New("callIndex is outside the canonical integer domain")
 	}
 
 	core.set("keyId", vString(s.keyID))
@@ -203,9 +231,9 @@ func (s *store) stamp(core *vObject) (*vObject, string, error) {
 	body := append(canon(stored), '\n')
 	path := filepath.Join(sessionDir, fmt.Sprintf("%d.json", int64(index)))
 	if err := s.write(path, body, true); err != nil {
-		return nil, "", err
+		return nil, "", false, err
 	}
-	return stored, signatureHex, nil
+	return stored, signatureHex, made, nil
 }
 
 // --- the seal registry (write side) ---------------------------------------

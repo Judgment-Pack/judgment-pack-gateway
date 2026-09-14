@@ -30,8 +30,9 @@ read different files: the server takes its connection string from the environmen
 variable `DATABASE_URI`, so the `live` credentials file is `{"DATABASE_URI":
 "postgresql://…"}`, an object of strings; the connector's `history` file is the
 configuration its `spec` describes (`host`, `port` as a number, `database`, `username`,
-`password`, `ssl_mode` as an object, …). A platform names one file per operation. The `write` entry is stated and not derived: nothing runs it until an
-executor exists.
+`password`, `ssl_mode` as an object, …). A platform names one file per operation, the `write` file only when the platform sets
+`write: true`. The `write` entry is derived only for such a platform, as `<platform>/write`,
+and only the executor runs it (`docs/design/executor.md`); `/acquire` never names it.
 
 ELv2 (the Elastic License 2.0) forbids providing the connector to third parties as a
 managed service; an operator hosting the engine for others should read it before enabling

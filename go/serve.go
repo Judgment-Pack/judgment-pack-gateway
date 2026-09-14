@@ -34,6 +34,16 @@ type sessionState struct {
 	prev     string
 	sealed   bool
 	inFlight int // admitted acquisitions whose source has not finished
+	// created is whether this process made the session's directory in the
+	// store -- by an action's admission, which makes it before any executor
+	// runs, or by a read's stamp that found none -- so every receipt there
+	// is this process's own. An action is minted only into a session this
+	// process created (executor.md): absence at admission is not ownership,
+	// since another process could put the session there before the stamp,
+	// and a receipt count is not either, since a read can recreate a receipt
+	// an old session lost and count on from there. Made atomic by Mkdir:
+	// two makers cannot both succeed.
+	created bool
 }
 
 // sourceSpec is what the operator declared for one source: the command, the
@@ -59,6 +69,11 @@ type sourceSpec struct {
 	// check are the arguments a check of this source adds to the adapter's
 	// command line, from the binding; nothing serve uses.
 	check []string
+	// tools and endpoint are the write binding's, for a write source only
+	// (executor.md): the tools an executor may be asked for, and the
+	// endpoint an action receipt names; /acquire reads neither.
+	tools    []string
+	endpoint string
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -84,14 +99,30 @@ type gatewayService struct {
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
 	// started counts the sources this service has started; a test reads it
-	// to prove that a refusal came before any source ran.
-	started atomic.Int64
+	// to prove that a refusal came before any source ran. startedWith is the
+	// command line the last one was started with, for a test that holds the
+	// executor to the tool it was narrowed to.
+	started     atomic.Int64
+	startedWith atomic.Pointer[[]string]
+	// beforeAdmit, when a test sets it, runs between an action's evidence
+	// checks and its admission: the window in which another request may
+	// have put the session on disk or sealed it, which admission's own
+	// recheck must catch.
+	beforeAdmit func()
+	// beforeStamp, when a test sets it, runs in the last moment before a
+	// read's stamp, under the lock: the window in which another process may
+	// have put the session on disk, which the stamp's own exclusive Mkdir
+	// must find rather than claim.
+	beforeStamp func()
 	// identity is who may call (serveOptions.identity); nil when no
 	// issuer is configured, and every receipt then carries caller null.
 	identity *identityConfig
 	// receiptVersion is what acquire mints: "3" unless the operator asked
 	// for "2" to keep a consumer not yet updated working (SPEC.md §1.2a).
 	receiptVersion string
+	// decisionRecords is where an action's cited decision record is looked
+	// for (executor.md); empty refuses every action.
+	decisionRecords string
 	// ctx is the service's lifetime. Every source's context derives from it,
 	// so shutting the service down cancels every source in flight; a source
 	// in its own process group would otherwise outlive the gateway that
@@ -277,7 +308,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 		return nil, badRequest{err} // refuse before running anything
 	}
 	spec, known := g.sources[source]
-	if !known {
+	if !known || strings.HasSuffix(source, "/write") {
+		// A write source is the executor's alone (executor.md): a read
+		// that writes is not a read, and /acquire names no such source.
 		return nil, badRequest{fmt.Errorf("unknown source: %s", source)}
 	}
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
@@ -296,89 +329,15 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	}
 	defer g.release(sessionID)
 
-	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
-	defer cancel()
-	// The command is resolved once, here, to the file that will be started,
-	// and that file is what a version 3 receipt digests -- os/exec would
-	// otherwise give a relative Windows command its extension only at start,
-	// after the digest. A bare name that resolves to the working directory
-	// is refused, as os/exec refuses it.
-	path, err := exec.LookPath(spec.argv[0])
+	result, adapterDigest, observedAt, err := g.runSource(source, spec, canonicalArgs)
 	if err != nil {
-		return nil, fmt.Errorf("source could not be started: %v", err)
-	}
-	var adapterDigest string
-	if g.receiptVersion == receiptVersion3 && spec.shape == "" {
-		// Digested before anything is started, so a failure here leaves
-		// nothing to reap. It is the file at that path at that moment: a
-		// replacement between this read and the start is not detected.
-		adapterDigest, err = executableDigest(path)
-		if err != nil {
-			return nil, err
-		}
-	}
-	cmd := exec.CommandContext(ctx, path, spec.argv[1:]...)
-	// The source sees the command as configured, not as resolved.
-	cmd.Args = append([]string{spec.argv[0]}, spec.argv[1:]...)
-	cmd.Stdin = bytes.NewReader(canonicalArgs)
-	// The declared environment and nothing else (sourceSpec). An explicit
-	// slice is what stops os/exec from handing the child this process's
-	// environment; an empty declaration is an empty environment, not an
-	// inherited one.
-	cmd.Env = sourceEnvironment(spec)
-	group, err := prepareSourceProcess(cmd, spec.user)
-	if err != nil {
-		return nil, fmt.Errorf("source %s: %w", source, err)
-	}
-	cmd.WaitDelay = g.waitDelay
-	// stdout is bounded and its overflow kills the source; stderr is bounded
-	// and simply truncated, because only its first line is ever reported and
-	// a chatty source is not a failed one.
-	stdout := &boundedBuffer{limit: g.maxSourceOutput, stop: cancel}
-	stderr := &boundedBuffer{limit: 4096}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	// Start and Wait are separate so that a source that could not be started
-	// at all -- the command gone, or the user switch refused by the kernel --
-	// is reported as that, with the operating system's own reason, rather
-	// than as an empty "source failed".
-	g.started.Add(1)
-	if err := group.start(cmd); err != nil {
-		group.reap()
-		return nil, fmt.Errorf("source could not be started: %v", err)
-	}
-	waitErr := cmd.Wait()
-	// Whatever Wait returned, nothing of the source's process group survives
-	// the acquisition. os/exec stops watching the context once the direct
-	// child has exited, so an overflow written by a descendant after that
-	// cancels a context nobody acts on; the bounded wait then returns, and
-	// this is what kills the descendant. The group's anchor is reaped last,
-	// so the kill cannot reach a reused pid.
-	group.reap()
-	if stdout.overflowed {
-		// Whether the kill landed first or the source exited on its own, the
-		// output is not the output it produced.
-		return nil, fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
-	}
-	if waitErr != nil {
-		if errors.Is(waitErr, exec.ErrWaitDelay) {
-			return nil, errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
-		}
-		trimmed := stderr.buf.String()
-		if len(trimmed) > 200 {
-			trimmed = trimmed[:200]
-		}
-		return nil, fmt.Errorf("source failed: %s", trimmed)
-	}
-	observedAt := nowStamp()
-	result, err := parseJSON(stdout.buf.Bytes())
-	if err != nil {
-		return nil, fmt.Errorf("source did not return a canonical JSON value: %w", err)
+		return nil, err
 	}
 
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	// The session exists because admission created it, and it cannot have been
-	// sealed since: sealing refuses while an acquisition is in flight.
+	// The session is known because admission reserved it, and it cannot have
+	// been sealed since: sealing refuses while an acquisition is in flight.
 	state := g.sessions[sessionID]
 
 	// An adapter's stdout is an envelope (SPEC.md §6): the result to attest
@@ -463,12 +422,23 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 		core.set("argumentsDigest", vString("hmac-sha256:"+hex.EncodeToString(mac.Sum(nil))))
 	}
 
-	stored, signature, err := g.store.stamp(core)
+	if g.beforeStamp != nil {
+		g.beforeStamp()
+	}
+	stored, signature, made, err := g.store.stampOwning(core)
 	if err != nil {
 		return nil, err
 	}
 	state.index++
 	state.prev = signature
+	if made {
+		// The stamp made the session's directory, exclusively: the session
+		// is this process's own from here (sessionState.created). A
+		// directory another process put there at any moment before the
+		// stamp -- absence read earlier would not have seen it -- is found
+		// by the same Mkdir and never taken for this process's own.
+		state.created = true
+	}
 
 	// The receipt in the response is the stored receipt, whole: the same
 	// members written under receipts/<session>/<index>.json, so the caller
@@ -490,6 +460,98 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 }
 
 // newSalt draws the 32 random bytes one commitment is salted with.
+// runSource starts one source as configured -- resolved once to the file
+// that is digested, the canonical request on stdin, the declared environment
+// and nothing else, the platform's user, its own process group -- waits for
+// it under the service's bounds, and returns what it wrote as a canonical
+// JSON value, the adapter digest a bare command's receipt names, and when
+// the output was read. /acquire and /act share it: an action is a call
+// through the same boundary as a read, and the receipt's claims about the
+// process are the same claims.
+func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
+	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
+	defer cancel()
+	// The command is resolved once, here, to the file that will be started,
+	// and that file is what a version 3 receipt digests -- os/exec would
+	// otherwise give a relative Windows command its extension only at start,
+	// after the digest. A bare name that resolves to the working directory
+	// is refused, as os/exec refuses it.
+	path, err := exec.LookPath(spec.argv[0])
+	if err != nil {
+		return nil, "", "", fmt.Errorf("source could not be started: %v", err)
+	}
+	if g.receiptVersion == receiptVersion3 && spec.shape == "" {
+		// Digested before anything is started, so a failure here leaves
+		// nothing to reap. It is the file at that path at that moment: a
+		// replacement between this read and the start is not detected.
+		adapterDigest, err = executableDigest(path)
+		if err != nil {
+			return nil, "", "", err
+		}
+	}
+	cmd := exec.CommandContext(ctx, path, spec.argv[1:]...)
+	// The source sees the command as configured, not as resolved.
+	cmd.Args = append([]string{spec.argv[0]}, spec.argv[1:]...)
+	cmd.Stdin = bytes.NewReader(stdin)
+	// The declared environment and nothing else (sourceSpec). An explicit
+	// slice is what stops os/exec from handing the child this process's
+	// environment; an empty declaration is an empty environment, not an
+	// inherited one.
+	cmd.Env = sourceEnvironment(spec)
+	group, err := prepareSourceProcess(cmd, spec.user)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("source %s: %w", source, err)
+	}
+	cmd.WaitDelay = g.waitDelay
+	// stdout is bounded and its overflow kills the source; stderr is bounded
+	// and simply truncated, because only its first line is ever reported and
+	// a chatty source is not a failed one.
+	stdout := &boundedBuffer{limit: g.maxSourceOutput, stop: cancel}
+	stderr := &boundedBuffer{limit: 4096}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	// Start and Wait are separate so that a source that could not be started
+	// at all -- the command gone, or the user switch refused by the kernel --
+	// is reported as that, with the operating system's own reason, rather
+	// than as an empty "source failed".
+	g.started.Add(1)
+	argv := append([]string(nil), cmd.Args...)
+	g.startedWith.Store(&argv)
+	if err := group.start(cmd); err != nil {
+		group.reap()
+		return nil, "", "", fmt.Errorf("source could not be started: %v", err)
+	}
+	waitErr := cmd.Wait()
+	// Whatever Wait returned, nothing of the source's process group survives
+	// the acquisition. os/exec stops watching the context once the direct
+	// child has exited, so an overflow written by a descendant after that
+	// cancels a context nobody acts on; the bounded wait then returns, and
+	// this is what kills the descendant. The group's anchor is reaped last,
+	// so the kill cannot reach a reused pid.
+	group.reap()
+	if stdout.overflowed {
+		// Whether the kill landed first or the source exited on its own, the
+		// output is not the output it produced.
+		return nil, "", "", fmt.Errorf("source output exceeds %d bytes", g.maxSourceOutput)
+	}
+	if waitErr != nil {
+		if errors.Is(waitErr, exec.ErrWaitDelay) {
+			return nil, "", "", errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
+		}
+		trimmed := stderr.buf.String()
+		if len(trimmed) > 200 {
+			trimmed = trimmed[:200]
+		}
+		return nil, "", "", fmt.Errorf("source failed: %s", trimmed)
+	}
+	observedAt = nowStamp()
+	result, err = parseJSON(stdout.buf.Bytes())
+	if err != nil {
+		return nil, "", "", fmt.Errorf("source did not return a canonical JSON value: %w", err)
+	}
+	return result, adapterDigest, observedAt, nil
+
+}
+
 func newSalt() ([]byte, error) {
 	salt := make([]byte, 32)
 	if _, err := rand.Read(salt); err != nil {
@@ -728,7 +790,9 @@ func (g *gatewayService) release(sessionID string) {
 		return
 	}
 	state.inFlight--
-	if state.inFlight <= 0 && state.index == 0 && !state.sealed {
+	// A session this process created stays known whatever it holds: its
+	// directory is on disk and is this process's own (sessionState.created).
+	if state.inFlight <= 0 && state.index == 0 && !state.sealed && !state.created {
 		delete(g.sessions, sessionID)
 	}
 }
@@ -765,7 +829,7 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
-	rep, err := verifyWithRegistry(g.storeRoot, g.regPath, g.authority, g.publicKey)
+	rep, err := verifyWithRegistryAndRecords(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
 	if err != nil {
 		return nil, err
 	}
@@ -862,6 +926,63 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		out, err := g.acquire(body.Session, body.Source, arguments, who)
 		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	})
+
+	// An action (docs/design/executor.md): the same boundary as /acquire,
+	// with an authenticated requester and a judgment that must exist before
+	// any executor runs. A refusal names the step of the ladder it fell at.
+	mux.HandleFunc("/act", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+			return
+		}
+		who, ok := authenticate(w, r)
+		if !ok {
+			return
+		}
+		if who == nil {
+			// No identity configured: nobody is a requester, and the body is
+			// not read -- the ladder's first step, answered before the second
+			// byte of the request.
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": errNoRequester.Error() + "; this engine has no identity configured", "refusedAt": "requester"})
+			return
+		}
+		limitBody(w, r)
+		// Every member is read at its own step of the ladder (act), the
+		// string-valued ones included: a member of the wrong type is a
+		// refusal at that step, not a decoding error ahead of the session's.
+		var body struct {
+			Session   json.RawMessage `json:"session"`
+			Platform  json.RawMessage `json:"platform"`
+			Tool      json.RawMessage `json:"tool"`
+			Arguments json.RawMessage `json:"arguments"`
+			Decision  json.RawMessage `json:"decision"`
+			Cites     json.RawMessage `json:"cites"`
+		}
+		if err := decodeSingleJSON(r.Body, &body); err != nil {
+			fail(w, badRequest{err})
+			return
+		}
+		out, err := g.act(body.Session, body.Platform, body.Tool, body.Arguments, body.Decision, body.Cites, who)
+		if err != nil {
+			var refusal actRefusal
+			if errors.As(err, &refusal) {
+				// The ladder's first step is who is asking: with no identity
+				// configured nobody is, and the answer is the one a missing
+				// token gets.
+				status := http.StatusBadRequest
+				if refusal.step == "requester" {
+					status = http.StatusUnauthorized
+					w.Header().Set("WWW-Authenticate", "Bearer")
+				}
+				writeJSON(w, status, map[string]any{"error": refusal.reason, "refusedAt": refusal.step})
+				return
+			}
 			fail(w, err)
 			return
 		}

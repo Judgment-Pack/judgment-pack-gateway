@@ -70,6 +70,11 @@ type binding struct {
 	platform string
 	history  *operation
 	live     *operation
+	// write is the operation an executor is pointed at (executor.md): the
+	// same mcp shape as live, its own tools, its own credentials. Stated in
+	// the binding and derived only for a platform whose configuration sets
+	// write: true.
+	write *operation
 }
 
 type operation struct {
@@ -262,7 +267,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
 		}
-		if err := exactlyMembers(credentials, map[string]bool{"history": false, "live": false}, "platform "+name+" credentials"); err != nil {
+		if err := exactlyMembers(credentials, map[string]bool{"history": false, "live": false, "write": false}, "platform "+name+" credentials"); err != nil {
 			return engineConfig{}, err
 		}
 		if len(credentials.names) == 0 {
@@ -474,8 +479,16 @@ func parseBinding(data []byte) (binding, error) {
 			}
 			b.live = &parsed
 		case "write":
-			// Accepted and stated, so a catalog entry can name its write
-			// path; nothing derives from it until an executor exists.
+			if parsed.shape != "mcp" {
+				return binding{}, fmt.Errorf("operation write is served by the mcp shape, not %q", parsed.shape)
+			}
+			if parsed.probe != "" {
+				// A check of a write source starts the server, completes the
+				// handshake and lists its tools, and calls nothing: a probe
+				// would call a write tool, which no check may.
+				return binding{}, errors.New("operation write accepts no probe: a write source's check calls no tool")
+			}
+			b.write = &parsed
 		default:
 			return binding{}, fmt.Errorf("unknown operation %q", name)
 		}
@@ -646,6 +659,23 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 				argv = append(append(argv, "--"), b.live.args...)
 			}
 			sources[p.name+"/live"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", check: check}
+		}
+		// The write operation, for a platform that allows writes: the
+		// executor is adapter-mcp on the binding's write server with the
+		// write tools and the write credentials (executor.md). A platform
+		// that does not allow writes derives none, whatever the binding
+		// states.
+		if b.write != nil && p.write {
+			// --error-results: a target's refusal of a write is a response
+			// to receipt, not a read that did not happen (executor.md).
+			argv := []string{adapter("adapter-mcp"), "--image=" + b.write.image, "--credentials=" + p.credentials["write"], "--runtime=" + cfg.runtime, "--tools=" + strings.Join(b.write.tools, ","), "--error-results"}
+			if p.endpoint != "" {
+				argv = append(argv, "--endpoint="+p.endpoint)
+			}
+			if len(b.write.args) > 0 {
+				argv = append(append(argv, "--"), b.write.args...)
+			}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: p.endpoint}
 		}
 	}
 	return sources
@@ -1049,7 +1079,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, receiptVersion: receiptVersion3, identity: identity}
+	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords}
 }
 
 // maxKeySetBytes bounds the issuer's key file.
@@ -1107,7 +1137,7 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
-		if err := credentialsMatch(p.credentials, b); err != nil {
+		if err := credentialsMatch(p.credentials, b, p.write); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
 		bindings[p.name] = b
@@ -1117,7 +1147,7 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 
 // bindingOperations are the operations a binding derives sources for, in
 // order.
-func bindingOperations(b binding) []string {
+func bindingOperations(b binding, write bool) []string {
 	var ops []string
 	if b.history != nil {
 		ops = append(ops, "history")
@@ -1125,15 +1155,24 @@ func bindingOperations(b binding) []string {
 	if b.live != nil {
 		ops = append(ops, "live")
 	}
+	// The write operation is offered only to a platform that allows
+	// writes: a binding may state one that no executor is ever pointed at,
+	// and such a platform names no credential for it.
+	if b.write != nil && write {
+		ops = append(ops, "write")
+	}
 	return ops
 }
 
 // credentialsMatch holds a platform's credentials to its binding: a file
 // for every operation the binding offers, and none for an operation it
-// does not.
-func credentialsMatch(credentials map[string]string, b binding) error {
+// does not. A platform that allows writes against a binding stating no
+// write operation is not refused here -- the flag points an executor at
+// nothing, derives nothing, and a request to write is what the executor
+// refuses (executor.md), naming the binding.
+func credentialsMatch(credentials map[string]string, b binding, write bool) error {
 	offered := map[string]bool{}
-	for _, op := range bindingOperations(b) {
+	for _, op := range bindingOperations(b, write) {
 		offered[op] = true
 		if credentials[op] == "" {
 			return fmt.Errorf("the binding offers %s but credentials name no %s file", op, op)

@@ -23,7 +23,7 @@ const postgresBinding = `{
   "operations": {
     "history": {"shape": "airbyte", "image": "airbyte/source-postgres:3.6.1@` + testImageDigest + `", "licence": "ELv2"},
     "live": {"shape": "mcp", "server": {"image": "ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"}, "tools": ["query", "explain"], "licence": "MIT"},
-    "write": {"shape": "mcp", "server": {"image": "ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"}, "tools": ["execute"], "licence": "MIT"}
+    "write": {"shape": "mcp", "server": {"image": "ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"}, "tools": ["execute", "drop"], "licence": "MIT"}
   }
 }`
 
@@ -118,7 +118,7 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 	ref := "postgres@" + digestOf(postgresBinding)
 	bin := abs(t, t.TempDir(), "bin")
 	text := engineJSON(t, catalog, `,"runtime":"podman","adapters":"`+bin+`"`,
-		platformJSON(t, "warehouse", ref, "engine-warehouse", `,"endpoint":"warehouse.internal:5432","write":true,"environment":{"DOCKER_HOST":"unix:///run/user/1001/docker.sock"}`))
+		platformJSONFor(t, "warehouse", ref, "engine-warehouse", `,"endpoint":"warehouse.internal:5432","write":true,"environment":{"DOCKER_HOST":"unix:///run/user/1001/docker.sock"}`, "history", "live", "write"))
 	cfg, sources, err := load(t, text)
 	if err != nil {
 		t.Fatal(err)
@@ -143,13 +143,49 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 				"--credentials=" + p.credentials["live"], "--runtime=podman", "--tools=query,explain", "--endpoint=warehouse.internal:5432"},
 			env: env, user: "engine-warehouse", shape: "mcp",
 		},
+		// The write operation, since the platform allows writes: the
+		// executor is adapter-mcp on the binding's write server, with the
+		// write tools and the write credentials (executor.md).
+		"warehouse/write": {
+			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image=ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
+				"--credentials=" + p.credentials["write"], "--runtime=podman", "--tools=execute,drop", "--error-results", "--endpoint=warehouse.internal:5432"},
+			env: env, user: "engine-warehouse", shape: "mcp", tools: []string{"execute", "drop"}, endpoint: "warehouse.internal:5432",
+		},
 	}
 	if !reflect.DeepEqual(sources, want) {
 		t.Fatalf("derived sources:\n got %+v\nwant %+v", sources, want)
 	}
+	// A platform that does not allow writes derives no write source and
+	// names no write credential, whatever its binding states; one that
+	// allows them against a binding stating none derives none either --
+	// the executor is what refuses a request to write there.
+	_, sources, err = load(t, engineJSON(t, catalog, ``, platformJSON(t, "warehouse", ref, "engine-warehouse", ``)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, derived := sources["warehouse/write"]; derived || len(sources) != 2 {
+		t.Fatalf("no write: true, no write source: %+v", sources)
+	}
+	if _, _, err := load(t, engineJSON(t, catalog, ``, platformJSONFor(t, "warehouse", ref, "engine-warehouse", ``, "history", "live", "write"))); err == nil || !strings.Contains(err.Error(), "credentials name a write file but the binding offers no write") {
+		t.Fatalf("a write credential for a platform that allows no writes: %v", err)
+	}
+	// A write operation naming a probe is refused: a check of a write source
+	// calls no tool, so a probe there would be a write no check may make.
+	probed := `{"bindingVersion":"1","platform":"postgres","operations":{"write":{"shape":"mcp","server":{"image":"ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"},"tools":["execute"],"probe":{"tool":"execute"},"licence":"MIT"}}}`
+	if _, _, err := load(t, engineJSON(t, catalogWith(t, map[string]string{"postgres": probed}), ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(probed), "engine-warehouse", `,"write":true`, "write"))); err == nil || !strings.Contains(err.Error(), "operation write accepts no probe") {
+		t.Fatalf("a probe on a write operation: %v", err)
+	}
+	noWrite := `{"bindingVersion":"1","platform":"postgres","operations":{"live":{"shape":"mcp","server":{"image":"ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"},"tools":["query"],"licence":"MIT"}}}`
+	_, sources, err = load(t, engineJSON(t, catalogWith(t, map[string]string{"postgres": noWrite}), ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(noWrite), "engine-warehouse", `,"write":true`, "live")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, derived := sources["warehouse/write"]; derived || len(sources) != 1 {
+		t.Fatalf("write: true against a binding with no write operation derives none: %+v", sources)
+	}
 	// Without an adapters directory the binaries are found on PATH; a
-	// binding with one operation derives one source; the write operation
-	// derives nothing; the runtime is docker by default.
+	// binding with one operation derives one source; the runtime is
+	// docker by default.
 	one := `{"bindingVersion":"1","platform":"docs","operations":{"history":{"shape":"airbyte","image":"airbyte/source-s3:4.0.0@` + testImageDigest + `","licence":"MIT"}}}`
 	catalog = catalogWith(t, map[string]string{"docs": one})
 	_, sources, err = load(t, engineJSON(t, catalog, ``, platformJSONFor(t, "policy-documents", "docs@"+digestOf(one), "engine-docs", ``, "history")))

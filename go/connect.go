@@ -350,7 +350,7 @@ func newPlatformEntry(req connectRequest, ref string, b binding, account func(na
 		}
 		p.credentials[op] = credentials
 	}
-	if err := credentialsMatch(p.credentials, b); err != nil {
+	if err := credentialsMatch(p.credentials, b, p.write); err != nil {
 		return p, fmt.Errorf("platform %s: %v", req.platform, err)
 	}
 	if req.user == "" {

@@ -29,6 +29,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	runtime := fs.String("runtime", "docker", "container runtime command for --image: docker or podman")
 	endpoint := fs.String("endpoint", "", "the host the server reaches, as the operator names it; recorded as the receipt's endpoint")
 	tools := fs.String("tools", "", "the only tools a request may name, comma-separated; all offered when empty")
+	errorResults := fs.Bool("error-results", false, "envelope a tool result that reports an error as the result of the call instead of failing: what an executor needs, since a target's refusal of a write is a response to receipt")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
 	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; stopping the server takes up to seven seconds more, under the gateway's thirty")
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
@@ -60,6 +61,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	} else {
 		cfg.Command = positional
 	}
+	cfg.ErrorResults = *errorResults
 	if *tools != "" {
 		cfg.Tools = strings.Split(*tools, ",")
 	}
