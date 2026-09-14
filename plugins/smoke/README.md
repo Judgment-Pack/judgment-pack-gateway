@@ -35,8 +35,10 @@ plugins/smoke/n8n/run.sh plugins/n8n-nodes-judgment-pack/n8n-nodes-judgment-pack
 ```
 
 `run.sh` installs the packed package under a fresh, private data directory the way n8n's
-own community-node installer lays it out (removed at the end; `N8N_SMOKE_KEEP=1` keeps it,
-`N8N_SMOKE_DATA` names one), then runs the official image — pinned by digest to the version
+own community-node installer lays it out — without its `n8n-workflow` peer, so the node
+runs against the image's own copy and nothing floats between runs — and removes that
+directory at the end (`N8N_SMOKE_KEEP=1` keeps a generated one; a directory named by
+`N8N_SMOKE_DATA`, existing or not, is always kept), then runs the official image — pinned by digest to the version
 the checks were written against, `N8N_IMAGE` to run another on purpose — on the host
 network three times: `import:credentials`, `import:workflow`, `execute`. The workflow is Start → Acquire → Act → Seal in one session named per run — the
 runner writes a nonce into the workflow at import, so every node names the same literal and
@@ -49,9 +51,10 @@ echo and whose `salts.args` is 64 hex characters; an error item from Act carryin
 this n8n version puts on the engine's 401 and nothing else (a citation the node refused
 before asking, or a 404, is not that); a seal of the run's session at one receipt, signed.
 
-Last run here: n8n 2.38.7 (the pinned digest), Node 22 host, engine at `0406128`: `n8n smoke
-ok: execution 1 — Acquire receipt smoke-n8n-1789420001-2192058/0, Act refused (Authorization
-failed - please check your credentials), Seal finalCount 1`. n8n wraps the engine's 401 in its own words; the engine's
+Last run here: n8n 2.38.7 (the pinned digest, which bundles `n8n-workflow` 2.38.1, the copy
+the node ran against), Node 22 host, engine at `0406128`: `n8n smoke ok: execution 1 — Acquire
+receipt smoke-n8n-1789420858-2201294/0, Act refused (Authorization failed - please check your
+credentials), Seal finalCount 1`. n8n wraps the engine's 401 in its own words; the engine's
 text (`an action needs an authenticated requester; this engine has no identity configured`) is
 what the Activepieces run shows.
 

@@ -22,7 +22,7 @@ assert.equal(validation.valid, true);
 const session = `smoke-ap-${Date.now()}`;
 const acquired = await actions['acquire'].run(ctx({ session, source: 'screening', arguments: '{"subject": "acme"}' }));
 console.log('acquire receipt version:', acquired.receipt.receiptVersion, 'kind:', acquired.receipt.kind, 'callIndex:', acquired.receipt.callIndex, 'salts:', Object.keys(acquired.salts).join(','));
-assert.equal(String(acquired.receipt.receiptVersion), '3');
+assert.equal(acquired.receipt.receiptVersion, '3');
 assert.equal(acquired.receipt.kind, 'acquisition');
 assert.equal(acquired.receipt.callIndex, 0);
 assert.equal(acquired.receipt.sessionId, session);
@@ -37,7 +37,7 @@ try {
 	refusal = e.message;
 }
 console.log('act refusal:', refusal);
-assert.match(refusal, /401/);
+assert.match(refusal, /^the engine answered 401: /);
 
 const sealed = await actions['seal'].run(ctx({ session }));
 console.log('seal:', JSON.stringify(sealed).slice(0, 200));
