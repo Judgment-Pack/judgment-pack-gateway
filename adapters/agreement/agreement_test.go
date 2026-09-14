@@ -315,6 +315,32 @@ func TestDerivationRefusals(t *testing.T) {
 	if _, err := LiveFacts(withText(live, withMessages, false)); err != nil {
 		t.Fatalf("an answer with messages: %v", err)
 	}
+	// a string is its value, whatever its spelling: an escape a recorder
+	// preserved in the statement, or the server used in its echo, is the
+	// same SQL
+	escapedStatement := strings.Replace(*live.Acquisition.Statement, `"sql":"SELECT`, `"sql":"\u0053ELECT`, 1)
+	escaped := live
+	escaped.Acquisition.Statement = &escapedStatement
+	if escapedStatement == *live.Acquisition.Statement {
+		t.Fatal("the statement escape did not apply")
+	}
+	if _, err := LiveFacts(escaped); err != nil {
+		t.Fatalf("a statement with the SQL under an escape: %v", err)
+	}
+	if _, err := LiveFacts(withText(live, strings.Replace(good, `"sql": "SELECT`, `"sql": "\u0053ELECT`, 1), false)); err != nil {
+		t.Fatalf("an echo with the SQL under an escape: %v", err)
+	}
+	if _, err := LiveFacts(withText(live, strings.Replace(good, `"success": true`, `"succ\u0065ss": true`, 1), false)); err != nil {
+		t.Fatalf("a member name under an escape: %v", err)
+	}
+	escapedTool := strings.Replace(*live.Acquisition.Statement, `"tool":"execute_sql"`, `"tool":"execute_sq\u006c"`, 1)
+	escaped.Acquisition.Statement = &escapedTool
+	if escapedTool == *live.Acquisition.Statement {
+		t.Fatal("the tool escape did not apply")
+	}
+	if _, err := LiveFacts(escaped); err != nil {
+		t.Fatalf("a statement with the tool name under an escape: %v", err)
+	}
 	cases := []struct {
 		name string
 		e    Envelope
@@ -408,6 +434,15 @@ func TestDerivationRefusals(t *testing.T) {
 		},
 		"observedAt that is no instant": func(s string) string {
 			return regexp.MustCompile(`"observedAt":"[^"]*"`).ReplaceAllString(s, `"observedAt":"2026-99-99T99:99:99Z"`)
+		},
+		"observedAt with a fraction of a second": func(s string) string {
+			return regexp.MustCompile(`"observedAt":"([^"]*)Z"`).ReplaceAllString(s, `"observedAt":"${1}.1Z"`)
+		},
+		"observedAt with a comma fraction": func(s string) string {
+			return regexp.MustCompile(`"observedAt":"([^"]*)Z"`).ReplaceAllString(s, `"observedAt":"${1},1Z"`)
+		},
+		"observedAt with a one-digit hour": func(s string) string {
+			return regexp.MustCompile(`"observedAt":"[^"]*"`).ReplaceAllString(s, `"observedAt":"2026-09-14T8:34:16Z"`)
 		},
 		"a schema that is not a digest": func(s string) string { return strings.Replace(s, `"schema":null`, `"schema":"x"`, 1) },
 		"an adapter name that is null":  func(s string) string { return strings.Replace(s, `"name":"bytebase/dbhub"`, `"name":null`, 1) },

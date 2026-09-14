@@ -65,7 +65,7 @@ What "byte-identical" means here is identity under the canon rule (`SPEC.md` §1
 the domain admits is spelled canonically, and one past it — a fraction, an exponent, an integer
 past ±(2^53−1) — is carried as a string of its literal. The rule preserves spellings, not
 types: a numeric `1.5` and a string `"1.5"` derive to the same facts, and `1.0` and `1e0` to
-different ones. The golden record has no such member; the second golden record should.
+different ones. The golden records have no such member; the next golden record should.
 
 ## The golden records
 
@@ -77,7 +77,9 @@ The postgres platform's golden record is the World sample database
 ```
 
 Its second is a one-row table the test adds to that database, `past (n bigint)` holding
-2^53 + 1, the first integer the canon domain does not admit:
+2^53 + 1 — the first positive integer a binary64 double cannot represent exactly, which is
+what a driver that parses JSON into doubles loses; the canon domain ends one earlier, at
+2^53 − 1, so the value lies outside it as well:
 
 ```json
 {"n":"9007199254740993"}

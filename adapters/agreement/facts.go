@@ -104,10 +104,19 @@ func Parse(data []byte) (Envelope, error) {
 		return Envelope{}, errors.New("acquisition: observedAt is not a string")
 	}
 	_ = json.Unmarshal(acq["observedAt"], &e.Acquisition.ObservedAt)
-	if _, err := time.Parse(observedAtLayout, e.Acquisition.ObservedAt); err != nil {
+	if !isStamp(e.Acquisition.ObservedAt) {
 		return Envelope{}, errors.New("acquisition: observedAt is not of the form YYYY-MM-DDThh:mm:ssZ")
 	}
 	return e, nil
+}
+
+// isStamp is the signer's own check of the form: an instant that parses
+// under the layout and, formatted back, reads as it was written -- so a
+// fraction of a second or a one-digit hour, which the parser alone
+// forgives, is refused as the signer refuses it.
+func isStamp(s string) bool {
+	t, err := time.Parse(observedAtLayout, s)
+	return err == nil && t.UTC().Format(observedAtLayout) == s
 }
 
 // Statement reads the statement an adapter recorded as the object it
@@ -168,6 +177,17 @@ func members(raw json.RawMessage, required, optional []string) (map[string]json.
 func isString(raw json.RawMessage) bool {
 	t := bytes.TrimLeft(raw, " \t\r\n")
 	return len(t) > 0 && t[0] == '"' && json.Valid(raw)
+}
+
+// stringValue is the value of a JSON string, whatever its spelling: an
+// escape a recorder preserved is the same string.
+func stringValue(raw json.RawMessage) (string, bool) {
+	if !isString(raw) {
+		return "", false
+	}
+	var s string
+	_ = json.Unmarshal(raw, &s)
+	return s, true
 }
 
 func isArray(raw json.RawMessage) bool {
@@ -322,7 +342,7 @@ func liveRow(e Envelope) (json.RawMessage, error) {
 			return nil, fmt.Errorf("live content item's %s is not an object", name)
 		}
 	}
-	if string(item["type"]) != `"text"` || !isString(item["text"]) {
+	if kind, ok := stringValue(item["type"]); !ok || kind != "text" || !isString(item["text"]) {
 		return nil, errors.New("live content item is not text")
 	}
 	var text string
@@ -355,7 +375,8 @@ func liveRow(e Envelope) (json.RawMessage, error) {
 	if err != nil {
 		return nil, fmt.Errorf("live answer's statement: %w", err)
 	}
-	if !isString(statement["sql"]) {
+	echoed, ok := stringValue(statement["sql"])
+	if !ok {
 		return nil, errors.New("live answer's sql is not a string")
 	}
 	recorded, err := Statement(e)
@@ -363,10 +384,11 @@ func liveRow(e Envelope) (json.RawMessage, error) {
 		return nil, err
 	}
 	args, err := members(recorded["arguments"], []string{"sql"}, nil)
-	if err != nil || string(recorded["tool"]) != `"execute_sql"` || len(recorded) != 2 {
+	tool, _ := stringValue(recorded["tool"])
+	if err != nil || tool != "execute_sql" || len(recorded) != 2 {
 		return nil, errors.New("the statement is not an execute_sql call of one sql argument")
 	}
-	if string(args["sql"]) != string(statement["sql"]) {
+	if asked, ok := stringValue(args["sql"]); !ok || asked != echoed {
 		return nil, errors.New("the answer echoes other SQL than the statement records")
 	}
 	var rows []json.RawMessage
