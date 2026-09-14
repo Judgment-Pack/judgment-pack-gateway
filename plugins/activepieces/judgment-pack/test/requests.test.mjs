@@ -191,7 +191,15 @@ async function rawServer(answer) {
 	const server = net.createServer((socket) => {
 		sockets.add(socket);
 		socket.on('close', () => sockets.delete(socket));
-		socket.on('data', () => socket.write(answer));
+		// one answer per connection, whatever fragments the request arrives in;
+		// later bytes are drained and not answered again
+		let answered = false;
+		socket.on('data', () => {
+			if (!answered) {
+				answered = true;
+				socket.write(answer);
+			}
+		});
 	});
 	const port = await listening(server);
 	return {
