@@ -479,10 +479,11 @@ func validIssuerURL(s string) error {
 }
 
 // validOrigin is an origin as a browser sends it: scheme://host[:port],
-// nothing more.
+// nothing more -- no path, no query or fragment delimiter even empty, no
+// userinfo, no trailing slash.
 func validOrigin(s string) error {
 	u, err := url.Parse(s)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.User != nil || strings.HasSuffix(s, "/") {
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.User != nil || strings.HasSuffix(s, "/") || strings.ContainsAny(s, "?#") || u.Opaque != "" {
 		return fmt.Errorf("%q is not an origin (scheme://host[:port])", s)
 	}
 	return nil

@@ -105,6 +105,17 @@ Bounds. The endpoint path is `/mcp`; the transport is chosen at launch, never by
 | `tools/call` | `POST /acquire` to the signer's `listen` address with `source = "<platform>/live"`, the session (below) and `arguments = {"tool": <tool>, "arguments": <the call's arguments, byte for byte>}`; the answer, below |
 | anything else | a JSON-RPC method-not-found; no prompts, no resources, no sampling, no writes |
 
+Messages are read as the pinned protocol has them, by their members' exact names, never
+case-folded, with no member named twice — except a platform tool's `arguments`, whose content
+is the signer's to judge: an id is a string or a number with no fractional part, in any
+spelling (a spelling of at most 64 bytes and an exponent within ±999, since an id is compared
+and echoed, never computed with), and never `null`; `params` is an object; a client's
+response carries an id and exactly one of a `result` object and an `error` object of an
+integer `code` and a string `message`. `initialize` is validated — a `protocolVersion` string,
+a `capabilities` object, `clientInfo` with `name` and `version` strings — and happens once per
+session; until it has, `tools/list` and `tools/call` are refused. The seal tool's arguments
+are the server's own and are read the same way as the envelope.
+
 **The tool table.** One tool per `(platform, live tool)` pair the configuration and bindings
 name, held in an explicit table from name to pair, built at start. The name is
 `<platform>.<tool>`; a name two pairs would share is a refusal to start, never an overwrite,
@@ -185,7 +196,8 @@ and a request without an acceptable token is refused at the transport with `401`
 discovers where to get a token. What the engine does not do is fetch anything: the token is
 verified by the MCP server itself with the same `verifyToken` the signer uses — same issuer,
 same audience, same key-set file, the key's algorithm, a non-empty subject, `nbf` and `exp`
-with thirty seconds' leeway — before the body is read.
+with thirty seconds' leeway — before the body is read; a request refused before its body is
+read is answered at once, and its connection closed after the answer.
 
 A token that passes is sent on, unchanged, to exactly one destination, the signer's
 configured `listen` address, and nowhere else; the signer verifies it again and names the
@@ -270,7 +282,14 @@ resolves it; a consumer's verdict is store-wide and fails closed (§5a.1), which
 
 Small and explicit, so a conformance test can hold it. **stdio**: newline-delimited JSON-RPC
 on stdin and stdout, nothing but protocol on stdout, diagnostics on stderr, one MCP session
-for the life of the process.
+for the life of the process. Each line is admitted in the order it was read — the lifecycle,
+the session a call resolves to, the window and the admission gate — and an admitted call runs
+while the next line is read, so answers may come in another order, correlated by id, as
+JSON-RPC allows; at most 64 messages are admitted and unanswered at once, past which the
+server stops reading until one is answered; and an answer that cannot be written ends the
+transport with that failure, nothing further run. Diagnostics name what went wrong by
+category — timed out, connection refused, permission denied — never an address, a name or a
+token, since a host may forward its servers' stderr anywhere.
 
 **Streamable HTTP**, one endpoint at `/mcp`, JSON responses only, protocol `2025-06-18`
 only, one JSON-RPC message per body. Checks run in the order of the rows, each before the
@@ -278,7 +297,7 @@ next, and the first that fails answers:
 
 | Check, in order | Answer |
 |---|---|
-| `Origin` present and not in `mcp.origins` | `403`, before the body is read; absent `Origin` (a native client) is admitted |
+| `Origin` present and not in `mcp.origins` — present twice, or present and empty, included | `403`, before the body is read; absent `Origin` (a native client) is admitted |
 | `Authorization` missing or refused | `401` with `WWW-Authenticate: Bearer resource_metadata="..."`, before the body is read |
 | `MCP-Protocol-Version` present and not `2025-06-18` | `400`; absent, `2025-06-18` is assumed, the one version this server speaks |
 | body over the bound (1 MiB) | `413` |
@@ -286,8 +305,8 @@ next, and the first that fails answers:
 | `Mcp-Session-Id` unknown, expired or ended, on any method | `404` |
 | `GET` | `405`, whatever `Accept` says |
 | `DELETE` | `200`; the transport session ends, and no receipt session is sealed by it |
-| `POST` under whose `Accept` `application/json` is not acceptable by RFC 9110's rules — wildcards and quality values honoured, so `*/*` and `application/*` accept it and `application/json;q=0` or SSE alone do not | `406` |
-| `POST` an `initialize` request | `200`, JSON body; the response carries a new `Mcp-Session-Id` — the *transport* session, which is not a receipt session and seals nothing — unless `mcp.sessions` are open, then `503` |
+| `POST` under whose `Accept` `application/json` is not acceptable by RFC 9110's rules — every field line read, wildcards and quality values honoured, so `*/*` and `application/*` accept it and `application/json;q=0` or SSE alone do not; a range with a media-type parameter applies to no answer of this server's, and a weight outside the `qvalue` grammar makes the header one this server cannot read | `406` |
+| `POST` an `initialize` request | `200`, JSON body; a successful one carries a new `Mcp-Session-Id` — the *transport* session, which is not a receipt session and seals nothing — and a refused one carries none and keeps none; `503` when `mcp.sessions` are open or admission is closed |
 | `POST` a request | `200`, JSON body, `Content-Type: application/json` |
 | `POST` a notification or a response | `202`, no body |
 
@@ -317,7 +336,12 @@ deadline per forward, forty-five seconds — the signer's thirty-second source d
 five-second wait for the source's pipes, and a margin — after which the outcome is unknown
 as above, and eight mebibytes of the signer's answer — its own one-mebibyte output bound,
 the receipt, the salts and room — past which the outcome is unknown too. When admission
-closes for maintenance, a queued call is refused as an overload, not drained.
+closes for maintenance, a queued call is refused as an overload, not drained, and so is one
+that finds its forward slot free at the moment the gate closes, or after the gate closed and
+reopened while it waited: a call admitted before a closure is never forwarded after it. The
+HTTP server's own deadlines sit behind these: thirty seconds to read a request's headers and
+body, then the queue's wait, the forward's deadline and fifteen seconds' margin to answer it,
+from the moment the body is read, and a minute for an idle connection.
 
 What these bounds do not bound is the signer's work. A forward past its deadline releases
 its slot while the signer may still be running the source and writing the receipt, so zero

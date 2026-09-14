@@ -98,9 +98,11 @@ func runMCP(args []string, stderr io.Writer, reach mcpReachHost) int {
 		}
 		return 0
 	}
-	fmt.Fprintf(stderr, "mcp on http://%s%s (authority %s, %d tools, signer at %s)\n", cfg.mcp.listen, mcpEndpoint, cfg.authority, len(server.order), cfg.listen)
+	// the diagnostics stream names no address: a host may forward it
+	// anywhere
+	fmt.Fprintf(stderr, "mcp: serving --http at the configured address (authority %s, %d tools)\n", cfg.authority, len(server.order))
 	if err := server.listenHTTP(ctx); err != nil {
-		fmt.Fprintln(stderr, "mcp:", err)
+		fmt.Fprintln(stderr, "mcp: the transport ended:", transportErrorCategory(err))
 		return 1
 	}
 	return 0

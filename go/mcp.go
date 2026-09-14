@@ -18,13 +18,17 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -42,12 +46,21 @@ const (
 	mcpForwardTimeout = 45 * time.Second
 	// mcpQueueWait is how long a call waits for a forward slot.
 	mcpQueueWait = 10 * time.Second
+	// mcpResponseMargin is what an answer may take beyond the queue's wait
+	// and the forward's deadline before the transport gives up on writing
+	// it.
+	mcpResponseMargin = 15 * time.Second
 	// mcpMaxAnswerBytes bounds what the signer's answer may be: the
 	// signer's own output bound is one mebibyte by default, and an answer
 	// carries the result with its receipt and salts.
 	mcpMaxAnswerBytes = 8 << 20
 	// mcpMaxMessageBytes bounds one JSON-RPC message.
 	mcpMaxMessageBytes = 1 << 20
+	// mcpMaxIDBytes bounds a JSON-RPC id's spelling, and mcpMaxIDExponent
+	// a numeric id's exponent: an identifier, not a number to compute
+	// with.
+	mcpMaxIDBytes    = 64
+	mcpMaxIDExponent = 999
 	// mcpReadTimeout bounds the reading of one request, headers and body:
 	// a message is at most a mebibyte, and a client that takes longer than
 	// this to say it is not speaking.
@@ -87,23 +100,31 @@ type mcpServer struct {
 	client   *http.Client
 	now      func() time.Time
 	newID    func() string
-	log      io.Writer     // diagnostics, token-free, never the client's
+	log      io.Writer     // diagnostics: categories, never a token, never an address
 	forwards chan struct{} // one token per forward in flight
 	queue    chan struct{} // one token per call waiting
-	// forwardTimeout bounds one forward and queueWait one wait for a slot;
-	// the constants above unless a test shortens them
+	// forwardTimeout bounds one forward, queueWait one wait for a slot,
+	// readTimeout the reading of one request, responseMargin what an
+	// answer may take past the two; the constants above unless a test
+	// shortens them
 	forwardTimeout time.Duration
 	queueWait      time.Duration
-	// readTimeout bounds a request's headers and body; mcpReadTimeout
-	// unless a test shortens it
-	readTimeout time.Duration
-	mu          sync.Mutex
-	sessions    map[string]*mcpSession
+	readTimeout    time.Duration
+	responseMargin time.Duration
+	// stdioBacklog bounds the messages admitted and unanswered over stdio;
+	// mcpStdioBacklog unless a test lowers it
+	stdioBacklog int
+	mu           sync.Mutex
+	sessions     map[string]*mcpSession
 	// admission is open unless the operator closed it for maintenance:
 	// closed, a new transport session is refused, a new acquisition is an
-	// overload, a queued one is woken and refused, and sealing goes on
-	closed   bool
-	reopened chan struct{} // closed on every close of admission, replaced on reopen
+	// overload, a queued one is woken and refused, and sealing goes on.
+	// Every closure is a generation: a call admitted under one generation
+	// and given a slot under another was queued through a closure, and is
+	// refused as the note says.
+	closed     bool
+	generation uint64
+	reopened   chan struct{} // closed on every close of admission, replaced on reopen
 }
 
 // newMCPServer builds the server from a resolved configuration and its
@@ -132,6 +153,8 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		forwardTimeout: mcpForwardTimeout,
 		queueWait:      mcpQueueWait,
 		readTimeout:    mcpReadTimeout,
+		responseMargin: mcpResponseMargin,
+		stdioBacklog:   mcpStdioBacklog,
 	}
 	add := func(t mcpTool) error {
 		if other, taken := s.tools[t.name]; taken {
@@ -182,6 +205,12 @@ func (s *mcpServer) newSession() *mcpSession {
 	return &mcpSession{id: s.newID(), receiptSession: s.newID(), lastUsed: s.now()}
 }
 
+// responseBudget is what an answer may take once the request is read: the
+// queue's wait, the forward's deadline and the margin.
+func (s *mcpServer) responseBudget() time.Duration {
+	return s.queueWait + s.forwardTimeout + s.responseMargin
+}
+
 // --- admission ------------------------------------------------------------
 
 // closeAdmission closes the gate for maintenance (the rotation contract of
@@ -194,6 +223,7 @@ func (s *mcpServer) closeAdmission() {
 		return
 	}
 	s.closed = true
+	s.generation++
 	close(s.reopened)
 	fmt.Fprintln(s.log, "mcp: admission closed")
 }
@@ -210,11 +240,12 @@ func (s *mcpServer) openAdmission() {
 	fmt.Fprintln(s.log, "mcp: admission open")
 }
 
-// admission reports the gate and the channel that closes with it.
-func (s *mcpServer) admission() (closed bool, wake <-chan struct{}) {
+// admission reports the gate, the channel that closes with it, and the
+// generation: the count of closures so far.
+func (s *mcpServer) admission() (closed bool, wake <-chan struct{}, generation uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.closed, s.reopened
+	return s.closed, s.reopened, s.generation
 }
 
 // --- JSON-RPC ---------------------------------------------------------------
@@ -265,11 +296,27 @@ func members(raw json.RawMessage, what string, allowed map[string]bool) (map[str
 	return m, nil
 }
 
-// validID says whether a JSON-RPC id is one the protocol admits: a string
-// or an integer, never null, a fraction, a boolean or a structure.
+// isString says whether a raw value is a JSON string -- null decodes into
+// a Go string without complaint, and is not one.
+func isString(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) > 0 && t[0] == '"' && json.Valid(t)
+}
+
+// isObject says whether a raw value is a JSON object.
+func isObject(raw json.RawMessage) bool {
+	t := bytes.TrimSpace(raw)
+	return len(t) > 0 && t[0] == '{' && json.Valid(t)
+}
+
+// validID says whether a JSON-RPC id is one the pinned protocol admits: a
+// string, or an integer -- a number with no fractional part, in whatever
+// spelling, within a spelling bound and an exponent bound, since an id is
+// compared and echoed, never computed with -- never null, a boolean or a
+// structure.
 func validID(raw json.RawMessage) bool {
 	t := bytes.TrimSpace(raw)
-	if len(t) == 0 {
+	if len(t) == 0 || len(t) > mcpMaxIDBytes {
 		return false
 	}
 	if t[0] == '"' {
@@ -282,8 +329,14 @@ func validID(raw json.RawMessage) bool {
 	if dec.Decode(&n) != nil {
 		return false
 	}
-	_, err := n.Int64()
-	return err == nil && !strings.ContainsAny(string(n), ".eE")
+	if _, exponent, found := strings.Cut(strings.ToLower(string(n)), "e"); found {
+		e, err := strconv.Atoi(strings.TrimPrefix(exponent, "+"))
+		if err != nil || e > mcpMaxIDExponent || e < -mcpMaxIDExponent {
+			return false
+		}
+	}
+	r, ok := new(big.Rat).SetString(string(n))
+	return ok && r.IsInt()
 }
 
 // parseMCPMessage reads one JSON-RPC message: syntax first, then an object
@@ -300,7 +353,8 @@ func parseMCPMessage(data []byte) (mcpRequest, *jsonrpcError) {
 	// The message is read by exact member names with no duplicate, as the
 	// signer reads what it signs; but what a call carries as its tool's
 	// arguments is the signer's to judge -- its duplicates, its numbers --
-	// so the walk skips that one value.
+	// so the walk skips that one value. (The seal tool's arguments are this
+	// server's, and are walked where they are read.)
 	if err := noDuplicateMembers(data, [][]string{{"params", "arguments"}}); err != nil {
 		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, err.Error()}
 	}
@@ -308,17 +362,28 @@ func parseMCPMessage(data []byte) (mcpRequest, *jsonrpcError) {
 	if perr != nil {
 		return mcpRequest{}, perr
 	}
-	if string(bytes.TrimSpace(m["jsonrpc"])) != `"2.0"` {
+	var version string
+	if json.Unmarshal(m["jsonrpc"], &version) != nil || version != "2.0" {
 		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, `jsonrpc must be "2.0"`}
 	}
 	id, hasID := m["id"]
 	method, hasMethod := m["method"]
-	_, hasResult := m["result"]
-	_, hasError := m["error"]
+	result, hasResult := m["result"]
+	errValue, hasError := m["error"]
 	if !hasMethod {
-		// a response: exactly one of result and error, with an id
+		// a response: an id and exactly one of result -- an object -- and
+		// error -- an object of an integer code and a string message
 		if hasResult == hasError || !hasID || !validID(id) {
 			return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a message without a method is a response, with an id and exactly one of result and error"}
+		}
+		if hasResult && !isObject(result) {
+			return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a response's result is an object"}
+		}
+		if hasError {
+			e, perr := members(errValue, "a response's error", map[string]bool{"code": true, "message": true, "data": true})
+			if perr != nil || !validID(e["code"]) || isString(e["code"]) || !isString(e["message"]) {
+				return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a response's error is an object of an integer code and a string message"}
+			}
 		}
 		return mcpRequest{isResponse: true, id: id}, nil
 	}
@@ -329,11 +394,10 @@ func parseMCPMessage(data []byte) (mcpRequest, *jsonrpcError) {
 	if json.Unmarshal(method, &name) != nil || name == "" {
 		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "method must be a non-empty string"}
 	}
-	if params, ok := m["params"]; ok {
-		t := bytes.TrimSpace(params)
-		if len(t) == 0 || (t[0] != '{' && t[0] != '[') {
-			return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "params must be an object or an array"}
-		}
+	if params, ok := m["params"]; ok && !isObject(params) {
+		// JSON-RPC admits an array; the pinned protocol's messages carry
+		// objects
+		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "params must be an object"}
 	}
 	if !hasID {
 		return mcpRequest{method: name, params: m["params"]}, nil
@@ -455,12 +519,16 @@ func noDuplicateMembers(data []byte, skip [][]string) error {
 	}
 }
 
-// mcpOutcome is what handling one message yields: a response to write (nil
-// for a notification or a client's response), or a transport-level refusal
-// the HTTP transport turns into its own status.
+// mcpOutcome is what admitting one message yields: a response to write (nil
+// for a notification or a client's response), a transport-level refusal
+// the HTTP transport turns into its own status, whether the message was an
+// initialize that succeeded, and -- for a call admitted and not yet made
+// -- the work that makes it, which a transport runs where it likes.
 type mcpOutcome struct {
-	response  []byte
-	transport *mcpTransportRefusal
+	response    []byte
+	transport   *mcpTransportRefusal
+	initialized bool
+	run         func(ctx context.Context) mcpOutcome
 }
 
 // mcpTransportRefusal is a refusal the HTTP transport answers with a
@@ -483,11 +551,21 @@ func rpcFailure(id json.RawMessage, e jsonrpcError) []byte {
 	return out
 }
 
-// handle answers one message that arrived at the given time, for a
-// transport session, under the caller's bearer (empty when the engine has
-// no identity). Over stdio the token is the one given at start; over HTTP
-// it is the request's.
+// handle admits and answers one message: admit, then the work, inline.
 func (s *mcpServer) handle(ctx context.Context, sess *mcpSession, token string, arrived time.Time, data []byte) mcpOutcome {
+	outcome := s.admit(sess, token, arrived, data)
+	if outcome.run != nil {
+		return outcome.run(ctx)
+	}
+	return outcome
+}
+
+// admit reads one message that arrived at the given time, for a transport
+// session, under the caller's bearer (empty when the engine has no
+// identity), and does everything that is done in arrival order: the
+// lifecycle, the session's resolution, the window, the gate. A call that
+// passes comes back as work to run.
+func (s *mcpServer) admit(sess *mcpSession, token string, arrived time.Time, data []byte) mcpOutcome {
 	req, perr := parseMCPMessage(data)
 	if perr != nil {
 		return mcpOutcome{response: rpcFailure(nil, *perr)}
@@ -515,48 +593,43 @@ func (s *mcpServer) handle(ctx context.Context, sess *mcpSession, token string, 
 	case "tools/list":
 		return mcpOutcome{response: rpcResult(req.id, map[string]any{"tools": s.toolList()})}
 	case "tools/call":
-		return s.callTool(ctx, sess, token, arrived, req)
+		return s.admitCall(sess, token, arrived, req)
 	default:
 		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcMethodNotFound, "method not supported: " + req.method})}
 	}
 }
 
 // initialize holds the client's initialize to the lifecycle's shape and
-// answers the one version this server speaks, whatever was proposed.
+// answers the one version this server speaks, whatever was proposed. The
+// transition is one: a session initializes once, and two initializes that
+// race find one of them second.
 func (s *mcpServer) initialize(sess *mcpSession, req mcpRequest) mcpOutcome {
-	s.mu.Lock()
-	already := sess.initialized
-	s.mu.Unlock()
-	if already {
-		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcInvalidRequest, "the session is initialized already"})}
-	}
 	params, perr := members(req.params, "initialize params", map[string]bool{"protocolVersion": true, "capabilities": true, "clientInfo": true, "_meta": true})
 	if perr != nil {
 		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcInvalidParams, perr.Message})}
 	}
 	var proposed string
-	if raw, ok := params["protocolVersion"]; !ok || json.Unmarshal(raw, &proposed) != nil || proposed == "" {
+	if raw, ok := params["protocolVersion"]; !ok || !isString(raw) || json.Unmarshal(raw, &proposed) != nil || proposed == "" {
 		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcInvalidParams, "initialize names a protocolVersion"})}
 	}
-	var capabilities map[string]json.RawMessage
-	if raw, ok := params["capabilities"]; !ok || json.Unmarshal(raw, &capabilities) != nil || capabilities == nil {
+	if raw, ok := params["capabilities"]; !ok || !isObject(raw) {
 		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcInvalidParams, "initialize carries capabilities, an object"})}
-	}
-	var client struct {
-		Name    *string
-		Version *string
 	}
 	clientInfo, perr := members(params["clientInfo"], "clientInfo", map[string]bool{"name": true, "version": true, "title": true, "websiteUrl": true})
 	if perr != nil {
 		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcInvalidParams, "initialize carries clientInfo, an object of name and version"})}
 	}
-	if json.Unmarshal(clientInfo["name"], &client.Name) != nil || client.Name == nil || json.Unmarshal(clientInfo["version"], &client.Version) != nil || client.Version == nil {
+	if !isString(clientInfo["name"]) || !isString(clientInfo["version"]) {
 		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcInvalidParams, "clientInfo names name and version, strings"})}
 	}
 	s.mu.Lock()
+	already := sess.initialized
 	sess.initialized = true
 	s.mu.Unlock()
-	return mcpOutcome{response: rpcResult(req.id, map[string]any{
+	if already {
+		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcInvalidRequest, "the session is initialized already"})}
+	}
+	return mcpOutcome{initialized: true, response: rpcResult(req.id, map[string]any{
 		"protocolVersion": mcpProtocolVersion,
 		"capabilities":    map[string]any{"tools": map[string]any{}},
 		"serverInfo":      map[string]any{"name": s.cfg.authority, "version": buildVersion()},
@@ -597,11 +670,16 @@ func (s *mcpServer) toolList() []map[string]any {
 	return list
 }
 
-// callTool turns tools/call into the signer's request. A call is counted
-// against the window as it arrives, whatever becomes of it, and named after
-// the session it resolves to.
-func (s *mcpServer) callTool(ctx context.Context, sess *mcpSession, token string, arrived time.Time, req mcpRequest) mcpOutcome {
-	// the session first, so that every refusal below can name it
+// overload is an overload result naming the session.
+func overload(session, reason string) map[string]any {
+	return toolError(map[string]any{"session": session, "outcome": "overload", "error": reason})
+}
+
+// admitCall does the arrival-order part of tools/call: the session it
+// resolves to, first, so that every refusal names it; the window, counted
+// whatever becomes of the call; the shape; the gate. What passes is
+// returned as work.
+func (s *mcpServer) admitCall(sess *mcpSession, token string, arrived time.Time, req mcpRequest) mcpOutcome {
 	session := sess.receiptSession
 	var name string
 	var arguments json.RawMessage
@@ -610,86 +688,99 @@ func (s *mcpServer) callTool(ctx context.Context, sess *mcpSession, token string
 	if perr != nil {
 		invalid = &jsonrpcError{rpcInvalidParams, perr.Message}
 	} else {
-		if json.Unmarshal(params["name"], &name) != nil || name == "" {
-			invalid = &jsonrpcError{rpcInvalidParams, "tools/call names a tool"}
-		}
-		arguments = params["arguments"]
-		if raw, ok := params["_meta"]; ok && invalid == nil {
+		// the metadata's session first, whatever the name says
+		if raw, ok := params["_meta"]; ok {
 			meta, perr := members(raw, "_meta", nil)
 			if perr != nil {
 				invalid = &jsonrpcError{rpcInvalidParams, "_meta must be an object"}
 			} else if named, ok := meta[mcpSessionMeta]; ok {
-				var want string
-				if json.Unmarshal(named, &want) != nil {
+				if !isString(named) {
 					invalid = &jsonrpcError{rpcInvalidParams, "_meta." + mcpSessionMeta + " must be a session name"}
 				} else {
-					session = want
+					json.Unmarshal(named, &session)
 				}
 			}
 		}
+		if invalid == nil && (!isString(params["name"]) || json.Unmarshal(params["name"], &name) != nil || name == "") {
+			invalid = &jsonrpcError{rpcInvalidParams, "tools/call names a tool"}
+		}
+		arguments = params["arguments"]
 	}
 	tool, known := s.tools[name]
 	if invalid == nil && !known {
 		invalid = &jsonrpcError{rpcInvalidParams, "unknown tool: " + name}
 	}
 	if invalid == nil && tool.seal {
-		args, perr := members(arguments, mcpSealTool+" arguments", map[string]bool{"session": true})
-		if perr != nil {
+		// the seal tool's arguments are this server's own: read exactly,
+		// no duplicate, a string
+		if err := noDuplicateMembers(arguments, nil); err != nil {
+			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " arguments: " + err.Error()}
+		} else if args, perr := members(arguments, mcpSealTool+" arguments", map[string]bool{"session": true}); perr != nil {
 			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes {session} and no other member"}
+		} else if !isString(args["session"]) {
+			invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes {session}, a session name"}
 		} else {
-			var want string
-			if raw, ok := args["session"]; !ok || json.Unmarshal(raw, &want) != nil {
-				invalid = &jsonrpcError{rpcInvalidParams, mcpSealTool + " takes {session}, a session name"}
-			} else {
-				session = want
-			}
+			json.Unmarshal(args["session"], &session)
 		}
 	}
-	if invalid == nil && !tool.seal && len(bytes.TrimSpace(arguments)) > 0 {
-		if t := bytes.TrimSpace(arguments); t[0] != '{' {
-			invalid = &jsonrpcError{rpcInvalidParams, "arguments must be an object"}
-		}
+	if invalid == nil && !tool.seal && len(bytes.TrimSpace(arguments)) > 0 && !isObject(arguments) {
+		invalid = &jsonrpcError{rpcInvalidParams, "arguments must be an object"}
 	}
 	// the window: counted at arrival, whatever becomes of the call
 	if refusal := s.countCall(sess, arrived, session); refusal != nil {
-		return mcpOutcome{response: rpcResult(req.id, toolError(refusal))}
+		return mcpOutcome{response: rpcResult(req.id, refusal)}
 	}
 	if invalid != nil {
 		return mcpOutcome{response: rpcFailure(req.id, *invalid)}
 	}
-	// admission: closed for maintenance, an acquisition is refused and a
-	// seal goes on
-	if closed, _ := s.admission(); closed && !tool.seal {
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "overload", "error": "admission is closed for maintenance; nothing was forwarded"}))}
+	// the gate: closed for maintenance, an acquisition is refused and a
+	// seal goes on; the generation is remembered for the slot below
+	closed, _, generation := s.admission()
+	if closed && !tool.seal {
+		return mcpOutcome{response: rpcResult(req.id, overload(session, "admission is closed for maintenance; nothing was forwarded"))}
 	}
-	// the queue and the forward slot; a queued acquisition is woken and
-	// refused when admission closes, a queued seal is not (a nil channel
-	// never fires)
+	return mcpOutcome{run: func(ctx context.Context) mcpOutcome {
+		return s.runCall(ctx, token, req.id, tool, session, arguments, generation)
+	}}
+}
+
+// runCall takes a queue token and a forward slot and makes the call. A
+// queued acquisition is woken and refused when admission closes, and one
+// that gets its slot after a closure -- the two ready at once, or the gate
+// closed and reopened while it waited -- is refused too and gives the slot
+// back; a queued seal is woken by nothing (a nil channel never fires).
+func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessage, tool mcpTool, session string, arguments json.RawMessage, generation uint64) mcpOutcome {
 	select {
 	case s.queue <- struct{}{}:
 	default:
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "overload", "error": "the engine's front is full; nothing was forwarded"}))}
+		return mcpOutcome{response: rpcResult(id, overload(session, "the engine's front is full; nothing was forwarded"))}
 	}
 	var wake <-chan struct{}
 	if !tool.seal {
-		_, wake = s.admission()
+		_, wake, _ = s.admission()
 	}
 	waited := time.NewTimer(s.queueWait)
 	select {
 	case s.forwards <- struct{}{}:
 		waited.Stop()
 		<-s.queue
+		if !tool.seal {
+			if closed, _, now := s.admission(); closed || now != generation {
+				<-s.forwards
+				return mcpOutcome{response: rpcResult(id, overload(session, "admission closed for maintenance while the call waited; nothing was forwarded"))}
+			}
+		}
 	case <-waited.C:
 		<-s.queue
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "overload", "error": "no forward slot within " + s.queueWait.String() + "; nothing was forwarded"}))}
+		return mcpOutcome{response: rpcResult(id, overload(session, "no forward slot within "+s.queueWait.String()+"; nothing was forwarded"))}
 	case <-wake:
 		waited.Stop()
 		<-s.queue
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "overload", "error": "admission closed for maintenance while the call waited; nothing was forwarded"}))}
+		return mcpOutcome{response: rpcResult(id, overload(session, "admission closed for maintenance while the call waited; nothing was forwarded"))}
 	case <-ctx.Done():
 		waited.Stop()
 		<-s.queue
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "overload", "error": "the call ended before a forward slot was free; nothing was forwarded"}))}
+		return mcpOutcome{response: rpcResult(id, overload(session, "the call ended before a forward slot was free; nothing was forwarded"))}
 	}
 	defer func() { <-s.forwards }()
 
@@ -712,27 +803,27 @@ func (s *mcpServer) callTool(ctx context.Context, sess *mcpSession, token string
 	}
 	status, answer, err := s.forward(ctx, path, token, body)
 	if err != nil {
-		// the reason stays here, token-free; the client learns only that
-		// the answer did not arrive
-		fmt.Fprintf(s.log, "mcp: forward to %s did not answer: %v\n", path, err)
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's answer did not arrive; the call may have run and minted a receipt"}))}
+		// the category stays here, token-free and address-free; the
+		// client learns only that the answer did not arrive
+		fmt.Fprintf(s.log, "mcp: forward to %s did not answer: %s\n", path, transportErrorCategory(err))
+		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's answer did not arrive; the call may have run and minted a receipt"}))}
 	}
 	if status == http.StatusUnauthorized {
 		reason := signerReason(answer)
 		return mcpOutcome{
-			response:  rpcResult(req.id, toolError(map[string]any{"session": session, "status": status, "error": reason})),
+			response:  rpcResult(id, toolError(map[string]any{"session": session, "status": status, "error": reason})),
 			transport: &mcpTransportRefusal{status: status, reason: reason},
 		}
 	}
 	if status < 200 || status >= 300 {
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "status": status, "error": signerReason(answer)}))}
+		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "status": status, "error": signerReason(answer)}))}
 	}
 	if tool.seal {
 		var record map[string]json.RawMessage
 		if json.Unmarshal(answer, &record) != nil || record == nil {
-			return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's seal answer was not an object; the seal may have been written"}))}
+			return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's seal answer was not an object; the seal may have been written"}))}
 		}
-		return mcpOutcome{response: rpcResult(req.id, toolSuccess(record))}
+		return mcpOutcome{response: rpcResult(id, toolSuccess(record))}
 	}
 	var acquired struct {
 		Result  json.RawMessage `json:"result"`
@@ -740,10 +831,44 @@ func (s *mcpServer) callTool(ctx context.Context, sess *mcpSession, token string
 		Salts   json.RawMessage `json:"salts"`
 	}
 	if json.Unmarshal(answer, &acquired) != nil || len(acquired.Receipt) == 0 {
-		return mcpOutcome{response: rpcResult(req.id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's answer was not an acquisition; a receipt may have been minted"}))}
+		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's answer was not an acquisition; a receipt may have been minted"}))}
 	}
-	return mcpOutcome{response: rpcResult(req.id, toolSuccess(map[string]any{"session": session, "result": acquired.Result, "receipt": acquired.Receipt, "salts": acquired.Salts}))}
+	return mcpOutcome{response: rpcResult(id, toolSuccess(map[string]any{"session": session, "result": acquired.Result, "receipt": acquired.Receipt, "salts": acquired.Salts}))}
 }
+
+// transportErrorCategory names what went wrong with a forward, or a
+// listener, in a word that carries no address, no name and no token: what
+// a diagnostics stream may say, since a host may forward it anywhere.
+func transportErrorCategory(err error) string {
+	switch {
+	case err == nil:
+		return "nothing"
+	case errors.Is(err, errAnswerTooLarge):
+		return "the answer exceeded the bound"
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, os.ErrDeadlineExceeded):
+		return "timed out"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	case errors.Is(err, syscall.EADDRINUSE):
+		return "address in use"
+	case errors.Is(err, syscall.EACCES) || errors.Is(err, os.ErrPermission):
+		return "permission denied"
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return "timed out"
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return "connection failed"
+	}
+	return "transport error"
+}
+
+// errAnswerTooLarge is a forward whose answer crossed the bound.
+var errAnswerTooLarge = errors.New("the answer exceeds the bound")
 
 // toolSuccess is a tool result carrying the object as one text block and as
 // structuredContent.
@@ -772,7 +897,7 @@ func (s *mcpServer) countCall(sess *mcpSession, arrived time.Time, session strin
 	sess.windowCount++
 	if sess.windowCount > s.cfg.mcp.callsPerMinute {
 		wait := time.Minute - arrived.Sub(sess.windowStart)
-		return map[string]any{"session": session, "outcome": "overload", "error": fmt.Sprintf("%d calls in this window already; nothing was forwarded", s.cfg.mcp.callsPerMinute), "retryAfterSeconds": int(math.Ceil(wait.Seconds()))}
+		return toolError(map[string]any{"session": session, "outcome": "overload", "error": fmt.Sprintf("%d calls in this window already; nothing was forwarded", s.cfg.mcp.callsPerMinute), "retryAfterSeconds": int(math.Ceil(wait.Seconds()))})
 	}
 	return nil
 }
@@ -800,7 +925,7 @@ func (s *mcpServer) forward(ctx context.Context, path, token string, body []byte
 		return 0, nil, err
 	}
 	if len(answer) > mcpMaxAnswerBytes {
-		return 0, nil, errors.New("the answer exceeds the bound")
+		return 0, nil, errAnswerTooLarge
 	}
 	return res.StatusCode, answer, nil
 }

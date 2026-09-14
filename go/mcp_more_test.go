@@ -189,15 +189,18 @@ func TestMCPOverStdio(t *testing.T) {
 		return m
 	}
 	in, answers, done, cancel := start(t, f.token)
-	// a call before initialize is refused; the initialize answers; a
-	// notification is silent; then a call and a seal
-	fmt.Fprintln(in, toolCall(0, "screen.lookup", `{}`, ""))
-	if early := next(t, answers); early["error"] == nil || !strings.Contains(early["error"].(map[string]any)["message"].(string), "initialize first") {
+	// a call written before the initialize, without waiting, is refused
+	// in the reader's order; the initialize answers; a second initialize
+	// is refused; a notification is silent; then a call and a seal
+	fmt.Fprintln(in, toolCall(0, "screen.lookup", `{}`, "")+"\n"+initialize+"\n"+initialize)
+	if early := next(t, answers); early["id"] != float64(0) || early["error"] == nil || !strings.Contains(early["error"].(map[string]any)["message"].(string), "initialize first") {
 		t.Fatalf("a call before initialize: %v", early)
 	}
-	fmt.Fprintln(in, initialize)
 	if init := next(t, answers); init["result"] == nil || init["result"].(map[string]any)["protocolVersion"] != mcpProtocolVersion {
 		t.Fatalf("initialize: %v", init)
+	}
+	if again := next(t, answers); again["error"] == nil || !strings.Contains(again["error"].(map[string]any)["message"].(string), "initialized already") {
+		t.Fatalf("a second initialize: %v", again)
 	}
 	fmt.Fprintln(in, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 	fmt.Fprintln(in, toolCall(2, "screen.lookup", `{"q":"x"}`, ""))
@@ -553,6 +556,15 @@ func TestAcceptsJSON(t *testing.T) {
 		{[]string{"application/json;q=x"}, false},
 		{[]string{"application/json;q=2"}, false},
 		{[]string{"application/json;Q=0.5"}, true},
+		{[]string{"application/json;q=.5"}, false},
+		{[]string{"application/json;q=+0.5"}, false},
+		{[]string{"application/json;q=1e-1"}, false},
+		{[]string{"application/json;q=0.5555"}, false},
+		{[]string{"application/json;q=NaN"}, false},
+		{[]string{"application/json;q=1.000"}, true},
+		{[]string{"application/json;q=0."}, false},
+		{[]string{"application/json;q=0.001"}, true},
+		{[]string{"application/json;q=1.001"}, false},
 		{[]string{`text/plain;x="a,b", application/json`}, true},
 		{[]string{"*/*;q=0, application/json"}, true},
 	} {
@@ -605,7 +617,7 @@ func TestMetadataPathAndDuplicates(t *testing.T) {
 		}
 	}
 	// JSON-RPC ids: strings and integers, nothing else
-	for id, ok := range map[string]bool{`1`: true, `"x"`: true, `0`: true, `-1`: true, `1.0`: false, `1e2`: false, `true`: false, `null`: false, `[1]`: false, `{}`: false, `""`: true, `9007199254740993`: true, `1e400`: false} {
+	for id, ok := range map[string]bool{`1`: true, `"x"`: true, `0`: true, `-1`: true, `1.0`: true, `1e2`: true, `1.5`: false, `1e-2`: false, `true`: false, `null`: false, `[1]`: false, `{}`: false, `""`: true, `9007199254740993`: true, `1e400`: true, `1e99999`: false, `"` + strings.Repeat("a", 63) + `"`: false} {
 		if validID(json.RawMessage(id)) != ok {
 			t.Errorf("id %s: %v", id, !ok)
 		}

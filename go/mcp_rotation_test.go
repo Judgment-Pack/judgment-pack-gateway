@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -50,10 +51,24 @@ func TestMCPRotationSequence(t *testing.T) {
 	if _, _, body := acquire(1, oldToken); resultOf(t, body)["isError"] != nil {
 		t.Fatalf("under the old key: %v", body)
 	}
-	// 1. the new key beside the old, the frontend restarted: the old token
-	// still works end to end; the new one passes the frontend and is the
-	// signer's refusal, made the transport's
-	setKeys(keysOf(t, f.issuer, old, new), keysOf(t, f.issuer, old))
+	// 1. the new key beside the old, the frontend restarted -- a new
+	// process on the same configuration, whose transport sessions are
+	// gone: the old id is unknown to it, a new one is opened -- the old
+	// token still works end to end; the new one passes the frontend and is
+	// the signer's refusal, made the transport's
+	both := keysOf(t, f.issuer, old, new)
+	restarted, err := newMCPServer(f.server.cfg, mcpBindings(), &both)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.server = restarted
+	f.front = httptest.NewServer(restarted.httpHandler())
+	t.Cleanup(f.front.Close)
+	if code, _, _ := f.call(t, http.MethodPost, sid, toolCall(1, "screen.lookup", `{}`, meta), nil); code != http.StatusNotFound {
+		t.Fatalf("the old transport session survived the frontend's restart: %d", code)
+	}
+	sid = f.open(t)
+	setKeys(both, keysOf(t, f.issuer, old))
 	if _, _, body := acquire(2, oldToken); resultOf(t, body)["isError"] != nil {
 		t.Fatalf("the old token after the frontend's restart: %v", body)
 	}
@@ -182,7 +197,7 @@ func TestMCPRotationSequence(t *testing.T) {
 	f.server.closeAdmission()
 	f.server.openAdmission()
 	f.server.openAdmission()
-	if closed, _ := f.server.admission(); closed {
+	if closed, _, _ := f.server.admission(); closed {
 		t.Fatal("admission stayed closed")
 	}
 }

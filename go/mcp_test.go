@@ -106,7 +106,7 @@ func (f *mcpFixture) call(t *testing.T, method, session, body string, headers ma
 	}
 	for k, v := range headers {
 		switch {
-		case k == "Accept-Second":
+		case k == "Accept-Second" || k == "Origin-Second" || k == "Origin-Empty":
 			// added below, after every Set, whatever order the map yields
 		case v == "":
 			req.Header.Del(k)
@@ -116,6 +116,12 @@ func (f *mcpFixture) call(t *testing.T, method, session, body string, headers ma
 	}
 	if second, ok := headers["Accept-Second"]; ok {
 		req.Header.Add("Accept", second)
+	}
+	if second, ok := headers["Origin-Second"]; ok {
+		req.Header.Add("Origin", second)
+	}
+	if _, ok := headers["Origin-Empty"]; ok {
+		req.Header["Origin"] = []string{""}
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -299,6 +305,22 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 	if otherReceipt["source"] != "other/live" || otherReceipt["callIndex"] != float64(1) {
 		t.Fatalf("the other platform's receipt is %v", otherReceipt)
 	}
+	// both are the engine's, verifiable in the store; a consumer that
+	// binds the source (§5a.4) accepts the one and refuses the other, so
+	// a receipt from the wrong platform's tool is no receipt for this one
+	verified, err := verifySession(filepath.Join(f.root, "store"), session, "gateway:test", f.service.publicKey)
+	if err != nil || verified.count != 2 {
+		t.Fatalf("the generated session does not verify: %v %v", err, verified)
+	}
+	for _, finding := range verified.findings {
+		if finding["status"] != "ok" {
+			t.Fatalf("the generated session does not verify: %v", finding)
+		}
+	}
+	bound := func(r map[string]any, source string) bool { return r["sessionId"] == session && r["source"] == source }
+	if !bound(receipt, "screen/live") || bound(otherReceipt, "screen/live") || !bound(otherReceipt, "other/live") {
+		t.Fatal("a consumer binding the source did not tell the two platforms' receipts apart")
+	}
 	onDisk, err := os.ReadFile(filepath.Join(f.root, "store", "receipts", session, "0.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -378,6 +400,12 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 		{`{"jsonrpc":"2.0","id":1,"method":"ping","result":{}}`, rpcInvalidRequest},
 		{`{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}}`, rpcInvalidRequest},
 		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":"x"}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"error":17}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"result":null}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"error":{"code":"1","message":"x"}}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x","extra":true}}`, rpcInvalidRequest},
+		{`{"jsonrpc":"2.0","id":"` + strings.Repeat("x", mcpMaxIDBytes) + `","method":"ping"}`, rpcInvalidRequest},
 		{`{"jsonrpc":"2.0","id":1,"method":"ping","extra":1}`, rpcInvalidRequest},
 		{`{"jsonrpc":"2.0","id":1,"method":""}`, rpcInvalidRequest},
 		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","arguments":[1]}}`, rpcInvalidParams},
@@ -392,15 +420,44 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 			t.Fatalf("%s: %d %v", c.body, code, body)
 		}
 	}
+	// what the pinned protocol admits is admitted in any spelling: the
+	// version as an escaped string, an integer id however spelled, echoed
+	// as it was spelled; and a client's response of the protocol's shape
+	for _, c := range []struct{ body, id string }{
+		{`{"jsonrpc":"2\u002e0","id":7,"method":"ping"}`, "7"},
+		{`{"jsonrpc":"2.0","id":1e2,"method":"ping"}`, "1e2"},
+		{`{"jsonrpc":"2.0","id":1.0,"method":"ping"}`, "1.0"},
+		{`{"jsonrpc":"2.0","id":12345678901234567890,"method":"ping"}`, "12345678901234567890"},
+		{`{"jsonrpc":"2.0","id":-0,"method":"ping"}`, "-0"},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, f.front.URL+mcpEndpoint, strings.NewReader(c.body))
+		req.Header.Set("Mcp-Session-Id", sid)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != 200 || !strings.Contains(string(raw), `"id":`+c.id+`,`) || !strings.Contains(string(raw), `"result":{}`) {
+			t.Fatalf("%s: %d %s", c.body, resp.StatusCode, raw)
+		}
+	}
+	for _, response := range []string{`{"jsonrpc":"2.0","id":1,"result":{}}`, `{"jsonrpc":"2.0","id":"x","error":{"code":1,"message":"x"}}`, `{"jsonrpc":"2.0","id":1,"error":{"code":-32000,"message":"x","data":[1]}}`} {
+		if code, _, _ := f.call(t, http.MethodPost, sid, response, nil); code != http.StatusAccepted {
+			t.Fatalf("%s answered %d", response, code)
+		}
+	}
 	// a message whose id is null is neither a request nor a notification
 	// under the pinned protocol's schema: refused, not taken for either
 	if _, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":null,"method":"ping"}`, nil); body["error"] == nil || body["error"].(map[string]any)["code"] != float64(rpcInvalidRequest) || body["result"] != nil {
 		t.Fatalf("id null: %v", body)
 	}
-	// the members are read by their exact names: METHOD is not method, and
-	// a message with no method is a response, acknowledged
-	if code, _, _ := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":1,"METHOD":"ping"}`, nil); code != http.StatusOK {
-		t.Fatalf("METHOD answered %d", code)
+	// the members are read by their exact names: METHOD is not method, so
+	// the message is refused for the member this server does not read,
+	// not answered as a ping
+	if _, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":1,"METHOD":"ping"}`, nil); body["error"] == nil || !strings.Contains(body["error"].(map[string]any)["message"].(string), "METHOD") || body["result"] != nil {
+		t.Fatalf("METHOD: %v", body)
 	}
 	// a case-folded member inside a call is not the member: no session is
 	// named by _META, and the call lands in the generated session
@@ -414,16 +471,21 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 		t.Fatalf("a second initialize: %v", body)
 	}
 	for _, params := range []string{`{}`, `{"protocolVersion":"2025-06-18"}`, `{"protocolVersion":"2025-06-18","capabilities":{}}`, `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t"}}`, `{"protocolVersion":"2025-06-18","capabilities":[],"clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"},"x":1}`, `{"capabilities":{},"clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":"2025-06-18","clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":1,"capabilities":{},"clientInfo":{"name":"t","version":"0"}}`, `{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":0}}`} {
+		f.server.mu.Lock()
+		before := len(f.server.sessions)
+		f.server.mu.Unlock()
 		code, header, body := f.call(t, http.MethodPost, "", `{"jsonrpc":"2.0","id":45,"method":"initialize","params":`+params+`}`, nil)
 		if code != http.StatusOK || body["error"] == nil || body["error"].(map[string]any)["code"] != float64(rpcInvalidParams) {
 			t.Fatalf("initialize with params %s: %d %v", params, code, body)
 		}
-		// the session it opened is not initialized: a call on it is refused
-		// and nothing reaches the signer
-		if _, _, body := f.call(t, http.MethodPost, header.Get("Mcp-Session-Id"), toolCall(46, "screen.lookup", `{}`, ""), nil); body["error"] == nil || !strings.Contains(body["error"].(map[string]any)["message"].(string), "initialize first") {
-			t.Fatalf("a call before initialization: %v", body)
+		// a failed initialize publishes no transport session: no id in
+		// the answer, none kept
+		f.server.mu.Lock()
+		after := len(f.server.sessions)
+		f.server.mu.Unlock()
+		if header.Get("Mcp-Session-Id") != "" || after != before {
+			t.Fatalf("a failed initialize published a session: %q, %d then %d", header.Get("Mcp-Session-Id"), before, after)
 		}
-		f.call(t, http.MethodDelete, header.Get("Mcp-Session-Id"), "", nil)
 	}
 	// three receipts in the generated session: the first call, the other
 	// platform's, and the one with absent arguments; the refusals minted none
@@ -436,7 +498,7 @@ func TestMCPHTTPMatrix(t *testing.T) {
 	f := newMCPFixture(t, true)
 	sid := f.open(t)
 	ping := `{"jsonrpc":"2.0","id":1,"method":"ping"}`
-	init := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{}}}`
+	init := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
 	rows := []struct {
 		name    string
 		method  string
@@ -461,6 +523,11 @@ func TestMCPHTTPMatrix(t *testing.T) {
 		{"a loopback origin with userinfo", http.MethodPost, sid, ping, map[string]string{"Origin": "http://u@localhost"}, http.StatusForbidden},
 		{"a loopback origin with a query", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost?x"}, http.StatusForbidden},
 		{"an origin spelled as a host that resolves to loopback", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost.evil.example"}, http.StatusForbidden},
+		{"an origin present and empty", http.MethodPost, sid, ping, map[string]string{"Origin-Empty": "yes"}, http.StatusForbidden},
+		{"two origins", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost", "Origin-Second": "http://localhost"}, http.StatusForbidden},
+		{"a loopback origin with an empty query", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost?"}, http.StatusForbidden},
+		{"a loopback origin with an empty fragment", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost#"}, http.StatusForbidden},
+		{"a weight outside the grammar", http.MethodPost, sid, ping, map[string]string{"Accept": "application/json;q=.5"}, http.StatusNotAcceptable},
 		// combined failures: the first row that fails answers
 		{"a bad origin and no token", http.MethodPost, sid, ping, map[string]string{"Origin": "https://evil.example", "Authorization": ""}, http.StatusForbidden},
 		{"no token and a bad version", http.MethodPost, sid, ping, map[string]string{"Authorization": "", "MCP-Protocol-Version": "2024-11-05"}, http.StatusUnauthorized},
@@ -492,6 +559,11 @@ func TestMCPHTTPMatrix(t *testing.T) {
 		code, header, body := f.call(t, row.method, row.session, row.body, headers)
 		if code != row.want {
 			t.Errorf("%s: %d, want %d: %v", row.name, code, row.want, body)
+		}
+		if strings.HasPrefix(row.name, "initialize proposing another version") && code == http.StatusOK {
+			if result, ok := body["result"].(map[string]any); !ok || result["protocolVersion"] != mcpProtocolVersion || header.Get("Mcp-Session-Id") == "" {
+				t.Errorf("%s: not answered this version with a session: %v", row.name, body)
+			}
 		}
 		if code == http.StatusUnauthorized && header.Get("WWW-Authenticate") != `Bearer resource_metadata="https://engine.test/.well-known/oauth-protected-resource/mcp"` {
 			t.Errorf("%s: the challenge is %q", row.name, header.Get("WWW-Authenticate"))
@@ -634,8 +706,8 @@ func TestMCPForwardFollowsNothingAndNamesNoAddress(t *testing.T) {
 	if text := fmt.Sprint(structured["error"]); strings.Contains(text, stalled.URL) || strings.Contains(text, "127.0.0.1") {
 		t.Fatalf("the unknown outcome names the signer's address: %s", text)
 	}
-	if !strings.Contains(diagnostics.String(), "did not answer") {
-		t.Fatalf("the diagnostics stream did not record the failed forward: %q", diagnostics.String())
+	if !strings.Contains(diagnostics.String(), "did not answer") || strings.Contains(diagnostics.String(), stalled.URL) || strings.Contains(diagnostics.String(), "127.0.0.1") {
+		t.Fatalf("the diagnostics stream did not record the failed forward as a category alone: %q", diagnostics.String())
 	}
 }
 

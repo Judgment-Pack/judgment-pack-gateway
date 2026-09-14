@@ -114,7 +114,7 @@ func TestResourceAndIssuerIdentifiers(t *testing.T) {
 			t.Errorf("%s: %v", s, err)
 		}
 	}
-	for _, s := range []string{"http://localhost/", "http://localhost/app", "localhost", "ftp://x", "http://u@localhost", "http://localhost?q"} {
+	for _, s := range []string{"http://localhost/", "http://localhost/app", "localhost", "ftp://x", "http://u@localhost", "http://localhost?q", "http://localhost?", "http://localhost#", "http:localhost", ""} {
 		if err := validOrigin(s); err == nil {
 			t.Errorf("%s accepted as an origin", s)
 		}
