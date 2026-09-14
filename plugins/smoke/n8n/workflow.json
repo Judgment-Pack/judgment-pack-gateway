@@ -1,0 +1,25 @@
+{
+  "id": "jpsmokewf000001",
+  "name": "Judgment Pack smoke",
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "nodes": [
+    { "id": "n1", "name": "Start", "type": "n8n-nodes-base.manualTrigger", "typeVersion": 1, "position": [0, 0], "parameters": {} },
+    { "id": "n2", "name": "Acquire", "type": "n8n-nodes-judgment-pack.judgmentPack", "typeVersion": 1, "position": [220, 0],
+      "parameters": { "operation": "acquire", "session": "smoke-n8n-RUN_NONCE", "source": "screening", "arguments": "{\"subject\": \"acme\"}" },
+      "credentials": { "judgmentPackEngineApi": { "id": "jpsmoke00000001", "name": "Judgment Pack Engine (smoke)" } } },
+    { "id": "n3", "name": "Act (refused: no identity)", "type": "n8n-nodes-judgment-pack.judgmentPack", "typeVersion": 1, "position": [440, 0], "onError": "continueRegularOutput",
+      "parameters": { "operation": "act", "session": "smoke-n8n-RUN_NONCE", "platform": "tickets", "tool": "update_ticket", "arguments": "{\"id\": \"T-1\"}",
+        "decision": "{\"recordDigest\": \"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\", \"packDigest\": \"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}",
+        "cites": "={{ JSON.stringify([{ sessionId: $json.receipt.sessionId, callIndex: $json.receipt.callIndex, signature: $json.receipt.signature }]) }}" },
+      "credentials": { "judgmentPackEngineApi": { "id": "jpsmoke00000001", "name": "Judgment Pack Engine (smoke)" } } },
+    { "id": "n4", "name": "Seal", "type": "n8n-nodes-judgment-pack.judgmentPack", "typeVersion": 1, "position": [660, 0],
+      "parameters": { "operation": "seal", "session": "smoke-n8n-RUN_NONCE" },
+      "credentials": { "judgmentPackEngineApi": { "id": "jpsmoke00000001", "name": "Judgment Pack Engine (smoke)" } } }
+  ],
+  "connections": {
+    "Start": { "main": [[{ "node": "Acquire", "type": "main", "index": 0 }]] },
+    "Acquire": { "main": [[{ "node": "Act (refused: no identity)", "type": "main", "index": 0 }]] },
+    "Act (refused: no identity)": { "main": [[{ "node": "Seal", "type": "main", "index": 0 }]] }
+  }
+}
