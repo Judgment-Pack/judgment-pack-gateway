@@ -250,6 +250,14 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if code, body := authed(t, restartedServer, "/act", predating, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "predates this start") {
 		t.Fatalf("a session with receipts this engine did not mint: %d %v", code, body)
 	}
+	// And named as the session before any later fault: the session step
+	// judges the store before the decision is read.
+	noDecisionInto := func(session string) string {
+		return `{"session":"` + session + `","platform":"tickets","tool":"update_ticket","arguments":{},"cites":[{"sessionId":"act-1","callIndex":0,"signature":"` + signature + `"}]}`
+	}
+	if code, body := authed(t, restartedServer, "/act", noDecisionInto("act-2"), token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
+		t.Fatalf("a predating session is named before a missing decision: %d %v", code, body)
+	}
 	if restarted.started.Load() != 0 {
 		t.Fatal("an executor ran after a restart for a session the store already held")
 	}
@@ -262,6 +270,9 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	}
 	if code, body := authed(t, restartedServer, "/act", predating, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "predates this start") {
 		t.Fatalf("a session reserved by an in-flight acquisition: %d %v", code, body)
+	}
+	if code, body := authed(t, restartedServer, "/act", noDecisionInto("act-2"), token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
+		t.Fatalf("a reserved session is named before a missing decision: %d %v", code, body)
 	}
 	restarted.release("act-2")
 	if restarted.started.Load() != 0 {
@@ -306,6 +317,9 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(service.storeRoot, "receipts", "act-7"), 0o700); err != nil {
 			t.Fatal(err)
 		}
+		if err := os.WriteFile(filepath.Join(service.storeRoot, "receipts", "act-7", "0.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	raced := strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-7"`, 1)
 	if code, body := authed(t, restartedServer, "/act", raced, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
@@ -314,6 +328,52 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	restarted.beforeAdmit = nil
 	if restarted.started.Load() != 0 {
 		t.Fatal("an executor ran into a session that appeared on disk before admission")
+	}
+	// A fresh session an action opens: admission makes its directory, the
+	// executor runs (and, being the stand-in, fails), the directory stays
+	// this process's own, so a second action into it passes the session
+	// step and runs the executor again -- and the store still verifies with
+	// the empty session there.
+	opened := strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-5"`, 1)
+	for attempt := 1; attempt <= 2; attempt++ {
+		if code, body := authed(t, restartedServer, "/act", opened, token); code == http.StatusOK || body["refusedAt"] != nil {
+			t.Fatalf("attempt %d into the session the action opened runs the executor: %d %v", attempt, code, body)
+		}
+		if restarted.started.Load() != int64(attempt) {
+			t.Fatalf("attempt %d: the executor ran %d times", attempt, restarted.started.Load())
+		}
+	}
+	// The empty directory is a session with no receipts: unsealed, as every
+	// open session is, and nothing else -- no malformed, misfiled or count
+	// finding of its own.
+	report, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var about []finding
+	for _, f := range report.Findings {
+		if f["sessionId"] == "act-5" {
+			about = append(about, f)
+		}
+	}
+	if len(about) != 1 || about[0]["status"] != "unregistered-session" {
+		t.Fatalf("a session directory an action opened and did not fill is only an unsealed session: %v", about)
+	}
+	// Each later step, reached by satisfying the ones before it and faulting
+	// every one after: the earliest fault names the step, and nothing runs.
+	for _, tc := range []struct{ name, body, step string }{
+		{"tool, with arguments, decision and cites faulty", `{"session":"act-8","platform":"tickets","tool":"close_ticket","arguments":{"n":1.5},"decision":{"x":1},"cites":[]}`, "tool"},
+		{"arguments, with decision and cites faulty", `{"session":"act-8","platform":"tickets","tool":"update_ticket","arguments":{"n":1.5},"decision":{"x":1},"cites":[]}`, "arguments"},
+		{"decision, with cites faulty", `{"session":"act-8","platform":"tickets","tool":"update_ticket","arguments":{},"decision":{"x":1},"cites":[]}`, "decision"},
+		{"cites, with the record absent", `{"session":"act-8","platform":"tickets","tool":"update_ticket","arguments":{},"decision":{"recordDigest":"` + noRecord + `","packDigest":"sha256:` + strings.Repeat("b", 64) + `"},"cites":[{"sessionId":"act-1","callIndex":0,"signature":"` + signature + `","note":1}]}`, "cites"},
+	} {
+		code, body := authed(t, restartedServer, "/act", tc.body, token)
+		if code != http.StatusBadRequest || body["refusedAt"] != tc.step {
+			t.Fatalf("%s: want the %s step, got %d %v", tc.name, tc.step, code, body)
+		}
+	}
+	if restarted.started.Load() != 2 {
+		t.Fatal("an executor ran for a request refused at a later step")
 	}
 	// An entry in the store that is not a directory -- a dangling link --
 	// is a session this engine did not mint too; a stat that followed the
@@ -324,6 +384,9 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 		}
 		if code, body := authed(t, restartedServer, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-9"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") || strings.Contains(fmt.Sprint(body["error"]), service.storeRoot) {
 			t.Fatalf("a dangling link where a session would be: %d %v", code, body)
+		}
+		if code, body := authed(t, restartedServer, "/act", noDecisionInto("act-9"), token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
+			t.Fatalf("a dangling link is named as the session before a missing decision: %d %v", code, body)
 		}
 	}
 	// A new session on the restarted engine passes the session step and

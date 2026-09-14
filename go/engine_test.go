@@ -169,6 +169,12 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 	if _, _, err := load(t, engineJSON(t, catalog, ``, platformJSONFor(t, "warehouse", ref, "engine-warehouse", ``, "history", "live", "write"))); err == nil || !strings.Contains(err.Error(), "credentials name a write file but the binding offers no write") {
 		t.Fatalf("a write credential for a platform that allows no writes: %v", err)
 	}
+	// A write operation naming a probe is refused: a check of a write source
+	// calls no tool, so a probe there would be a write no check may make.
+	probed := `{"bindingVersion":"1","platform":"postgres","operations":{"write":{"shape":"mcp","server":{"image":"ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"},"tools":["execute"],"probe":{"tool":"execute"},"licence":"MIT"}}}`
+	if _, _, err := load(t, engineJSON(t, catalogWith(t, map[string]string{"postgres": probed}), ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(probed), "engine-warehouse", `,"write":true`, "write"))); err == nil || !strings.Contains(err.Error(), "operation write accepts no probe") {
+		t.Fatalf("a probe on a write operation: %v", err)
+	}
 	noWrite := `{"bindingVersion":"1","platform":"postgres","operations":{"live":{"shape":"mcp","server":{"image":"ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"},"tools":["query"],"licence":"MIT"}}}`
 	_, sources, err = load(t, engineJSON(t, catalogWith(t, map[string]string{"postgres": noWrite}), ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(noWrite), "engine-warehouse", `,"write":true`, "live")))
 	if err != nil {

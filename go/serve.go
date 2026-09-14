@@ -36,13 +36,16 @@ type sessionState struct {
 	prev     string
 	sealed   bool
 	inFlight int // admitted acquisitions whose source has not finished
-	// owned is whether this process found the session absent from the
-	// store when it first admitted into it -- so every receipt there is
-	// this process's own -- or found something there it did not mint. An
-	// action is minted only into an owned session (executor.md): a receipt
-	// count says nothing, since a read can recreate a receipt an old
-	// session lost and count up from there.
-	owned bool
+	// created is whether this process made the session's directory in the
+	// store -- by an action's admission, which makes it before any executor
+	// runs, or by a read's stamp that found none -- so every receipt there
+	// is this process's own. An action is minted only into a session this
+	// process created (executor.md): absence at admission is not ownership,
+	// since another process could put the session there before the stamp,
+	// and a receipt count is not either, since a read can recreate a receipt
+	// an old session lost and count on from there. Made atomic by Mkdir:
+	// two makers cannot both succeed.
+	created bool
 }
 
 // sourceSpec is what the operator declared for one source: the command, the
@@ -333,6 +336,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	// The session exists because admission created it, and it cannot have been
 	// sealed since: sealing refuses while an acquisition is in flight.
 	state := g.sessions[sessionID]
+	absent := g.sessionAbsent(sessionID)
 
 	// An adapter's stdout is an envelope (SPEC.md §6): the result to attest
 	// and the acquisition as the adapter recorded it. A defective envelope
@@ -422,6 +426,12 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	}
 	state.index++
 	state.prev = signature
+	if absent {
+		// The stamp made the session's directory, under this lock, in a
+		// store this process serves alone: the session is this process's
+		// own from here (sessionState.created).
+		state.created = true
+	}
 
 	// The receipt in the response is the stored receipt, whole: the same
 	// members written under receipts/<session>/<index>.json, so the caller
@@ -747,7 +757,7 @@ func (g *gatewayService) admit(sessionID string) error {
 	defer g.mu.Unlock()
 	state, seen := g.sessions[sessionID]
 	if !seen {
-		state = &sessionState{owned: g.sessionAbsent(sessionID)}
+		state = &sessionState{}
 		g.sessions[sessionID] = state
 	}
 	if state.sealed {
@@ -782,7 +792,9 @@ func (g *gatewayService) release(sessionID string) {
 		return
 	}
 	state.inFlight--
-	if state.inFlight <= 0 && state.index == 0 && !state.sealed {
+	// A session this process created stays known whatever it holds: its
+	// directory is on disk and is this process's own (sessionState.created).
+	if state.inFlight <= 0 && state.index == 0 && !state.sealed && !state.created {
 		delete(g.sessions, sessionID)
 	}
 }

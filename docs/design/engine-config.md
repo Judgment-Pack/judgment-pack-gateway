@@ -281,7 +281,8 @@ switch to, and the identity's key file, when one is configured, reads as a key s
 the environment `serve` would give it: `adapter-airbyte --check` runs the connector's own
 `check` with the credentials; `adapter-mcp --check` starts the server, completes the handshake
 and lists its tools, failing when a tool the binding names is not offered, and calls the
-binding's `probe` once when it names one. What each answered
+binding's `probe` once when a live operation names one; a write operation accepts no probe,
+and its check calls no tool. What each answered
 is printed, one line per operation; the first that cannot answer ends the connect with the
 adapter's reason. Nothing is acquired and no receipt is minted. An image the runtime does not
 hold yet is pulled during the check, which is why a check is given five minutes where an

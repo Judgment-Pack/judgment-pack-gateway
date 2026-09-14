@@ -636,12 +636,15 @@ carries, named by the commitment's label without its colon — `args` always, an
 `statement` exactly when `acquisition.statement` is not `null` — each a 32-byte
 salt in lowercase hex (§1.2a), returned here and nowhere else. Every `/acquire`
 receipt is of kind
-`"acquisition"`. This
-reference defines no surface that mints an action receipt: the format is
-specified so that a verifier written now verifies action receipts produced
-later, and the surface that produces them belongs to the engine described in
-`docs/adr/0001-one-engine-four-processes.md`. `gateway verify` takes
-`--decision-records <dir>` for §4 steps 5 and 6.
+`"acquisition"`. `POST /act` mints one of kind `"action"` (the engine of
+`docs/adr/0001-one-engine-four-processes.md`, described in
+`docs/design/executor.md`): from an authenticated request naming a platform's
+write tool, the decision record the write relies on and the receipts that
+record relied on, after the engine has found the cited receipts in its own
+store under its own key and the record under its decision-record directory —
+the standard §4 applies, and no more. The format was specified before the
+surface so that a verifier written then verifies what is minted now.
+`gateway verify` takes `--decision-records <dir>` for §4 steps 5 and 6.
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |

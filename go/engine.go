@@ -482,6 +482,12 @@ func parseBinding(data []byte) (binding, error) {
 			if parsed.shape != "mcp" {
 				return binding{}, fmt.Errorf("operation write is served by the mcp shape, not %q", parsed.shape)
 			}
+			if parsed.probe != "" {
+				// A check of a write source starts the server, completes the
+				// handshake and lists its tools, and calls nothing: a probe
+				// would call a write tool, which no check may.
+				return binding{}, errors.New("operation write accepts no probe: a write source's check calls no tool")
+			}
 			b.write = &parsed
 		default:
 			return binding{}, fmt.Errorf("unknown operation %q", name)

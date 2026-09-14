@@ -47,17 +47,22 @@ that what they name exists and compares nothing inside it, which is §4's standa
    not mint → refused. The last is what a restart means: a session the store already holds
    cannot have its chain continued from an empty memory, and a write that ran and could not be
    receipted is the outcome this design exists to refuse, so an action after a restart opens a
-   session of its own. "Did not mint" is judged by whether this process found the store empty
-   there when it first admitted into the session — never by a receipt count, since a read into
-   an old session can recreate a receipt that session lost and count on from there — so an
-   acquisition admitted into such a session leaves it one the action may not enter; an entry of
-   any kind — a directory, a link, a file — is such a session, and a lookup that fails for any
-   reason but absence refuses rather than passes.
-   (`/acquire` admits by memory alone, as it always has; a read against such a session fails at
-   the stamp with no receipt and nothing done.) Admission itself — the atomic reservation
-   against sealing — happens once the evidence below is held, as it does for a read, and judges
-   the session on disk once more under the same lock, so nothing decided here is overtaken by a
-   reservation or a seal in between.
+   session of its own. "Did not mint" is judged by whether this process made the session's
+   directory — an action's admission makes it, a read's stamp makes it when none was there —
+   never by absence at admission, which another process can end before the stamp, and never
+   by a receipt count, since a read into an old session can recreate a receipt that session
+   lost and count on from there; an entry of any kind — a directory, a link, a file — is such a
+   session, and a lookup that fails for any reason but absence refuses rather than passes.
+   (`/acquire` is unchanged: it admits by memory alone, runs its source, and then stamps a
+   receipt where none collides — continuing an old session, recreating a receipt it lost — or
+   fails at the stamp where one does; either way it is a read, and a read's session is never
+   an action's unless this process created it.) Admission itself — the atomic reservation
+   against sealing — happens once the evidence below is held, as it does for a read, judges the
+   session on disk once more under the same lock, and takes the session's directory for this
+   process by `Mkdir` before any executor runs: two makers cannot both succeed, so a session
+   another process put there in the meantime is refused here and not discovered at the stamp
+   after the write. What remains outside the claim is a second engine writing receipts into a
+   directory this one made — two engines on one store, which the design does not serve.
 3. The platform is unknown, or its binding declares no `write` operation, or the
    configuration does not set `write: true` for it → refused. `write: true` says an executor
    may be pointed at the platform; it authorizes no particular write. The request's `decision`

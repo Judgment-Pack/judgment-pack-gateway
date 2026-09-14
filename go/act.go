@@ -264,12 +264,12 @@ func (g *gatewayService) sessionOpen(sessionID string) string {
 // Called by the session step and again by admission, so a reservation made
 // between the two changes nothing.
 func (g *gatewayService) sessionMintedHere(sessionID string) string {
-	if state, seen := g.sessions[sessionID]; seen {
-		if state.owned {
-			return ""
-		}
-		return "session " + sessionID + " exists in the store as something this engine did not mint; it predates this start, and an action opens a session of its own"
+	if state, seen := g.sessions[sessionID]; seen && state.created {
+		return ""
 	}
+	// Known but not made by this process -- an old session a read continued,
+	// or one reserved with nothing minted yet -- or not known at all: the
+	// store says whether something is there, and anything is a refusal.
 	_, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", sessionID))
 	switch {
 	case err == nil:
@@ -282,25 +282,41 @@ func (g *gatewayService) sessionMintedHere(sessionID string) string {
 }
 
 // admitAction reserves an action against a session as admit reserves a
-// read, and under the same lock judges the session on disk once more
-// (sessionMintedHere) and the seal, so that nothing decided before the
-// evidence was read can have been overtaken by an admission or a seal in
-// between.
+// read, and under the same lock judges the seal and takes the session's
+// directory for this process, by Mkdir, before any executor runs: two makers
+// cannot both succeed, so a session another process put there since the
+// session step -- or one this process only reserved, or one it continued
+// without making -- is refused here, not found at the stamp after the
+// write. The session step's earlier judgment (sessionMintedHere) is the
+// same judgment made before the evidence is read, so the answer names the
+// session rather than a later step; this is the one that holds.
 func (g *gatewayService) admitAction(sessionID string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if reason := g.sessionMintedHere(sessionID); reason != "" {
-		return actRefusal{"session", reason}
-	}
 	state, seen := g.sessions[sessionID]
 	if !seen {
-		// sessionMintedHere found nothing in the store: the session is this
-		// process's own from here.
-		state = &sessionState{owned: true}
+		state = &sessionState{}
 		g.sessions[sessionID] = state
 	}
 	if state.sealed {
 		return actRefusal{"session", "session is sealed: " + sessionID}
+	}
+	if !state.created {
+		err := os.Mkdir(filepath.Join(g.storeRoot, "receipts", sessionID), 0o755)
+		switch {
+		case err == nil:
+			state.created = true
+		case errors.Is(err, fs.ErrExist):
+			if state.index == 0 && state.inFlight == 0 {
+				delete(g.sessions, sessionID)
+			}
+			return actRefusal{"session", "session " + sessionID + " exists in the store as something this engine did not mint; it predates this start, and an action opens a session of its own"}
+		default:
+			if state.index == 0 && state.inFlight == 0 {
+				delete(g.sessions, sessionID)
+			}
+			return actRefusal{"session", "session " + sessionID + " could not be made in the store"}
+		}
 	}
 	state.inFlight++
 	return nil
