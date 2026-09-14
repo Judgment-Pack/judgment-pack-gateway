@@ -103,3 +103,77 @@ jobs:
           go list -deps -f '{{.ImportPath}} {{.Dir}}' ./... \
             | awk -v core="$core" '$2 == core || index($2, core "/") == 1 { print "resolves into the core: " $0; bad = 1 } END { exit bad }'
           go list -deps ./... | grep -qx plugin && { echo "an adapter imports plugin"; exit 1; } || true
+
+  image:
+    name: engine image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The image is built from this commit and never pushed here; the
+      # release workflow is what publishes a digest. What is checked is that
+      # it builds from the pinned bases, and that the core inside it agrees
+      # with the frozen corpus it carries.
+      # BuildKit, stated rather than assumed: the legacy builder copies the
+      # gateway binary between stages without its capability attribute.
+      - name: Build
+        run: docker build --tag engine:ci .
+        env:
+          DOCKER_BUILDKIT: "1"
+      - name: The image's core agrees with the corpus it carries
+        run: docker run --rm engine:ci conform --corpus /usr/share/engine/corpus
+      # The filesystem the runtime itself unpacks -- a container created
+      # from the image, exported whole -- is what is held to the design,
+      # not a model of the layers: the gateway's capabilities (an attribute
+      # the export carries), mode and owner on a root-owned unlinked path;
+      # nothing else privileged; the homes and their parent; the adapters,
+      # catalog and corpus root's and unwritable, byte for byte; the users;
+      # the entrypoint and command from the image's configuration.
+      - name: The image check holds each invariant, one negative case each
+        run: python3 .github/test_image_checks.py
+      - name: The image's unpacked filesystem is what the design states, and its layers give the attribute as stated
+        run: |
+          docker create --name engine-export engine:ci
+          docker export engine-export > engine-export.tar
+          docker rm engine-export
+          docker image inspect engine:ci > engine-config.json
+          mkdir -p image && docker save engine:ci | tar -x -C image
+          python3 .github/image_checks.py engine-export.tar engine-config.json . image
+      # The root directory is not in an export; what it must be -- root's,
+      # writable by nobody else -- is held by the act, with a probe every
+      # identity can run (build/probe.go, built here with the image's own
+      # pinned builder, mounted read-only, never part of the image): the
+      # signer and each of the eight platform users are refused at the
+      # root, and root, as the control, is not.
+      - name: Nobody but root may write the root directory
+        run: |
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath -v "$PWD":/src -w /src docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 sh -c 'CGO_ENABLED=0 go build -o /src/probe build/probe.go'
+          # The probe's refusal is its exit 3; under the runner's bash -e a
+          # failing substitution would end the step first, so it is caught.
+          for user in 65532 65601 65602 65603 65604 65605 65606 65607 65608; do
+            code=0; out=$(docker run --rm --user $user -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-$user 2>&1) || code=$?
+            echo "uid $user: exit $code: $out"
+            if [ "$code" != "3" ] || ! echo "$out" | grep -q 'permission denied'; then echo "uid $user was not refused at the root as stated"; exit 1; fi
+          done
+          out=$(docker run --rm --user 0 -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-root 2>&1)
+          echo "root: $out"
+          echo "$out" | grep -q 'created' || { echo "the probe could not create even as root; it proves nothing"; exit 1; }
+          # The root directory itself: root's, its group root's, passable by
+          # everyone and writable by nobody else -- what a refusal alone
+          # cannot show, since a platform user that owned it could chmod it.
+          echo "$out" | grep -q 'root uid=0 gid=0 mode=0755' || { echo "the root directory is not root's at 0755"; exit 1; }
+      - name: The image runs the adapters and starts the engine as built
+        run: |
+          docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }
+          docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte does not run"; exit 1; }
+          # As built: no entrypoint or command override, so the default CMD is what runs.
+          docker run --rm engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the image does not start the engine with its own command"; exit 1; }
+      # The launch overrides the design note states: every capability
+      # dropped is an exec the kernel refuses, since the binary's effective
+      # bit demands its permitted set in full; the three added back is the
+      # supported minimum.
+      - name: The stated launch overrides behave as stated
+        run: |
+          if docker run --rm --cap-drop ALL engine:ci >out.txt 2>&1; then echo "started with every capability dropped"; cat out.txt; exit 1; fi
+          grep -qi 'operation not permitted\|permission denied' out.txt || { echo "refused for another reason:"; cat out.txt; exit 1; }
+          docker run --rm --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the three capabilities alone do not start the engine"; exit 1; }
