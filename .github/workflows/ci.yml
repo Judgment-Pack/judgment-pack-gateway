@@ -131,14 +131,24 @@ jobs:
       # the entrypoint and command from the image's configuration.
       - name: The image check holds each invariant, one negative case each
         run: python3 .github/test_image_checks.py
+      # The runtime the image carries is the released binary the Dockerfile
+      # pins, byte for byte: the same binary is taken from the pinned image
+      # here, by the digest the Dockerfile names, and handed to the check.
       - name: The image's unpacked filesystem is what the design states, and its layers give the attribute as stated
         run: |
+          # Exactly one pin line, spelled as a version tag and a digest.
+          [ "$(grep -c '^FROM ghcr\.io/judgment-pack/judgment-pack:' Dockerfile)" = 1 ] || { echo "the Dockerfile must name the runtime pin exactly once"; exit 1; }
+          pin=$(sed -n 's/^FROM \(ghcr\.io\/judgment-pack\/judgment-pack:[0-9][0-9.]*[0-9]@sha256:[0-9a-f]\{64\}\) AS runtime$/\1/p' Dockerfile)
+          [ -n "$pin" ] || { echo "the Dockerfile's runtime pin is not <version>@sha256:<digest>"; exit 1; }
+          docker create --name runtime-pinned "$pin"
+          docker cp runtime-pinned:/jpack runtime-jpack
+          docker rm runtime-pinned
           docker create --name engine-export engine:ci
           docker export engine-export > engine-export.tar
           docker rm engine-export
           docker image inspect engine:ci > engine-config.json
           mkdir -p image && docker save engine:ci | tar -x -C image
-          python3 .github/image_checks.py engine-export.tar engine-config.json . image
+          python3 .github/image_checks.py engine-export.tar engine-config.json . image runtime-jpack
       # The root directory is not in an export; what it must be -- root's,
       # writable by nobody else -- is held by the act, with a probe every
       # identity can run (build/probe.go, built here with the image's own
@@ -162,10 +172,57 @@ jobs:
           # everyone and writable by nobody else -- what a refusal alone
           # cannot show, since a platform user that owned it could chmod it.
           echo "$out" | grep -q 'root uid=0 gid=0 mode=0755' || { echo "the root directory is not root's at 0755"; exit 1; }
-      - name: The image runs the adapters and starts the engine as built
+      - name: The image runs the adapters and the runtime, and starts the engine as built
         run: |
           docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }
           docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte does not run"; exit 1; }
+          # The runtime reports the pinned release's version, as the signer
+          # and as a platform user: it is everyone's to run. The first line
+          # of its output is compared literally, and the run must succeed.
+          version=$(sed -n 's/^FROM ghcr\.io\/judgment-pack\/judgment-pack:\([0-9][0-9.]*[0-9]\)@sha256:[0-9a-f]\{64\} AS runtime$/\1/p' Dockerfile)
+          [ -n "$version" ] || { echo "the Dockerfile's runtime pin names no version"; exit 1; }
+          for user in 65532 65601; do
+            out=$(docker run --rm --user $user --entrypoint /usr/local/bin/jpack engine:ci version) || { echo "the runtime does not run as uid $user"; exit 1; }
+            [ "$(printf '%s\n' "$out" | head -n 1)" = "jpack $version" ] || { echo "uid $user: the runtime is not $version: $out"; exit 1; }
+          done
+      # The runtime evaluates for whoever runs it, on a project that user
+      # owns: the image's working directory is the signer's home, which a
+      # platform user cannot enter, so the project is mounted and named --
+      # here as uid 65601, HOME and the working directory on the mount --
+      # and the decision record it appends carries the citations it was
+      # given, as given, which is what the engine's verify reads.
+      - name: The runtime evaluates as a platform user and its record cites receipts as given
+        run: |
+          mkdir -p project/packs project/audit
+          cp .github/fixtures/runtime/data-request-intake-triage.json project/packs/intake.json
+          printf '%s' '{"configVersion":"3","audit":{"dir":"audit"},"packs":{"intake":{"path":"packs/intake.json"}}}' > project/jpack.json
+          printf '%s' '{"request":{"type":"data-access","completeness":"complete","appropriateness":"hard-fail","embargoedInformationToUnauthorizedRecipients":false}}' > project/facts.json
+          printf '%s' '{"intake-form":"present","sponsor-endorsement":"present"}' > project/evidence.json
+          signature=$(printf 'a%.0s' $(seq 128))
+          printf '[{"sessionId":"s-1","callIndex":0,"signature":"%s"}]' "$signature" > project/cites.json
+          sudo chown -R 65601:65601 project
+          docker run --rm --user 65601 -e HOME=/project -w /project -v "$PWD/project:/project" --entrypoint /usr/local/bin/jpack engine:ci \
+            experimental evaluate --pack-id intake --facts facts.json --evidence evidence.json --cites cites.json --format json > result.json
+          # The record is that user's alone (the runtime writes it so);
+          # the project is handed back to the runner to read it.
+          sudo chown -R "$(id -u):$(id -g)" project
+          python3 - "$signature" <<'PY'
+          import json, sys
+          # The disposition the fixture's facts reach under this pack: the
+          # outcome the runtime's own test of the same fixture expects.
+          result = json.load(open("result.json"))
+          disposition = result.get("disposition")
+          assert isinstance(disposition, dict) and disposition.get("kind") == "outcome" and disposition.get("outcomeId") == "decline-redirect", result
+          lines = [line for line in open("project/audit/evaluations.jsonl").read().split("\n") if line.strip()]
+          assert len(lines) == 1, lines
+          # As given means as written: the member's bytes on the record line,
+          # integer index and all, not a decoded value Python would fold.
+          expected = '"cites":[{"sessionId":"s-1","callIndex":0,"signature":"%s"}]' % sys.argv[1]
+          assert expected in lines[0], lines[0]
+          record = json.loads(lines[0])
+          assert record.get("kind") == "evaluation" and record.get("recordVersion") == "1", record
+          print("the record cites what it was given, as given, and the evaluation reached its outcome")
+          PY
           # As built: no entrypoint or command override, so the default CMD is what runs.
           docker run --rm engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the image does not start the engine with its own command"; exit 1; }
       # The launch overrides the design note states: every capability

@@ -6,7 +6,9 @@
 #
 # Every base is pinned by the digest of its manifest index, as the catalog
 # pins what it names. Both modules build with CGO disabled, so the binaries
-# are static and the base needs no libc.
+# are static and the base needs no libc. The runtime is not built here: it
+# is the released binary, taken from the runtime's own distribution image
+# at the pinned digest, so the bytes are the ones that release attests.
 
 FROM docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 AS build
 ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off
@@ -43,6 +45,11 @@ RUN set -e; mkdir -p /out/etc; \
       printf 'engine-%s:x:6560%s:\n' "$n" "$n" >> /out/etc/group; \
     done
 
+# The runtime pin: one line, the tag for the reader and the digest for the
+# builder. The runtime image is the released static binary on scratch, with
+# its notices beside it; nothing else of it is taken.
+FROM ghcr.io/judgment-pack/judgment-pack:0.20.0@sha256:6743ab84b751b8290d3a18a639637e542c2f42a4b93337c688f7da256fc7a614 AS runtime
+
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/etc/passwd /out/etc/group /etc/
 # The adapters first, so that the directories on the way -- which the
@@ -55,6 +62,13 @@ COPY --from=build /out/etc/passwd /out/etc/group /etc/
 # platform user's process that executed it would take them up, and the
 # engine refuses to start otherwise.
 COPY --from=build /out/adapter-airbyte /out/adapter-mcp /usr/local/bin/
+# The runtime beside them, root's and executable by everyone like the
+# adapters: it holds no seed and no credential, and whoever runs it -- a
+# desk, an orchestrator, a shell in a derived image -- runs it as itself.
+# Its notices travel with it, and its conformance statement, which every
+# evaluation payload it writes points the reader at.
+COPY --from=runtime /jpack /usr/local/bin/jpack
+COPY --from=runtime /LICENSE /NOTICE /THIRD_PARTY_NOTICES /CONFORMANCE.md /usr/share/engine/runtime/
 COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
 # The homes, made in place as root -- the base's own user is nonroot, so
 # root is taken for this one step and given back below -- and each given

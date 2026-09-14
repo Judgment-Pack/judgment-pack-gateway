@@ -11,13 +11,16 @@ the v3 attribute) and is the signer's alone (uid 65532, mode 0700);
 nothing else in the image carries a capability or a set-user-id or
 set-group-id bit, hard links included; every path the engine or a
 platform user executes or reads -- the gateway, the adapters, the
-catalog, the corpus, the passwd file -- and every home is reached through
-directories owned by root that nobody else may write, with no link on the
-way; the adapters, the catalog and the corpus are root's and unwritable
-by others, the last two byte for byte the checkout's; every home is its
-user's alone at 0700; the users are in /etc/passwd with their uids; the
-helper that made the homes is gone; and the image's configuration starts
-the gateway as engine with serve --config /etc/engine/engine.json.
+runtime with its notices and conformance statement, the catalog, the corpus, the passwd file -- and
+every home is reached through directories owned by root that nobody else
+may write, with no link on the way; the adapters, the runtime, the
+catalog and the corpus are root's and unwritable by others, the catalog
+and corpus byte for byte the checkout's and the runtime byte for byte
+the released binary the Dockerfile pins, when that binary is given; every
+home is its user's alone at 0700; the users are in /etc/passwd with their
+uids; the helper that made the homes is gone; and the image's
+configuration starts the gateway as engine with serve --config
+/etc/engine/engine.json.
 
 The exporter omits the root directory itself and normalises a revision-3
 capability attribute to revision 2, so two things are held elsewhere: the
@@ -29,7 +32,7 @@ the gateway with exactly the stated capabilities, which needs no model of
 how the layers combine, since a later layer cannot make an earlier
 attribute more than it was.
 
-Usage: image_checks.py <export.tar> <image config json> <repository checkout> [<docker save dir>]
+Usage: image_checks.py <export.tar> <image config json> <repository checkout> [<docker save dir> [<pinned runtime binary>]]
 The invariants are each held by a negative case in test_image_checks.py.
 """
 import json, os, posixpath, re, struct, sys, tarfile
@@ -190,9 +193,11 @@ HOMES.update({"home/engine-%d" % n: 65600 + n for n in range(1, 9)})
 USERS = {"engine": 65532, **{"engine-%d" % n: 65600 + n for n in range(1, 9)}}
 GATEWAY = "usr/local/bin/gateway"
 ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp")
+RUNTIME = "usr/local/bin/jpack"
+RUNTIME_DOCUMENTS = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES", "usr/share/engine/runtime/CONFORMANCE.md")
 
 
-def check(fs, archive, config, checkout):
+def check(fs, archive, config, checkout, runtime=None):
     trusted_path(fs, posixpath.dirname(GATEWAY))
     g = entry(fs, GATEWAY)
     if not g.isfile:
@@ -216,11 +221,21 @@ def check(fs, archive, config, checkout):
             fail("%s is type %r mode %04o uid %d gid %d; it must be a directory, 0700, owned by %d:%d" % (name, e.type, e.mode, e.uid, e.gid, uid, uid))
     if any(name == "mkhomes" or name.endswith("/mkhomes") for name in fs):
         fail("the mkhomes helper is still in the image")
-    for name in ADAPTERS:
+    for name in ADAPTERS + (RUNTIME,):
         trusted_path(fs, name, readable=True)
         e = entry(fs, name)
         if not e.isfile or e.mode & 0o111 != 0o111:
             fail("%s is type %r mode %04o; it must be a regular file executable by every user" % (name, e.type, e.mode))
+    # The runtime is the released binary the Dockerfile pins, byte for
+    # byte, when CI hands that binary over from the pinned image; its
+    # notices and its conformance statement -- the document every evaluation
+    # payload points at -- are there, readable, under a root-owned directory.
+    if runtime is not None and content(fs, archive, RUNTIME) != open(runtime, "rb").read():
+        fail("%s differs from the pinned runtime binary" % RUNTIME)
+    for name in RUNTIME_DOCUMENTS:
+        trusted_path(fs, name, readable=True)
+        if not entry(fs, name).isfile:
+            fail("%s is not a regular file" % name)
     # The catalog and the corpus: the checkout's trees exactly -- every
     # file of the checkout there and identical, and nothing there that the
     # checkout does not have -- each entry root's, unwritable by others and
@@ -289,7 +304,7 @@ def check(fs, archive, config, checkout):
             fail("/etc/group has %s as gid %s, not %d" % (user, groups.get(user), uid))
     if config.get("Entrypoint") != ["/usr/local/bin/gateway"] or config.get("Cmd") != ["serve", "--config", "/etc/engine/engine.json"] or config.get("User") not in ("engine", "65532"):
         fail("the image starts %r %r as %r" % (config.get("Entrypoint"), config.get("Cmd"), config.get("User")))
-    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them; entrypoint and command" % len(HOMES)
+    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
 
 
 def scan_layers(image_dir):
@@ -335,9 +350,9 @@ def load_config(path):
     return data.get("Config") or data.get("config")
 
 
-def main(export, config_path, checkout, saved=None):
+def main(export, config_path, checkout, saved=None, runtime=None):
     fs, archive = read_export(export)
-    report = check(fs, archive, load_config(config_path), checkout)
+    report = check(fs, archive, load_config(config_path), checkout, runtime)
     if saved:
         report += "; " + scan_layers(saved)
     return report
@@ -345,6 +360,6 @@ def main(export, config_path, checkout, saved=None):
 
 if __name__ == "__main__":
     try:
-        print(main(*sys.argv[1:5]))
+        print(main(*sys.argv[1:6]))
     except Failure as failure:
         sys.exit(str(failure))
