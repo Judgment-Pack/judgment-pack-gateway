@@ -12,6 +12,7 @@ CONFIG = {"Entrypoint": ["/usr/local/bin/gateway"], "Cmd": ["serve", "--config",
 PASSWD = b"root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:e:/home/engine:/sbin/nologin\n" + b"".join(
     b"engine-%d:x:%d:%d:p:/home/engine-%d:/sbin/nologin\n" % (n, 65600 + n, 65600 + n, n) for n in range(1, 9))
 GROUP = b"root:x:0:\nengine:x:65532:\n" + b"".join(b"engine-%d:x:%d:\n" % (n, 65600 + n) for n in range(1, 9))
+RUNTIME = b"released jpack"
 
 
 class Export:
@@ -60,11 +61,14 @@ def good(**over):
     over[name] = None to leave it out."""
     e = Export()
     spec = {}
-    for d in ("usr", "usr/local", "usr/local/bin", "usr/share", "usr/share/engine", "usr/share/engine/catalog", "usr/share/engine/corpus", "etc", "home"):
+    for d in ("usr", "usr/local", "usr/local/bin", "usr/share", "usr/share/engine", "usr/share/engine/catalog", "usr/share/engine/corpus", "usr/share/engine/runtime", "etc", "home"):
         spec[d] = dict(kind="dir")
     spec["usr/local/bin/gateway"] = dict(kind="file", data=b"g", mode=0o700, uid=65532, gid=65532, caps=CAPS)
     spec["usr/local/bin/adapter-airbyte"] = dict(kind="file", data=b"a", mode=0o755)
     spec["usr/local/bin/adapter-mcp"] = dict(kind="file", data=b"m", mode=0o755)
+    spec["usr/local/bin/jpack"] = dict(kind="file", data=RUNTIME, mode=0o755)
+    for notice in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES"):
+        spec["usr/share/engine/runtime/" + notice] = dict(kind="file", data=b"n")
     spec["usr/share/engine/catalog/postgres.json"] = dict(kind="file", data=b'{"bindingVersion":"1"}')
     spec["usr/share/engine/corpus/canon.json"] = dict(kind="file", data=b"[]")
     spec["etc/passwd"] = dict(kind="file", data=PASSWD)
@@ -94,18 +98,63 @@ class Checks(unittest.TestCase):
         os.makedirs(os.path.join(self.checkout, "corpus"))
         open(os.path.join(self.checkout, "catalog", "postgres.json"), "wb").write(b'{"bindingVersion":"1"}')
         open(os.path.join(self.checkout, "corpus", "canon.json"), "wb").write(b"[]")
+        self.runtime = os.path.join(self.checkout, "runtime-jpack")
+        open(self.runtime, "wb").write(RUNTIME)
 
-    def run_check(self, export, config=CONFIG):
+    def run_check(self, export, config=CONFIG, runtime="pinned"):
         fs, archive = ic.read_export(export.done() if isinstance(export, Export) else export)
-        return ic.check(fs, archive, config, self.checkout)
+        return ic.check(fs, archive, config, self.checkout, self.runtime if runtime == "pinned" else runtime)
 
-    def refused(self, export, fragment, config=CONFIG):
+    def refused(self, export, fragment, config=CONFIG, runtime="pinned"):
         with self.assertRaises(ic.Failure) as refused:
-            self.run_check(export, config)
+            self.run_check(export, config, runtime)
         self.assertIn(fragment, str(refused.exception))
 
     def test_the_stated_image_holds(self):
-        self.assertIn("the image holds", self.run_check(good()))
+        self.assertIn("the pinned binary, byte for byte", self.run_check(good()))
+
+    def test_the_stated_image_holds_without_the_pinned_binary_to_compare(self):
+        report = self.run_check(good(), runtime=None)
+        self.assertIn("the image holds", report)
+        self.assertNotIn("byte for byte)", report)
+
+    # The runtime: the released binary, held as the adapters are and to
+    # the pinned bytes; its notices beside it.
+    def test_runtime_missing(self):
+        self.refused(good(**{"usr/local/bin/jpack": None}), "usr/local/bin/jpack is not in the image")
+
+    def test_runtime_not_executable(self):
+        self.refused(good(**{"usr/local/bin/jpack": dict(mode=0o644)}), "usr/local/bin/jpack is type b'0' mode 0644; it must be a regular file executable by every user")
+
+    def test_runtime_not_readable(self):
+        self.refused(good(**{"usr/local/bin/jpack": dict(mode=0o711)}), "readable by everyone")
+
+    def test_runtime_writable(self):
+        self.refused(good(**{"usr/local/bin/jpack": dict(mode=0o777)}), "unwritable by others")
+
+    def test_runtime_owned_by_a_platform(self):
+        self.refused(good(**{"usr/local/bin/jpack": dict(uid=65601)}), "must be root's")
+
+    def test_runtime_with_capabilities(self):
+        self.refused(good(**{"usr/local/bin/jpack": dict(caps=CAPS)}), "jpack carries a capability attribute")
+
+    def test_runtime_not_the_pinned_bytes(self):
+        self.refused(good(**{"usr/local/bin/jpack": dict(data=b"rebuilt jpack")}), "jpack differs from the pinned runtime binary")
+
+    def test_runtime_not_the_pinned_bytes_is_not_held_without_them(self):
+        self.assertIn("the image holds", self.run_check(good(**{"usr/local/bin/jpack": dict(data=b"rebuilt jpack")}), runtime=None))
+
+    def test_runtime_notice_missing(self):
+        self.refused(good(**{"usr/share/engine/runtime/THIRD_PARTY_NOTICES": None}), "THIRD_PARTY_NOTICES is not in the image")
+
+    def test_runtime_notice_not_readable(self):
+        self.refused(good(**{"usr/share/engine/runtime/NOTICE": dict(mode=0o600)}), "readable by everyone")
+
+    def test_runtime_notice_not_a_file(self):
+        self.refused(good(**{"usr/share/engine/runtime/LICENSE": dict(kind="dir")}), "LICENSE is not a regular file")
+
+    def test_runtime_notices_directory_writable(self):
+        self.refused(good(**{"usr/share/engine/runtime": dict(kind="dir", mode=0o777)}), "unwritable by others")
 
     # The gateway: each of its properties on its own.
     def test_gateway_mode(self):

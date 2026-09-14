@@ -131,14 +131,22 @@ jobs:
       # the entrypoint and command from the image's configuration.
       - name: The image check holds each invariant, one negative case each
         run: python3 .github/test_image_checks.py
+      # The runtime the image carries is the released binary the Dockerfile
+      # pins, byte for byte: the same binary is taken from the pinned image
+      # here, by the digest the Dockerfile names, and handed to the check.
       - name: The image's unpacked filesystem is what the design states, and its layers give the attribute as stated
         run: |
+          pin=$(sed -n 's/^FROM \(ghcr\.io\/judgment-pack\/judgment-pack:[^ ]*\) AS runtime$/\1/p' Dockerfile)
+          [ -n "$pin" ] || { echo "the Dockerfile names no runtime pin"; exit 1; }
+          docker create --name runtime-pinned "$pin"
+          docker cp runtime-pinned:/jpack runtime-jpack
+          docker rm runtime-pinned
           docker create --name engine-export engine:ci
           docker export engine-export > engine-export.tar
           docker rm engine-export
           docker image inspect engine:ci > engine-config.json
           mkdir -p image && docker save engine:ci | tar -x -C image
-          python3 .github/image_checks.py engine-export.tar engine-config.json . image
+          python3 .github/image_checks.py engine-export.tar engine-config.json . image runtime-jpack
       # The root directory is not in an export; what it must be -- root's,
       # writable by nobody else -- is held by the act, with a probe every
       # identity can run (build/probe.go, built here with the image's own
@@ -162,10 +170,16 @@ jobs:
           # everyone and writable by nobody else -- what a refusal alone
           # cannot show, since a platform user that owned it could chmod it.
           echo "$out" | grep -q 'root uid=0 gid=0 mode=0755' || { echo "the root directory is not root's at 0755"; exit 1; }
-      - name: The image runs the adapters and starts the engine as built
+      - name: The image runs the adapters and the runtime, and starts the engine as built
         run: |
           docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }
           docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte does not run"; exit 1; }
+          # The runtime reports the pinned release's version, as the signer
+          # and as a platform user: it is everyone's to run.
+          version=$(sed -n 's/^FROM ghcr\.io\/judgment-pack\/judgment-pack:\([^@ ]*\)@.* AS runtime$/\1/p' Dockerfile)
+          for user in 65532 65601; do
+            docker run --rm --user $user --entrypoint /usr/local/bin/jpack engine:ci version 2>&1 | grep -q "^jpack $version\$" || { echo "the runtime does not run as uid $user, or is not $version"; exit 1; }
+          done
           # As built: no entrypoint or command override, so the default CMD is what runs.
           docker run --rm engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the image does not start the engine with its own command"; exit 1; }
       # The launch overrides the design note states: every capability

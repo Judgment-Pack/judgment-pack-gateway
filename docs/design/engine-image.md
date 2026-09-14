@@ -21,16 +21,26 @@ which is what CI's capability check exists to catch.
 | `/usr/local/bin/gateway` | the core binary from `go/`: `serve`, `verify`, `canon`, `conform`, `keygen`, and the engine's `connect`; owned by `engine`, mode 0700, since it carries file capabilities | built from this repository at the tagged commit |
 | `/usr/local/bin/adapter-airbyte` | runs a connector image and reads its record stream | built from `adapters/` at the same commit |
 | `/usr/local/bin/adapter-mcp` | an MCP client: live reads and tool calls | same |
+| `/usr/local/bin/jpack` | the runtime ([judgment-pack-runtime](https://github.com/Judgment-Pack/judgment-pack-runtime)): validates packs, evaluates them, writes the decision record that cites receipts; root's, executable by everyone, holds no seed and no credential | the released binary, taken from the runtime's own distribution image at the digest the `Dockerfile` names (`FROM ghcr.io/judgment-pack/judgment-pack:<version>@sha256:… AS runtime`), never rebuilt here |
+| `/usr/share/engine/runtime/` | the runtime's `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES` | from the same image |
 | `/usr/share/engine/catalog/` | the binding files ([catalog/](../../catalog/README.md)) | by content; each is referenced by digest from the configuration |
 | `/usr/share/engine/corpus/` | the frozen corpus, so `gateway conform` runs inside the image | by content |
 | `/etc/passwd` | the signer's user `engine` (uid 65532) and eight platform users `engine-1` … `engine-8` (uids 65601 … 65608), each with a home of its own alone | written at build |
 
 Not yet in the image, and said so here rather than promised: `adapter-http` (the generic
 fallback the envelope contract names; not shipped by this release), an `executor` (nothing
-performs an action yet), the runtime `jpack` (no runtime pin exists yet), and a container
-runtime for the Airbyte connectors and MCP server images (the section below); the adapters
-find `docker` or `podman` on the engine's `PATH` or at the path the configuration names, which
-in this image means a runtime the deployment provides beside it.
+performs an action yet), and a container runtime for the Airbyte connectors and MCP server
+images (the section below); the adapters find `docker` or `podman` on the engine's `PATH` or at
+the path the configuration names, which in this image means a runtime the deployment provides
+beside it.
+
+**The runtime pin.** The `Dockerfile` names the runtime release once — its tag for the reader
+and the digest of its image index for the builder — and takes `/jpack` and the notices from
+that image, so the binary in the engine image is byte for byte the one the runtime's release
+attests, on every architecture that index carries. CI takes the same binary from the same
+digest and holds the image's to it. Moving the pin is one line and a deliberate change: the
+runtime's own changelog says what a release adds, and the engine's says which release it
+carries.
 
 The image carries **no seed, no store, no registry, and no configuration**. All four live on a
 volume the operator mounts; the image's command is `serve --config /etc/engine/engine.json`,
@@ -49,7 +59,8 @@ or the v3 attribute, not compared as bytes), mode 0700 and the signer's, reached
 directories that are root's and that nobody else may write, with no link on the way; nothing
 else carrying a capability or a set-user-id or set-group-id bit, hard links included; every
 home its user's alone at 0700; the adapters, the catalog and the corpus root's, unwritable by
-others, reached the same way, the last two byte for byte the checkout's; every home under a root-owned
+others, reached the same way, the last two byte for byte the checkout's, and the runtime byte for
+byte the pinned release's; every home under a root-owned
 `/home` that nobody else may write, so no home can be renamed away; every such path passable and
 readable by everyone, since the signer and the platform users are not root; the catalog and the
 corpus trees exactly the checkout's, nothing more; the users and groups as the engine reads them
@@ -104,9 +115,15 @@ provides one, and the engine has already refused to start if the seed file is re
 identity. The adapter reads its secret in its own process and the gateway never sees it. A
 connector image for a history read is run by the Airbyte adapter, not by the gateway.
 
-The runtime is not in this image and is not launched by it (the table above says so); running
-it as its own process beside the signer, for evaluation, is future work. Nothing about `verify`
-waits on it: `gateway verify <store> <registry> <authority> --decision-records <dir>` takes the
+The runtime is in the image and is not launched by it: nothing in the engine starts `jpack`, and
+nothing needs to. Whoever evaluates — a desk, an orchestrator, an operator's shell in a derived
+image — runs `/usr/local/bin/jpack` as itself, with its own project on a volume of its own, and
+the decision records it writes cite receipts by session, index and signature
+([ADR-0033](https://github.com/Judgment-Pack/judgment-pack-runtime/blob/main/docs/adr/0033-a-record-cites-the-receipts-it-relied-on.md)
+in the runtime), recorded as given and verified by nothing in the runtime. The runtime holds no
+seed and no credential, so its identity is whoever runs it; it runs as the signer or as a
+platform user only if the caller chooses that user. Nothing about `verify` waits on it:
+`gateway verify <store> <registry> <authority> --decision-records <dir>` takes the
 decision-record directory as an argument — it reads no engine configuration — hashes every
 candidate under it in its own process for the action receipts' `decision.recordDigest`, and
 reads a candidate that carries a `cites` member for that member alone, resolving each citation
@@ -182,7 +199,7 @@ digest-shaped filename satisfies nothing. The verdict is the JSON, never the exi
 
 No release workflow publishes the image yet: CI builds it from every commit and never pushes it.
 When one does, it is to publish the image digest, a software bill of materials for both modules,
-and the runtime pin, in the same `checksums.txt` that names the binaries, so that an operator pins
+and the runtime pin the `Dockerfile` names, in the same `checksums.txt` that names the binaries, so that an operator pins
 the image by digest and can name the tagged state it was built from, as
 [CONTRIBUTING.md](../../CONTRIBUTING.md#tags) already says of the binary. Until then the digest of
 a build is what a deployment pins, and this note is what it means.
