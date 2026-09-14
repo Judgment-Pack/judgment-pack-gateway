@@ -188,10 +188,14 @@ def canonical_id(text, what):
     return int(text)
 
 
-HOMES = {"home/engine": 65532}
+HOMES = {"home/engine": 65532, "home/engine-mcp": 65533}
 HOMES.update({"home/engine-%d" % n: 65600 + n for n in range(1, 9)})
-USERS = {"engine": 65532, **{"engine-%d" % n: 65600 + n for n in range(1, 9)}}
+USERS = {"engine": 65532, "engine-mcp": 65533, **{"engine-%d" % n: 65600 + n for n in range(1, 9)}}
 GATEWAY = "usr/local/bin/gateway"
+# The MCP server's copy of the executable (docs/design/mcp-server.md):
+# the same bytes as the signer's, root's, executable by everyone, and with
+# no capability attribute, since the process that runs it holds none.
+MCP = "usr/local/bin/engine-mcp"
 ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp", "usr/local/bin/adapter-http")
 RUNTIME = "usr/local/bin/jpack"
 RUNTIME_DOCUMENTS = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES", "usr/share/engine/runtime/CONFORMANCE.md")
@@ -209,6 +213,14 @@ def check(fs, archive, config, checkout, runtime=None):
         fail("the gateway binary's capabilities are %r, not permitted and effective CAP_KILL, CAP_SETGID, CAP_SETUID with nothing inheritable and a root id of 0" % decoded)
     if g.mode != 0o700 or g.uid != 65532 or g.gid != 65532:
         fail("the gateway binary is mode %04o owned by %d:%d; it must be 0700 and the signer's (65532), since it carries file capabilities" % (g.mode, g.uid, g.gid))
+    trusted_path(fs, MCP, readable=True)
+    m = entry(fs, MCP)
+    if not m.isfile or m.mode != 0o755 or m.uid != 0 or m.gid != 0:
+        fail("%s is type %r mode %04o owned by %d:%d; it must be a regular file, 0755, root's" % (MCP, m.type, m.mode, m.uid, m.gid))
+    if m.capability is not None:
+        fail("%s carries a capability attribute; the MCP server holds no capability" % MCP)
+    if content(fs, archive, MCP) != content(fs, archive, GATEWAY):
+        fail("%s is not the gateway executable byte for byte" % MCP)
     for name, e in fs.items():
         if name != GATEWAY and e.capability is not None:
             fail("%s carries a capability attribute; only the gateway binary may" % name)
@@ -299,12 +311,17 @@ def check(fs, archive, config, checkout, runtime=None):
         if gid in gids:
             fail("/etc/group gives gid %d twice" % gid)
         groups[line[0]], gids[gid] = gid, line[0]
+        # the MCP server's user is in no group but its own: a member list
+        # naming it would admit that process to what the group's files admit
+        members = [m for m in line[3].split(",") if m]
+        if "engine-mcp" in members:
+            fail("/etc/group makes engine-mcp a member of %s; the MCP server's user belongs to no group but its own" % line[0])
     for user, uid in USERS.items():
         if groups.get(user) != uid:
             fail("/etc/group has %s as gid %s, not %d" % (user, groups.get(user), uid))
     if config.get("Entrypoint") != ["/usr/local/bin/gateway"] or config.get("Cmd") != ["serve", "--config", "/etc/engine/engine.json"] or config.get("User") not in ("engine", "65532"):
         fail("the image starts %r %r as %r" % (config.get("Entrypoint"), config.get("Cmd"), config.get("User")))
-    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
+    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; the MCP server's copy of it root's, 0755, without a capability, the same bytes; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them, engine-mcp in no group but its own; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
 
 
 def scan_layers(image_dir):

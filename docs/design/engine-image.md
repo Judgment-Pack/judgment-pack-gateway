@@ -106,6 +106,17 @@ timestamps, and the claim this image makes rests on its contents.
 The container's first process is `gateway serve`, reading the engine configuration
 ([engine-config.md](engine-config.md)). It is the only process that ever holds the seed.
 
+The MCP server ([mcp-server.md](mcp-server.md)) is a fifth process the operator starts
+beside it, as the runtime and the verifier are started: `/usr/local/bin/engine-mcp mcp
+--config /etc/engine/engine.json --http` as the user `engine-mcp` (uid 65533, its own group,
+home `/home/engine-mcp`, no supplementary group, no capability). The executable is the
+gateway's, copied in the build before the signer's capabilities were written to it: root's,
+mode `0755`, with no capability attribute, and the image check holds it to the gateway's bytes.
+The signer's `0700` binary is never the one that process runs, and the engine's loader refuses
+a platform on that user. What the image cannot see — a seed, a credentials file or a store the
+operator mounts — the process checks at start: it refuses to run unless opening each is
+denied to it.
+
 Adapters are **spawned, never linked**. When a request names a platform, the gateway resolves
 its binding to an adapter binary and starts it over the source contract of SPEC.md §6:
 canonical arguments on stdin, one JSON result on stdout, twenty seconds for an acquisition.

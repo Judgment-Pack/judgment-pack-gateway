@@ -112,11 +112,11 @@ exists yet:
    the engine's platforms, not every server the gateway routes.
 
 The first is what the plan's wording asks for and the second is what its rules permit today.
-The recommendation is to do the second first — it serves any MCP client, ContextForge among
-them, and needs only engine work under the existing contract — and to put the first to the
-specification as an RFC, because "receipts on every tool call" across servers the engine never
-touches is a witness claim, and the specification should say what such a receipt is worth
-before an engine mints one. Neither is in this change.
+The second is built: [mcp-server.md](mcp-server.md) is its design and
+[ADR-0003](../adr/0003-a-fifth-process-speaks-mcp.md) its record, and `gateway mcp` is the
+process. The first stays an RFC question for the specification, because "receipts on every
+tool call" across servers the engine never touches is a witness claim, and the specification
+should say what such a receipt is worth before an engine mints one.
 
 ## Where the code lives and what checks it
 
