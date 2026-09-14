@@ -660,7 +660,9 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		// that does not allow writes derives none, whatever the binding
 		// states.
 		if b.write != nil && p.write {
-			argv := []string{adapter("adapter-mcp"), "--image=" + b.write.image, "--credentials=" + p.credentials["write"], "--runtime=" + cfg.runtime, "--tools=" + strings.Join(b.write.tools, ",")}
+			// --error-results: a target's refusal of a write is a response
+			// to receipt, not a read that did not happen (executor.md).
+			argv := []string{adapter("adapter-mcp"), "--image=" + b.write.image, "--credentials=" + p.credentials["write"], "--runtime=" + cfg.runtime, "--tools=" + strings.Join(b.write.tools, ","), "--error-results"}
 			if p.endpoint != "" {
 				argv = append(argv, "--endpoint="+p.endpoint)
 			}

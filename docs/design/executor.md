@@ -43,17 +43,24 @@ that what they name exists and compares nothing inside it, which is §4's standa
    configured refuses before the body, and one with an identity refuses a missing or bad token
    as `/acquire` does.
 2. The session is not a session, is sealed in the registry on disk — the one record of a seal,
-   this process's own or an earlier one's — or has receipts in the store that this process did
-   not mint → refused. The last is what a
-   restart means: a session the store already holds cannot have its chain continued from an
-   empty memory, and a write that ran and could not be receipted is the outcome this design
-   exists to refuse, so an action after a restart opens a session of its own. (`/acquire`
-   admits by memory alone, as it always has; a read against such a session fails at the stamp
-   with no receipt and nothing done.) Admission itself — the atomic reservation against
-   sealing — happens once the evidence below is held, as it does for a read.
+   this process's own or an earlier one's — or exists in the store as something this process did
+   not mint → refused. The last is what a restart means: a session the store already holds
+   cannot have its chain continued from an empty memory, and a write that ran and could not be
+   receipted is the outcome this design exists to refuse, so an action after a restart opens a
+   session of its own. "Did not mint" is judged by what this process has minted, not by what it
+   has reserved: an acquisition admitted into such a session, with nothing minted yet, leaves it
+   one the action may not enter; an entry of any kind — a directory, a link, a file — is such a
+   session, and a lookup that fails for any reason but absence refuses rather than passes.
+   (`/acquire` admits by memory alone, as it always has; a read against such a session fails at
+   the stamp with no receipt and nothing done.) Admission itself — the atomic reservation
+   against sealing — happens once the evidence below is held, as it does for a read, and judges
+   the session on disk once more under the same lock, so nothing decided here is overtaken by a
+   reservation or a seal in between.
 3. The platform is unknown, or its binding declares no `write` operation, or the
    configuration does not set `write: true` for it → refused. `write: true` says an executor
-   may be pointed at the platform; it authorizes no particular write.
+   may be pointed at the platform; it authorizes no particular write. The request's `decision`
+   and `cites` members are read at their own steps below — absent or unparseable is a refusal
+   at that step — so a request with several faults is answered by the earliest step it fell at.
 4. The tool is not one the `write` binding names → refused. The executor is spawned with
    `--tools=<that tool>` and nothing else — the binding's list narrowed to the one requested —
    so a server offering more cannot be asked for more. The arguments must be a JSON object:
@@ -115,7 +122,10 @@ The receipt is lineage of a request and a response. It does not say the write wa
 it does not say the requester approved it: a token proves who asked. Evidence that a person
 approved this specific action is an open question the plan names, and nothing here answers it.
 A target that refuses the write is a response like any other — the receipt records the
-refusal bytes — and an executor that cannot reach the target mints nothing.
+refusal bytes: the executor is started with `--error-results`, under which `adapter-mcp`
+envelopes a tool result that reports an error as the result of the call, where for a read the
+same result is a failed acquisition — and an executor that cannot reach the target mints
+nothing.
 
 ## How it is held
 

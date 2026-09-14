@@ -94,6 +94,11 @@ type gatewayService struct {
 	// executor to the tool it was narrowed to.
 	started     atomic.Int64
 	startedWith atomic.Pointer[[]string]
+	// beforeAdmit, when a test sets it, runs between an action's evidence
+	// checks and its admission: the window in which another request may
+	// have put the session on disk or sealed it, which admission's own
+	// recheck must catch.
+	beforeAdmit func()
 	// identity is who may call (serveOptions.identity); nil when no
 	// issuer is configured, and every receipt then carries caller null.
 	identity *identityConfig
@@ -941,27 +946,7 @@ func (g *gatewayService) handler() http.Handler {
 			}
 			arguments = parsed
 		}
-		parse := func(name string, raw json.RawMessage) (value, bool) {
-			if len(raw) == 0 {
-				fail(w, badRequest{fmt.Errorf("%s is required", name)})
-				return nil, false
-			}
-			parsed, err := parseJSON(raw)
-			if err != nil {
-				fail(w, badRequest{fmt.Errorf("%s: %w", name, err)})
-				return nil, false
-			}
-			return parsed, true
-		}
-		decisionV, ok := parse("decision", body.Decision)
-		if !ok {
-			return
-		}
-		citesV, ok := parse("cites", body.Cites)
-		if !ok {
-			return
-		}
-		out, err := g.act(body.Session, body.Platform, body.Tool, arguments, decisionV, citesV, who)
+		out, err := g.act(body.Session, body.Platform, body.Tool, arguments, body.Decision, body.Cites, who)
 		if err != nil {
 			var refusal actRefusal
 			if errors.As(err, &refusal) {

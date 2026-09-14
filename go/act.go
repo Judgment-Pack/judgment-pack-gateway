@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -29,7 +30,7 @@ type actRefusal struct {
 func (r actRefusal) Error() string { return r.step + ": " + r.reason }
 
 // act performs one write for an authenticated requester, or refuses it.
-func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisionV, citesV value, who *caller) (map[string]any, error) {
+func (g *gatewayService) act(sessionID, platform, tool string, arguments value, decisionRaw, citesRaw json.RawMessage, who *caller) (map[string]any, error) {
 	if who == nil {
 		return nil, actRefusal{"requester", errNoRequester.Error() + "; this engine has no identity configured"}
 	}
@@ -56,9 +57,17 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisi
 	if _, isObject := arguments.(*vObject); !isObject {
 		return nil, actRefusal{"arguments", "arguments must be a JSON object: the executor sends the request as an object, and the commitment is over what is sent"}
 	}
+	decisionV, err := parseMember("decision", decisionRaw)
+	if err != nil {
+		return nil, actRefusal{"decision", err.Error()}
+	}
 	decision, err := parseDecision(decisionV)
 	if err != nil {
 		return nil, actRefusal{"decision", err.Error()}
+	}
+	citesV, err := parseMember("cites", citesRaw)
+	if err != nil {
+		return nil, actRefusal{"cites", err.Error()}
 	}
 	cites, err := parseCitations(citesV, "action")
 	if err != nil {
@@ -90,7 +99,10 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisi
 	// The judgment is there. What follows is the acquisition path with an
 	// action's claims: admission, the executor as a source, one receipt in
 	// the session chain.
-	if err := g.admit(sessionID); err != nil {
+	if g.beforeAdmit != nil {
+		g.beforeAdmit()
+	}
+	if err := g.admitAction(sessionID); err != nil {
 		return nil, err
 	}
 	defer g.release(sessionID)
@@ -209,20 +221,61 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisi
 // write that ran and could not be receipted is the one outcome this design
 // exists to refuse.
 func (g *gatewayService) sessionOpen(sessionID string) string {
-	g.mu.Lock()
-	_, seen := g.sessions[sessionID]
-	g.mu.Unlock()
 	if seals, _, err := loadSeals(g.regPath, g.publicKey); err != nil {
 		return "the registry could not be read"
 	} else if _, sealed := seals[sessionID]; sealed {
 		return "session is sealed in the registry: " + sessionID
 	}
-	if !seen {
-		if _, err := os.Stat(filepath.Join(g.storeRoot, "receipts", sessionID)); err == nil {
-			return "session " + sessionID + " has receipts this engine did not mint; it predates this start, and an action opens a session of its own"
-		}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.sessionMintedHere(sessionID)
+}
+
+// sessionMintedHere is why a session is not one this process may continue,
+// or "": under the lock, a session into which this process has minted
+// nothing -- unknown to it, or reserved by an admission that has minted
+// nothing yet -- must have nothing in the store either. An entry there of
+// any kind (a directory, a link, a file) is a session this engine did not
+// mint; a lookup that fails for any reason but absence is refused as such,
+// never taken for absence, since a dangling link reports absent to a stat
+// that follows it. Called by the session step and again by admission, so a
+// reservation made between the two changes nothing.
+func (g *gatewayService) sessionMintedHere(sessionID string) string {
+	if state, seen := g.sessions[sessionID]; seen && state.index > 0 {
+		return ""
 	}
-	return ""
+	_, err := os.Lstat(filepath.Join(g.storeRoot, "receipts", sessionID))
+	switch {
+	case err == nil:
+		return "session " + sessionID + " exists in the store as something this engine did not mint; it predates this start, and an action opens a session of its own"
+	case errors.Is(err, fs.ErrNotExist):
+		return ""
+	default:
+		return "session " + sessionID + " could not be looked up in the store"
+	}
+}
+
+// admitAction reserves an action against a session as admit reserves a
+// read, and under the same lock judges the session on disk once more
+// (sessionMintedHere) and the seal, so that nothing decided before the
+// evidence was read can have been overtaken by an admission or a seal in
+// between.
+func (g *gatewayService) admitAction(sessionID string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if reason := g.sessionMintedHere(sessionID); reason != "" {
+		return actRefusal{"session", reason}
+	}
+	state, seen := g.sessions[sessionID]
+	if !seen {
+		state = &sessionState{}
+		g.sessions[sessionID] = state
+	}
+	if state.sealed {
+		return actRefusal{"session", "session is sealed: " + sessionID}
+	}
+	state.inFlight++
+	return nil
 }
 
 // narrowTools is the write source started for one tool: the adapter's
@@ -230,8 +283,14 @@ func (g *gatewayService) sessionOpen(sessionID string) string {
 // more, whatever the binding names.
 func narrowTools(spec sourceSpec, tool string) sourceSpec {
 	argv := make([]string, 0, len(spec.argv))
+	own := true
 	for _, arg := range spec.argv {
-		if strings.HasPrefix(arg, "--tools=") {
+		if arg == "--" {
+			// What follows is the server's own command line, the binding's
+			// to state and not this engine's to rewrite.
+			own = false
+		}
+		if own && strings.HasPrefix(arg, "--tools=") {
 			arg = "--tools=" + tool
 		}
 		argv = append(argv, arg)
@@ -240,6 +299,19 @@ func narrowTools(spec sourceSpec, tool string) sourceSpec {
 	narrowed.argv = argv
 	narrowed.tools = []string{tool}
 	return narrowed
+}
+
+// parseMember reads one required member of the request body, at its own
+// step of the ladder: absent is a refusal there, as unparseable is.
+func parseMember(name string, raw json.RawMessage) (value, error) {
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("%s is required", name)
+	}
+	parsed, err := parseJSON(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %v", name, err)
+	}
+	return parsed, nil
 }
 
 // identityObject is a token identity as a receipt names it.

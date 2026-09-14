@@ -95,8 +95,12 @@ func main() {
 		case "initialize":
 			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "standin", "version": "0.1"}}
 		case "tools/list":
-			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "execute", "inputSchema": map[string]any{"type": "object"}}}}
+			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "execute", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "drop", "inputSchema": map[string]any{"type": "object"}}}}
 		case "tools/call":
+			if strings.Contains(string(m.Params), ` + "`" + `"name":"drop"` + "`" + `) {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refused: drop is not permitted for this principal"}}, "isError": true}
+				break
+			}
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "1 row"}}, "structuredContent": map[string]any{"rows": []any{map[string]any{"id": 101}}, "params": json.RawMessage(m.Params)}}
 		default:
 			continue
@@ -230,6 +234,19 @@ func main() {
 	requestV, _ := parseJSON([]byte(`{"tool":"execute","arguments":{"sql":"update t set s = 1"}}`))
 	if action["argumentsCommitment"] != commitmentOver(argsSalt, "args:", canon(argumentsV)) || inner["request"] != commitmentOver(requestSalt, "request:", canon(requestV)) {
 		t.Fatalf("the commitments recompute from the salts over the bytes sent: %v %v", action["argumentsCommitment"], inner["request"])
+	}
+	// A target that refuses the write answers, and the answer is receipted:
+	// the executor is started with --error-results, so the refusal is the
+	// call's result, retained as the artifact and named by the receipt,
+	// rather than a read that did not happen.
+	refused := strings.Replace(act, `"tool":"execute"`, `"tool":"drop"`, 1)
+	code, refusal := post(t, server, "/act", refused)
+	if code != http.StatusOK {
+		t.Fatalf("a target's refusal is a response to receipt: %d %v", code, refusal)
+	}
+	if refusal["result"].(map[string]any)["isError"] != true || !strings.Contains(fmt.Sprint(refusal["result"]), "not permitted") ||
+		refusal["receipt"].(map[string]any)["kind"] != "action" || refusal["receipt"].(map[string]any)["action"].(map[string]any)["tool"].(map[string]any)["name"] != "drop" {
+		t.Fatalf("the refusal's bytes are the result and the receipt names the call: %v", refusal)
 	}
 	if code, body := post(t, server, "/seal", `{"session":"cfg-1"}`); code != http.StatusOK {
 		t.Fatalf("seal failed: %d %v", code, body)

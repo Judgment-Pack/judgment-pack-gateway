@@ -90,10 +90,12 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   the engine starts; a key not in it is a key the engine does not know.
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
   a receipt will carry — to a **binding** from the catalog, pinned by digest, to where its
-  credentials are — **one file per operation** the binding offers, `history` and `live`, since
+  credentials are — **one file per operation** the binding offers, `history` and `live`, and
+  `write` when the platform sets `write: true` and the binding states a write operation, since
   a connector's configuration and a server's environment are different files in different
-  forms, and a file for an operation the binding does not offer, or none for one it does, is
-  refused — and to the OS **user** its adapters run as, which must exist, must not be
+  forms, and a file for an operation the binding does not offer (or a `write` file for a
+  platform that allows no writes), or none for one it does, is refused — and to the OS
+  **user** its adapters run as, which must exist, must not be
   root or the signer, and must be no other platform's. `endpoint` is the host the platform is
   reached at as the operator names it, recorded as the receipt's endpoint; the adapters do not
   read it from the credentials. `environment` is an object of string values the platform's
@@ -115,12 +117,12 @@ way:
 |---|---|---|
 | `<platform>/history` | `adapter-airbyte` | `--image=<history.image> --credentials=<credentials.history.file> --runtime=<runtime> [--endpoint=<endpoint>]` |
 | `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
+| `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> --error-results [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
 
 Every flag and its value are one word, `flag=value`: a value that is `--` on its own would be
 the delimiter the adapter splits its line at, and a tool, an endpoint or a runtime can be so
 named.
 
-| `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
 
 ## What the engine refuses
 

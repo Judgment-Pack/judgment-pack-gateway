@@ -47,6 +47,11 @@ type Config struct {
 	Endpoint string
 	// Tools, when given, are the only tools a request may name.
 	Tools []string
+	// ErrorResults, when set, makes a tool result that reports an error
+	// (isError true) the result of the call rather than its failure: what
+	// an executor needs, since a target's refusal of a write is a response
+	// to receipt, where a source's is a read that did not happen.
+	ErrorResults bool
 	// Probe, when given, is a tool a check calls once with no arguments
 	// to establish that the server reaches its platform -- a server that
 	// starts and lists its tools without a working connection answers the
@@ -262,7 +267,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if int64(len(raw)) > cfg.MaxOutput {
 		return finish(nil, fmt.Errorf("the tool's result exceeds the output bound of %d bytes", cfg.MaxOutput))
 	}
-	result, err := parseToolResult(raw)
+	result, err := parseToolResult(raw, cfg.ErrorResults)
 	if err != nil {
 		return finish(nil, err)
 	}
@@ -409,7 +414,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		if int64(len(raw)) > cfg.MaxOutput {
 			return finish(nil, fmt.Errorf("the probe's result exceeds the output bound of %d bytes", cfg.MaxOutput))
 		}
-		if _, err := parseToolResult(raw); err != nil {
+		if _, err := parseToolResult(raw, false); err != nil {
 			return finish(nil, fmt.Errorf("probe %q: %v", cfg.Probe, err))
 		}
 		if cfg.ProbeFailure != "" {
@@ -542,7 +547,7 @@ func outputSchemaOf(descriptor json.RawMessage) ([]byte, error) {
 // exact member names on the canonical form, which has refused a duplicate
 // name already, and returns that canonical form as the result. A result
 // that says isError is not a fact and fails the acquisition with its text.
-func parseToolResult(raw json.RawMessage) ([]byte, error) {
+func parseToolResult(raw json.RawMessage, errorResults bool) ([]byte, error) {
 	result, err := canon.Canonicalize(raw, canon.CarryNumbersAsText)
 	if err != nil {
 		return nil, fmt.Errorf("tools/call: the tool's result: %v", err)
@@ -584,7 +589,12 @@ func parseToolResult(raw json.RawMessage) ([]byte, error) {
 	if flag, ok := members["isError"]; ok {
 		switch string(flag) {
 		case "true":
-			return nil, fmt.Errorf("the tool reported an error: %s", textOf(content))
+			// A source's error is a read that did not happen and fails the
+			// acquisition; an executor's is the target's answer to a write,
+			// enveloped and receipted as the response it is (ErrorResults).
+			if !errorResults {
+				return nil, fmt.Errorf("the tool reported an error: %s", textOf(content))
+			}
 		case "false":
 		default:
 			return nil, errors.New("tools/call: isError is not a boolean")

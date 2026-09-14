@@ -1165,3 +1165,23 @@ func TestAProbeAnswerIsReadByExactMembers(t *testing.T) {
 		t.Fatalf("an answer without the space does not begin with the prefix: %v", err)
 	}
 }
+
+// An executor asks for a target's error to be enveloped: with ErrorResults
+// the result that reports an error is the result of the call, content and
+// flag intact; without it, the failure it always was.
+func TestErrorResultsAreEnvelopedOnlyWhenAsked(t *testing.T) {
+	raw := json.RawMessage(`{"content":[{"type":"text","text":"permission denied"}],"isError":true}`)
+	if _, err := parseToolResult(raw, false); err == nil || !strings.Contains(err.Error(), "the tool reported an error: permission denied") {
+		t.Fatalf("a source's error result fails the acquisition: %v", err)
+	}
+	result, err := parseToolResult(raw, true)
+	if err != nil {
+		t.Fatalf("an executor's error result is the result: %v", err)
+	}
+	if !strings.Contains(string(result), `"isError":true`) || !strings.Contains(string(result), "permission denied") {
+		t.Fatalf("the error result is carried whole: %s", result)
+	}
+	if _, err := parseToolResult(json.RawMessage(`{"content":[],"isError":"true"}`), true); err == nil || !strings.Contains(err.Error(), "isError is not a boolean") {
+		t.Fatalf("a flag that is not a boolean is refused whatever was asked: %v", err)
+	}
+}

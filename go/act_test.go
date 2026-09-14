@@ -151,6 +151,19 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if service.started.Load() != started+1 {
 		t.Fatalf("the executor runs once every step has passed: started %d, was %d", service.started.Load(), started)
 	}
+	// A request missing its decision is refused at the decision step, after
+	// the session step: on a session that cannot be entered, it is the
+	// session that is named.
+	if code, body := authed(t, server, "/act", strings.Replace(good("act-1", "0", signature, record), `"decision":{`, `"decisionX":{`, 1), token); code != http.StatusBadRequest {
+		t.Fatalf("an unknown member: %d %v", code, body)
+	}
+	noDecision := `{"session":"act-1","platform":"tickets","tool":"update_ticket","arguments":{},"cites":[{"sessionId":"act-1","callIndex":0,"signature":"` + signature + `"}]}`
+	if code, body := authed(t, server, "/act", noDecision, token); code != http.StatusBadRequest || body["refusedAt"] != "decision" || !strings.Contains(fmt.Sprint(body["error"]), "decision is required") {
+		t.Fatalf("no decision: %d %v", code, body)
+	}
+	if code, body := authed(t, server, "/act", strings.Replace(noDecision, `"session":"act-1"`, `"session":"act-8"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "decision" {
+		t.Fatalf("no decision on a fresh session reaches the decision step: %d %v", code, body)
+	}
 	// Started for the one tool requested: the binding's list narrowed to it
 	// on the command line the executor actually got.
 	if argv := service.startedWith.Load(); argv == nil || !contains(*argv, "--tools=update_ticket") || contains(*argv, "--tools=update_ticket,delete_ticket") {
@@ -199,6 +212,11 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if code, body := authed(t, server, "/act", good("act-1", "0", signature, record), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "sealed in the registry") {
 		t.Fatalf("a sealed session: %d %v", code, body)
 	}
+	// On a sealed session, a request missing its decision is refused at
+	// the session step: the ladder's order is the order of the answer.
+	if code, body := authed(t, server, "/act", noDecision, token); code != http.StatusBadRequest || body["refusedAt"] != "session" {
+		t.Fatalf("a sealed session names the session before the missing decision: %d %v", code, body)
+	}
 	restarted, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
 	if err != nil {
 		t.Fatal(err)
@@ -223,6 +241,47 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	}
 	if restarted.started.Load() != 0 {
 		t.Fatal("an executor ran after a restart for a session the store already held")
+	}
+	// A reservation is not a minting: an acquisition admitted into that
+	// session after the restart, with nothing minted yet, leaves the
+	// session one this process did not mint, and the action is refused at
+	// admission as it was at the session step.
+	if err := restarted.admit("act-2"); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := authed(t, restartedServer, "/act", predating, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "predates this start") {
+		t.Fatalf("a session reserved by an in-flight acquisition: %d %v", code, body)
+	}
+	restarted.release("act-2")
+	if restarted.started.Load() != 0 {
+		t.Fatal("an executor ran into a session an acquisition had only reserved")
+	}
+	// A session put on disk between the session step and admission -- an
+	// acquisition's stamp landing in the window the evidence checks open --
+	// is caught by admission's own recheck under the lock, and nothing runs.
+	restarted.beforeAdmit = func() {
+		if err := os.MkdirAll(filepath.Join(service.storeRoot, "receipts", "act-7"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raced := strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-7"`, 1)
+	if code, body := authed(t, restartedServer, "/act", raced, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") {
+		t.Fatalf("a session that appeared on disk before admission: %d %v", code, body)
+	}
+	restarted.beforeAdmit = nil
+	if restarted.started.Load() != 0 {
+		t.Fatal("an executor ran into a session that appeared on disk before admission")
+	}
+	// An entry in the store that is not a directory -- a dangling link --
+	// is a session this engine did not mint too; a stat that followed the
+	// link would have called it absent.
+	if runtime.GOOS != "windows" {
+		if err := os.Symlink(filepath.Join(service.storeRoot, "nowhere"), filepath.Join(service.storeRoot, "receipts", "act-9")); err != nil {
+			t.Fatal(err)
+		}
+		if code, body := authed(t, restartedServer, "/act", strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-9"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "did not mint") || strings.Contains(fmt.Sprint(body["error"]), service.storeRoot) {
+			t.Fatalf("a dangling link where a session would be: %d %v", code, body)
+		}
 	}
 	// A new session on the restarted engine passes the session step and
 	// reaches the evidence, which is what the store holds.
@@ -258,7 +317,7 @@ func TestActWithoutAnIdentityReadsNoBody(t *testing.T) {
 	if reader.reads.Load() != 0 {
 		t.Fatalf("the body was read %d times before the requester was refused", reader.reads.Load())
 	}
-	if _, err := service.act("s", "tickets", "update_ticket", newObject(), newObject(), vArray{}, nil); err == nil || !strings.Contains(err.Error(), "requester") {
+	if _, err := service.act("s", "tickets", "update_ticket", newObject(), json.RawMessage(`{}`), json.RawMessage(`[]`), nil); err == nil || !strings.Contains(err.Error(), "requester") {
 		t.Fatalf("act refuses a nil requester on its own: %v", err)
 	}
 }
@@ -276,12 +335,15 @@ func (r *unreadBody) Read(p []byte) (int, error) {
 // The executor is started for the one tool requested, whatever the binding
 // names beside it.
 func TestActNarrowsTheExecutorToTheRequestedTool(t *testing.T) {
-	spec := sourceSpec{argv: []string{"adapter-mcp", "--image=x@sha256:" + strings.Repeat("0", 64), "--tools=update,delete", "--endpoint=h"}, tools: []string{"update", "delete"}, shape: "mcp", endpoint: "h"}
+	image := "--image=x@sha256:" + strings.Repeat("0", 64)
+	spec := sourceSpec{argv: []string{"adapter-mcp", image, "--tools=update,delete", "--endpoint=h", "--", "--tools=all", "--verbose"}, tools: []string{"update", "delete"}, shape: "mcp", endpoint: "h"}
 	narrowed := narrowTools(spec, "delete")
-	if strings.Join(narrowed.argv, " ") != "adapter-mcp --image=x@sha256:"+strings.Repeat("0", 64)+" --tools=delete --endpoint=h" || len(narrowed.tools) != 1 || narrowed.tools[0] != "delete" {
+	// The adapter's own flag is narrowed; the server's arguments after the
+	// delimiter are the binding's and stay as stated.
+	if strings.Join(narrowed.argv, " ") != "adapter-mcp "+image+" --tools=delete --endpoint=h -- --tools=all --verbose" || len(narrowed.tools) != 1 || narrowed.tools[0] != "delete" {
 		t.Fatalf("narrowed: %+v", narrowed)
 	}
-	if strings.Join(spec.argv, " ") != "adapter-mcp --image=x@sha256:"+strings.Repeat("0", 64)+" --tools=update,delete --endpoint=h" || len(spec.tools) != 2 {
+	if strings.Join(spec.argv, " ") != "adapter-mcp "+image+" --tools=update,delete --endpoint=h -- --tools=all --verbose" || len(spec.tools) != 2 {
 		t.Fatalf("the binding's own source is untouched: %+v", spec)
 	}
 }
