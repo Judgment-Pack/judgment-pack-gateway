@@ -37,7 +37,10 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisi
 		return nil, actRefusal{"receipt-version", "an action receipt is a version 3 receipt; this engine mints version " + g.receiptVersion}
 	}
 	if err := requireSession(sessionID); err != nil {
-		return nil, badRequest{err}
+		return nil, actRefusal{"session", err.Error()}
+	}
+	if reason := g.sessionOpen(sessionID); reason != "" {
+		return nil, actRefusal{"session", reason}
 	}
 	source := platform + "/write"
 	spec, known := g.sources[source]
@@ -46,6 +49,12 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisi
 	}
 	if !contains(spec.tools, tool) {
 		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", tool)}
+	}
+	// The executor is started for this tool alone (executor.md): a binding
+	// naming several write tools offers each request one of them.
+	spec = narrowTools(spec, tool)
+	if _, isObject := arguments.(*vObject); !isObject {
+		return nil, actRefusal{"arguments", "arguments must be a JSON object: the executor sends the request as an object, and the commitment is over what is sent"}
 	}
 	decision, err := parseDecision(decisionV)
 	if err != nil {
@@ -69,7 +78,10 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisi
 	recordHex := strings.TrimPrefix(decision.recordDigest, "sha256:")
 	found, present, err := decisionCandidates(g.decisionRecords, map[string]bool{recordHex: true}, nil)
 	if err != nil {
-		return nil, fmt.Errorf("decision-record directory: %w", err)
+		// What went wrong is the operator's to read in the log; the
+		// requester learns that the directory could not be read, not where
+		// it is.
+		return nil, actRefusal{"decision", "the decision-record directory could not be read"}
 	}
 	if !present || !found[recordHex] {
 		return nil, actRefusal{"decision", fmt.Sprintf("no candidate under the decision-record directory has the digest %s", decision.recordDigest)}
@@ -182,6 +194,52 @@ func (g *gatewayService) act(sessionID, platform, tool string, arguments, decisi
 		"receipt": receiptOut,
 		"salts":   map[string]any{"args": hex.EncodeToString(argsSalt), "request": hex.EncodeToString(requestSalt)},
 	}, nil
+}
+
+// sessionOpen is why an action may not be minted into a session, or "":
+// the session is sealed in the registry on disk -- the one record of a seal,
+// which this process wrote if it sealed the session itself, and which an
+// earlier process wrote otherwise -- or it has receipts on disk that this
+// process did not mint: it predates this engine's start, and its chain
+// cannot be continued from an empty memory, so a restart never lets an
+// action into a session the store already holds. Admission's own recheck
+// under the lock holds the in-memory state against a seal that lands
+// between here and the spawn. /acquire admits by that memory alone, which
+// is what it has always done; an action is held to the disk too, since a
+// write that ran and could not be receipted is the one outcome this design
+// exists to refuse.
+func (g *gatewayService) sessionOpen(sessionID string) string {
+	g.mu.Lock()
+	_, seen := g.sessions[sessionID]
+	g.mu.Unlock()
+	if seals, _, err := loadSeals(g.regPath, g.publicKey); err != nil {
+		return "the registry could not be read"
+	} else if _, sealed := seals[sessionID]; sealed {
+		return "session is sealed in the registry: " + sessionID
+	}
+	if !seen {
+		if _, err := os.Stat(filepath.Join(g.storeRoot, "receipts", sessionID)); err == nil {
+			return "session " + sessionID + " has receipts this engine did not mint; it predates this start, and an action opens a session of its own"
+		}
+	}
+	return ""
+}
+
+// narrowTools is the write source started for one tool: the adapter's
+// allowlist is that tool, so a server offering more cannot be asked for
+// more, whatever the binding names.
+func narrowTools(spec sourceSpec, tool string) sourceSpec {
+	argv := make([]string, 0, len(spec.argv))
+	for _, arg := range spec.argv {
+		if strings.HasPrefix(arg, "--tools=") {
+			arg = "--tools=" + tool
+		}
+		argv = append(argv, arg)
+	}
+	narrowed := spec
+	narrowed.argv = argv
+	narrowed.tools = []string{tool}
+	return narrowed
 }
 
 // identityObject is a token identity as a receipt names it.

@@ -23,7 +23,7 @@ const postgresBinding = `{
   "operations": {
     "history": {"shape": "airbyte", "image": "airbyte/source-postgres:3.6.1@` + testImageDigest + `", "licence": "ELv2"},
     "live": {"shape": "mcp", "server": {"image": "ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"}, "tools": ["query", "explain"], "licence": "MIT"},
-    "write": {"shape": "mcp", "server": {"image": "ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"}, "tools": ["execute"], "licence": "MIT"}
+    "write": {"shape": "mcp", "server": {"image": "ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"}, "tools": ["execute", "drop"], "licence": "MIT"}
   }
 }`
 
@@ -148,8 +148,8 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 		// write tools and the write credentials (executor.md).
 		"warehouse/write": {
 			argv: []string{filepath.Join(binDir, "adapter-mcp"), "--image=ghcr.io/example/mcp-postgres:2.1@" + testImageDigest,
-				"--credentials=" + p.credentials["write"], "--runtime=podman", "--tools=execute", "--endpoint=warehouse.internal:5432"},
-			env: env, user: "engine-warehouse", shape: "mcp", tools: []string{"execute"}, endpoint: "warehouse.internal:5432",
+				"--credentials=" + p.credentials["write"], "--runtime=podman", "--tools=execute,drop", "--endpoint=warehouse.internal:5432"},
+			env: env, user: "engine-warehouse", shape: "mcp", tools: []string{"execute", "drop"}, endpoint: "warehouse.internal:5432",
 		},
 	}
 	if !reflect.DeepEqual(sources, want) {

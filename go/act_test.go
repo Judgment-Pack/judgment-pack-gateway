@@ -3,11 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -42,7 +45,7 @@ func authed(t *testing.T, server *httptest.Server, path, body, token string) (in
 // step passes, the executor runs.
 func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	service, server := testService(t)
-	service.sources["tickets/write"] = sourceSpec{argv: []string{os.Args[0]}, env: helperEnv, shape: "mcp", tools: []string{"update_ticket"}, endpoint: "https://mcp.example/"}
+	service.sources["tickets/write"] = sourceSpec{argv: []string{os.Args[0], "--tools=update_ticket,delete_ticket"}, env: helperEnv, shape: "mcp", tools: []string{"update_ticket", "delete_ticket"}, endpoint: "https://mcp.example/"}
 	records := filepath.Join(t.TempDir(), "decisions")
 	if err := os.MkdirAll(records, 0o700); err != nil {
 		t.Fatal(err)
@@ -90,7 +93,7 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 
 	for _, tc := range []struct{ name, body, step, want string }{
 		{"unknown platform", strings.Replace(good("act-1", "0", signature, record), `"platform":"tickets"`, `"platform":"docs"`, 1), "platform", "allows no writes"},
-		{"a tool the binding does not name", strings.Replace(good("act-1", "0", signature, record), `"tool":"update_ticket"`, `"tool":"delete_ticket"`, 1), "tool", "not one the platform's write binding names"},
+		{"a tool the binding does not name", strings.Replace(good("act-1", "0", signature, record), `"tool":"update_ticket"`, `"tool":"close_ticket"`, 1), "tool", "not one the platform's write binding names"},
 		{"a decision missing a member", strings.Replace(good("act-1", "0", signature, record), `,"packDigest":"sha256:`+strings.Repeat("b", 64)+`"`, ``, 1), "decision", "decision"},
 		{"a decision digest not of its form", strings.Replace(good("act-1", "0", signature, record), record, "sha256:abc", 1), "decision", "64 lowercase hex"},
 		{"no citation", strings.Replace(good("act-1", "0", signature, record), `"cites":[{`, `"cites":[],"x":[{`, 1), "cites", ""},
@@ -148,6 +151,34 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	if service.started.Load() != started+1 {
 		t.Fatalf("the executor runs once every step has passed: started %d, was %d", service.started.Load(), started)
 	}
+	// Started for the one tool requested: the binding's list narrowed to it
+	// on the command line the executor actually got.
+	if argv := service.startedWith.Load(); argv == nil || !contains(*argv, "--tools=update_ticket") || contains(*argv, "--tools=update_ticket,delete_ticket") {
+		t.Fatalf("the executor is started for the requested tool alone: %v", argv)
+	}
+	// A decision-record directory that cannot be read refuses at the
+	// decision step, without saying where it is.
+	if runtime.GOOS != "windows" && os.Getuid() != 0 {
+		unreadable := filepath.Join(t.TempDir(), "sealed-records")
+		if err := os.MkdirAll(unreadable, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(unreadable, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(unreadable, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(unreadable, 0o700) })
+		service.decisionRecords = unreadable
+		code, body := authed(t, server, "/act", good("act-1", "0", signature, record), token)
+		if code != http.StatusBadRequest || body["refusedAt"] != "decision" || !strings.Contains(fmt.Sprint(body["error"]), "could not be read") || strings.Contains(fmt.Sprint(body["error"]), unreadable) {
+			t.Fatalf("an unreadable decision-record directory: %d %v", code, body)
+		}
+		if service.started.Load() != started+1 {
+			t.Fatal("an executor ran with an unreadable decision-record directory")
+		}
+	}
 	// Without a decision-record directory no record can be found, and the
 	// ladder says so at the decision step, before any executor runs.
 	service.decisionRecords = ""
@@ -156,5 +187,101 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 	}
 	if service.started.Load() != started+1 {
 		t.Fatal("an executor ran with no decision-record directory")
+	}
+	// The decision-record directory is back for what follows.
+	service.decisionRecords = records
+	// A session sealed here is refused at the session step, before any
+	// evidence is read; so is one sealed in the registry by an earlier
+	// process, or one whose receipts on disk this process did not mint.
+	if code, body := authed(t, server, "/seal", `{"session":"act-1"}`, token); code != http.StatusOK {
+		t.Fatalf("seal: %d %v", code, body)
+	}
+	if code, body := authed(t, server, "/act", good("act-1", "0", signature, record), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "sealed in the registry") {
+		t.Fatalf("a sealed session: %d %v", code, body)
+	}
+	restarted, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted.identity = &id
+	restarted.decisionRecords = records
+	restartedServer := httptest.NewServer(restarted.handler())
+	defer restartedServer.Close()
+	if code, body := authed(t, restartedServer, "/act", good("act-1", "0", signature, record), token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "sealed in the registry") {
+		t.Fatalf("a session sealed before this start: %d %v", code, body)
+	}
+	// An unsealed session with receipts on disk, after a restart: the
+	// chain cannot be continued from an empty memory, so no action enters
+	// it; the cited receipt itself still resolves, since the session it
+	// cites is not the one the action would be minted into.
+	if code, body := authed(t, server, "/acquire", `{"session":"act-2","source":"screening","arguments":{"q":"acme"}}`, token); code != http.StatusOK {
+		t.Fatalf("acquire into a second session: %d %v", code, body)
+	}
+	predating := strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-2"`, 1)
+	if code, body := authed(t, restartedServer, "/act", predating, token); code != http.StatusBadRequest || body["refusedAt"] != "session" || !strings.Contains(fmt.Sprint(body["error"]), "predates this start") {
+		t.Fatalf("a session with receipts this engine did not mint: %d %v", code, body)
+	}
+	if restarted.started.Load() != 0 {
+		t.Fatal("an executor ran after a restart for a session the store already held")
+	}
+	// A new session on the restarted engine passes the session step and
+	// reaches the evidence, which is what the store holds.
+	fresh := strings.Replace(good("act-1", "0", signature, record), `"session":"act-1"`, `"session":"act-3"`, 1)
+	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"tool":"update_ticket"`, `"tool":"close_ticket"`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "tool" {
+		t.Fatalf("a fresh session after a restart reaches the tool step: %d %v", code, body)
+	}
+	// Arguments that are not an object are refused before the executor:
+	// what is committed to is what is sent, and the adapter sends an object.
+	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"arguments":{"id":"T-1"}`, `"arguments":null`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "arguments" {
+		t.Fatalf("null arguments: %d %v", code, body)
+	}
+	if code, body := authed(t, restartedServer, "/act", strings.Replace(fresh, `"arguments":{"id":"T-1"}`, `"arguments":["T-1"]`, 1), token); code != http.StatusBadRequest || body["refusedAt"] != "arguments" {
+		t.Fatalf("array arguments: %d %v", code, body)
+	}
+}
+
+// With no identity configured nobody is a requester, and the refusal comes
+// before the body is read at all; act itself refuses a nil requester too,
+// for a caller that is not the handler.
+func TestActWithoutAnIdentityReadsNoBody(t *testing.T) {
+	service, _ := testService(t)
+	reader := &unreadBody{}
+	req := httptest.NewRequest(http.MethodPost, "/act", reader)
+	req.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	service.handler().ServeHTTP(recorder, req)
+	var body map[string]any
+	_ = json.NewDecoder(recorder.Body).Decode(&body)
+	if recorder.Code != http.StatusUnauthorized || body["refusedAt"] != "requester" || recorder.Header().Get("WWW-Authenticate") != "Bearer" {
+		t.Fatalf("no identity: %d %v", recorder.Code, body)
+	}
+	if reader.reads.Load() != 0 {
+		t.Fatalf("the body was read %d times before the requester was refused", reader.reads.Load())
+	}
+	if _, err := service.act("s", "tickets", "update_ticket", newObject(), newObject(), vArray{}, nil); err == nil || !strings.Contains(err.Error(), "requester") {
+		t.Fatalf("act refuses a nil requester on its own: %v", err)
+	}
+}
+
+// unreadBody counts the reads made of a request body that is never meant
+// to be read: the handler is driven directly, so no client transport reads
+// it to send it.
+type unreadBody struct{ reads atomic.Int64 }
+
+func (r *unreadBody) Read(p []byte) (int, error) {
+	r.reads.Add(1)
+	return 0, io.EOF
+}
+
+// The executor is started for the one tool requested, whatever the binding
+// names beside it.
+func TestActNarrowsTheExecutorToTheRequestedTool(t *testing.T) {
+	spec := sourceSpec{argv: []string{"adapter-mcp", "--image=x@sha256:" + strings.Repeat("0", 64), "--tools=update,delete", "--endpoint=h"}, tools: []string{"update", "delete"}, shape: "mcp", endpoint: "h"}
+	narrowed := narrowTools(spec, "delete")
+	if strings.Join(narrowed.argv, " ") != "adapter-mcp --image=x@sha256:"+strings.Repeat("0", 64)+" --tools=delete --endpoint=h" || len(narrowed.tools) != 1 || narrowed.tools[0] != "delete" {
+		t.Fatalf("narrowed: %+v", narrowed)
+	}
+	if strings.Join(spec.argv, " ") != "adapter-mcp --image=x@sha256:"+strings.Repeat("0", 64)+" --tools=update,delete --endpoint=h" || len(spec.tools) != 2 {
+		t.Fatalf("the binding's own source is untouched: %+v", spec)
 	}
 }

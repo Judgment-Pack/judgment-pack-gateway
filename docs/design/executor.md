@@ -39,13 +39,26 @@ that what they name exists and compares nothing inside it, which is §4's standa
 
 ## What refuses it, in order, before any executor runs
 
-1. No authenticated requester → refused (401). Nothing is read.
-2. The session is not open, or is sealed → refused, as `/acquire` refuses.
+1. No authenticated requester → refused (401). Nothing is read: an engine with no identity
+   configured refuses before the body, and one with an identity refuses a missing or bad token
+   as `/acquire` does.
+2. The session is not a session, is sealed in the registry on disk — the one record of a seal,
+   this process's own or an earlier one's — or has receipts in the store that this process did
+   not mint → refused. The last is what a
+   restart means: a session the store already holds cannot have its chain continued from an
+   empty memory, and a write that ran and could not be receipted is the outcome this design
+   exists to refuse, so an action after a restart opens a session of its own. (`/acquire`
+   admits by memory alone, as it always has; a read against such a session fails at the stamp
+   with no receipt and nothing done.) Admission itself — the atomic reservation against
+   sealing — happens once the evidence below is held, as it does for a read.
 3. The platform is unknown, or its binding declares no `write` operation, or the
    configuration does not set `write: true` for it → refused. `write: true` says an executor
    may be pointed at the platform; it authorizes no particular write.
 4. The tool is not one the `write` binding names → refused. The executor is spawned with
-   `--tools=<that tool>` and nothing else, so a server offering more cannot be asked for more.
+   `--tools=<that tool>` and nothing else — the binding's list narrowed to the one requested —
+   so a server offering more cannot be asked for more. The arguments must be a JSON object:
+   the executor sends `{tool, arguments}` as an object, and the commitment is over what is
+   sent, so nothing is sent that is not what was committed to.
 5. Each citation must resolve in the engine's store by §4 step 5's rule — its `sessionId`
    exactly a session directory name, its `callIndex` exactly a file stem, its `signature` the
    same string as that file's — and that receipt must pass the ladder under the engine's key.
@@ -56,7 +69,11 @@ that what they name exists and compares nothing inside it, which is §4's standa
    `decisionRecords` directory by §4 step 6's rule — every regular file as its whole bytes,
    and every line of a `.jsonl` file — or the request is refused. `packDigest` is recorded as
    given and checked against nothing: the record's contents are the runtime's, and the engine
-   reads none of them. Symbolic links are not followed; the walk is bounded as `verify`'s is.
+   reads none of them. Symbolic links are not followed. The walk is `verify`'s own, and like
+   it is not bounded in bytes, entries or time: availability is a stated limit of this
+   reference ([SECURITY.md](../../SECURITY.md)), and an operator who mounts an archive as the
+   decision-record directory has made the walk as long as the archive. A directory that cannot
+   be read refuses the action without saying where it is.
 
 A refused request executes nothing and mints nothing. The refusal names which step refused.
 
@@ -89,6 +106,8 @@ and `resultDigest` names them. The engine then mints one receipt in the session 
 | `action.observedAt` | when the target answered, from the envelope |
 
 The response returns the target's result, the receipt, and the salts, as `/acquire` does.
+`/verify` on the engine reads the same decision-record directory, so an action verifies there
+as it does under `gateway verify --decision-records`.
 
 ## What it does not claim
 

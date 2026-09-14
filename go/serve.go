@@ -89,8 +89,11 @@ type gatewayService struct {
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
 	// started counts the sources this service has started; a test reads it
-	// to prove that a refusal came before any source ran.
-	started atomic.Int64
+	// to prove that a refusal came before any source ran. startedWith is the
+	// command line the last one was started with, for a test that holds the
+	// executor to the tool it was narrowed to.
+	started     atomic.Int64
+	startedWith atomic.Pointer[[]string]
 	// identity is who may call (serveOptions.identity); nil when no
 	// issuer is configured, and every receipt then carries caller null.
 	identity *identityConfig
@@ -480,6 +483,8 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	// is reported as that, with the operating system's own reason, rather
 	// than as an empty "source failed".
 	g.started.Add(1)
+	argv := append([]string(nil), cmd.Args...)
+	g.startedWith.Store(&argv)
 	if err := group.start(cmd); err != nil {
 		group.reap()
 		return nil, "", "", fmt.Errorf("source could not be started: %v", err)
@@ -791,7 +796,7 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
-	rep, err := verifyWithRegistry(g.storeRoot, g.regPath, g.authority, g.publicKey)
+	rep, err := verifyWithRegistryAndRecords(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
 	if err != nil {
 		return nil, err
 	}
@@ -904,6 +909,14 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		who, ok := authenticate(w, r)
 		if !ok {
+			return
+		}
+		if who == nil {
+			// No identity configured: nobody is a requester, and the body is
+			// not read -- the ladder's first step, answered before the second
+			// byte of the request.
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": errNoRequester.Error() + "; this engine has no identity configured", "refusedAt": "requester"})
 			return
 		}
 		limitBody(w, r)

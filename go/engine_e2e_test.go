@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -84,6 +85,7 @@ func main() {
 		var m struct {
 			ID     json.RawMessage ` + "`json:\"id\"`" + `
 			Method string          ` + "`json:\"method\"`" + `
+			Params json.RawMessage ` + "`json:\"params\"`" + `
 		}
 		if json.Unmarshal(in.Bytes(), &m) != nil || len(m.ID) == 0 {
 			continue
@@ -95,7 +97,7 @@ func main() {
 		case "tools/list":
 			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "execute", "inputSchema": map[string]any{"type": "object"}}}}
 		case "tools/call":
-			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "1 row"}}, "structuredContent": map[string]any{"rows": []any{map[string]any{"id": 101}}}}
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "1 row"}}, "structuredContent": map[string]any{"rows": []any{map[string]any{"id": 101}}, "params": json.RawMessage(m.Params)}}
 		default:
 			continue
 		}
@@ -207,19 +209,45 @@ func main() {
 		inner["adapter"].(map[string]any)["digest"] != testImageDigest || !strings.HasPrefix(fmt.Sprint(inner["request"]), "sha256:") {
 		t.Fatalf("the action receipt names the executor, the tool, the requester, the decision and the citation: %v", action)
 	}
-	if salts := acted["salts"].(map[string]any); salts["args"] == nil || salts["request"] == nil {
-		t.Fatalf("both commitments' salts are returned: %v", acted["salts"])
+	// The target received exactly the arguments the requester sent -- the
+	// stand-in echoes its call's params -- and both commitments recompute
+	// from the returned salts over those same bytes: what was committed to
+	// is what was sent.
+	echoed := acted["result"].(map[string]any)["structuredContent"].(map[string]any)["params"].(map[string]any)
+	if echoed["name"] != "execute" || echoed["arguments"].(map[string]any)["sql"] != "update t set s = 1" {
+		t.Fatalf("the target got the tool and the arguments as sent: %v", echoed)
+	}
+	salts := acted["salts"].(map[string]any)
+	argsSalt, err := hex.DecodeString(fmt.Sprint(salts["args"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestSalt, err := hex.DecodeString(fmt.Sprint(salts["request"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	argumentsV, _ := parseJSON([]byte(`{"sql":"update t set s = 1"}`))
+	requestV, _ := parseJSON([]byte(`{"tool":"execute","arguments":{"sql":"update t set s = 1"}}`))
+	if action["argumentsCommitment"] != commitmentOver(argsSalt, "args:", canon(argumentsV)) || inner["request"] != commitmentOver(requestSalt, "request:", canon(requestV)) {
+		t.Fatalf("the commitments recompute from the salts over the bytes sent: %v %v", action["argumentsCommitment"], inner["request"])
 	}
 	if code, body := post(t, server, "/seal", `{"session":"cfg-1"}`); code != http.StatusOK {
 		t.Fatalf("seal failed: %d %v", code, body)
 	}
+	// /verify on the engine reads the configured decision-record directory,
+	// as the command does when handed it: every receipt ok, the action's
+	// citation and record resolved.
+	code, verified := post(t, server, "/verify", ``)
+	if code != http.StatusOK || verified["ok"] != true {
+		t.Fatalf("/verify with the records: %d %v", code, verified)
+	}
+	for _, f := range verified["findings"].([]any) {
+		if f.(map[string]any)["status"] != "ok" {
+			t.Fatalf("every receipt ok over /verify: %v", verified["findings"])
+		}
+	}
 	report, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", cfg.decisionRecords, service.publicKey)
 	if err != nil || !report.OK {
 		t.Fatalf("the store, the registry and the records must verify together: %v %v", err, report)
-	}
-	for _, f := range report.Findings {
-		if f["status"] != "ok" {
-			t.Fatalf("every receipt ok, the action's citation and record resolved: %v", report.Findings)
-		}
 	}
 }
