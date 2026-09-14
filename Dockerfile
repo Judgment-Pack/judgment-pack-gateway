@@ -48,7 +48,7 @@ RUN set -e; mkdir -p /out/etc; \
 # The runtime pin: one line, the tag for the reader and the digest for the
 # builder. The runtime image is the released static binary on scratch, with
 # its notices beside it; nothing else of it is taken.
-FROM ghcr.io/judgment-pack/judgment-pack:0.20.0@sha256:6743ab84b751b8290d3a18a639637e542c2f42a4b93337c688f7da256fc7a614 AS runtime
+FROM ghcr.io/judgment-pack/judgment-pack:0.21.0@sha256:bb64406d40c4acf914c64f8d6d5011f904a1f298df67bbd98f81f1e3d828d4f5 AS runtime
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --from=build /out/etc/passwd /out/etc/group /etc/
