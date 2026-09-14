@@ -158,4 +158,5 @@ for the trust boundary it protects. The runtime's ADR-0013 for the precedent of 
 release as an OCI image. Design notes: [receipt-v3.md](../design/receipt-v3.md),
 [engine-config.md](../design/engine-config.md), [engine-image.md](../design/engine-image.md),
 [both-paths-agreement.md](../design/both-paths-agreement.md) for point 4's check on the first
-platform.
+platform, [plugins.md](../design/plugins.md) for the workflow-tool packages and the open
+question of a plugin that witnesses calls the engine did not make.

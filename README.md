@@ -234,11 +234,15 @@ a search provider's JSON API, a reader service that renders a page or a PDF as t
 a credential the adapter holds, one request per acquisition — wired to `serve` with
 `--source-shape NAME=airbyte`, `NAME=mcp` and `NAME=http`. That a record reached through
 both the connector and the MCP paths derives to the same facts is checked on a golden record
-([docs/design/both-paths-agreement.md](docs/design/both-paths-agreement.md)).
+([docs/design/both-paths-agreement.md](docs/design/both-paths-agreement.md)). A workflow
+tool reaches the same surface through a client package under [plugins/](plugins/) — an n8n
+community node and an Activepieces piece, each carrying `result`, `receipt` and `salts` into
+the workflow as data and verifying nothing ([docs/design/plugins.md](docs/design/plugins.md)).
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only
 adapters/    what reaches outside, spawned by the core over the source contract, never linked
+plugins/     the engine reached from workflow tools: an n8n node, an Activepieces piece
 corpus/      the frozen vectors both answer to
 docs/adr/    why the repository is shaped this way
 docs/design/ what is designed and not yet decided

@@ -1,0 +1,31 @@
+{
+	"name": "@activepieces/piece-judgment-pack",
+	"version": "0.0.1",
+	"description": "Activepieces piece for the Judgment Pack engine: acquire facts with a signed receipt, perform an approved write as an action, seal a session",
+	"license": "MIT",
+	"main": "./dist/src/index.js",
+	"types": "./dist/src/index.d.ts",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Judgment-Pack/judgment-pack-gateway.git",
+		"directory": "plugins/activepieces/judgment-pack"
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.lib.json && cp package.json dist/",
+		"lint": "tsc -p tsconfig.lib.json --noEmit && eslint 'src/**/*.ts'",
+		"test": "node --test test/*.test.mjs"
+	},
+	"dependencies": {
+		"@activepieces/pieces-common": "0.12.5",
+		"@activepieces/pieces-framework": "0.32.0",
+		"@activepieces/shared": "0.96.2",
+		"tslib": "2.6.2"
+	},
+	"devDependencies": {
+		"@eslint/js": "9.39.4",
+		"@types/node": "22.19.0",
+		"eslint": "9.39.4",
+		"typescript": "5.9.3",
+		"typescript-eslint": "8.56.0"
+	}
+}

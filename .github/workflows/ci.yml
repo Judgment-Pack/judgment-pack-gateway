@@ -265,3 +265,39 @@ jobs:
         run: go test -count=1 -timeout 25m -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/
         env:
           AGREEMENT_RUNTIME: docker
+
+  plugins:
+    name: plugins · ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - plugins/n8n-nodes-judgment-pack
+          - plugins/activepieces/judgment-pack
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      # Each ecosystem package is installed from its own lock file, built,
+      # linted by its ecosystem's own linter and tested with Node's test
+      # runner over the request-building code (docs/design/plugins.md).
+      # Lifecycle scripts are not run: the n8n CLI's dependency tree carries
+      # a native module (isolated-vm, under @n8n/ai-utilities) the build,
+      # lint and tests never load, and nothing here needs one compiled.
+      # Nothing here publishes: npm and the upstream submissions are not
+      # CI's to do.
+      - name: Install from the lock file
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Lint
+        run: npm run lint
+      - name: Tests
+        run: npm test
