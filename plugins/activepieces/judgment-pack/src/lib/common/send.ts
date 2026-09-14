@@ -29,18 +29,26 @@ export function sendTo(
 	const target = new URL(url);
 	const options: https.RequestOptions = {
 		method: init.method,
-		headers: init.headers,
+		// one connection per exchange, closed with the answer: nothing is
+		// pooled for a later call to find, and nothing outlives the answer
+		headers: { ...init.headers, Connection: 'close' },
 		// explicit on every connection, so the process's default -- which
 		// another piece's transport may have turned off -- never decides
 		rejectUnauthorized: true,
 	};
 	return new Promise((resolve, reject) => {
 		let settled = false;
+		// finish settles the promise once, clears the deadline, and destroys
+		// a request the exchange left open -- an upload the engine stopped
+		// reading after answering early -- so nothing outlives the answer
 		const finish = (outcome: () => void) => {
 			if (!settled) {
 				settled = true;
 				clearTimeout(timer);
 				outcome();
+				if (!req.destroyed) {
+					req.destroy();
+				}
 			}
 		};
 		const req = (target.protocol === 'https:' ? https : http).request(target, options, (res) => {
@@ -62,10 +70,15 @@ export function sendTo(
 			});
 			res.on('error', (error) => finish(() => reject(error)));
 		});
+		// the deadline settles the promise itself, then destroys the request:
+		// a request Node has already closed on its own -- after an answer
+		// that switched protocols, which reaches no handler above -- would
+		// swallow a destroy with an error and settle nothing
 		const timer = setTimeout(() => {
-			req.destroy(new Error(`the engine did not answer within ${timeoutMs} ms`));
+			finish(() => reject(new Error(`the engine did not answer within ${timeoutMs} ms`)));
 		}, timeoutMs);
 		req.on('error', (error) => finish(() => reject(error)));
+		req.on('close', () => finish(() => reject(new Error('the engine closed the connection without answering'))));
 		if (init.body !== undefined) {
 			req.write(init.body);
 		}

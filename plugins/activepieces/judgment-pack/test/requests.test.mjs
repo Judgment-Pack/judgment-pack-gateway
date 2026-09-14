@@ -73,7 +73,7 @@ async function selfSigned(t) {
 	try {
 		execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem'), '-days', '1', '-subj', '/CN=127.0.0.1'], { stdio: 'ignore' });
 	} catch (error) {
-		if (error.code === 'ENOENT' && !process.env.CI) {
+		if (error.code === 'ENOENT' && process.env.CI === undefined) {
 			t.skip('openssl is not installed, so no certificate can be minted');
 			return undefined;
 		}
@@ -147,6 +147,90 @@ test('an engine that accepts the connection and stops answering does not hold th
 	} finally {
 		partial.closeAllConnections();
 		await closed(partial);
+	}
+});
+
+test('the engine’s answer comes back as the JSON it is, and the connection is not kept', async () => {
+	const http = await import('node:http');
+	let received;
+	const server = http.createServer((req, res) => {
+		const chunks = [];
+		req.on('data', (c) => chunks.push(c));
+		req.on('end', () => {
+			received = { method: req.method, url: req.url, authorization: req.headers.authorization, body: JSON.parse(Buffer.concat(chunks).toString()) };
+			res.statusCode = 200;
+			res.setHeader('Content-Type', 'application/json');
+			res.end('{"result": {"id": 1}, "receipt": {"receiptVersion": 3}, "salts": {"args": "00"}}');
+		});
+	});
+	const port = await listening(server);
+	try {
+		const answer = await send(acquireRequest({ engine_url: `http://127.0.0.1:${port}`, token: 'tok' }, { session: 's1', source: 'x', arguments: { id: 1 } }));
+		assert.deepEqual(answer, { result: { id: 1 }, receipt: { receiptVersion: 3 }, salts: { args: '00' } });
+		assert.deepEqual(received, { method: 'POST', url: '/acquire', authorization: 'Bearer tok', body: { session: 's1', source: 'x', arguments: { id: 1 } } });
+		const deadline = Date.now() + 2000;
+		let open = 1;
+		while (open > 0 && Date.now() < deadline) {
+			open = await new Promise((resolve) => server.getConnections((_, n) => resolve(n)));
+			if (open > 0) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+		}
+		assert.equal(open, 0, 'the connection stayed open after the answer');
+	} finally {
+		server.closeAllConnections();
+		await closed(server);
+	}
+});
+
+test('an answer that switches protocols, which Node closes on its own, still settles the call', async () => {
+	const net = await import('node:net');
+	// not an http server: Node's client closes the request on a 101 without
+	// reaching a response or error handler
+	const server = net.createServer((socket) => {
+		socket.on('data', () => {
+			socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: nothing\r\nConnection: Upgrade\r\n\r\n');
+		});
+	});
+	const port = await listening(server);
+	try {
+		const started = Date.now();
+		await assert.rejects(
+			send(sealRequest({ engine_url: `http://127.0.0.1:${port}` }, { session: 's1' }), 200),
+			/closed the connection without answering|did not answer within 200 ms/,
+		);
+		assert.ok(Date.now() - started < 5000, 'settled without waiting on anything but the deadline');
+	} finally {
+		await closed(server);
+	}
+});
+
+test('an early answer to an upload the engine stops reading leaves nothing open', async () => {
+	const http = await import('node:http');
+	// answers at once and never reads the body
+	const server = http.createServer((req, res) => {
+		req.socket.pause();
+		res.statusCode = 401;
+		res.end('{"error":"no requester"}');
+	});
+	const port = await listening(server);
+	try {
+		const big = acquireRequest({ engine_url: `http://127.0.0.1:${port}` }, { session: 's1', source: 'x', arguments: { pad: 'x'.repeat(8 * 1024 * 1024) } });
+		await assert.rejects(send(big, 5000), /answered 401/);
+		// the request is destroyed with the answer, so the server's side of
+		// the connection goes away too
+		const deadline = Date.now() + 2000;
+		let open = 1;
+		while (open > 0 && Date.now() < deadline) {
+			open = await new Promise((resolve) => server.getConnections((_, n) => resolve(n)));
+			if (open > 0) {
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+		}
+		assert.equal(open, 0, 'the connection stayed open after the answer');
+	} finally {
+		server.closeAllConnections();
+		await closed(server);
 	}
 });
 
