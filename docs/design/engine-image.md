@@ -21,15 +21,19 @@ which is what CI's capability check exists to catch.
 | `/usr/local/bin/gateway` | the core binary from `go/`: `serve`, `verify`, `canon`, `conform`, `keygen`, and the engine's `connect`; owned by `engine`, mode 0700, since it carries file capabilities | built from this repository at the tagged commit |
 | `/usr/local/bin/adapter-airbyte` | runs a connector image and reads its record stream | built from `adapters/` at the same commit |
 | `/usr/local/bin/adapter-mcp` | an MCP client: live reads and tool calls | same |
+| `/usr/local/bin/adapter-http` | one request over TLS to a fixed endpoint: a provider's JSON API, a reader service, a resource a URL names | same |
 | `/usr/local/bin/jpack` | the runtime ([judgment-pack-runtime](https://github.com/Judgment-Pack/judgment-pack-runtime)): validates packs, evaluates them, writes the decision record that cites receipts; root's, executable by everyone, holds no seed and no credential | the released binary, taken from the runtime's own distribution image at the digest the `Dockerfile` names (`FROM ghcr.io/judgment-pack/judgment-pack:<version>@sha256:… AS runtime`), never rebuilt here |
 | `/usr/share/engine/runtime/` | the runtime's `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES`, and its `CONFORMANCE.md` — the conformance statement every evaluation payload points the reader at, stated in full and only there | from the same image |
 | `/usr/share/engine/catalog/` | the binding files ([catalog/](../../catalog/README.md)) | by content; each is referenced by digest from the configuration |
 | `/usr/share/engine/corpus/` | the frozen corpus, so `gateway conform` runs inside the image | by content |
 | `/etc/passwd` | the signer's user `engine` (uid 65532) and eight platform users `engine-1` … `engine-8` (uids 65601 … 65608), each with a home of its own alone | written at build |
 
-Not yet in the image, and said so here rather than promised: `adapter-http` (the generic
-fallback the envelope contract names; not shipped by this release) and a container runtime
-for the Airbyte connectors and MCP server images (the section below); the executor is
+Not yet in the image, and said so here rather than promised: a container runtime
+for the Airbyte connectors and MCP server images (the section below). `adapter-http`, the
+generic shape the envelope contract names, is in the image and is wired as a `--source`
+with `--source-shape NAME=http` ([adapters/README.md](../../adapters/README.md)); a
+catalog binding naming the `http` shape is still refused, since a binding's operations
+are history, live and write and none of them is an HTTP endpoint yet. The executor is
 `adapter-mcp` on a platform's `write` binding ([executor.md](executor.md)), already there; the adapters find `docker` or `podman` on the engine's `PATH` or at
 the path the configuration names, which in this image means a runtime the deployment provides
 beside it.

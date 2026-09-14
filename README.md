@@ -225,12 +225,15 @@ the tests cannot: what each process may read, and which deployment choices would
 The receipt format
 this needs, version 3, is normative in [SPEC.md §1.2a](SPEC.md) with vectors under
 `corpus/v3/`, and is what `serve` mints; its design record is
-[docs/design/receipt-v3.md](docs/design/receipt-v3.md). The first two adapters are in
+[docs/design/receipt-v3.md](docs/design/receipt-v3.md). The adapters are in
 [adapters/](adapters/README.md): `adapter-airbyte`, a pinned connector image run through
-the operator's container runtime, one page of one stream per acquisition, and
+the operator's container runtime, one page of one stream per acquisition;
 `adapter-mcp`, a client of a vendor's MCP server over stdio, one tool call per
-acquisition — wired to `serve` with `--source-shape NAME=airbyte` and `NAME=mcp`. That a
-record reached through both derives to the same facts is checked on a golden record
+acquisition; and `adapter-http`, one request over TLS to an endpoint the operator fixed —
+a search provider's JSON API, a reader service that renders a page or a PDF as text — with
+a credential the adapter holds, one request per acquisition — wired to `serve` with
+`--source-shape NAME=airbyte`, `NAME=mcp` and `NAME=http`. That a record reached through
+both the connector and the MCP paths derives to the same facts is checked on a golden record
 ([docs/design/both-paths-agreement.md](docs/design/both-paths-agreement.md)).
 
 ```

@@ -20,8 +20,11 @@
 //	                       page of one stream per acquisition
 //	mcp/                   the MCP-shaped adapter: a client of an MCP server
 //	                       over stdio, one tool call per acquisition
+//	httpsource/            the HTTP-shaped adapter: one request over TLS to an
+//	                       endpoint the operator fixed, one request per acquisition
 //	cmd/adapter-airbyte/   their commands
 //	cmd/adapter-mcp/
+//	cmd/adapter-http/
 //	internal/canon/        §1.1 canonical form, answering to corpus/canon.json
 //	internal/containers/   a container run and ended with its absence established
 //	internal/redact/       a connector's configuration kept out of diagnostics
