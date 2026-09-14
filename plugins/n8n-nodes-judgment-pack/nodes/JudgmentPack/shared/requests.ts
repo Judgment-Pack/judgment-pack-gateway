@@ -70,10 +70,12 @@ class check {
 	}
 
 	// /acquire takes any value in the canonical JSON domain as the
-	// arguments, and an absent member as {}: a string is read as JSON, and
-	// an empty one leaves the member out for the engine's default.
+	// arguments, and an absent member as {}: a string is read as JSON (so
+	// the text "null" is the value null, sent as such), an absent or empty
+	// one leaves the member out for the engine's default, and a null an
+	// expression resolved to is a null.
 	anyValue(value: unknown, name: string): { present: boolean; value?: unknown } {
-		if (value === undefined || value === null || (typeof value === 'string' && value.trim() === '')) {
+		if (value === undefined || (typeof value === 'string' && value.trim() === '')) {
 			return { present: false };
 		}
 		const v = this.parsed(value, name);

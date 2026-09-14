@@ -44,7 +44,11 @@ about the key's authenticity.
 1. **Acquire** with source `tickets/live`, arguments `{"tool": "get_ticket", "arguments": {"id": "T-1"}}`.
 2. **Seal** the acquisition session.
 3. Verify the store: `gateway verify <store-root> <registry-path> <authority> < publickey.raw`,
-   with the public key pinned out of band, and read the JSON verdict; rely on the bytes only then.
+   with the public key pinned out of band, and read the JSON verdict. Then bind before relying
+   (`SPEC.md` §5a.4): the receipt the node handed back is signature-checked under that pinned key
+   and its `(sessionId, callIndex)` is among the verifier's `ok` findings, and the `result` the
+   workflow kept re-digests to that receipt's `resultDigest`. Only then are the bytes attested
+   bytes.
 4. Evaluate the facts with the runtime, which writes a decision record citing the receipt.
 5. After a person approves, **Act** in a new session on platform `tickets`, tool `update_ticket`,
    citing the decision record's digest and the receipt from step 1; **Seal** that session too.

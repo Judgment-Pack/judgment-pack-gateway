@@ -24,6 +24,10 @@ test('acquire takes any JSON value as arguments and leaves an empty one to the e
 	assert.equal(acquireRequest(engine, { session: 's1', source: 'x', arguments: 7 }).body.arguments, 7);
 	assert.equal('arguments' in acquireRequest(engine, { session: 's1', source: 'x', arguments: '' }).body, false);
 	assert.equal('arguments' in acquireRequest(engine, { session: 's1', source: 'x', arguments: undefined }).body, false);
+	// a null that was given is a null, and the text "null" is the value null: the engine defaults only an absent member
+	assert.equal(acquireRequest(engine, { session: 's1', source: 'x', arguments: null }).body.arguments, null);
+	assert.equal('arguments' in acquireRequest(engine, { session: 's1', source: 'x', arguments: null }).body, true);
+	assert.equal(acquireRequest(engine, { session: 's1', source: 'x', arguments: 'null' }).body.arguments, null);
 	assert.throws(() => acquireRequest(engine, { session: 's1', source: 'x', arguments: 'not json' }), RequestError);
 });
 
@@ -54,6 +58,45 @@ test('seal names the session and nothing else', () => {
 test('the engine URL is required and must be http or https', () => {
 	assert.throws(() => sealRequest({ engine_url: '' }, { session: 's1' }), RequestError);
 	assert.throws(() => sealRequest({ engine_url: 'ftp://x' }, { session: 's1' }), RequestError);
+});
+
+test('over https, a certificate the process has been told to ignore is still refused', async (t) => {
+	const { execFileSync } = await import('node:child_process');
+	const { mkdtempSync, readFileSync } = await import('node:fs');
+	const { tmpdir } = await import('node:os');
+	const { join } = await import('node:path');
+	let key, cert;
+	try {
+		const dir = mkdtempSync(join(tmpdir(), 'jp-tls-'));
+		execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-keyout', join(dir, 'key.pem'), '-out', join(dir, 'cert.pem'), '-days', '1', '-subj', '/CN=127.0.0.1'], { stdio: 'ignore' });
+		key = readFileSync(join(dir, 'key.pem'));
+		cert = readFileSync(join(dir, 'cert.pem'));
+	} catch {
+		t.skip('openssl is not available to mint a self-signed certificate');
+		return;
+	}
+	const server = (await import('node:https')).createServer({ key, cert }, (req, res) => {
+		res.statusCode = 200;
+		res.end('{"leaked": true}');
+	});
+	await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+	const port = server.address().port;
+	const before = process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+	// what the framework's client leaves behind for the whole process
+	process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+	try {
+		await assert.rejects(
+			send(sealRequest({ engine_url: `https://127.0.0.1:${port}` }, { session: 's1' })),
+			(e) => /self[- ]signed|certificate|CERT/i.test(e.message) || /CERT/.test(e.code ?? ''),
+		);
+	} finally {
+		if (before === undefined) {
+			delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+		} else {
+			process.env.NODE_TLS_REJECT_UNAUTHORIZED = before;
+		}
+		server.close();
+	}
 });
 
 test('sending leaves the process’s certificate verification alone, and a refusal carries the engine’s answer', async () => {

@@ -15,15 +15,18 @@ verdict is store-wide and it is the JSON, never an exit code.
 
 | Action | Calls | Properties |
 |---|---|---|
-| Acquire | `POST /acquire` | Session, Source, Arguments (JSON object) |
+| Acquire | `POST /acquire` | Session, Source, Arguments (JSON text: any JSON value; empty for the engine's default, `{}`) |
 | Act | `POST /act` | Session, Platform, Tool, Arguments, Decision (`recordDigest`, `packDigest`), Cites (array of `{sessionId, callIndex, signature}`) |
 | Seal | `POST /seal` | Session |
 
 The framework's custom-call action is not offered: the pinned `@activepieces/pieces-common`
 sends through a client that disables certificate verification for the whole process before it
 sends (`NODE_TLS_REJECT_UNAUTHORIZED=0`), which would let an impersonating engine over https
-collect the bearer. The piece sends through Node's own `fetch` instead, which verifies
-certificates and touches no process state; a test holds it to that.
+collect the bearer — and, once set, that state would decide for any transport that takes Node's
+default, `fetch` included. The piece sends through Node's `http`/`https` modules asking for
+certificate verification on every connection explicitly, and touches no process state; a test
+starts an https server with a self-signed certificate, sets the variable as the framework's
+client leaves it, and requires the piece to refuse the connection.
 
 The session is a flat token the flow chooses (`SPEC.md` §3a) and sealing it is the flow's own
 step. An Act is refused by the engine unless the requester is authenticated, the platform is
@@ -45,7 +48,11 @@ nothing about the key's authenticity.
 1. **Acquire** with source `tickets/live`, arguments `{"tool": "get_ticket", "arguments": {"id": "T-1"}}`.
 2. **Seal** the acquisition session.
 3. Verify the store: `gateway verify <store-root> <registry-path> <authority> < publickey.raw`,
-   with the public key pinned out of band, and read the JSON verdict; rely on the bytes only then.
+   with the public key pinned out of band, and read the JSON verdict. Then bind before relying
+   (`SPEC.md` §5a.4): the receipt the piece handed back is signature-checked under that pinned key
+   and its `(sessionId, callIndex)` is among the verifier's `ok` findings, and the `result` the
+   flow kept re-digests to that receipt's `resultDigest`. Only then are the bytes attested
+   bytes.
 4. Evaluate the facts with the runtime, which writes a decision record citing the receipt.
 5. After a person approves, **Act** in a new session on platform `tickets`, tool `update_ticket`,
    citing the decision record's digest and the receipt from step 1; **Seal** that session too.

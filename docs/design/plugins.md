@@ -38,7 +38,7 @@ the same way in either tool.
 
 | Operation | Calls | Sends | Yields |
 |---|---|---|---|
-| Acquire | `POST /acquire` | `session`, `source`, `arguments` (an object) | `{result, receipt, salts}` |
+| Acquire | `POST /acquire` | `session`, `source`, `arguments` (any value of the canonical JSON domain; left out when empty, for the engine's default `{}`) | `{result, receipt, salts}` |
 | Act | `POST /act` | `session`, `platform`, `tool`, `arguments`, `decision` (`recordDigest`, `packDigest`), `cites` (an array of `{sessionId, callIndex, signature}`) | `{result, receipt, salts}` |
 | Seal | `POST /seal` | `session` | the seal record |
 
@@ -52,18 +52,25 @@ engine answers at the URL and nothing about the key's authenticity (§5).
 **What the packages do not do.** They do not verify. A receipt's verification is `gateway
 verify` over the store, the registry and the pinned key (§4), and it is the consumer's (§5a):
 whoever relies on the bytes — the workflow itself, as often as not — checks the store-wide JSON
-verdict before relying, and never takes the engine's own `GET /verify` for it (§5a.3); the
-packages hand the receipt on and say so, and their examples seal and verify an acquisition
-session before an action session begins. They do not hold a session for the caller: the session
+verdict before relying, never takes the engine's own `GET /verify` for it (§5a.3), and binds
+before use (§5a.4): the receipt it holds signature-checked under the pinned key and among the
+verifier's `ok` findings, and the bytes it kept re-digested to that receipt's `resultDigest`.
+The packages hand the receipt on and say so, and their examples walk that ceremony — seal,
+verify, bind — before an action session begins. They do not hold a session for the caller: the session
 is a flat token the workflow chooses (§3a), and sealing it is an operation the workflow calls.
 They take no dependency beyond each framework's own (n8n's verification rules forbid runtime
 dependencies, environment variables and files; Activepieces pieces take the framework and
 `tslib`), and they read nothing the caller did not pass as a parameter. One thing of the
 framework's the piece does not use: `@activepieces/pieces-common`'s HTTP client, at the pinned
 version, sets `NODE_TLS_REJECT_UNAUTHORIZED` to `0` for the whole process before every request,
-which would let an impersonating engine over https collect the bearer; the piece sends through
-Node's own `fetch`, which verifies certificates and touches no process state, and leaves the
-framework's custom-call action out for the same reason. A test holds the transport to that.
+which would let an impersonating engine over https collect the bearer, and which, once set,
+decides for any transport that takes Node's default, `fetch` included; the piece sends through
+Node's `http` and `https` modules asking for certificate verification on every connection
+explicitly, touches no process state, and leaves the framework's custom-call action out for the
+same reason. A test starts an https server with a self-signed certificate, sets the variable as
+the framework's client leaves it, and requires the piece to refuse the connection. (The n8n node
+sends through n8n's own transport, as n8n's verification requires; a node may not touch the
+environment, and the transport is n8n's to keep honest.)
 
 **n8n** (`plugins/n8n-nodes-judgment-pack`): one node, `Judgment Pack`, with the three
 operations; one credential, `Judgment Pack Engine`; built with `@n8n/node-cli`, which is also

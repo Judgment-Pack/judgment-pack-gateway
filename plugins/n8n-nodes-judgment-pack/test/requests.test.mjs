@@ -20,6 +20,10 @@ test('acquire sends what a curl of /acquire sends', () => {
 	assert.equal(acquireRequest({ session: 's1', source: 'x', arguments: 7 }).request.body.arguments, 7);
 	assert.equal('arguments' in acquireRequest({ session: 's1', source: 'x', arguments: '' }).request.body, false);
 	assert.equal('arguments' in acquireRequest({ session: 's1', source: 'x', arguments: undefined }).request.body, false);
+	// a null an expression resolved to is a null, and the text "null" is the value null: the engine defaults only an absent member
+	assert.equal('arguments' in acquireRequest({ session: 's1', source: 'x', arguments: null }).request.body, true);
+	assert.equal(acquireRequest({ session: 's1', source: 'x', arguments: null }).request.body.arguments, null);
+	assert.equal(acquireRequest({ session: 's1', source: 'x', arguments: 'null' }).request.body.arguments, null);
 });
 
 test('act carries the requester’s assertions as given and refuses what the engine would refuse anyway', () => {

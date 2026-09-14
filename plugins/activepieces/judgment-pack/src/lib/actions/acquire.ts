@@ -20,10 +20,13 @@ export const acquire = createAction({
 			description: 'A source the engine is configured with, such as a platform’s history or live operation',
 			required: true,
 		}),
-		arguments: Property.Json({
-			displayName: 'Arguments',
+		// JSON as text, not the framework's Json property: that one admits
+		// objects and arrays only, and /acquire takes any value of the
+		// canonical domain
+		arguments: Property.LongText({
+			displayName: 'Arguments (JSON)',
 			description:
-				'The canonical arguments the source receives: any JSON value; leave empty for the engine’s default, an empty object',
+				'The canonical arguments the source receives, as JSON text: any JSON value; leave empty for the engine’s default, an empty object',
 			required: false,
 		}),
 	},
