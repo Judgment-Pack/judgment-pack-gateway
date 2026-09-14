@@ -67,8 +67,8 @@ def good(**over):
     spec["usr/local/bin/adapter-airbyte"] = dict(kind="file", data=b"a", mode=0o755)
     spec["usr/local/bin/adapter-mcp"] = dict(kind="file", data=b"m", mode=0o755)
     spec["usr/local/bin/jpack"] = dict(kind="file", data=RUNTIME, mode=0o755)
-    for notice in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES"):
-        spec["usr/share/engine/runtime/" + notice] = dict(kind="file", data=b"n")
+    for document in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "CONFORMANCE.md"):
+        spec["usr/share/engine/runtime/" + document] = dict(kind="file", data=b"n")
     spec["usr/share/engine/catalog/postgres.json"] = dict(kind="file", data=b'{"bindingVersion":"1"}')
     spec["usr/share/engine/corpus/canon.json"] = dict(kind="file", data=b"[]")
     spec["etc/passwd"] = dict(kind="file", data=PASSWD)
@@ -146,6 +146,9 @@ class Checks(unittest.TestCase):
 
     def test_runtime_notice_missing(self):
         self.refused(good(**{"usr/share/engine/runtime/THIRD_PARTY_NOTICES": None}), "THIRD_PARTY_NOTICES is not in the image")
+
+    def test_runtime_conformance_statement_missing(self):
+        self.refused(good(**{"usr/share/engine/runtime/CONFORMANCE.md": None}), "CONFORMANCE.md is not in the image")
 
     def test_runtime_notice_not_readable(self):
         self.refused(good(**{"usr/share/engine/runtime/NOTICE": dict(mode=0o600)}), "readable by everyone")

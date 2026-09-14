@@ -11,7 +11,7 @@ the v3 attribute) and is the signer's alone (uid 65532, mode 0700);
 nothing else in the image carries a capability or a set-user-id or
 set-group-id bit, hard links included; every path the engine or a
 platform user executes or reads -- the gateway, the adapters, the
-runtime and its notices, the catalog, the corpus, the passwd file -- and
+runtime with its notices and conformance statement, the catalog, the corpus, the passwd file -- and
 every home is reached through directories owned by root that nobody else
 may write, with no link on the way; the adapters, the runtime, the
 catalog and the corpus are root's and unwritable by others, the catalog
@@ -194,7 +194,7 @@ USERS = {"engine": 65532, **{"engine-%d" % n: 65600 + n for n in range(1, 9)}}
 GATEWAY = "usr/local/bin/gateway"
 ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp")
 RUNTIME = "usr/local/bin/jpack"
-RUNTIME_NOTICES = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES")
+RUNTIME_DOCUMENTS = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES", "usr/share/engine/runtime/CONFORMANCE.md")
 
 
 def check(fs, archive, config, checkout, runtime=None):
@@ -228,10 +228,11 @@ def check(fs, archive, config, checkout, runtime=None):
             fail("%s is type %r mode %04o; it must be a regular file executable by every user" % (name, e.type, e.mode))
     # The runtime is the released binary the Dockerfile pins, byte for
     # byte, when CI hands that binary over from the pinned image; its
-    # notices are there, readable, under a root-owned directory.
+    # notices and its conformance statement -- the document every evaluation
+    # payload points at -- are there, readable, under a root-owned directory.
     if runtime is not None and content(fs, archive, RUNTIME) != open(runtime, "rb").read():
         fail("%s differs from the pinned runtime binary" % RUNTIME)
-    for name in RUNTIME_NOTICES:
+    for name in RUNTIME_DOCUMENTS:
         trusted_path(fs, name, readable=True)
         if not entry(fs, name).isfile:
             fail("%s is not a regular file" % name)

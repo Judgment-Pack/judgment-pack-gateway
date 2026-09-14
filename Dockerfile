@@ -65,9 +65,10 @@ COPY --from=build /out/adapter-airbyte /out/adapter-mcp /usr/local/bin/
 # The runtime beside them, root's and executable by everyone like the
 # adapters: it holds no seed and no credential, and whoever runs it -- a
 # desk, an orchestrator, a shell in a derived image -- runs it as itself.
-# Its own notices travel with it.
+# Its notices travel with it, and its conformance statement, which every
+# evaluation payload it writes points the reader at.
 COPY --from=runtime /jpack /usr/local/bin/jpack
-COPY --from=runtime /LICENSE /NOTICE /THIRD_PARTY_NOTICES /usr/share/engine/runtime/
+COPY --from=runtime /LICENSE /NOTICE /THIRD_PARTY_NOTICES /CONFORMANCE.md /usr/share/engine/runtime/
 COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
 # The homes, made in place as root -- the base's own user is nonroot, so
 # root is taken for this one step and given back below -- and each given

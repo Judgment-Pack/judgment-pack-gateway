@@ -22,7 +22,7 @@ which is what CI's capability check exists to catch.
 | `/usr/local/bin/adapter-airbyte` | runs a connector image and reads its record stream | built from `adapters/` at the same commit |
 | `/usr/local/bin/adapter-mcp` | an MCP client: live reads and tool calls | same |
 | `/usr/local/bin/jpack` | the runtime ([judgment-pack-runtime](https://github.com/Judgment-Pack/judgment-pack-runtime)): validates packs, evaluates them, writes the decision record that cites receipts; root's, executable by everyone, holds no seed and no credential | the released binary, taken from the runtime's own distribution image at the digest the `Dockerfile` names (`FROM ghcr.io/judgment-pack/judgment-pack:<version>@sha256:… AS runtime`), never rebuilt here |
-| `/usr/share/engine/runtime/` | the runtime's `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES` | from the same image |
+| `/usr/share/engine/runtime/` | the runtime's `LICENSE`, `NOTICE`, `THIRD_PARTY_NOTICES`, and its `CONFORMANCE.md` — the conformance statement every evaluation payload points the reader at, stated in full and only there | from the same image |
 | `/usr/share/engine/catalog/` | the binding files ([catalog/](../../catalog/README.md)) | by content; each is referenced by digest from the configuration |
 | `/usr/share/engine/corpus/` | the frozen corpus, so `gateway conform` runs inside the image | by content |
 | `/etc/passwd` | the signer's user `engine` (uid 65532) and eight platform users `engine-1` … `engine-8` (uids 65601 … 65608), each with a home of its own alone | written at build |
