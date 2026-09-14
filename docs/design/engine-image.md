@@ -28,9 +28,9 @@ which is what CI's capability check exists to catch.
 | `/etc/passwd` | the signer's user `engine` (uid 65532) and eight platform users `engine-1` … `engine-8` (uids 65601 … 65608), each with a home of its own alone | written at build |
 
 Not yet in the image, and said so here rather than promised: `adapter-http` (the generic
-fallback the envelope contract names; not shipped by this release), an `executor` (nothing
-performs an action yet), and a container runtime for the Airbyte connectors and MCP server
-images (the section below); the adapters find `docker` or `podman` on the engine's `PATH` or at
+fallback the envelope contract names; not shipped by this release) and a container runtime
+for the Airbyte connectors and MCP server images (the section below); the executor is
+`adapter-mcp` on a platform's `write` binding ([executor.md](executor.md)), already there; the adapters find `docker` or `podman` on the engine's `PATH` or at
 the path the configuration names, which in this image means a runtime the deployment provides
 beside it.
 

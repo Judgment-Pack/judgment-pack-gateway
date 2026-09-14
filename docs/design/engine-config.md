@@ -120,8 +120,7 @@ Every flag and its value are one word, `flag=value`: a value that is `--` on its
 the delimiter the adapter splits its line at, and a tool, an endpoint or a runtime can be so
 named.
 
-A binding's `write` operation derives nothing: the executor that performs writes does not
-exist yet, and a source that could be asked to write would be a read that writes.
+| `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
 
 ## What the engine refuses
 

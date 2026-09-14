@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // From a configuration to a receipt: the sources `serve --config` derives
@@ -91,7 +93,7 @@ func main() {
 		case "initialize":
 			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "standin", "version": "0.1"}}
 		case "tools/list":
-			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}}}
+			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "execute", "inputSchema": map[string]any{"type": "object"}}}}
 		case "tools/call":
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "1 row"}}, "structuredContent": map[string]any{"rows": []any{map[string]any{"id": 101}}}}
 		default:
@@ -124,7 +126,7 @@ func main() {
 	text := `{"engineVersion":"1","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
 		`"registry":"` + escape(filepath.Join(dir, "registry.jsonl")) + `","decisionRecords":"` + escape(filepath.Join(dir, "decisions")) + `",` +
 		`"listen":"127.0.0.1:0","catalog":"` + escape(catalog) + `","runtime":"` + escape(fake) + `","adapters":"` + escape(bin) + `",` +
-		`"platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + escape(credentials) + `"},"live":{"file":"` + escape(credentials) + `"}},"user":"engine-warehouse","endpoint":"warehouse.internal:5432"}}}`
+		`"platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + escape(credentials) + `"},"live":{"file":"` + escape(credentials) + `"},"write":{"file":"` + escape(credentials) + `"}},"user":"engine-warehouse","endpoint":"warehouse.internal:5432","write":true}}}`
 	path := filepath.Join(dir, "engine.json")
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
@@ -141,6 +143,16 @@ func main() {
 	service, err := buildService(cfg.store, testSeed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, nil))
 	if err != nil {
 		t.Fatal(err)
+	}
+	// An identity, so that an action has a requester; every request below
+	// carries its token.
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	post := func(t *testing.T, server *httptest.Server, path, body string) (int, map[string]any) {
+		t.Helper()
+		return authed(t, server, path, body, token)
 	}
 	server := httptest.NewServer(service.handler())
 	defer server.Close()
@@ -163,11 +175,51 @@ func main() {
 	if code, body := post(t, server, "/acquire", `{"session":"cfg-1","source":"warehouse/history","arguments":{"stream":"decisions"}}`); code == http.StatusOK {
 		t.Fatalf("the history source runs adapter-airbyte, which is not built here, so it must fail: %v", body)
 	}
+	// The join, end to end (docs/design/executor.md): a decision record
+	// that cites the acquisition, written where the engine looks for one;
+	// an action that cites both; the executor is adapter-mcp on the write
+	// binding, calling the write tool; and the store, the registry and the
+	// records verify together with every receipt ok.
+	signature := receipt["signature"].(string)
+	line := `{"recordVersion":"1","kind":"evaluation","cites":[{"sessionId":"cfg-1","callIndex":0,"signature":"` + signature + `"}]}`
+	if err := os.MkdirAll(cfg.decisionRecords, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.decisionRecords, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	act := `{"session":"cfg-1","platform":"warehouse","tool":"execute","arguments":{"sql":"update t set s = 1"},` +
+		`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"sha256:` + strings.Repeat("b", 64) + `"},` +
+		`"cites":[{"sessionId":"cfg-1","callIndex":0,"signature":"` + signature + `"}]}`
+	code, acted := post(t, server, "/act", act)
+	if code != http.StatusOK {
+		t.Fatalf("act failed: %d %v", code, acted)
+	}
+	action := acted["receipt"].(map[string]any)
+	inner := action["action"].(map[string]any)
+	tool := inner["tool"].(map[string]any)
+	requester := inner["requester"].(map[string]any)
+	cited := inner["cites"].([]any)[0].(map[string]any)
+	if action["kind"] != "action" || action["source"] != "warehouse/write" || action["callIndex"] != float64(1) || action["prevSignature"] != signature ||
+		tool["shape"] != "mcp" || tool["name"] != "execute" || tool["endpoint"] != "warehouse.internal:5432" ||
+		requester["subject"] != "user-7" || cited["signature"] != signature || cited["callIndex"] != float64(0) ||
+		inner["decision"].(map[string]any)["recordDigest"] != "sha256:"+hexOf([]byte(line)) ||
+		inner["adapter"].(map[string]any)["digest"] != testImageDigest || !strings.HasPrefix(fmt.Sprint(inner["request"]), "sha256:") {
+		t.Fatalf("the action receipt names the executor, the tool, the requester, the decision and the citation: %v", action)
+	}
+	if salts := acted["salts"].(map[string]any); salts["args"] == nil || salts["request"] == nil {
+		t.Fatalf("both commitments' salts are returned: %v", acted["salts"])
+	}
 	if code, body := post(t, server, "/seal", `{"session":"cfg-1"}`); code != http.StatusOK {
 		t.Fatalf("seal failed: %d %v", code, body)
 	}
-	report, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
+	report, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", cfg.decisionRecords, service.publicKey)
 	if err != nil || !report.OK {
-		t.Fatalf("the store must verify: %v %v", err, report)
+		t.Fatalf("the store, the registry and the records must verify together: %v %v", err, report)
+	}
+	for _, f := range report.Findings {
+		if f["status"] != "ok" {
+			t.Fatalf("every receipt ok, the action's citation and record resolved: %v", report.Findings)
+		}
 	}
 }
