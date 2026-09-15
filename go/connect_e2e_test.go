@@ -210,9 +210,10 @@ func main() {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if len(out.answers) != 2 || !strings.HasPrefix(out.answers[0], "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: checked with ") || strings.Contains(out.answers[0], "hunter2") ||
-		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server standin 0.1, protocol 2025-06-18, tools query, explain; query answered" {
-		t.Fatalf("both adapters reported, the connector's message redacted: %q", out.answers)
+	if len(out.answers) != 4 || !strings.HasPrefix(out.answers[0], "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: checked with ") || strings.Contains(out.answers[0], "hunter2") ||
+		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server standin 0.1, protocol 2025-06-18, tools query, explain; query answered" ||
+		out.answers[2] != "warehouse/live: descriptors: server standin 0.1" || out.answers[3] != "warehouse/live: descriptors: query captured (input schema 17 bytes)" {
+		t.Fatalf("both adapters reported, the connector's message redacted, and the live one captured: %q", out.answers)
 	}
 	traced, _ := os.ReadFile(trace)
 	lines := strings.Split(strings.TrimSpace(string(traced)), "\n")
@@ -227,6 +228,17 @@ func main() {
 	if sources := deriveSources(cfg, bindings); len(sources) != 2 || !strings.HasSuffix(strings.Join(sources["warehouse/live"].argv, " "), " -- --access-mode=restricted") ||
 		!strings.Contains(strings.Join(sources["warehouse/history"].argv, " "), "--credentials="+connector+" ") || !strings.Contains(strings.Join(sources["warehouse/live"].argv, " "), "--credentials="+credentials+" ") {
 		t.Fatalf("serve derives both sources from the written entry: %v", sources)
+	}
+	// The live check captured the stand-in's tool, and the entry pins the
+	// snapshot connect kept beside the configuration, in a file version 3
+	// names and whose name is its digest.
+	pin := cfg.platforms[0].descriptors
+	kept, err := os.ReadFile(filepath.Join(config+".descriptors", strings.TrimPrefix(pin, "sha256:")+".json"))
+	if err != nil || cfg.version != "3" || pin == "" || pin != digestOf(string(kept)) {
+		t.Fatalf("the snapshot is kept and pinned: %v version %s pin %s", err, cfg.version, pin)
+	}
+	if s, err := parseSnapshot(kept); err != nil || s.platform != "warehouse" || strings.Join(s.names, ",") != "query" || s.tools["query"].inputSchemaText == nil {
+		t.Fatalf("the snapshot kept is the capture: %v %+v", err, s)
 	}
 	// A platform that does not answer is not configured: replacing the
 	// entry with one the connector answers FAILED to ends the connect

@@ -79,6 +79,20 @@ func toolsFile(t *testing.T, tools any) {
 	t.Setenv(fakemcp.EnvTools, path)
 }
 
+// fallbackLines writes fallbacks one to a line: the tool's label and its
+// position among the allowed tools, the part, the reason.
+func fallbackLines(fs []fallback) string {
+	var lines []string
+	for _, f := range fs {
+		who := "-"
+		if f.Allowed != nil {
+			who = fmt.Sprintf("%s@%d", f.Tool, *f.Allowed)
+		}
+		lines = append(lines, who+"|"+f.Part+"|"+f.Reason)
+	}
+	return strings.Join(lines, "\n")
+}
+
 func TestCheckCapturesTheAllowedToolsAsTheServerWroteThem(t *testing.T) {
 	cfg := capturing(t, "search", "close")
 	// The schema as the server wrote it -- spaced, tabbed, a name
@@ -218,15 +232,15 @@ func TestACredentialValueIsRefusedAndNotDisclosed(t *testing.T) {
 		snap.Tools["plain"].InputSchemaText == nil || snap.Tools["ask"].Description != nil {
 		t.Fatalf("each candidate is judged on its own: %s", report.Descriptors)
 	}
-	want := []fallback{
-		{Part: partServer, Reason: "the server's version holds a value of the credentials"},
-		{Tool: "ask", Part: partDescription, Reason: "the description holds a value of the credentials"},
-		{Tool: "lookup", Part: partInputSchema, Reason: "a string in it holds a value of the credentials"},
-		{Tool: "query_[redacted]", Part: partTool, Reason: "its name holds a value of the credentials"},
-		{Tool: "named", Part: partInputSchema, Reason: "a string in it holds a value of the credentials"},
+	want := []string{
+		"-|server|the server's version holds a value of the credentials",
+		"ask@0|description|the description holds a value of the credentials",
+		"lookup@1|inputSchema|a string in it holds a value of the credentials",
+		"query_[redacted]@2|tool|its name holds a value of the credentials",
+		"named@4|inputSchema|a string in it holds a value of the credentials",
 	}
-	if fmt.Sprint(report.Fallbacks) != fmt.Sprint(want) {
-		t.Fatalf("fallbacks, in order, saying only that a credential value was held:\n got %v\nwant %v", report.Fallbacks, want)
+	if fallbackLines(report.Fallbacks) != strings.Join(want, "\n") {
+		t.Fatalf("fallbacks, in order, saying only that a credential value was held:\n got %s\nwant %v", fallbackLines(report.Fallbacks), want)
 	}
 }
 
@@ -243,16 +257,16 @@ func TestCandidatesFallBackOneByOne(t *testing.T) {
 		t.Fatal(err)
 	}
 	report := readReport(t, out)
-	want := []fallback{
-		{Tool: "a", Part: partDescription, Reason: "the description holds U+202E, which display policy 1 refuses"},
-		{Tool: "b", Part: partDescription, Reason: "the description is not a string"},
-		{Tool: "b", Part: partInputSchema, Reason: "/properties/e/format: not a keyword of schema grammar 1"},
-		{Tool: "c", Part: partInputSchema, Reason: "the tool declares no inputSchema"},
-		{Tool: "d", Part: partDescription, Reason: "the description is not a string"},
-		{Tool: "d", Part: partInputSchema, Reason: "/$ref: not a keyword of schema grammar 1"},
+	want := []string{
+		"a@0|description|the description holds U+202E, which display policy 1 refuses",
+		"b@1|description|the description is not a string",
+		"b@1|inputSchema|/properties/e/format: not a keyword of schema grammar 1",
+		"c@2|inputSchema|the tool declares no inputSchema",
+		"d@3|description|the description is not a string",
+		"d@3|inputSchema|/$ref: not a keyword of schema grammar 1",
 	}
-	if fmt.Sprint(report.Fallbacks) != fmt.Sprint(want) {
-		t.Fatalf("fallbacks:\n got %v\nwant %v", report.Fallbacks, want)
+	if fallbackLines(report.Fallbacks) != strings.Join(want, "\n") {
+		t.Fatalf("fallbacks:\n got %s\nwant %v", fallbackLines(report.Fallbacks), want)
 	}
 	if !strings.Contains(string(report.Descriptors), `"tools":{"a":{"inputSchemaText":"{\"type\":\"object\"}"},"c":{"description":"No schema"}}`) {
 		t.Fatalf("a tool with neither candidate is not listed: %s", report.Descriptors)
@@ -595,7 +609,7 @@ func TestFallbacksAreCutAsTheyAreRecorded(t *testing.T) {
 		}
 		schema := json.RawMessage(`{"type":"object","` + keyword + `":1}`)
 		descriptor, _ := json.Marshal(map[string]any{"name": name, "inputSchema": schema})
-		if err := c.add(listedTool{name: name, descriptor: descriptor}); err != nil {
+		if err := c.add(listedTool{name: name, descriptor: descriptor}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -629,7 +643,7 @@ func TestFallbacksAreCutAsTheyAreRecorded(t *testing.T) {
 	// Once the list is over its bound, a fallback small enough to fit is
 	// counted all the same, as the whole list would be cut.
 	kept := len(c.fallbacks)
-	if err := c.add(listedTool{name: "t", descriptor: json.RawMessage(`{"name":"t"}`)}); err != nil {
+	if err := c.add(listedTool{name: "t", descriptor: json.RawMessage(`{"name":"t"}`)}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(c.fallbacks) != kept || c.unlisted != 2001-kept {

@@ -227,10 +227,12 @@ The limits below are exact, and when one is reached the overflow is deterministi
   writing it. Should it pass anyway, the adapter drops `descriptors`, so every tool falls back,
   and says so. It never lets `connect` kill the check.
 
-  The report names each fallback by its tool and its part (the server's identity, a
-  description, an input schema, or a whole tool) with the reason. It counts what a cap leaves
-  unlisted in `toolsUnlisted` and `fallbacksUnlisted`, and says why a dropped snapshot was
-  dropped in `descriptorsDropped`.
+  The report names each fallback by its part (the server's identity, a description, an input
+  schema, or a whole tool) with the reason, and a tool's by its position among the tools the
+  check was told to allow, `allowed`, beside a label redacted and cut for the operator; the
+  position, not the label, is the tool's identity. It counts what a cap leaves unlisted in
+  `toolsUnlisted` and `fallbacksUnlisted`, and says why a dropped snapshot was dropped in
+  `descriptorsDropped`.
 - **The configuration:** checked, as today, against 1 MiB as it would be written, pins and
   version included.
 - **The listing:** the frontend's whole `tools/list` answer, serialized, is at most 8 MiB. When
@@ -347,16 +349,23 @@ derives from that pin.
 **Writing, and the crash story.** `connect` writes in this order:
 
 1. **The directory.** If `<configuration>.descriptors/` does not exist, `connect` makes it, mode
-   `0755`, owned by the configuration's owner. It then syncs the configuration's directory, so
-   the new entry survives a crash before anything names it.
-2. **The snapshot, staged.** It writes the snapshot in the private staging directory beside the
-   configuration, sets its final mode `0644` and owner, then syncs it.
+   `0755`, owned by the configuration's owner; if it does, it holds it to the frontend's
+   invariants. It holds the directory open, judged before the open and after as the directory
+   opened, and does every later step inside it, so its name swapped for a link meanwhile
+   changes nothing. It then syncs the configuration's directory, whether the entry was made now
+   or by a `connect` that stopped before its own sync, so it survives a crash before anything
+   names it.
+2. **The snapshot, staged.** It writes the snapshot in the held directory under a staging name
+   no snapshot has, which the directory's ownership keeps private, sets its final mode `0644`
+   and owner, then syncs it.
 3. **The snapshot, published without replacing.** It links the staged file to `<hex>.json`; a
-   link never replaces an existing name. If the name is taken, it opens the existing file
-   without following links. It checks that it is a regular file, of the specified mode and
-   owner, that digests to `<hex>`. A match is reused. Anything else refuses the `connect`,
-   before any configuration names it. It then removes the staged name and syncs the descriptors
-   directory.
+   link never replaces an existing name. If the name is taken, it opens the existing file as
+   the entry it is, judged again after the open, so no link is followed. It checks that it is
+   a regular file, of the specified mode and owner, that digests to `<hex>`, and syncs it: a
+   file found may never have reached the disk. A match is reused. Anything else refuses the
+   `connect`, before any configuration names it. It then removes the staged name and syncs the
+   descriptors directory. Just before the configuration's rename, it judges the directory's
+   name again: still the directory held.
 4. **The configuration.** It writes the configuration with today's writer, changed in two ways:
    the mode and owner are set before the file is synced, and the configuration's directory is
    synced after the rename.
@@ -383,11 +392,13 @@ snapshot. Removing unpinned snapshots is a separate operation that this note doe
 | `"3"` | accepted | optional, per platform whose binding has a live MCP operation |
 
 `connect` writes version `"3"` exactly when the entry it writes carries a pin, and otherwise
-leaves the version as it found it. `--replace` that captures nothing removes the member. The
-changes land in `engineVersions`, `platformMembers`, the parser and the renderer, and the
-version diagnostics name `"3"`. The signer parses a version-3 configuration and never reads a
-snapshot. A signer binary older than this change refuses version 3, so the rollout is binaries
-first, then `connect`.
+leaves the version as it found it. `--replace` that captures nothing removes the member. A
+capture of no tool pins nothing. `connect --no-descriptors` asks the live check to capture
+nothing and writes no pin: the choice for a deployment whose descriptors are confidential beyond
+what screening finds. The changes land in `engineVersions`, `platformMembers`, the parser and
+the renderer, and the version diagnostics name `"3"`. The signer parses a version-3
+configuration and never reads a snapshot. A signer binary older than this change refuses version
+3, so the rollout is binaries first, then `connect`.
 
 ## What the frontend reads, once
 
@@ -431,7 +442,10 @@ restart, as mcp-server.md requires for any change to the configuration.
   back.
 
 It compares only after verifying the previous snapshot against its pin. When the previous
-snapshot is missing or does not verify, it says so and compares with nothing. The capture time
+snapshot is missing or does not verify, it says so and compares with nothing. The previous
+binding says which tools were allowed before; when it cannot be read, as when its catalog file
+was updated in place, `connect` says so and says only what the two snapshots show, never that
+a tool was added nor that nothing changed. The server's identity is compared as the tools are. The capture time
 never counts as a change. `connect --preview-descriptors <platform>` renders exactly what the
 frontend would serve for that platform: the templates, the fenced blocks and the schema
 projections, before any listing-budget drop across platforms. Every character outside printable

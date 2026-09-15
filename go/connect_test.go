@@ -38,11 +38,20 @@ type connectFixture struct {
 	reports                                 map[string]string // by shape
 	fail                                    map[string]string // by shape: an error instead
 	groupless                               string            // a user whose groups cannot be read
+	// captured is the tools member of the snapshot a live check asked to
+	// capture reports, as JSON; "{}" by default, a capture of no tool,
+	// which pins nothing. capturedExtra is added to the check as it is.
+	captured      string
+	capturedExtra string
+	// snapshotAs, when set, is the whole snapshot member reported;
+	// noSnapshot reports none.
+	snapshotAs string
+	noSnapshot bool
 }
 
 func newConnectFixture(t *testing.T, bindingText string, platforms string) *connectFixture {
 	t.Helper()
-	f := &connectFixture{dir: t.TempDir(), reports: map[string]string{"airbyte": airbyteReport, "mcp": mcpReport}, fail: map[string]string{}}
+	f := &connectFixture{dir: t.TempDir(), reports: map[string]string{"airbyte": airbyteReport, "mcp": mcpReport}, fail: map[string]string{}, captured: "{}"}
 	f.catalog = catalogWith(t, map[string]string{"postgres": bindingText})
 	// Synthetic paths, rooted on the platform's volume so they are absolute
 	// on Windows too; the stub filesystem is what holds them.
@@ -116,7 +125,29 @@ func (f *connectFixture) check(_ context.Context, spec sourceSpec) ([]byte, erro
 	if msg, ok := f.fail[spec.shape]; ok {
 		return nil, errors.New(msg)
 	}
-	return []byte(f.reports[spec.shape]), nil
+	report := f.reports[spec.shape]
+	// A check asked to capture reports a snapshot, as the adapter does.
+	var platform, binding string
+	for _, arg := range spec.check {
+		if v, ok := strings.CutPrefix(arg, "--descriptors-platform="); ok {
+			platform = v
+		}
+		if v, ok := strings.CutPrefix(arg, "--descriptors-binding="); ok {
+			binding = v
+		}
+	}
+	if platform != "" {
+		snap := `{"binding":"` + binding + `","capturedAt":"2026-09-15T00:00:00Z","platform":"` + platform + `","policy":1,"server":{"name":"postgres-mcp","version":"0.3.0"},"tools":` + f.captured + `}`
+		if f.snapshotAs != "" {
+			snap = f.snapshotAs
+		}
+		member := `"descriptors":` + snap + `,`
+		if f.noSnapshot {
+			member = ""
+		}
+		report = strings.Replace(report, `{"check":{`, `{"check":{`+member+f.capturedExtra, 1)
+	}
+	return []byte(report), nil
 }
 
 func (f *connectFixture) request() connectRequest {
@@ -151,12 +182,15 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	if argv := strings.Join(f.asked[1].argv, " "); !strings.HasSuffix(argv, " --endpoint=warehouse.internal:5432 -- --access-mode=restricted") || !strings.Contains(argv, "--credentials="+f.credentials+" ") {
 		t.Fatalf("the derived command line carries the binding's server arguments after --: %s", argv)
 	}
-	if strings.Join(f.asked[1].check, " ") != "--probe=query --probe-failure=Error:" || len(f.asked[0].check) != 0 {
+	// The live check, and only it, is asked to capture descriptors, for
+	// this platform and the binding pinned.
+	if strings.Join(f.asked[1].check, " ") != "--probe=query --probe-failure=Error: --descriptors-platform=warehouse --descriptors-binding=postgres@"+digestOf(restrictedBinding) || len(f.asked[0].check) != 0 {
 		t.Fatalf("the check carries the binding's probe: %q %q", f.asked[0].check, f.asked[1].check)
 	}
-	if len(out.answers) != 2 || out.answers[0] != "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: Connected" ||
-		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server postgres-mcp 0.3.0, protocol 2025-03-26, tools query, explain" {
-		t.Fatalf("what the platform answered, one line per operation: %q", out.answers)
+	if len(out.answers) != 4 || out.answers[0] != "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: Connected" ||
+		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server postgres-mcp 0.3.0, protocol 2025-03-26, tools query, explain" ||
+		out.answers[2] != "warehouse/live: descriptors: server postgres-mcp 0.3.0" || out.answers[3] != "warehouse/live: descriptors: 1 allowed tool fell back with no reason the report lists" {
+		t.Fatalf("what the platform answered, one line per operation, then what was captured: %q", out.answers)
 	}
 	if out.written != f.config || len(out.statements) != 0 {
 		t.Fatalf("written %q, statements %v", out.written, out.statements)
@@ -399,7 +433,11 @@ func TestPrintOutcomeWritesOneLinePerAnswer(t *testing.T) {
 	f := newConnectFixture(t, restrictedBinding, ``)
 	f.reports["airbyte"] = `{"check":{"status":"succeeded","adapter":{"name":"airbyte/source-postgres","version":"3.8.5","digest":"` + testImageDigest + `"},"message":"Connected\nwarehouse/live: forged: server evil answered"}}`
 	f.reports["mcp"] = `{"check":{"status":"succeeded","adapter":{"name":"crystaldba/postgres-mcp","version":"0.3.0","digest":"` + testImageDigest + `"},"server":{"name":"postgres-mcp\u001b[2J","version":"0.3.0"},"protocolVersion":"2025-03-26","tools":["query","ex\rplain"]}}`
-	out, err := connect(context.Background(), f.request(), f.host, f.check)
+	// What a capture says goes through the same door, and is tested with
+	// it; here, one line per operation.
+	req := f.request()
+	req.noDescriptors = true
+	out, err := connect(context.Background(), req, f.host, f.check)
 	if err != nil {
 		t.Fatal(err)
 	}
