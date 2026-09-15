@@ -219,6 +219,12 @@ class Checks(unittest.TestCase):
     def test_a_shipped_seed_path(self):
         self.refused(good(**{"var": dict(kind="dir"), "var/lib": dict(kind="dir"), "var/lib/engine": dict(kind="dir", mode=0o700, uid=65532, gid=65532), "var/lib/engine/gateway.seed": dict(data=b"s", mode=0o600, uid=65532, gid=65532)}), "the image ships var/lib/engine")
 
+    def test_a_link_under_home_that_leads_out(self):
+        self.refused(good(**{"home/shared": dict(kind="link", target="/etc")}), "home/shared is a symbolic link under /home")
+
+    def test_a_link_in_the_mcp_users_own_home(self):
+        self.refused(good(**{"home/engine-mcp/elsewhere": dict(kind="link", target="/home/engine")}), "home/engine-mcp/elsewhere is a symbolic link under /home")
+
     def test_a_shipped_secret(self):
         self.refused(good(**{"run": dict(kind="dir"), "run/secrets": dict(kind="dir"), "run/secrets/warehouse": dict(data=b"c", mode=0o600, uid=65601, gid=65601)}), "the image ships run/secrets")
 

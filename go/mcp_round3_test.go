@@ -291,7 +291,9 @@ func TestMCPClosureReportsAreReliableAndNumbered(t *testing.T) {
 		"mcp: admission closed (closure 2); 1 acquisitions forwarded before it have not returned",
 		"mcp: closure 2 drained: every acquisition forwarded before it has returned; 0 forwards ended without an answer since the last drain",
 	}
-	waitUntil(t, "every report", func() bool { return strings.Contains(lines.String(), "closure 2 drained") })
+	waitUntil(t, "every report and the dropped count", func() bool {
+		return strings.Contains(lines.String(), "closure 2 drained") && strings.Contains(lines.String(), "diagnostics were dropped")
+	})
 	text := lines.String()
 	at := 0
 	for _, w := range want {

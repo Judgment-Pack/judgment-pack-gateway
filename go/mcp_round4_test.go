@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -39,15 +40,17 @@ func TestSignerGateIsTheBarrierForWhatWasInTransit(t *testing.T) {
 			let := make(chan struct{})
 			letOnce := sync.OnceFunc(func() { close(let) })
 			defer letOnce()
-			var once sync.Once
-			admitted := make(chan struct{})
+			var once, decidedOnce sync.Once
+			decided := make(chan error, 1)
 			f.service.beforeReadAdmit = func() {
 				once.Do(func() {
 					close(held)
 					<-let
-					defer close(admitted)
 				})
 			}
+			// what admission decided for the request that was in transit:
+			// the test waits on the decision, not on a clock
+			f.service.afterReadAdmit = func(err error) { decidedOnce.Do(func() { decided <- err }) }
 			// the forward gives up; the request is at the signer's door
 			_, _, body := f.call(t, http.MethodPost, sid, toolCall(1, "screen.lookup", `{}`, `{"`+mcpSessionMeta+`":"transit-1"}`), nil)
 			<-held
@@ -73,16 +76,28 @@ func TestSignerGateIsTheBarrierForWhatWasInTransit(t *testing.T) {
 				waitUntil(t, "the signer's drain", func() bool { return strings.Contains(signerReports.String(), "serve: closure 1 drained") })
 			}
 			letOnce()
-			<-admitted
-			time.Sleep(100 * time.Millisecond) // let a request admitted run to its receipt
-			f.service.mu.Lock()
-			_, opened := f.service.sessions["transit-1"]
-			f.service.mu.Unlock()
-			if closeSigner && (f.receiptsOf("transit-1") != 0 || opened) {
-				t.Fatalf("a request in transit was admitted after the signer's gate closed: %d receipts, opened %v", f.receiptsOf("transit-1"), opened)
+			var decision error
+			select {
+			case decision = <-decided:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the request in transit was never decided")
 			}
-			if !closeSigner {
-				waitUntil(t, "the request in transit to be admitted", func() bool { return f.receiptsOf("transit-1") == 1 })
+			if closeSigner {
+				if !errors.As(decision, new(unavailable)) {
+					t.Fatalf("the request in transit after the signer's gate closed was decided %v, not refused", decision)
+				}
+				f.service.mu.Lock()
+				_, opened := f.service.sessions["transit-1"]
+				pending := f.service.gate.pending
+				f.service.mu.Unlock()
+				if f.receiptsOf("transit-1") != 0 || opened || pending != 0 {
+					t.Fatalf("a refused admission left %d receipts, a session (%v), %d pending", f.receiptsOf("transit-1"), opened, pending)
+				}
+			} else {
+				if decision != nil {
+					t.Fatalf("with the signer open the request was refused: %v", decision)
+				}
+				waitUntil(t, "the request in transit to mint its receipt", func() bool { return f.receiptsOf("transit-1") == 1 })
 			}
 			f.service.openAdmission()
 			f.server.openAdmission()
@@ -206,6 +221,33 @@ func TestMCPStdioRefusesWhatIsNotUTF8(t *testing.T) {
 	}
 	if e, ok := answer["error"].(map[string]any); !ok || e["code"] != float64(rpcParse) || answer["id"] != nil || strings.Contains(out.String(), "�") {
 		t.Fatalf("a message that is not UTF-8: %s", out.String())
+	}
+}
+
+// allocatedBy is the bytes one call allocates.
+func allocatedBy(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// The duplicate walk's work grows with the message, not with its square:
+// four times the depth allocates about four times the bytes, where a walk
+// that built its ancestors' path at every value would allocate sixteen.
+// This holds the algorithm whatever the counter below counts.
+func TestDuplicateWalkAllocatesLinearly(t *testing.T) {
+	deep := func(depth int) []byte {
+		return []byte(strings.Repeat(`{"a":`, depth) + "1" + strings.Repeat("}", depth))
+	}
+	small, large := deep(1000), deep(4000)
+	skip := [][]string{{"params", "arguments"}}
+	a := allocatedBy(func() { noDuplicateMembers(small, skip) })
+	b := allocatedBy(func() { noDuplicateMembers(large, skip) })
+	if ratio := float64(b) / float64(a); ratio > 8 {
+		t.Fatalf("four times the depth allocated %.1f times the bytes (%d, %d)", ratio, a, b)
 	}
 }
 

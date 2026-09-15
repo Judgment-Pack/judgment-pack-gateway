@@ -78,7 +78,8 @@ func TestMCPRotationSequence(t *testing.T) {
 	if f.receiptsOf("kept-1") != 2 {
 		t.Fatalf("kept-1 holds %d receipts", f.receiptsOf("kept-1"))
 	}
-	// 2. close admission, with an acquisition in flight and one queued
+	// 2. close admission at both processes, with an acquisition in flight
+	// at the signer and one queued at the frontend
 	f.server.forwards = make(chan struct{}, 1)
 	f.server.queue = make(chan struct{}, 1)
 	barrier := t.TempDir()
@@ -99,7 +100,9 @@ func TestMCPRotationSequence(t *testing.T) {
 	waitForFile(t, filepath.Join(barrier, "started"))
 	launch(11)
 	waitUntil(t, "the second call to queue", func() bool { return len(f.server.queue) == 1 })
-	f.server.closeAdmission()
+	f.service.reportsOut = &syncBuffer{}
+	frontClosure := f.server.closeAdmission()
+	signerClosure := f.service.closeAdmission()
 	// the queued call is woken and refused at once, before the barrier lifts
 	select {
 	case woken := <-answers:
@@ -110,7 +113,7 @@ func TestMCPRotationSequence(t *testing.T) {
 		t.Fatal("the queued call was not woken when admission closed")
 	}
 	// a new transport session is 503; a new acquisition is an overload,
-	// nothing forwarded
+	// nothing forwarded; and any other ingress to the signer is its 503
 	if code, _, _ := f.call(t, http.MethodPost, "", `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`, nil); code != http.StatusServiceUnavailable {
 		t.Fatalf("initialize under closed admission answered %d", code)
 	}
@@ -118,11 +121,8 @@ func TestMCPRotationSequence(t *testing.T) {
 	if refused := resultOf(t, body); refused["isError"] != true || sameBothWays(t, refused)["outcome"] != "overload" || sameBothWays(t, refused)["session"] != "kept-1" || !strings.HasPrefix(sameBothWays(t, refused)["error"].(string), "admission is closed for maintenance") {
 		t.Fatalf("an acquisition under closed admission: %v", refused)
 	}
-	// the drain signal: /seal directly on the signer's loopback surface,
-	// under the operator's own token, is refused while the acquisition is
-	// in flight, and succeeds once it is not
-	sealDirectly := func() int {
-		req, _ := http.NewRequest(http.MethodPost, f.signer.URL+"/seal", strings.NewReader(`{"session":"kept-1"}`))
+	directly := func(path, payload string) int {
+		req, _ := http.NewRequest(http.MethodPost, f.signer.URL+path, strings.NewReader(payload))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer "+oldToken)
 		resp, err := http.DefaultClient.Do(req)
@@ -132,7 +132,19 @@ func TestMCPRotationSequence(t *testing.T) {
 		resp.Body.Close()
 		return resp.StatusCode
 	}
-	if code := sealDirectly(); code == http.StatusOK {
+	if code := directly("/acquire", `{"session":"other-ingress","source":"screen/live","arguments":{"tool":"lookup","arguments":{}}}`); code != http.StatusServiceUnavailable {
+		t.Fatalf("another ingress to the closed signer answered %d", code)
+	}
+	// neither closure drains while the acquisition is in flight, and the
+	// signer refuses to seal its session
+	select {
+	case <-signerClosure:
+		t.Fatal("the signer's closure drained with an acquisition in flight")
+	case <-frontClosure:
+		t.Fatal("the frontend's closure drained with a forward outstanding")
+	case <-time.After(200 * time.Millisecond):
+	}
+	if code := directly("/seal", `{"session":"kept-1"}`); code == http.StatusOK {
 		t.Fatal("/seal succeeded with an acquisition in flight")
 	}
 	os.WriteFile(release, []byte("go"), 0o600)
@@ -145,22 +157,51 @@ func TestMCPRotationSequence(t *testing.T) {
 	}
 	t.Setenv(envSourceWait, "")
 	t.Setenv(envSourceReady, "")
-	if code := sealDirectly(); code != http.StatusOK {
-		t.Fatalf("/seal directly, quiet, answered %d", code)
+	for name, closure := range map[string]<-chan struct{}{"the signer's": signerClosure, "the frontend's": frontClosure} {
+		select {
+		case <-closure:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s closure did not drain", name)
+		}
+	}
+	// drained: seal directly, under the signer's closed gate
+	if code := directly("/seal", `{"session":"kept-1"}`); code != http.StatusOK {
+		t.Fatalf("/seal directly, drained, answered %d", code)
 	}
 	if f.receiptsOf("kept-1") != 3 {
 		t.Fatalf("kept-1 holds %d receipts after the drain, not 3", f.receiptsOf("kept-1"))
 	}
-	// under closed admission a seal through the tool goes on too: a quiet
-	// named session from before is sealed by a transport session that
-	// survived, and the sealed one refuses another seal
+	// a transport session opened before the closure still carries the
+	// seal tool, and the sealed session refuses another seal
 	_, _, body = f.call(t, http.MethodPost, sid, toolCall(13, mcpSealTool, `{"session":"kept-1"}`, ""), nil)
 	if sealing := resultOf(t, body); sealing["isError"] != true || !strings.Contains(sameBothWays(t, sealing)["error"].(string), "sealed") {
 		t.Fatalf("sealing the sealed session through the closed frontend: %v", sealing)
 	}
-	// 3. the signer restarted under both keys; admission reopened; the new
-	// token works end to end, and so does the old until retired
+	// 3. stop the signer and start another on the same store and registry,
+	// under both keys: its session map is gone, its gate starts open, and
+	// the sealed session verifies from what is on disk before any new-key
+	// work is accepted
+	f.signer.Close()
+	signer, err := newGatewayService(f.service.storeRoot, testSeed, "gateway:test", f.service.regPath, f.service.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.service = signer
+	f.signer = httptest.NewServer(signer.handler())
+	t.Cleanup(f.signer.Close)
+	f.server.signer = f.signer.URL
 	setKeys(keysOf(t, f.issuer, old, new), keysOf(t, f.issuer, old, new))
+	verdict := ceremonyVerify(t, f.service, pinnedKey(t))
+	if !verdict.OK {
+		t.Fatalf("the store does not verify after the signer's restart: %v", verdict.Findings)
+	}
+	for index := 0; index < 3; index++ {
+		if !acceptedReceipt(t, verdict, "kept-1", float64(index)) {
+			t.Fatalf("kept-1's receipt %d is not accepted after the restart", index)
+		}
+	}
+	// reopen the frontend's admission; the new token works end to end,
+	// and so does the old until retired
 	f.server.openAdmission()
 	sid = f.open(t)
 	meta = `{"` + mcpSessionMeta + `":"kept-2"}`

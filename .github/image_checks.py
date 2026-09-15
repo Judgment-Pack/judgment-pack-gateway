@@ -329,14 +329,14 @@ def check(fs, archive, config, checkout, runtime=None):
     closed_to_the_frontend(fs)
     if config.get("Entrypoint") != ["/usr/local/bin/gateway"] or config.get("Cmd") != ["serve", "--config", "/etc/engine/engine.json"] or config.get("User") not in ("engine", "65532"):
         fail("the image starts %r %r as %r" % (config.get("Entrypoint"), config.get("Cmd"), config.get("User")))
-    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; the MCP server's copy of it root's, 0755, without a capability, the same bytes; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them, engine-mcp in no group but its own, owning nothing outside its home, every entry under /home but its own closed to it, and no seed, store, configuration or credential path shipped; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
+    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; the MCP server's copy of it root's, 0755, without a capability, the same bytes; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them, engine-mcp in no group but its own, owning nothing outside its home, every entry under /home but its own closed to it and no link under /home, and no seed, store, configuration or credential path shipped; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
 
 
 def closed_to_the_frontend(fs):
     """What the MCP server's user (uid 65533) must not reach, the image
     does not give it: nothing outside its own home is owned by that user
-    or its group; every entry under /home, but under its own home, carries
-    no bit for others, so a seed, a store or a credentials file put there
+    or its group; no symbolic link is under /home at all; every entry
+    under /home, but under its own home, carries no bit for others, so a seed, a store or a credentials file put there
     by a derived image is closed to it as the home itself is -- the homes
     this check holds are those under /home, and a home elsewhere in
     /etc/passwd (root's) is not held by it; and the paths a
@@ -344,6 +344,12 @@ def closed_to_the_frontend(fs):
     are not in the image at all -- an image check can prove absence and
     closure, and no more."""
     for name, e in sorted(fs.items()):
+        # a symbolic link under /home is a way out of the closure the modes
+        # describe -- /home is root's and traversable, and a link there
+        # reaches wherever it points -- so there is none, the MCP server's
+        # own home included
+        if name.startswith("home/") and e.islink:
+            fail("%s is a symbolic link under /home; no link there may lead the MCP server out of the closure the homes' modes describe" % name)
         if name == FRONTEND_HOME or name.startswith(FRONTEND_HOME + "/"):
             continue
         if e.uid == FRONTEND_UID or e.gid == FRONTEND_UID:

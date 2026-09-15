@@ -24,8 +24,8 @@ cannot prove:
   capabilities is never the one this process runs — and a user `engine-mcp` (uid `65533`,
   its own group and no other, home `/home/engine-mcp`) that no group of the signer's or of a
   platform's admits. The image check holds the copy's mode and attributes, the user's entry
-  and groups, that nothing outside that home is the user's or its group's, that every entry
-  under `/home` but the frontend's own home is closed to others, and that the paths a deployment mounts a seed, a
+  and groups, that nothing outside that home is the user's or its group's, that no symbolic link
+  is under `/home` and every entry under it but the frontend's own home is closed to others, and that the paths a deployment mounts a seed, a
   store, a configuration or a credential at are absent from the image — what an image check
   can prove, and no more: what an operator mounts at deployment the image never sees.
 - **The launch** is the operator's. The executable is the gateway's, copied; the
@@ -235,10 +235,13 @@ a request the signer may still receive, and the frontend cannot know whether it 
 closure on its diagnostics stream, numbered: the signer's is drained ("serve: closure *n*
 drained") when nothing it admitted is in flight; the frontend's when every acquisition it
 forwarded before the closure has returned, naming how many forwards ended without an answer
-since its last drain, which are the signer's closure to vouch for. Then seal every
+since its last drain, which are the signer's closure to vouch for. Closure numbers are each
+process's own: the operator reads each process's current closure, not an order across the
+two. Then seal every
 session to be preserved **by `/seal` directly**, on the signer's loopback
-surface under the operator's own token — the frontend's transport sessions went with its
-restart and `engine.seal` is not reachable through a closed frontend; restart the signer, whose
+surface under the operator's own token — which works whether or not a transport session of
+the frontend's is there to carry `engine.seal`: a session opened before the closure still
+carries it, and a new one cannot be opened while closed; stop the signer, then start it, whose
 gate starts open; reopen the frontend's admission; issue under the new key. The operator closes
 any other ingress to `/acquire` and `/act` too; the signer's gate refuses theirs as well. To retire the old key, wait out the validity window of the tokens it signed,
 then remove it from the file and restart both in the same order; to revoke it, remove it and
@@ -309,7 +312,9 @@ be written ends the transport with that failure, nothing further run.
 **Diagnostics.** A process's diagnostics are two kinds of line on one writer of their own. Its
 reports to the operator — a gate closed, a closure drained or cut short, the transport ended
 — are never dropped and keep the order of the changes they report, each numbered by its
-closure. What it says about its traffic is dropped past a buffer and counted. What the process says while it serves names what went wrong by category —
+closure; they are held in memory until the stream takes them, one per operator signal or
+transition, so a stream that never drains holds as many as the operator sent. What it says
+about its traffic is dropped past a buffer and counted. What the process says while it serves names what went wrong by category —
 timed out, connection refused, permission denied, the answer past its bound, the HTTP server
 unable to accept — never an address, a name or a token, since a host may forward its
 servers' stderr anywhere; `net/http`'s own lines reach the stream the same way, their text

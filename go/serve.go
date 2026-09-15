@@ -150,8 +150,9 @@ type gatewayService struct {
 	reportsOut io.Writer
 	// beforeReadAdmit, when a test sets it, runs as an acquisition's
 	// request is about to be admitted: where a request that was in transit
-	// meets a closure
+	// meets a closure; afterReadAdmit is told what admission decided
 	beforeReadAdmit func()
+	afterReadAdmit  func(error)
 }
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
@@ -378,8 +379,12 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	if g.beforeReadAdmit != nil {
 		g.beforeReadAdmit()
 	}
-	if err := g.admit(sessionID); err != nil {
-		return nil, err
+	admitted := g.admit(sessionID)
+	if g.afterReadAdmit != nil {
+		g.afterReadAdmit(admitted)
+	}
+	if admitted != nil {
+		return nil, admitted
 	}
 	defer g.release(sessionID)
 
