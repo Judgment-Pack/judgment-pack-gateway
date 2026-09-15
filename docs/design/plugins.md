@@ -100,11 +100,15 @@ persists across a request's hooks. A hook answers with `continue_processing`, an
 virtual environment, or as an external service (`kind: external`) over MCP, gRPC or a Unix
 socket. Beside the modes this note first recorded — `enforce` and `permissive`, with
 `enforce_ignore_error` and `disabled` — ContextForge now accepts CPEX's own: `sequential`,
-`transform`, `audit`, `concurrent` and `fire_and_forget`, which run as phases in that order, a
-phase's plugins by priority. So which result a `tool_post_invoke` hook sees depends on where it
-sits: in CPEX's modes, an `audit` or `fire_and_forget` hook sees the result after every plugin
-that transforms it, and a `sequential` hook of low priority sees it before most of them. A
-receipting plugin is then a pair — a `tool_pre_invoke` hook that keeps the call, and a
+`transform`, `audit`, `concurrent` and `fire_and_forget`, which run as phases in that order, the
+plugins within each serial phase in ascending numeric priority (a lower number runs first). So
+which result a `tool_post_invoke` hook sees depends on where it sits: a `sequential` hook sees the
+changes of earlier `sequential` hooks, before later ones and the `transform` phase, and an `audit`
+hook, when reached, sees the chained result after both. A `fire_and_forget` hook does not: in
+CPEX 0.1.3, the version ContextForge pins, it is handed a snapshot of the payload the hook was
+invoked with, before any plugin transformed it, and it is scheduled on an early halt as well
+(`cpex/framework/manager.py` at the `0.1.3` tag), though CPEX's documentation speaks of the final
+payload. A receipting plugin is then a pair — a `tool_pre_invoke` hook that keeps the call, and a
 `tool_post_invoke` hook that has the answer and wants both signed — placed by a choice of which
 answer to report. A second gateway offers a comparable hook with less to go on: Docker's MCP
 Gateway runs interceptors `before` and `after` a tool call, and an `after` interceptor is
