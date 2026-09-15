@@ -35,6 +35,10 @@ optional tidiness: removing it removes the claim. These are import guards: they 
 what each module links, not what a process can read; the process model in the design notes
 carries that claim.
 
+A third module, `testdata/tool-descriptors/metaschema`, holds no gateway code. It checks the
+shared tool-descriptor vectors against the JSON Schema meta-schemas with a third-party
+validator, so that neither of the gateway's modules takes the dependency.
+
 Every pull request carries a one-line `Material-decision impact:` declaration, and material
 decisions require the recorded cross-vendor review described in
 [docs/adr/README.md](docs/adr/README.md#review-of-material-decisions).

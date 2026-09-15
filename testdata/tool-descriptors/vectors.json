@@ -1,0 +1,1187 @@
+{
+ "about": [
+  "Shared vectors for display policy 1 and schema grammar 1 of docs/design/tool-descriptors.md.",
+  "The adapter's capture and the frontend's start each answer to them, with an implementation of its own.",
+  "Written by make_vectors.py, whose expectations are written by hand; edit it, not this file.",
+  "A schema's text is the candidate's original bytes, as a JSON string here. padTo: spaces are inserted",
+  "before the text's last byte until it is that many bytes long.",
+  "A refusal names its code and, when it is located, the JSON Pointer of what is refused; a refusal",
+  "without a pointer is of the candidate as a whole. Each refused vector breaks exactly one rule.",
+  "Secret screening needs the credentials, which the frontend never holds, and is not here."
+ ],
+ "displayPolicy": {
+  "unicode": "15.0.0",
+  "refused": [
+   {
+    "codePoint": "U+0000",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+0008",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+000B",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+000D",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+001B",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+007F",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+0085",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+009F",
+    "class": "Cc"
+   },
+   {
+    "codePoint": "U+061C",
+    "class": "Bidi_Control"
+   },
+   {
+    "codePoint": "U+200E",
+    "class": "Bidi_Control"
+   },
+   {
+    "codePoint": "U+200F",
+    "class": "Bidi_Control"
+   },
+   {
+    "codePoint": "U+202A",
+    "class": "Bidi_Control"
+   },
+   {
+    "codePoint": "U+202E",
+    "class": "Bidi_Control"
+   },
+   {
+    "codePoint": "U+2066",
+    "class": "Bidi_Control"
+   },
+   {
+    "codePoint": "U+2069",
+    "class": "Bidi_Control"
+   },
+   {
+    "codePoint": "U+00AD",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+034F",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+115F",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+1160",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+17B4",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+180B",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+180F",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+200B",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+200D",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+2060",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+206F",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+3164",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+FE00",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+FE0F",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+FEFF",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+FFA0",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+1BCA0",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+1D173",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+E0000",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+E0001",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+E0041",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+E0FFF",
+    "class": "Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+E000",
+    "class": "Co"
+   },
+   {
+    "codePoint": "U+F8FF",
+    "class": "Co"
+   },
+   {
+    "codePoint": "U+F0000",
+    "class": "Co"
+   },
+   {
+    "codePoint": "U+10FFFD",
+    "class": "Co"
+   },
+   {
+    "codePoint": "U+0378",
+    "class": "Cn"
+   },
+   {
+    "codePoint": "U+2FFC",
+    "class": "Cn"
+   },
+   {
+    "codePoint": "U+31EF",
+    "class": "Cn"
+   },
+   {
+    "codePoint": "U+2EBF0",
+    "class": "Cn"
+   },
+   {
+    "codePoint": "U+E0080",
+    "class": "Cn"
+   },
+   {
+    "codePoint": "U+FDD0",
+    "class": "Noncharacter_Code_Point"
+   },
+   {
+    "codePoint": "U+FDEF",
+    "class": "Noncharacter_Code_Point"
+   },
+   {
+    "codePoint": "U+FFFE",
+    "class": "Noncharacter_Code_Point"
+   },
+   {
+    "codePoint": "U+FFFF",
+    "class": "Noncharacter_Code_Point"
+   },
+   {
+    "codePoint": "U+1FFFE",
+    "class": "Noncharacter_Code_Point"
+   },
+   {
+    "codePoint": "U+10FFFF",
+    "class": "Noncharacter_Code_Point"
+   }
+  ],
+  "admitted": [
+   {
+    "codePoint": "U+0009",
+    "note": "tab"
+   },
+   {
+    "codePoint": "U+000A",
+    "note": "line feed"
+   },
+   {
+    "codePoint": "U+0020",
+    "note": "space"
+   },
+   {
+    "codePoint": "U+0041",
+    "note": "letter"
+   },
+   {
+    "codePoint": "U+00A0",
+    "note": "no-break space, Zs"
+   },
+   {
+    "codePoint": "U+00E9",
+    "note": "letter"
+   },
+   {
+    "codePoint": "U+2028",
+    "note": "line separator, Zl"
+   },
+   {
+    "codePoint": "U+2029",
+    "note": "paragraph separator, Zp"
+   },
+   {
+    "codePoint": "U+3000",
+    "note": "ideographic space"
+   },
+   {
+    "codePoint": "U+1F600",
+    "note": "emoji"
+   },
+   {
+    "codePoint": "U+FFFD",
+    "note": "replacement character, So"
+   },
+   {
+    "codePoint": "U+FFF9",
+    "note": "Cf, but not Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+13430",
+    "note": "Cf, but not Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+0600",
+    "note": "Cf and Prepended_Concatenation_Mark, so not Default_Ignorable_Code_Point"
+   },
+   {
+    "codePoint": "U+2FFB",
+    "note": "assigned in 15.0.0"
+   },
+   {
+    "codePoint": "U+1FAF8",
+    "note": "assigned in 15.0.0"
+   }
+  ]
+ },
+ "descriptions": [
+  {
+   "name": "plain words",
+   "value": "Search tickets by text",
+   "refusal": null
+  },
+  {
+   "name": "tab and line feed",
+   "value": "one\ttwo\nthree",
+   "refusal": null
+  },
+  {
+   "name": "4096 bytes",
+   "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "refusal": null
+  },
+  {
+   "name": "4097 bytes",
+   "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "refusal": "string-size"
+  },
+  {
+   "name": "2048 characters of 2 bytes",
+   "value": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+   "refusal": null
+  },
+  {
+   "name": "2049 characters of 2 bytes",
+   "value": "\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9",
+   "refusal": "string-size"
+  },
+  {
+   "name": "an emoji sequence joined",
+   "value": "\ud83d\udc69\u200d\ud83d\udcbb",
+   "refusal": "policy"
+  },
+  {
+   "name": "an emoji with a variation selector",
+   "value": "\u2764\ufe0f",
+   "refusal": "policy"
+  },
+  {
+   "name": "an escape",
+   "value": "red \u001b[31m",
+   "refusal": "policy"
+  },
+  {
+   "name": "a bidi isolate",
+   "value": "a\u2066b\u2069",
+   "refusal": "policy"
+  },
+  {
+   "name": "a line separator",
+   "value": "a\u2028b",
+   "refusal": null
+  }
+ ],
+ "identities": [
+  {
+   "name": "a name and a version",
+   "server": {
+    "name": "tickets-mcp",
+    "version": "2.4.1"
+   },
+   "refusal": null
+  },
+  {
+   "name": "an empty version",
+   "server": {
+    "name": "tickets-mcp",
+    "version": ""
+   },
+   "refusal": null
+  },
+  {
+   "name": "a name of 256 bytes",
+   "server": {
+    "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+    "version": "1"
+   },
+   "refusal": null
+  },
+  {
+   "name": "a name of 257 bytes",
+   "server": {
+    "name": "nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn",
+    "version": "1"
+   },
+   "refusal": "string-size"
+  },
+  {
+   "name": "a version of 257 bytes",
+   "server": {
+    "name": "s",
+    "version": "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"
+   },
+   "refusal": "string-size"
+  },
+  {
+   "name": "a line feed in the name",
+   "server": {
+    "name": "a\nb",
+    "version": "1"
+   },
+   "refusal": null
+  },
+  {
+   "name": "an override in the version",
+   "server": {
+    "name": "s",
+    "version": "1\u202e"
+   },
+   "refusal": "policy"
+  }
+ ],
+ "schemas": [
+  {
+   "name": "the smallest schema",
+   "text": "{\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "a typical tool's arguments",
+   "text": "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"Search text\"},\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":100,\"default\":10}},\"required\":[\"query\"]}",
+   "refusal": null
+  },
+  {
+   "name": "every keyword of the grammar",
+   "text": "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"title\":\"Every keyword\",\"description\":\"Each keyword of the grammar, once or more\",\"$comment\":\"held to grammar 1\",\"additionalProperties\":false,\"required\":[\"a\"],\"minProperties\":0,\"maxProperties\":9007199254740991,\"properties\":{\"a\":{\"type\":[\"string\",\"null\"],\"minLength\":0,\"maxLength\":80,\"examples\":[\"x\",null],\"default\":null,\"deprecated\":true,\"readOnly\":false,\"writeOnly\":false},\"b\":{\"type\":\"number\",\"exclusiveMinimum\":-1.5e+308,\"exclusiveMaximum\":1e+308,\"multipleOf\":0.25,\"minimum\":-10,\"maximum\":10},\"c\":{\"enum\":[\"x\",1,1.5,true,null]},\"d\":{\"const\":\"k\"},\"e\":{\"type\":\"array\",\"items\":{\"type\":\"string\"},\"minItems\":1,\"maxItems\":3},\"f\":{\"type\":\"object\",\"additionalProperties\":{\"type\":\"integer\"},\"minProperties\":1},\"g\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"null\"}]},\"h\":{\"oneOf\":[{\"const\":1},{\"const\":2}]},\"i\":{\"allOf\":[{\"type\":\"integer\"},{\"minimum\":0}]},\"j\":{\"not\":{\"type\":\"null\"}},\"k\":{\"default\":{\"nested\":[1,\"two\",{\"three\":3}]}}}}",
+   "refusal": null
+  },
+  {
+   "name": "the draft-07 dialect",
+   "text": "{\"$schema\":\"http://json-schema.org/draft-07/schema#\",\"type\":\"object\",\"additionalProperties\":false}",
+   "refusal": null
+  },
+  {
+   "name": "a boolean additionalProperties",
+   "text": "{\"type\":\"object\",\"additionalProperties\":true}",
+   "refusal": null
+  },
+  {
+   "name": "whitespace and escapes as the server wrote them",
+   "text": "{ \"type\" : \"object\" ,\n  \"properties\" : { \"caf\\u00e9\" : { \"type\" : \"string\" } } }",
+   "refusal": null
+  },
+  {
+   "name": "names that are keywords elsewhere",
+   "text": "{\"type\":\"object\",\"properties\":{\"description\":{\"type\":\"string\"},\"$ref\":{\"type\":\"string\"},\"format\":{\"type\":\"string\"},\"properties\":{\"type\":\"object\"}}}",
+   "refusal": null
+  },
+  {
+   "name": "tab and line feed in a description",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"description\":\"one\\ttwo\\nthree\"}}}",
+   "refusal": null
+  },
+  {
+   "name": "a line separator, a no-break space and an emoji",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"title\":\"a\u2028b\u00a0c \ud83d\ude00\"}}}",
+   "refusal": null
+  },
+  {
+   "name": "schema locations nested 32 deep",
+   "text": "{\"type\":\"object\",\"additionalProperties\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}",
+   "refusal": null
+  },
+  {
+   "name": "2048 schema locations",
+   "text": "{\"type\":\"object\",\"anyOf\":[{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]}]}]}",
+   "refusal": null
+  },
+  {
+   "name": "a text of 16384 bytes",
+   "text": "{\"type\":\"object\"}",
+   "padTo": 16384,
+   "refusal": null
+  },
+  {
+   "name": "a property name of 128 bytes",
+   "text": "{\"type\":\"object\",\"properties\":{\"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\":{}}}",
+   "refusal": null
+  },
+  {
+   "name": "a property name of 128 bytes in 64 characters",
+   "text": "{\"type\":\"object\",\"properties\":{\"\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\":{}}}",
+   "refusal": null
+  },
+  {
+   "name": "a string of 1024 bytes",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"description\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}}}",
+   "refusal": null
+  },
+  {
+   "name": "256 properties",
+   "text": "{\"type\":\"object\",\"properties\":{\"p000\":{},\"p001\":{},\"p002\":{},\"p003\":{},\"p004\":{},\"p005\":{},\"p006\":{},\"p007\":{},\"p008\":{},\"p009\":{},\"p010\":{},\"p011\":{},\"p012\":{},\"p013\":{},\"p014\":{},\"p015\":{},\"p016\":{},\"p017\":{},\"p018\":{},\"p019\":{},\"p020\":{},\"p021\":{},\"p022\":{},\"p023\":{},\"p024\":{},\"p025\":{},\"p026\":{},\"p027\":{},\"p028\":{},\"p029\":{},\"p030\":{},\"p031\":{},\"p032\":{},\"p033\":{},\"p034\":{},\"p035\":{},\"p036\":{},\"p037\":{},\"p038\":{},\"p039\":{},\"p040\":{},\"p041\":{},\"p042\":{},\"p043\":{},\"p044\":{},\"p045\":{},\"p046\":{},\"p047\":{},\"p048\":{},\"p049\":{},\"p050\":{},\"p051\":{},\"p052\":{},\"p053\":{},\"p054\":{},\"p055\":{},\"p056\":{},\"p057\":{},\"p058\":{},\"p059\":{},\"p060\":{},\"p061\":{},\"p062\":{},\"p063\":{},\"p064\":{},\"p065\":{},\"p066\":{},\"p067\":{},\"p068\":{},\"p069\":{},\"p070\":{},\"p071\":{},\"p072\":{},\"p073\":{},\"p074\":{},\"p075\":{},\"p076\":{},\"p077\":{},\"p078\":{},\"p079\":{},\"p080\":{},\"p081\":{},\"p082\":{},\"p083\":{},\"p084\":{},\"p085\":{},\"p086\":{},\"p087\":{},\"p088\":{},\"p089\":{},\"p090\":{},\"p091\":{},\"p092\":{},\"p093\":{},\"p094\":{},\"p095\":{},\"p096\":{},\"p097\":{},\"p098\":{},\"p099\":{},\"p100\":{},\"p101\":{},\"p102\":{},\"p103\":{},\"p104\":{},\"p105\":{},\"p106\":{},\"p107\":{},\"p108\":{},\"p109\":{},\"p110\":{},\"p111\":{},\"p112\":{},\"p113\":{},\"p114\":{},\"p115\":{},\"p116\":{},\"p117\":{},\"p118\":{},\"p119\":{},\"p120\":{},\"p121\":{},\"p122\":{},\"p123\":{},\"p124\":{},\"p125\":{},\"p126\":{},\"p127\":{},\"p128\":{},\"p129\":{},\"p130\":{},\"p131\":{},\"p132\":{},\"p133\":{},\"p134\":{},\"p135\":{},\"p136\":{},\"p137\":{},\"p138\":{},\"p139\":{},\"p140\":{},\"p141\":{},\"p142\":{},\"p143\":{},\"p144\":{},\"p145\":{},\"p146\":{},\"p147\":{},\"p148\":{},\"p149\":{},\"p150\":{},\"p151\":{},\"p152\":{},\"p153\":{},\"p154\":{},\"p155\":{},\"p156\":{},\"p157\":{},\"p158\":{},\"p159\":{},\"p160\":{},\"p161\":{},\"p162\":{},\"p163\":{},\"p164\":{},\"p165\":{},\"p166\":{},\"p167\":{},\"p168\":{},\"p169\":{},\"p170\":{},\"p171\":{},\"p172\":{},\"p173\":{},\"p174\":{},\"p175\":{},\"p176\":{},\"p177\":{},\"p178\":{},\"p179\":{},\"p180\":{},\"p181\":{},\"p182\":{},\"p183\":{},\"p184\":{},\"p185\":{},\"p186\":{},\"p187\":{},\"p188\":{},\"p189\":{},\"p190\":{},\"p191\":{},\"p192\":{},\"p193\":{},\"p194\":{},\"p195\":{},\"p196\":{},\"p197\":{},\"p198\":{},\"p199\":{},\"p200\":{},\"p201\":{},\"p202\":{},\"p203\":{},\"p204\":{},\"p205\":{},\"p206\":{},\"p207\":{},\"p208\":{},\"p209\":{},\"p210\":{},\"p211\":{},\"p212\":{},\"p213\":{},\"p214\":{},\"p215\":{},\"p216\":{},\"p217\":{},\"p218\":{},\"p219\":{},\"p220\":{},\"p221\":{},\"p222\":{},\"p223\":{},\"p224\":{},\"p225\":{},\"p226\":{},\"p227\":{},\"p228\":{},\"p229\":{},\"p230\":{},\"p231\":{},\"p232\":{},\"p233\":{},\"p234\":{},\"p235\":{},\"p236\":{},\"p237\":{},\"p238\":{},\"p239\":{},\"p240\":{},\"p241\":{},\"p242\":{},\"p243\":{},\"p244\":{},\"p245\":{},\"p246\":{},\"p247\":{},\"p248\":{},\"p249\":{},\"p250\":{},\"p251\":{},\"p252\":{},\"p253\":{},\"p254\":{},\"p255\":{}}}",
+   "refusal": null
+  },
+  {
+   "name": "256 required names",
+   "text": "{\"type\":\"object\",\"required\":[\"r000\",\"r001\",\"r002\",\"r003\",\"r004\",\"r005\",\"r006\",\"r007\",\"r008\",\"r009\",\"r010\",\"r011\",\"r012\",\"r013\",\"r014\",\"r015\",\"r016\",\"r017\",\"r018\",\"r019\",\"r020\",\"r021\",\"r022\",\"r023\",\"r024\",\"r025\",\"r026\",\"r027\",\"r028\",\"r029\",\"r030\",\"r031\",\"r032\",\"r033\",\"r034\",\"r035\",\"r036\",\"r037\",\"r038\",\"r039\",\"r040\",\"r041\",\"r042\",\"r043\",\"r044\",\"r045\",\"r046\",\"r047\",\"r048\",\"r049\",\"r050\",\"r051\",\"r052\",\"r053\",\"r054\",\"r055\",\"r056\",\"r057\",\"r058\",\"r059\",\"r060\",\"r061\",\"r062\",\"r063\",\"r064\",\"r065\",\"r066\",\"r067\",\"r068\",\"r069\",\"r070\",\"r071\",\"r072\",\"r073\",\"r074\",\"r075\",\"r076\",\"r077\",\"r078\",\"r079\",\"r080\",\"r081\",\"r082\",\"r083\",\"r084\",\"r085\",\"r086\",\"r087\",\"r088\",\"r089\",\"r090\",\"r091\",\"r092\",\"r093\",\"r094\",\"r095\",\"r096\",\"r097\",\"r098\",\"r099\",\"r100\",\"r101\",\"r102\",\"r103\",\"r104\",\"r105\",\"r106\",\"r107\",\"r108\",\"r109\",\"r110\",\"r111\",\"r112\",\"r113\",\"r114\",\"r115\",\"r116\",\"r117\",\"r118\",\"r119\",\"r120\",\"r121\",\"r122\",\"r123\",\"r124\",\"r125\",\"r126\",\"r127\",\"r128\",\"r129\",\"r130\",\"r131\",\"r132\",\"r133\",\"r134\",\"r135\",\"r136\",\"r137\",\"r138\",\"r139\",\"r140\",\"r141\",\"r142\",\"r143\",\"r144\",\"r145\",\"r146\",\"r147\",\"r148\",\"r149\",\"r150\",\"r151\",\"r152\",\"r153\",\"r154\",\"r155\",\"r156\",\"r157\",\"r158\",\"r159\",\"r160\",\"r161\",\"r162\",\"r163\",\"r164\",\"r165\",\"r166\",\"r167\",\"r168\",\"r169\",\"r170\",\"r171\",\"r172\",\"r173\",\"r174\",\"r175\",\"r176\",\"r177\",\"r178\",\"r179\",\"r180\",\"r181\",\"r182\",\"r183\",\"r184\",\"r185\",\"r186\",\"r187\",\"r188\",\"r189\",\"r190\",\"r191\",\"r192\",\"r193\",\"r194\",\"r195\",\"r196\",\"r197\",\"r198\",\"r199\",\"r200\",\"r201\",\"r202\",\"r203\",\"r204\",\"r205\",\"r206\",\"r207\",\"r208\",\"r209\",\"r210\",\"r211\",\"r212\",\"r213\",\"r214\",\"r215\",\"r216\",\"r217\",\"r218\",\"r219\",\"r220\",\"r221\",\"r222\",\"r223\",\"r224\",\"r225\",\"r226\",\"r227\",\"r228\",\"r229\",\"r230\",\"r231\",\"r232\",\"r233\",\"r234\",\"r235\",\"r236\",\"r237\",\"r238\",\"r239\",\"r240\",\"r241\",\"r242\",\"r243\",\"r244\",\"r245\",\"r246\",\"r247\",\"r248\",\"r249\",\"r250\",\"r251\",\"r252\",\"r253\",\"r254\",\"r255\"]}",
+   "refusal": null
+  },
+  {
+   "name": "an enum of 256",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255]}}}",
+   "refusal": null
+  },
+  {
+   "name": "16 branches",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"anyOf\":[{\"const\":0},{\"const\":1},{\"const\":2},{\"const\":3},{\"const\":4},{\"const\":5},{\"const\":6},{\"const\":7},{\"const\":8},{\"const\":9},{\"const\":10},{\"const\":11},{\"const\":12},{\"const\":13},{\"const\":14},{\"const\":15}]}}}",
+   "refusal": null
+  },
+  {
+   "name": "a number of 32 characters",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"default\":0.100000000000000000000000000001}}}",
+   "refusal": null
+  },
+  {
+   "name": "exponents at 308",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"minimum\":-1e308,\"maximum\":1E+0308,\"multipleOf\":1e-308}}}",
+   "refusal": null
+  },
+  {
+   "name": "the largest length",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"maxLength\":9007199254740991}}}",
+   "refusal": null
+  },
+  {
+   "name": "a member name twice",
+   "text": "{\"type\":\"object\",\"type\":\"object\"}",
+   "refusal": {
+    "code": "json"
+   }
+  },
+  {
+   "name": "a lone surrogate",
+   "text": "{\"type\":\"object\",\"title\":\"\\ud800\"}",
+   "refusal": {
+    "code": "json"
+   }
+  },
+  {
+   "name": "trailing content",
+   "text": "{\"type\":\"object\"} {}",
+   "refusal": {
+    "code": "json"
+   }
+  },
+  {
+   "name": "a root that is an array",
+   "text": "[]",
+   "refusal": {
+    "code": "not-object",
+    "pointer": ""
+   }
+  },
+  {
+   "name": "a root that is a boolean",
+   "text": "true",
+   "refusal": {
+    "code": "not-object",
+    "pointer": ""
+   }
+  },
+  {
+   "name": "a root without type",
+   "text": "{\"properties\":{}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/type"
+   }
+  },
+  {
+   "name": "a root of another type",
+   "text": "{\"type\":\"string\"}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/type"
+   }
+  },
+  {
+   "name": "a root typed by an array",
+   "text": "{\"type\":[\"object\"]}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/type"
+   }
+  },
+  {
+   "name": "format",
+   "text": "{\"type\":\"object\",\"properties\":{\"e\":{\"type\":\"string\",\"format\":\"email\"}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/e/format"
+   }
+  },
+  {
+   "name": "pattern",
+   "text": "{\"type\":\"object\",\"properties\":{\"e\":{\"type\":\"string\",\"pattern\":\"^a\"}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/e/pattern"
+   }
+  },
+  {
+   "name": "a reference",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"$ref\":\"#/$defs/x\"}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/$ref"
+   }
+  },
+  {
+   "name": "definitions at the root",
+   "text": "{\"type\":\"object\",\"$defs\":{\"x\":{}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/$defs"
+   }
+  },
+  {
+   "name": "the older definitions",
+   "text": "{\"type\":\"object\",\"definitions\":{\"x\":{}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/definitions"
+   }
+  },
+  {
+   "name": "an identifier",
+   "text": "{\"type\":\"object\",\"$id\":\"https://example.com/s\"}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/$id"
+   }
+  },
+  {
+   "name": "an anchor",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"$anchor\":\"x\"}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/$anchor"
+   }
+  },
+  {
+   "name": "a dynamic reference",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"$dynamicRef\":\"#x\"}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/$dynamicRef"
+   }
+  },
+  {
+   "name": "a recursive reference",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"$recursiveRef\":\"#\"}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/$recursiveRef"
+   }
+  },
+  {
+   "name": "patternProperties",
+   "text": "{\"type\":\"object\",\"patternProperties\":{\"^a\":{}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/patternProperties"
+   }
+  },
+  {
+   "name": "propertyNames",
+   "text": "{\"type\":\"object\",\"propertyNames\":{\"maxLength\":3}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/propertyNames"
+   }
+  },
+  {
+   "name": "uniqueItems",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"array\",\"uniqueItems\":true}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/uniqueItems"
+   }
+  },
+  {
+   "name": "a conditional",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"if\":{\"type\":\"string\"}}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/if"
+   }
+  },
+  {
+   "name": "a keyword no dialect names",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"x-order\":1}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/x-order"
+   }
+  },
+  {
+   "name": "$schema below the root",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/$schema"
+   }
+  },
+  {
+   "name": "a keyword named with ~ and /",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"a~b/c\":1}}}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/x/a~0b~1c"
+   }
+  },
+  {
+   "name": "draft-04's $schema",
+   "text": "{\"$schema\":\"http://json-schema.org/draft-04/schema#\",\"type\":\"object\"}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/$schema"
+   }
+  },
+  {
+   "name": "a boolean schema as a property",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":true}}",
+   "refusal": {
+    "code": "not-object",
+    "pointer": "/properties/x"
+   }
+  },
+  {
+   "name": "a boolean items",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"items\":false}}}",
+   "refusal": {
+    "code": "not-object",
+    "pointer": "/properties/x/items"
+   }
+  },
+  {
+   "name": "the array form of items",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"items\":[{}]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/items"
+   }
+  },
+  {
+   "name": "a boolean not",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"not\":false}}}",
+   "refusal": {
+    "code": "not-object",
+    "pointer": "/properties/x/not"
+   }
+  },
+  {
+   "name": "a boolean branch",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"anyOf\":[true]}}}",
+   "refusal": {
+    "code": "not-object",
+    "pointer": "/properties/x/anyOf/0"
+   }
+  },
+  {
+   "name": "no branches",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"oneOf\":[]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/oneOf"
+   }
+  },
+  {
+   "name": "17 branches",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"allOf\":[{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/allOf"
+   }
+  },
+  {
+   "name": "a type no dialect names",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"float\"}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/type"
+   }
+  },
+  {
+   "name": "no types",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":[]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/type"
+   }
+  },
+  {
+   "name": "a type twice",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":[\"string\",\"string\"]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/type/1"
+   }
+  },
+  {
+   "name": "a type that is not a name",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":[1]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/type/0"
+   }
+  },
+  {
+   "name": "properties that are not an object",
+   "text": "{\"type\":\"object\",\"properties\":[]}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties"
+   }
+  },
+  {
+   "name": "257 properties",
+   "text": "{\"type\":\"object\",\"properties\":{\"p000\":{},\"p001\":{},\"p002\":{},\"p003\":{},\"p004\":{},\"p005\":{},\"p006\":{},\"p007\":{},\"p008\":{},\"p009\":{},\"p010\":{},\"p011\":{},\"p012\":{},\"p013\":{},\"p014\":{},\"p015\":{},\"p016\":{},\"p017\":{},\"p018\":{},\"p019\":{},\"p020\":{},\"p021\":{},\"p022\":{},\"p023\":{},\"p024\":{},\"p025\":{},\"p026\":{},\"p027\":{},\"p028\":{},\"p029\":{},\"p030\":{},\"p031\":{},\"p032\":{},\"p033\":{},\"p034\":{},\"p035\":{},\"p036\":{},\"p037\":{},\"p038\":{},\"p039\":{},\"p040\":{},\"p041\":{},\"p042\":{},\"p043\":{},\"p044\":{},\"p045\":{},\"p046\":{},\"p047\":{},\"p048\":{},\"p049\":{},\"p050\":{},\"p051\":{},\"p052\":{},\"p053\":{},\"p054\":{},\"p055\":{},\"p056\":{},\"p057\":{},\"p058\":{},\"p059\":{},\"p060\":{},\"p061\":{},\"p062\":{},\"p063\":{},\"p064\":{},\"p065\":{},\"p066\":{},\"p067\":{},\"p068\":{},\"p069\":{},\"p070\":{},\"p071\":{},\"p072\":{},\"p073\":{},\"p074\":{},\"p075\":{},\"p076\":{},\"p077\":{},\"p078\":{},\"p079\":{},\"p080\":{},\"p081\":{},\"p082\":{},\"p083\":{},\"p084\":{},\"p085\":{},\"p086\":{},\"p087\":{},\"p088\":{},\"p089\":{},\"p090\":{},\"p091\":{},\"p092\":{},\"p093\":{},\"p094\":{},\"p095\":{},\"p096\":{},\"p097\":{},\"p098\":{},\"p099\":{},\"p100\":{},\"p101\":{},\"p102\":{},\"p103\":{},\"p104\":{},\"p105\":{},\"p106\":{},\"p107\":{},\"p108\":{},\"p109\":{},\"p110\":{},\"p111\":{},\"p112\":{},\"p113\":{},\"p114\":{},\"p115\":{},\"p116\":{},\"p117\":{},\"p118\":{},\"p119\":{},\"p120\":{},\"p121\":{},\"p122\":{},\"p123\":{},\"p124\":{},\"p125\":{},\"p126\":{},\"p127\":{},\"p128\":{},\"p129\":{},\"p130\":{},\"p131\":{},\"p132\":{},\"p133\":{},\"p134\":{},\"p135\":{},\"p136\":{},\"p137\":{},\"p138\":{},\"p139\":{},\"p140\":{},\"p141\":{},\"p142\":{},\"p143\":{},\"p144\":{},\"p145\":{},\"p146\":{},\"p147\":{},\"p148\":{},\"p149\":{},\"p150\":{},\"p151\":{},\"p152\":{},\"p153\":{},\"p154\":{},\"p155\":{},\"p156\":{},\"p157\":{},\"p158\":{},\"p159\":{},\"p160\":{},\"p161\":{},\"p162\":{},\"p163\":{},\"p164\":{},\"p165\":{},\"p166\":{},\"p167\":{},\"p168\":{},\"p169\":{},\"p170\":{},\"p171\":{},\"p172\":{},\"p173\":{},\"p174\":{},\"p175\":{},\"p176\":{},\"p177\":{},\"p178\":{},\"p179\":{},\"p180\":{},\"p181\":{},\"p182\":{},\"p183\":{},\"p184\":{},\"p185\":{},\"p186\":{},\"p187\":{},\"p188\":{},\"p189\":{},\"p190\":{},\"p191\":{},\"p192\":{},\"p193\":{},\"p194\":{},\"p195\":{},\"p196\":{},\"p197\":{},\"p198\":{},\"p199\":{},\"p200\":{},\"p201\":{},\"p202\":{},\"p203\":{},\"p204\":{},\"p205\":{},\"p206\":{},\"p207\":{},\"p208\":{},\"p209\":{},\"p210\":{},\"p211\":{},\"p212\":{},\"p213\":{},\"p214\":{},\"p215\":{},\"p216\":{},\"p217\":{},\"p218\":{},\"p219\":{},\"p220\":{},\"p221\":{},\"p222\":{},\"p223\":{},\"p224\":{},\"p225\":{},\"p226\":{},\"p227\":{},\"p228\":{},\"p229\":{},\"p230\":{},\"p231\":{},\"p232\":{},\"p233\":{},\"p234\":{},\"p235\":{},\"p236\":{},\"p237\":{},\"p238\":{},\"p239\":{},\"p240\":{},\"p241\":{},\"p242\":{},\"p243\":{},\"p244\":{},\"p245\":{},\"p246\":{},\"p247\":{},\"p248\":{},\"p249\":{},\"p250\":{},\"p251\":{},\"p252\":{},\"p253\":{},\"p254\":{},\"p255\":{},\"p256\":{}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties"
+   }
+  },
+  {
+   "name": "required that is not an array",
+   "text": "{\"type\":\"object\",\"required\":\"a\"}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/required"
+   }
+  },
+  {
+   "name": "required that is not a string",
+   "text": "{\"type\":\"object\",\"required\":[1]}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/required/0"
+   }
+  },
+  {
+   "name": "a required name twice",
+   "text": "{\"type\":\"object\",\"required\":[\"a\",\"a\"]}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/required/1"
+   }
+  },
+  {
+   "name": "257 required names",
+   "text": "{\"type\":\"object\",\"required\":[\"r000\",\"r001\",\"r002\",\"r003\",\"r004\",\"r005\",\"r006\",\"r007\",\"r008\",\"r009\",\"r010\",\"r011\",\"r012\",\"r013\",\"r014\",\"r015\",\"r016\",\"r017\",\"r018\",\"r019\",\"r020\",\"r021\",\"r022\",\"r023\",\"r024\",\"r025\",\"r026\",\"r027\",\"r028\",\"r029\",\"r030\",\"r031\",\"r032\",\"r033\",\"r034\",\"r035\",\"r036\",\"r037\",\"r038\",\"r039\",\"r040\",\"r041\",\"r042\",\"r043\",\"r044\",\"r045\",\"r046\",\"r047\",\"r048\",\"r049\",\"r050\",\"r051\",\"r052\",\"r053\",\"r054\",\"r055\",\"r056\",\"r057\",\"r058\",\"r059\",\"r060\",\"r061\",\"r062\",\"r063\",\"r064\",\"r065\",\"r066\",\"r067\",\"r068\",\"r069\",\"r070\",\"r071\",\"r072\",\"r073\",\"r074\",\"r075\",\"r076\",\"r077\",\"r078\",\"r079\",\"r080\",\"r081\",\"r082\",\"r083\",\"r084\",\"r085\",\"r086\",\"r087\",\"r088\",\"r089\",\"r090\",\"r091\",\"r092\",\"r093\",\"r094\",\"r095\",\"r096\",\"r097\",\"r098\",\"r099\",\"r100\",\"r101\",\"r102\",\"r103\",\"r104\",\"r105\",\"r106\",\"r107\",\"r108\",\"r109\",\"r110\",\"r111\",\"r112\",\"r113\",\"r114\",\"r115\",\"r116\",\"r117\",\"r118\",\"r119\",\"r120\",\"r121\",\"r122\",\"r123\",\"r124\",\"r125\",\"r126\",\"r127\",\"r128\",\"r129\",\"r130\",\"r131\",\"r132\",\"r133\",\"r134\",\"r135\",\"r136\",\"r137\",\"r138\",\"r139\",\"r140\",\"r141\",\"r142\",\"r143\",\"r144\",\"r145\",\"r146\",\"r147\",\"r148\",\"r149\",\"r150\",\"r151\",\"r152\",\"r153\",\"r154\",\"r155\",\"r156\",\"r157\",\"r158\",\"r159\",\"r160\",\"r161\",\"r162\",\"r163\",\"r164\",\"r165\",\"r166\",\"r167\",\"r168\",\"r169\",\"r170\",\"r171\",\"r172\",\"r173\",\"r174\",\"r175\",\"r176\",\"r177\",\"r178\",\"r179\",\"r180\",\"r181\",\"r182\",\"r183\",\"r184\",\"r185\",\"r186\",\"r187\",\"r188\",\"r189\",\"r190\",\"r191\",\"r192\",\"r193\",\"r194\",\"r195\",\"r196\",\"r197\",\"r198\",\"r199\",\"r200\",\"r201\",\"r202\",\"r203\",\"r204\",\"r205\",\"r206\",\"r207\",\"r208\",\"r209\",\"r210\",\"r211\",\"r212\",\"r213\",\"r214\",\"r215\",\"r216\",\"r217\",\"r218\",\"r219\",\"r220\",\"r221\",\"r222\",\"r223\",\"r224\",\"r225\",\"r226\",\"r227\",\"r228\",\"r229\",\"r230\",\"r231\",\"r232\",\"r233\",\"r234\",\"r235\",\"r236\",\"r237\",\"r238\",\"r239\",\"r240\",\"r241\",\"r242\",\"r243\",\"r244\",\"r245\",\"r246\",\"r247\",\"r248\",\"r249\",\"r250\",\"r251\",\"r252\",\"r253\",\"r254\",\"r255\",\"r256\"]}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/required"
+   }
+  },
+  {
+   "name": "an empty enum",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/enum"
+   }
+  },
+  {
+   "name": "an enum of an array",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[[1]]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/enum/0"
+   }
+  },
+  {
+   "name": "an enum with one number twice",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[1,1.0]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/enum/1"
+   }
+  },
+  {
+   "name": "an enum with zero twice",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[0,-0]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/enum/1"
+   }
+  },
+  {
+   "name": "an enum with one string twice",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[\"a\",\"a\"]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/enum/1"
+   }
+  },
+  {
+   "name": "an enum of 257",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,109,110,111,112,113,114,115,116,117,118,119,120,121,122,123,124,125,126,127,128,129,130,131,132,133,134,135,136,137,138,139,140,141,142,143,144,145,146,147,148,149,150,151,152,153,154,155,156,157,158,159,160,161,162,163,164,165,166,167,168,169,170,171,172,173,174,175,176,177,178,179,180,181,182,183,184,185,186,187,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,211,212,213,214,215,216,217,218,219,220,221,222,223,224,225,226,227,228,229,230,231,232,233,234,235,236,237,238,239,240,241,242,243,244,245,246,247,248,249,250,251,252,253,254,255,256]}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/enum"
+   }
+  },
+  {
+   "name": "a constant object",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"const\":{}}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/const"
+   }
+  },
+  {
+   "name": "a minimum written as a string",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"minimum\":\"1\"}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/minimum"
+   }
+  },
+  {
+   "name": "draft-04's boolean exclusiveMinimum",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"minimum\":1,\"exclusiveMinimum\":true}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/exclusiveMinimum"
+   }
+  },
+  {
+   "name": "multipleOf zero",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"multipleOf\":0}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/multipleOf"
+   }
+  },
+  {
+   "name": "multipleOf zero with a fraction",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"multipleOf\":0.0e5}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/multipleOf"
+   }
+  },
+  {
+   "name": "a negative multipleOf",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"multipleOf\":-2}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/multipleOf"
+   }
+  },
+  {
+   "name": "a length with a fraction",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"minLength\":1.0}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/minLength"
+   }
+  },
+  {
+   "name": "a length with an exponent",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"maxItems\":1e2}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/maxItems"
+   }
+  },
+  {
+   "name": "a negative length",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"minItems\":-1}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/minItems"
+   }
+  },
+  {
+   "name": "a length past 2^53-1",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"maxLength\":9007199254740992}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/maxLength"
+   }
+  },
+  {
+   "name": "a description that is not a string",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"description\":1}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/description"
+   }
+  },
+  {
+   "name": "a null title",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"title\":null}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/title"
+   }
+  },
+  {
+   "name": "examples that are not an array",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"examples\":{}}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/examples"
+   }
+  },
+  {
+   "name": "deprecated that is not a boolean",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"deprecated\":\"yes\"}}}",
+   "refusal": {
+    "code": "value",
+    "pointer": "/properties/x/deprecated"
+   }
+  },
+  {
+   "name": "a number of 33 characters",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"default\":0.1000000000000000000000000000001}}}",
+   "refusal": {
+    "code": "number",
+    "pointer": "/properties/x/default"
+   }
+  },
+  {
+   "name": "an exponent of 309",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"maximum\":1e309}}}",
+   "refusal": {
+    "code": "number",
+    "pointer": "/properties/x/maximum"
+   }
+  },
+  {
+   "name": "an exponent of -309",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"examples\":[1E-309]}}}",
+   "refusal": {
+    "code": "number",
+    "pointer": "/properties/x/examples/0"
+   }
+  },
+  {
+   "name": "a number in data, far down",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"default\":{\"a\":[{\"b\":1e999}]}}}}",
+   "refusal": {
+    "code": "number",
+    "pointer": "/properties/x/default/a/0/b"
+   }
+  },
+  {
+   "name": "schema locations nested 33 deep",
+   "text": "{\"type\":\"object\",\"additionalProperties\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{\"items\":{}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}}",
+   "refusal": {
+    "code": "nesting",
+    "pointer": "/additionalProperties/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items/items"
+   }
+  },
+  {
+   "name": "2049 schema locations",
+   "text": "{\"type\":\"object\",\"anyOf\":[{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{},{}]}]},{\"anyOf\":[{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]},{\"anyOf\":[{},{},{},{},{},{}]}]}]}",
+   "refusal": {
+    "code": "locations"
+   }
+  },
+  {
+   "name": "a text of 16385 bytes",
+   "text": "{\"type\":\"object\"}",
+   "padTo": 16385,
+   "refusal": {
+    "code": "text-size"
+   }
+  },
+  {
+   "name": "a property name of 129 bytes",
+   "text": "{\"type\":\"object\",\"properties\":{\"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\":{}}}",
+   "refusal": {
+    "code": "name-size",
+    "pointer": "/properties/nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
+   }
+  },
+  {
+   "name": "a property name of 130 bytes in 65 characters",
+   "text": "{\"type\":\"object\",\"properties\":{\"\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\":{}}}",
+   "refusal": {
+    "code": "name-size",
+    "pointer": "/properties/\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9\u00e9"
+   }
+  },
+  {
+   "name": "a string of 1025 bytes",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"description\":\"ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\"}}}",
+   "refusal": {
+    "code": "string-size",
+    "pointer": "/properties/x/description"
+   }
+  },
+  {
+   "name": "a member name in data of 1025 bytes",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"default\":{\"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\":1}}}}",
+   "refusal": {
+    "code": "string-size",
+    "pointer": "/properties/x/default/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
+   }
+  },
+  {
+   "name": "a right-to-left override in a property name",
+   "text": "{\"type\":\"object\",\"properties\":{\"a\u202eb\":{}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/a\u202eb"
+   }
+  },
+  {
+   "name": "the same, written as an escape",
+   "text": "{\"type\":\"object\",\"properties\":{\"a\\u202eb\":{}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/a\u202eb"
+   }
+  },
+  {
+   "name": "a zero-width space in a description",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"description\":\"a\u200bb\"}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/description"
+   }
+  },
+  {
+   "name": "a null in an enum",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"enum\":[\"a\\u0000\"]}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/enum/0"
+   }
+  },
+  {
+   "name": "private use in a default",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"default\":\"\ue000\"}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/default"
+   }
+  },
+  {
+   "name": "unassigned in a title",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"title\":\"\u0378\"}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/title"
+   }
+  },
+  {
+   "name": "a noncharacter in an example",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"examples\":[\"\ufffe\"]}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/examples/0"
+   }
+  },
+  {
+   "name": "an Arabic letter mark in a comment",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"$comment\":\"\u061c\"}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/$comment"
+   }
+  },
+  {
+   "name": "a soft hyphen in a required name",
+   "text": "{\"type\":\"object\",\"required\":[\"a\u00adb\"]}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/required/0"
+   }
+  },
+  {
+   "name": "a tag character in a constant",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"const\":\"\udb40\udc41\"}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/const"
+   }
+  },
+  {
+   "name": "a carriage return in a member name in data",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"default\":{\"a\\rb\":1}}}}",
+   "refusal": {
+    "code": "policy",
+    "pointer": "/properties/x/default/a\rb"
+   }
+  }
+ ]
+}

@@ -41,7 +41,7 @@ func fake(t *testing.T) Config {
 	for _, name := range []string{fakemcp.EnvTools, fakemcp.EnvResult, fakemcp.EnvHang, fakemcp.EnvExitBeforeCall, fakemcp.EnvStderr,
 		fakemcp.EnvServerRequest, fakemcp.EnvNotify, fakemcp.EnvJunk, fakemcp.EnvPagedTools, fakemcp.EnvInitError, fakemcp.EnvStuck,
 		fakemcp.EnvPing, fakemcp.EnvWrongID, fakemcp.EnvHoldStdin, fakemcp.EnvConflict, fakemcp.EnvExitAtStart, fakemcp.EnvProtocol, fakemcp.EnvNoTools,
-		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw, fakemcp.EnvListLine, fakemcp.EnvStderrFile, fakemcp.EnvRequire} {
+		fakemcp.EnvLinger, fakemcp.EnvNullError, fakemcp.EnvServerInfo, fakemcp.EnvListRaw, fakemcp.EnvListLine, fakemcp.EnvListPages, fakemcp.EnvStderrFile, fakemcp.EnvRequire} {
 		t.Setenv(name, "")
 	}
 	t.Setenv(fakemcp.EnvActivate, "1")

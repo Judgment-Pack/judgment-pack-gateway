@@ -91,6 +91,11 @@ const (
 	// EnvListLine names a file whose contents are the whole line written
 	// in answer to tools/list, with {id} replaced by the request's id.
 	EnvListLine = "MCP_FAKE_LIST_LINE"
+	// EnvListPages names a file of whole lines, one per page of
+	// tools/list, each written with {id} replaced by the request's id: a
+	// request without a cursor is answered with the first line, and one
+	// with cursor N with line N.
+	EnvListPages = "MCP_FAKE_LIST_PAGES"
 	// EnvStderrFile names a file whose contents are written to stderr at
 	// start, for text too long for a variable.
 	EnvStderrFile = "MCP_FAKE_STDERR_FILE"
@@ -248,6 +253,15 @@ func serve() int {
 			emit(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
 		case "notifications/initialized":
 		case "tools/list":
+			if path := os.Getenv(EnvListPages); path != "" {
+				data, _ := os.ReadFile(path)
+				pages := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
+				page, _ := strconv.Atoi(m.Params.Cursor)
+				page = min(max(page, 0), len(pages)-1)
+				out.WriteString(strings.ReplaceAll(pages[page], "{id}", string(m.ID)) + "\n")
+				out.Flush()
+				continue
+			}
 			if path := os.Getenv(EnvListLine); path != "" {
 				raw, _ := os.ReadFile(path)
 				out.WriteString(strings.ReplaceAll(strings.TrimSpace(string(raw)), "{id}", string(m.ID)) + "\n")

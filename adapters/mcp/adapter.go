@@ -64,6 +64,13 @@ type Config struct {
 	// only in the text, and the binding that pins the server knows what
 	// it says.
 	ProbeFailure string
+	// Descriptors, when given, has a check capture the allowed tools'
+	// descriptions and input schemas, and the server's identity, into
+	// the snapshot connect keeps for the platform it names
+	// (docs/design/tool-descriptors.md). Only the live operation's check
+	// is given it; a write operation's may run under other credentials,
+	// against another server.
+	Descriptors *DescriptorTarget
 	// MaxOutput bounds the envelope in bytes.
 	MaxOutput int64
 }
@@ -298,16 +305,27 @@ func (cfg Config) serverRefusal() error {
 }
 
 // checkReport is what Check writes: the server as it identified itself,
-// the protocol version it answered with, and every tool it offers. It is
-// for the operator who is connecting a platform, and it is not an
-// envelope: nothing is minted from it.
+// the protocol version it answered with, and every tool it offers; with
+// descriptors asked for, the snapshot and why each candidate that is not
+// in it fell back. It is for the operator who is connecting a platform,
+// and it is not an envelope: nothing is minted from it. Every string
+// outside the snapshot is at most maxReportField bytes, and each list at
+// most maxReportList bytes with what passes it counted, so the report
+// stays within reportBound with any snapshot inside it.
 type checkReport struct {
 	Status          string          `json:"status"`
 	Adapter         adapterIdentity `json:"adapter"`
 	Server          serverIdentity  `json:"server"`
 	ProtocolVersion string          `json:"protocolVersion"`
 	Tools           []string        `json:"tools"`
+	ToolsUnlisted   int             `json:"toolsUnlisted,omitempty"`
 	Probe           *probeReport    `json:"probe,omitempty"`
+	// Descriptors is the snapshot in its canonical form, as connect
+	// writes it.
+	Descriptors        json.RawMessage `json:"descriptors,omitempty"`
+	Fallbacks          []fallback      `json:"fallbacks,omitempty"`
+	FallbacksUnlisted  int             `json:"fallbacksUnlisted,omitempty"`
+	DescriptorsDropped string          `json:"descriptorsDropped,omitempty"`
 }
 
 // probeReport says which tool the check called and that it answered.
@@ -338,6 +356,11 @@ type serverIdentity struct {
 func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err := cfg.serverRefusal(); err != nil {
 		return nil, err
+	}
+	if cfg.Descriptors != nil {
+		if err := cfg.Descriptors.refusal(); err != nil {
+			return nil, err
+		}
 	}
 	env, secrets, err := credentialsEnv(cfg.Credentials)
 	if err != nil {
@@ -387,9 +410,20 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err := rpc.notify("notifications/initialized", map[string]any{}); err != nil {
 		return fail(err)
 	}
-	names, err := listTools(ctx, rpc)
+	// A listing that is captured is pinned, and held to what pinning
+	// needs; only the allowed tools' descriptors are kept.
+	var keep func(string) bool
+	if cfg.Descriptors != nil {
+		keep = func(name string) bool { return len(cfg.Tools) == 0 || contains(cfg.Tools, name) }
+	}
+	offered, err := listTools(ctx, rpc, cfg.Descriptors != nil, keep)
 	if err != nil {
 		return fail(err)
+	}
+	capturedAt := now().UTC().Truncate(time.Second).Format(stampLayout)
+	names := make([]string, 0, len(offered))
+	for _, tool := range offered {
+		names = append(names, tool.name)
 	}
 	for _, allowed := range cfg.Tools {
 		if !contains(names, allowed) {
@@ -436,22 +470,67 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if identity.Version == "" {
 		identity.Version = redact.Redact(initialized.version, secrets)
 	}
+	identity = adapterIdentity{Name: capField(identity.Name), Version: capField(identity.Version), Digest: capField(identity.Digest)}
 	redacted := make([]string, 0, len(names))
 	for _, name := range names {
-		redacted = append(redacted, redact.Redact(name, secrets))
+		redacted = append(redacted, reportField(name, secrets))
 	}
-	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
+	report := checkReport{
 		Status:          "succeeded",
 		Adapter:         identity,
-		Server:          serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)},
-		ProtocolVersion: initialized.protocol,
-		Tools:           redacted,
+		Server:          serverIdentity{Name: reportField(initialized.name, secrets), Version: reportField(initialized.version, secrets)},
+		ProtocolVersion: capField(initialized.protocol),
 		Probe:           probe,
-	}})
+	}
+	report.Tools, report.ToolsUnlisted = capList(redacted, maxReportList)
+	if probe != nil {
+		probe.Tool = capField(probe.Tool)
+	}
+	if cfg.Descriptors != nil {
+		var allowed []listedTool
+		for _, tool := range offered {
+			if tool.descriptor != nil {
+				allowed = append(allowed, tool)
+			}
+		}
+		snapshot, fallbacks, err := capture(*cfg.Descriptors, initialized, allowed, secrets, capturedAt)
+		if err != nil {
+			return finish(nil, err)
+		}
+		report.Descriptors = snapshot
+		for i := range fallbacks {
+			fallbacks[i].Tool = reportField(fallbacks[i].Tool, secrets)
+			fallbacks[i].Reason = reportField(fallbacks[i].Reason, secrets)
+		}
+		report.Fallbacks, report.FallbacksUnlisted = capList(fallbacks, maxReportList)
+	}
+	out, err := encodeCheckReport(report)
 	if err != nil {
 		return finish(nil, err)
 	}
-	return finish(report, nil)
+	return finish(out, nil)
+}
+
+// encodeCheckReport writes the report within reportBound, which connect
+// holds it to by killing an adapter that writes more. The caps keep it
+// well inside with any snapshot; should it pass anyway, the snapshot is
+// dropped, every tool falls back, and the report says so.
+func encodeCheckReport(report checkReport) ([]byte, error) {
+	out, err := canon.EncodeJSON(map[string]any{"check": report})
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > reportBound && report.Descriptors != nil {
+		report.Descriptors = nil
+		report.DescriptorsDropped = fmt.Sprintf("the report with the snapshot would pass %d bytes, so no tool's descriptors are captured", reportBound)
+		if out, err = canon.EncodeJSON(map[string]any{"check": report}); err != nil {
+			return nil, err
+		}
+	}
+	if len(out) > reportBound {
+		return nil, fmt.Errorf("the check's report would pass %d bytes", reportBound)
+	}
+	return out, nil
 }
 
 type initializeResult struct {
@@ -630,10 +709,15 @@ func findTool(ctx context.Context, rpc *client, name string) (json.RawMessage, [
 	return nil, nil, fmt.Errorf("tools/list did not end within %d pages", maxToolPages)
 }
 
-// listTools is every tool the server offers, by name, in the order the
-// server lists them across its pages.
-func listTools(ctx context.Context, rpc *client) ([]string, error) {
-	names := []string{}
+// listTools is every tool the server offers, in the order the server
+// lists them across its pages, each with its descriptor as the server
+// wrote it when keep says so and without one otherwise. A pinned listing
+// -- one a snapshot is captured from -- fails on a cursor seen twice, or
+// on a name offered twice anywhere in it, even with the same descriptor:
+// a listing that does either cannot be pinned.
+func listTools(ctx context.Context, rpc *client, pinned bool, keep func(string) bool) ([]listedTool, error) {
+	offered := []listedTool{}
+	seen, cursors := map[string]bool{}, map[string]bool{}
 	params := map[string]any{}
 	for page := 0; page < maxToolPages; page++ {
 		tools, next, err := toolPage(ctx, rpc, params)
@@ -641,11 +725,24 @@ func listTools(ctx context.Context, rpc *client) ([]string, error) {
 			return nil, err
 		}
 		for _, tool := range tools {
-			names = append(names, tool.name)
+			if pinned && seen[tool.name] {
+				// Written as it is, not quoted with %q: an escape would
+				// carry a name that echoes a credential past a redactor.
+				return nil, fmt.Errorf("tools/list: the server offers tool '%s' twice", tool.name)
+			}
+			seen[tool.name] = true
+			if keep == nil || !keep(tool.name) {
+				tool.descriptor = nil
+			}
+			offered = append(offered, tool)
 		}
 		if next == "" {
-			return names, nil
+			return offered, nil
 		}
+		if pinned && cursors[next] {
+			return nil, errors.New("tools/list: the server gave a cursor it had given before")
+		}
+		cursors[next] = true
 		params = map[string]any{"cursor": next}
 	}
 	return nil, fmt.Errorf("tools/list did not end within %d pages", maxToolPages)

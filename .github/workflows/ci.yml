@@ -103,6 +103,18 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build -buildvcs=false ./...
+      # The shared descriptor vectors are what make_vectors.py writes, and
+      # every schema they and the library fixtures say schema grammar 1
+      # accepts is a schema under both dialects' meta-schemas
+      # (docs/design/tool-descriptors.md). The validator is a module of its
+      # own, so neither of the gateway's modules takes the dependency; it
+      # carries both meta-schemas and fetches nothing.
+      - name: The descriptor vectors are what their script writes
+        working-directory: testdata/tool-descriptors
+        run: python3 make_vectors.py && git diff --exit-code -- vectors.json
+      - name: Accepted descriptor schemas are valid in both dialects
+        working-directory: testdata/tool-descriptors/metaschema
+        run: go vet ./... && go test ./...
       # The mirror of the core's rule: an adapter may take dependencies the core
       # never will, but no dependency may resolve into the core's directory,
       # under any import name, and nothing may redirect resolution.

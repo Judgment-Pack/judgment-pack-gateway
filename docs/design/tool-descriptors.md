@@ -30,7 +30,10 @@ never a source: it may run under other credentials, against another server. The 
 tools as it does today, page by page, at most 32 pages. Two conditions fail the whole check,
 since a listing that meets them cannot be pinned: a cursor seen twice, and a tool name offered
 twice anywhere in the enumeration, even with an identical descriptor. A tool the live operation
-allows and the server does not offer fails the check, as it does today.
+allows and the server does not offer fails the check, as it does today. `connect` asks that
+check, and no other, to capture, by handing its adapter the platform's name and the pinned
+binding (`--descriptors-platform`, `--descriptors-binding`). The adapter then writes the
+snapshot whole, so the snapshot's bounds are exact where tools are admitted.
 
 For each allowed tool, two members of its descriptor are candidates:
 
@@ -62,8 +65,9 @@ it does today. A candidate's **original bytes** are the bytes the server wrote f
 cut from the message.
 
 **In the check report and in the snapshot.** The report gains a `descriptors` member holding the
-snapshot's content. `connect` decodes that member strictly, not with the lenient decoding
-`describeCheck` uses for the rest of the report:
+snapshot in the canonical form of `SPEC.md` §1.1, which is the file's content. `connect` decodes
+that member strictly, not with the lenient decoding `describeCheck` uses for the rest of the
+report:
 
 - exact member names, and exact types for each;
 - no member name twice, at any depth;
@@ -160,13 +164,17 @@ implementation's tests check offline.
 
 | Limit | Bound |
 |---|---|
-| nesting of schema locations | 32 |
+| nesting of schema locations | 32, the root the first |
 | schema locations in all | 2048 |
 | a property name | 128 bytes |
 | any other string in a schema | 1024 bytes |
 | a schema's original text | 16384 bytes |
 | a description | 4096 bytes |
 | the server's name, and its version | 256 bytes each |
+
+A refusal names the JSON Pointer of what it refuses, except for the whole-text bound and the
+count of locations. Which location is one too many depends on the order a walk takes, and two
+implementations need not share one.
 
 **What it bounds.** With no references, no regular expressions and bounded size, what a host
 does to a value because of the schema is linear in the schema's size. What it does also depends
@@ -177,34 +185,46 @@ set. What a host chooses to render from a schema is the host's.
 
 A candidate is refused, never redacted, when any of its decoded strings contains a value the
 check's secret collection finds in the credentials. That covers property names and the server's
-name and version. A refused identity is omitted, and the provenance names no server. The report
-says only that a candidate held a credential value, never which. Screening finds the values the
-collection finds: whole scalars of the credentials file, the user, password and query values of
-a URL in it, and the scalars of JSON nested in its strings. It does not find a secret split
-across strings or spelled in another encoding. A snapshot is written readable to every local
-user, mode `0644`. The design therefore assumes a descriptor is not confidential beyond the
-values screening finds. A deployment for which that is not so should not capture descriptors.
+name and version. A string that is exactly one of the grammar's own words is not screened: a
+keyword the table names, a type name, or a dialect's URI. Such a string is the same whatever the
+credentials hold, so it carries nothing a server chose. Screening it would only refuse, for
+example, every schema that uses `required` beside a PostgreSQL credential `sslmode=require`. A
+refused identity is omitted, and the provenance names no server. The report says only that a
+candidate held a credential value, never which. Screening finds the values the collection finds:
+whole scalars of the credentials file, the user, password and query values of a URL in it, and
+the scalars of JSON nested in its strings. It does not find a secret split across strings or
+spelled in another encoding. A snapshot is written readable to every local user, mode `0644`.
+The design therefore assumes a descriptor is not confidential beyond the values screening finds.
+A deployment for which that is not so should not capture descriptors.
 
 ## Budgets
 
 The limits below are exact, and when one is reached the overflow is deterministic:
 
 - **Candidates:** each within the limits above.
-- **A snapshot:** at most 320 KiB, the whole file. Of that, the candidates' text totals at most
-  256 KiB, leaving the rest for names, identity and the wrapper. The adapter admits tools in
-  the server's order while both bounds hold with the tool added. Every later tool falls back,
-  reported as over the platform's budget.
+- **A snapshot:** at most 320 KiB, the whole file. Of that, the candidates' text, the
+  descriptions' bytes and the schemas' original texts, totals at most 256 KiB, leaving the rest
+  for names, identity and the wrapper. The adapter admits tools in the server's order while both
+  bounds hold with the tool added. Every later tool falls back, reported as over the platform's
+  budget.
 - **The check report:** at most 1 MiB, as `connect` bounds it today. Every field outside
   `descriptors` is capped:
   - the list of offered tool names, and the fallback reasons, at 64 KiB each, with what passes
     a cap counted, not listed;
-  - every other string field, at 512 bytes, as today's redaction already caps the server's name
-    and version: the adapter's identity, the probe's tool name, the protocol version.
+  - every other string field, at 512 bytes, the marker of a cut included: the adapter's
+    identity, the server's name and version, the probe's tool name, the protocol version.
+    Today's redaction cuts the server's name and version at 512 bytes and then adds a
+    three-byte marker; the report's cap counts the marker.
 
   So the report without `descriptors` is at most about 130 KiB, and with a snapshot of at most
   320 KiB it stays inside 1 MiB. The adapter checks the serialized report against 1 MiB before
   writing it. Should it pass anyway, the adapter drops `descriptors`, so every tool falls back,
   and says so. It never lets `connect` kill the check.
+
+  The report names each fallback by its tool and its part (the server's identity, a
+  description, an input schema, or a whole tool) with the reason. It counts what a cap leaves
+  unlisted in `toolsUnlisted` and `fallbacksUnlisted`, and says why a dropped snapshot was
+  dropped in `descriptorsDropped`.
 - **The configuration:** checked, as today, against 1 MiB as it would be written, pins and
   version included.
 - **The listing:** the frontend's whole `tools/list` answer, serialized, is at most 8 MiB. When
@@ -424,7 +444,8 @@ time. A tool that fell back, and `engine.seal`, name none.
   - a repeated name, or a cursor seen twice, failing the check;
   - each display-policy class refused, checked against the Unicode 15.0.0 tables;
   - each grammar rule and limit refused, with accepted fixtures valid under both meta-schemas
-    offline;
+    offline. The vectors are shared (`testdata/tool-descriptors`), and the frontend's own
+    implementation answers to them as well;
   - accepted fixtures from Pydantic and `zod-to-json-schema` output;
   - a credential in a description, a property name or the identity refused without disclosure;
   - the snapshot and report budgets, with their deterministic overflow, including an

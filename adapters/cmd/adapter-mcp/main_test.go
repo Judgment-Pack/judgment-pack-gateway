@@ -26,6 +26,11 @@ func TestRunUsage(t *testing.T) {
 		{"--unknown", "--", "y"},
 		{"--probe", "query", "--", "y"},
 		{"--check", "--probe-failure", "Error:", "--", "y"},
+		// Descriptors are captured by a check, for a platform and its
+		// pinned binding together.
+		{"--check", "--descriptors-platform=tickets", "--", "y"},
+		{"--check", "--descriptors-binding=tickets@" + digest, "--", "y"},
+		{"--descriptors-platform=tickets", "--descriptors-binding=tickets@" + digest, "--", "y"},
 	} {
 		var stdout, stderr bytes.Buffer
 		if code := run(args, strings.NewReader(`{"tool":"query"}`), &stdout, &stderr); code != 2 || stdout.Len() != 0 {
@@ -140,5 +145,25 @@ func TestRunCheck(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"--check", "--endpoint", "--", os.Args[0], "--tools", "query"}, strings.NewReader(""), &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "flag needs an argument") {
 		t.Fatalf("a -- consumed as a value: exit %d %s", code, stderr.String())
+	}
+}
+
+func TestRunCapturesDescriptorsWhenAsked(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(fakemcp.EnvActivate, "1")
+	t.Setenv(fakemcp.EnvTrace, filepath.Join(dir, "trace.jsonl"))
+	var stdout, stderr bytes.Buffer
+	args := []string{"--check", "--tools=query", "--descriptors-platform=tickets", "--descriptors-binding=tickets@" + digest, "--", os.Args[0]}
+	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if out := stdout.String(); !strings.Contains(out, `"descriptors":{"binding":"tickets@`+digest+`",`) || !strings.Contains(out, `"platform":"tickets","policy":1,`) ||
+		!strings.Contains(out, `"tools":{"query":{"description":"Run a read-only query","inputSchemaText":`) {
+		t.Fatalf("the report carries the snapshot: %s", out)
+	}
+	stdout.Reset()
+	args = []string{"--check", "--descriptors-platform=tickets", "--descriptors-binding=tickets", "--", os.Args[0]}
+	if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 1 || !strings.Contains(stdout.String(), "pinned binding") {
+		t.Fatalf("a binding that is not pinned fails the check: %d %s", code, stdout.String())
 	}
 }
