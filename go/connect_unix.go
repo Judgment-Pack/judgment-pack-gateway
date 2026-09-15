@@ -153,3 +153,42 @@ func lockBeside(dir *os.Root, name string, owner fileOwnerIDs) (func(), error) {
 	}
 	return func() { lock.Close() }, nil
 }
+
+// syncDirectory makes a directory's entries durable: what was made, linked
+// or renamed in it survives a crash once this returns.
+func syncDirectory(dir *os.Root, name string) error {
+	d, err := dir.OpenFile(name, os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
+}
+
+// openNoFollow opens a file in the held directory following no link and
+// blocking on nothing, so what is opened is judged by the descriptor.
+func openNoFollow(dir *os.Root, name string) (*os.File, error) {
+	return dir.OpenFile(name, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+}
+
+// snapshotHeld is why a snapshot, or the snapshots' directory, is not what
+// the frontend will verify at start, or nil: of its kind, owned by root or
+// by the configuration's owner, writable by neither group nor others, and a
+// snapshot of exactly its mode.
+func snapshotHeld(info os.FileInfo, owner fileOwnerIDs, dir bool) error {
+	switch {
+	case dir && !info.IsDir():
+		return errors.New("is not a directory")
+	case !dir && !info.Mode().IsRegular():
+		return errors.New("is not a regular file")
+	case !dir && info.Mode().Perm() != snapshotMode:
+		return fmt.Errorf("has mode %04o, not %04o", info.Mode().Perm(), snapshotMode)
+	case info.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("is writable beyond its owner (mode %04o)", info.Mode().Perm())
+	}
+	holder := ownerIDsOf(info)
+	if holder.known && holder.uid != 0 && !(owner.known && holder.uid == owner.uid) {
+		return fmt.Errorf("is owned by uid %d, neither root nor the configuration's owner", holder.uid)
+	}
+	return nil
+}

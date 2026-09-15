@@ -383,11 +383,13 @@ snapshot. Removing unpinned snapshots is a separate operation that this note doe
 | `"3"` | accepted | optional, per platform whose binding has a live MCP operation |
 
 `connect` writes version `"3"` exactly when the entry it writes carries a pin, and otherwise
-leaves the version as it found it. `--replace` that captures nothing removes the member. The
-changes land in `engineVersions`, `platformMembers`, the parser and the renderer, and the
-version diagnostics name `"3"`. The signer parses a version-3 configuration and never reads a
-snapshot. A signer binary older than this change refuses version 3, so the rollout is binaries
-first, then `connect`.
+leaves the version as it found it. `--replace` that captures nothing removes the member. A
+capture of no tool pins nothing. `connect --no-descriptors` asks the live check to capture
+nothing and writes no pin: the choice for a deployment whose descriptors are confidential beyond
+what screening finds. The changes land in `engineVersions`, `platformMembers`, the parser and
+the renderer, and the version diagnostics name `"3"`. The signer parses a version-3
+configuration and never reads a snapshot. A signer binary older than this change refuses version
+3, so the rollout is binaries first, then `connect`.
 
 ## What the frontend reads, once
 

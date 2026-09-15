@@ -24,13 +24,17 @@ import (
 // refused, integers only, unknown members refused by name -- so a
 // misspelled key is an error, never an intention silently dropped.
 
-// engineVersion is the version this engine writes; engineVersions are the
-// ones it reads. Version 2 adds the optional `mcp` member (docs/design/
-// mcp-server.md): a version-1 file without it still loads, and a version-1
-// file with it is refused by name, as any member a version does not have.
-const engineVersion = "2"
+// engineVersion is the newest version this engine reads; engineVersions are
+// all it reads. Version 2 adds the optional `mcp` member (docs/design/
+// mcp-server.md), and version 3 a platform's optional `descriptors` pin
+// (docs/design/tool-descriptors.md): a file of an earlier version without
+// the member still loads, and one with it is refused by name, as any member
+// a version does not have. connect writes version 3 into a file exactly
+// when the entry it writes carries a pin, and otherwise leaves the version
+// as it found it.
+const engineVersion = "3"
 
-var engineVersions = map[string]bool{"1": true, "2": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true}
 
 // The frontend's user (docs/design/mcp-server.md): the MCP server runs as
 // it, so no platform may, or a credentials file could belong to the user
@@ -101,6 +105,10 @@ type platformConfig struct {
 	endpoint    string
 	environment []string // KEY=VALUE, for the runtime's selection, never a secret
 	write       bool
+	// descriptors pins the snapshot of the live operation's tool
+	// descriptors that connect captured, sha256:<64 hex>; "" when none. The
+	// signer never reads it; the frontend does (tool-descriptors.md).
+	descriptors string
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -184,7 +192,7 @@ var engineMembers = map[string]bool{
 
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
-	"endpoint": false, "environment": false, "write": false,
+	"endpoint": false, "environment": false, "write": false, "descriptors": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -203,7 +211,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q or %q", version, "1", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q or %q", version, "1", "2", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
@@ -382,6 +390,16 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: write, when present, is a boolean", name)
 			}
 			pc.write = bool(b)
+		}
+		if _, present := p.get("descriptors"); present {
+			if version != "3" {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: descriptors is a version-3 member; engineVersion %s has no descriptors", name, version)
+			}
+			pin, ok := memberString(p, "descriptors")
+			if !ok || !isDigest(pin) {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: descriptors must be sha256:<64 lowercase hex>, the digest of a snapshot", name)
+			}
+			pc.descriptors = pin
 		}
 		cfg.platforms = append(cfg.platforms, pc)
 	}
@@ -1348,6 +1366,11 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		}
 		if err := credentialsMatch(p.credentials, b, p.write); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		// A snapshot is of the live operation's tools; a binding without
+		// one has none to pin.
+		if p.descriptors != "" && b.live == nil {
+			return nil, fmt.Errorf("platform %s: descriptors pins a snapshot of a live MCP operation, and binding %s has none", p.name, p.binding)
 		}
 		bindings[p.name] = b
 	}

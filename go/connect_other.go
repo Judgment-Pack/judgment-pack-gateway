@@ -23,3 +23,14 @@ func openConfigForRead(dir *os.Root, name string) (*os.File, error) {
 }
 
 func lockBeside(dir *os.Root, name string, owner fileOwnerIDs) (func(), error) { return func() {}, nil }
+
+// Elsewhere than Unix a directory is not synced, a link is not refused by
+// the open, and a snapshot's mode and owner are not judged: connect writes
+// nothing on such hosts.
+func syncDirectory(dir *os.Root, name string) error { return nil }
+
+func openNoFollow(dir *os.Root, name string) (*os.File, error) {
+	return dir.OpenFile(name, os.O_RDONLY, 0)
+}
+
+func snapshotHeld(info os.FileInfo, owner fileOwnerIDs, dir bool) error { return nil }

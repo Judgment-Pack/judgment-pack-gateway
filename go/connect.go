@@ -35,6 +35,10 @@ type connectRequest struct {
 	environment []string // KEY=VALUE
 	write       bool
 	replace     bool
+	// noDescriptors has the live check capture nothing, for a deployment
+	// whose descriptors are confidential beyond what screening finds
+	// (docs/design/tool-descriptors.md): the entry is written without a pin.
+	noDescriptors bool
 }
 
 // connectOutcome is what connect has to say: the statements the
@@ -44,6 +48,9 @@ type connectOutcome struct {
 	statements []string
 	answers    []string
 	written    string
+	// after is what to do once the file is written: which processes must
+	// restart for it to be served.
+	after []string
 }
 
 const (
@@ -57,7 +64,7 @@ const (
 	checkMaxOutput = 1 << 20
 )
 
-const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <operation>=<path>... --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace]"
+const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <operation>=<path>... --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace] [--no-descriptors]"
 
 // cmdConnect writes a platform entry into the engine's configuration:
 // after holding the configuration it would produce to every refusal
@@ -94,6 +101,9 @@ func printOutcome(stdout, stderr io.Writer, platform string, out connectOutcome,
 		return 1
 	}
 	fmt.Fprintf(stdout, "%s: written to %s\n", printable(platform), printable(out.written))
+	for _, line := range out.after {
+		fmt.Fprintln(stdout, printable(line))
+	}
 	return 0
 }
 
@@ -156,6 +166,7 @@ func parseConnectArgs(args []string) (connectRequest, string, bool) {
 	fs.Func("environment", "", func(s string) error { req.environment = append(req.environment, s); return nil })
 	fs.BoolVar(&req.write, "write", false, "")
 	fs.BoolVar(&req.replace, "replace", false, "")
+	fs.BoolVar(&req.noDescriptors, "no-descriptors", false, "")
 	// Go's flag parsing stops at the first word that is not a flag; the
 	// platform may stand there, and parsing resumes after it.
 	for {
@@ -215,7 +226,10 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if index >= 0 && !req.replace {
 		return out, fmt.Errorf("platform %s is already configured in %s; --replace replaces its entry", req.platform, req.config)
 	}
+	var previous *platformConfig
 	if index >= 0 {
+		kept := cfg.platforms[index]
+		previous = &kept
 		// The entry replaced is not resolved: its pin is what --replace
 		// may be repairing. Every other platform is.
 		cfg.platforms = append(cfg.platforms[:index:index], cfg.platforms[index+1:]...)
@@ -240,7 +254,15 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	candidate.platforms = append(append([]platformConfig(nil), cfg.platforms...), entry)
 	sort.Slice(candidate.platforms, func(i, j int) bool { return candidate.platforms[i].name < candidate.platforms[j].name })
 	bindings[req.platform] = b
-	text, err := renderPlatformEntry(data, req, ref)
+	// The live check captures descriptors unless the operator said not
+	// to; the size is judged with a pin in the entry, which is what it
+	// holds if anything is captured.
+	capturing := b.live != nil && !req.noDescriptors
+	placeholder := ""
+	if capturing {
+		placeholder = "sha256:" + strings.Repeat("0", 64)
+	}
+	text, err := renderPlatformEntry(data, req, ref, placeholder)
 	if err != nil {
 		return out, err
 	}
@@ -284,23 +306,81 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		}
 	}
 	sort.Strings(names)
+	live := req.platform + "/live"
+	var captured liveCapture
 	for _, name := range names {
-		report, err := check(ctx, sources[name])
+		spec := sources[name]
+		if name == live && capturing {
+			// Only the live operation's check captures: a write
+			// operation's may run under other credentials, against
+			// another server. Each flag and its value as one word.
+			spec.check = append(append([]string(nil), spec.check...), "--descriptors-platform="+req.platform, "--descriptors-binding="+ref)
+		}
+		report, err := check(ctx, spec)
 		if err != nil {
 			return out, fmt.Errorf("%s: %v", name, err)
 		}
-		answer, err := describeCheck(sources[name].shape, report)
+		answer, err := describeCheck(spec.shape, report)
 		if err != nil {
 			return out, fmt.Errorf("%s: %v", name, err)
 		}
 		out.answers = append(out.answers, name+": "+answer)
+		if name == live && capturing {
+			if captured, err = readCapture(report, req.platform, ref, b.live); err != nil {
+				return out, fmt.Errorf("%s: %v", name, err)
+			}
+			for _, line := range captureLines(captured, b.live) {
+				out.answers = append(out.answers, name+": "+line)
+			}
+		}
+	}
+	// A snapshot with a tool in it is published before any configuration
+	// names it; one that captured no tool is not pinned.
+	pin := ""
+	if captured.data != nil && len(captured.snap.names) > 0 {
+		if pin, err = file.publishSnapshot(captured.data); err != nil {
+			return out, err
+		}
+	}
+	if text, err = renderPlatformEntry(data, req, ref, pin); err != nil {
+		return out, err
+	}
+	if _, err := parseEngineConfig(text); err != nil {
+		return out, fmt.Errorf("the configuration as written would not parse: %v", err)
+	}
+	// Compared with the snapshot the entry pinned before, when there is
+	// one and it still verifies against its pin.
+	if previous != nil && previous.descriptors != "" && capturing {
+		prior, err := file.readPinnedSnapshot(previous.descriptors)
+		if err != nil {
+			out.answers = append(out.answers, live+": descriptors: the previous snapshot does not verify against its pin, so nothing is compared: "+err.Error())
+		} else {
+			var allowedBefore map[string]bool
+			if before, err := loadBinding(cfg.catalog, previous.binding); err == nil && before.live != nil {
+				allowedBefore = map[string]bool{}
+				for _, tool := range before.live.tools {
+					allowedBefore[tool] = true
+				}
+			}
+			for _, line := range compareLines(&prior, allowedBefore, captured, b.live) {
+				out.answers = append(out.answers, live+": "+line)
+			}
+		}
 	}
 	// The file is put in place only if it is still what was read: a
 	// connect that raced this one is not written over.
 	if err := file.replace(data, text); err != nil {
+		var late errNotDurable
+		if errors.As(err, &late) {
+			out.written = req.config
+		}
 		return out, err
 	}
 	out.written = req.config
+	if previous != nil {
+		entry.descriptors = pin
+		out.after = restartLines(*previous, entry)
+	}
 	return out, nil
 }
 
@@ -513,7 +593,11 @@ func describeCheck(shape string, report []byte) (string, error) {
 // renderPlatformEntry is the configuration with the entry in it, as the
 // engine writes its own form: the file re-read as a value, the platform
 // set under platforms, the whole rendered with members in canonical order.
-func renderPlatformEntry(data []byte, req connectRequest, ref string) ([]byte, error) {
+//
+// An entry that pins a snapshot is a version-3 member, so the file is
+// written as version 3 exactly when the entry carries a pin; otherwise its
+// version stays as it was found.
+func renderPlatformEntry(data []byte, req connectRequest, ref, pin string) ([]byte, error) {
 	v, err := parseJSON(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine configuration: %v", err)
@@ -556,6 +640,10 @@ func renderPlatformEntry(data []byte, req connectRequest, ref string) ([]byte, e
 	if req.write {
 		entry.set("write", vBool(true))
 	}
+	if pin != "" {
+		entry.set("descriptors", vString(pin))
+		obj.set("engineVersion", vString("3"))
+	}
 	platforms.set(req.platform, entry)
 	var sb strings.Builder
 	formatValue(&sb, obj, "")
@@ -578,6 +666,59 @@ type configFile struct {
 	// entry: a test's way of putting another file in the entry's place
 	// at exactly that moment.
 	afterOpen func()
+}
+
+// openEntry opens a name in the held directory as the entry it is: not a
+// link, and the file opened the entry's own. The held directory follows a
+// link that stays inside it whatever flag the open is given, so the entry
+// is judged first and the file opened compared with it after, as the lock
+// is (lockHeld).
+func openEntry(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
+	entry, err := dir.Lstat(name)
+	if err != nil {
+		return nil, nil, err
+	}
+	if entry.Mode()&os.ModeSymlink != 0 {
+		return nil, nil, errors.New("is a symbolic link")
+	}
+	if entryJudged != nil {
+		entryJudged(name)
+	}
+	file, err := openNoFollow(dir, name)
+	if err != nil {
+		return nil, nil, err
+	}
+	info, err := file.Stat()
+	if err != nil {
+		file.Close()
+		return nil, nil, err
+	}
+	if !os.SameFile(entry, info) {
+		file.Close()
+		return nil, nil, errors.New("is not the file its name held a moment ago")
+	}
+	return file, info, nil
+}
+
+// entryJudged, when set, runs between judging an entry and opening it: a
+// test's way of putting another file in its place at that moment.
+var entryJudged func(name string)
+
+// directorySynced and fileSyncing, when set, are a test's view of the
+// writes: each directory sync, by name, with what it returns in place of
+// the sync; and each file as it is about to be synced, so its mode and
+// owner at that moment can be judged.
+var (
+	directorySynced func(name string) error
+	fileSyncing     func(file *os.File)
+)
+
+// syncFile syncs a file written here.
+func syncFile(file *os.File) error {
+	if fileSyncing != nil {
+		fileSyncing(file)
+	}
+	return file.Sync()
 }
 
 func openConfigFile(path string) (*configFile, error) {
@@ -671,19 +812,20 @@ func (f *configFile) read() ([]byte, error) {
 // against. That holds against another connect, which takes the lock; an
 // editor that does not is not held out, and its save in the instant
 // between that read and the rename would be written over.
+//
+// The rename is the commit point. Everything before it leaves the old
+// configuration in place; the configuration's directory is synced after
+// it, and a failure there leaves the new file visible but perhaps not
+// durable, which the error says (errNotDurable).
 func (f *configFile) replace(read, content []byte) error {
 	if _, err := f.regular(); err != nil {
 		return err
 	}
-	var suffix [4]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
+	private, cleanup, err := f.private()
+	if err != nil {
 		return err
 	}
-	private := f.base + ".connect-" + hex.EncodeToString(suffix[:])
-	if err := f.dir.Mkdir(private, 0o700); err != nil {
-		return fmt.Errorf("engine configuration: %v", err)
-	}
-	defer f.dir.RemoveAll(private)
+	defer cleanup()
 	tmp := private + "/new"
 	file, err := f.dir.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, f.mode)
 	if err != nil {
@@ -696,19 +838,20 @@ func (f *configFile) replace(read, content []byte) error {
 	if _, err := file.Write(content); err != nil {
 		return fail(err)
 	}
-	if err := file.Sync(); err != nil {
-		return fail(err)
-	}
 	// The mode as it was, whatever the umask narrowed it to at creation,
 	// and the owner as it was -- a directory with the setgid bit would
 	// otherwise give the file its group -- both through the descriptor,
 	// so they land on the file written and not on a name; or the rename
 	// does not happen: a file the signer could read must stay one it can
-	// read.
+	// read. Both before the sync, so what is synced is the file as it
+	// will stand.
 	if err := file.Chmod(f.mode); err != nil {
 		return fail(err)
 	}
 	if err := keepOwner(file, f.owner); err != nil {
+		return fail(err)
+	}
+	if err := syncFile(file); err != nil {
 		return fail(err)
 	}
 	if err := file.Close(); err != nil {
@@ -723,6 +866,180 @@ func (f *configFile) replace(read, content []byte) error {
 	}
 	if err := f.dir.Rename(tmp, f.base); err != nil {
 		return fmt.Errorf("engine configuration: %v", err)
+	}
+	if err := f.syncDir("."); err != nil {
+		return errNotDurable{err}
+	}
+	return nil
+}
+
+// errNotDurable is a failure after the commit point: the configuration
+// was replaced, and may not survive a crash.
+type errNotDurable struct{ err error }
+
+func (e errNotDurable) Error() string {
+	return "engine configuration: replaced, but its directory could not be synced, so the replacement may not survive a crash: " + e.err.Error()
+}
+
+// syncDir syncs a directory in the held one.
+func (f *configFile) syncDir(name string) error {
+	if directorySynced != nil {
+		if err := directorySynced(name); err != nil {
+			return err
+		}
+	}
+	return syncDirectory(f.dir, name)
+}
+
+// private makes a directory of this process's own beside the file, 0700,
+// so no other user can swap what is in it, and returns it with its
+// removal.
+func (f *configFile) private() (string, func(), error) {
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", nil, err
+	}
+	name := f.base + ".connect-" + hex.EncodeToString(suffix[:])
+	if err := f.dir.Mkdir(name, 0o700); err != nil {
+		return "", nil, fmt.Errorf("engine configuration: %v", err)
+	}
+	return name, func() { f.dir.RemoveAll(name) }, nil
+}
+
+const (
+	snapshotMode    os.FileMode = 0o644
+	snapshotDirMode os.FileMode = 0o755
+)
+
+// snapshotDir is the directory the configuration's snapshots are kept in,
+// named from the configuration's own name, beside it and on its
+// filesystem; no configuration member names it.
+func (f *configFile) snapshotDir() string { return f.base + ".descriptors" }
+
+// publishSnapshot keeps a snapshot beside the configuration, named by its
+// digest, before any configuration names it, and returns its pin
+// (docs/design/tool-descriptors.md, "Writing, and the crash story"):
+//
+//  1. the directory, made when it is not there -- mode 0755, the
+//     configuration's owner -- with the configuration's directory synced,
+//     so the entry survives a crash before anything names it; one that is
+//     there is used only when it holds to what the frontend verifies;
+//  2. the snapshot, written in a private directory beside the
+//     configuration, given its final mode and owner, and synced;
+//  3. the snapshot linked to <hex>.json, which never replaces a name. A
+//     name already taken is reused only when it is a regular file, of that
+//     mode and owner, that digests to its name; anything else refuses the
+//     connect. The staged name goes with the private directory, and the
+//     snapshots' directory is synced.
+func (f *configFile) publishSnapshot(data []byte) (string, error) {
+	sum := sha256.Sum256(data)
+	pin := "sha256:" + hex.EncodeToString(sum[:])
+	dir := f.snapshotDir()
+	name := dir + "/" + hex.EncodeToString(sum[:]) + ".json"
+	if err := f.snapshotDirectory(dir); err != nil {
+		return "", err
+	}
+	private, cleanup, err := f.private()
+	if err != nil {
+		return "", err
+	}
+	defer cleanup()
+	staged := private + "/" + hex.EncodeToString(sum[:]) + ".json"
+	file, err := f.dir.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, snapshotMode)
+	if err != nil {
+		return "", fmt.Errorf("descriptors: %v", err)
+	}
+	fail := func(err error) (string, error) {
+		file.Close()
+		return "", fmt.Errorf("descriptors: %v", err)
+	}
+	if _, err := file.Write(data); err != nil {
+		return fail(err)
+	}
+	if err := file.Chmod(snapshotMode); err != nil {
+		return fail(err)
+	}
+	if err := keepOwner(file, f.owner); err != nil {
+		return fail(err)
+	}
+	if err := syncFile(file); err != nil {
+		return fail(err)
+	}
+	if err := file.Close(); err != nil {
+		return "", fmt.Errorf("descriptors: %v", err)
+	}
+	if err := f.dir.Link(staged, name); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return "", fmt.Errorf("descriptors: %v", err)
+		}
+		if err := f.snapshotTaken(name, pin); err != nil {
+			return "", err
+		}
+	}
+	if err := f.syncDir(dir); err != nil {
+		return "", fmt.Errorf("descriptors: %s could not be synced: %v", dir, err)
+	}
+	return pin, nil
+}
+
+// snapshotDirectory makes the snapshots' directory, or holds the one that
+// is there to what the frontend verifies at start.
+func (f *configFile) snapshotDirectory(dir string) error {
+	info, err := f.dir.Lstat(dir)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("descriptors: %s is a symbolic link", dir)
+		}
+		if err := snapshotHeld(info, f.owner, true); err != nil {
+			return fmt.Errorf("descriptors: %s %v", dir, err)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("descriptors: %v", err)
+	}
+	if err := f.dir.Mkdir(dir, snapshotDirMode); err != nil {
+		return fmt.Errorf("descriptors: %v", err)
+	}
+	// Mode and owner through the descriptor of the directory made, as the
+	// configuration's own are kept.
+	made, err := openNoFollow(f.dir, dir)
+	if err != nil {
+		return fmt.Errorf("descriptors: %v", err)
+	}
+	defer made.Close()
+	if err := made.Chmod(snapshotDirMode); err != nil {
+		return fmt.Errorf("descriptors: %v", err)
+	}
+	if err := keepOwner(made, f.owner); err != nil {
+		return fmt.Errorf("descriptors: %v", err)
+	}
+	if err := f.syncDir("."); err != nil {
+		return fmt.Errorf("descriptors: the configuration's directory could not be synced: %v", err)
+	}
+	return nil
+}
+
+// snapshotTaken judges a snapshot's name that is already taken: reused only
+// when what holds it is a regular file, of the snapshot's mode and an owner
+// the frontend accepts, that digests to the pin. It is opened as the entry
+// it is (openEntry), and judged by what was opened.
+func (f *configFile) snapshotTaken(name, pin string) error {
+	file, info, err := openEntry(f.dir, name)
+	if err != nil {
+		return fmt.Errorf("descriptors: %s is taken, and is not a file this connect can reuse: %v", name, err)
+	}
+	defer file.Close()
+	if err := snapshotHeld(info, f.owner, false); err != nil {
+		return fmt.Errorf("descriptors: %s is taken by a file that %v", name, err)
+	}
+	existing, err := readBoundedFrom(file, name, maxSnapshotBytes)
+	if err != nil {
+		return fmt.Errorf("descriptors: %v", err)
+	}
+	sum := sha256.Sum256(existing)
+	if "sha256:"+hex.EncodeToString(sum[:]) != pin {
+		return fmt.Errorf("descriptors: %s is taken by a file that does not digest to its name", name)
 	}
 	return nil
 }

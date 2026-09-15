@@ -55,12 +55,20 @@ duplicate member names refused, integers only, unknown members refused by name. 
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity` and `mcp` are optional; within a
-platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment` and
-`write` optional. Every path is absolute.
+platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`
+and `descriptors` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` and `"2"`: version 2 added `mcp`, and a version-1 file still loads without it and is
-  refused by name with it.
+  `"1"`, `"2"` and `"3"`: version 2 added `mcp`, and version 3 a platform's `descriptors`. A
+  file of an earlier version still loads without the member and is refused by name with it.
+  `connect` writes version 3 exactly when an entry it writes carries a pin, and otherwise
+  leaves the version as it found it, so a signer older than version 3 goes on reading every
+  file `connect` has not pinned.
+- `descriptors`, in a version-3 file, pins the snapshot of the platform's tool descriptors
+  that `connect` captured from its live operation, `sha256:<64 hex>`, kept beside the file in
+  `<file>.descriptors/` ([tool-descriptors.md](tool-descriptors.md)). A platform whose binding
+  has no live operation may not carry one. The signer parses it and never reads the snapshot;
+  the MCP server does.
 - `mcp`, when present, is the MCP server's own settings ([mcp-server.md](mcp-server.md)):
   `listen`, a literal loopback address with an explicit port, where `gateway mcp --http`
   listens; `resource`, the absolute `https` URL the server is reached as, without a fragment,
@@ -279,7 +287,7 @@ is fetched both ways and must derive to byte-identical canonical facts.
 ```
 gateway connect --config engine.json service-desk --binding jira \
   --credentials-file live=/run/secrets/service-desk --user engine-service-desk \
-  [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace]
+  [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace] [--no-descriptors]
 ```
 
 writes the platform entry — the binding pinned by the digest of the catalog file as it is
@@ -304,6 +312,18 @@ is printed, one line per operation; the first that cannot answer ends the connec
 adapter's reason. Nothing is acquired and no receipt is minted. An image the runtime does not
 hold yet is pulled during the check, which is why a check is given five minutes where an
 acquisition has twenty seconds.
+
+The live operation's check, and no other, also captures the allowed tools' descriptions and
+input schemas and the server's identity ([tool-descriptors.md](tool-descriptors.md)), unless
+`--no-descriptors` is given, for a deployment whose descriptors are confidential beyond what
+screening finds. `connect` reads the capture strictly from the report and says, for each allowed
+tool, what was captured or why it fell back. A capture holding a tool is kept as an immutable
+snapshot in `<file>.descriptors/`, named by its digest, before any configuration names it, and
+the entry pins it. A capture of no tool pins nothing, and `--replace` without a pin removes the
+member. With `--replace`, `connect` compares the capture with the snapshot the entry pinned
+before, once that verifies against its pin. It then says which processes must restart: the MCP
+server alone when only the descriptors' pin changed, and both when anything the signer reads
+changed.
 
 It refuses a binding that is not in the catalog, a platform already configured unless
 `--replace` is given — and with it the entry replaced is not resolved, since its pin may be
