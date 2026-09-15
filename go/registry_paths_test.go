@@ -359,6 +359,32 @@ func TestAShareThatHasGoneAwayIsNotAbsence(t *testing.T) {
 	}
 }
 
+// Below a directory confirmed missing nothing is looked at, and the input is
+// absent. A look there would be answered with what Windows answers for a name
+// under a missing directory, ERROR_PATH_NOT_FOUND, which is not the plain
+// answer for absence -- every fresh gateway whose registry directory is not
+// yet made would refuse its first acquisition. Here such a look fails
+// outright, on every platform, to show there is none.
+func TestNothingIsLookedAtBelowAMissingDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing")
+	registry := filepath.Join(missing, "registry.jsonl")
+	decisions := filepath.Join(missing, "decisions")
+	looked := errors.New("looked below a missing directory")
+	stat = func(path string) (fs.FileInfo, error) {
+		if path == registry || path == decisions {
+			return nil, &fs.PathError{Op: "stat", Path: path, Err: looked}
+		}
+		return os.Stat(path)
+	}
+	t.Cleanup(func() { stat = os.Stat })
+	if _, present, err := readRegistryBytes(registry); err != nil || present {
+		t.Fatalf("a registry under a missing directory: present=%v err=%v", present, err)
+	}
+	if _, present, err := decisionCandidates(decisions, nil, nil); err != nil || present {
+		t.Fatalf("a decision-record directory under a missing directory: present=%v err=%v", present, err)
+	}
+}
+
 // A second look that fails is not absence. When the stat that follows links
 // finds an input not there, only a look at the path itself that confirms it
 // makes the input absent: that look failing -- the filesystem changing between

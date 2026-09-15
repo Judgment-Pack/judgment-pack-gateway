@@ -328,8 +328,10 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 	if err := requirePlainSpelling(dir, false); err != nil {
 		return nil, false, fmt.Errorf("decision-record directory: %w", err)
 	}
-	if err := registryContainerReachable(dir); err != nil {
+	if there, err := registryContainerReachable(dir); err != nil {
 		return nil, false, fmt.Errorf("decision-record directory: %w", err)
+	} else if !there {
+		return nil, false, nil
 	}
 	// a link that leads nowhere is there and cannot be read, at the
 	// directory as above it (§4.1), never the absence it would be taken for

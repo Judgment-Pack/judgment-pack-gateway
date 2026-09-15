@@ -358,7 +358,12 @@ func absentOrLink(path, link string) error {
 // mapping. Statting the registry path — or only its immediate parent — cannot do
 // it: Windows answers ERROR_PATH_NOT_FOUND for any non-directory path component,
 // at any depth, and os.IsNotExist reports that as absence.
-func registryContainerReachable(path string) error {
+//
+// It reports whether every directory above the input is there. When one is
+// confirmed absent the input is absent too, and the caller does not look at it:
+// on Windows a look at a name under a missing directory answers
+// ERROR_PATH_NOT_FOUND, which is not the plain answer absent() takes.
+func registryContainerReachable(path string) (bool, error) {
 	for _, dir := range pathAncestors(path) {
 		info, err := stat(dir)
 		if err != nil {
@@ -366,15 +371,15 @@ func registryContainerReachable(path string) error {
 				// nothing reachable from here down -- unless the component
 				// is there as a link that leads nowhere, which a stat that
 				// follows it reports as absent
-				return absentOrLink(dir, "registry parent path component is a link that leads nowhere")
+				return false, absentOrLink(dir, "registry parent path component is a link that leads nowhere")
 			}
-			return err
+			return false, err
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("registry parent path component is not a directory: %s", dir)
+			return false, fmt.Errorf("registry parent path component is not a directory: %s", dir)
 		}
 	}
-	return nil
+	return true, nil
 }
 
 // statInput stats an input the verifier reads -- the registry file, the
@@ -407,7 +412,7 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 	if err := requirePlainSpelling(path, true); err != nil {
 		return nil, false, err
 	}
-	if err := registryContainerReachable(path); err != nil {
+	if there, err := registryContainerReachable(path); err != nil || !there {
 		return nil, false, err
 	}
 	info, err := statInput(path, "the registry is a link that leads nowhere")
