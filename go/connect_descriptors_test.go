@@ -336,7 +336,7 @@ func TestConnectComparesWithThePreviousSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: explain removed") ||
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot (the previous binding cannot be read, so which tools it allowed is not known): explain removed") ||
 		!hasLine(out.after, "restart: what the signer reads changed (the binding); restart both processes") {
 		t.Fatalf("%q %q", out.answers, out.after)
 	}
@@ -498,5 +498,79 @@ func TestRestartAdviceComparesWhatIsWritten(t *testing.T) {
 	}
 	if !hasLine(out.after, "restart: nothing either process reads changed") {
 		t.Fatalf("%q", out.after)
+	}
+}
+
+// A catalog file updated in place no longer digests to the old pin, and
+// what the old binding allowed is then not known: the comparison says so,
+// and says neither that a tool was added nor that nothing changed.
+func TestAComparisonWithoutThePreviousBindingSaysWhatItCannotKnow(t *testing.T) {
+	f := newConnectFixture(t, twoToolBinding, ``)
+	f.captured = `{"query":{"description":"Run a query"}}` // explain fell back
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	req := f.request()
+	req.replace = true
+	// The binding rewritten in place with its tools as they were: explain
+	// now captured was allowed before, which the comparison cannot know.
+	rewritten := strings.Replace(twoToolBinding, `"licence": "MIT"`, `"licence": "MIT-0"`, 1)
+	if rewritten == twoToolBinding {
+		t.Fatal("the rewrite changed nothing")
+	}
+	if err := os.WriteFile(filepath.Join(f.catalog, "postgres.json"), []byte(rewritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.captured = `{"explain":{"description":"Explain"},"query":{"description":"Run a query"}}`
+	out, err := connect(context.Background(), req, f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot (the previous binding cannot be read, so which tools it allowed is not known): explain captured now and not before") {
+		t.Fatalf("%q", out.answers)
+	}
+	// Rewritten again, explain gone; it fell back before, so neither
+	// snapshot shows it, and nothing is claimed about it.
+	if err := os.WriteFile(filepath.Join(f.catalog, "postgres.json"), []byte(strings.Replace(restrictedBinding, `"licence": "MIT"`, `"licence": "MIT-0"`, 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.captured = `{"query":{"description":"Run a query"}}`
+	req2 := f.request()
+	req2.replace = true
+	out, err = connect(context.Background(), req2, f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range out.answers {
+		if strings.Contains(line, "nothing changed") || strings.Contains(line, "added") {
+			t.Fatalf("a claim the snapshots cannot support: %q", line)
+		}
+	}
+}
+
+// A fallback is the tool at its position among the allowed tools, whatever
+// its label: the adapter redacts and cuts the label, and connect prints the
+// label, never the name the adapter screened.
+func TestFallbacksAreMatchedByPosition(t *testing.T) {
+	f := newConnectFixture(t, twoToolBinding, ``)
+	f.captured = `{"query":{"description":"Run a query"}}`
+	f.capturedExtra = `"fallbacks":[{"tool":"que[redacted]","allowed":0,"part":"inputSchema","reason":"the tool declares no inputSchema"},{"tool":"exp…","allowed":1,"part":"tool","reason":"its name holds a value of the credentials"}],`
+	out, err := connect(context.Background(), f.request(), f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLine(out.answers, "warehouse/live: descriptors: query captured (description 11 bytes); fell back: input schema: the tool declares no inputSchema") ||
+		!hasLine(out.answers, "warehouse/live: descriptors: exp… fell back: tool: its name holds a value of the credentials") {
+		t.Fatalf("%q", out.answers)
+	}
+	for _, line := range out.answers {
+		if strings.Contains(line, "descriptors:") && strings.Contains(line, "explain") {
+			t.Fatalf("a name the adapter screened is printed: %q", line)
+		}
+	}
+	f = newConnectFixture(t, twoToolBinding, ``)
+	f.capturedExtra = `"fallbacks":[{"tool":"x","allowed":2,"part":"tool","reason":"r"}],`
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "names no tool the live operation allows") {
+		t.Fatalf("%v", err)
 	}
 }

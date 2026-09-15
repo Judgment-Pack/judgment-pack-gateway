@@ -75,16 +75,20 @@ func TestConnectUsesWhatIsThereOnlyWhenItHolds(t *testing.T) {
 			}
 		}, "is taken, and is not a file this connect can reuse: is a symbolic link"},
 		{"a link put in a snapshot's place once its name is judged", func(t *testing.T, f *connectFixture, path string) {
+			// To a copy beside it, which the held directory would follow.
 			data, _ := os.ReadFile(path)
-			if err := os.WriteFile(filepath.Join(filepath.Dir(f.config), "copy.json"), data, 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "copy.json"), data, 0o644); err != nil {
 				t.Fatal(err)
 			}
 			entryJudged = func(name string) {
+				if !strings.HasSuffix(name, ".json") {
+					return
+				}
 				entryJudged = nil
 				if err := os.Remove(path); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink("../copy.json", path); err != nil {
+				if err := os.Symlink("copy.json", path); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -92,6 +96,9 @@ func TestConnectUsesWhatIsThereOnlyWhenItHolds(t *testing.T) {
 		}, "is not the file its name held a moment ago"},
 		{"a link to the same file, put in its place once its name is judged", func(t *testing.T, f *connectFixture, path string) {
 			entryJudged = func(name string) {
+				if !strings.HasSuffix(name, ".json") {
+					return
+				}
 				entryJudged = nil
 				// The snapshot itself renamed, and a link to it where it
 				// stood: the file opened through the link is the file
@@ -172,7 +179,7 @@ func TestNothingOfTheMCPServersOwnIsUsed(t *testing.T) {
 	}
 	defer root.Close()
 	f := &configFile{dir: root, base: "engine.json", mode: 0o640, owner: fileOwnerIDs{uid: 1000, gid: frontendUID, known: true}}
-	if _, err := f.publishSnapshot([]byte("{}")); err == nil || !strings.Contains(err.Error(), "would be refused at the server's start") {
+	if _, _, err := f.publishSnapshot([]byte("{}")); err == nil || !strings.Contains(err.Error(), "would be refused at the server's start") {
 		t.Fatalf("%v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(dir, "engine.json.descriptors")); !os.IsNotExist(err) {
@@ -212,7 +219,79 @@ func TestConnectSyncsASnapshotItReuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := strings.TrimPrefix(pin, "sha256:") + ".json"
-	if strings.Join(synced, " ") != name+" "+name+" new" {
+	if len(synced) != 3 || !strings.HasSuffix(synced[0], ".staged") || synced[1] != name || synced[2] != "new" {
 		t.Fatalf("the staged snapshot, the one reused, then the configuration: %q", synced)
+	}
+}
+
+// The snapshots' directory is held while the snapshot is kept, and its
+// name judged again before the configuration is put in place: a link to
+// the same directory put in its place, when it is judged or once the
+// snapshot is kept, refuses the connect.
+func TestTheSnapshotsDirectoryIsHeld(t *testing.T) {
+	for _, when := range []string{"judged", "kept"} {
+		t.Run(when, func(t *testing.T) {
+			f := newConnectFixture(t, restrictedBinding, ``)
+			f.captured = capturedQuery
+			if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+				t.Fatal(err)
+			}
+			dir := f.config + ".descriptors"
+			swap := func() {
+				if err := os.Rename(dir, dir+".moved"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Base(dir)+".moved", dir); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if when == "judged" {
+				entryJudged = func(name string) {
+					if strings.HasSuffix(name, ".descriptors") {
+						entryJudged = nil
+						swap()
+					}
+				}
+			} else {
+				beforeCommit = func() { beforeCommit = nil; swap() }
+			}
+			t.Cleanup(func() { entryJudged, beforeCommit = nil, nil })
+			before := f.fileText(t)
+			req := f.request()
+			req.replace = true
+			f.captured = `{"query":{"description":"Run a query now"}}`
+			if _, err := connect(context.Background(), req, f.host, f.check); err == nil || !strings.Contains(err.Error(), "is not the directory its name held a moment ago") {
+				t.Fatalf("%v", err)
+			}
+			if f.fileText(t) != before {
+				t.Fatal("the configuration is left as it was")
+			}
+			// Found when it is judged, nothing is written in the directory
+			// the link leads to.
+			if entries, _ := os.ReadDir(dir + ".moved"); when == "judged" && len(entries) != 1 {
+				t.Fatalf("a snapshot was kept in a directory swapped in: %v", entries)
+			}
+		})
+	}
+}
+
+// A failure to sync the snapshots' directory refuses the connect before
+// any configuration names what is in it.
+func TestASnapshotsDirectoryThatWillNotSyncRefusesTheConnect(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	f.captured = capturedQuery
+	directorySynced = func(name string) error {
+		if strings.HasSuffix(name, ".descriptors") {
+			return os.ErrPermission
+		}
+		return nil
+	}
+	defer func() { directorySynced = nil }()
+	before := f.fileText(t)
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "could not be synced") {
+		t.Fatalf("%v", err)
+	}
+	if f.fileText(t) != before {
+		t.Fatal("the configuration is left as it was")
 	}
 }

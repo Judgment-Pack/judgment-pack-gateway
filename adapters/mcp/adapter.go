@@ -421,10 +421,15 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return finish(nil, err)
 		}
 		visit = func(tool listedTool) error {
-			if len(cfg.Tools) > 0 && !contains(cfg.Tools, tool.name) {
-				return nil
+			if len(cfg.Tools) == 0 {
+				return capture.add(tool, nil)
 			}
-			return capture.add(tool)
+			for i, allowed := range cfg.Tools {
+				if allowed == tool.name {
+					return capture.add(tool, &i)
+				}
+			}
+			return nil
 		}
 	}
 	names, err := listTools(ctx, rpc, capture != nil, visit)

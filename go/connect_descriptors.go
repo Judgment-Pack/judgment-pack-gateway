@@ -26,10 +26,15 @@ type liveCapture struct {
 	dropped   string
 }
 
+// reportedFallback is a candidate the adapter did not capture: the tool by
+// its position among the tools the check was told to allow, which is the
+// binding's order, and by a label the adapter redacted and cut, which is
+// words for the operator and not the tool's identity.
 type reportedFallback struct {
-	Tool   string `json:"tool"`
-	Part   string `json:"part"`
-	Reason string `json:"reason"`
+	Tool    string `json:"tool"`
+	Allowed *int   `json:"allowed"`
+	Part    string `json:"part"`
+	Reason  string `json:"reason"`
 }
 
 // readCapture reads what the live check captured. The whole report is
@@ -64,6 +69,11 @@ func readCapture(report []byte, platform, ref string, live *operation) (liveCapt
 		return c, fmt.Errorf("descriptors: the report's fallbacks cannot be read: %v", err)
 	}
 	c.fallbacks, c.unlisted, c.dropped = lenient.Check.Fallbacks, lenient.Check.FallbacksUnlisted, lenient.Check.DescriptorsDropped
+	for _, f := range c.fallbacks {
+		if f.Allowed != nil && (*f.Allowed < 0 || *f.Allowed >= len(live.tools)) {
+			return c, errors.New("descriptors: a fallback names no tool the live operation allows")
+		}
+	}
 	value, present := check.get("descriptors")
 	if !present {
 		if c.dropped == "" {
@@ -91,51 +101,61 @@ func readCapture(report []byte, platform, ref string, live *operation) (liveCapt
 }
 
 // captureLines says, for the operator, what was captured of the server and
-// of each tool the live operation allows, in the binding's order, or why
-// it fell back.
+// of each tool the live operation allows, in the binding's order, or why it
+// fell back. A tool is found in the fallbacks by its position among the
+// allowed tools, and a tool that fell back is named by the adapter's label:
+// the adapter redacted it, and the snapshot names only tools it captured.
 func captureLines(c liveCapture, live *operation) []string {
-	reasons := map[string][]string{}
+	reasons := map[int][]string{}
+	labels := map[int]string{}
 	var lines []string
 	for _, f := range c.fallbacks {
-		if f.Part == "server" {
-			lines = append(lines, "descriptors: the server's identity fell back: "+f.Reason)
+		if f.Allowed == nil {
+			if f.Part == "server" {
+				lines = append(lines, "descriptors: the server's identity fell back: "+f.Reason)
+			}
 			continue
 		}
 		part := map[string]string{"description": "description", "inputSchema": "input schema", "tool": "tool"}[f.Part]
 		if part == "" {
 			part = f.Part
 		}
-		reasons[f.Tool] = append(reasons[f.Tool], part+": "+f.Reason)
+		reasons[*f.Allowed] = append(reasons[*f.Allowed], part+": "+f.Reason)
+		labels[*f.Allowed] = f.Tool
 	}
 	if c.data == nil {
 		lines = append(lines, "descriptors: none captured: "+c.dropped)
 	} else if c.snap.server != nil {
 		lines = append(lines, "descriptors: server "+strings.TrimSpace(c.snap.server.name+" "+c.snap.server.version))
 	}
-	for _, name := range live.tools {
+	unnamed := 0
+	for i, name := range live.tools {
 		t, captured := c.snap.tools[name]
-		var parts []string
-		if t.description != nil {
-			parts = append(parts, fmt.Sprintf("description %d bytes", len(*t.description)))
-		}
-		if t.inputSchemaText != nil {
-			parts = append(parts, fmt.Sprintf("input schema %d bytes", len(*t.inputSchemaText)))
-		}
-		line := "descriptors: " + name
 		switch {
 		case captured:
-			line += " captured (" + strings.Join(parts, ", ") + ")"
-			if len(reasons[name]) > 0 {
-				line += "; fell back: " + strings.Join(reasons[name], "; ")
+			var parts []string
+			if t.description != nil {
+				parts = append(parts, fmt.Sprintf("description %d bytes", len(*t.description)))
 			}
-		case len(reasons[name]) > 0:
-			line += " fell back: " + strings.Join(reasons[name], "; ")
-		case c.unlisted > 0:
-			line += " fell back; the reason is past what the report lists"
+			if t.inputSchemaText != nil {
+				parts = append(parts, fmt.Sprintf("input schema %d bytes", len(*t.inputSchemaText)))
+			}
+			line := "descriptors: " + name + " captured (" + strings.Join(parts, ", ") + ")"
+			if len(reasons[i]) > 0 {
+				line += "; fell back: " + strings.Join(reasons[i], "; ")
+			}
+			lines = append(lines, line)
+		case len(reasons[i]) > 0:
+			lines = append(lines, "descriptors: "+labels[i]+" fell back: "+strings.Join(reasons[i], "; "))
 		default:
-			line += " fell back"
+			unnamed++
 		}
-		lines = append(lines, line)
+	}
+	switch {
+	case unnamed == 1:
+		lines = append(lines, "descriptors: 1 allowed tool fell back with no reason the report lists")
+	case unnamed > 1:
+		lines = append(lines, fmt.Sprintf("descriptors: %d allowed tools fell back with no reason the report lists", unnamed))
 	}
 	return lines
 }
@@ -145,10 +165,12 @@ func captureLines(c liveCapture, live *operation) []string {
 // snapshot holds: a tool the binding allows now and did not is added, one
 // it no longer allows is removed, one captured in both whose candidates
 // differ is changed, and one captured in only one of them is now, or no
-// longer, fallen back. The server's identity is compared the same way. The
+// longer, fallen back. The server's identity is compared the same way; the
 // capture time never counts. previous is nil when there is no previous
-// snapshot to compare with; allowedBefore is nil when the previous binding
-// cannot be read, and then the previous snapshot stands for it.
+// snapshot to compare with. allowedBefore is nil when the previous binding
+// cannot be read -- a catalog file updated in place no longer digests to
+// the old pin -- and then the comparison says so, and says only what the
+// two snapshots show: never that a tool was added, nor that nothing changed.
 func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCapture, live *operation) []string {
 	if previous == nil {
 		return nil
@@ -157,21 +179,19 @@ func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCap
 	for _, tool := range live.tools {
 		allowedNow[tool] = true
 	}
-	before := allowedBefore
-	if before == nil {
-		before = map[string]bool{}
-		for _, name := range previous.names {
-			before[name] = true
-		}
-	}
+	var candidates []string
+	candidates = append(candidates, live.tools...)
+	candidates = append(candidates, previous.names...)
+	candidates = append(candidates, now.snap.names...)
 	var formerly []string
-	for tool := range before {
+	for tool := range allowedBefore {
 		formerly = append(formerly, tool)
 	}
 	sort.Strings(formerly)
+	candidates = append(candidates, formerly...)
 	var names []string
 	seen := map[string]bool{}
-	for _, name := range append(append(append([]string{}, live.tools...), previous.names...), formerly...) {
+	for _, name := range candidates {
 		if !seen[name] {
 			seen[name] = true
 			names = append(names, name)
@@ -186,46 +206,62 @@ func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCap
 	case was == nil && is != nil:
 		changes = append(changes, "the server's identity no longer fallen back")
 	}
+	known := allowedBefore != nil
 	for _, name := range names {
 		was, inBefore := previous.tools[name]
 		is, inAfter := now.snap.tools[name]
 		switch {
-		case !allowedNow[name]:
+		case !allowedNow[name] && (inBefore || (known && allowedBefore[name])):
 			changes = append(changes, name+" removed")
-		case !before[name]:
+		case !allowedNow[name]:
+		case known && !allowedBefore[name]:
 			changes = append(changes, name+" added")
 		case inBefore && inAfter && !reflect.DeepEqual(was, is):
 			changes = append(changes, name+" changed")
 		case inBefore && !inAfter:
 			changes = append(changes, name+" now fallen back")
-		case !inBefore && inAfter:
+		case !inBefore && inAfter && known:
 			changes = append(changes, name+" no longer fallen back")
+		case !inBefore && inAfter:
+			changes = append(changes, name+" captured now and not before")
 		}
 	}
-	if len(changes) == 0 {
-		return []string{"descriptors: against the previous snapshot, nothing changed"}
+	header := "descriptors: against the previous snapshot"
+	if !known {
+		header += " (the previous binding cannot be read, so which tools it allowed is not known)"
 	}
-	return []string{"descriptors: against the previous snapshot: " + strings.Join(changes, ", ")}
+	switch {
+	case len(changes) > 0:
+		return []string{header + ": " + strings.Join(changes, ", ")}
+	case known:
+		return []string{header + ", nothing changed"}
+	}
+	return []string{header + ", no captured tool changed"}
 }
 
-// readPinnedSnapshot reads the snapshot a pin names from the snapshots'
-// directory, opened as the entry it is, judged by what was opened -- a regular
-// file of the snapshot's mode and an owner the frontend accepts -- and
-// digested before it is parsed. It is how connect finds the previous
-// snapshot to compare with.
+// readPinnedSnapshot reads the snapshot a pin names, in the snapshots'
+// directory held open as the entry it is, the file opened as the entry it
+// is and judged by what was opened -- a regular file of the snapshot's mode
+// and an owner the frontend accepts -- and digested before it is parsed.
+// It is how connect finds the previous snapshot to compare with.
 func (f *configFile) readPinnedSnapshot(pin string) (snapshot, error) {
 	hexSum, ok := strings.CutPrefix(pin, "sha256:")
 	if !ok || !isDigest(pin) {
 		return snapshot{}, errors.New("not a pin")
 	}
-	name := f.snapshotDir() + "/" + hexSum + ".json"
-	file, info, err := openEntry(f.dir, name)
+	held, err := f.holdSnapshotDirectory(false)
 	if err != nil {
-		return snapshot{}, fmt.Errorf("%s %v", name, err)
+		return snapshot{}, err
+	}
+	defer held.Close()
+	name := hexSum + ".json"
+	file, info, err := openEntry(held, name)
+	if err != nil {
+		return snapshot{}, fmt.Errorf("%s/%s %v", f.snapshotDir(), name, err)
 	}
 	defer file.Close()
 	if err := snapshotHeld(info, f.owner, false); err != nil {
-		return snapshot{}, fmt.Errorf("%s %v", name, err)
+		return snapshot{}, fmt.Errorf("%s/%s %v", f.snapshotDir(), name, err)
 	}
 	data, err := readBoundedFrom(file, name, maxSnapshotBytes)
 	if err != nil {
@@ -233,7 +269,7 @@ func (f *configFile) readPinnedSnapshot(pin string) (snapshot, error) {
 	}
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != hexSum {
-		return snapshot{}, fmt.Errorf("%s does not digest to its pin", name)
+		return snapshot{}, fmt.Errorf("%s/%s does not digest to its pin", f.snapshotDir(), name)
 	}
 	return parseSnapshot(data)
 }

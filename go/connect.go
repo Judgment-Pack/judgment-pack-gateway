@@ -346,10 +346,12 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	// A snapshot with a tool in it is published before any configuration
 	// names it; one that captured no tool is not pinned.
 	pin := ""
+	var held *os.Root
 	if captured.data != nil && len(captured.snap.names) > 0 {
-		if pin, err = file.publishSnapshot(captured.data); err != nil {
+		if pin, held, err = file.publishSnapshot(captured.data); err != nil {
 			return out, err
 		}
+		defer held.Close()
 	}
 	if text, err = renderPlatformEntry(data, req, ref, pin); err != nil {
 		return out, err
@@ -376,8 +378,17 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 			}
 		}
 	}
-	// The file is put in place only if it is still what was read: a
+	// The snapshots' directory is still the one the snapshot was kept in,
+	// and the file is put in place only if it is still what was read: a
 	// connect that raced this one is not written over.
+	if beforeCommit != nil {
+		beforeCommit()
+	}
+	if held != nil {
+		if err := file.stillHeld(held); err != nil {
+			return out, err
+		}
+	}
 	if err := file.replace(data, text); err != nil {
 		var late errNotDurable
 		if errors.As(err, &late) {
@@ -713,7 +724,12 @@ func openEntry(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
 
 // entryJudged, when set, runs between judging an entry and opening it: a
 // test's way of putting another file in its place at that moment.
-var entryJudged func(name string)
+// beforeCommit, when set, runs once the snapshot is kept and before the
+// configuration is put in place.
+var (
+	entryJudged  func(name string)
+	beforeCommit func()
+)
 
 // directorySynced and fileSyncing, when set, are a test's view of the
 // writes: each directory sync, by name, with what it returns in place of
@@ -928,102 +944,159 @@ const (
 func (f *configFile) snapshotDir() string { return f.base + ".descriptors" }
 
 // publishSnapshot keeps a snapshot beside the configuration, named by its
-// digest, before any configuration names it, and returns its pin
-// (docs/design/tool-descriptors.md, "Writing, and the crash story"):
+// digest, before any configuration names it, and returns its pin with the
+// snapshots' directory held open (docs/design/tool-descriptors.md,
+// "Writing, and the crash story"):
 //
 //  1. the directory, made when it is not there -- mode 0755, the
-//     configuration's owner -- with the configuration's directory synced,
-//     so the entry survives a crash before anything names it; one that is
-//     there is used only when it holds to what the frontend verifies;
-//  2. the snapshot, written in a private directory beside the
-//     configuration, given its final mode and owner, and synced;
-//  3. the snapshot linked to <hex>.json, which never replaces a name. A
-//     name already taken is reused only when it is a regular file, of that
-//     mode and owner, that digests to its name; anything else refuses the
-//     connect. The staged name goes with the private directory, and the
-//     snapshots' directory is synced.
-func (f *configFile) publishSnapshot(data []byte) (string, error) {
+//     configuration's owner -- or found and held to what the frontend
+//     verifies, then held open as the entry it is, and the configuration's
+//     directory synced, so the entry survives a crash before anything
+//     names it;
+//  2. the snapshot, written in the held directory under a staging name no
+//     snapshot has, given its final mode and owner, and synced;
+//  3. the snapshot linked to <hex>.json in the held directory, which never
+//     replaces a name. A name already taken is reused only when it is a
+//     regular file, of that mode and owner, that digests to its name, and
+//     it is synced. The staging name is removed, and the held directory
+//     synced.
+//
+// Every step is in the held directory, so a name swapped for a link to it
+// meanwhile changes nothing; the caller judges the name again before the
+// configuration is put in place (stillHeld).
+func (f *configFile) publishSnapshot(data []byte) (string, *os.Root, error) {
 	// A snapshot is given the configuration's owner, and the MCP server
 	// refuses one that belongs to its own user or group.
 	if frontendOwns(f.owner) {
-		return "", fmt.Errorf("descriptors: the configuration belongs to the MCP server's own user or group (%d), and a snapshot given its owner would be refused at the server's start", frontendUID)
+		return "", nil, fmt.Errorf("descriptors: the configuration belongs to the MCP server's own user or group (%d), and a snapshot given its owner would be refused at the server's start", frontendUID)
 	}
 	sum := sha256.Sum256(data)
 	pin := "sha256:" + hex.EncodeToString(sum[:])
-	dir := f.snapshotDir()
-	name := dir + "/" + hex.EncodeToString(sum[:]) + ".json"
-	if err := f.snapshotDirectory(dir); err != nil {
-		return "", err
-	}
-	private, cleanup, err := f.private()
+	name := hex.EncodeToString(sum[:]) + ".json"
+	held, err := f.holdSnapshotDirectory(true)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	defer cleanup()
-	staged := private + "/" + hex.EncodeToString(sum[:]) + ".json"
-	file, err := f.dir.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, snapshotMode)
+	fail := func(err error) (string, *os.Root, error) {
+		held.Close()
+		return "", nil, err
+	}
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return fail(err)
+	}
+	staged := ".connect-" + hex.EncodeToString(suffix[:]) + ".staged"
+	file, err := held.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, snapshotMode)
 	if err != nil {
-		return "", fmt.Errorf("descriptors: %v", err)
+		return fail(fmt.Errorf("descriptors: %v", err))
 	}
-	fail := func(err error) (string, error) {
-		file.Close()
-		return "", fmt.Errorf("descriptors: %v", err)
+	defer held.Remove(staged)
+	written := func() error {
+		defer file.Close()
+		if _, err := file.Write(data); err != nil {
+			return err
+		}
+		if err := file.Chmod(snapshotMode); err != nil {
+			return err
+		}
+		if err := keepOwner(file, f.owner); err != nil {
+			return err
+		}
+		if err := syncFile(file); err != nil {
+			return err
+		}
+		return file.Close()
 	}
-	if _, err := file.Write(data); err != nil {
-		return fail(err)
+	if err := written(); err != nil {
+		return fail(fmt.Errorf("descriptors: %v", err))
 	}
-	if err := file.Chmod(snapshotMode); err != nil {
-		return fail(err)
-	}
-	if err := keepOwner(file, f.owner); err != nil {
-		return fail(err)
-	}
-	if err := syncFile(file); err != nil {
-		return fail(err)
-	}
-	if err := file.Close(); err != nil {
-		return "", fmt.Errorf("descriptors: %v", err)
-	}
-	if err := f.dir.Link(staged, name); err != nil {
+	if err := held.Link(staged, name); err != nil {
 		if !errors.Is(err, os.ErrExist) {
-			return "", fmt.Errorf("descriptors: %v", err)
+			return fail(fmt.Errorf("descriptors: %v", err))
 		}
-		if err := f.snapshotTaken(name, pin); err != nil {
-			return "", err
+		if err := f.snapshotTaken(held, name, pin); err != nil {
+			return fail(err)
 		}
 	}
-	if err := f.syncDir(dir); err != nil {
-		return "", fmt.Errorf("descriptors: %s could not be synced: %v", dir, err)
+	if err := held.Remove(staged); err != nil {
+		return fail(fmt.Errorf("descriptors: %v", err))
 	}
-	return pin, nil
+	if err := f.syncHeld(held); err != nil {
+		return fail(fmt.Errorf("descriptors: %s could not be synced: %v", f.snapshotDir(), err))
+	}
+	return pin, held, nil
 }
 
-// snapshotDirectory makes the snapshots' directory, or holds the one that
-// is there to what the frontend verifies at start.
-func (f *configFile) snapshotDirectory(dir string) error {
-	info, err := f.dir.Lstat(dir)
-	if err == nil {
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("descriptors: %s is a symbolic link", dir)
+// holdSnapshotDirectory holds the snapshots' directory open: made, when
+// publishing and it is not there, or found and held to what the frontend
+// verifies; judged before it is opened and again after, each time as the
+// directory opened, so a link put in its place is found. When publishing,
+// the configuration's directory is then synced, whether the directory was
+// made now or by a connect that may have stopped before its own sync.
+func (f *configFile) holdSnapshotDirectory(publishing bool) (*os.Root, error) {
+	dir := f.snapshotDir()
+	entry, err := f.dir.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) && publishing {
+		if err := f.makeSnapshotDirectory(dir); err != nil {
+			return nil, err
 		}
-		if err := snapshotHeld(info, f.owner, true); err != nil {
-			return fmt.Errorf("descriptors: %s %v", dir, err)
-		}
-		// Found, not made: a connect that made it may have stopped before
-		// its parent was synced, so the entry is made durable here too.
-		if err := f.syncDir("."); err != nil {
-			return fmt.Errorf("descriptors: the configuration's directory could not be synced: %v", err)
-		}
-		return nil
+		entry, err = f.dir.Lstat(dir)
 	}
-	if !errors.Is(err, os.ErrNotExist) {
+	if err != nil {
+		return nil, fmt.Errorf("descriptors: %v", err)
+	}
+	if entry.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("descriptors: %s is a symbolic link", dir)
+	}
+	if err := snapshotHeld(entry, f.owner, true); err != nil {
+		return nil, fmt.Errorf("descriptors: %s %v", dir, err)
+	}
+	if entryJudged != nil {
+		entryJudged(dir)
+	}
+	held, err := f.dir.OpenRoot(dir)
+	if err != nil {
+		return nil, fmt.Errorf("descriptors: %v", err)
+	}
+	if err := f.stillHeld(held); err != nil {
+		held.Close()
+		return nil, err
+	}
+	opened, err := held.Stat(".")
+	if err != nil || !os.SameFile(entry, opened) {
+		held.Close()
+		return nil, fmt.Errorf("descriptors: %s is not the directory its name held a moment ago", dir)
+	}
+	if publishing {
+		if err := f.syncDir("."); err != nil {
+			held.Close()
+			return nil, fmt.Errorf("descriptors: the configuration's directory could not be synced: %v", err)
+		}
+	}
+	return held, nil
+}
+
+// stillHeld is why the snapshots' directory's name no longer names the
+// directory held, or nil: not a link, and the directory held.
+func (f *configFile) stillHeld(held *os.Root) error {
+	dir := f.snapshotDir()
+	opened, err := held.Stat(".")
+	if err != nil {
 		return fmt.Errorf("descriptors: %v", err)
 	}
+	named, err := f.dir.Lstat(dir)
+	if err != nil || named.Mode()&os.ModeSymlink != 0 || !os.SameFile(named, opened) {
+		return fmt.Errorf("descriptors: %s is not the directory its name held a moment ago", dir)
+	}
+	return nil
+}
+
+// makeSnapshotDirectory makes the snapshots' directory, mode 0755, with the
+// configuration's owner, set through its descriptor.
+func (f *configFile) makeSnapshotDirectory(dir string) error {
 	if err := f.dir.Mkdir(dir, snapshotDirMode); err != nil {
 		return fmt.Errorf("descriptors: %v", err)
 	}
-	// Mode and owner through the descriptor of the directory made, as the
-	// configuration's own are kept.
 	made, err := openNoFollow(f.dir, dir)
 	if err != nil {
 		return fmt.Errorf("descriptors: %v", err)
@@ -1035,24 +1108,32 @@ func (f *configFile) snapshotDirectory(dir string) error {
 	if err := keepOwner(made, f.owner); err != nil {
 		return fmt.Errorf("descriptors: %v", err)
 	}
-	if err := f.syncDir("."); err != nil {
-		return fmt.Errorf("descriptors: the configuration's directory could not be synced: %v", err)
-	}
 	return nil
 }
 
-// snapshotTaken judges a snapshot's name that is already taken: reused only
-// when what holds it is a regular file, of the snapshot's mode and an owner
-// the frontend accepts, that digests to the pin. It is opened as the entry
-// it is (openEntry), and judged by what was opened.
-func (f *configFile) snapshotTaken(name, pin string) error {
-	file, info, err := openEntry(f.dir, name)
+// syncHeld syncs the held directory.
+func (f *configFile) syncHeld(held *os.Root) error {
+	if directorySynced != nil {
+		if err := directorySynced(f.snapshotDir()); err != nil {
+			return err
+		}
+	}
+	return syncDirectory(held, ".")
+}
+
+// snapshotTaken judges a snapshot's name already taken in the held
+// directory: reused only when what holds it is a regular file, of the
+// snapshot's mode and an owner the frontend accepts, that digests to the
+// pin; opened as the entry it is (openEntry), judged by what was opened,
+// and synced, since a file found may never have reached the disk.
+func (f *configFile) snapshotTaken(held *os.Root, name, pin string) error {
+	file, info, err := openEntry(held, name)
 	if err != nil {
-		return fmt.Errorf("descriptors: %s is taken, and is not a file this connect can reuse: %v", name, err)
+		return fmt.Errorf("descriptors: %s/%s is taken, and is not a file this connect can reuse: %v", f.snapshotDir(), name, err)
 	}
 	defer file.Close()
 	if err := snapshotHeld(info, f.owner, false); err != nil {
-		return fmt.Errorf("descriptors: %s is taken by a file that %v", name, err)
+		return fmt.Errorf("descriptors: %s/%s is taken by a file that %v", f.snapshotDir(), name, err)
 	}
 	existing, err := readBoundedFrom(file, name, maxSnapshotBytes)
 	if err != nil {
@@ -1060,12 +1141,10 @@ func (f *configFile) snapshotTaken(name, pin string) error {
 	}
 	sum := sha256.Sum256(existing)
 	if "sha256:"+hex.EncodeToString(sum[:]) != pin {
-		return fmt.Errorf("descriptors: %s is taken by a file that does not digest to its name", name)
+		return fmt.Errorf("descriptors: %s/%s is taken by a file that does not digest to its name", f.snapshotDir(), name)
 	}
-	// A file found, not written, may never have reached the disk: the
-	// configuration will name it, so it is synced before that.
 	if err := syncFound(file); err != nil {
-		return fmt.Errorf("descriptors: %s could not be synced: %v", name, err)
+		return fmt.Errorf("descriptors: %s/%s could not be synced: %v", f.snapshotDir(), name, err)
 	}
 	return nil
 }

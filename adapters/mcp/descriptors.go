@@ -77,9 +77,15 @@ type capturedTool struct {
 // fallback is a candidate that was not captured, and why: the server's
 // identity, a tool's description or input schema, or a whole tool.
 type fallback struct {
-	Tool   string `json:"tool,omitempty"`
-	Part   string `json:"part"`
-	Reason string `json:"reason"`
+	// Tool is the tool's name as the report can carry it, redacted and
+	// cut: words for the operator, not the tool's identity.
+	Tool string `json:"tool,omitempty"`
+	// Allowed is the tool's position among the tools the check was told
+	// to allow (Config.Tools), which is how a caller that named them
+	// knows the tool; absent for the server's identity.
+	Allowed *int   `json:"allowed,omitempty"`
+	Part    string `json:"part"`
+	Reason  string `json:"reason"`
 }
 
 const (
@@ -138,15 +144,16 @@ func newCapturer(target DescriptorTarget, info initializeResult, secrets []strin
 // The canonical form sorts members by name and writes no whitespace, so
 // what a tool adds does not depend on where it sorts: its name, a colon,
 // its candidates, and a comma beside any other tool.
-func (c *capturer) add(tool listedTool) error {
+func (c *capturer) add(tool listedTool, allowed *int) error {
 	if c.over {
 		// Every tool after the first that did not fit falls back, and is
 		// not judged: nothing of it would be captured whatever it holds.
-		c.fallBack(fallback{Tool: tool.name, Part: partTool, Reason: overBudget})
+		c.fallBack(fallback{Tool: tool.name, Allowed: allowed, Part: partTool, Reason: overBudget})
 		return nil
 	}
 	entry, refused := candidates(tool, c.secrets)
 	for _, f := range refused {
+		f.Allowed = allowed
 		c.fallBack(f)
 	}
 	if entry.Description == nil && entry.InputSchemaText == nil {
@@ -171,7 +178,7 @@ func (c *capturer) add(tool listedTool) error {
 		return nil
 	}
 	c.over = true
-	c.fallBack(fallback{Tool: tool.name, Part: partTool, Reason: overBudget})
+	c.fallBack(fallback{Tool: tool.name, Allowed: allowed, Part: partTool, Reason: overBudget})
 	return nil
 }
 

@@ -189,7 +189,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	}
 	if len(out.answers) != 4 || out.answers[0] != "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: Connected" ||
 		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server postgres-mcp 0.3.0, protocol 2025-03-26, tools query, explain" ||
-		out.answers[2] != "warehouse/live: descriptors: server postgres-mcp 0.3.0" || out.answers[3] != "warehouse/live: descriptors: query fell back" {
+		out.answers[2] != "warehouse/live: descriptors: server postgres-mcp 0.3.0" || out.answers[3] != "warehouse/live: descriptors: 1 allowed tool fell back with no reason the report lists" {
 		t.Fatalf("what the platform answered, one line per operation, then what was captured: %q", out.answers)
 	}
 	if out.written != f.config || len(out.statements) != 0 {
