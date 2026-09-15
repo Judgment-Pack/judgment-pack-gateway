@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -140,14 +141,14 @@ func captureLines(c liveCapture, live *operation) []string {
 }
 
 // compareLines says how the snapshot captured now differs from the one
-// the entry pinned before, tool by tool, over the tools either allows: a
-// tool the binding allows now and did not is added, one it no longer
-// allows is removed, one captured in both whose candidates differ is
-// changed, and one captured in only one of them is now, or no longer,
-// fallen back. The capture time never counts. previous is nil when there
-// is no previous snapshot to compare with; allowedBefore is nil when the
-// previous binding cannot be read, and then the previous snapshot stands
-// for it.
+// the entry pinned before, over every tool either binding allows or either
+// snapshot holds: a tool the binding allows now and did not is added, one
+// it no longer allows is removed, one captured in both whose candidates
+// differ is changed, and one captured in only one of them is now, or no
+// longer, fallen back. The server's identity is compared the same way. The
+// capture time never counts. previous is nil when there is no previous
+// snapshot to compare with; allowedBefore is nil when the previous binding
+// cannot be read, and then the previous snapshot stands for it.
 func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCapture, live *operation) []string {
 	if previous == nil {
 		return nil
@@ -156,30 +157,44 @@ func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCap
 	for _, tool := range live.tools {
 		allowedNow[tool] = true
 	}
-	if allowedBefore == nil {
-		allowedBefore = map[string]bool{}
+	before := allowedBefore
+	if before == nil {
+		before = map[string]bool{}
 		for _, name := range previous.names {
-			allowedBefore[name] = true
+			before[name] = true
 		}
 	}
+	var formerly []string
+	for tool := range before {
+		formerly = append(formerly, tool)
+	}
+	sort.Strings(formerly)
 	var names []string
 	seen := map[string]bool{}
-	for _, name := range append(append([]string{}, live.tools...), previous.names...) {
+	for _, name := range append(append(append([]string{}, live.tools...), previous.names...), formerly...) {
 		if !seen[name] {
 			seen[name] = true
 			names = append(names, name)
 		}
 	}
 	var changes []string
+	switch was, is := previous.server, now.snap.server; {
+	case was != nil && is != nil && *was != *is:
+		changes = append(changes, "the server's identity changed")
+	case was != nil && is == nil:
+		changes = append(changes, "the server's identity now fallen back")
+	case was == nil && is != nil:
+		changes = append(changes, "the server's identity no longer fallen back")
+	}
 	for _, name := range names {
-		before, inBefore := previous.tools[name]
-		after, inAfter := now.snap.tools[name]
+		was, inBefore := previous.tools[name]
+		is, inAfter := now.snap.tools[name]
 		switch {
 		case !allowedNow[name]:
 			changes = append(changes, name+" removed")
-		case !allowedBefore[name]:
+		case !before[name]:
 			changes = append(changes, name+" added")
-		case inBefore && inAfter && !reflect.DeepEqual(before, after):
+		case inBefore && inAfter && !reflect.DeepEqual(was, is):
 			changes = append(changes, name+" changed")
 		case inBefore && !inAfter:
 			changes = append(changes, name+" now fallen back")
@@ -223,8 +238,20 @@ func (f *configFile) readPinnedSnapshot(pin string) (snapshot, error) {
 	return parseSnapshot(data)
 }
 
+// environmentOf is an environment as the file holds it, a variable to its
+// value, whatever order it was given in.
+func environmentOf(pairs []string) map[string]string {
+	env := map[string]string{}
+	for _, pair := range pairs {
+		key, value, _ := strings.Cut(pair, "=")
+		env[key] = value
+	}
+	return env
+}
+
 // restartLines says which processes must restart for what a --replace
-// wrote to be served: when nothing the signer reads changed -- the
+// wrote to be served, comparing the entry as the file held it with the
+// entry as it is written: when nothing the signer reads changed -- the
 // binding's pin, a credentials path, the user, the endpoint, the
 // environment, the write flag -- and only the descriptors' pin did, the
 // frontend alone; otherwise both.
@@ -242,7 +269,7 @@ func restartLines(previous, next platformConfig) []string {
 	if previous.endpoint != next.endpoint {
 		signer = append(signer, "the endpoint")
 	}
-	if strings.Join(previous.environment, "\x00") != strings.Join(next.environment, "\x00") {
+	if !reflect.DeepEqual(environmentOf(previous.environment), environmentOf(next.environment)) {
 		signer = append(signer, "the environment")
 	}
 	if previous.write != next.write {

@@ -172,9 +172,11 @@ func openNoFollow(dir *os.Root, name string) (*os.File, error) {
 }
 
 // snapshotHeld is why a snapshot, or the snapshots' directory, is not what
-// the frontend will verify at start, or nil: of its kind, owned by root or
-// by the configuration's owner, writable by neither group nor others, and a
-// snapshot of exactly its mode.
+// the frontend will verify at start and can read, or nil: of its kind,
+// owned by root or by the configuration's owner, belonging to neither the
+// MCP server's user nor its group, writable by neither group nor others, a
+// directory others may pass through -- the MCP server is neither its owner
+// nor in its group -- and a snapshot of exactly its mode.
 func snapshotHeld(info os.FileInfo, owner fileOwnerIDs, dir bool) error {
 	switch {
 	case dir && !info.IsDir():
@@ -185,10 +187,24 @@ func snapshotHeld(info os.FileInfo, owner fileOwnerIDs, dir bool) error {
 		return fmt.Errorf("has mode %04o, not %04o", info.Mode().Perm(), snapshotMode)
 	case info.Mode().Perm()&0o022 != 0:
 		return fmt.Errorf("is writable beyond its owner (mode %04o)", info.Mode().Perm())
+	case dir && info.Mode().Perm()&0o001 == 0:
+		return fmt.Errorf("cannot be passed through by the MCP server (mode %04o)", info.Mode().Perm())
 	}
 	holder := ownerIDsOf(info)
-	if holder.known && holder.uid != 0 && !(owner.known && holder.uid == owner.uid) {
+	if !holder.known {
+		return nil
+	}
+	if holder.uid != 0 && !(owner.known && holder.uid == owner.uid) {
 		return fmt.Errorf("is owned by uid %d, neither root nor the configuration's owner", holder.uid)
 	}
+	if holder.uid == frontendUID || holder.gid == frontendUID {
+		return fmt.Errorf("belongs to the MCP server's own user or group (%d)", frontendUID)
+	}
 	return nil
+}
+
+// frontendOwns reports whether an owner is the MCP server's own user or
+// group.
+func frontendOwns(owner fileOwnerIDs) bool {
+	return owner.known && (owner.uid == frontendUID || owner.gid == frontendUID)
 }

@@ -34,3 +34,5 @@ func openNoFollow(dir *os.Root, name string) (*os.File, error) {
 }
 
 func snapshotHeld(info os.FileInfo, owner fileOwnerIDs, dir bool) error { return nil }
+
+func frontendOwns(owner fileOwnerIDs) bool { return false }

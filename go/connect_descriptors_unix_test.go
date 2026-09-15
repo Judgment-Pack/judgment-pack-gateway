@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // The snapshot and the configuration are given their final modes before
@@ -89,6 +90,26 @@ func TestConnectUsesWhatIsThereOnlyWhenItHolds(t *testing.T) {
 			}
 			t.Cleanup(func() { entryJudged = nil })
 		}, "is not the file its name held a moment ago"},
+		{"a link to the same file, put in its place once its name is judged", func(t *testing.T, f *connectFixture, path string) {
+			entryJudged = func(name string) {
+				entryJudged = nil
+				// The snapshot itself renamed, and a link to it where it
+				// stood: the file opened through the link is the file
+				// judged, and only its name has become a link.
+				if err := os.Rename(path, path+".moved"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Base(path)+".moved", path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { entryJudged = nil })
+		}, "is not the file its name held a moment ago"},
+		{"a directory the MCP server cannot pass through", func(t *testing.T, f *connectFixture, path string) {
+			if err := os.Chmod(filepath.Dir(path), 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}, "cannot be passed through by the MCP server"},
 		{"a directory others could write", func(t *testing.T, f *connectFixture, path string) {
 			if err := os.Chmod(filepath.Dir(path), 0o775); err != nil {
 				t.Fatal(err)
@@ -125,3 +146,49 @@ func TestConnectUsesWhatIsThereOnlyWhenItHolds(t *testing.T) {
 		})
 	}
 }
+
+// What belongs to the MCP server's own user or group is refused: a
+// snapshot or directory found so, and a configuration whose owner would
+// give it to a snapshot made.
+func TestNothingOfTheMCPServersOwnIsUsed(t *testing.T) {
+	// Even were the configuration the MCP server's user's, and a root file
+	// the MCP server's group's.
+	for _, tc := range []struct {
+		st    syscall.Stat_t
+		owner fileOwnerIDs
+	}{
+		{syscall.Stat_t{Uid: frontendUID}, fileOwnerIDs{uid: frontendUID, known: true}},
+		{syscall.Stat_t{Uid: 0, Gid: frontendUID}, fileOwnerIDs{uid: 1000, known: true}},
+	} {
+		st := tc.st
+		if err := snapshotHeld(fakeInfo{mode: 0o644, sys: &st}, tc.owner, false); err == nil || !strings.Contains(err.Error(), "belongs to the MCP server's own user or group") {
+			t.Errorf("%+v: %v", tc.st, err)
+		}
+	}
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	f := &configFile{dir: root, base: "engine.json", mode: 0o640, owner: fileOwnerIDs{uid: 1000, gid: frontendUID, known: true}}
+	if _, err := f.publishSnapshot([]byte("{}")); err == nil || !strings.Contains(err.Error(), "would be refused at the server's start") {
+		t.Fatalf("%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "engine.json.descriptors")); !os.IsNotExist(err) {
+		t.Fatalf("nothing is made for it: %v", err)
+	}
+}
+
+// fakeInfo is a file's state as a test states it.
+type fakeInfo struct {
+	mode os.FileMode
+	sys  any
+}
+
+func (i fakeInfo) Name() string       { return "x" }
+func (i fakeInfo) Size() int64        { return 0 }
+func (i fakeInfo) Mode() os.FileMode  { return i.mode }
+func (i fakeInfo) ModTime() time.Time { return time.Time{} }
+func (i fakeInfo) IsDir() bool        { return i.mode.IsDir() }
+func (i fakeInfo) Sys() any           { return i.sys }

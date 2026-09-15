@@ -248,6 +248,15 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err != nil {
 		return out, err
 	}
+	// The entry as it is written, kept apart: judging the configuration
+	// below replaces each credentials path in the entry with the path it
+	// resolves to, which is not what the file will say.
+	written := entry
+	written.credentials = map[string]string{}
+	for op, path := range entry.credentials {
+		written.credentials[op] = path
+	}
+	written.environment = append([]string(nil), entry.environment...)
 	// The configuration as it would be, held to every refusal serve
 	// applies, and to the size serve reads, before anything is asked.
 	candidate := cfg
@@ -378,8 +387,8 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	}
 	out.written = req.config
 	if previous != nil {
-		entry.descriptors = pin
-		out.after = restartLines(*previous, entry)
+		written.descriptors = pin
+		out.after = restartLines(*previous, written)
 	}
 	return out, nil
 }
@@ -671,8 +680,9 @@ type configFile struct {
 // openEntry opens a name in the held directory as the entry it is: not a
 // link, and the file opened the entry's own. The held directory follows a
 // link that stays inside it whatever flag the open is given, so the entry
-// is judged first and the file opened compared with it after, as the lock
-// is (lockHeld).
+// is judged before the open and again after it, each time as the file
+// opened: a link put in its place, even one to the same file under another
+// name, is found by the second.
 func openEntry(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
 	entry, err := dir.Lstat(name)
 	if err != nil {
@@ -693,7 +703,8 @@ func openEntry(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
 		file.Close()
 		return nil, nil, err
 	}
-	if !os.SameFile(entry, info) {
+	after, err := dir.Lstat(name)
+	if err != nil || after.Mode()&os.ModeSymlink != 0 || !os.SameFile(entry, info) || !os.SameFile(after, info) {
 		file.Close()
 		return nil, nil, errors.New("is not the file its name held a moment ago")
 	}
@@ -932,6 +943,11 @@ func (f *configFile) snapshotDir() string { return f.base + ".descriptors" }
 //     connect. The staged name goes with the private directory, and the
 //     snapshots' directory is synced.
 func (f *configFile) publishSnapshot(data []byte) (string, error) {
+	// A snapshot is given the configuration's owner, and the MCP server
+	// refuses one that belongs to its own user or group.
+	if frontendOwns(f.owner) {
+		return "", fmt.Errorf("descriptors: the configuration belongs to the MCP server's own user or group (%d), and a snapshot given its owner would be refused at the server's start", frontendUID)
+	}
 	sum := sha256.Sum256(data)
 	pin := "sha256:" + hex.EncodeToString(sum[:])
 	dir := f.snapshotDir()
@@ -993,6 +1009,11 @@ func (f *configFile) snapshotDirectory(dir string) error {
 		if err := snapshotHeld(info, f.owner, true); err != nil {
 			return fmt.Errorf("descriptors: %s %v", dir, err)
 		}
+		// Found, not made: a connect that made it may have stopped before
+		// its parent was synced, so the entry is made durable here too.
+		if err := f.syncDir("."); err != nil {
+			return fmt.Errorf("descriptors: the configuration's directory could not be synced: %v", err)
+		}
 		return nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -1040,6 +1061,11 @@ func (f *configFile) snapshotTaken(name, pin string) error {
 	sum := sha256.Sum256(existing)
 	if "sha256:"+hex.EncodeToString(sum[:]) != pin {
 		return fmt.Errorf("descriptors: %s is taken by a file that does not digest to its name", name)
+	}
+	// A file found, not written, may never have reached the disk: the
+	// configuration will name it, so it is synced before that.
+	if err := syncFile(file); err != nil {
+		return fmt.Errorf("descriptors: %s could not be synced: %v", name, err)
 	}
 	return nil
 }

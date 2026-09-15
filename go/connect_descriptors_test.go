@@ -255,7 +255,9 @@ func TestConnectSyncsInTheDesignsOrder(t *testing.T) {
 	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(synced, " "); got != "engine.json.descriptors ." {
+	// Found, the directory's parent is synced all the same: a connect
+	// that made it may have stopped before its own sync.
+	if got := strings.Join(synced, " "); got != ". engine.json.descriptors ." {
 		t.Fatalf("with the directory there, syncs %q", got)
 	}
 }
@@ -414,5 +416,109 @@ func TestWhatACaptureSaysIsPrintedEscaped(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), `descriptors: server pg\nwarehouse: written to /elsewhere 1`) {
 		t.Fatalf("%q", stdout.String())
+	}
+}
+
+// A snapshot's name already taken by the same bytes is reused, and synced
+// before the configuration names it: a file found may never have reached
+// the disk.
+func TestConnectSyncsASnapshotItReuses(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	f.captured = capturedQuery
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	_, pin, _ := pinnedSnapshot(t, f)
+	var synced []string
+	fileSyncing = func(file *os.File) { synced = append(synced, filepath.Base(file.Name())) }
+	defer func() { fileSyncing = nil }()
+	req := f.request()
+	req.replace = true
+	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	name := strings.TrimPrefix(pin, "sha256:") + ".json"
+	if strings.Join(synced, " ") != name+" "+name+" new" {
+		t.Fatalf("the staged snapshot, the one reused, then the configuration: %q", synced)
+	}
+}
+
+// A tool the previous binding allowed and the snapshot never held -- it
+// fell back -- is still one the comparison names when the binding no
+// longer allows it.
+func TestAToolThatFellBackIsStillRemoved(t *testing.T) {
+	narrow := strings.Replace(restrictedBinding, `"platform": "postgres"`, `"platform": "postgres2"`, 1)
+	f := newConnectFixture(t, twoToolBinding, ``)
+	if err := os.WriteFile(filepath.Join(f.catalog, "postgres2.json"), []byte(narrow), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.captured = `{"query":{"description":"Run a query"}}`
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	req := f.request()
+	req.replace, req.binding = true, "postgres2"
+	out, err := connect(context.Background(), req, f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: explain removed") {
+		t.Fatalf("%q", out.answers)
+	}
+}
+
+// The server's identity is compared as the tools are: the words a
+// description quotes change with it.
+func TestTheServersIdentityIsCompared(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	f.captured = capturedQuery
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	req := f.request()
+	req.replace = true
+	base := `{"binding":"postgres@` + digestOf(restrictedBinding) + `","capturedAt":"2026-09-15T00:00:00Z","platform":"warehouse","policy":1,`
+	for _, tc := range []struct{ snapshot, want string }{
+		{base + `"server":{"name":"postgres-mcp","version":"0.4.0"},"tools":` + capturedQuery + `}`, "against the previous snapshot: the server's identity changed"},
+		{base + `"tools":` + capturedQuery + `}`, "against the previous snapshot: the server's identity now fallen back"},
+		{base + `"server":{"name":"postgres-mcp","version":"0.4.0"},"tools":` + capturedQuery + `}`, "against the previous snapshot: the server's identity no longer fallen back"},
+	} {
+		f.snapshotAs = tc.snapshot
+		out, err := connect(context.Background(), req, f.host, f.check)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasLine(out.answers, "warehouse/live: descriptors: "+tc.want) {
+			t.Fatalf("want %q: %q", tc.want, out.answers)
+		}
+	}
+}
+
+// What the signer reads is compared as the file holds it: an environment
+// given in another order, and a credentials path the judging resolved
+// through a link, change nothing.
+func TestRestartAdviceComparesWhatIsWritten(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	root := filepath.VolumeName(f.dir) + string(filepath.Separator)
+	linked := filepath.Join(root, "var", "secrets", "warehouse")
+	target := filepath.Join(root, "private", "var", "secrets", "warehouse")
+	f.fs = goodFilesystem(f.seed, target, 1000, 1001)
+	f.fs[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "var")] = filepath.Join(root, "private", "var")
+	t.Cleanup(func() { delete(linkTargets, filepath.Join(root, "var")) })
+	f.credentials = linked
+	req := f.request()
+	req.environment = []string{"A=1", "B=2"}
+	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	req.replace = true
+	req.environment = []string{"B=2", "A=1"}
+	out, err := connect(context.Background(), req, f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLine(out.after, "restart: nothing either process reads changed") {
+		t.Fatalf("%q", out.after)
 	}
 }
