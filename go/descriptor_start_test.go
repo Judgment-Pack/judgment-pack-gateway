@@ -346,22 +346,6 @@ func TestTheListingDropsSnapshotsInReverseTableOrder(t *testing.T) {
 	if strings.Count(string(listed), strings.Repeat("w", 3000)) != 1 {
 		t.Fatal("the platform first in the table keeps its snapshot")
 	}
-	// A snapshot the bound drops is verified all the same: one that is not
-	// its pin refuses the start.
-	dropped := filepath.Join(f.snapshots, strings.TrimPrefix(cfg.platforms[1].descriptors, "sha256:")+".json")
-	good, err := os.ReadFile(dropped)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(dropped, append(good, ' '), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := newMCPServer(cfg, mcpBindings(), nil, f.config); err == nil || !strings.Contains(err.Error(), "platform "+cfg.platforms[1].name) {
-		t.Fatalf("a dropped snapshot that is not its pin: %v", err)
-	}
-	if err := os.WriteFile(dropped, good, 0o644); err != nil {
-		t.Fatal(err)
-	}
 	// A first platform whose snapshot cannot fit, before one whose could:
 	// dropping from the table's end drops both, the last first.
 	small := bytes.Replace(canonicalSnapshot(t, `{"lookup":{"description":"s"}}`), []byte(`"platform":"tickets"`), []byte(`"platform":"`+cfg.platforms[1].name+`"`), 1)
@@ -376,6 +360,22 @@ func TestTheListingDropsSnapshotsInReverseTableOrder(t *testing.T) {
 	s, err = newMCPServer(cfg, mcpBindings(), nil, f.config)
 	if err != nil || strings.Join(s.dropped, ",") != cfg.platforms[1].name+","+cfg.platforms[0].name {
 		t.Fatalf("%v %v", err, s.dropped)
+	}
+	// The snapshot dropped after the first that does not fit is verified
+	// all the same: one that is not its pin refuses the start.
+	dropped := filepath.Join(f.snapshots, strings.TrimPrefix(cfg.platforms[1].descriptors, "sha256:")+".json")
+	good, err := os.ReadFile(dropped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dropped, append(good, ' '), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newMCPServer(cfg, mcpBindings(), nil, f.config); err == nil || !strings.Contains(err.Error(), "platform "+cfg.platforms[1].name) {
+		t.Fatalf("a dropped snapshot that is not its pin: %v", err)
+	}
+	if err := os.WriteFile(dropped, good, 0o644); err != nil {
+		t.Fatal(err)
 	}
 	// A bound the listing passes with every snapshot dropped: no start.
 	listingBound = 100
