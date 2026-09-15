@@ -106,7 +106,7 @@ func (f *mcpFixture) call(t *testing.T, method, session, body string, headers ma
 	}
 	for k, v := range headers {
 		switch {
-		case k == "Accept-Second" || k == "Origin-Second" || k == "Origin-Empty":
+		case k == "Accept-Second" || k == "Origin-Second" || k == "Origin-Empty" || k == "Version-Second" || k == "Version-Empty":
 			// added below, after every Set, whatever order the map yields
 		case v == "":
 			req.Header.Del(k)
@@ -122,6 +122,12 @@ func (f *mcpFixture) call(t *testing.T, method, session, body string, headers ma
 	}
 	if _, ok := headers["Origin-Empty"]; ok {
 		req.Header["Origin"] = []string{""}
+	}
+	if second, ok := headers["Version-Second"]; ok {
+		req.Header.Add("MCP-Protocol-Version", second)
+	}
+	if _, ok := headers["Version-Empty"]; ok {
+		req.Header["Mcp-Protocol-Version"] = []string{""}
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -381,42 +387,53 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 	if code, _, body = f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"screen.search"}}`, nil); code != 200 || body["result"].(map[string]any)["isError"] != nil {
 		t.Fatalf("absent arguments: %d %v", code, body)
 	}
-	// method not found, unknown tool, invalid params
+	// method not found, unknown tool, invalid params: a request -- a method
+	// and an admissible id, in a message without a duplicate member -- is
+	// answered 200 with an error carrying its id; any other input that
+	// cannot be accepted is 400, with the error and no id
+	const request, other = 200, 400
 	for _, c := range []struct {
-		body string
-		code float64
+		body   string
+		code   float64
+		status int
+		id     any
 	}{
-		{`{"jsonrpc":"2.0","id":7,"method":"resources/list"}`, rpcMethodNotFound},
-		{toolCall(8, "screen.nothing", `{}`, ""), rpcInvalidParams},
-		{`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}`, rpcInvalidParams},
-		{`[{"jsonrpc":"2.0","id":10,"method":"ping"}]`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":10,"method":"ping","method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"screen.lookup","_meta":{"a":1,"a":2}}}`, rpcInvalidRequest},
-		{`{"jsonrpc":"1.0","id":11,"method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":true,"method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":[1],"method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"method":"ping","result":{}}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":"x"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"error":17}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"result":null}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"error":{"code":"1","message":"x"}}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x","extra":true}}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":"` + strings.Repeat("x", mcpMaxIDBytes) + `","method":"ping"}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"method":"ping","extra":1}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"method":""}`, rpcInvalidRequest},
-		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","arguments":[1]}}`, rpcInvalidParams},
-		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"NAME":"screen.lookup"}}`, rpcInvalidParams},
-		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":"x"}}`, rpcInvalidParams},
-		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":{"` + mcpSessionMeta + `":1}}}`, rpcInvalidParams},
-		{`not json`, rpcParse},
-		{`{"jsonrpc":"2.0","id":1,"method":"ping"} trailing`, rpcParse},
+		{`{"jsonrpc":"2.0","id":7,"method":"resources/list"}`, rpcMethodNotFound, request, 7.0},
+		{toolCall(8, "screen.nothing", `{}`, ""), rpcInvalidParams, request, 8.0},
+		{`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}`, rpcInvalidParams, request, 9.0},
+		{`[{"jsonrpc":"2.0","id":10,"method":"ping"}]`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":10,"method":"ping","method":"ping"}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"screen.lookup","_meta":{"a":1,"a":2}}}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"1.0","id":11,"method":"ping"}`, rpcInvalidRequest, request, 11.0},
+		{`{"jsonrpc":"2.0","id":true,"method":"ping"}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":[1],"method":"ping"}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":{"a":1},"method":"ping"}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1.5,"method":"ping"}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","result":{}}`, rpcInvalidRequest, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"result":{},"error":{"code":1,"message":"x"}}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":"x"}`, rpcInvalidRequest, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":[]}`, rpcInvalidRequest, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"error":17}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"result":null}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"error":{"code":"1","message":"x"}}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"x","extra":true}}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"result":{},"params":[]}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"result":{"a":1,"a":2}}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","method":"notifications/x","params":[]}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":{"arguments":{"a":1,"a":2}}}`, rpcInvalidRequest, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","params":{"argum\u0065nts":{"a":1,"a":2}}}`, rpcInvalidRequest, request, 1.0},
+		{`{"jsonrpc":"2.0","id":"` + strings.Repeat("x", mcpMaxIDBytes) + `","method":"ping"}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping","extra":1}`, rpcInvalidRequest, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"method":""}`, rpcInvalidRequest, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","arguments":[1]}}`, rpcInvalidParams, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"NAME":"screen.lookup"}}`, rpcInvalidParams, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":"x"}}`, rpcInvalidParams, request, 1.0},
+		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":{"` + mcpSessionMeta + `":1}}}`, rpcInvalidParams, request, 1.0},
+		{`not json`, rpcParse, other, nil},
+		{`{"jsonrpc":"2.0","id":1,"method":"ping"} trailing`, rpcParse, other, nil},
 	} {
 		code, _, body := f.call(t, http.MethodPost, sid, c.body, nil)
-		if code != 200 || body["error"] == nil || body["error"].(map[string]any)["code"] != c.code {
+		if code != c.status || body["error"] == nil || body["error"].(map[string]any)["code"] != c.code || body["id"] != c.id || body["result"] != nil {
 			t.Fatalf("%s: %d %v", c.body, code, body)
 		}
 	}
@@ -450,14 +467,14 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 	}
 	// a message whose id is null is neither a request nor a notification
 	// under the pinned protocol's schema: refused, not taken for either
-	if _, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":null,"method":"ping"}`, nil); body["error"] == nil || body["error"].(map[string]any)["code"] != float64(rpcInvalidRequest) || body["result"] != nil {
-		t.Fatalf("id null: %v", body)
+	if code, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":null,"method":"ping"}`, nil); code != http.StatusBadRequest || body["error"] == nil || body["error"].(map[string]any)["code"] != float64(rpcInvalidRequest) || body["result"] != nil {
+		t.Fatalf("id null: %d %v", code, body)
 	}
 	// the members are read by their exact names: METHOD is not method, so
 	// the message is refused for the member this server does not read,
 	// not answered as a ping
-	if _, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":1,"METHOD":"ping"}`, nil); body["error"] == nil || !strings.Contains(body["error"].(map[string]any)["message"].(string), "METHOD") || body["result"] != nil {
-		t.Fatalf("METHOD: %v", body)
+	if code, _, body := f.call(t, http.MethodPost, sid, `{"jsonrpc":"2.0","id":1,"METHOD":"ping"}`, nil); code != http.StatusBadRequest || body["error"] == nil || !strings.Contains(body["error"].(map[string]any)["message"].(string), "METHOD") || body["result"] != nil {
+		t.Fatalf("METHOD: %d %v", code, body)
 	}
 	// a case-folded member inside a call is not the member: no session is
 	// named by _META, and the call lands in the generated session
@@ -524,6 +541,9 @@ func TestMCPHTTPMatrix(t *testing.T) {
 		{"a loopback origin with a query", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost?x"}, http.StatusForbidden},
 		{"an origin spelled as a host that resolves to loopback", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost.evil.example"}, http.StatusForbidden},
 		{"an origin present and empty", http.MethodPost, sid, ping, map[string]string{"Origin-Empty": "yes"}, http.StatusForbidden},
+		{"a protocol version present and empty", http.MethodPost, sid, ping, map[string]string{"Version-Empty": "yes"}, http.StatusBadRequest},
+		{"the protocol version named twice", http.MethodPost, sid, ping, map[string]string{"MCP-Protocol-Version": "2025-06-18", "Version-Second": "2025-06-18"}, http.StatusBadRequest},
+		{"two protocol versions", http.MethodPost, sid, ping, map[string]string{"MCP-Protocol-Version": "2025-06-18", "Version-Second": "2025-03-26"}, http.StatusBadRequest},
 		{"two origins", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost", "Origin-Second": "http://localhost"}, http.StatusForbidden},
 		{"a loopback origin with an empty query", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost?"}, http.StatusForbidden},
 		{"a loopback origin with an empty fragment", http.MethodPost, sid, ping, map[string]string{"Origin": "http://localhost#"}, http.StatusForbidden},
@@ -695,8 +715,8 @@ func TestMCPForwardFollowsNothingAndNamesNoAddress(t *testing.T) {
 	t.Cleanup(stalled.Close)
 	f.server.signer = stalled.URL
 	f.server.forwardTimeout = 100 * time.Millisecond
-	var diagnostics bytes.Buffer
-	f.server.log = &diagnostics
+	diagnostics := &syncBuffer{}
+	f.server.log = diagnostics
 	_, _, body = f.call(t, http.MethodPost, sid, toolCall(2, "screen.lookup", `{}`, ""), nil)
 	result = body["result"].(map[string]any)
 	structured := sameBothWays(t, result)
@@ -706,7 +726,8 @@ func TestMCPForwardFollowsNothingAndNamesNoAddress(t *testing.T) {
 	if text := fmt.Sprint(structured["error"]); strings.Contains(text, stalled.URL) || strings.Contains(text, "127.0.0.1") {
 		t.Fatalf("the unknown outcome names the signer's address: %s", text)
 	}
-	if !strings.Contains(diagnostics.String(), "did not answer") || strings.Contains(diagnostics.String(), stalled.URL) || strings.Contains(diagnostics.String(), "127.0.0.1") {
+	waitUntil(t, "the diagnostic", func() bool { return strings.Contains(diagnostics.String(), "did not answer") })
+	if strings.Contains(diagnostics.String(), stalled.URL) || strings.Contains(diagnostics.String(), "127.0.0.1") {
 		t.Fatalf("the diagnostics stream did not record the failed forward as a category alone: %q", diagnostics.String())
 	}
 }

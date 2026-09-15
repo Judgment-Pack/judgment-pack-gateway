@@ -28,6 +28,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -100,7 +101,7 @@ type mcpServer struct {
 	client   *http.Client
 	now      func() time.Time
 	newID    func() string
-	log      io.Writer     // diagnostics: categories, never a token, never an address
+	log      io.Writer     // where diagnostics go: categories, never a token, never an address
 	forwards chan struct{} // one token per forward in flight
 	queue    chan struct{} // one token per call waiting
 	// forwardTimeout bounds one forward, queueWait one wait for a slot,
@@ -120,11 +121,28 @@ type mcpServer struct {
 	// closed, a new transport session is refused, a new acquisition is an
 	// overload, a queued one is woken and refused, and sealing goes on.
 	// Every closure is a generation: a call admitted under one generation
-	// and given a slot under another was queued through a closure, and is
-	// refused as the note says.
-	closed     bool
-	generation uint64
-	reopened   chan struct{} // closed on every close of admission, replaced on reopen
+	// is refused under another, whether it is still queued or has its slot.
+	// An acquisition that passed the gate and has not had its answer is
+	// dispatching; a closure is drained when none is, and only then may the
+	// operator seal, since a dispatch the signer has not yet received is
+	// one its own in-flight check cannot see.
+	closed      bool
+	generation  uint64
+	closing     chan struct{} // closed when admission closes, replaced on reopen
+	opening     chan struct{} // closed when admission reopens, replaced on close
+	dispatching int
+	drained     chan struct{} // closed once a closure finds nothing dispatching
+	// afterSlot and beforeForward, when a test sets them, run once the
+	// call has its slot and before the gate's last word, and between that
+	// word and the forward: where a closure must still be seen
+	afterSlot     func()
+	beforeForward func()
+	// diagnostics are delivered by one goroutine, so a blocked stderr
+	// holds up no lock and no call; past the buffer they are dropped and
+	// counted
+	diagnostics chan string
+	dropped     atomic.Int64
+	diagOnce    sync.Once
 }
 
 // newMCPServer builds the server from a resolved configuration and its
@@ -148,7 +166,10 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		forwards: make(chan struct{}, cfg.mcp.concurrency),
 		queue:    make(chan struct{}, cfg.mcp.concurrency),
 		sessions: map[string]*mcpSession{},
-		reopened: make(chan struct{}),
+		closing:  make(chan struct{}),
+		opening:  make(chan struct{}),
+
+		diagnostics: make(chan string, 256),
 
 		forwardTimeout: mcpForwardTimeout,
 		queueWait:      mcpQueueWait,
@@ -211,33 +232,76 @@ func (s *mcpServer) responseBudget() time.Duration {
 	return s.queueWait + s.forwardTimeout + s.responseMargin
 }
 
+// --- diagnostics -----------------------------------------------------------
+
+// diag queues one diagnostic line for the diagnostics stream. It never
+// blocks: a stream that does not drain fills the buffer, and what does not
+// fit is counted and said later.
+func (s *mcpServer) diag(format string, args ...any) {
+	s.diagOnce.Do(func() { go s.deliverDiagnostics() })
+	select {
+	case s.diagnostics <- fmt.Sprintf(format, args...):
+	default:
+		s.dropped.Add(1)
+	}
+}
+
+func (s *mcpServer) deliverDiagnostics() {
+	for line := range s.diagnostics {
+		if n := s.dropped.Swap(0); n > 0 {
+			fmt.Fprintf(s.log, "mcp: %d diagnostics were dropped; the stream was not draining\n", n)
+		}
+		fmt.Fprintln(s.log, line)
+	}
+}
+
 // --- admission ------------------------------------------------------------
 
 // closeAdmission closes the gate for maintenance (the rotation contract of
 // the note): what waits is woken and refused, what arrives is refused, and
-// sealing goes on.
-func (s *mcpServer) closeAdmission() {
+// sealing goes on. It returns the channel that closes when no acquisition
+// that passed the gate before the closure is still dispatching -- the
+// frontend's half of the drain -- and says both on the diagnostics stream.
+func (s *mcpServer) closeAdmission() <-chan struct{} {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
-		return
+		d := s.drained
+		s.mu.Unlock()
+		return d
 	}
 	s.closed = true
 	s.generation++
-	close(s.reopened)
-	fmt.Fprintln(s.log, "mcp: admission closed")
+	close(s.closing)
+	s.opening = make(chan struct{})
+	drained, opening, pending := make(chan struct{}), s.opening, s.dispatching
+	if pending == 0 {
+		close(drained)
+	}
+	s.drained = drained
+	s.mu.Unlock()
+	s.diag("mcp: admission closed; %d acquisitions forwarded before the closure have not had their answer", pending)
+	go func() {
+		select {
+		case <-drained:
+			s.diag("mcp: admission closed and drained; every acquisition forwarded before the closure has had its answer, and none will be forwarded until admission reopens")
+		case <-opening:
+		}
+	}()
+	return drained
 }
 
 // openAdmission reopens the gate.
 func (s *mcpServer) openAdmission() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.closed {
+		s.mu.Unlock()
 		return
 	}
 	s.closed = false
-	s.reopened = make(chan struct{})
-	fmt.Fprintln(s.log, "mcp: admission open")
+	s.closing = make(chan struct{})
+	close(s.opening)
+	s.mu.Unlock()
+	s.diag("mcp: admission open")
 }
 
 // admission reports the gate, the channel that closes with it, and the
@@ -245,7 +309,36 @@ func (s *mcpServer) openAdmission() {
 func (s *mcpServer) admission() (closed bool, wake <-chan struct{}, generation uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.closed, s.reopened, s.generation
+	return s.closed, s.closing, s.generation
+}
+
+// dispatch is the gate's last word for an acquisition that has its slot:
+// under the lock that a closure takes, it is refused if a closure came
+// since it was admitted, and otherwise counted as dispatching, so a
+// closure after this point waits for its answer before it is drained.
+func (s *mcpServer) dispatch(generation uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed || s.generation != generation {
+		return false
+	}
+	s.dispatching++
+	return true
+}
+
+// dispatched counts an acquisition's answer in, and drains a closure that
+// was waiting for it.
+func (s *mcpServer) dispatched() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dispatching--
+	if s.closed && s.dispatching == 0 {
+		select {
+		case <-s.drained:
+		default:
+			close(s.drained)
+		}
+	}
 }
 
 // --- JSON-RPC ---------------------------------------------------------------
@@ -275,6 +368,11 @@ type mcpRequest struct {
 	// acknowledged and ignored.
 	isResponse bool
 }
+
+// isRequest says whether a message was a request: one with a method and an
+// id the protocol admits, whose refusal carries that id and is an answer,
+// not a rejection of the input.
+func (r mcpRequest) isRequest() bool { return r.id != nil && r.method != "" }
 
 // members reads an object by its members' exact names: encoding/json's
 // struct decoding folds case, and a member that means one thing to one
@@ -342,6 +440,10 @@ func validID(raw json.RawMessage) bool {
 // parseMCPMessage reads one JSON-RPC message: syntax first, then an object
 // with jsonrpc "2.0" and the members the protocol names, read exactly. An
 // array (a batch) is refused, as the pinned protocol does not carry them.
+// A refusal of a message that is a request -- a method and an admissible
+// id, read after the duplicate walk, so an id named twice is no id --
+// comes back with that request's id and method, so the answer carries the
+// id; any other refusal comes back with neither.
 func parseMCPMessage(data []byte) (mcpRequest, *jsonrpcError) {
 	if !json.Valid(data) {
 		return mcpRequest{}, &jsonrpcError{rpcParse, "the message is not JSON"}
@@ -351,61 +453,84 @@ func parseMCPMessage(data []byte) (mcpRequest, *jsonrpcError) {
 		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a batch is not accepted under protocol " + mcpProtocolVersion}
 	}
 	// The message is read by exact member names with no duplicate, as the
-	// signer reads what it signs; but what a call carries as its tool's
-	// arguments is the signer's to judge -- its duplicates, its numbers --
-	// so the walk skips that one value. (The seal tool's arguments are this
-	// server's, and are walked where they are read.)
+	// signer reads what it signs; but what a platform tool's call carries
+	// as its arguments is the signer's to judge -- its duplicates, its
+	// numbers -- so this walk steps over params.arguments, and a second
+	// walk below takes it back for every message that is not tools/call.
+	// (The seal tool's arguments are this server's, and are walked where
+	// they are read.)
 	if err := noDuplicateMembers(data, [][]string{{"params", "arguments"}}); err != nil {
 		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, err.Error()}
 	}
-	m, perr := members(data, "the message", map[string]bool{"jsonrpc": true, "id": true, "method": true, "params": true, "result": true, "error": true})
+	var peek map[string]json.RawMessage
+	if json.Unmarshal(data, &peek) != nil || peek == nil {
+		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "the message is not an object"}
+	}
+	// a request, if it is one: its errors carry its id
+	var asRequest mcpRequest
+	var method string
+	if raw, ok := peek["method"]; ok && isString(raw) && json.Unmarshal(raw, &method) == nil && method != "" {
+		if id, ok := peek["id"]; ok && validID(id) {
+			asRequest = mcpRequest{id: id, method: method}
+		}
+	}
+	refuse := func(code int, message string) (mcpRequest, *jsonrpcError) {
+		return asRequest, &jsonrpcError{code, message}
+	}
+	_, hasMethod := peek["method"]
+	allowed := map[string]bool{"jsonrpc": true, "id": true, "method": true, "params": true}
+	if !hasMethod {
+		allowed = map[string]bool{"jsonrpc": true, "id": true, "result": true, "error": true}
+	}
+	m, perr := members(data, "the message", allowed)
 	if perr != nil {
-		return mcpRequest{}, perr
+		return refuse(perr.Code, perr.Message)
 	}
 	var version string
 	if json.Unmarshal(m["jsonrpc"], &version) != nil || version != "2.0" {
-		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, `jsonrpc must be "2.0"`}
+		return refuse(rpcInvalidRequest, `jsonrpc must be "2.0"`)
 	}
 	id, hasID := m["id"]
-	method, hasMethod := m["method"]
-	result, hasResult := m["result"]
-	errValue, hasError := m["error"]
 	if !hasMethod {
 		// a response: an id and exactly one of result -- an object -- and
 		// error -- an object of an integer code and a string message
+		result, hasResult := m["result"]
+		errValue, hasError := m["error"]
 		if hasResult == hasError || !hasID || !validID(id) {
-			return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a message without a method is a response, with an id and exactly one of result and error"}
+			return refuse(rpcInvalidRequest, "a message without a method is a response, with an id and exactly one of result and error")
 		}
 		if hasResult && !isObject(result) {
-			return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a response's result is an object"}
+			return refuse(rpcInvalidRequest, "a response's result is an object")
 		}
 		if hasError {
 			e, perr := members(errValue, "a response's error", map[string]bool{"code": true, "message": true, "data": true})
 			if perr != nil || !validID(e["code"]) || isString(e["code"]) || !isString(e["message"]) {
-				return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a response's error is an object of an integer code and a string message"}
+				return refuse(rpcInvalidRequest, "a response's error is an object of an integer code and a string message")
 			}
 		}
 		return mcpRequest{isResponse: true, id: id}, nil
 	}
-	if hasResult || hasError {
-		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "a request carries no result or error"}
-	}
-	var name string
-	if json.Unmarshal(method, &name) != nil || name == "" {
-		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "method must be a non-empty string"}
+	if method == "" {
+		return refuse(rpcInvalidRequest, "method must be a non-empty string")
 	}
 	if params, ok := m["params"]; ok && !isObject(params) {
 		// JSON-RPC admits an array; the pinned protocol's messages carry
 		// objects
-		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "params must be an object"}
+		return refuse(rpcInvalidRequest, "params must be an object")
+	}
+	if method != "tools/call" {
+		// the exception is a platform tool's arguments, and nothing else's
+		if err := noDuplicateMembers(data, nil); err != nil {
+			return refuse(rpcInvalidRequest, err.Error())
+		}
 	}
 	if !hasID {
-		return mcpRequest{method: name, params: m["params"]}, nil
+		return mcpRequest{method: method, params: m["params"]}, nil
 	}
 	if !validID(id) {
-		return mcpRequest{}, &jsonrpcError{rpcInvalidRequest, "id must be a string or an integer"}
+		return refuse(rpcInvalidRequest, "id must be a string or an integer")
 	}
-	return mcpRequest{id: id, method: name, params: m["params"]}, nil
+	return mcpRequest{id: id, method: method, params: m["params"]}, nil
 }
 
 // noDuplicateMembers walks a JSON text and refuses an object naming a
@@ -529,6 +654,11 @@ type mcpOutcome struct {
 	transport   *mcpTransportRefusal
 	initialized bool
 	run         func(ctx context.Context) mcpOutcome
+	// rejected says the input was not a request and could not be
+	// accepted -- a notification or a response of the wrong shape, or
+	// something that is neither -- which the HTTP transport answers with
+	// an error status, not a 200 or a 202
+	rejected bool
 }
 
 // mcpTransportRefusal is a refusal the HTTP transport answers with a
@@ -552,23 +682,24 @@ func rpcFailure(id json.RawMessage, e jsonrpcError) []byte {
 }
 
 // handle admits and answers one message: admit, then the work, inline.
-func (s *mcpServer) handle(ctx context.Context, sess *mcpSession, token string, arrived time.Time, data []byte) mcpOutcome {
-	outcome := s.admit(sess, token, arrived, data)
+func (s *mcpServer) handle(ctx context.Context, sess *mcpSession, token string, data []byte) mcpOutcome {
+	outcome := s.admit(sess, token, data)
 	if outcome.run != nil {
 		return outcome.run(ctx)
 	}
 	return outcome
 }
 
-// admit reads one message that arrived at the given time, for a transport
-// session, under the caller's bearer (empty when the engine has no
-// identity), and does everything that is done in arrival order: the
-// lifecycle, the session's resolution, the window, the gate. A call that
-// passes comes back as work to run.
-func (s *mcpServer) admit(sess *mcpSession, token string, arrived time.Time, data []byte) mcpOutcome {
+// admit reads one message, for a transport session, under the caller's
+// bearer (empty when the engine has no identity), and does everything
+// that is done in arrival order -- the message arrives when it has been
+// read whole and is admitted: the lifecycle, the session's resolution, the
+// window, the gate, the queue place. A call that passes comes back as work
+// to run, which must be run exactly once.
+func (s *mcpServer) admit(sess *mcpSession, token string, data []byte) mcpOutcome {
 	req, perr := parseMCPMessage(data)
 	if perr != nil {
-		return mcpOutcome{response: rpcFailure(nil, *perr)}
+		return mcpOutcome{response: rpcFailure(req.id, *perr), rejected: !req.isRequest()}
 	}
 	if req.isResponse {
 		return mcpOutcome{}
@@ -593,7 +724,7 @@ func (s *mcpServer) admit(sess *mcpSession, token string, arrived time.Time, dat
 	case "tools/list":
 		return mcpOutcome{response: rpcResult(req.id, map[string]any{"tools": s.toolList()})}
 	case "tools/call":
-		return s.admitCall(sess, token, arrived, req)
+		return s.admitCall(sess, token, req)
 	default:
 		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcMethodNotFound, "method not supported: " + req.method})}
 	}
@@ -677,9 +808,9 @@ func overload(session, reason string) map[string]any {
 
 // admitCall does the arrival-order part of tools/call: the session it
 // resolves to, first, so that every refusal names it; the window, counted
-// whatever becomes of the call; the shape; the gate. What passes is
-// returned as work.
-func (s *mcpServer) admitCall(sess *mcpSession, token string, arrived time.Time, req mcpRequest) mcpOutcome {
+// whatever becomes of the call; the shape; the gate; and a place in the
+// queue, whose wait starts here. What passes is returned as work.
+func (s *mcpServer) admitCall(sess *mcpSession, token string, req mcpRequest) mcpOutcome {
 	session := sess.receiptSession
 	var name string
 	var arguments json.RawMessage
@@ -727,62 +858,86 @@ func (s *mcpServer) admitCall(sess *mcpSession, token string, arrived time.Time,
 		invalid = &jsonrpcError{rpcInvalidParams, "arguments must be an object"}
 	}
 	// the window: counted at arrival, whatever becomes of the call
-	if refusal := s.countCall(sess, arrived, session); refusal != nil {
+	if refusal := s.countCall(sess, session); refusal != nil {
 		return mcpOutcome{response: rpcResult(req.id, refusal)}
 	}
 	if invalid != nil {
 		return mcpOutcome{response: rpcFailure(req.id, *invalid)}
 	}
 	// the gate: closed for maintenance, an acquisition is refused and a
-	// seal goes on; the generation is remembered for the slot below
-	closed, _, generation := s.admission()
+	// seal goes on; the generation and the closure's channel are kept for
+	// the wait and the slot below
+	closed, wake, generation := s.admission()
 	if closed && !tool.seal {
 		return mcpOutcome{response: rpcResult(req.id, overload(session, "admission is closed for maintenance; nothing was forwarded"))}
 	}
-	return mcpOutcome{run: func(ctx context.Context) mcpOutcome {
-		return s.runCall(ctx, token, req.id, tool, session, arguments, generation)
-	}}
-}
-
-// runCall takes a queue token and a forward slot and makes the call. A
-// queued acquisition is woken and refused when admission closes, and one
-// that gets its slot after a closure -- the two ready at once, or the gate
-// closed and reopened while it waited -- is refused too and gives the slot
-// back; a queued seal is woken by nothing (a nil channel never fires).
-func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessage, tool mcpTool, session string, arguments json.RawMessage, generation uint64) mcpOutcome {
+	if tool.seal {
+		wake = nil // a seal is woken by no closure
+	}
+	// the queue place, taken at arrival: a call that finds the queue full
+	// is an overload at once, and one that takes a place waits from now
 	select {
 	case s.queue <- struct{}{}:
 	default:
-		return mcpOutcome{response: rpcResult(id, overload(session, "the engine's front is full; nothing was forwarded"))}
+		return mcpOutcome{response: rpcResult(req.id, overload(session, "the engine's front is full; nothing was forwarded"))}
 	}
-	var wake <-chan struct{}
+	deadline := time.Now().Add(s.queueWait)
+	return mcpOutcome{run: func(ctx context.Context) mcpOutcome {
+		return s.runCall(ctx, token, req.id, tool, session, arguments, generation, wake, deadline)
+	}}
+}
+
+// runCall waits, in the queue place admission took, for a forward slot
+// and makes the call. An acquisition is refused -- and gives back what it
+// holds -- when a closure came since it was admitted: before it waits,
+// while it waits (the closure's channel from admission fires, even if the
+// gate has reopened since), and when it gets its slot, where the gate's
+// last word counts it as dispatching under the closure's own lock. A seal
+// is woken by nothing (a nil channel never fires).
+func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessage, tool mcpTool, session string, arguments json.RawMessage, generation uint64, wake <-chan struct{}, deadline time.Time) mcpOutcome {
+	closedMeanwhile := func() mcpOutcome {
+		return mcpOutcome{response: rpcResult(id, overload(session, "admission closed for maintenance while the call waited; nothing was forwarded"))}
+	}
 	if !tool.seal {
-		_, wake, _ = s.admission()
+		if closed, _, now := s.admission(); closed || now != generation {
+			<-s.queue
+			return closedMeanwhile()
+		}
 	}
-	waited := time.NewTimer(s.queueWait)
+	wait := time.Until(deadline)
+	if wait < 0 {
+		wait = 0
+	}
+	waited := time.NewTimer(wait)
 	select {
 	case s.forwards <- struct{}{}:
 		waited.Stop()
 		<-s.queue
-		if !tool.seal {
-			if closed, _, now := s.admission(); closed || now != generation {
-				<-s.forwards
-				return mcpOutcome{response: rpcResult(id, overload(session, "admission closed for maintenance while the call waited; nothing was forwarded"))}
-			}
-		}
 	case <-waited.C:
 		<-s.queue
 		return mcpOutcome{response: rpcResult(id, overload(session, "no forward slot within "+s.queueWait.String()+"; nothing was forwarded"))}
 	case <-wake:
 		waited.Stop()
 		<-s.queue
-		return mcpOutcome{response: rpcResult(id, overload(session, "admission closed for maintenance while the call waited; nothing was forwarded"))}
+		return closedMeanwhile()
 	case <-ctx.Done():
 		waited.Stop()
 		<-s.queue
 		return mcpOutcome{response: rpcResult(id, overload(session, "the call ended before a forward slot was free; nothing was forwarded"))}
 	}
 	defer func() { <-s.forwards }()
+	if s.afterSlot != nil {
+		s.afterSlot()
+	}
+	if !tool.seal {
+		if !s.dispatch(generation) {
+			return closedMeanwhile()
+		}
+		defer s.dispatched()
+	}
+	if s.beforeForward != nil {
+		s.beforeForward()
+	}
 
 	var path string
 	var body []byte
@@ -805,7 +960,7 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 	if err != nil {
 		// the category stays here, token-free and address-free; the
 		// client learns only that the answer did not arrive
-		fmt.Fprintf(s.log, "mcp: forward to %s did not answer: %s\n", path, transportErrorCategory(err))
+		s.diag("mcp: forward to %s did not answer: %s", path, transportErrorCategory(err))
 		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's answer did not arrive; the call may have run and minted a receipt"}))}
 	}
 	if status == http.StatusUnauthorized {
@@ -885,12 +1040,15 @@ func toolError(structured any) map[string]any {
 	return r
 }
 
-// countCall counts one call, at its arrival, against the transport
-// session's window and refuses past the bound, naming the session the call
-// resolved to and the seconds until the window turns.
-func (s *mcpServer) countCall(sess *mcpSession, arrived time.Time, session string) map[string]any {
+// countCall counts one call, at its arrival -- read under the lock, so
+// calls are counted in the one order admission happens and no window is
+// charged an arrival older than its start -- against the transport
+// session's window and refuses past the bound, naming the session the
+// call resolved to and the seconds until the window turns.
+func (s *mcpServer) countCall(sess *mcpSession, session string) map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	arrived := s.now()
 	if sess.windowStart.IsZero() || arrived.Sub(sess.windowStart) >= time.Minute {
 		sess.windowStart, sess.windowCount = arrived, 0
 	}

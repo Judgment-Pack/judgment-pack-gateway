@@ -106,12 +106,15 @@ Bounds. The endpoint path is `/mcp`; the transport is chosen at launch, never by
 | anything else | a JSON-RPC method-not-found; no prompts, no resources, no sampling, no writes |
 
 Messages are read as the pinned protocol has them, by their members' exact names, never
-case-folded, with no member named twice — except a platform tool's `arguments`, whose content
-is the signer's to judge: an id is a string or a number with no fractional part, in any
+case-folded, with no member named twice — except the `arguments` of a `tools/call` of a
+platform tool, whose content is the signer's to judge: an id is a string or a number with no fractional part, in any
 spelling (a spelling of at most 64 bytes and an exponent within ±999, since an id is compared
 and echoed, never computed with), and never `null`; `params` is an object; a client's
 response carries an id and exactly one of a `result` object and an `error` object of an
-integer `code` and a string `message`. `initialize` is validated — a `protocolVersion` string,
+integer `code` and a string `message`, and no `params`. A request that cannot be served is
+answered with an error that carries its id; any other input that cannot be accepted — a
+notification or a response of the wrong shape, or a message that is neither — is refused as
+input, an error with no id. `initialize` is validated — a `protocolVersion` string,
 a `capabilities` object, `clientInfo` with `name` and `version` strings — and happens once per
 session; until it has, `tools/list` and `tools/call` are refused. The seal tool's arguments
 are the server's own and are read the same way as the envelope.
@@ -222,7 +225,11 @@ under a new `kid` beside the old; restart the frontend; **close admission** — 
 the frontend closes it and `SIGUSR2` reopens it; closed, the frontend
 answers a new `initialize` `503` and a new acquisition as an overload, and the operator
 closes every other ingress to `/acquire` and `/act` the same way — and wait for what is in
-flight; seal every session to be preserved **by `/seal` directly**, on the signer's loopback
+flight: first the frontend's own drain, which it reports on its diagnostics stream ("admission
+closed and drained") once every acquisition that passed its gate before the closure has had
+its answer — a forward the signer has not yet received is one the signer's own check cannot
+see, and one that has had its answer has reached the signer or never will; then seal every
+session to be preserved **by `/seal` directly**, on the signer's loopback
 surface under the operator's own token — the frontend's transport sessions went with its
 restart and `engine.seal` is not reachable through a closed frontend — and the signer's own
 refusal to seal a session with an acquisition still in flight is the drain signal: a seal
@@ -282,14 +289,24 @@ resolves it; a consumer's verdict is store-wide and fails closed (§5a.1), which
 
 Small and explicit, so a conformance test can hold it. **stdio**: newline-delimited JSON-RPC
 on stdin and stdout, nothing but protocol on stdout, diagnostics on stderr, one MCP session
-for the life of the process. Each line is admitted in the order it was read — the lifecycle,
-the session a call resolves to, the window and the admission gate — and an admitted call runs
-while the next line is read, so answers may come in another order, correlated by id, as
-JSON-RPC allows; at most 64 messages are admitted and unanswered at once, past which the
-server stops reading until one is answered; and an answer that cannot be written ends the
-transport with that failure, nothing further run. Diagnostics name what went wrong by
-category — timed out, connection refused, permission denied — never an address, a name or a
-token, since a host may forward its servers' stderr anywhere.
+for the life of the process. The reader takes a place in a backlog of 64 before it admits a
+line, so at most 64 messages are ever admitted and unanswered, and past that the server stops
+reading until one is answered; each line is admitted in the order it was read — the
+lifecycle, the session a call resolves to, the window, the admission gate and the queue
+place — and an admitted call runs while the next line is read, so answers may come in
+another order, correlated by id, as JSON-RPC allows; an answer the reader gives itself — a
+refusal at admission — waits on the output, which is backpressure; and an answer that cannot
+be written ends the transport with that failure, nothing further run.
+
+**Diagnostics.** What the process says while it serves names what went wrong by category —
+timed out, connection refused, permission denied, the answer past its bound, the HTTP server
+unable to accept — never an address, a name or a token, since a host may forward its
+servers' stderr anywhere; `net/http`'s own lines reach the stream the same way, their text
+dropped. Diagnostics are delivered by one writer of their own and never waited for: a stream
+that does not drain holds up no call and no operator control, and the lines it cannot take
+are counted and said when it drains. A refusal to start is not a diagnostic of traffic: it
+reads the configuration back to whoever started the process — the operator — and names what
+it refuses, member and value.
 
 **Streamable HTTP**, one endpoint at `/mcp`, JSON responses only, protocol `2025-06-18`
 only, one JSON-RPC message per body. Checks run in the order of the rows, each before the
@@ -299,7 +316,7 @@ next, and the first that fails answers:
 |---|---|
 | `Origin` present and not in `mcp.origins` — present twice, or present and empty, included | `403`, before the body is read; absent `Origin` (a native client) is admitted |
 | `Authorization` missing or refused | `401` with `WWW-Authenticate: Bearer resource_metadata="..."`, before the body is read |
-| `MCP-Protocol-Version` present and not `2025-06-18` | `400`; absent, `2025-06-18` is assumed, the one version this server speaks |
+| `MCP-Protocol-Version` present and not `2025-06-18` — present and empty, or named twice, included | `400`, before the body is read; absent, `2025-06-18` is assumed, the one version this server speaks |
 | body over the bound (1 MiB) | `413` |
 | `Mcp-Session-Id` absent, on any method but a `POST` of `initialize` | `400` |
 | `Mcp-Session-Id` unknown, expired or ended, on any method | `404` |
@@ -308,7 +325,7 @@ next, and the first that fails answers:
 | `POST` under whose `Accept` `application/json` is not acceptable by RFC 9110's rules — every field line read, wildcards and quality values honoured, so `*/*` and `application/*` accept it and `application/json;q=0` or SSE alone do not; a range with a media-type parameter applies to no answer of this server's, and a weight outside the `qvalue` grammar makes the header one this server cannot read | `406` |
 | `POST` an `initialize` request | `200`, JSON body; a successful one carries a new `Mcp-Session-Id` — the *transport* session, which is not a receipt session and seals nothing — and a refused one carries none and keeps none; `503` when `mcp.sessions` are open or admission is closed |
 | `POST` a request | `200`, JSON body, `Content-Type: application/json` |
-| `POST` a notification or a response | `202`, no body |
+| `POST` a notification or a response | `202`, no body, when it is of the protocol's shape; `400` with a JSON-RPC error and no id when it is not, or when the message is neither a request nor one of these |
 
 The response carries `MCP-Protocol-Version` too, an extra the specification permits. An
 `initialize` that names a live transport session is a request on that session, answered
@@ -325,11 +342,14 @@ that bounds what *it* sends the signer, and only that: `mcp.sessions` transport 
 once (`1` to `4096`; a further `initialize` is `503`); `mcp.idleSeconds` before an idle
 transport session expires (`60` to `86400`); `mcp.concurrency` **outstanding forwards** — the
 frontend's own HTTP operations to the signer not yet answered or timed out — across all
-transport sessions (`1` to `64`), with a queue of the same depth behind them in which a call
-waits at most ten seconds before it is an overload error with nothing forwarded, and a call
-arriving at a full queue is that error at once; `mcp.callsPerMinute` calls per transport
+transport sessions (`1` to `64`), with a queue of the same depth behind them, whose place a
+call takes when it is admitted and in which it waits at most ten seconds from then before it
+is an overload error with nothing forwarded, and a call admitted to a full queue is that
+error at once; `mcp.callsPerMinute` calls per transport
 session, or per process over stdio (`1` to `6000`), counted in a fixed window of sixty
-seconds from the first call, **a call counted at arrival** whether it is then queued,
+seconds from the first call, **a call counted at arrival** — when its message has been read
+whole and is admitted, one at a time, in the order admission happens, so no window is
+charged an arrival older than its start and no wait named exceeds sixty seconds — whether it is then queued,
 forwarded or refused — so a flood refused at the queue still spends its quota — an excess
 call answered as an overload error naming the seconds until the window turns; and one
 deadline per forward, forty-five seconds — the signer's thirty-second source deadline, its
@@ -339,6 +359,9 @@ the receipt, the salts and room — past which the outcome is unknown too. When 
 closes for maintenance, a queued call is refused as an overload, not drained, and so is one
 that finds its forward slot free at the moment the gate closes, or after the gate closed and
 reopened while it waited: a call admitted before a closure is never forwarded after it. The
+gate's last word for an acquisition is taken with its slot, under the lock a closure takes,
+and counts it as dispatching until it has had its answer; a closure is drained when nothing
+is dispatching. The
 HTTP server's own deadlines sit behind these: thirty seconds to read a request's headers and
 body, then the queue's wait, the forward's deadline and fifteen seconds' margin to answer it,
 from the moment the body is read, and a minute for an idle connection.

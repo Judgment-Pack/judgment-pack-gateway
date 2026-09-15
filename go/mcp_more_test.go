@@ -611,6 +611,15 @@ func TestMetadataPathAndDuplicates(t *testing.T) {
 		`{"params":{"arguments":1,"name":"x"},"params":{}}`:            false,
 		`{"other":{"arguments":{"a":1,"a":2}}}`:                        false,
 		`{"params":{"_meta":{"a":1,"a":2}}}`:                           false,
+		// escaped spellings are the names they decode to, on the path as
+		// in a duplicate; a lookalike at another depth is no exception
+		`{"p\u0061rams":{"arguments":{"a":1,"a":2}}}`:         true,
+		`{"params":{"argum\u0065nts":{"a":1,"a":2}}}`:         true,
+		`{"params":{"x":{"arguments":{"a":1,"a":2}}}}`:        false,
+		`{"x":{"params":{"arguments":{"a":1,"a":2}}}}`:        false,
+		`{"params":[{"arguments":{"a":1,"a":2}}]}`:            false,
+		`{"params":{"arguments":{"a":1},"argum\u0065nts":2}}`: false,
+		`{"a":1,"\u0061":2}`:                                  false,
 	} {
 		if err := noDuplicateMembers([]byte(text), [][]string{{"params", "arguments"}}); (err == nil) != ok {
 			t.Errorf("%s: %v", text, err)

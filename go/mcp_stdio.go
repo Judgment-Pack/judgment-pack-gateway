@@ -2,12 +2,13 @@ package main
 
 // The stdio transport of the MCP server: newline-delimited JSON-RPC on
 // stdin and stdout, nothing but protocol on stdout, one transport session
-// for the life of the process, and the token given once at start. Each
-// line is admitted in the reader's own turn -- the lifecycle, the session
-// it resolves to, the window and the gate, in arrival order -- and what
-// passes is run as it is admitted, up to a bound of work outstanding, past
-// which the reader waits; each answer is written whole, and the first
-// answer that cannot be written ends the transport.
+// for the life of the process, and the token given once at start. The
+// reader takes a place in the backlog before it admits a line, so no more
+// than the backlog is ever admitted and unanswered; it admits each line
+// in its own turn -- the lifecycle, the session it resolves to, the
+// window, the gate and the queue place, in arrival order -- and what
+// passes is run while the next line is read; each answer is written
+// whole, and the first answer that cannot be written ends the transport.
 
 import (
 	"bufio"
@@ -89,15 +90,8 @@ func (s *mcpServer) serveStdio(ctx context.Context, in io.Reader, out io.Writer,
 			if len(line) == 0 {
 				continue
 			}
-			arrived := s.now()
-			// admitted here, in order; run wherever, within the bound
-			outcome := s.admit(sess, token, arrived, line)
-			if outcome.run == nil {
-				if outcome.response != nil {
-					write(outcome.response)
-				}
-				continue
-			}
+			// a place in the backlog first: a line is admitted only when
+			// its answer has room
 			select {
 			case outstanding <- struct{}{}:
 			case <-ctx.Done():
@@ -110,6 +104,15 @@ func (s *mcpServer) serveStdio(ctx context.Context, in io.Reader, out io.Writer,
 				handlers.Wait()
 				done <- nil
 				return
+			}
+			// admitted here, in order; run wherever
+			outcome := s.admit(sess, token, line)
+			if outcome.run == nil {
+				if outcome.response != nil {
+					write(outcome.response)
+				}
+				<-outstanding
+				continue
 			}
 			handlers.Add(1)
 			go func(run func(context.Context) mcpOutcome) {

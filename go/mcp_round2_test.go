@@ -60,7 +60,7 @@ func TestMCPClosureBeatsASlot(t *testing.T) {
 	// whichever it takes, the call is refused -- twenty rounds, so a
 	// select that takes the slot and forwards cannot hide
 	for round := 0; round < 20; round++ {
-		admitted := f.server.admit(sess, "", time.Now(), []byte(toolCall(round, "screen.lookup", `{}`, "")))
+		admitted := f.server.admit(sess, "", []byte(toolCall(round, "screen.lookup", `{}`, "")))
 		if admitted.run == nil {
 			t.Fatalf("round %d: the call was not admitted: %s", round, admitted.response)
 		}
@@ -75,7 +75,7 @@ func TestMCPClosureBeatsASlot(t *testing.T) {
 		// admitted, then the gate closed and reopened before it ran: its
 		// wake channel is the new, open one, the slot is free, and only the
 		// generation says a closure came between
-		admitted = f.server.admit(sess, "", time.Now(), []byte(toolCall(100+round, "screen.lookup", `{}`, "")))
+		admitted = f.server.admit(sess, "", []byte(toolCall(100+round, "screen.lookup", `{}`, "")))
 		f.server.closeAdmission()
 		f.server.openAdmission()
 		outcome = admitted.run(context.Background())
@@ -91,7 +91,7 @@ func TestMCPClosureBeatsASlot(t *testing.T) {
 		t.Fatalf("%d calls were forwarded across a closure", len(bodies()))
 	}
 	// and a call admitted after the reopen goes on
-	if outcome := f.server.handle(context.Background(), sess, "", time.Now(), []byte(toolCall(999, "screen.lookup", `{}`, ""))); !strings.Contains(string(outcome.response), `"receipt"`) || len(bodies()) != 1 {
+	if outcome := f.server.handle(context.Background(), sess, "", []byte(toolCall(999, "screen.lookup", `{}`, ""))); !strings.Contains(string(outcome.response), `"receipt"`) || len(bodies()) != 1 {
 		t.Fatalf("after the reopen: %s", outcome.response)
 	}
 	// over the transport: a queued call is woken by the closure
@@ -143,74 +143,125 @@ func TestMCPClosureBeatsASlot(t *testing.T) {
 }
 
 // The stdio transport's work is bounded and its output is not silently
-// lost: past the backlog the reader waits; an answer that cannot be
-// written ends the transport with the failure, and nothing more is run.
+// lost: the reader takes a place in the backlog before it admits a line,
+// so exactly the backlog is admitted and unanswered at once, the next line
+// is read but not admitted -- not counted, not forwarded -- and the one
+// after is not read; an answer that cannot be written ends the transport
+// with the failure, and nothing more is run.
 func TestMCPStdioBacklogAndBrokenOutput(t *testing.T) {
 	f := newMCPFixture(t, false)
-	signer, bodies := fastSigner(t)
-	f.server.signer = signer.URL
+	var mu sync.Mutex
+	var forwarded []string
+	release := make(chan struct{})
+	releaseOnce := sync.OnceFunc(func() { close(release) })
+	defer releaseOnce()
+	stalling := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		forwarded = append(forwarded, string(body))
+		mu.Unlock()
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"result":{},"receipt":{"kind":"acquisition"},"salts":{}}`))
+	}))
+	t.Cleanup(stalling.Close)
+	t.Cleanup(releaseOnce)
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(forwarded)
+	}
+	f.server.signer = stalling.URL
 	f.server.cfg.mcp.callsPerMinute = 6000
-	f.server.stdioBacklog = 8
-	backlog := f.server.stdioBacklog
+	f.server.forwards = make(chan struct{}, 4)
+	f.server.queue = make(chan struct{}, 4)
+	f.server.stdioBacklog = 3
 	initialize := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}`
-	// an output that takes the first answer and then blocks until released;
-	// released on every way out of the test, so a failure cannot hang it
-	gate := &gatedWriter{release: make(chan struct{})}
-	release := sync.OnceFunc(func() { close(gate.release) })
-	defer release()
 	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	lines := make(chan string, 16)
+	go func() {
+		scanner := bufio.NewScanner(outR)
+		for scanner.Scan() {
+			lines <- scanner.Text()
+		}
+		close(lines)
+	}()
 	done := make(chan error, 1)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { done <- f.server.serveStdio(ctx, inR, gate, "") }()
+	go func() { done <- f.server.serveStdio(context.Background(), inR, outW, ""); outW.Close() }()
 	fmt.Fprintln(inW, initialize)
-	waitUntil(t, "the initialize answer", func() bool { return gate.count() == 1 })
-	// the backlog fills: the reader takes this many, admits them (two
-	// forwarded, two queued, the rest overloads, each an answer that then
-	// waits on the output), and then waits itself, so the line after the
-	// next is not even read and its write on the pipe does not complete
-	for i := 0; i < backlog; i++ {
+	if first := <-lines; !strings.Contains(first, `"protocolVersion"`) {
+		t.Fatalf("initialize: %s", first)
+	}
+	for i := 0; i < 3; i++ {
 		fmt.Fprintln(inW, toolCall(10+i, "screen.lookup", `{}`, ""))
 	}
-	written := make(chan struct{})
+	waitUntil(t, "the backlog to be forwarded", func() bool { return count() == 3 })
+	fourth := make(chan struct{})
+	fifth := make(chan struct{})
 	go func() {
-		fmt.Fprintln(inW, toolCall(1000, "screen.lookup", `{}`, "")) // admitted, then waits for a token
-		fmt.Fprintln(inW, toolCall(1001, "screen.lookup", `{}`, "")) // not even read
-		close(written)
+		fmt.Fprintln(inW, toolCall(13, "screen.lookup", `{}`, "")) // read, not admitted
+		close(fourth)
+		fmt.Fprintln(inW, toolCall(14, "screen.lookup", `{}`, "")) // not read
+		close(fifth)
 	}()
+	<-fourth
 	select {
-	case <-written:
-		t.Fatal("the reader kept reading past the backlog")
+	case <-fifth:
+		t.Fatal("the reader read past the backlog")
 	case <-time.After(300 * time.Millisecond):
 	}
-	if n := len(bodies()); n == 0 || n > backlog {
-		t.Fatalf("%d forwards with the output blocked", n)
+	if n := count(); n != 3 {
+		t.Fatalf("%d calls forwarded with a backlog of 3", n)
 	}
-	release()
-	<-written
-	waitUntil(t, "every answer to be written", func() bool { return gate.count() == 1+backlog+2 })
+	// the line read past the backlog is not admitted: it holds no queue
+	// place (the three admitted have their slots)
+	if n := len(f.server.queue); n != 0 {
+		t.Fatalf("the line past the backlog was admitted: %d queue places held", n)
+	}
+	releaseOnce()
+	<-fifth
 	inW.Close()
+	seen := map[string]int{}
+	for line := range lines {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("not JSON: %s", line)
+		}
+		seen[fmt.Sprint(m["id"])]++
+		if r, ok := m["result"].(map[string]any); !ok || r["isError"] != nil {
+			t.Fatalf("an answer: %s", line)
+		}
+	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range []string{"10", "11", "12", "13", "14"} {
+		if seen[id] != 1 {
+			t.Fatalf("id %s answered %d times: %v", id, seen[id], seen)
+		}
+	}
+	if n := count(); n != 5 {
+		t.Fatalf("%d calls forwarded in the end, not 5", n)
+	}
 	// a broken output: the first failed answer ends the transport with
 	// the failure as a category, and the call behind it is not run
-	bodiesBefore := len(bodies())
+	before := count()
 	broken := &failingWriter{}
 	err := f.server.serveStdio(context.Background(), strings.NewReader(initialize+"\n"+toolCall(2, "screen.lookup", `{}`, "")+"\n"), broken, "")
 	if err == nil || !strings.Contains(err.Error(), "could not be written") || strings.Contains(err.Error(), "127.0.0.1") {
 		t.Fatalf("a broken output: %v", err)
 	}
-	if len(bodies()) != bodiesBefore {
+	if count() != before {
 		t.Fatal("a call behind a failed answer was forwarded")
 	}
 	// the same over a real pipe whose reader is gone
-	outR, outW, _ := os.Pipe()
-	outR.Close()
-	if err := f.server.serveStdio(context.Background(), strings.NewReader(initialize+"\n"), outW, ""); err == nil || !strings.Contains(err.Error(), "could not be written") {
+	deadR, deadW, _ := os.Pipe()
+	deadR.Close()
+	if err := f.server.serveStdio(context.Background(), strings.NewReader(initialize+"\n"), deadW, ""); err == nil || !strings.Contains(err.Error(), "could not be written") {
 		t.Fatalf("a pipe without a reader: %v", err)
 	}
-	outW.Close()
+	deadW.Close()
 }
 
 // Ending the stdio transport does not wait on an answer stuck on the
@@ -312,7 +363,7 @@ func TestMCPSealArgumentsAndMetadataAreReadExactly(t *testing.T) {
 	sid := f.open(t)
 	for _, c := range []struct{ name, arguments string }{
 		{"a duplicate session", `{"session":"a","session":"b"}`},
-		{"an escaped duplicate", `{"session":"a","session":"b"}`},
+		{"an escaped duplicate", `{"session":"a","sess\u0069on":"b"}`},
 		{"a null session", `{"session":null}`},
 		{"a numeric session", `{"session":1}`},
 		{"no session", `{}`},
@@ -444,6 +495,7 @@ func TestMCPAuthorizationBeforeTheBody(t *testing.T) {
 		{"no token", nil, http.StatusUnauthorized},
 		{"a bad token", map[string]string{"Authorization": "Bearer not-a-token"}, http.StatusUnauthorized},
 		{"a version not spoken", map[string]string{"Authorization": "Bearer " + f.token, "MCP-Protocol-Version": "2024-11-05"}, http.StatusBadRequest},
+		{"a version present and empty", map[string]string{"Authorization": "Bearer " + f.token, "MCP-Protocol-Version": ""}, http.StatusBadRequest},
 	} {
 		req := httptest.NewRequest(http.MethodPost, mcpEndpoint, sentinelBody{t, c.name})
 		for k, v := range c.headers {
@@ -535,7 +587,7 @@ func TestMCPInitializeIsOneTransition(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				if f.server.admit(sess, "", time.Now(), initialize).initialized {
+				if f.server.admit(sess, "", initialize).initialized {
 					mu.Lock()
 					succeeded++
 					mu.Unlock()

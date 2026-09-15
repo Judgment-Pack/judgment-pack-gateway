@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -67,7 +68,6 @@ func refuseUnread(w http.ResponseWriter, status int, body any) {
 
 // serveMCP answers one request under the ordered checks.
 func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
-	arrived := s.now()
 	w.Header().Set("MCP-Protocol-Version", mcpProtocolVersion)
 	// 1. Origin: present and not admitted, 403 before the body is read;
 	// present twice, or present and empty, is not an origin this server
@@ -83,9 +83,11 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 		refuseUnread(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 		return
 	}
-	// 3. the protocol version, when named
-	if v := r.Header.Get("MCP-Protocol-Version"); v != "" && v != mcpProtocolVersion {
-		refuseUnread(w, http.StatusBadRequest, map[string]any{"error": "protocol version not supported: " + v + "; this server speaks " + mcpProtocolVersion})
+	// 3. the protocol version, when named: named once, and as the one
+	// this server speaks -- present and empty, or named twice, is no
+	// version this server speaks
+	if versions := r.Header.Values("MCP-Protocol-Version"); len(versions) > 0 && (len(versions) != 1 || versions[0] != mcpProtocolVersion) {
+		refuseUnread(w, http.StatusBadRequest, map[string]any{"error": "the protocol version named is not the one this server speaks, " + mcpProtocolVersion})
 		return
 	}
 	// 4. the body bound, on every method: what is over it is refused
@@ -161,7 +163,7 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	outcome := s.handle(r.Context(), sess, token, arrived, body)
+	outcome := s.handle(r.Context(), sess, token, body)
 	if initializing {
 		if outcome.initialized {
 			w.Header().Set("Mcp-Session-Id", sess.id)
@@ -174,6 +176,15 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 		// with this server's challenge
 		s.challenge(w)
 		mcpWriteJSON(w, outcome.transport.status, map[string]any{"error": outcome.transport.reason})
+		return
+	}
+	if outcome.rejected {
+		// an input that is not a request and cannot be accepted -- a
+		// notification or a response of the wrong shape, or neither -- is
+		// an error status, with the JSON-RPC error that says why
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(outcome.response)
 		return
 	}
 	if outcome.response == nil {
@@ -371,7 +382,30 @@ func (s *mcpServer) httpServer() *http.Server {
 		WriteTimeout:      s.readTimeout + s.responseBudget(),
 		IdleTimeout:       60 * time.Second,
 		MaxHeaderBytes:    64 << 10,
+		// what net/http would log itself -- an accept error, a handler's
+		// panic -- carries addresses; it reaches the diagnostics stream as
+		// a category and nothing of the line
+		ErrorLog: log.New(serverDiagnostics{s}, "", 0),
 	}
+}
+
+// serverDiagnostics turns net/http's own log lines into categories on the
+// diagnostics stream: the line's text, which names addresses, is dropped.
+type serverDiagnostics struct{ s *mcpServer }
+
+func (d serverDiagnostics) Write(p []byte) (int, error) {
+	line := string(p)
+	category := "the HTTP server reported an error"
+	switch {
+	case strings.Contains(line, "Accept error"):
+		category = "the HTTP server could not accept a connection, and retries"
+	case strings.Contains(line, "panic serving"):
+		category = "a request's handler panicked"
+	case strings.Contains(line, "superfluous response.WriteHeader"):
+		category = "a handler wrote its header twice"
+	}
+	d.s.diag("mcp: %s", category)
+	return len(p), nil
 }
 
 // listenHTTP serves the transport on the configured address until the
