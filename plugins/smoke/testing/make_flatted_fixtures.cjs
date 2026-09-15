@@ -12,7 +12,7 @@
 // answered; this writes it as n8n stores it. It also writes the decoder's
 // cases -- shared objects, a string that recurs, a key and a value that read
 // as numbers beside a number, keys a JavaScript object orders first -- and
-// what they decode to.
+// what they decode to, and cycles.
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -41,4 +41,18 @@ const cases = {
 };
 fs.writeFileSync(path.join(fixtures, 'flatted-cases.flatted.json'), flatted.stringify(cases));
 fs.writeFileSync(path.join(fixtures, 'flatted-cases.json'), JSON.stringify(cases));
+
+// cycles, which flatted writes and its parse gives back as cycles: an object
+// that holds itself, an array that holds itself, and two objects that hold
+// each other -- the same object test_n8n_check.py's flatted_cycles builds
+const cyclic = { name: 'root' };
+cyclic.self = cyclic;
+const ring = ['ring'];
+ring.push(ring);
+cyclic.ring = ring;
+const a = { name: 'a' };
+const b = { name: 'b', a };
+a.b = b;
+cyclic.pair = a;
+fs.writeFileSync(path.join(fixtures, 'flatted-cycles.flatted.json'), flatted.stringify(cyclic));
 console.log(`flatted ${version}: wrote the execution and the decoder's cases`);

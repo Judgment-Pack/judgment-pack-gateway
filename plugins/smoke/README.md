@@ -24,8 +24,9 @@ chmod +x my_source
 ```
 
 The source echoes the canonical arguments it was given, so a result is checkable. No identity
-is configured, so every receipt carries `caller: null`, and an `Act` is refused with a 401
-before its body is read. Both runs check that refusal, in the words each client surfaces.
+is configured, so every receipt carries `caller: null`, and the engine's handler refuses an
+`Act` with a 401 without reading its body. Both runs check that refusal, in the words each
+client surfaces.
 
 ## n8n — the node inside the official image
 
@@ -114,26 +115,40 @@ engine:
   the seal, the key document and the act refusal, each in the engine's own JSON. It also builds
   the wrong answers the checkers must refuse (`FAULTS`). Each fault changes one member, and
   names the one check that must catch it, as both checkers name their checks.
-- `stand_in_engine.py` answers the routes a client plugin calls as the engine above answers
-  them. It gives the same refusals, in the same order and the same words. It refuses an action
-  before reading its body, chains a session's receipts and keeps a seal final. With `--fault
-  NAME` it gives one wrong answer. With `--require-length` it refuses a chunked body, as a
-  proxy that takes none would. Nothing it answers is signed: it stands in for the shape of the
-  engine's answers, never for their verification.
-- `test_stand_in_engine.py` sends the same requests to the engine and to the stand-in and
-  compares the answers: status, headers, every member, and the bytes of every refusal. What
-  the engine derives from its key, seed and clock is compared by its form and by how it relates
-  to the rest. The test needs the engine's binary, named by `GATEWAY_BIN`. CI's Linux Go job
-  builds the engine and runs the test with `SMOKE_REQUIRE_ENGINE` set, so a stand-in that
-  drifts from the engine fails there. The same file checks that each fault changes its one
-  member and nothing else.
+- `stand_in_engine.py` answers as the engine above answers. It reads a body as the engine's
+  JSON decoder does, and holds arguments to the canonical domain. It gives the same refusals,
+  in the same order and the same words, except where the words are Go's decoder's own. It
+  decides an action's 401 before reading the body. It chains a session's receipts and keeps a
+  seal final. It routes other methods and query strings as the engine's router does, and sends
+  the engine's headers. With `--fault NAME` it gives one wrong answer. With `--require-length`
+  it refuses a chunked body, as a proxy that takes none would. Nothing it answers is signed: it
+  stands in for the shape of the engine's answers, never for their verification.
+- `test_stand_in_engine.py` sends the same 48 requests to the engine and to the stand-in and
+  compares the answers:
+  - the status;
+  - the headers `Content-Type`, `Content-Length`, `Transfer-Encoding`, `Connection`,
+    `WWW-Authenticate`, `X-Content-Type-Options` and `Server`;
+  - every body member, compared as JSON text;
+  - the bytes of every refusal.
+
+  Where the words are Go's decoder's own, it compares the status, the headers but the length,
+  and that the error is a string. What the engine derives from its key, seed and clock is
+  compared by its form at its place in the answer. It is also compared by relation: the key
+  id is the key's, `prevSignature` is the session's last signature, and times parse and never
+  run backward. The arguments commitment and the result digest are recomputed. The adapter and
+  result digests, which no seed touches, are compared exactly. The test needs the engine's
+  binary, named by `GATEWAY_BIN`. CI's Linux Go job builds the engine and runs the test with
+  `SMOKE_REQUIRE_ENGINE` set, so a stand-in that drifts from the engine fails there. The same
+  file checks that each fault changes its one member and nothing else, headers included,
+  except what the clock sets.
 - `test_n8n_check.py` writes executions into a SQLite database as n8n stores them: one as the
   engine must have answered, and one for each fault this checker reads. It requires `check.py`
   to pass the first, and to fail each other at the fault's check and no other. The flatted
   bytes are the library's. `fixtures/` holds what flatted 3.4.2, the copy in the pinned n8n
   image, wrote for the execution and for the decoder's hard cases: a shared object, a
-  recurring string, and a key and a value that read as numbers beside a number. The encoder
-  the tests write faults with is held byte for byte to those.
+  recurring string, a key and a value that read as numbers beside a number, and cycles. The
+  decoder gives a shared object back as one object and a cycle as a cycle. The encoder the
+  tests write faults with is held byte for byte to those, for the integers they hold.
 - `test_activepieces_runner.py` runs `activepieces/run.mjs` against the stand-in: once as the
   engine answers, and once for each fault, where the run must fail at the fault's check. It
   runs once more against `--require-length`, which the piece passes because it states its

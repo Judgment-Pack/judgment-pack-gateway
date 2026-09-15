@@ -24,7 +24,7 @@
           "receipt": {
            "acquisition": {
             "adapter": {
-             "digest": "sha256:ef47e9f081a3618a6c4c2f73e31175bd26b96714c4b26d42c0cd03c84c5e034e",
+             "digest": "sha256:e4d5782adfcbf17d156a826c420e85d8f59ef590c0248cc92af9383a70251834",
              "name": "./my_source",
              "version": ""
             },
@@ -37,15 +37,15 @@
             "statement": null,
             "upstreamToken": null
            },
-           "argumentsCommitment": "sha256:773bcb005bfd544c192e9894388dec4d6e2861cef477108a87f16bae346bc6bd",
+           "argumentsCommitment": "sha256:8b8a9095f4ebcc024fb20e773435cd96ce162d9b67ab3937a831e40fb75222ea",
            "authority": "gateway:smoke",
            "callIndex": 0,
            "caller": null,
-           "keyId": "f477d6008dce778c5bb40fc2580315bc",
+           "keyId": "c62b5dde7faa962cdb19bebec4682885",
            "kind": "acquisition",
            "prevSignature": null,
            "receiptVersion": "3",
-           "resultDigest": "sha256:78bddf496c94fe4ffc6e32e967477fb16defc9db80462075e857b9679c0b4050",
+           "resultDigest": "sha256:5f680223cd4160d0d3f7961826b05025e7b57487213ef7ce3bc4e284d08ac7c2",
            "servedAt": "2026-09-15T00:00:00Z",
            "sessionId": "smoke-n8n-test-1",
            "signature": "69fd21d4abedce4234ad1178c79560603a94783bc6837faf05d737e3e5db7c1456f9e4866a5330c58bbfc16d05f398c10f615632c2dcb22246bb022ff8d10aab",
@@ -90,7 +90,7 @@
         {
          "json": {
           "finalCount": 1,
-          "keyId": "f477d6008dce778c5bb40fc2580315bc",
+          "keyId": "c62b5dde7faa962cdb19bebec4682885",
           "sealedAt": "2026-09-15T00:00:00Z",
           "sessionId": "smoke-n8n-test-1",
           "signature": "c192b59ed03466b14b01b6169980255bc3904f7e4db00cd2e7401e36e6acfcdd79fb7a59d26a8e222f9b4ec52e8dc7a423d94aa170f16a91bae44ea4647b94ae"

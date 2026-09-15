@@ -10,24 +10,32 @@ request for request.
 
     python3 stand_in_engine.py <port> [--fault NAME] [--require-length]
 
-As the engine does, it answers:
-  GET  /publickey  the key document
-  POST /acquire    refused 400 in the engine's words, in the engine's
-                   order: a session that is not a flat token, then a
-                   source other than screening, then a sealed session;
-                   otherwise the source's echo of the arguments -- {} when
-                   the member is absent, as given (null included) when it
-                   is there -- with a complete version 3 receipt chained
-                   to the session's last, and the arguments salt
-  POST /act        401 with a Bearer challenge, decided before the body is
-                   read, as an engine with no identity refuses every
-                   action; to a client that asks to close the connection
-                   it comes before the body has arrived
-  POST /seal       refused 400 for a session that is not a flat token, one
-                   it does not hold, or one already sealed; otherwise the
-                   seal at the count the session holds
-  other methods on those routes: 404 {"error": "not found"}; any other
-  path: 404 page not found, as the engine's router answers
+As the engine does, it answers, routing by path whatever the query:
+  /publickey       the key document, to any method (HEAD without a body)
+  POST /acquire    reads the body as the engine's decoder reads it into its
+                   struct -- member names without regard to case, the last
+                   of several taking the place, others ignored -- then holds
+                   the arguments to the canonical domain, then refuses a
+                   session that is not a flat token, then a source other
+                   than screening, then a sealed session: each a 400 in the
+                   engine's words (a malformed body's words are Go's
+                   decoder's, and differ here). Otherwise the source's echo
+                   of the arguments -- {} when the member is absent, as given
+                   (null included) when it is there -- with a complete
+                   version 3 receipt chained to the session's last, and the
+                   arguments salt
+  POST /act        401 with a Bearer challenge, the handler's decision made
+                   before the body is read, as an engine with no identity
+                   refuses every action; it then takes what the client still
+                   sends, briefly, and closes
+  POST /seal       reads the session as /acquire does and refuses, 400, one
+                   that is not a flat token, one it does not hold, or one
+                   already sealed; otherwise the seal at the count the
+                   session holds
+  another method on /acquire, /act or /seal: 404 {"error": "not found"}
+  any other path: 404 page not found, as the engine's router answers
+It sends the engine's headers: no Server, a Date, and on the router's 404
+X-Content-Type-Options: nosniff.
 
 --require-length refuses a request body sent chunked (411) before any route
 answers, as a server or proxy in front of the engine that takes no chunked
@@ -40,6 +48,7 @@ import os
 import socket
 import sys
 import threading
+import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import answers  # noqa: E402
@@ -62,9 +71,16 @@ def make_handler(fault, require_length):
         def log_message(self, *args):
             pass
 
+        def send_response(self, code, message=None):
+            # the engine sends a Date and no Server
+            self.log_request(code)
+            self.send_response_only(code, message)
+            self.send_header("Date", self.date_time_string())
+
         def _send(self, code, body, headers=()):
             if isinstance(body, str):
                 data, kind = body.encode(), "text/plain; charset=utf-8"
+                headers = (*headers, ("X-Content-Type-Options", "nosniff"))
             else:
                 data, kind = answers.go_json(body).encode(), "application/json"
             self.send_response(code)
@@ -74,13 +90,15 @@ def make_handler(fault, require_length):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Connection", "close")
             self.end_headers()
-            self.wfile.write(data)
+            if self.command != "HEAD":
+                self.wfile.write(data)
 
         def _answer(self, route, code, body, headers=()):
             # the fault, when it is at this route, in place of the answer
             if fault and fault.route == route:
                 if fault.status:
-                    code, body, headers = fault.status, fault.value, ()
+                    code, body = fault.status, fault.value
+                    headers = (("WWW-Authenticate", "Bearer"),) if fault.status == 401 else ()
                 else:
                     body = answers.apply(fault, body)
             self._send(code, body, headers)
@@ -114,28 +132,33 @@ def make_handler(fault, require_length):
             except OSError:
                 pass
 
-        def _object(self):
-            """The request body as a JSON object, or None once refused."""
-            try:
-                body = json.loads(self._body())
-            except ValueError as error:
-                self._send(400, {"error": f"the body is not JSON: {error}"})
-                return None
-            if not isinstance(body, dict) or not all(isinstance(body.get(k, ""), str) for k in ("session", "source")):
-                self._send(400, {"error": "the body is not an object of the engine's members"})
-                return None
-            return body
+        def _route(self):
+            return urllib.parse.urlsplit(self.path).path
 
-        def do_GET(self):
-            if self.path == "/publickey":
+        def _fields(self, names):
+            """The request's fields as the engine reads them, or None once
+            refused."""
+            try:
+                return answers.request_fields(self._body().decode("utf-8", "replace"), names)
+            except answers.Refusal as refusal:
+                self._send(400, {"error": refusal.message})
+                return None
+
+        def _elsewhere(self):
+            route = self._route()
+            if route == "/publickey":
                 self._answer("publickey", 200, answers.public_key())
-            elif self.path in ROUTES:
+            elif route in ROUTES:
                 self._send(404, {"error": "not found"})
             else:
                 self._send(404, "404 page not found\n")
+            self._linger()
+
+        do_GET = do_HEAD = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _elsewhere
 
         def do_POST(self):
-            if self.path not in ROUTES:
+            route = self._route()
+            if route not in ROUTES:
                 self._send(404, "404 page not found\n")
                 self._linger()
                 return
@@ -143,11 +166,12 @@ def make_handler(fault, require_length):
                 self._send(411, {"error": "a request body needs a Content-Length here"})
                 self._linger()
                 return
-            if self.path == "/publickey":
+            if route == "/publickey":
                 self._answer("publickey", 200, answers.public_key())
-            elif self.path == "/act":
+                self._linger()
+            elif route == "/act":
                 self._act()
-            elif self.path == "/acquire":
+            elif route == "/acquire":
                 self._acquire()
             else:
                 self._seal()
@@ -162,15 +186,20 @@ def make_handler(fault, require_length):
             self._linger()
 
         def _acquire(self):
-            body = self._object()
-            if body is None:
+            fields = self._fields(("session", "source", "arguments"))
+            if fields is None:
                 return
-            session, source = body.get("session", ""), body.get("source", "")
+            arguments = {}
+            if "arguments" in fields:
+                try:
+                    arguments = answers.canonical_arguments(fields["arguments"])
+                except answers.Refusal as refusal:
+                    return self._send(400, {"error": refusal.message})
+            session, source = fields.get("session", ""), fields.get("source", "")
             if not flat_token(session):
                 return self._send(400, {"error": answers.SESSION_REFUSAL})
             if source != answers.SOURCE:
                 return self._send(400, {"error": f"unknown source: {source}"})
-            arguments = body["arguments"] if "arguments" in body else {}
             with lock:
                 state = sessions.setdefault(session, {"count": 0, "last": None, "sealed": False})
                 if state["sealed"]:
@@ -184,10 +213,10 @@ def make_handler(fault, require_length):
             self._answer("acquire", 200, answer)
 
         def _seal(self):
-            body = self._object()
-            if body is None:
+            fields = self._fields(("session",))
+            if fields is None:
                 return
-            session = body.get("session", "")
+            session = fields.get("session", "")
             if not flat_token(session):
                 return self._send(400, {"error": answers.SESSION_REFUSAL})
             with lock:

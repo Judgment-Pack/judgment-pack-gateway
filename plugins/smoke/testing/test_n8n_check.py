@@ -75,9 +75,10 @@ def flatted(root):
     first met -- the members of the root, then of the first found, and so
     on -- each distinct string once and each object once however often it is
     referred to, and every one of them written as its index, as a string,
-    wherever it is referred to. Numbers, booleans and nulls stay inline.
-    test_the_encoder_writes_what_flatted_writes holds it to the library's
-    bytes."""
+    wherever it is referred to. Numbers, booleans and nulls stay inline --
+    integers only: Python writes a float as JavaScript does not, and nothing
+    here needs one. test_the_encoder_writes_what_flatted_writes holds it to
+    the library's bytes."""
     known, members = {}, []
 
     def index_of(value):
@@ -90,6 +91,8 @@ def flatted(root):
     def inline(value):
         if isinstance(value, (str, dict, list)):
             return json.dumps(index_of(value))
+        if isinstance(value, float):
+            raise ValueError("a float is written otherwise by JavaScript")
         return json.dumps(value)
 
     def written(value):
@@ -121,6 +124,20 @@ def flatted_cases():
         "empty": {},
         "none": [],
     }
+
+
+def flatted_cycles():
+    # the cyclic object make_flatted_fixtures.cjs builds, built the same way
+    cyclic = {"name": "root"}
+    cyclic["self"] = cyclic
+    ring = ["ring"]
+    ring.append(ring)
+    cyclic["ring"] = ring
+    a = {"name": "a"}
+    b = {"name": "b", "a": a}
+    a["b"] = b
+    cyclic["pair"] = a
+    return cyclic
 
 
 def good_outputs():
@@ -181,6 +198,20 @@ class FlattedTest(unittest.TestCase):
     def test_the_encoder_writes_what_flatted_writes(self):
         self.assertEqual(flatted(json.loads(fixture("n8n-execution.json"))), fixture("n8n-execution.flatted.json"))
         self.assertEqual(flatted(flatted_cases()), fixture("flatted-cases.flatted.json"))
+        self.assertEqual(flatted(flatted_cycles()), fixture("flatted-cycles.flatted.json"))
+
+    def test_the_decoder_keeps_what_is_shared_and_what_is_cyclic(self):
+        # as the library's parse gives them: an object referred to more than
+        # once is one object, and a cycle is a cycle, never an expansion
+        cases = check.decode(json.loads(fixture("flatted-cases.flatted.json")))
+        self.assertIs(cases["shared"], cases["list"][2])
+        self.assertIs(cases["shared"], cases["nested"]["again"])
+        self.assertIs(cases["list"], cases["nested"]["list"])
+        cyclic = check.decode(json.loads(fixture("flatted-cycles.flatted.json")))
+        self.assertIs(cyclic["self"], cyclic)
+        self.assertIs(cyclic["ring"][1], cyclic["ring"])
+        self.assertIs(cyclic["pair"]["b"]["a"], cyclic["pair"])
+        self.assertEqual((cyclic["name"], cyclic["ring"][0], cyclic["pair"]["name"], cyclic["pair"]["b"]["name"]), ("root", "ring", "a", "b"))
 
     def test_the_decoder_reads_what_flatted_writes(self):
         stored = json.loads(fixture("flatted-cases.flatted.json"))
@@ -228,6 +259,16 @@ class CheckTest(unittest.TestCase):
         failed, out = self.failed(flatted(execution(good_outputs(), "the engine was not there")), status="error")
         self.assertEqual(failed, ["execution status"], out)
         self.assertIn("the engine was not there", out)
+
+    def test_a_cycle_outside_the_checked_outputs_does_not_stop_the_check(self):
+        loop = {"note": "a cycle, as n8n's data may hold one"}
+        loop["again"] = loop
+        stored = execution(good_outputs())
+        stored["resultData"]["runData"]["Start"][0]["data"]["main"][0][0]["json"] = loop
+        write_database(self.db, flatted(stored))
+        done = self.run_check()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("n8n smoke ok", done.stdout)
 
     def test_an_act_refused_for_another_reason(self):
         outputs = good_outputs()

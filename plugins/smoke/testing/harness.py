@@ -12,13 +12,12 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 STAND_IN = os.path.join(HERE, "stand_in_engine.py")
+sys.path.insert(0, HERE)
+from answers import SOURCE_SCRIPT  # noqa: E402
 
-# the synthetic source of plugins/smoke/README.md ("The engine"): it echoes
-# the canonical arguments it was given
-SOURCE_SCRIPT = """#!/bin/sh
-args=$(cat)
-printf '{"synthetic":true,"arguments":%s}\\n' "${args:-null}"
-"""
+# the headers a comparison reads: what a client acts on, and what tells one
+# server from another; the Date alone is left out, as every answer's differs
+HEADERS = ("Content-Type", "Content-Length", "Transfer-Encoding", "Connection", "WWW-Authenticate", "X-Content-Type-Options", "Server")
 
 
 def free_port():
@@ -82,10 +81,14 @@ class Engine:
         self.proc.wait(timeout=10)
 
 
-def read_answer(status, kind, challenge, raw):
+def read_answer(status, headers, raw):
+    """An answer as a client reads it: its status, the headers a comparison
+    reads (a missing one as None), its raw text, and its body -- JSON when
+    it says so."""
     text = raw.decode()
-    body = json.loads(text) if kind.startswith("application/json") else text
-    return {"status": status, "type": kind, "challenge": challenge, "body": body, "text": text}
+    kind = headers.get("content-type") or ""
+    body = json.loads(text) if kind.startswith("application/json") and text else text
+    return {"status": status, "headers": {h: headers.get(h.lower()) for h in HEADERS}, "body": body, "text": text}
 
 
 def exchange(port, method, path, body=None, raw=None, chunked=False):
@@ -105,9 +108,31 @@ def exchange(port, method, path, body=None, raw=None, chunked=False):
             headers["Content-Type"] = "application/json"
             conn.request(method, path, body=data, headers=headers)
         res = conn.getresponse()
-        return read_answer(res.status, res.getheader("Content-Type", ""), res.getheader("WWW-Authenticate"), res.read())
+        return read_answer(res.status, {k.lower(): v for k, v in res.getheaders()}, res.read())
     finally:
         conn.close()
+
+
+def raw_exchange(port, head):
+    """A request written as bytes, on a connection the client asks to close,
+    and the answer read to the end as bytes -- so that a body where none
+    belongs, as after a HEAD, is seen, where a client that knows the method
+    would ignore it."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.sendall(head)
+    data = b""
+    try:
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    finally:
+        s.close()
+    top, _, text = data.partition(b"\r\n\r\n")
+    lines = top.decode().split("\r\n")
+    fields = {k.strip().lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:])}
+    return read_answer(int(lines[0].split()[1]), fields, text)
 
 
 def early_act(port):
@@ -132,6 +157,6 @@ def early_act(port):
         return {"status": 0, "early": False}
     lines = head.decode().split("\r\n")
     fields = {k.strip().lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:])}
-    answer = read_answer(int(lines[0].split()[1]), fields.get("content-type", ""), fields.get("www-authenticate"), text)
+    answer = read_answer(int(lines[0].split()[1]), fields, text)
     answer["early"] = time.time() - started < 2
     return answer

@@ -32,26 +32,38 @@ def decode(raw):
     object or array is the index, as a string, of the member that holds it --
     one member for each distinct string and each distinct object, however
     often it recurs. Numbers, booleans and nulls are written inline, and an
-    object's keys are never indices."""
+    object's keys are never indices. Each member is decoded once: an object
+    referred to twice decodes to one object, and a cycle to a cycle, as the
+    library's own parse gives them."""
     if not isinstance(raw, list):
         return raw
+    made = {}
 
-    def unflatten(value, depth):
-        if depth > 200:
-            raise ValueError("execution data nests too deep to be flatted")
-        if isinstance(value, list):
-            return [resolve(v, depth) for v in value]
-        if isinstance(value, dict):
-            return {k: resolve(v, depth) for k, v in value.items()}
-        return value
+    def member(index):
+        if index in made:
+            return made[index]
+        stored = raw[index]
+        if isinstance(stored, list):
+            out = made[index] = []
+            out.extend(value(v) for v in stored)
+            return out
+        if isinstance(stored, dict):
+            out = made[index] = {}
+            for key, v in stored.items():
+                out[key] = value(v)
+            return out
+        return stored
 
-    def resolve(value, depth):
-        if isinstance(value, str):
-            target = raw[int(value)]
-            return target if isinstance(target, str) else unflatten(target, depth + 1)
-        return unflatten(value, depth + 1)
+    def value(v):
+        if isinstance(v, str):
+            return member(int(v))
+        if isinstance(v, list):
+            return [value(x) for x in v]
+        if isinstance(v, dict):
+            return {key: value(x) for key, x in v.items()}
+        return v
 
-    return unflatten(raw[0], 0)
+    return member(0)
 
 
 def outputs_of(execution):
@@ -73,7 +85,10 @@ def failed_checks(status, execution, session):
             failed.append((name, found))
 
     def shown(value):
-        return json.dumps(value)[:300]
+        try:
+            return json.dumps(value)[:300]
+        except ValueError:
+            return repr(value)[:300]
 
     outputs = outputs_of(execution)
     error = (execution["resultData"].get("error") or {}).get("message")
