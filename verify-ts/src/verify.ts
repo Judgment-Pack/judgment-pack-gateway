@@ -91,6 +91,11 @@ function size(s: string): number {
 // the charge that passes it is made. Only a test lowers it.
 export const limits = { retainedBytes: 256 << 20 };
 
+// sessionCost is what a session is charged beside its name: what is kept
+// for it, empty or not -- its list of receipt files, its receipts as
+// judged, its index of stems, and its entry in the map of each.
+export const sessionCost = 4 * entryCost;
+
 // receiptCost is what a receipt file is charged beside its name. What is
 // kept of a receipt but its name is bounded: a status and an index; for
 // one that passed, its version, its signature and a previous one of at
@@ -192,7 +197,7 @@ function sessionFiles(root: string, budget: Budget): Map<string, string[]> {
       return;
     }
     const session = nameOf(name, "a session directory");
-    budget.charge(entryCost + size(session), "the store's sessions");
+    budget.charge(sessionCost + size(session), "the store's sessions");
     const files: string[] = [];
     sessions.set(session, files);
     const what = `session ${JSON.stringify(session)}`;

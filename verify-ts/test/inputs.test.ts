@@ -14,7 +14,7 @@ import * as vm from "node:vm";
 
 import { NoVerdict, documentBound } from "../src/inputs.ts";
 import { maxValues } from "../src/json.ts";
-import { limits, testHooks, verifyStore, writeVerdict } from "../src/verify.ts";
+import { limits, sessionCost, testHooks, verifyStore, writeVerdict } from "../src/verify.ts";
 import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir, verdictText } from "./support.ts";
 
 // A store of one session, s1, holding one valid receipt.
@@ -252,6 +252,24 @@ test("what is kept of a receipt does not grow with it", () => {
   fs.writeFileSync(store.registry, "");
   const peak = heapPeak(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), "receipt");
   assert.ok(peak < 4 << 20, `${peak >> 20} MiB held between receipts of 2 MiB`);
+});
+
+test("what is kept of a session, empty or not, is within its charge", () => {
+  const store = newStore();
+  fs.writeFileSync(store.registry, "");
+  const n = 50000;
+  for (let i = 0; i < n; i++) {
+    fs.mkdirSync(path.join(store.root, "receipts", `e${i}`), { recursive: true });
+  }
+  // Verification run once on a small store first, so what the heap holds
+  // of its code is there before the heap is measured.
+  const small = oneSession();
+  fs.writeFileSync(small.registry, "");
+  verifyStore(small.root, small.registry, authority, undefined, publicKey);
+  const peak = heapPeak(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), "decision records");
+  // Each name charged at two bytes a character, as the budget does.
+  const charged = n * sessionCost + 2 * Array.from({ length: n }, (_, i) => `e${i}`.length).reduce((a, b) => a + b);
+  assert.ok(peak < charged, `${peak} bytes kept for ${n} empty sessions, charged ${charged}`);
 });
 
 test("what is kept of the decision records does not grow with their number", () => {

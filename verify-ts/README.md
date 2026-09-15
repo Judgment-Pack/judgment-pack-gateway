@@ -77,14 +77,15 @@ reference.
   only which of the named ones were found, and the findings for those that fail,
   one each, as reported.
 - **256 MiB kept.** Everything verification keeps is charged, as it is kept,
-  to a budget of 256 MiB, strings at two bytes a character: each session; each
-  receipt file, charged when it is met for all that will be kept of it — 2 KiB,
-  and its name twice; each seal; each directory under the decision records
-  still to walk; and the buffer of failing records' findings, 33 bytes each. The
-  charge that passes the budget is no verdict, made before anything more is
-  read: directories are read an entry at a time, so a store too large is refused
-  before any receipt is read, and a registry before the line after the seal
-  that passes it. Findings are not kept: the verdict is written as it is made,
+  to a budget of 256 MiB, strings at two bytes a character: each session, for
+  what is kept of it empty or not — 1 KiB, and its name; each receipt file,
+  charged when it is met for all that will be kept of it — 2 KiB, and its name
+  twice; each seal; each directory under the decision records still to walk;
+  and the buffer of failing records' findings, 33 bytes each. The charge that
+  passes the budget is no verdict, made before anything more is read:
+  directories are read an entry at a time, so a store too large is refused
+  before any receipt is read, and a registry at the seal that passes it, before
+  a later line is read for a seal. Findings are not kept: the verdict is written as it is made,
   a finding at a time. One document is read at a time beside the budget, within
   the bounds above.
 - **Arguments are their bytes.** The platform hands a program its arguments
