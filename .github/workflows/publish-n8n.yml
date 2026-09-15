@@ -1,0 +1,68 @@
+name: Publish the n8n node
+
+# Publishes plugins/n8n-nodes-judgment-pack to npm with a provenance
+# statement, which n8n requires of every community node it verifies from
+# 1 May 2026: anyone can check that this workflow, in this repository, at
+# the tagged commit, built the package. It runs on nothing but a tag naming
+# the package at its version -- n8n-nodes-judgment-pack@0.1.0 -- which a
+# person pushes (plugins/n8n-nodes-judgment-pack/README.md, "Publishing").
+#
+# Before the first run, the npm account that is to own the package sets up
+# one of: npm Trusted Publishing for this repository and this workflow file,
+# with no secret held here; or a granular npm token with publish access,
+# saved as the repository secret NPM_TOKEN.
+
+on:
+  push:
+    tags:
+      - "n8n-nodes-judgment-pack@*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: n8n-nodes-judgment-pack to npm, with provenance
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The provenance statement, and Trusted Publishing's exchange, are
+      # signed with this job's OIDC token.
+      id-token: write
+    defaults:
+      run:
+        working-directory: plugins/n8n-nodes-judgment-pack
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+      - name: The tag names this package at its version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          want="n8n-nodes-judgment-pack@$(node -p 'require("./package.json").version')"
+          test "$TAG" = "$want" || { echo "the tag $TAG does not name $want"; exit 1; }
+      # Trusted Publishing needs npm 11.5.1 or later; say so plainly rather
+      # than fail in the publish.
+      - name: npm can publish from here
+        run: |
+          node -e 'const [a, b, c] = process.argv[1].split(".").map(Number); process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1)' "$(npm --version)" \
+            || { echo "npm $(npm --version) is older than 11.5.1"; exit 1; }
+      - name: Install from the lock file
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Tests
+        run: npm test
+      # Inside GitHub Actions, n8n-node release lints, builds and runs npm
+      # publish with provenance; the package's prepublishOnly refuses any
+      # other publish.
+      - name: Publish
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -n "$NPM_TOKEN" ]; then npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"; fi
+          npm run release

@@ -66,3 +66,24 @@ npm run build && npm run lint && npm test
 ```
 
 Built with `@n8n/node-cli`; MIT; no runtime dependencies, no environment variables, no files.
+
+## Publishing
+
+n8n verifies a community node only if it was published to npm from GitHub Actions with a
+provenance statement. The workflow `.github/workflows/publish-n8n.yml` does that, and only on a
+tag naming this package at its version:
+
+1. Once, the npm account that is to own `n8n-nodes-judgment-pack` sets up either npm Trusted
+   Publishing for the repository `Judgment-Pack/judgment-pack-gateway` and the workflow
+   `publish-n8n.yml`, or a granular token with publish access, saved as the repository secret
+   `NPM_TOKEN`. npm sets up Trusted Publishing in a package's settings, so while the package does
+   not exist, its first publish uses the token.
+2. The version in `package.json` is raised in an ordinary pull request.
+3. Once that has merged, the tag is pushed on the merged commit:
+   `git tag n8n-nodes-judgment-pack@<version> && git push origin n8n-nodes-judgment-pack@<version>`.
+4. The workflow checks that the tag names the version in `package.json`, installs from the lock
+   file, runs the tests, and runs `npm run release`: inside GitHub Actions, `n8n-node release`
+   lints, builds and publishes with provenance. `npm publish` run any other way is refused by
+   `prepublishOnly`.
+5. Verification is asked for in n8n's Creator Portal, once
+   `npx @n8n/scan-community-package n8n-nodes-judgment-pack` passes against the published package.
