@@ -134,7 +134,8 @@ schemas: running it means holding its credentials, which this process must never
 consequence is stated plainly: a host that validates arguments validates nothing here, and a
 model must know the platform's tool from elsewhere. Descriptors captured by `connect` — which
 already runs the adapter in check mode under the platform's own user — and stored beside the
-configuration as metadata are the follow-on that closes this, and are not in this design.
+configuration as metadata are the follow-on that closes this, and are not in this design:
+[tool-descriptors.md](tool-descriptors.md) designs it.
 
 **Arguments, byte for byte.** The call's `arguments` member is carried to `/acquire` as the
 bytes the client sent, inside the wrapping object, never decoded and re-encoded on the way:
