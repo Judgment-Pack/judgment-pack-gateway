@@ -12,9 +12,12 @@ request for request.
 
 As the engine does, it answers, routing by path whatever the query:
   /publickey       the key document, to any method (HEAD without a body)
-  POST /acquire    reads the body as the engine's decoder reads it into its
-                   struct -- member names without regard to case, the last
-                   of several taking the place, others ignored -- then holds
+  POST /acquire    reads the body as the engine does -- at most 1 MiB, one
+                   value, decoded into its struct with member names matched
+                   without regard to case, the last of several taking the
+                   place, a string's lone surrogates and bytes that are not
+                   UTF-8 read as U+FFFD, others ignored, nested as deep as
+                   Go's decoder takes -- then holds
                    the arguments to the canonical domain, then refuses a
                    session that is not a flat token, then a source other
                    than screening, then a sealed session: each a 400 in the
@@ -34,8 +37,9 @@ As the engine does, it answers, routing by path whatever the query:
                    session holds
   another method on /acquire, /act or /seal: 404 {"error": "not found"}
   any other path: 404 page not found, as the engine's router answers
-It sends the engine's headers: no Server, a Date, and on the router's 404
-X-Content-Type-Options: nosniff.
+It sends the engine's headers: no Server, a Date, on the router's 404
+X-Content-Type-Options: nosniff, and a Content-Length, except on an answer
+past the 2048 bytes the engine's server buffers, which it chunks.
 
 --require-length refuses a request body sent chunked (411) before any route
 answers, as a server or proxy in front of the engine that takes no chunked
@@ -83,14 +87,22 @@ def make_handler(fault, require_length):
                 headers = (*headers, ("X-Content-Type-Options", "nosniff"))
             else:
                 data, kind = answers.go_json(body).encode(), "application/json"
+            # the engine's server buffers 2048 bytes of an answer whose
+            # length it was not told, and chunks one that outgrows them
+            chunked = len(data) > 2048 and self.command != "HEAD"
             self.send_response(code)
             self.send_header("Content-Type", kind)
             for name, value in headers:
                 self.send_header(name, value)
-            self.send_header("Content-Length", str(len(data)))
+            if chunked:
+                self.send_header("Transfer-Encoding", "chunked")
+            else:
+                self.send_header("Content-Length", str(len(data)))
             self.send_header("Connection", "close")
             self.end_headers()
-            if self.command != "HEAD":
+            if chunked:
+                self.wfile.write(b"%x\r\n" % len(data) + data + b"\r\n0\r\n\r\n")
+            elif self.command != "HEAD":
                 self.wfile.write(data)
 
         def _answer(self, route, code, body, headers=()):
@@ -139,7 +151,7 @@ def make_handler(fault, require_length):
             """The request's fields as the engine reads them, or None once
             refused."""
             try:
-                return answers.request_fields(self._body().decode("utf-8", "replace"), names)
+                return answers.request_fields(self._body(), names)
             except answers.Refusal as refusal:
                 self._send(400, {"error": refusal.message})
                 return None

@@ -140,6 +140,16 @@ def flatted_cycles():
     return cyclic
 
 
+def flatted_chain():
+    # the chain make_flatted_fixtures.cjs builds, built the same way
+    chain = {"depth": 0}
+    link = chain
+    for depth in range(1, 600):
+        link["next"] = {"depth": depth}
+        link = link["next"]
+    return chain
+
+
 def good_outputs():
     return {
         "Acquire": answers.acquisition(SESSION, 0, None, {"subject": "acme"}, AT),
@@ -199,6 +209,14 @@ class FlattedTest(unittest.TestCase):
         self.assertEqual(flatted(json.loads(fixture("n8n-execution.json"))), fixture("n8n-execution.flatted.json"))
         self.assertEqual(flatted(flatted_cases()), fixture("flatted-cases.flatted.json"))
         self.assertEqual(flatted(flatted_cycles()), fixture("flatted-cycles.flatted.json"))
+        self.assertEqual(flatted(flatted_chain()), fixture("flatted-chain.flatted.json"))
+
+    def test_the_decoder_reads_a_long_chain(self):
+        link, depth = check.decode(json.loads(fixture("flatted-chain.flatted.json"))), 0
+        while "next" in link:
+            self.assertEqual(link["depth"], depth)
+            link, depth = link["next"], depth + 1
+        self.assertEqual((link["depth"], depth), (599, 599))
 
     def test_the_decoder_keeps_what_is_shared_and_what_is_cyclic(self):
         # as the library's parse gives them: an object referred to more than
@@ -259,6 +277,14 @@ class CheckTest(unittest.TestCase):
         failed, out = self.failed(flatted(execution(good_outputs(), "the engine was not there")), status="error")
         self.assertEqual(failed, ["execution status"], out)
         self.assertIn("the engine was not there", out)
+
+    def test_a_long_chain_outside_the_checked_outputs_does_not_stop_the_check(self):
+        stored = execution(good_outputs())
+        stored["resultData"]["runData"]["Start"][0]["data"]["main"][0][0]["json"] = flatted_chain()
+        write_database(self.db, flatted(stored))
+        done = self.run_check()
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn("n8n smoke ok", done.stdout)
 
     def test_a_cycle_outside_the_checked_outputs_does_not_stop_the_check(self):
         loop = {"note": "a cycle, as n8n's data may hold one"}

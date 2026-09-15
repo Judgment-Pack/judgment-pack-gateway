@@ -44,14 +44,54 @@ ACT_REFUSAL = {
 }
 
 
+MAX_BODY_BYTES = 1 << 20  # the engine's maxRequestBody
+MAX_DEPTH = 10000  # Go's decoder, and the engine's canonical parser
+_GO_ESCAPES = (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029"))
+
+
+def _string(text, go):
+    out = json.dumps(text, ensure_ascii=False)
+    if go:
+        for raw, escaped in _GO_ESCAPES:
+            out = out.replace(raw, escaped)
+    return out
+
+
+def _write(value, go):
+    """value as compact JSON, an object's keys sorted, written iteratively
+    however deep it nests: Go's json.Marshal form when go -- which escapes
+    <, >, &, U+2028 and U+2029 -- and the canonical form otherwise."""
+    out, stack = [], [(False, value)]
+    while stack:
+        literal, item = stack.pop()
+        if literal:
+            out.append(item)
+        elif isinstance(item, dict):
+            parts = [(True, "{")]
+            for n, key in enumerate(sorted(item)):
+                parts += [(True, ("," if n else "") + _string(key, go) + ":"), (False, item[key])]
+            stack.extend(reversed(parts + [(True, "}")]))
+        elif isinstance(item, list):
+            parts = [(True, "[")]
+            for n, member in enumerate(item):
+                parts += ([(True, ",")] if n else []) + [(False, member)]
+            stack.extend(reversed(parts + [(True, "]")]))
+        elif item is True or item is False or item is None:
+            out.append({True: "true", False: "false", None: "null"}[item])
+        elif isinstance(item, int):
+            out.append(str(item))
+        elif isinstance(item, str):
+            out.append(_string(item, go))
+        else:
+            raise TypeError(f"not JSON the engine writes: {item!r}")
+    return "".join(out)
+
+
 def go_json(value):
     """value as the engine writes it (Go's json.Marshal): compact, an
     object's keys sorted, no newline after, and <, >, &, U+2028 and U+2029
     escaped."""
-    text = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    for raw, escaped in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"), ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
-        text = text.replace(raw, escaped)
-    return text
+    return _write(value, True)
 
 
 def stamp(at=None):
@@ -59,7 +99,7 @@ def stamp(at=None):
 
 
 def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return _write(value, False)
 
 
 def sha256_of(data):
@@ -95,42 +135,160 @@ class _Number(str):
         return number
 
 
+class _Text(str):
+    """A JSON string as read. Its value keeps each lone surrogate and each
+    byte that is not UTF-8 as read; go is what Go's decoder makes of it, each
+    replaced by U+FFFD; problem is the first of them, in the engine's
+    canonical parser's words, or None."""
+
+    def __new__(cls, text, go, problem):
+        read = super().__new__(cls, text)
+        read.go = go
+        read.problem = problem
+        return read
+
+
 class _Members(list):
     """A JSON object as written: its members in order, duplicates kept."""
 
 
-def _refuse_constant(name):
-    raise ValueError(f"{name} is not JSON")
-
-
-_READER = json.JSONDecoder(
-    object_pairs_hook=_Members,
-    parse_float=lambda literal: _Number(literal, True),
-    parse_int=lambda literal: _Number(literal, False),
-    parse_constant=_refuse_constant,
-)
 _JSON_SPACE = " \t\n\r"
+_NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?")
+_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 
 
-def _one_value(text):
-    """The one JSON value of a request body, as the engine's decoder takes it
-    (decodeSingleJSON). A refusal whose words are Go's decoder's own
-    carries different words here."""
-    start = len(text) - len(text.lstrip(_JSON_SPACE))
-    if start == len(text):
-        raise Refusal("EOF")
-    try:
-        value, end = _READER.raw_decode(text, start)
-    except ValueError as error:
-        raise Refusal(f"the body is not JSON: {error}")
-    rest = text[end:].lstrip(_JSON_SPACE)
-    if rest:
-        try:
-            _READER.raw_decode(rest)
-        except ValueError as error:
-            raise Refusal(f"request body contains trailing content: {error}")
-        raise Refusal("request body must contain exactly one JSON value")
-    return value
+def _skip(text, i):
+    while i < len(text) and text[i] in _JSON_SPACE:
+        i += 1
+    return i
+
+
+def _hex4(text, i):
+    digits = text[i:i + 4]
+    if len(digits) != 4 or any(c not in "0123456789abcdefABCDEF" for c in digits):
+        raise Refusal("invalid character in \\u hexadecimal character escape")
+    return int(digits, 16)
+
+
+def _read_string(text, i):
+    """The JSON string at text[i], a quotation mark, and where it ends. A
+    byte that is not UTF-8 arrives as the body's reading kept it, U+DC80 to
+    U+DCFF."""
+    i += 1
+    value, go, problem = [], [], None
+    while True:
+        if i >= len(text):
+            raise Refusal("unexpected end of JSON input")
+        c = text[i]
+        if c == '"':
+            return _Text("".join(value), "".join(go), problem), i + 1
+        if c == "\\":
+            e = text[i + 1:i + 2]
+            if e in _ESCAPES and e:
+                value.append(_ESCAPES[e])
+                go.append(_ESCAPES[e])
+                i += 2
+                continue
+            if e != "u":
+                raise Refusal(f"invalid character {e!r} in string escape code")
+            high = _hex4(text, i + 2)
+            i += 6
+            if 0xD800 <= high <= 0xDBFF and text.startswith("\\u", i):
+                low = _hex4(text, i + 2)
+                if 0xDC00 <= low <= 0xDFFF:
+                    pair = chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+                    value.append(pair)
+                    go.append(pair)
+                    i += 6
+                    continue
+            value.append(chr(high))
+            if 0xD800 <= high <= 0xDFFF:
+                go.append("\ufffd")
+                problem = problem or f"lone surrogate \\u{high:04x} is not encodable"
+            else:
+                go.append(chr(high))
+            continue
+        if ord(c) < 0x20:
+            raise Refusal(f"invalid character {c!r} in string literal")
+        value.append(c)
+        if 0xDC80 <= ord(c) <= 0xDCFF:
+            go.append("\ufffd")
+            problem = problem or "invalid UTF-8 in string"
+        else:
+            go.append(c)
+        i += 1
+
+
+def _read_key(text, i):
+    i = _skip(text, i)
+    if text[i:i + 1] != '"':
+        raise Refusal("invalid character looking for beginning of object key string")
+    key, i = _read_string(text, i)
+    i = _skip(text, i)
+    if text[i:i + 1] != ":":
+        raise Refusal("invalid character after object key")
+    return key, i + 1
+
+
+def _read_value(text, i):
+    """One JSON value from text at i, read iteratively however deep, and
+    where it ends -- to Go's decoder's depth and no further. An object keeps
+    its members in order, duplicates included. A refusal here is in words of
+    this reader's own, as Go's decoder's are its own."""
+    stack = []
+    while True:
+        i = _skip(text, i)
+        if i >= len(text):
+            raise Refusal("unexpected end of JSON input")
+        c = text[i]
+        if c in "{[":
+            if len(stack) >= MAX_DEPTH:
+                raise Refusal(f"invalid character {c!r} exceeded max depth")
+            container, closer = (_Members(), "}") if c == "{" else ([], "]")
+            i = _skip(text, i + 1)
+            if text[i:i + 1] == closer:
+                value, i = container, i + 1
+            else:
+                stack.append([container, closer, None])
+                if closer == "}":
+                    stack[-1][2], i = _read_key(text, i)
+                continue
+        elif c == '"':
+            value, i = _read_string(text, i)
+        elif c == "-" or c in "0123456789":
+            match = _NUMBER.match(text, i)
+            if not match:
+                raise Refusal("invalid character in numeric literal")
+            value, i = _Number(match.group(0), bool(match.group(1) or match.group(2))), match.end()
+        elif text.startswith("true", i):
+            value, i = True, i + 4
+        elif text.startswith("false", i):
+            value, i = False, i + 5
+        elif text.startswith("null", i):
+            value, i = None, i + 4
+        else:
+            raise Refusal(f"invalid character {c!r} looking for beginning of value")
+        while True:
+            if not stack:
+                return value, i
+            frame = stack[-1]
+            if frame[1] == "}":
+                frame[0].append((frame[2], value))
+            else:
+                frame[0].append(value)
+            i = _skip(text, i)
+            if i >= len(text):
+                raise Refusal("unexpected end of JSON input")
+            if text[i] == ",":
+                i += 1
+                if frame[1] == "}":
+                    frame[2], i = _read_key(text, i)
+                break
+            if text[i] == frame[1]:
+                stack.pop()
+                value, i = frame[0], i + 1
+                continue
+            raise Refusal(f"invalid character {text[i]!r} after {'object key:value pair' if frame[1] == '}' else 'array element'}")
 
 
 def _json_type(value):
@@ -151,71 +309,127 @@ def _fold(name):
     return "".join({"\u017f": "s", "\u212a": "k"}.get(c, c.lower() if c.isascii() else c) for c in name)
 
 
-def request_fields(text, names):
-    """The members of a request body the engine reads, as its decoder reads
-    them into its struct: names matched without regard to case, the last
-    of several taking the place, a null leaving a string as it was, and
-    every other member ignored. arguments is any JSON value, as written."""
-    value = _one_value(text)
-    if not isinstance(value, _Members):
-        raise Refusal(f"json: cannot unmarshal {_json_type(value)} into Go value of type struct")
+def request_fields(body, names):
+    """The members of a request body the engine reads, as it reads them:
+    at most 1 MiB, one JSON value, decoded into its struct -- names matched
+    without regard to case, the last of several taking the place, a null
+    leaving a string as it was, a string's lone surrogates and bytes that are
+    not UTF-8 each read as U+FFFD, every other member ignored -- then no
+    second value. arguments is any JSON value, kept as read for
+    canonical_arguments. Each stage refuses before the next, as the engine's
+    decoder does."""
+    text = body[:MAX_BODY_BYTES].decode("utf-8", "surrogateescape")
+    start = _skip(text, 0)
+    if start == len(text):
+        raise Refusal("http: request body too large" if len(body) > MAX_BODY_BYTES else "EOF")
+    try:
+        value, end = _read_value(text, start)
+    except Refusal as refusal:
+        if len(body) > MAX_BODY_BYTES and refusal.message == "unexpected end of JSON input":
+            raise Refusal("http: request body too large")
+        raise
     fields, mistyped = {}, None
-    for key, member in value:
-        name = next((n for n in names if _fold(key) == n), None)
-        if name is None:
-            continue
-        if name == "arguments":
-            fields[name] = member
-        elif member is None:
-            continue
-        elif isinstance(member, str) and not isinstance(member, _Number):
-            fields[name] = str(member)
-        elif mistyped is None:
-            mistyped = f"json: cannot unmarshal {_json_type(member)} into Go struct field .{name} of type string"
+    if value is not None:
+        if not isinstance(value, _Members):
+            raise Refusal(f"json: cannot unmarshal {_json_type(value)} into Go value of type struct")
+        for key, member in value:
+            name = next((n for n in names if _fold(key.go) == n), None)
+            if name is None:
+                continue
+            if name == "arguments":
+                fields[name] = member
+            elif member is None:
+                continue
+            elif isinstance(member, _Text):
+                fields[name] = member.go
+            elif mistyped is None:
+                mistyped = f"json: cannot unmarshal {_json_type(member)} into Go struct field .{name} of type string"
     if mistyped:
         raise Refusal(mistyped)
-    return fields
+    rest = text[end:]
+    if not rest.strip(_JSON_SPACE):
+        if len(body) > MAX_BODY_BYTES:
+            raise Refusal("request body contains trailing content: http: request body too large")
+        return fields
+    try:
+        _read_value(rest, 0)
+    except Refusal as refusal:
+        raise Refusal(f"request body contains trailing content: {refusal.message}")
+    raise Refusal("request body must contain exactly one JSON value")
 
 
 def _go_quote(text):
-    return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-
-def _whole_scalars(text):
+    """text as Go's %q quotes it: the named escapes, \\x for another control
+    byte, \\u or \\U for a rune that does not print, and the rest as it is."""
+    named = {"\a": "\\a", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t", "\v": "\\v", "\\": "\\\\", '"': '\\"'}
+    out = []
     for c in text:
-        if 0xD800 <= ord(c) <= 0xDFFF:
-            raise Refusal(f"lone surrogate \\u{ord(c):04x} is not encodable")
+        if c in named:
+            out.append(named[c])
+        elif ord(c) < 0x20 or ord(c) == 0x7F:
+            out.append(f"\\x{ord(c):02x}")
+        elif not c.isprintable():
+            out.append(f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}")
+        else:
+            out.append(c)
+    return '"' + "".join(out) + '"'
 
 
 def canonical_arguments(value):
     """arguments held to the canonical domain as the engine holds them
-    (parseJSON), in document order: no member name twice in an object, no
-    fraction or exponent, no integer past the safe range, no lone
-    surrogate; the value, as plain JSON, when it holds."""
-    if isinstance(value, _Members):
-        seen, out = set(), {}
-        for key, member in value:
-            _whole_scalars(key)
-            if key in seen:
-                raise Refusal(f"duplicate member name {_go_quote(key)}")
-            seen.add(key)
-            out[key] = canonical_arguments(member)
-        return out
-    if isinstance(value, list):
-        return [canonical_arguments(member) for member in value]
-    if isinstance(value, _Number):
-        if value.written_as_float:
-            if "." in value:
-                raise Refusal("non-integer number is outside the canonical domain")
-            raise Refusal("exponent notation is outside the canonical domain")
-        number = int(value)
-        if abs(number) > MAX_SAFE_INTEGER:
-            raise Refusal(f"integer {value} is outside the safe-integer range")
-        return number
-    if isinstance(value, str):
-        _whole_scalars(value)
-        return str(value)
-    return value
+    (parseJSON), in document order and iteratively however deep: no byte
+    that is not UTF-8, no lone surrogate, no member name twice in an object,
+    no fraction or exponent, no integer outside 64 bits or past the safe
+    range; the value, as plain JSON, when it holds."""
+    stack = [("value", value, None)]
+    while stack:
+        what, item, seen = stack.pop()
+        if what == "key":
+            if item.problem:
+                raise Refusal(item.problem)
+            if str(item) in seen:
+                raise Refusal(f"duplicate member name {_go_quote(str(item))}")
+            seen.add(str(item))
+        elif isinstance(item, _Members):
+            names = set()
+            for key, member in reversed(item):
+                stack += [("value", member, None), ("key", key, names)]
+        elif isinstance(item, list):
+            stack += [("value", member, None) for member in reversed(item)]
+        elif isinstance(item, _Number):
+            if item.written_as_float:
+                if "." in item:
+                    raise Refusal("non-integer number is outside the canonical domain")
+                raise Refusal("exponent notation is outside the canonical domain")
+            number = int(item)
+            if not -(2**63) <= number < 2**63:
+                raise Refusal(f"integer {item} is outside the canonical domain")
+            if abs(number) > MAX_SAFE_INTEGER:
+                raise Refusal(f"integer {item} is outside the safe-integer range")
+        elif isinstance(item, _Text) and item.problem:
+            raise Refusal(item.problem)
+    return _plain(value)
+
+
+def _plain(value):
+    """A value as read, as plain JSON, built iteratively however deep."""
+    holder = []
+    stack = [(value, holder, None)]
+    while stack:
+        item, parent, key = stack.pop()
+        if isinstance(item, _Members):
+            made, children = {}, [(member, None, str(name)) for name, member in item]
+        elif isinstance(item, list):
+            made, children = [], [(member, None, None) for member in item]
+        else:
+            made = int(item) if isinstance(item, _Number) else str(item) if isinstance(item, _Text) else item
+            children = []
+        if isinstance(parent, dict):
+            parent[key] = made
+        else:
+            parent.append(made)
+        stack += [(member, made, name) for member, _, name in reversed(children)]
+    return holder[0]
 
 
 def public_key():

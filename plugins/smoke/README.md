@@ -115,16 +115,17 @@ engine:
   the seal, the key document and the act refusal, each in the engine's own JSON. It also builds
   the wrong answers the checkers must refuse (`FAULTS`). Each fault changes one member, and
   names the one check that must catch it, as both checkers name their checks.
-- `stand_in_engine.py` answers as the engine above answers. It reads a body as the engine's
-  JSON decoder does, and holds arguments to the canonical domain. It gives the same refusals,
-  in the same order and the same words, except where the words are Go's decoder's own. It
-  decides an action's 401 before reading the body. It chains a session's receipts and keeps a
-  seal final. It routes other methods and query strings as the engine's router does, and sends
-  the engine's headers. With `--fault NAME` it gives one wrong answer. With `--require-length`
+- `stand_in_engine.py` answers as the engine above answers. It reads a body as the engine
+  does, to its 1 MiB and to its depth, and holds arguments to the canonical domain. It gives
+  the same refusals, in the same order and the same words, except where the words are Go's
+  decoder's own. It decides an action's 401 before reading the body. It chains a session's
+  receipts and keeps a seal final. It routes the methods and query strings the requests below
+  exercise as the engine's router does. It sends the engine's headers, and chunks an answer
+  past the 2048 bytes the engine's server buffers. With `--fault NAME` it gives one wrong answer. With `--require-length`
   it refuses a chunked body, as a proxy that takes none would. Nothing it answers is signed: it
   stands in for the shape of the engine's answers, never for their verification.
-- `test_stand_in_engine.py` sends the same 48 requests to the engine and to the stand-in and
-  compares the answers:
+- `test_stand_in_engine.py` sends the same 63 requests to the engine and to the stand-in, each
+  on a connection the client asks to close, and compares the answers:
   - the status;
   - the headers `Content-Type`, `Content-Length`, `Transfer-Encoding`, `Connection`,
     `WWW-Authenticate`, `X-Content-Type-Options` and `Server`;
@@ -134,13 +135,17 @@ engine:
   Where the words are Go's decoder's own, it compares the status, the headers but the length,
   and that the error is a string. What the engine derives from its key, seed and clock is
   compared by its form at its place in the answer. It is also compared by relation: the key
-  id is the key's, `prevSignature` is the session's last signature, and times parse and never
-  run backward. The arguments commitment and the result digest are recomputed. The adapter and
-  result digests, which no seed touches, are compared exactly. The test needs the engine's
+  id is the key's, and `prevSignature` is the session's last signature. Times parse. A receipt
+  is observed no later than it is served, and served no earlier than the answer before it. A
+  seal is no earlier than its session's receipts. The arguments commitment and the result
+  digest are recomputed. The adapter and result digests, which no seed touches, are compared
+  exactly. An answer nested past what Python's `json` module reads is compared by its status
+  and headers. The test needs the engine's
   binary, named by `GATEWAY_BIN`. CI's Linux Go job builds the engine and runs the test with
   `SMOKE_REQUIRE_ENGINE` set, so a stand-in that drifts from the engine fails there. The same
   file checks that each fault changes its one member and nothing else, headers included,
-  except what the clock sets.
+  except what the clock sets. A fault that answers with a status is held to that status and
+  its body.
 - `test_n8n_check.py` writes executions into a SQLite database as n8n stores them: one as the
   engine must have answered, and one for each fault this checker reads. It requires `check.py`
   to pass the first, and to fail each other at the fault's check and no other. The flatted

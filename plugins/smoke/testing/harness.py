@@ -81,17 +81,18 @@ class Engine:
         self.proc.wait(timeout=10)
 
 
-def read_answer(status, headers, raw):
+def read_answer(status, headers, raw, parse=True):
     """An answer as a client reads it: its status, the headers a comparison
     reads (a missing one as None), its raw text, and its body -- JSON when
-    it says so."""
+    it says so, and when asked for: an answer nested past what Python's
+    json module reads is left unread."""
     text = raw.decode()
     kind = headers.get("content-type") or ""
-    body = json.loads(text) if kind.startswith("application/json") and text else text
+    body = None if not parse else json.loads(text) if kind.startswith("application/json") and text else text
     return {"status": status, "headers": {h: headers.get(h.lower()) for h in HEADERS}, "body": body, "text": text}
 
 
-def exchange(port, method, path, body=None, raw=None, chunked=False):
+def exchange(port, method, path, body=None, raw=None, chunked=False, parse=True):
     """One request, sent whole with its length unless chunked, on a
     connection closed with the answer -- as the Activepieces piece sends --
     and the answer as a client reads it."""
@@ -108,7 +109,7 @@ def exchange(port, method, path, body=None, raw=None, chunked=False):
             headers["Content-Type"] = "application/json"
             conn.request(method, path, body=data, headers=headers)
         res = conn.getresponse()
-        return read_answer(res.status, {k.lower(): v for k, v in res.getheaders()}, res.read())
+        return read_answer(res.status, {k.lower(): v for k, v in res.getheaders()}, res.read(), parse)
     finally:
         conn.close()
 

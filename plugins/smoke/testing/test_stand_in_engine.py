@@ -29,6 +29,8 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# answers nested hundreds deep are formed and written here recursively
+sys.setrecursionlimit(20000)
 import answers  # noqa: E402
 from harness import Engine, StandIn, early_act, exchange, raw_exchange  # noqa: E402
 
@@ -89,6 +91,20 @@ REQUESTS = (
     ("arguments naming a member twice, deeper", arguments(b'[{"a":{"x":1,"x":2}}]')),
     ("arguments with a lone surrogate", arguments(b'"\\ud800"')),
     ("arguments refused before the session", acquire(raw=b'{"session":"../x","source":"screening","arguments":1.5}')),
+    ("a fraction written with an exponent", arguments(b"1.5e2")),
+    ("a bad number before a duplicate name", arguments(b'{"x":1.5,"x":2}')),
+    ("a duplicate name before a bad number", arguments(b'{"x":1,"x":1.5}')),
+    ("a duplicate name that is a control character", arguments(b'{"\\n":1,"\\n":2}')),
+    ("arguments past 64 bits", arguments(b"9223372036854776000")),
+    ("arguments with a byte that is not UTF-8", arguments(b'"\xff"')),
+    ("arguments nested 600 deep", acquire(raw=b'{"session":"diff-600","source":"screening","arguments":' + b"[" * 600 + b"]" * 600 + b"}")),
+    ("arguments nested as deep as the engine takes", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 9999 + b"]" * 9999 + b"}", parse=False)),
+    ("arguments nested past the engine's depth", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 10000 + b"]" * 10000 + b"}")),
+    ("a body past 1 MiB", acquire(raw=b'{"session":"diff-big","source":"screening","arguments":"' + b"a" * (1 << 20) + b'"}')),
+    ("a source with a lone surrogate", acquire(raw=b'{"session":"diff-2","source":"\\ud800"}')),
+    ("a source with a byte that is not UTF-8", acquire(raw=b'{"session":"diff-2","source":"\xff"}')),
+    ("a body that is null", acquire(raw=b"null")),
+    ("a mistyped member before a second value", acquire(raw=b'{"session":3} {}')),
     ("a session refused before the source", acquire({"session": "../x", "source": "elsewhere"})),
     ("a source the engine does not have", acquire({"session": "diff-2", "source": "elsewhere", "arguments": {}})),
     ("a session that is not a flat token", acquire({"session": "../x", "source": "screening", "arguments": {}})),
@@ -104,6 +120,7 @@ REQUESTS = (
     ("an action whose body has not arrived", early_act),
     ("a seal of a session the engine does not hold", seal({"session": "diff-none"})),
     ("a seal with a member it does not read", seal({"session": "diff-none", "source": "screening"})),
+    ("a seal with a member it does not read, not a string", seal({"session": "diff-none", "source": 5})),
     ("a seal", seal({"session": "diff-1"})),
     ("a second seal, its member in another case", seal({"SESSION": "diff-1"})),
     ("an acquisition into a sealed session", acquire({"session": "diff-1", "source": "screening", "arguments": {}})),
@@ -116,11 +133,13 @@ REQUESTS = (
     ("another method on a path not routed", lambda p: exchange(p, "DELETE", "/nowhere")),
     ("a path under a route", lambda p: exchange(p, "POST", "/acquire/", {"session": "diff-1"})),
 )
-# the refusals whose words are Go's JSON decoder's own
+# the refusals whose words are Go's JSON decoder's own, and an answer nested
+# past what Python's json module reads, whose body is left unread
 DECODER_WORDS = {
     "an acquisition whose body is not JSON",
     "an acquisition whose body is not an object",
     "a seal whose body is not JSON",
+    "arguments nested as deep as the engine takes",
 }
 
 
@@ -195,6 +214,26 @@ def relations(test, answers_by_request, whose):
             sealed = when(body["sealedAt"])
             test.assertTrue(all(at <= sealed for at in served.get(body["sessionId"], [])), f"{whose}: {what}: sealed before a receipt was served")
             latest = max(latest, sealed)
+
+
+class FormTest(unittest.TestCase):
+    """A member is formed by its place in an answer, never by its name: a
+    member the source echoes back, named as a derived one is named, is
+    compared exactly."""
+
+    def test_a_derived_members_name_elsewhere_is_compared_exactly(self):
+        base = {
+            "result": {"arguments": {"signature": "a" * 128, "keyId": "b" * 32, "sealedAt": "2026-01-01T00:00:00Z", "args": "c" * 64}},
+            "receipt": {"signature": "d" * 128},
+        }
+        for name, other in (("signature", "e" * 128), ("keyId", "f" * 32), ("sealedAt", "2026-01-02T00:00:00Z"), ("args", "0" * 64)):
+            with self.subTest(name=name):
+                changed = json.loads(json.dumps(base))
+                changed["result"]["arguments"][name] = other
+                self.assertNotEqual(formed(changed), formed(base))
+        derived = json.loads(json.dumps(base))
+        derived["receipt"]["signature"] = "9" * 128
+        self.assertEqual(formed(derived), formed(base))
 
 
 class StandInTest(unittest.TestCase):

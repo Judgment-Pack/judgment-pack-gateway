@@ -32,38 +32,28 @@ def decode(raw):
     object or array is the index, as a string, of the member that holds it --
     one member for each distinct string and each distinct object, however
     often it recurs. Numbers, booleans and nulls are written inline, and an
-    object's keys are never indices. Each member is decoded once: an object
-    referred to twice decodes to one object, and a cycle to a cycle, as the
-    library's own parse gives them."""
+    object's keys are never indices. Each member is decoded once, and
+    without recursion: every object and array is made first, then each is
+    filled with what its members refer to -- so an object referred to twice
+    decodes to one object, a cycle to a cycle, and a chain however long to a
+    chain, as the library's own parse gives them."""
     if not isinstance(raw, list):
         return raw
-    made = {}
-
-    def member(index):
-        if index in made:
-            return made[index]
-        stored = raw[index]
-        if isinstance(stored, list):
-            out = made[index] = []
-            out.extend(value(v) for v in stored)
-            return out
-        if isinstance(stored, dict):
-            out = made[index] = {}
-            for key, v in stored.items():
-                out[key] = value(v)
-            return out
-        return stored
+    made = {i: ([] if isinstance(m, list) else {}) for i, m in enumerate(raw) if isinstance(m, (list, dict))}
 
     def value(v):
         if isinstance(v, str):
-            return member(int(v))
-        if isinstance(v, list):
-            return [value(x) for x in v]
-        if isinstance(v, dict):
-            return {key: value(x) for key, x in v.items()}
+            return made.get(int(v), raw[int(v)])
+        if isinstance(v, (list, dict)):
+            raise ValueError("execution data holds an object inline, which flatted never writes")
         return v
 
-    return member(0)
+    for i, stored in enumerate(raw):
+        if isinstance(stored, list):
+            made[i].extend(value(v) for v in stored)
+        elif isinstance(stored, dict):
+            made[i].update((key, value(v)) for key, v in stored.items())
+    return made.get(0, raw[0])
 
 
 def outputs_of(execution):
