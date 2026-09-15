@@ -143,8 +143,8 @@ func TestAPinnedListingFailsOnARepeatedNameOrCursor(t *testing.T) {
 		pages []string
 		want  string
 	}{
-		{"a name twice on one page", []string{page(a+","+a, "")}, "offers tool 'a' twice"},
-		{"a name on two pages", []string{page(a, "1"), page(a, "")}, "offers tool 'a' twice"},
+		{"a name twice on one page", []string{page(a+","+a, "")}, "offers one tool name twice"},
+		{"a name on two pages", []string{page(a, "1"), page(a, "")}, "offers one tool name twice"},
 		{"a cursor twice", []string{page(a, "1"), page(b, "1")}, "gave a cursor it had given before"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -467,5 +467,105 @@ func TestReportFieldsAreCutExactly(t *testing.T) {
 	}
 	if got := reportField("token hunter2 and "+strings.Repeat("x", 600), []string{"hunter2"}); strings.Contains(got, "hunter2") || len(got) > maxReportField {
 		t.Fatalf("a field is redacted, then cut: %q", got)
+	}
+}
+
+// Each tool is judged as its page is read: the listing hands every tool on
+// a page over before it asks for the next, so no descriptor outlives the
+// page it came on, whatever a server puts in one.
+func TestEachPageIsJudgedBeforeTheNextIsAsked(t *testing.T) {
+	cfg := fake(t)
+	page := func(name, next string) string {
+		result := `{"tools":[{"name":"` + name + `","junk":"` + strings.Repeat("x", 1<<16) + `","inputSchema":{"type":"object"}}]`
+		if next != "" {
+			result += `,"nextCursor":"` + next + `"`
+		}
+		return `{"jsonrpc":"2.0","id":{id},"result":` + result + "}}"
+	}
+	path := filepath.Join(t.TempDir(), "pages")
+	if err := os.WriteFile(path, []byte(page("a", "1")+"\n"+page("b", "2")+"\n"+page("c", "")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(fakemcp.EnvListPages, path)
+	ctx := context.Background()
+	srv, err := startServer(ctx, cfg, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.stop()
+	rpc := newClient(srv.stdin, srv.stdout)
+	if _, err := rpc.call(ctx, "initialize", map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "0"}}); err != nil {
+		t.Fatal(err)
+	}
+	var askedWhenSeen []int
+	names, err := listTools(ctx, rpc, true, func(tool listedTool) error {
+		askedWhenSeen = append(askedWhenSeen, strings.Count(strings.Join(methods(trace(t)), " "), "tools/list"))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(names, ",") != "a,b,c" || fmt.Sprint(askedWhenSeen) != "[1 2 3]" {
+		t.Fatalf("each page's tools are handed over before the next page is asked for: %v %v", names, askedWhenSeen)
+	}
+}
+
+func TestASnapshotWhoseBaseIsOverItsBoundIsDropped(t *testing.T) {
+	cfg := capturing(t, "query")
+	cfg.Descriptors.Platform = strings.Repeat("p", maxSnapshot)
+	out, err := Check(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := readReport(t, out)
+	if report.Descriptors != nil || !strings.Contains(report.DescriptorsDropped, "platform and binding alone pass 327680 bytes") ||
+		strings.Contains(string(out), strings.Repeat("p", 600)) {
+		t.Fatalf("no snapshot, said why, the platform not echoed: %.600s", out)
+	}
+	if len(report.Fallbacks) != 1 || report.Fallbacks[0].Tool != "query" || report.Fallbacks[0].Reason != overBudget {
+		t.Fatalf("the tool falls back over the budget: %v", report.Fallbacks)
+	}
+}
+
+// Screening follows each string's role: the grammar's own words in their
+// own places pass beside a credential that spells them, and every string
+// a server chose is screened, a grammar word or not.
+func TestScreeningFollowsEachStringsRole(t *testing.T) {
+	secrets := []string{"string", "object", "require", "json-schema.org"}
+	for _, tc := range []struct {
+		name, text string
+		refused    bool
+	}{
+		{"keywords, type names and the root's dialect", `{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"x":{"type":["string","null"]}},"required":["x"]}`, false},
+		{"a constant", `{"type":"object","properties":{"password":{"type":"string","const":"string"}}}`, true},
+		{"an enum member", `{"type":"object","properties":{"x":{"enum":["object"]}}}`, true},
+		{"a default", `{"type":"object","properties":{"x":{"default":"object"}}}`, true},
+		{"an example", `{"type":"object","properties":{"x":{"examples":["string"]}}}`, true},
+		{"a member name in data", `{"type":"object","properties":{"x":{"default":{"string":1}}}}`, true},
+		{"a property name that is a type name", `{"type":"object","properties":{"string":{}}}`, true},
+		{"a property name that is a keyword", `{"type":"object","properties":{"required":{}}}`, true},
+		{"a required name", `{"type":"object","required":["string"]}`, true},
+		{"a description", `{"type":"object","description":"required"}`, true},
+		{"a title", `{"type":"object","title":"object"}`, true},
+		{"a keyword the grammar does not name", `{"type":"object","x-string":1}`, true},
+		{"what an unnamed keyword holds", `{"type":"object","x":"object"}`, true},
+		{"a type that is no type name", `{"type":"object","properties":{"x":{"type":"requirement"}}}`, true},
+		{"a $schema below the root", `{"type":"object","properties":{"x":{"$schema":"https://json-schema.org/draft/2020-12/schema"}}}`, true},
+		{"a $schema that is no dialect", `{"$schema":"https://json-schema.org/other","type":"object"}`, true},
+	} {
+		r := checkSchema([]byte(tc.text), secrets)
+		switch refused := r != nil && r.code == codeSecret; {
+		case refused != tc.refused:
+			t.Errorf("%s: refused as holding a credential %v, want %v (%v)", tc.name, refused, tc.refused, r)
+		case refused && !r.whole:
+			t.Errorf("%s: a credential's refusal names a location: %q", tc.name, r.pointer)
+		}
+	}
+}
+
+func TestADescriptionWrittenPastSixTimesItsBoundIsNotDecoded(t *testing.T) {
+	raw := []byte(`"` + strings.Repeat("a", 6*maxDescription+1) + `"`)
+	if _, r := checkDescription(raw, nil); r == nil || r.code != codeStringSize {
+		t.Fatalf("%v", r)
 	}
 }

@@ -89,66 +89,97 @@ const (
 	partInputSchema = "inputSchema"
 )
 
-// capture judges every candidate and admits tools, in the server's order,
-// while the snapshot and its candidates' text both stay within their
-// bounds with the tool added; every later tool falls back. It returns the
-// snapshot in canonical form -- the bytes connect writes and pins -- and
-// every fallback, in order.
-func capture(target DescriptorTarget, info initializeResult, allowed []listedTool, secrets []string, capturedAt string) ([]byte, []fallback, error) {
-	snap := snapshot{Binding: target.Binding, CapturedAt: capturedAt, Platform: target.Platform, Policy: displayPolicy, Tools: map[string]capturedTool{}}
-	var fallbacks []fallback
+// capturer judges each allowed tool as the listing reaches it and admits
+// it, in the server's order, while the snapshot and its candidates' text
+// both stay within their bounds with the tool added; every later tool
+// falls back. It keeps only what it admits and why the rest fell back, so
+// a descriptor's bytes last no longer than the page they came on.
+type capturer struct {
+	secrets   []string
+	snap      snapshot
+	size      int // the snapshot's canonical size with what is admitted
+	text      int // the admitted descriptions' and schemas' bytes
+	over      bool
+	dropped   string // why the report carries no snapshot, when it carries none
+	fallbacks []fallback
+}
+
+const overBudget = "over the platform's budget: a snapshot of at most 327680 bytes, its descriptions and schemas at most 262144 together"
+
+// newCapturer starts a snapshot for the target, with the server's identity
+// as its initialize answer gave it when that passes, and the snapshot as
+// it stands before any tool is added. When that alone passes the
+// snapshot's bound -- a platform or binding so long -- no tool is
+// admitted, and the report carries no snapshot and says why.
+func newCapturer(target DescriptorTarget, info initializeResult, secrets []string, capturedAt string) (*capturer, error) {
+	c := &capturer{secrets: secrets, snap: snapshot{Binding: target.Binding, CapturedAt: capturedAt, Platform: target.Platform, Policy: displayPolicy, Tools: map[string]capturedTool{}}}
 	if r := checkIdentity(info.name, info.version, secrets); r != nil {
 		// A refused identity is omitted, and nothing names the server.
-		fallbacks = append(fallbacks, fallback{Part: partServer, Reason: r.reason()})
+		c.fallbacks = append(c.fallbacks, fallback{Part: partServer, Reason: r.reason()})
 	} else {
-		snap.Server = &serverIdentity{Name: info.name, Version: info.version}
+		c.snap.Server = &serverIdentity{Name: info.name, Version: info.version}
 	}
-	empty, err := canonicalJSON(snap)
+	empty, err := canonicalJSON(c.snap)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	// The canonical form sorts members by name and writes no whitespace,
-	// so what a tool adds does not depend on where it sorts: its name, a
-	// colon, its candidates, and a comma beside any other tool.
-	size, text, over := len(empty), 0, false
-	for _, tool := range allowed {
-		entry, refused := candidates(tool, secrets)
-		fallbacks = append(fallbacks, refused...)
-		if entry.Description == nil && entry.InputSchemaText == nil {
-			continue
-		}
-		if !over {
-			name, err := canonicalJSON(tool.name)
-			if err != nil {
-				return nil, nil, err
-			}
-			value, err := canonicalJSON(entry)
-			if err != nil {
-				return nil, nil, err
-			}
-			grow := len(name) + 1 + len(value)
-			if len(snap.Tools) > 0 {
-				grow++
-			}
-			parts := len(deref(entry.Description)) + len(deref(entry.InputSchemaText))
-			if size+grow <= maxSnapshot && text+parts <= maxCandidateText {
-				snap.Tools[tool.name] = entry
-				size, text = size+grow, text+parts
-				continue
-			}
-			over = true
-		}
-		fallbacks = append(fallbacks, fallback{Tool: tool.name, Part: partTool,
-			Reason: fmt.Sprintf("over the platform's budget: a snapshot of at most %d bytes, its descriptions and schemas at most %d together", maxSnapshot, maxCandidateText)})
+	c.size = len(empty)
+	if c.size > maxSnapshot {
+		c.over = true
+		c.dropped = fmt.Sprintf("the snapshot's platform and binding alone pass %d bytes, so no tool's descriptors are captured", maxSnapshot)
 	}
-	out, err := canonicalJSON(snap)
+	return c, nil
+}
+
+// add judges one allowed tool and admits it or records why it fell back.
+// The canonical form sorts members by name and writes no whitespace, so
+// what a tool adds does not depend on where it sorts: its name, a colon,
+// its candidates, and a comma beside any other tool.
+func (c *capturer) add(tool listedTool) error {
+	entry, refused := candidates(tool, c.secrets)
+	c.fallbacks = append(c.fallbacks, refused...)
+	if entry.Description == nil && entry.InputSchemaText == nil {
+		return nil
+	}
+	if !c.over {
+		name, err := canonicalJSON(tool.name)
+		if err != nil {
+			return err
+		}
+		value, err := canonicalJSON(entry)
+		if err != nil {
+			return err
+		}
+		grow := len(name) + 1 + len(value)
+		if len(c.snap.Tools) > 0 {
+			grow++
+		}
+		parts := len(deref(entry.Description)) + len(deref(entry.InputSchemaText))
+		if c.size+grow <= maxSnapshot && c.text+parts <= maxCandidateText {
+			c.snap.Tools[tool.name] = entry
+			c.size, c.text = c.size+grow, c.text+parts
+			return nil
+		}
+		c.over = true
+	}
+	c.fallbacks = append(c.fallbacks, fallback{Tool: tool.name, Part: partTool, Reason: overBudget})
+	return nil
+}
+
+// finish is the snapshot in canonical form -- the bytes connect writes and
+// pins -- or, when there is none, why; and every fallback, in order.
+func (c *capturer) finish() ([]byte, []fallback, string, error) {
+	if c.dropped != "" {
+		return nil, c.fallbacks, c.dropped, nil
+	}
+	out, err := canonicalJSON(c.snap)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
-	if len(out) != size {
-		return nil, nil, fmt.Errorf("the snapshot is %d bytes where %d were counted", len(out), size)
+	if len(out) != c.size || len(out) > maxSnapshot {
+		return nil, nil, "", fmt.Errorf("the snapshot is %d bytes where %d were counted, of at most %d", len(out), c.size, maxSnapshot)
 	}
-	return out, fallbacks, nil
+	return out, c.fallbacks, "", nil
 }
 
 // candidates judges one tool's description and input schema, each on its
@@ -188,6 +219,12 @@ func candidates(tool listedTool, secrets []string) (capturedTool, []fallback) {
 // holding no value of the credentials, within its bound, and passing
 // display policy 1.
 func checkDescription(raw json.RawMessage, secrets []string) (string, *refusal) {
+	// No escape is written in more than six bytes, so a string written in
+	// more than six times the bound holds more than the bound, and is
+	// refused without being decoded.
+	if len(raw) > 6*maxDescription+2 {
+		return "", &refusal{code: codeStringSize, whole: true, detail: fmt.Sprintf("the description is over %d bytes", maxDescription)}
+	}
 	var s string
 	if len(raw) == 0 || raw[0] != '"' || json.Unmarshal(raw, &s) != nil {
 		return "", &refusal{code: codeValue, whole: true, detail: "the description is not a string"}
@@ -196,7 +233,7 @@ func checkDescription(raw json.RawMessage, secrets []string) (string, *refusal) 
 		return "", &refusal{code: codeSecret, whole: true, detail: "the description holds a value of the credentials"}
 	}
 	if len(s) > maxDescription {
-		return "", &refusal{code: codeStringSize, whole: true, detail: fmt.Sprintf("the description is %d bytes, over %d", len(s), maxDescription)}
+		return "", &refusal{code: codeStringSize, whole: true, detail: fmt.Sprintf("the description is over %d bytes", maxDescription)}
 	}
 	if r, refused := displayRefusal(s); refused {
 		return "", &refusal{code: codePolicy, whole: true, detail: fmt.Sprintf("the description holds U+%04X, which display policy 1 refuses", r)}

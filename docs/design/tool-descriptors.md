@@ -33,7 +33,9 @@ twice anywhere in the enumeration, even with an identical descriptor. A tool the
 allows and the server does not offer fails the check, as it does today. `connect` asks that
 check, and no other, to capture, by handing its adapter the platform's name and the pinned
 binding (`--descriptors-platform`, `--descriptors-binding`). The adapter then writes the
-snapshot whole, so the snapshot's bounds are exact where tools are admitted.
+snapshot whole, so the snapshot's bounds are exact where tools are admitted. It judges each
+allowed tool as the page holding it is read, and keeps only what it captures and why the rest
+fell back, so no descriptor outlives its page.
 
 For each allowed tool, two members of its descriptor are candidates:
 
@@ -185,10 +187,13 @@ set. What a host chooses to render from a schema is the host's.
 
 A candidate is refused, never redacted, when any of its decoded strings contains a value the
 check's secret collection finds in the credentials. That covers property names and the server's
-name and version. A string that is exactly one of the grammar's own words is not screened: a
-keyword the table names, a type name, or a dialect's URI. Such a string is the same whatever the
-credentials hold, so it carries nothing a server chose. Screening it would only refuse, for
-example, every schema that uses `required` beside a PostgreSQL credential `sslmode=require`. A
+name and version. Three kinds of string are the grammar's own words in their own places, the
+same whatever the credentials hold, and are not screened: a keyword the grammar names, as a
+member of a schema location; a type name, as the value of `type`; and a dialect's URI, as the
+root's `$schema`. Screening them would only refuse, for example, every schema that uses
+`required` beside a PostgreSQL credential `sslmode=require`. The exemption is by role, not by
+spelling: a property name, a string of data, a description, a title, a comment or a name
+`required` lists is screened even when it spells one of those words, since a server chose it. A
 refused identity is omitted, and the provenance names no server. The report says only that a
 candidate held a credential value, never which. Screening finds the values the collection finds:
 whole scalars of the credentials file, the user, password and query values of a URL in it, and
@@ -206,7 +211,8 @@ The limits below are exact, and when one is reached the overflow is deterministi
   descriptions' bytes and the schemas' original texts, totals at most 256 KiB, leaving the rest
   for names, identity and the wrapper. The adapter admits tools in the server's order while both
   bounds hold with the tool added. Every later tool falls back, reported as over the platform's
-  budget.
+  budget. A platform or binding so long that the snapshot passes its bound with no tool in it
+  admits none, and the report carries no snapshot and says why.
 - **The check report:** at most 1 MiB, as `connect` bounds it today. Every field outside
   `descriptors` is capped:
   - the list of offered tool names, and the fallback reasons, at 64 KiB each, with what passes

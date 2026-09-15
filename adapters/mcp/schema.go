@@ -78,26 +78,15 @@ func (r *refusal) reason() string {
 
 var schemaTypes = map[string]bool{"null": true, "boolean": true, "object": true, "array": true, "number": true, "string": true, "integer": true}
 
-// grammarWords are the grammar's own words: the keywords it names, the
-// type names and the two dialects' URIs. A string that is exactly one of
-// them is the same whatever the credentials hold, so it carries nothing a
-// server chose and is not screened for them: a credential "require"
-// (PostgreSQL's sslmode) would otherwise refuse every schema that uses
-// required.
-var grammarWords = func() map[string]bool {
-	words := map[string]bool{dialect2020: true, dialect07: true}
-	for _, w := range []string{"type", "properties", "required", "additionalProperties", "items", "enum", "const",
-		"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf",
-		"minLength", "maxLength", "minItems", "maxItems", "minProperties", "maxProperties",
-		"anyOf", "oneOf", "allOf", "not", "description", "title", "$comment", "examples", "default",
-		"deprecated", "readOnly", "writeOnly", "$schema"} {
-		words[w] = true
-	}
-	for t := range schemaTypes {
-		words[t] = true
-	}
-	return words
-}()
+// grammarKeywords are the keywords the grammar names.
+var grammarKeywords = map[string]bool{
+	"type": true, "properties": true, "required": true, "additionalProperties": true, "items": true,
+	"enum": true, "const": true, "minimum": true, "maximum": true, "exclusiveMinimum": true,
+	"exclusiveMaximum": true, "multipleOf": true, "minLength": true, "maxLength": true, "minItems": true,
+	"maxItems": true, "minProperties": true, "maxProperties": true, "anyOf": true, "oneOf": true,
+	"allOf": true, "not": true, "description": true, "title": true, "$comment": true, "examples": true,
+	"default": true, "deprecated": true, "readOnly": true, "writeOnly": true, "$schema": true,
+}
 
 // lengthLiteral is a non-negative integer written without sign, fraction
 // or exponent.
@@ -123,7 +112,7 @@ func checkSchema(text []byte, secrets []string) *refusal {
 	if err := dec.Decode(&tree); err != nil {
 		return &refusal{code: codeJSON, whole: true, detail: "it is not one strict JSON value"}
 	}
-	if treeHoldsSecret(tree, secrets) {
+	if schemaHoldsSecret(tree, secrets, true) {
 		return &refusal{code: codeSecret, whole: true, detail: "a string in it holds a value of the credentials"}
 	}
 	c := &schemaCheck{}
@@ -475,14 +464,94 @@ func isScalar(v any) bool {
 	return false
 }
 
+// schemaHoldsSecret reports whether a string a server chose holds a value
+// of the credentials, walking the schema by the role each string has. Three
+// are the grammar's own words in their own places, the same whatever the
+// credentials hold, and are not screened: a keyword the grammar names, as a
+// member of a schema location; a type name, as the value of type; and a
+// dialect's URI, as the root's $schema. A credential "require"
+// (PostgreSQL's sslmode) would otherwise refuse every schema that uses
+// required. Every other string is screened wherever it is: a property
+// name, a string of data, a description, title or comment, a name required
+// lists, a keyword the grammar does not name and all it holds.
+func schemaHoldsSecret(v any, secrets []string, root bool) bool {
+	obj, ok := v.(map[string]any)
+	if !ok {
+		return treeHoldsSecret(v, secrets)
+	}
+	for key, value := range obj {
+		if !grammarKeywords[key] {
+			if holdsSecret(key, secrets) || treeHoldsSecret(value, secrets) {
+				return true
+			}
+			continue
+		}
+		switch key {
+		case "properties":
+			props, ok := value.(map[string]any)
+			if !ok {
+				if treeHoldsSecret(value, secrets) {
+					return true
+				}
+				continue
+			}
+			for name, sub := range props {
+				if holdsSecret(name, secrets) || schemaHoldsSecret(sub, secrets, false) {
+					return true
+				}
+			}
+		case "items", "additionalProperties", "not":
+			if schemaHoldsSecret(value, secrets, false) {
+				return true
+			}
+		case "anyOf", "oneOf", "allOf":
+			list, ok := value.([]any)
+			if !ok {
+				if treeHoldsSecret(value, secrets) {
+					return true
+				}
+				continue
+			}
+			for _, sub := range list {
+				if schemaHoldsSecret(sub, secrets, false) {
+					return true
+				}
+			}
+		case "type":
+			names := []any{value}
+			if list, ok := value.([]any); ok {
+				names = list
+			}
+			for _, name := range names {
+				if s, ok := name.(string); ok && schemaTypes[s] {
+					continue
+				}
+				if treeHoldsSecret(name, secrets) {
+					return true
+				}
+			}
+		case "$schema":
+			if s, ok := value.(string); ok && root && (s == dialect2020 || s == dialect07) {
+				continue
+			}
+			if treeHoldsSecret(value, secrets) {
+				return true
+			}
+		default:
+			if treeHoldsSecret(value, secrets) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // treeHoldsSecret reports whether any string of a decoded JSON value, a
-// member name or a value, holds a value of the credentials; a string that
-// is exactly one of the grammar's own words is not screened.
+// member name or a value, holds a value of the credentials.
 func treeHoldsSecret(v any, secrets []string) bool {
-	screened := func(s string) bool { return !grammarWords[s] && holdsSecret(s, secrets) }
 	switch x := v.(type) {
 	case string:
-		return screened(x)
+		return holdsSecret(x, secrets)
 	case []any:
 		for _, item := range x {
 			if treeHoldsSecret(item, secrets) {
@@ -491,7 +560,7 @@ func treeHoldsSecret(v any, secrets []string) bool {
 		}
 	case map[string]any:
 		for k, item := range x {
-			if screened(k) || treeHoldsSecret(item, secrets) {
+			if holdsSecret(k, secrets) || treeHoldsSecret(item, secrets) {
 				return true
 			}
 		}

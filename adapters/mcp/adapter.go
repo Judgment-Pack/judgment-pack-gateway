@@ -411,19 +411,25 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		return fail(err)
 	}
 	// A listing that is captured is pinned, and held to what pinning
-	// needs; only the allowed tools' descriptors are kept.
-	var keep func(string) bool
+	// needs; each allowed tool is judged as its page is read, and what is
+	// not captured is not kept.
+	var capture *capturer
+	var visit func(listedTool) error
 	if cfg.Descriptors != nil {
-		keep = func(name string) bool { return len(cfg.Tools) == 0 || contains(cfg.Tools, name) }
+		capturedAt := now().UTC().Truncate(time.Second).Format(stampLayout)
+		if capture, err = newCapturer(*cfg.Descriptors, initialized, secrets, capturedAt); err != nil {
+			return finish(nil, err)
+		}
+		visit = func(tool listedTool) error {
+			if len(cfg.Tools) > 0 && !contains(cfg.Tools, tool.name) {
+				return nil
+			}
+			return capture.add(tool)
+		}
 	}
-	offered, err := listTools(ctx, rpc, cfg.Descriptors != nil, keep)
+	names, err := listTools(ctx, rpc, capture != nil, visit)
 	if err != nil {
 		return fail(err)
-	}
-	capturedAt := now().UTC().Truncate(time.Second).Format(stampLayout)
-	names := make([]string, 0, len(offered))
-	for _, tool := range offered {
-		names = append(names, tool.name)
 	}
 	for _, allowed := range cfg.Tools {
 		if !contains(names, allowed) {
@@ -486,18 +492,12 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if probe != nil {
 		probe.Tool = capField(probe.Tool)
 	}
-	if cfg.Descriptors != nil {
-		var allowed []listedTool
-		for _, tool := range offered {
-			if tool.descriptor != nil {
-				allowed = append(allowed, tool)
-			}
-		}
-		snapshot, fallbacks, err := capture(*cfg.Descriptors, initialized, allowed, secrets, capturedAt)
+	if capture != nil {
+		snapshot, fallbacks, dropped, err := capture.finish()
 		if err != nil {
 			return finish(nil, err)
 		}
-		report.Descriptors = snapshot
+		report.Descriptors, report.DescriptorsDropped = snapshot, dropped
 		for i := range fallbacks {
 			fallbacks[i].Tool = reportField(fallbacks[i].Tool, secrets)
 			fallbacks[i].Reason = reportField(fallbacks[i].Reason, secrets)
@@ -709,14 +709,15 @@ func findTool(ctx context.Context, rpc *client, name string) (json.RawMessage, [
 	return nil, nil, fmt.Errorf("tools/list did not end within %d pages", maxToolPages)
 }
 
-// listTools is every tool the server offers, in the order the server
-// lists them across its pages, each with its descriptor as the server
-// wrote it when keep says so and without one otherwise. A pinned listing
-// -- one a snapshot is captured from -- fails on a cursor seen twice, or
-// on a name offered twice anywhere in it, even with the same descriptor:
-// a listing that does either cannot be pinned.
-func listTools(ctx context.Context, rpc *client, pinned bool, keep func(string) bool) ([]listedTool, error) {
-	offered := []listedTool{}
+// listTools is every tool the server offers, by name, in the order the
+// server lists them across its pages; visit, when given, is handed each
+// tool with its descriptor as the server wrote it, in that order, as its
+// page is read. A pinned listing -- one a snapshot is captured from --
+// fails on a cursor seen twice, or on a name offered twice anywhere in it,
+// even with the same descriptor: a listing that does either cannot be
+// pinned.
+func listTools(ctx context.Context, rpc *client, pinned bool, visit func(listedTool) error) ([]string, error) {
+	names := []string{}
 	seen, cursors := map[string]bool{}, map[string]bool{}
 	params := map[string]any{}
 	for page := 0; page < maxToolPages; page++ {
@@ -726,18 +727,20 @@ func listTools(ctx context.Context, rpc *client, pinned bool, keep func(string) 
 		}
 		for _, tool := range tools {
 			if pinned && seen[tool.name] {
-				// Written as it is, not quoted with %q: an escape would
-				// carry a name that echoes a credential past a redactor.
-				return nil, fmt.Errorf("tools/list: the server offers tool '%s' twice", tool.name)
+				// The name is not written: it is the server's, and could
+				// hold what moves an operator's terminal.
+				return nil, errors.New("tools/list: the server offers one tool name twice")
 			}
 			seen[tool.name] = true
-			if keep == nil || !keep(tool.name) {
-				tool.descriptor = nil
+			names = append(names, tool.name)
+			if visit != nil {
+				if err := visit(tool); err != nil {
+					return nil, err
+				}
 			}
-			offered = append(offered, tool)
 		}
 		if next == "" {
-			return offered, nil
+			return names, nil
 		}
 		if pinned && cursors[next] {
 			return nil, errors.New("tools/list: the server gave a cursor it had given before")
