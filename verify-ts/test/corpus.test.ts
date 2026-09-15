@@ -5,7 +5,7 @@
 // the same corpus in CI; this holds the module to it without the gateway.
 
 import * as assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -82,6 +82,7 @@ test("the process contract, end to end", () => {
   // end, each refused having read no more than a byte past the bound.
   const longKey = spawnSync(process.execPath, [main, "verify", root, registry, v.authority], { input: Buffer.concat([publicKey, Buffer.from([0])]) });
   assert.equal(longKey.status, 2);
+  assert.match(longKey.stderr.toString(), /standard input is more than 32 bytes/);
   const endless = fs.openSync("/dev/zero", "r");
   try {
     const endlessKey = spawnSync(process.execPath, [main, "verify", root, registry, v.authority], { stdio: [endless, "pipe", "pipe"], timeout: 20000 });
@@ -102,6 +103,47 @@ test("the process contract, end to end", () => {
   const none = spawnSync(process.execPath, [main, "verify", file, registry, v.authority], { input: publicKey });
   assert.equal(none.status, 2);
   assert.equal(none.stdout.length, 0);
+});
+
+// A key of 33 bytes on a pipe left open is refused on its 33rd byte, the
+// verifier waiting for nothing more.
+test("a key past its bound is refused without waiting for the end", async () => {
+  const v = storeVectors().find((s) => s.name === "valid-sealed")!;
+  const { root, registry } = materialize(v);
+  const child = spawn(process.execPath, [main, "verify", root, registry, v.authority], { stdio: ["pipe", "ignore", "ignore"] });
+  child.stdin.write(Buffer.concat([publicKey, Buffer.from([0])]));
+  const status = await new Promise<number | null>((resolve) => {
+    const timer = setTimeout(() => {
+      child.kill();
+      resolve(null);
+    }, 10000);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      resolve(code);
+    });
+  });
+  child.stdin.destroy();
+  assert.equal(status, 2);
+});
+
+// Standard input read a byte at a time -- a pipe returns what its writer
+// wrote -- is held as the document's bytes, not a buffer a read: a
+// document of 512 KiB so read is canonicalized in a process held to a heap
+// too small for half a million buffers. The platform's module is rebound
+// before the verifier loads.
+test("standard input read a byte at a time fits a small heap", () => {
+  const preload =
+    "data:text/javascript," +
+    encodeURIComponent(
+      'import fs from "node:fs"; import { syncBuiltinESMExports } from "node:module";' +
+        " const readSync = fs.readSync;" +
+        " fs.readSync = (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, Math.min(length, 1), position);" +
+        " syncBuiltinESMExports();",
+    );
+  const document = '"' + "a".repeat(512 << 10) + '"';
+  const r = spawnSync(process.execPath, ["--max-old-space-size=16", "--import", preload, main, "canon"], { input: document, maxBuffer: 2 << 20 });
+  assert.equal(r.status, 0, r.stderr.toString().slice(0, 400));
+  assert.equal(r.stdout.toString(), document);
 });
 
 // A string of millions of escapes, one value and within every bound, is

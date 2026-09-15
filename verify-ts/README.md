@@ -60,7 +60,9 @@ reference.
   record that cites, and is no verdict; any other is not one JSON object, and is
   not read — a record is still hashed for §4 step 6. Artifacts and `.jsonl`
   files are hashed as they are read, whatever their size. Standard input is held
-  to the same bound, and the key on it to 32 bytes.
+  to the same bound, and the key on it to 32 bytes. A document, a line and
+  standard input are held as they are read in one buffer grown by doubling, so
+  reading one holds at most twice its bytes, however few each read returns.
 - **A million values in a JSON document.** Parsed, a value costs far more than
   its bytes, so a document of more than 2²⁰ values — scalars and containers
   alike — is read no further. A receipt past it is no verdict. A registry line

@@ -252,22 +252,61 @@ export function readDocument(p: string, what: string): Uint8Array {
   }
 }
 
+// Bytes are a document's bytes as they are read, kept in one buffer grown
+// by doubling: what they hold is at most twice the bytes read, however
+// few each read returns -- a file under /proc returns a page at a time,
+// and a pipe what its writer wrote. Past documentBound they are dropped.
+export class Bytes {
+  private buffer = Buffer.alloc(0);
+  private length = 0;
+
+  // add keeps the bytes; when they would pass documentBound it drops
+  // everything and answers false.
+  add(bytes: Uint8Array): boolean {
+    const length = this.length + bytes.length;
+    if (length > documentBound) {
+      this.buffer = Buffer.alloc(0);
+      this.length = 0;
+      return false;
+    }
+    if (length > this.buffer.length) {
+      let size = Math.max(256, this.buffer.length);
+      while (size < length) {
+        size *= 2;
+      }
+      const grown = Buffer.alloc(Math.min(size, documentBound));
+      this.buffer.copy(grown, 0, 0, this.length);
+      this.buffer = grown;
+    }
+    this.buffer.set(bytes, this.length);
+    this.length = length;
+    return true;
+  }
+
+  // take is the bytes in storage of their own length, the buffer they
+  // grew in let go.
+  take(): Uint8Array {
+    const bytes = Buffer.alloc(this.length);
+    this.buffer.copy(bytes, 0, 0, this.length);
+    this.buffer = Buffer.alloc(0);
+    this.length = 0;
+    return bytes;
+  }
+}
+
 // readBounded is the open file's bytes to its end, or null past
 // documentBound.
 function readBounded(fd: number): Uint8Array | null {
-  const parts: Buffer[] = [];
-  let n = 0;
+  const bytes = new Bytes();
+  const buffer = Buffer.alloc(chunk);
   for (;;) {
-    const buffer = Buffer.alloc(chunk);
     const read = fs.readSync(fd, buffer, 0, buffer.length, null);
     if (read === 0) {
-      return Buffer.concat(parts, n);
+      return bytes.take();
     }
-    n += read;
-    if (n > documentBound) {
+    if (!bytes.add(buffer.subarray(0, read))) {
       return null;
     }
-    parts.push(buffer.subarray(0, read));
   }
 }
 
@@ -278,13 +317,12 @@ export type Read = { readonly digest: string; readonly bytes: Uint8Array | null;
 
 const isSpace = (b: number) => b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d;
 
-// Accumulating is a document read a chunk at a time: hashed throughout,
+// Accumulating is a document read a piece at a time: hashed throughout,
 // kept while within documentBound, and past it only its first byte that is
 // not whitespace remembered.
 class Accumulating {
   private readonly hash = crypto.createHash("sha256");
-  private parts: Buffer[] = [];
-  private length = 0;
+  private readonly bytes = new Bytes();
   private first = -1;
   private over = false;
 
@@ -299,22 +337,15 @@ class Accumulating {
         this.first = bytes[at]!;
       }
     }
-    if (this.over) {
-      return;
-    }
-    if (this.length + bytes.length > documentBound) {
+    if (!this.over && !this.bytes.add(bytes)) {
       this.over = true;
-      this.parts = [];
-      return;
     }
-    this.parts.push(Buffer.from(bytes));
-    this.length += bytes.length;
   }
 
   done(): Read {
     return {
       digest: this.hash.digest("hex"),
-      bytes: this.over ? null : Buffer.concat(this.parts, this.length),
+      bytes: this.over ? null : this.bytes.take(),
       opensObject: this.first === 0x7b,
     };
   }

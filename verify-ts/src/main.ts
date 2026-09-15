@@ -13,15 +13,16 @@
 import * as fs from "node:fs";
 
 import { canonical } from "./canon.ts";
-import { NoVerdict, code, documentBound } from "./inputs.ts";
+import { Bytes, NoVerdict, code, documentBound } from "./inputs.ts";
 import { TooLarge, maxValues, parse } from "./json.ts";
 import type { Value } from "./json.ts";
 import { verifyStore, writeVerdict } from "./verify.ts";
 
-// readInput is standard input to its end, or null past limit bytes: no
-// more than a byte past the limit is read.
+// readInput is standard input to its end, or null past limit bytes, which
+// are no more than documentBound: no more than a byte past the limit is
+// read.
 function readInput(limit: number): Uint8Array | null {
-  const parts: Buffer[] = [];
+  const bytes = new Bytes();
   const buffer = Buffer.alloc(1 << 16);
   let n = 0;
   for (;;) {
@@ -41,13 +42,12 @@ function readInput(limit: number): Uint8Array | null {
     if (read === 0) {
       break;
     }
-    parts.push(Buffer.from(buffer.subarray(0, read)));
     n += read;
-    if (n > limit) {
+    if (n > limit || !bytes.add(buffer.subarray(0, read))) {
       return null;
     }
   }
-  return Buffer.concat(parts, n);
+  return bytes.take();
 }
 
 // wait is a pause for a descriptor that is not ready.

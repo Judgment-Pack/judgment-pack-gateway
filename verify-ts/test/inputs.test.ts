@@ -7,12 +7,13 @@ import { spawnSync } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { test } from "node:test";
 
 import * as v8 from "node:v8";
 import * as vm from "node:vm";
 
-import { NoVerdict, documentBound, entryCost, readChunk } from "../src/inputs.ts";
+import { Bytes, NoVerdict, documentBound, entryCost, readChunk } from "../src/inputs.ts";
 import { maxValues } from "../src/json.ts";
 import { limits, sessionCost, testHooks, verifyStore, writeVerdict } from "../src/verify.ts";
 import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir, verdictText } from "./support.ts";
@@ -214,30 +215,38 @@ test("a document past the bound: a receipt is no verdict, a seal line no seal, a
   assert.ok(refused(store.root, store.registry, records), "a line that opens an object");
 });
 
-// Memory, looked at between documents: the heap, and what is held outside
-// it -- a buffer's bytes, and a long string, which the platform may keep
-// outside the heap. What verification keeps of each receipt and each
-// decision record is small, whatever they hold. It is looked at every
-// every'th time verification passes where.
-function memoryPeak(run: () => void, where: string, every = 1): number {
+// A gauge of memory: the heap, and what is held outside it -- a buffer's
+// bytes, and a long string, which the platform may keep outside the heap
+// -- from when the gauge is made. Each look follows a collection that
+// finishes before it returns, a buffer's bytes released with it: otherwise
+// a buffer no longer held can still be counted after it.
+function memoryGauge(): { look: () => void; peak: () => number } {
   v8.setFlagsFromString("--expose-gc");
-  // A collection that finishes before it returns, a buffer's bytes
-  // released with it: otherwise a buffer no longer held can still be
-  // counted after it.
   const collect = vm.runInNewContext("gc") as (options: object) => void;
-  const gc = () => collect({ type: "major", execution: "sync", flavor: "last-resort" });
   const used = () => {
+    collect({ type: "major", execution: "sync", flavor: "last-resort" });
     const m = process.memoryUsage();
     return m.heapUsed + m.external;
   };
-  gc();
   const base = used();
   let peak = 0;
+  return {
+    look: () => {
+      peak = Math.max(peak, used() - base);
+    },
+    peak: () => peak,
+  };
+}
+
+// memoryPeak is the most memory held, looked at every every'th time
+// verification passes where: what verification keeps of each receipt and
+// each decision record is small, whatever they hold.
+function memoryPeak(run: () => void, where: string, every = 1): number {
+  const gauge = memoryGauge();
   let passed = 0;
   testHooks.sample = (at) => {
     if (at === where && ++passed % every === 0) {
-      gc();
-      peak = Math.max(peak, used() - base);
+      gauge.look();
     }
   };
   try {
@@ -245,8 +254,76 @@ function memoryPeak(run: () => void, where: string, every = 1): number {
   } finally {
     delete testHooks.sample;
   }
-  return peak;
+  return gauge.peak();
 }
+
+// shortReadPeak is the most memory held while verification runs with each
+// read returning at most most bytes, looked at every every'th read. The
+// platform's own module is what verification reads through, rebound for
+// the run.
+const nodeFs = createRequire(import.meta.url)("node:fs") as typeof fs;
+function shortReadPeak(most: number, every: number, run: () => void): number {
+  const gauge = memoryGauge();
+  const readSync = nodeFs.readSync;
+  let reads = 0;
+  const short = (fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fs.ReadPosition | null) => {
+    if (++reads % every === 0) {
+      gauge.look();
+    }
+    return readSync(fd, buffer, offset, Math.min(length, most), position);
+  };
+  nodeFs.readSync = short as typeof nodeFs.readSync;
+  syncBuiltinESMExports();
+  try {
+    run();
+  } finally {
+    nodeFs.readSync = readSync;
+    syncBuiltinESMExports();
+  }
+  assert.ok(reads > every, "the reads were made through the rebound module");
+  return gauge.peak();
+}
+
+// Bytes grow by doubling: read a byte at a time, a document is copied a
+// few times over, not once for each byte.
+test("bytes grow by doubling", () => {
+  const alloc = Buffer.alloc;
+  let allocations = 0;
+  Buffer.alloc = ((...args: Parameters<typeof Buffer.alloc>) => {
+    allocations++;
+    return alloc(...args);
+  }) as typeof Buffer.alloc;
+  const bytes = new Bytes();
+  try {
+    for (let i = 0; i < 100000; i++) {
+      bytes.add(Uint8Array.of(0x61));
+    }
+  } finally {
+    Buffer.alloc = alloc;
+  }
+  assert.equal(Buffer.from(bytes.take()).toString(), "a".repeat(100000));
+  assert.ok(allocations < 40, `${allocations} buffers made for 100,000 bytes`);
+});
+
+// A read may return fewer bytes than were asked for, however many remain:
+// a file under /proc returns a page at a time. What reading a document
+// holds is at most twice the document, however few bytes each read
+// returns.
+test("short reads hold no more than twice the document", () => {
+  const store = newStore();
+  put(store, "s1", "0.json", JSON.stringify({ ...acquisitionV3(), later: "x".repeat(128 << 10) }));
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  const receipt = shortReadPeak(512, 16, () => verifyStore(store.root, store.registry, authority, undefined, publicKey));
+  assert.ok(receipt < 4 << 20, `${receipt} bytes held reading a receipt of 128 KiB 512 bytes at a time`);
+
+  const small = oneSession();
+  fs.writeFileSync(small.registry, sealLine("s1", 1) + "\n");
+  const records = tempDir();
+  fs.writeFileSync(path.join(records, "a.json"), JSON.stringify({ n: "y".repeat(64 << 10) }));
+  fs.writeFileSync(path.join(records, "b.jsonl"), JSON.stringify({ n: "z".repeat(64 << 10) }) + "\n");
+  const record = shortReadPeak(1, 4096, () => verifyStore(small.root, small.registry, authority, records, publicKey));
+  assert.ok(record < 4 << 20, `${record} bytes held reading decision records of 64 KiB a byte at a time`);
+});
 
 test("what is kept of a receipt does not grow with it", () => {
   const store = newStore();
