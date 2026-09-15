@@ -385,101 +385,105 @@ func TestNothingIsLookedAtBelowAMissingDirectory(t *testing.T) {
 	}
 }
 
-// A path splits into the directory a lookup of it reaches last and the name it
-// looks up there, spelled as given: the directory whose listing confirms an
-// absence.
-func TestAPathSplitsIntoItsDirectoryAndName(t *testing.T) {
-	rows := [][3]string{
-		{"/a/b", "/a", "b"},
-		{"/a", "/", "a"},
-		{"a", ".", "a"},
-		{"a/b/", "a", "b"},
-		{"./x", ".", "x"},
-		{"../x", "..", "x"},
-		{"a//b", "a/", "b"},
+// The engine makes its registry, empty, when it starts without one -- and only
+// where nothing is: a registry that is a link to nothing, or a directory,
+// fails the start, and the link's target is not made.
+func TestTheEngineMakesItsRegistryAtStart(t *testing.T) {
+	dir := t.TempDir()
+	regPath := filepath.Join(dir, "anchor", "registry.jsonl")
+	if _, err := newGatewayService(filepath.Join(dir, "store"), testSeed, "gateway:test", regPath, nil); err != nil {
+		t.Fatal(err)
 	}
-	if runtime.GOOS == "windows" {
-		rows = [][3]string{
-			{`C:\a\b`, `C:\a`, "b"},
-			{`C:\a`, `C:\`, "a"},
-			{`C:a`, `C:.`, "a"},
-			{`\\server\share\a`, `\\server\share\`, "a"},
-			{`a`, `.`, "a"},
-			{`C:\a\b\`, `C:\a`, "b"},
-			{`C:/a/b`, `C:/a`, "b"},
+	if info, err := os.Lstat(regPath); err != nil || !info.Mode().IsRegular() || info.Size() != 0 {
+		t.Fatalf("the start made no empty registry: %v %v", info, err)
+	}
+	t.Run("a link to nothing", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "made-by-a-start")
+		regPath := filepath.Join(dir, "registry.jsonl")
+		linkOrSkip(t, target, regPath)
+		if _, err := newGatewayService(filepath.Join(dir, "store"), testSeed, "gateway:test", regPath, nil); err == nil || !strings.Contains(err.Error(), "link that leads nowhere") {
+			t.Fatalf("a start on a registry that is a link to nothing: %v", err)
 		}
-	}
-	for _, r := range rows {
-		if dir, name := parentAndName(r[0]); dir != r[1] || name != r[2] {
-			t.Errorf("parentAndName(%q) = %q, %q; want %q, %q", r[0], dir, name, r[1], r[2])
+		if _, err := os.Lstat(target); !os.IsNotExist(err) {
+			t.Fatalf("the start made the link's target: %v", err)
 		}
-	}
+	})
+	t.Run("a directory", func(t *testing.T) {
+		dir := t.TempDir()
+		regPath := filepath.Join(dir, "registry.jsonl")
+		if err := os.Mkdir(regPath, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := newGatewayService(filepath.Join(dir, "store"), testSeed, "gateway:test", regPath, nil); err == nil {
+			t.Fatal("a start on a registry that is a directory")
+		}
+	})
 }
 
-// A lookup's plain not-found is not proof alone that nothing is there:
-// Windows before 10 1909 answers a storage device that has gone away with
-// ERROR_FILE_NOT_FOUND, as it answers a missing name. The directory the name
-// would be in, which the walk reached, is read: listing the name, or not
-// readable at all, it makes the registry present and unreadable. The reader,
-// the /registry endpoint and an acquisition all refuse, and no source starts.
-// The plain answer is errno 2 on every platform: ENOENT off Windows,
-// ERROR_FILE_NOT_FOUND on it.
-func TestALookupThatFindsNothingIsCheckedAgainstTheDirectory(t *testing.T) {
-	plain := syscall.Errno(2)
-	refuses := func(t *testing.T, service *gatewayService, says string) {
+// After the start the registry's absence is never an empty registry to the
+// engine. No lookup can prove an absence: a device or a share that has gone
+// away can answer as a missing file does -- errno 2 here, ENOENT off Windows
+// and ERROR_FILE_NOT_FOUND on it -- and so can a file that was removed. An
+// acquisition into a session the engine does not hold, a seal and the
+// /registry endpoint all refuse, and no source starts; a session the engine
+// holds is judged by its own record, as before.
+func TestAnEngineRegistryThatHasGoneIsARefusal(t *testing.T) {
+	refuses := func(t *testing.T, service *gatewayService) {
 		t.Helper()
-		if _, _, err := readRegistryBytes(service.regPath); err == nil || !strings.Contains(err.Error(), says) {
-			t.Fatalf("the reader: %v", err)
-		}
 		rec := httptest.NewRecorder()
 		service.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/registry", nil))
-		if rec.Code != http.StatusInternalServerError {
+		if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "is not there") {
 			t.Fatalf("/registry answered %d: %q", rec.Code, rec.Body.String())
 		}
 		started := filepath.Join(t.TempDir(), "source-started")
 		t.Setenv(envSourceReady, started)
-		if _, err := service.acquire("device-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry could not be read") {
+		if _, err := service.acquire("gone-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry could not be read") {
 			t.Fatalf("an acquisition: %v", err)
 		}
 		if _, err := os.Stat(started); err == nil {
 			t.Fatal("a source started")
 		}
+		if _, err := service.sealSession("gone-held"); err == nil || !strings.Contains(err.Error(), "is not there") {
+			t.Fatalf("a seal: %v", err)
+		}
+		if _, err := service.acquire("gone-held", "screening", vString("y"), nil); err != nil {
+			t.Fatalf("a held session, judged by the engine's record: %v", err)
+		}
 	}
-	t.Run("a registry that is there, answered as not found", func(t *testing.T) {
+	setUp := func(t *testing.T) *gatewayService {
 		service, _ := testService(t)
-		if _, err := service.acquire("device-sealed", "screening", vString("x"), nil); err != nil {
+		for _, session := range []string{"gone-sealed", "gone-held"} {
+			if _, err := service.acquire(session, "screening", vString("x"), nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if _, err := service.sealSession("gone-sealed"); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := service.sealSession("device-sealed"); err != nil {
-			t.Fatal(err)
-		}
+		return service
+	}
+	t.Run("a registry answered as not found", func(t *testing.T) {
+		service := setUp(t)
 		gone := func(path string) (fs.FileInfo, error) {
 			if path == service.regPath {
-				return nil, &fs.PathError{Op: "stat", Path: path, Err: plain}
+				return nil, &fs.PathError{Op: "stat", Path: path, Err: syscall.Errno(2)}
 			}
 			return os.Stat(path)
 		}
 		stat, lstat = gone, gone
 		t.Cleanup(func() { stat, lstat = os.Stat, os.Lstat })
-		refuses(t, service, "but its directory lists it")
+		refuses(t, service)
 	})
-	t.Run("a registry whose directory cannot be read", func(t *testing.T) {
-		service, _ := testService(t)
-		failed := errors.New("the volume has gone away")
-		original := readDirNames
-		t.Cleanup(func() { readDirNames = original })
-		readDirNames = func(dir string) ([]string, error) {
-			if dir == filepath.Dir(service.regPath) {
-				return nil, failed
-			}
-			names, err := os.ReadDir(dir)
-			out := make([]string, 0, len(names))
-			for _, n := range names {
-				out = append(out, n.Name())
-			}
-			return out, err
+	t.Run("a registry removed", func(t *testing.T) {
+		service := setUp(t)
+		if err := os.Remove(service.regPath); err != nil {
+			t.Fatal(err)
 		}
-		refuses(t, service, "its directory cannot be read")
+		refuses(t, service)
+		if _, err := os.Stat(service.regPath); !os.IsNotExist(err) {
+			t.Fatalf("a refusal made the registry again: %v", err)
+		}
 	})
 }
 
@@ -514,29 +518,33 @@ func TestASealIntoALinkToNothingIsRefused(t *testing.T) {
 
 // The engine's start judges the registry and the decision-record directory as
 // the reader does, so a start does not take for absent -- and offer to make --
-// what an acquisition would then refuse.
+// what an acquisition would then refuse: a link to nothing at either fails
+// the start, as does an answer that is not the plain one for a missing name.
 func TestTheStartJudgesTheInputsAsTheReaderDoes(t *testing.T) {
 	dir := t.TempDir()
 	registry := filepath.Join(dir, "registry.jsonl")
 	records := filepath.Join(dir, "records")
-	if err := os.WriteFile(registry, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(records, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	for name, path := range map[string]string{"registry": registry, "decisionRecords": records} {
-		t.Run(name, func(t *testing.T) {
+		t.Run(name+", a link to nothing", func(t *testing.T) {
+			linkOrSkip(t, filepath.Join(dir, "nowhere-"+name), path)
+			t.Cleanup(func() { os.Remove(path) })
+			err := preflightPaths(filepath.Join(dir, "store"), registry, records)
+			if err == nil || !strings.HasPrefix(err.Error(), name+" "+path+": ") || !strings.Contains(err.Error(), "link that leads nowhere") {
+				t.Fatalf("the start: %v", err)
+			}
+		})
+		t.Run(name+", an answer that is not a missing name", func(t *testing.T) {
+			failed := errors.New("the device did not answer")
 			gone := func(p string) (fs.FileInfo, error) {
 				if p == path {
-					return nil, &fs.PathError{Op: "stat", Path: p, Err: syscall.Errno(2)}
+					return nil, &fs.PathError{Op: "stat", Path: p, Err: failed}
 				}
 				return os.Stat(p)
 			}
 			stat, lstat = gone, gone
 			t.Cleanup(func() { stat, lstat = os.Stat, os.Lstat })
 			err := preflightPaths(filepath.Join(dir, "store"), registry, records)
-			if err == nil || !strings.HasPrefix(err.Error(), name+" "+path+": ") || !strings.Contains(err.Error(), "but its directory lists it") {
+			if err == nil || !strings.HasPrefix(err.Error(), name+" "+path+": ") || !strings.Contains(err.Error(), "did not answer") {
 				t.Fatalf("the start: %v", err)
 			}
 		})

@@ -845,7 +845,7 @@ func (g *gatewayService) sealedElsewhere(sessionID string) string {
 	if held {
 		return ""
 	}
-	seals, _, err := loadSeals(g.regPath, g.publicKey)
+	seals, err := loadEngineSeals(g.regPath, g.publicKey)
 	if err != nil {
 		return "the registry could not be read"
 	}
@@ -1147,10 +1147,14 @@ func (g *gatewayService) handler() http.Handler {
 	})
 
 	mux.HandleFunc("/registry", func(w http.ResponseWriter, r *http.Request) {
-		// The same classifier the verifier uses: an absent registry serves the
-		// empty body an external verifier reads as "no seals", and a registry
-		// that is present and unreachable must not be served as that.
-		data, _, err := readRegistryBytes(g.regPath)
+		// The same classifier the verifier uses. The engine made its
+		// registry at start, so an absent one is served as no registry at
+		// all, never as the empty body an external verifier reads as "no
+		// seals"; nor is a registry that is present and unreachable.
+		data, present, err := readRegistryBytes(g.regPath)
+		if err == nil && !present {
+			err = fmt.Errorf("the registry the engine made at its start is not there: %s", g.regPath)
+		}
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return

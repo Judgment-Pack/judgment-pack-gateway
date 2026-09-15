@@ -1597,11 +1597,12 @@ func TestRegistryEndpointServesRawBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(body) != 0 {
-			t.Fatalf("body = %d bytes, want 0 (empty body for absent registry)", len(body))
+			t.Fatalf("body = %d bytes, want 0 (the empty registry the start made)", len(body))
 		}
 
-		if _, err := os.Stat(service.regPath); err == nil {
-			t.Fatal("registry file should not exist before any seal")
+		// the start made the registry, empty; no seal has been written
+		if info, err := os.Stat(service.regPath); err != nil || info.Size() != 0 {
+			t.Fatalf("registry before any seal: %v %v, want an empty file", info, err)
 		}
 	})
 
@@ -1782,9 +1783,9 @@ func TestMethodContractForStateChangingRoutes(t *testing.T) {
 				t.Errorf("len(entries) = %d, want 0", len(entries))
 			}
 
-			_, err = os.Stat(regPath)
-			if err == nil || !os.IsNotExist(err) {
-				t.Errorf("Stat error = %v, want IsNotExist", err)
+			// nothing sealed: the registry is as the start made it, empty
+			if info, err := os.Stat(regPath); err != nil || info.Size() != 0 {
+				t.Errorf("registry = %v %v, want the empty file the start made", info, err)
 			}
 		})
 	}

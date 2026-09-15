@@ -191,16 +191,6 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 var (
 	stat  = os.Stat
 	lstat = os.Lstat
-	// readDirNames lists a directory's names; a test stands in a directory
-	// that cannot be read
-	readDirNames = func(dir string) ([]string, error) {
-		f, err := os.Open(dir)
-		if err != nil {
-			return nil, err
-		}
-		defer f.Close()
-		return f.Readdirnames(-1)
-	}
 )
 
 // errorFileNotFound is ERROR_FILE_NOT_FOUND: the answer by which Windows says
@@ -333,51 +323,6 @@ func pathAncestors(path string) []string {
 	return dirs
 }
 
-// parentAndName splits a path, as spelled, into the directory a lookup of it
-// reaches last and the name it looks up there. A trailing separator is not a
-// name; a path with no separator after its volume is looked up in the
-// current directory (of the volume's drive, when it names one).
-func parentAndName(path string) (string, string) {
-	volume := len(filepath.VolumeName(path))
-	end := len(path)
-	for end > volume+1 && os.IsPathSeparator(path[end-1]) {
-		end--
-	}
-	i := end - 1
-	for i >= volume && !os.IsPathSeparator(path[i]) {
-		i--
-	}
-	name := path[i+1 : end]
-	switch {
-	case i < volume:
-		return path[:volume] + ".", name
-	case i == volume:
-		return path[:volume+1], name
-	default:
-		return path[:i], name
-	}
-}
-
-// notListed confirms that nothing is at a path a lookup found absent: the
-// directory it would be in -- one the walk has reached -- is read, and does not
-// list its name. A lookup's plain not-found is not proof alone: Windows before
-// 10 1909 answers a storage device that has gone away with
-// ERROR_FILE_NOT_FOUND, as it answers a missing name. A directory that cannot
-// be read, or that lists the name, is a refusal.
-func notListed(path string) error {
-	dir, name := parentAndName(path)
-	names, err := readDirNames(dir)
-	if err != nil {
-		return fmt.Errorf("a lookup found nothing at %s, and its directory cannot be read: %w", path, err)
-	}
-	for _, listed := range names {
-		if listed == name {
-			return fmt.Errorf("a lookup found nothing at %s, but its directory lists it", path)
-		}
-	}
-	return nil
-}
-
 // absentOrLink judges a path a stat that follows links found not there. It is
 // absent only when a look at the path itself confirms it: a link that leads
 // nowhere is there and cannot be read, and a second look that fails for any
@@ -390,7 +335,7 @@ func absentOrLink(path, link string) error {
 	case err == nil:
 		return fmt.Errorf("%s: %s", link, path)
 	case absent(err):
-		return notListed(path)
+		return nil
 	default:
 		return err
 	}
@@ -489,16 +434,38 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 // `unregistered-session`. A registry that is present and unreachable is not
 // absent: readRegistryBytes tells the two apart, and this refuses on the second.
 func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error) {
-	seals := map[string]seal{}
-	var order []string
-
-	data, present, err := readRegistryBytes(path)
+	data, _, err := readRegistryBytes(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	if !present {
-		return seals, order, nil
+	seals, order := parseSeals(data, publicKey)
+	return seals, order, nil
+}
+
+// loadEngineSeals is the engine's own read of the registry it made when it
+// started (newRegistryWriter): the one read, and an absent registry is a
+// refusal, never an empty registry. No lookup can prove an absence -- a
+// device or a share that has gone away can answer as a missing file does,
+// and so can a filesystem that shows an empty directory where the registry
+// was -- so the engine, which knows its registry is there, takes any
+// absence for a registry it cannot read.
+func loadEngineSeals(path string, publicKey []byte) (map[string]seal, error) {
+	data, present, err := readRegistryBytes(path)
+	if err != nil {
+		return nil, err
 	}
+	if !present {
+		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", path)
+	}
+	seals, _ := parseSeals(data, publicKey)
+	return seals, nil
+}
+
+// parseSeals keeps each line of the registry that is a seal under the public
+// key, first seal of a session first, and drops every other line.
+func parseSeals(data []byte, publicKey []byte) (map[string]seal, []string) {
+	seals := map[string]seal{}
+	var order []string
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -547,7 +514,7 @@ func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error)
 		seals[sessionID] = seal{sessionID: sessionID, finalCount: int64(count)}
 		order = append(order, sessionID)
 	}
-	return seals, order, nil
+	return seals, order
 }
 
 // topLevelSignature reads a receipt file's own signature member as written:

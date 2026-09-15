@@ -270,6 +270,24 @@ func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 			return nil, err
 		}
 	}
+	// The engine makes its registry, empty, when it starts without one, so
+	// that from then on the registry's absence is never an empty registry
+	// to it (loadEngineSeals): a device or a share that has gone away can
+	// answer as a missing file does, and no lookup could tell the two
+	// apart. What is at the path is judged as the verifier judges it first,
+	// and the registry is made only where nothing is -- never through a
+	// link to nothing, which an exclusive create does not follow.
+	if _, present, err := readRegistryBytes(path); err != nil {
+		return nil, err
+	} else if !present {
+		made, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		if err := made.Close(); err != nil {
+			return nil, err
+		}
+	}
 	priv := ed25519.NewKeyFromSeed(seed)
 	return &registryWriter{
 		path: path, seed: seed, priv: priv,
@@ -290,9 +308,12 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	// directory or a share that cannot be reached -- is not an empty one,
 	// and sealing into it could append a second seal for a session it
 	// already holds, or make the target of a link to nothing
-	existing, _, err := readRegistryBytes(w.path)
+	existing, present, err := readRegistryBytes(w.path)
 	if err != nil {
 		return nil, err
+	}
+	if !present {
+		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", w.path)
 	}
 	for _, line := range splitLines(existing) {
 		v, err := parseJSON(line)
@@ -325,7 +346,9 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	boundary := len(line)
 	line = append(append(line, canon(record)...), '\n')
 
-	handle, err := os.OpenFile(w.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	// the registry is there (above); a create here could only follow a
+	// registry that went away between the read and the open
+	handle, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}

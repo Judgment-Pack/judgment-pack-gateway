@@ -370,6 +370,15 @@ record joined to it would make one line that is no seal (§4 drops it) and lose 
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback.
 
+A gateway makes its registry, empty, when it starts without one — only where nothing is, never
+through a link — so that from then on the registry's absence is never an empty registry to it.
+No lookup can prove an absence (§4.1): a device or a network share that has gone away can
+answer as a missing file does. So once the gateway has started, a registry that is not there
+is one it cannot read: an acquisition into a session it does not hold (§6), a seal, and
+`/registry` refuse it. A registry missing when the gateway starts — a mount that is not there
+yet, say — cannot be told from none, and the gateway makes a fresh one in the directory it
+sees.
+
 ## 3a. Session identifiers
 
 A session id names a directory under the store, and a verifier discovers sessions by
@@ -514,18 +523,23 @@ walk stops at the link. The directories above an input are the prefixes of its p
 each cut before a separator. A name under the decision-record directory that Windows would not
 read as spelled is a file under it that cannot be read.
 
-Only an input the platform confirms is not there is absent, and the confirmation is two answers
-that agree. The first is the plain answer for a missing name in a directory the walk has
-reached: `ENOENT`, or on Windows `ERROR_FILE_NOT_FOUND` — not `ERROR_PATH_NOT_FOUND` or
-`ERROR_BAD_NETPATH`, which say a directory, a drive or a network share on the way cannot be
-reached. The second is that directory, read, listing no such name. Neither alone is proof:
-Windows before 10 1909 answers a storage device that has gone away as it answers a missing
-name, and a directory that cannot be read, or that lists the name, makes the input present and
-unreadable. An input under a directory confirmed missing is absent, and nothing below that
-directory is looked at. When a stat that follows links finds nothing at a path, a look at the
-path itself must find nothing too, and any other answer to that look — a link, or a failure —
-makes the input present and unreadable. A gateway judges the registry this way before it seals
-into it, and the registry and the decision-record directory this way before it starts.
+For the registry and the decision-record directory, only an input the platform confirms is not
+there is absent. The confirmation is the plain answer for a missing name in a directory the
+walk has reached: `ENOENT`, or on Windows `ERROR_FILE_NOT_FOUND` — not `ERROR_PATH_NOT_FOUND`
+or `ERROR_BAD_NETPATH`, which say a directory, a drive or a network share on the way cannot be
+reached, and make an input under it present and unreadable. An input under a directory
+confirmed missing is absent, and nothing below that directory is looked at. When a stat that
+follows links finds nothing at a path, a look at the path itself must find nothing too, and any
+other answer to that look — a link, or a failure — makes the input present and unreadable.
+
+That confirmation concerns the namespace the filesystem shows, and no lookup proves more: a
+device that has gone away can answer as a missing name does (Windows before 10 1909), and a
+mount that is missing shows the empty directory beneath it. To a verifier an absent registry
+only fails a store closed — its sessions are `unregistered-session` — but to the gateway it
+could reopen a sealed session, so the gateway makes its registry at start and takes any later
+absence for a registry it cannot read (§3). It reads the registry through this classifier
+before it seals into it; started from a configuration, it judges the registry and the
+decision-record directory through it before it starts.
 
 Each of these fails **closed**: an absent anchor cannot make a store verify, it can
 only fail to excuse one. A store that is genuinely empty against an empty registry
@@ -666,7 +680,7 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, a missing or empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal; a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. |
+| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
@@ -685,7 +699,7 @@ the standard §4 applies, and no more. The format was specified before the
 surface so that a verifier written then verifies what is minted now.
 `gateway verify` takes `--decision-records <dir>` for §4 steps 5 and 6.
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
-| GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. |
+| GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 
 A `source` is an operator-configured subprocess that reads the canonical arguments on

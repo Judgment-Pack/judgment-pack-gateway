@@ -259,7 +259,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 // and could not be receipted is the one outcome this design exists to
 // refuse.
 func (g *gatewayService) sessionOpen(sessionID string) string {
-	if seals, _, err := loadSeals(g.regPath, g.publicKey); err != nil {
+	if seals, err := loadEngineSeals(g.regPath, g.publicKey); err != nil {
 		return "the registry could not be read"
 	} else if _, sealed := seals[sessionID]; sealed {
 		return "session is sealed in the registry: " + sessionID
