@@ -19,6 +19,12 @@ function isDigest(v: Value | undefined): boolean {
   return isString(v) && digestForm.test(v.value);
 }
 
+// A key id is §1.2's: the first 32 characters of a SHA-256 in hex, whose
+// case §1.2 leaves unstated.
+function isKeyId(v: Value | undefined): boolean {
+  return isString(v) && /^[0-9a-fA-F]{32}$/.test(v.value);
+}
+
 function isInteger(v: Value | undefined): boolean {
   return v?.type === "number" && v.integer !== null;
 }
@@ -138,7 +144,7 @@ export function structureV3(r: ObjectValue): boolean {
     !isDigest(member(r, "resultDigest")) ||
     !isString(member(r, "servedAt")) ||
     !isString(member(r, "authority")) ||
-    !isString(member(r, "keyId")) ||
+    !isKeyId(member(r, "keyId")) ||
     !isString(signature) ||
     !signatureV3Form.test(signature.value) ||
     !isDigest(member(r, "argumentsCommitment")) ||

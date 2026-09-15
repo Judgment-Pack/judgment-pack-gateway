@@ -58,6 +58,8 @@ test("a version 3 receipt departing from §1.2a in one respect is malformed", ()
     ["argumentsCommitment absent", (r) => delete r.argumentsCommitment],
     ["argumentsDigest present", (r) => (r.argumentsDigest = "hmac-sha256:" + "0".repeat(64))],
     ["keyId a number", (r) => (r.keyId = 1)],
+    ["keyId not hex", (r) => (r.keyId = "not-hex")],
+    ["keyId of another length", (r) => (r.keyId = r.keyId + "00")],
     ["servedAt null", (r) => (r.servedAt = null)],
     ["source absent", (r) => delete r.source],
     ["authority a number", (r) => (r.authority = 1)],
@@ -353,16 +355,24 @@ test("a seal's members beyond the four its signature covers are not read", () =>
   assert.deepEqual(multiset(verdict(store, [sealLine("s1", 1).replace("{", '{"note":[1.5],')]).findings), passes);
 });
 
-test("a cited file giving a name twice resolves nothing", () => {
+test("a citation reads the cited file's one signature, and nothing else in it", () => {
   const record = '{"run":"r"}';
   const head = signed(acquisitionV3(0, null, "s2"));
-  const { store, seals } = recordStore(record, { sessionId: "s2", callIndex: 0, signature: head["signature"] });
-  put(store, "s2", "0.json", JSON.stringify(head).replace("{", '{"source":"x",'));
-  assert.ok(
-    multiset(verdict(store, [...seals, sealLine("s2", 1)], withRecords({ "r.json": record })).findings).includes(
-      JSON.stringify({ callIndex: 1, sessionId: "s1", status: "citation-unresolved" }),
-    ),
-  );
+  const unresolved = JSON.stringify({ callIndex: 1, sessionId: "s1", status: "citation-unresolved" });
+  const findings = (text: string) => {
+    const { store, seals } = recordStore(record, { sessionId: "s2", callIndex: 0, signature: head["signature"] });
+    put(store, "s2", "0.json", text);
+    return multiset(verdict(store, [...seals, sealLine("s2", 1)], withRecords({ "r.json": record })).findings);
+  };
+  // A name twice elsewhere makes the cited receipt malformed, its own
+  // finding, and leaves its signature to be read.
+  const twiceElsewhere = findings(JSON.stringify(head).replace("{", '{"source":"x",'));
+  assert.ok(!twiceElsewhere.includes(unresolved), twiceElsewhere.join("\n"));
+  assert.ok(twiceElsewhere.includes(JSON.stringify({ file: "0.json", sessionId: "s2", status: "malformed" })));
+  // The signature given twice is no one signature.
+  // The signed one first: a reader taking the first of a name twice would
+  // resolve against it.
+  assert.ok(findings(JSON.stringify(head).replace(/("signature":"[0-9a-f]+")/, '$1,"signature":"' + "e".repeat(128) + '"')).includes(unresolved));
 });
 
 test("the same record in two candidates reports twice", () => {
@@ -425,4 +435,23 @@ test("a session id is a flat token of at most 128 characters", () => {
     assert.equal(findings.length, 1, JSON.stringify(findings));
     assert.equal(findings[0]!["status"], found, String(length));
   }
+});
+
+test("a version 3 key id of either case is of its form, and not the verifier's in uppercase", () => {
+  assert.deepEqual(alone(edited(acquisitionV3(), (r) => (r.keyId = r.keyId.toUpperCase()))), status("key-mismatch"));
+});
+
+test("an action that fails the ladder is joined to nothing", () => {
+  const store = newStore();
+  const head = signed(acquisitionV3());
+  put(store, "s1", "0.json", JSON.stringify(head));
+  const action = signed(actionV3(1, head["signature"] as string, [{ sessionId: "s9", callIndex: 0, signature: "c".repeat(128) }], resultDigest));
+  put(store, "s1", "1.json", JSON.stringify({ ...action, source: "altered" }));
+  assert.deepEqual(
+    multiset(verdict(store, [sealLine("s1", 2)]).findings),
+    multiset([
+      { sessionId: "s1", callIndex: 0, status: "ok" },
+      { sessionId: "s1", callIndex: 1, status: "signature-mismatch" },
+    ]),
+  );
 });

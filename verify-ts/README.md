@@ -26,7 +26,8 @@ in another language on other libraries: Node's own Ed25519 (OpenSSL) and a JSON
 reader of its own that keeps a number's spelling and a name given twice, where
 the reference uses Go's `crypto/ed25519` and `encoding/json`. Where the
 specification left a question open, the answer taken is recorded in
-[`AMBIGUITIES.md`](AMBIGUITIES.md) rather than settled silently.
+[`AMBIGUITIES.md`](AMBIGUITIES.md) rather than settled silently, beside the
+readings the text settles that a reader could miss.
 
 It is not a clean-room implementation in the strict sense the corpus's history
 describes — an author barred from reading the reference. Its author had earlier
@@ -36,10 +37,26 @@ code, written to the text, that agrees with the reference on every vector and
 disagrees with it nowhere the corpus looks. Whether that meets a two-implementation
 bar is for whoever holds the bar to judge.
 
-## What it does not do
+## Its limits
+
+`SPEC.md` sets none of these; each is this implementation's, and each ends in
+no verdict rather than in a verdict reached on less than the store holds.
 
 - **Windows.** §4.1's Windows spelling rules are not implemented, so it refuses to
   run there rather than read a path Windows would resolve otherwise.
+- **Only regular files are read.** A receipt, the registry or an artifact that
+  is a FIFO, a device or another special file — a link to one included — is no
+  verdict; each is opened without waiting on a writer, so nothing in a store can
+  make it hang. (A directory in an artifact's place is no artifact:
+  `AMBIGUITIES.md`, question 7.) Under the decision-record directory, only
+  regular files are candidates, as §4 step 6 says.
+- **64 MiB for a JSON document.** A receipt larger than that is no verdict. A
+  registry line that long is no seal, and is dropped. A decision record that
+  long is still hashed for §4 step 6, and step 7 reads it only as far as its
+  first byte that is not whitespace: one that opens an object could cite, and is
+  no verdict; any other is not one JSON object, and is not read. Artifacts and
+  `.jsonl` files are hashed as they are read, whatever their size, and nothing is
+  held but one document at a time and a few members of each receipt.
 - **Nesting past ten thousand levels.** Like the reference, it reads nothing
   deeper (§5).
 

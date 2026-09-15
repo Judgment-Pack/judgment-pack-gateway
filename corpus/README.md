@@ -153,7 +153,7 @@ the corpus and neither to the other. Its author was not barred from the
 reference, as the Go implementation's author was from the Python one; its
 README says what it is on those terms, and its
 [`AMBIGUITIES.md`](../verify-ts/AMBIGUITIES.md) records the questions it had
-to answer that these vectors do not settle.
+to answer that neither `SPEC.md` nor these vectors settle.
 
 ## Ambiguities this corpus surfaced
 
