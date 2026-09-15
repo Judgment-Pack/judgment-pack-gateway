@@ -45,18 +45,35 @@ export type Finding = ReadonlyArray<readonly [string, string | number | bigint |
 export type Verdict = { readonly ok: boolean; readonly findings: Finding[] };
 
 // A receipt file as the ladder judged it, kept as no more than the rest of
-// verification reads of it.
+// verification reads of it, each kept string its own and none long, so no
+// receipt's size stays in memory past its turn.
 type Judged = {
   readonly file: string;
   readonly status: Status;
-  // Past order 1: what the receipt says of its place and its chain.
+  // Past order 1: the receipt's index, for its finding.
   readonly callIndex?: bigint;
-  readonly version?: string | undefined;
-  readonly signature?: string;
-  readonly prevSignature?: Value | undefined;
-  // For a version 3 action: what it cites, and the record it names.
-  readonly action?: { readonly cites: Citation[]; readonly recordDigest: string } | undefined;
+  // For a receipt that passed: what the chain walk reads of it.
+  readonly chain?: { readonly version: string; readonly signature: string; readonly prev: Prev };
+  // For a version 3 action that passed: the record it names, and its
+  // bytes' SHA-256, by which its citations are read again once the
+  // enumeration is whole.
+  readonly action?: { readonly recordDigest: string; readonly bytes: string };
 };
+
+// Prev is a prevSignature as the chain walk compares it: null, a string
+// short enough to be a signature, or neither.
+type Prev = { readonly kind: "null" } | { readonly kind: "string"; readonly value: string } | { readonly kind: "other" };
+
+// own is a copy of a short string held by nothing else: a string read out
+// of a document can otherwise keep the whole document's text alive.
+function own(s: string): string {
+  return s.split("").join("");
+}
+
+// The longest callIndex, in digits, this verifier carries into a finding;
+// one longer cannot verify (the canonical domain ends at sixteen), and is
+// no verdict rather than a finding of unbounded size.
+const maxIndexDigits = 64;
 
 const receiptPrefix: Record<string, string> = {
   "2": "judgment-pack-gateway/receipt/2:",
@@ -87,6 +104,14 @@ function signed(key: crypto.KeyObject, prefix: string, v: Value, signatureHex: s
   const message = Buffer.concat([Buffer.from(prefix, "utf8"), body]);
   return crypto.verify(null, message, key, Buffer.from(signatureHex, "hex"));
 }
+
+function sha256Hex(bytes: Uint8Array): string {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+// testHooks lets a test look at the heap between one document and the
+// next; nothing sets it but a test.
+export const testHooks: { sample?: (where: string) => void } = {};
 
 function str(v: Value | undefined): string | undefined {
   return v?.type === "string" ? v.value : undefined;
@@ -130,12 +155,15 @@ function sessionFiles(root: string): Map<string, string[]> {
 // top-level signature member, when the file is one JSON object giving that
 // name once and the member is a string. Nothing else in it matters.
 function citedSignature(v: Value | null): string | undefined {
-  return v?.type === "object" && count(v, "signature") === 1 ? str(member(v, "signature")) : undefined;
+  const signature = v?.type === "object" && count(v, "signature") === 1 ? str(member(v, "signature")) : undefined;
+  // Only a version 3 signature's form can match a citation's; nothing
+  // longer is kept.
+  return signature !== undefined && /^[0-9a-f]{128}$/.test(signature) ? own(signature) : undefined;
 }
 
 // judge is the ladder of §1.4 for one receipt: at most one status, the
 // first failure in order.
-function judge(parsed: Value | null, root: string, session: string, file: string, key: crypto.KeyObject, keyId: string, authority: string): Judged {
+function judge(parsed: Value | null, bytesDigest: string, root: string, session: string, file: string, key: crypto.KeyObject, keyId: string, authority: string): Judged {
   // 1. malformed: unparseable, a name twice, or a structural violation of
   // the receipt's version.
   if (parsed === null || parsed.type !== "object" || hasDuplicate(parsed)) {
@@ -146,23 +174,13 @@ function judge(parsed: Value | null, root: string, session: string, file: string
   if (!(version === "3" ? structureV3(receipt) : structureV2(receipt))) {
     return { file, status: "malformed" };
   }
-  const callIndex = (member(receipt, "callIndex") as Extract<Value, { type: "number" }>).integer!;
-  const signature = str(member(receipt, "signature"))!;
-  let action: Judged["action"];
-  if (version === "3" && str(member(receipt, "kind")) === "action") {
-    const a = member(receipt, "action") as ObjectValue;
-    const decision = member(a, "decision") as ObjectValue;
-    action = { cites: citations(member(a, "cites")!)!, recordDigest: str(member(decision, "recordDigest"))! };
+  const index = member(receipt, "callIndex") as Extract<Value, { type: "number" }>;
+  if (index.text.replace("-", "").length > maxIndexDigits) {
+    throw new NoVerdict(`receipt ${session}/${file} has a callIndex of more than ${maxIndexDigits} digits`);
   }
-  const judged = (status: Status): Judged => ({
-    file,
-    status,
-    callIndex,
-    version,
-    signature,
-    prevSignature: member(receipt, "prevSignature"),
-    action,
-  });
+  const callIndex = index.integer!;
+  const signature = str(member(receipt, "signature"))!;
+  const judged = (status: Status): Judged => ({ file, status, callIndex });
   // 2. unsupported-version
   if (version !== "2" && version !== "3") {
     return judged("unsupported-version");
@@ -196,7 +214,19 @@ function judge(parsed: Value | null, root: string, session: string, file: string
   if (digest !== hex) {
     return judged("artifact-mismatch");
   }
-  return judged("ok");
+  const prevValue = member(receipt, "prevSignature");
+  const prev: Prev =
+    prevValue?.type === "null"
+      ? { kind: "null" }
+      : prevValue?.type === "string" && prevValue.value.length <= 128
+        ? { kind: "string", value: own(prevValue.value) }
+        : { kind: "other" };
+  let action: Judged["action"];
+  if (version === "3" && str(member(receipt, "kind")) === "action") {
+    const decision = member(member(receipt, "action") as ObjectValue, "decision") as ObjectValue;
+    action = { recordDigest: own(str(member(decision, "recordDigest"))!), bytes: bytesDigest };
+  }
+  return { file, status: "ok", callIndex, chain: { version: own(version), signature: own(signature), prev }, ...(action && { action }) };
 }
 
 type Seal = { readonly sessionId: string; readonly finalCount: bigint };
@@ -239,7 +269,7 @@ function sealOf(line: Uint8Array | null, key: crypto.KeyObject, keyId: string): 
   if (!signed(key, sealPrefix, payload, signature)) {
     return null;
   }
-  return { sessionId: sessionId.value, finalCount: finalCount.integer };
+  return { sessionId: own(sessionId.value), finalCount: finalCount.integer };
 }
 
 // verifyStore is the verdict of §4 over the store at root, against the
@@ -271,29 +301,71 @@ export function verifyStore(
     const judged: Judged[] = [];
     const stems = new Map<string, string | undefined>();
     for (const file of files) {
-      const parsed = parse(readDocument(path.join(root, "receipts", session, file), "the receipt"));
+      const bytes = readDocument(path.join(root, "receipts", session, file), "the receipt");
+      const parsed = parse(bytes);
       stems.set(file.slice(0, -".json".length), citedSignature(parsed));
-      judged.push(judge(parsed, root, session, file, key, keyId, authority));
+      judged.push(judge(parsed, sha256Hex(bytes), root, session, file, key, keyId, authority));
+      testHooks.sample?.("receipt");
     }
     sessions.set(session, judged);
     signatures.set(session, stems);
   }
   const resolves = (c: Citation): boolean => signatures.get(c.sessionId)?.get(c.callIndex.toString()) === c.signature;
 
-  // §4 step 2: the first loadable seal of each session.
+  // §4 step 5, now that the enumeration is whole: each action that passed
+  // is read again for its citations, and must be the bytes it was.
+  const unresolved = new Set<Judged>();
+  for (const [session, judged] of sessions) {
+    for (const j of judged) {
+      if (j.action === undefined) {
+        continue;
+      }
+      const bytes = readDocument(path.join(root, "receipts", session, j.file), "the receipt");
+      if (sha256Hex(bytes) !== j.action.bytes) {
+        throw new NoVerdict(`receipt ${session}/${j.file} changed while it was verified`);
+      }
+      const receipt = parse(bytes) as ObjectValue;
+      if (!citations(member(member(receipt, "action") as ObjectValue, "cites")!)!.every(resolves)) {
+        unresolved.add(j);
+      }
+    }
+  }
+
+  // §4 step 2: the first loadable seal of each session. A line past the
+  // bound that opens an object could be one, and the first, so it is no
+  // verdict; any other line past it is not one JSON object, and no seal.
   const seals = new Map<string, Seal>();
   eachRegistryLine(registry, (line) => {
+    if (line.bytes === null) {
+      if (line.opensObject) {
+        throw new NoVerdict(`a registry line of more than ${documentBound} bytes cannot be read for a seal`);
+      }
+      return;
+    }
     const seal = sealOf(line.bytes, key, keyId);
     if (seal !== null && !seals.has(seal.sessionId)) {
       seals.set(seal.sessionId, seal);
     }
   });
+  testHooks.sample?.("registry");
 
-  // §4 step 6's candidates by digest, and step 7's findings, from one walk.
-  const recordDigests = new Set<string>();
+  // §4 step 6's candidates, matched against the records the actions that
+  // passed name, and step 7's findings, from one walk.
+  const named = new Set<string>();
+  for (const judged of sessions.values()) {
+    for (const j of judged) {
+      if (j.action !== undefined) {
+        named.add(j.action.recordDigest);
+      }
+    }
+  }
+  const found = new Set<string>();
   const recordFindings: Finding[] = [];
   eachDecisionRecord(records, (candidate) => {
-    recordDigests.add("sha256:" + candidate.digest);
+    const digest = "sha256:" + candidate.digest;
+    if (named.has(digest)) {
+      found.add(digest);
+    }
     if (candidate.bytes === null) {
       // Past the bound: a candidate that does not open an object is not
       // one JSON object, and one that does cannot be read for its cites.
@@ -305,11 +377,12 @@ export function verifyStore(
     const status = recordCitations(candidate.bytes, resolves);
     if (status !== null) {
       recordFindings.push([
-        ["recordDigest", "sha256:" + candidate.digest],
+        ["recordDigest", digest],
         ["status", status],
       ]);
     }
   });
+  testHooks.sample?.("decision records");
 
   const findings: Finding[] = [];
   let ok = true;
@@ -345,12 +418,12 @@ export function verifyStore(
         ["status", "sequence-broken"],
       ]);
     } else {
-      const head = passing[0]?.version;
+      const head = passing[0]?.chain!.version;
       for (let i = 0; i < passing.length; i++) {
-        const prev = passing[i]!.prevSignature;
-        const expected = i === 0 ? null : passing[i - 1]!.signature!;
-        const linked = expected === null ? prev?.type === "null" : prev?.type === "string" && prev.value === expected;
-        if (!linked || passing[i]!.version !== head) {
+        const { version, prev } = passing[i]!.chain!;
+        const expected = i === 0 ? null : passing[i - 1]!.chain!.signature;
+        const linked = expected === null ? prev.kind === "null" : prev.kind === "string" && prev.value === expected;
+        if (!linked || version !== head) {
           add([
             ["sessionId", session],
             ["callIndex", null],
@@ -379,17 +452,17 @@ export function verifyStore(
     }
     // §4 steps 5 and 6, for each version 3 action receipt that passed.
     for (const j of judged) {
-      if (j.status !== "ok" || j.action === undefined) {
+      if (j.action === undefined) {
         continue;
       }
-      if (!j.action.cites.every(resolves)) {
+      if (unresolved.has(j)) {
         add([
           ["sessionId", session],
           ["callIndex", j.callIndex!],
           ["status", "citation-unresolved"],
         ]);
       }
-      if (!recordDigests.has(j.action.recordDigest)) {
+      if (!found.has(j.action.recordDigest)) {
         add([
           ["sessionId", session],
           ["callIndex", j.callIndex!],

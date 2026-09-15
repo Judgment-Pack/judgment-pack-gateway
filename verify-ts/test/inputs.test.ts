@@ -5,13 +5,15 @@
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 
+import * as v8 from "node:v8";
+import * as vm from "node:vm";
+
 import { NoVerdict, documentBound } from "../src/inputs.ts";
-import { verifyStore } from "../src/verify.ts";
-import { acquisitionV3, authority, newStore, publicKey, put, sealLine, signed } from "./support.ts";
+import { testHooks, verifyStore } from "../src/verify.ts";
+import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir } from "./support.ts";
 
 // A store of one session, s1, holding one valid receipt.
 function oneSession() {
@@ -185,11 +187,24 @@ test("a document past the bound: a receipt is no verdict, a seal line no seal, a
   past(path.join(store.root, "receipts", "s1", "9.json"), "{");
   assert.ok(refused(store.root, store.registry), "a receipt");
   fs.rmSync(path.join(store.root, "receipts", "s1", "9.json"));
+  // A registry line past the bound that opens no object is no seal, and
+  // the next line is read; one that opens an object could be the first
+  // seal of its session, so it is no verdict -- here a valid seal for two,
+  // behind whitespace, before a seal for one that would otherwise win.
   const registry = path.join(path.dirname(store.registry), "long");
-  past(registry, "{");
+  past(registry, "x");
   fs.appendFileSync(registry, "\n" + sealLine("s1", 1) + "\n");
-  assert.deepEqual(statuses(store.root, registry), ["ok"], "a seal line past the bound is dropped, and the next read");
-  const records = fs.mkdtempSync(path.join(os.tmpdir(), "verify-ts-records-"));
+  assert.deepEqual(statuses(store.root, registry), ["ok"], "a line past the bound that opens no object");
+  const padded = path.join(path.dirname(store.registry), "padded");
+  const fd = fs.openSync(padded, "w");
+  const spaces = Buffer.alloc(1 << 20, 0x20);
+  for (let written = 0; written <= documentBound; written += spaces.length) {
+    fs.writeSync(fd, spaces);
+  }
+  fs.writeSync(fd, sealLine("s1", 2) + "\n" + sealLine("s1", 1) + "\n");
+  fs.closeSync(fd);
+  assert.ok(refused(store.root, padded), "a line past the bound that could be the first seal");
+  const records = tempDir();
   past(path.join(records, "big.bin"), " x");
   assert.deepEqual(statuses(store.root, store.registry, records), ["ok"], "a file that opens no object is not read");
   past(path.join(records, "big.json"), " {");
@@ -197,4 +212,84 @@ test("a document past the bound: a receipt is no verdict, a seal line no seal, a
   fs.rmSync(path.join(records, "big.json"));
   past(path.join(records, "log.jsonl"), '{"cites":');
   assert.ok(refused(store.root, store.registry, records), "a line that opens an object");
+});
+
+// The heap, looked at between documents: what verification keeps of each
+// receipt and each decision record is small, whatever they hold.
+function heapPeak(run: () => void, where: string): number {
+  v8.setFlagsFromString("--expose-gc");
+  const gc = vm.runInNewContext("gc") as () => void;
+  gc();
+  const base = process.memoryUsage().heapUsed;
+  let peak = 0;
+  testHooks.sample = (at) => {
+    if (at === where) {
+      gc();
+      peak = Math.max(peak, process.memoryUsage().heapUsed - base);
+    }
+  };
+  try {
+    run();
+  } finally {
+    delete testHooks.sample;
+  }
+  return peak;
+}
+
+test("what is kept of a receipt does not grow with it", () => {
+  const store = newStore();
+  const big = "b".repeat(2 << 20);
+  // Receipts of 2 MiB, six of each: failing at the key, with a large
+  // member of their own; passing, each naming a large previous value, an
+  // object or a string; and failing at the signature, whose own is 2 MiB
+  // of hex.
+  for (let i = 0; i < 6; i++) {
+    put(store, "s1", `${i}.json`, JSON.stringify({ ...acquisitionV3(i), keyId: "0".repeat(32), later: big, signature: "a".repeat(128) }));
+    put(store, "s2", `${i}.json`, JSON.stringify(signed({ ...receiptV2(i, null), sessionId: "s2", prevSignature: { bulk: big } })));
+    put(store, "s3", `${i}.json`, JSON.stringify(signed({ ...receiptV2(i, null), sessionId: "s3", prevSignature: big })));
+    put(store, "s4", `${i}.json`, JSON.stringify({ ...receiptV2(i, null), sessionId: "s4", signature: "ab".repeat(1 << 20) }));
+  }
+  fs.writeFileSync(store.registry, "");
+  const peak = heapPeak(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), "receipt");
+  assert.ok(peak < 4 << 20, `${peak >> 20} MiB held between receipts of 2 MiB`);
+});
+
+test("what is kept of the decision records does not grow with their number", () => {
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  const records = tempDir();
+  fs.writeFileSync(path.join(records, "log.jsonl"), Array.from({ length: 200000 }, (_, i) => String(i)).join("\n") + "\n");
+  const peak = heapPeak(() => verifyStore(store.root, store.registry, authority, records, publicKey), "decision records");
+  assert.ok(peak < 8 << 20, `${peak >> 20} MiB held after 200,000 candidates no action names`);
+});
+
+test("a receipt that changes while it is verified is no verdict", () => {
+  const store = newStore();
+  const head = signed(acquisitionV3());
+  put(store, "s1", "0.json", JSON.stringify(head));
+  const action = signed(actionV3(1, head["signature"] as string, [{ sessionId: "s1", callIndex: 0, signature: head["signature"] }], resultDigest));
+  put(store, "s1", "1.json", JSON.stringify(action));
+  fs.writeFileSync(store.registry, sealLine("s1", 2) + "\n");
+  let judged = 0;
+  testHooks.sample = (at) => {
+    if (at === "receipt" && ++judged === 2) {
+      // Both read and judged: the action's citations are read again next.
+      put(store, "s1", "1.json", JSON.stringify(action) + " ");
+    }
+  };
+  try {
+    assert.throws(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), /changed while it was verified/);
+  } finally {
+    delete testHooks.sample;
+  }
+});
+
+test("an index of more than 64 digits is no verdict", () => {
+  const store = newStore();
+  const text = JSON.stringify(signed(receiptV2()));
+  put(store, "s1", "0.json", text.replace('"callIndex":0', '"callIndex":' + "9".repeat(64)));
+  fs.writeFileSync(store.registry, "");
+  assert.deepEqual(statuses(store.root, store.registry), ["signature-mismatch", "unregistered-session"]);
+  put(store, "s1", "0.json", text.replace('"callIndex":0', '"callIndex":' + "9".repeat(65)));
+  assert.ok(refused(store.root, store.registry));
 });

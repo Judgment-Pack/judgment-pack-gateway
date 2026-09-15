@@ -78,6 +78,20 @@ test("the process contract, end to end", () => {
   assert.equal(failing.status, 0);
   assert.equal(JSON.parse(failing.stdout.toString("utf8")).ok, false);
 
+  // Standard input past its bound: a key of 33 bytes, and input with no
+  // end, each refused having read no more than a byte past the bound.
+  const longKey = spawnSync(process.execPath, [main, "verify", root, registry, v.authority], { input: Buffer.concat([publicKey, Buffer.from([0])]) });
+  assert.equal(longKey.status, 2);
+  const endless = fs.openSync("/dev/zero", "r");
+  try {
+    const endlessKey = spawnSync(process.execPath, [main, "verify", root, registry, v.authority], { stdio: [endless, "pipe", "pipe"], timeout: 20000 });
+    assert.equal(endlessKey.status, 2);
+    const endlessDocument = spawnSync(process.execPath, [main, "canon"], { stdio: [endless, "pipe", "pipe"], timeout: 20000 });
+    assert.equal(endlessDocument.status, 1);
+  } finally {
+    fs.closeSync(endless);
+  }
+
   // No verdict: the store root is a file.
   const file = path.join(root, "receipts", "s2", "0.json");
   const none = spawnSync(process.execPath, [main, "verify", file, registry, v.authority], { input: publicKey });

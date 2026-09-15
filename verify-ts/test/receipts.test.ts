@@ -5,12 +5,12 @@
 import * as assert from "node:assert/strict";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 
+import { readChunk } from "../src/inputs.ts";
 import { verifyStore, writeVerdict } from "../src/verify.ts";
-import { acquisitionV3, actionV3, authority, multiset, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed } from "./support.ts";
+import { acquisitionV3, actionV3, authority, multiset, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir } from "./support.ts";
 import type { Receipt, Store } from "./support.ts";
 
 function verdict(store: Store, seals: string[], decisionRecords?: string): { ok: boolean; findings: Record<string, unknown>[] } {
@@ -213,7 +213,7 @@ const bothPass = multiset([
 ]);
 
 function withRecords(files: Record<string, string>): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verify-ts-records-"));
+  const dir = tempDir();
   for (const [name, text] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
     fs.writeFileSync(path.join(dir, name), text);
@@ -454,4 +454,17 @@ test("an action that fails the ladder is joined to nothing", () => {
       { sessionId: "s1", callIndex: 1, status: "signature-mismatch" },
     ]),
   );
+});
+
+test("a .jsonl file's lines are its lines whatever the reads that find them", () => {
+  const long = "a".repeat(readChunk - 1);
+  for (const [name, text, line] of [
+    ["the last line, with no line feed", '{"run":"a"}\n{"run":"last"}', '{"run":"last"}'],
+    ["a carriage return at a read's end before its line feed", long + "\r\n" + '{"run":"b"}', long],
+    ["a carriage return at a read's end before more of its line", long + "\rx\n", long + "\rx"],
+    ["a line across a read's end", "b".repeat(readChunk + 7) + "\n", "b".repeat(readChunk + 7)],
+  ] as const) {
+    const { store, seals } = recordStore(line);
+    assert.deepEqual(multiset(verdict(store, seals, withRecords({ "e.jsonl": text })).findings), bothPass, name);
+  }
 });

@@ -19,7 +19,9 @@ export class NoVerdict extends Error {}
 // bound; this one keeps memory within reach whatever a store holds.
 export const documentBound = 64 << 20;
 
-const chunk = 1 << 20;
+// readChunk is how much of a file is read at a time.
+export const readChunk = 1 << 20;
+const chunk = readChunk;
 
 export function code(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException | undefined)?.code;

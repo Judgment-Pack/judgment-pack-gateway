@@ -9,6 +9,20 @@ import * as path from "node:path";
 import { canonical } from "../src/canon.ts";
 import { parse } from "../src/json.ts";
 
+// tempDir is a fresh directory under the platform's temporary one, taken
+// away, with everything in it, when the test process ends.
+const made: string[] = [];
+process.on("exit", () => {
+  for (const dir of made) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+export function tempDir(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "verify-ts-"));
+  made.push(dir);
+  return dir;
+}
+
 export const corpus = path.join(import.meta.dirname, "..", "..", "corpus");
 export const publicKey = Buffer.from(fs.readFileSync(path.join(corpus, "TEST-PUBLIC-KEY"), "utf8").trim(), "hex");
 
@@ -36,7 +50,7 @@ export function storeVectors(): StoreVector[] {
 // materialize writes a vector as the runner would, and is the arguments
 // verify takes.
 export function materialize(v: StoreVector): { root: string; registry: string; decisionRecords: string | undefined } {
-  const at = fs.mkdtempSync(path.join(os.tmpdir(), "verify-ts-"));
+  const at = tempDir();
   const root = path.join(at, "store");
   for (const [file, text] of Object.entries(v.files)) {
     fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
@@ -173,7 +187,7 @@ export type Store = { readonly root: string; readonly registry: string; readonly
 // newStore is an empty store's paths: its root holding the artifact, a
 // registry path and a decision-record directory path, neither made.
 export function newStore(): Store {
-  const at = fs.mkdtempSync(path.join(os.tmpdir(), "verify-ts-"));
+  const at = tempDir();
   const root = path.join(at, "store");
   fs.mkdirSync(path.join(root, "artifacts"), { recursive: true });
   fs.writeFileSync(path.join(root, "artifacts", resultDigest.slice("sha256:".length)), artifact);

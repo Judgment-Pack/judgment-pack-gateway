@@ -51,12 +51,21 @@ no verdict rather than in a verdict reached on less than the store holds.
   `AMBIGUITIES.md`, question 7.) Under the decision-record directory, only
   regular files are candidates, as §4 step 6 says.
 - **64 MiB for a JSON document.** A receipt larger than that is no verdict. A
-  registry line that long is no seal, and is dropped. A decision record that
-  long is still hashed for §4 step 6, and step 7 reads it only as far as its
-  first byte that is not whitespace: one that opens an object could cite, and is
-  no verdict; any other is not one JSON object, and is not read. Artifacts and
-  `.jsonl` files are hashed as they are read, whatever their size, and nothing is
-  held but one document at a time and a few members of each receipt.
+  registry line or a decision record that long is read only as far as its first
+  byte that is not whitespace: one that opens an object could be a seal, or a
+  record that cites, and is no verdict; any other is not one JSON object, and is
+  not read — a record is still hashed for §4 step 6. Artifacts and `.jsonl`
+  files are hashed as they are read, whatever their size. Standard input is held
+  to the same bound, and the key on it to 32 bytes.
+- **What is kept.** One document is held at a time. Of each receipt only its
+  file name, status and index are kept; of one that passed, also what the chain
+  walk compares; of an action that passed, the record it names and its bytes'
+  digest, its citations being read again once every receipt is indexed — and
+  its bytes then must be what they were, or there is no verdict. Of the
+  decision records, only which of the named ones were found.
+- **An index of more than 64 digits.** A receipt whose `callIndex` is that long
+  is no verdict: it cannot verify, the canonical domain ending at sixteen
+  digits, and its finding would carry it whole.
 - **Nesting past ten thousand levels.** Like the reference, it reads nothing
   deeper (§5).
 

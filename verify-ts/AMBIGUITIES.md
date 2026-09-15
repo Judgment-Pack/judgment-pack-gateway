@@ -46,17 +46,12 @@ both parts is held by a test.
    whose `finalCount` is an integer, and whose `signature` is hex — and then §4
    step 2's two conditions. A member beyond the four the signature covers is
    neither signed nor read, and does not stop the seal loading.
-9. **A decision-record directory named without a trailing separator that is a
-   link.** §4.1 says the walk stops at the link. Read here: the directory is
-   there, and the walk finds no candidate in it, so every action receipt that
-   passed is `decision-record-mismatch`. With a trailing separator, the platform
-   resolves the link and the walk goes on below it.
-10. **A citation in a decision record carrying members beyond the three.** Read
-    here: tolerated, as a receipt's unknown members are, and held to the
-    canonical domain with the rest of `cites`.
-11. **A cited file that gives `signature` twice.** It has no one signature. Read
+9. **A citation in a decision record carrying members beyond the three.** Read
+   here: tolerated, as a receipt's unknown members are, and held to the
+   canonical domain with the rest of `cites`.
+10. **A cited file that gives `signature` twice.** It has no one signature. Read
     here: nothing resolves against it.
-12. **A public key of another length than 32 bytes on stdin.** Outside the
+11. **A public key of another length than 32 bytes on stdin.** Outside the
     process contract. Read here: no verdict.
 
 ## Settled: what the text requires, and a reader could miss
@@ -83,3 +78,8 @@ both parts is held by a test.
   each candidate.
 - **A spelling §4.1 refuses is refused before anything is read**, the store
   included.
+- **A decision-record directory named without a trailing separator that is a
+  link has no candidates.** §4.1 says the walk stops at the link; the directory
+  is there, and with no candidate every action receipt that passed is
+  `decision-record-mismatch` (§4 step 6). With a trailing separator, the
+  platform resolves the link and the walk goes on below it.
