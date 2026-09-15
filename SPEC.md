@@ -363,7 +363,10 @@ The context prefix domain-separates a seal signature from a receipt signature
 
 Checking a seal needs only the **public** key — see §5.
 
-The registry is an append-only file, one seal per line. Sealing a session that is already sealed is **refused** — a session's
+The registry is an append-only file, one seal per line. A seal is appended on a line of its
+own: a gateway that finds the registry's last line unterminated — an earlier seal written in
+part, or whole but for its newline — ends that line before it writes the record, since a
+record joined to it would make one line that is no seal (§4 drops it) and lose both. Sealing a session that is already sealed is **refused** — a session's
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback.
 
@@ -486,7 +489,17 @@ a verdict at all.
 | the registry path exists but cannot be read, or any existing parent path component is not a directory, or the registry or a directory above it is a link that leads nowhere | no verdict — the verifier refuses (non-zero exit); the anchor is present and unreadable, not absent |
 | a session directory holding no receipts | a session with count 0, judged against its seal like any other |
 | the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
-| the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
+| the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
+
+A directory above the registry or the decision-record directory is one the platform passes
+through on its way to the path as given. On Linux and macOS a `..` after a link steps back
+from the link's target, not from the link, so those directories are the prefixes of the path
+as spelled; Windows removes `.` and `..` by their spelling before it resolves anything —
+except in a path given with the `\\?\` prefix, which it takes literally — so there they are
+the prefixes of the path so cleaned. Only an input the platform confirms is not there is
+absent: when a stat that follows links finds nothing at a path, a look at the path itself must
+find nothing too, and any other answer to that look — a link, or a failure — makes the input
+present and unreadable.
 
 Each of these fails **closed**: an absent anchor cannot make a store verify, it can
 only fail to excuse one. A store that is genuinely empty against an empty registry

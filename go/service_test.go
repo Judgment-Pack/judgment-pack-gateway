@@ -989,6 +989,27 @@ func TestASealThatMayBeWrittenClosesTheSession(t *testing.T) {
 	if _, err := service.sealSession("seal-unsynced"); err == nil || !strings.Contains(err.Error(), "already sealed") {
 		t.Fatalf("a retry of the seal: %v", err)
 	}
+	// a write that fails with the record written whole but for its
+	// newline leaves a seal a reader loads: the session is closed too
+	if _, err := service.acquire("seal-unended", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	service.registry.write = func(f *os.File, line []byte) (int, error) {
+		n, _ := f.Write(line[:len(line)-1])
+		return n, errors.New("the disk filled before the newline")
+	}
+	if _, err := service.sealSession("seal-unended"); err == nil || !strings.Contains(err.Error(), "before the newline") {
+		t.Fatalf("a seal whose newline was not written: %v", err)
+	}
+	service.registry.write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
+	if seals, _, err := loadSeals(service.regPath, service.publicKey); err != nil {
+		t.Fatal(err)
+	} else if _, onDisk := seals["seal-unended"]; !onDisk {
+		t.Fatal("the stand-in failure left no loadable record: the test tests nothing")
+	}
+	if _, err := service.acquire("seal-unended", "screening", vString("y"), nil); err == nil || !strings.Contains(err.Error(), "session is sealed") {
+		t.Fatalf("an acquisition after a seal written whole but for its newline: %v", err)
+	}
 	// a write that fails before a byte is written is not a seal, and
 	// leaves the session as it was
 	if _, err := service.acquire("seal-unwritten", "screening", vString("x"), nil); err != nil {
@@ -1008,6 +1029,101 @@ func TestASealThatMayBeWrittenClosesTheSession(t *testing.T) {
 	os.Rename(blocked, service.regPath)
 	if _, err := service.acquire("seal-unwritten", "screening", vString("y"), nil); err != nil {
 		t.Fatalf("a session whose seal was never written was closed: %v", err)
+	}
+}
+
+// A seal starts on a line of its own. A registry whose last line an earlier
+// seal left unterminated -- written in part, or whole but for its newline --
+// is ended before the next record: joined to that line, the record would make
+// one line that is no seal, so a retried seal would answer sealed here and
+// load as nothing after a restart, and a seal written whole would be lost
+// with the next one.
+func TestASealStartsOnALineOfItsOwn(t *testing.T) {
+	service, _ := testService(t)
+	loaded := func() map[string]seal {
+		t.Helper()
+		seals, _, err := loadSeals(service.regPath, service.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return seals
+	}
+	for _, session := range []string{"torn", "whole", "next"} {
+		if _, err := service.acquire(session, "screening", vString("x"), nil); err != nil {
+			t.Fatalf("acquire %s: %v", session, err)
+		}
+	}
+	// an earlier seal of "torn" written in part: the start of its record
+	handle, err := os.OpenFile(service.regPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.WriteString(`{"finalCount":1,"keyId":"`); err != nil {
+		t.Fatal(err)
+	}
+	handle.Close()
+	if _, err := service.sealSession("torn"); err != nil {
+		t.Fatalf("the retried seal: %v", err)
+	}
+	if got, ok := loaded()["torn"]; !ok || got.finalCount != 1 {
+		t.Fatalf("the seal retried after a torn record does not load: %v", loaded())
+	}
+	// a seal of "whole" written whole but for its newline
+	if _, err := service.sealSession("whole"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(service.regPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service.regPath, []byte(strings.TrimSuffix(string(data), "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded()["whole"]; !ok {
+		t.Fatal("an unterminated whole seal does not load: the test tests nothing")
+	}
+	if _, err := service.sealSession("next"); err != nil {
+		t.Fatal(err)
+	}
+	seals := loaded()
+	for _, session := range []string{"torn", "whole", "next"} {
+		if _, ok := seals[session]; !ok {
+			t.Fatalf("the seal of %s does not load: %v", session, seals)
+		}
+	}
+	// a write that fails once it has ended the earlier line, and before a
+	// byte of the record, wrote no seal: the session stays open, and a
+	// retry writes the record
+	if _, err := service.acquire("ended", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	unterminated, err := os.OpenFile(service.regPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unterminated.WriteString(`{"finalCount":`); err != nil {
+		t.Fatal(err)
+	}
+	unterminated.Close()
+	service.registry.write = func(f *os.File, line []byte) (int, error) {
+		if line[0] != '\n' {
+			t.Fatal("no newline ended the unterminated line: the test tests nothing")
+		}
+		n, _ := f.Write(line[:1])
+		return n, errors.New("the disk filled after one byte")
+	}
+	if _, err := service.sealSession("ended"); err == nil || !strings.Contains(err.Error(), "after one byte") {
+		t.Fatalf("a seal whose record was never written: %v", err)
+	}
+	service.registry.write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
+	if _, err := service.acquire("ended", "screening", vString("y"), nil); err != nil {
+		t.Fatalf("a session whose record was never written was closed: %v", err)
+	}
+	if _, err := service.sealSession("ended"); err != nil {
+		t.Fatalf("the retried seal: %v", err)
+	}
+	if got, ok := loaded()["ended"]; !ok || got.finalCount != 2 {
+		t.Fatalf("the retried seal does not load at its count: %v", loaded())
 	}
 }
 

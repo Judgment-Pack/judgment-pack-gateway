@@ -243,8 +243,10 @@ type registryWriter struct {
 	seed  []byte
 	priv  ed25519.PrivateKey
 	keyID string
-	// sync makes an appended seal durable; a test stands in a failure
-	sync func(*os.File) error
+	// write appends a seal's line and sync makes it durable; a test
+	// stands in a failure for either
+	write func(*os.File, []byte) (int, error)
+	sync  func(*os.File) error
 }
 
 // sealMayBeWritten is a failure to seal after the record may already be in
@@ -266,6 +268,7 @@ func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 	return &registryWriter{
 		path: path, seed: seed, priv: priv,
 		keyID: keyIDFor(priv.Public().(ed25519.PublicKey)),
+		write: func(f *os.File, line []byte) (int, error) { return f.Write(line) },
 		sync:  func(f *os.File) error { return f.Sync() },
 	}, nil
 }
@@ -300,13 +303,28 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	record.set("keyId", vString(w.keyID))
 	record.set("signature", vString(hex.EncodeToString(signature)))
 
+	// A record starts on a line of its own. A registry whose last line is
+	// unterminated -- an earlier seal written in part, or whole but for its
+	// newline -- is ended first: joined to that line, the record would make
+	// one line that is no seal, and neither would load.
+	var line []byte
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		line = append(line, '\n')
+	}
+	boundary := len(line)
+	line = append(append(line, canon(record)...), '\n')
+
 	handle, err := os.OpenFile(w.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	defer handle.Close()
-	if n, err := handle.Write(append(canon(record), '\n')); err != nil {
-		if n > 0 {
+	if n, err := w.write(handle, line); err != nil {
+		// once a byte of the record is written the seal may be there --
+		// whole but for its newline, it loads -- and the session is taken
+		// as sealed until a retry settles it; a newline ending an earlier
+		// line is no part of the record
+		if n > boundary {
 			return nil, sealMayBeWritten{err}
 		}
 		return nil, err

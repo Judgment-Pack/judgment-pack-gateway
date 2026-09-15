@@ -1028,36 +1028,49 @@ func TestRegistryPathShapes(t *testing.T) {
 	// stat that follows it reports not-exist, and taking that for the
 	// absence of a registry grades every session from evidence nobody read
 	// -- and lets an acquisition into a session the registry would have
-	// said was sealed. At the file, and at a directory above it. Links
-	// need a privilege on some Windows hosts; where one cannot be made the
-	// row says so and stops.
+	// said was sealed. At the file, and at a directory above it: a directory
+	// link made as one (Windows fixes a link's kind when it is made) and, on
+	// Windows, a junction. A symbolic link needs a privilege on some Windows
+	// hosts; where the platform refuses one for that reason the row says so
+	// and stops, and any other failure to make it fails.
 	for _, tt := range []struct {
 		name string
+		// windowsOnly marks a row only Windows can build
+		windowsOnly bool
 		// build returns the registry path, given a directory to work in
 		// and a target that does not exist
-		build func(dir, nowhere string) (string, error)
+		build func(t *testing.T, dir, nowhere string) string
 		want  func(regPath string) string
 	}{
-		{"the registry is a link that leads nowhere refuses", func(dir, nowhere string) (string, error) {
+		{"the registry is a link that leads nowhere refuses", false, func(t *testing.T, dir, nowhere string) string {
 			regPath := filepath.Join(dir, "registry.jsonl")
-			return regPath, os.Symlink(nowhere, regPath)
+			linkOrSkip(t, nowhere, regPath)
+			return regPath
 		}, func(regPath string) string { return "the registry is a link that leads nowhere: " + regPath }},
-		{"a directory above the registry is a link that leads nowhere refuses", func(dir, nowhere string) (string, error) {
+		{"a directory above the registry is a link that leads nowhere refuses", false, func(t *testing.T, dir, nowhere string) string {
 			parent := filepath.Join(dir, "anchor")
-			return filepath.Join(parent, "registry.jsonl"), os.Symlink(nowhere, parent)
+			dirLinkToNowhere(t, nowhere, parent)
+			return filepath.Join(parent, "registry.jsonl")
+		}, func(regPath string) string {
+			return "registry parent path component is a link that leads nowhere: " + filepath.Dir(regPath)
+		}},
+		{"a directory above the registry is a junction that leads nowhere refuses", true, func(t *testing.T, dir, nowhere string) string {
+			parent := filepath.Join(dir, "anchor")
+			junctionToNowhere(t, nowhere, parent)
+			return filepath.Join(parent, "registry.jsonl")
 		}, func(regPath string) string {
 			return "registry parent path component is a link that leads nowhere: " + filepath.Dir(regPath)
 		}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.windowsOnly && runtime.GOOS != "windows" {
+				t.Skip("a junction is Windows' own")
+			}
 			st, _, storeRoot, _ := testStore(t)
 			stampSession(t, st, "s1", 2)
 			dir := t.TempDir()
-			regPath, err := tt.build(dir, filepath.Join(dir, "nothing-here"))
-			if err != nil {
-				t.Skipf("a link cannot be made here: %v", err)
-			}
-			_, err = verifyWithRegistry(storeRoot, regPath, "gateway:test", st.publicKey)
+			regPath := tt.build(t, dir, filepath.Join(dir, "nothing-here"))
+			_, err := verifyWithRegistry(storeRoot, regPath, "gateway:test", st.publicKey)
 			if err == nil || err.Error() != tt.want(regPath) {
 				t.Fatalf("got %v, want %q", err, tt.want(regPath))
 			}

@@ -327,12 +327,14 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 	if err := registryContainerReachable(dir); err != nil {
 		return nil, false, fmt.Errorf("decision-record directory: %w", err)
 	}
-	info, err := os.Stat(dir)
+	// a link that leads nowhere is there and cannot be read, at the
+	// directory as above it (§4.1), never the absence it would be taken for
+	info, err := statInput(dir, "the decision-record directory is a link that leads nowhere")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
 		return nil, false, err
+	}
+	if info == nil {
+		return nil, false, nil
 	}
 	if !info.IsDir() {
 		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)

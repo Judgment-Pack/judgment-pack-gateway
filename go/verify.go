@@ -20,6 +20,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -181,51 +182,105 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 	return append([]byte(sealContext), canon(covered)...)
 }
 
+// lstat is os.Lstat. A test stands in a failure for the second look at a
+// path the first found absent: no settled filesystem makes the two looks
+// disagree, only a change between them, and a failure then is not taken for
+// absence.
+var lstat = os.Lstat
+
+// resolvedAncestors returns the directories the platform passes through on its
+// way to path, deepest last, each spelled so that it resolves as the whole
+// path's resolution resolves it. On Linux and macOS that is each prefix of the
+// path exactly as given: a ".." is resolved against the directory the
+// component before it leads to -- through a link, the link's target -- so a
+// lexically cleaned parent can name another directory than the one the
+// platform reaches. Windows removes "." and ".." by their spelling before it
+// looks at anything, except in a path given with the \\?\ prefix, which it
+// takes literally; there the prefixes are those of the cleaned path, since
+// they are what Windows resolves. The root and a bare volume name are left
+// out: a root is a directory, and a bare volume names its current directory.
+func resolvedAncestors(path string) []string {
+	if runtime.GOOS == "windows" && !strings.HasPrefix(path, `\\?\`) {
+		path = filepath.Clean(path)
+	}
+	volume := len(filepath.VolumeName(path))
+	var dirs []string
+	for i := volume; i < len(path); i++ {
+		// a separator ends a component, unless it ends the volume (the
+		// root) or follows another separator (no component between them)
+		if os.IsPathSeparator(path[i]) && i > volume && !os.IsPathSeparator(path[i-1]) {
+			dirs = append(dirs, path[:i])
+		}
+	}
+	return dirs
+}
+
+// absentOrLink judges a path a stat that follows links found not there. It is
+// absent only when a look at the path itself confirms it: a link that leads
+// nowhere is there and cannot be read, and a second look that fails for any
+// other reason establishes nothing, so both are refusals. The caller has
+// established that the path's parent is a directory, so the look is answered
+// about the last component alone.
+func absentOrLink(path, link string) error {
+	_, err := lstat(path)
+	switch {
+	case err == nil:
+		return fmt.Errorf("%s: %s", link, path)
+	case os.IsNotExist(err):
+		return nil
+	default:
+		return err
+	}
+}
+
 // registryContainerReachable checks the directories that must exist above the
 // registry file, walking them from the filesystem root downward so that every
 // stat is taken against a parent already known to be a directory. At each step
 // the only outcomes are an existing directory, an existing non-directory (a
-// refusal, naming the component), and a component that is not there at all (the
-// registry is then genuinely absent, and the caller's stat of the file says so).
+// refusal, naming the component), a link that leads nowhere (a refusal too),
+// and a component that is not there at all (the registry is then genuinely
+// absent, and the caller's stat of the file says so). The directories are the
+// ones the platform resolves on its way to the file (resolvedAncestors), so
+// the walk judges the path the reader and the writer open, however it is
+// spelled.
 //
 // Walking downward is what keeps the classification off the platform's error
 // mapping. Statting the registry path — or only its immediate parent — cannot do
 // it: Windows answers ERROR_PATH_NOT_FOUND for any non-directory path component,
 // at any depth, and os.IsNotExist reports that as absence.
 func registryContainerReachable(path string) error {
-	var dirs []string
-	for dir := filepath.Dir(path); ; {
-		dirs = append(dirs, dir)
-		up := filepath.Dir(dir)
-		if up == dir {
-			break
-		}
-		dir = up
-	}
-	// dirs runs deepest-first, so walk it in reverse to start at the root.
-	for i := len(dirs) - 1; i >= 0; i-- {
-		info, err := os.Stat(dirs[i])
+	for _, dir := range resolvedAncestors(path) {
+		info, err := os.Stat(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
-				// Nothing reachable from here down -- unless the component is
-				// there as a link that leads nowhere, which a stat that
-				// follows it reports as absent: that is present and
-				// unreadable, not absent, and is refused as such. The parent
-				// is known to be a directory, so the lstat is answered about
-				// this component alone.
-				if _, lerr := os.Lstat(dirs[i]); lerr == nil {
-					return fmt.Errorf("registry parent path component is a link that leads nowhere: %s", dirs[i])
-				}
-				// Nothing exists from here down, so neither does the registry.
-				return nil
+				// nothing reachable from here down -- unless the component
+				// is there as a link that leads nowhere, which a stat that
+				// follows it reports as absent
+				return absentOrLink(dir, "registry parent path component is a link that leads nowhere")
 			}
 			return err
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("registry parent path component is not a directory: %s", dirs[i])
+			return fmt.Errorf("registry parent path component is not a directory: %s", dir)
 		}
 	}
 	return nil
+}
+
+// statInput stats an input the verifier reads -- the registry file, the
+// decision-record directory -- once the directories above it are known to be
+// reachable. It returns nil info and a nil error only for an input that is
+// genuinely not there; a link that leads nowhere is there and cannot be read,
+// never the absence a stat that follows the link would make of it.
+func statInput(path, link string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, absentOrLink(path, link)
+		}
+		return nil, err
+	}
+	return info, nil
 }
 
 // readRegistryBytes returns the registry's raw bytes and whether the registry is
@@ -234,23 +289,16 @@ func registryContainerReachable(path string) error {
 // differently.
 //
 // SPEC.md §4.1: only a registry file that is genuinely not there is absent. A
-// registry path that exists but cannot be read, or that has an existing parent
-// path component which is not a directory, is a present and unreachable anchor —
-// the caller must refuse rather than treat the anchor as empty.
+// registry path that exists but cannot be read, that has an existing parent
+// path component which is not a directory, or that is -- or lies under -- a
+// link that leads nowhere, is a present and unreachable anchor: the caller must
+// refuse rather than treat the anchor as empty.
 func readRegistryBytes(path string) ([]byte, bool, error) {
 	if err := registryContainerReachable(path); err != nil {
 		return nil, false, err
 	}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			// a registry that is a link leading nowhere is there and cannot
-			// be read -- never the absence of a registry, which a stat that
-			// follows the link would make of it
-			if _, lerr := os.Lstat(path); lerr == nil {
-				return nil, false, fmt.Errorf("the registry is a link that leads nowhere: %s", path)
-			}
-			return nil, false, nil
-		}
+	info, err := statInput(path, "the registry is a link that leads nowhere")
+	if err != nil || info == nil {
 		return nil, false, err
 	}
 	data, err := os.ReadFile(path)
