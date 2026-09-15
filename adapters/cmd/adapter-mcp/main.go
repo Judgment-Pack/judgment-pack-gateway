@@ -35,6 +35,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
 	probe := fs.String("probe", "", "with --check, a tool to call once with no arguments, so a server that lists its tools without reaching its platform is found out; its result is read for an error and discarded")
 	probeFailure := fs.String("probe-failure", "", "with --probe, text the probe's answer begins with when the platform was not reached, for a server that answers its own failure as ordinary text")
+	descriptorsPlatform := fs.String("descriptors-platform", "", "with --check and --descriptors-binding, capture the allowed tools' descriptions and input schemas, and the server's identity, into the report's snapshot for this platform (docs/design/tool-descriptors.md)")
+	descriptorsBinding := fs.String("descriptors-binding", "", "with --descriptors-platform, the pinned binding the snapshot is captured for, name@sha256:<64 hex>")
 	// The gateway splits a source command on whitespace and parses no
 	// quotes, so what comes after "--" is given word by word: a server
 	// command with its arguments, or, with --image, the server's own
@@ -70,6 +72,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	cfg.Probe, cfg.ProbeFailure = *probe, *probeFailure
+	if (*descriptorsPlatform != "") != (*descriptorsBinding != "") || (*descriptorsPlatform != "" && !*check) {
+		fmt.Fprintln(stderr, "adapter-mcp: --descriptors-platform and --descriptors-binding go together, and with --check")
+		return 2
+	}
+	if *descriptorsPlatform != "" {
+		cfg.Descriptors = &mcp.DescriptorTarget{Platform: *descriptorsPlatform, Binding: *descriptorsBinding}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 	var out []byte

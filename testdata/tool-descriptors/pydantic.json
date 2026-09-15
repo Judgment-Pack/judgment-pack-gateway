@@ -1,0 +1,84 @@
+{
+ "about": [
+  "Input schemas as Pydantic emits them for a tool's arguments, each written as the MCP Python SDK",
+  "sends it, compact. Written by make_pydantic_fixtures.py, whose expectations are written by hand."
+ ],
+ "generator": "pydantic 2.11.7",
+ "fixtures": [
+  {
+   "name": "search_ticketsArguments",
+   "text": "{\"properties\":{\"query\":{\"title\":\"Query\",\"type\":\"string\"},\"limit\":{\"default\":10,\"title\":\"Limit\",\"type\":\"integer\"},\"include_closed\":{\"default\":false,\"title\":\"Include Closed\",\"type\":\"boolean\"}},\"required\":[\"query\"],\"title\":\"search_ticketsArguments\",\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "optionalArguments",
+   "text": "{\"properties\":{\"owner\":{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"null\"}],\"default\":null,\"title\":\"Owner\"},\"tags\":{\"default\":[],\"items\":{\"type\":\"string\"},\"title\":\"Tags\",\"type\":\"array\"},\"after\":{\"anyOf\":[{\"minimum\":0,\"type\":\"integer\"},{\"type\":\"null\"}],\"default\":null,\"title\":\"After\"}},\"title\":\"optionalArguments\",\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "literalArguments",
+   "text": "{\"properties\":{\"status\":{\"enum\":[\"open\",\"closed\"],\"title\":\"Status\",\"type\":\"string\"},\"priority\":{\"default\":2,\"enum\":[1,2,3],\"title\":\"Priority\",\"type\":\"integer\"}},\"required\":[\"status\"],\"title\":\"literalArguments\",\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "constrainedArguments",
+   "text": "{\"properties\":{\"page\":{\"default\":1,\"description\":\"Page number\",\"maximum\":1000,\"minimum\":1,\"title\":\"Page\",\"type\":\"integer\"},\"name\":{\"examples\":[\"Ada\"],\"maxLength\":80,\"minLength\":1,\"title\":\"Name\",\"type\":\"string\"},\"ratio\":{\"default\":0.5,\"exclusiveMaximum\":1,\"exclusiveMinimum\":0,\"title\":\"Ratio\",\"type\":\"number\"},\"step\":{\"multipleOf\":0.25,\"title\":\"Step\",\"type\":\"number\"}},\"required\":[\"name\",\"step\"],\"title\":\"constrainedArguments\",\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "mappingArguments",
+   "text": "{\"properties\":{\"counts\":{\"additionalProperties\":{\"type\":\"integer\"},\"title\":\"Counts\",\"type\":\"object\"},\"matrix\":{\"items\":{\"items\":{\"type\":\"number\"},\"type\":\"array\"},\"maxItems\":4,\"minItems\":1,\"title\":\"Matrix\",\"type\":\"array\"}},\"required\":[\"counts\",\"matrix\"],\"title\":\"mappingArguments\",\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "unionArguments",
+   "text": "{\"properties\":{\"key\":{\"anyOf\":[{\"type\":\"integer\"},{\"type\":\"string\"}],\"title\":\"Key\"}},\"required\":[\"key\"],\"title\":\"unionArguments\",\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "strictArguments",
+   "text": "{\"additionalProperties\":false,\"properties\":{\"id\":{\"title\":\"Id\",\"type\":\"string\"}},\"required\":[\"id\"],\"title\":\"strictArguments\",\"type\":\"object\"}",
+   "refusal": null
+  },
+  {
+   "name": "patternArguments",
+   "text": "{\"properties\":{\"code\":{\"pattern\":\"^[A-Z]{3}$\",\"title\":\"Code\",\"type\":\"string\"}},\"required\":[\"code\"],\"title\":\"patternArguments\",\"type\":\"object\"}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/code/pattern"
+   }
+  },
+  {
+   "name": "dateArguments",
+   "text": "{\"properties\":{\"since\":{\"format\":\"date-time\",\"title\":\"Since\",\"type\":\"string\"}},\"required\":[\"since\"],\"title\":\"dateArguments\",\"type\":\"object\"}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/since/format"
+   }
+  },
+  {
+   "name": "uuidArguments",
+   "text": "{\"properties\":{\"id\":{\"format\":\"uuid\",\"title\":\"Id\",\"type\":\"string\"}},\"required\":[\"id\"],\"title\":\"uuidArguments\",\"type\":\"object\"}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/properties/id/format"
+   }
+  },
+  {
+   "name": "nestedArguments",
+   "text": "{\"$defs\":{\"Address\":{\"properties\":{\"city\":{\"title\":\"City\",\"type\":\"string\"}},\"required\":[\"city\"],\"title\":\"Address\",\"type\":\"object\"}},\"properties\":{\"address\":{\"$ref\":\"#/$defs/Address\"}},\"required\":[\"address\"],\"title\":\"nestedArguments\",\"type\":\"object\"}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/$defs"
+   }
+  },
+  {
+   "name": "enumArguments",
+   "text": "{\"$defs\":{\"Colour\":{\"enum\":[\"red\",\"blue\"],\"title\":\"Colour\",\"type\":\"string\"}},\"properties\":{\"colour\":{\"$ref\":\"#/$defs/Colour\"}},\"required\":[\"colour\"],\"title\":\"enumArguments\",\"type\":\"object\"}",
+   "refusal": {
+    "code": "keyword",
+    "pointer": "/$defs"
+   }
+  }
+ ]
+}

@@ -64,6 +64,13 @@ type Config struct {
 	// only in the text, and the binding that pins the server knows what
 	// it says.
 	ProbeFailure string
+	// Descriptors, when given, has a check capture the allowed tools'
+	// descriptions and input schemas, and the server's identity, into
+	// the snapshot connect keeps for the platform it names
+	// (docs/design/tool-descriptors.md). Only the live operation's check
+	// is given it; a write operation's may run under other credentials,
+	// against another server.
+	Descriptors *DescriptorTarget
 	// MaxOutput bounds the envelope in bytes.
 	MaxOutput int64
 }
@@ -298,16 +305,27 @@ func (cfg Config) serverRefusal() error {
 }
 
 // checkReport is what Check writes: the server as it identified itself,
-// the protocol version it answered with, and every tool it offers. It is
-// for the operator who is connecting a platform, and it is not an
-// envelope: nothing is minted from it.
+// the protocol version it answered with, and every tool it offers; with
+// descriptors asked for, the snapshot and why each candidate that is not
+// in it fell back. It is for the operator who is connecting a platform,
+// and it is not an envelope: nothing is minted from it. Every string
+// outside the snapshot is at most maxReportField bytes, and each list at
+// most maxReportList bytes with what passes it counted, so the report
+// stays within reportBound with any snapshot inside it.
 type checkReport struct {
 	Status          string          `json:"status"`
 	Adapter         adapterIdentity `json:"adapter"`
 	Server          serverIdentity  `json:"server"`
 	ProtocolVersion string          `json:"protocolVersion"`
 	Tools           []string        `json:"tools"`
+	ToolsUnlisted   int             `json:"toolsUnlisted,omitempty"`
 	Probe           *probeReport    `json:"probe,omitempty"`
+	// Descriptors is the snapshot in its canonical form, as connect
+	// writes it.
+	Descriptors        json.RawMessage `json:"descriptors,omitempty"`
+	Fallbacks          []fallback      `json:"fallbacks,omitempty"`
+	FallbacksUnlisted  int             `json:"fallbacksUnlisted,omitempty"`
+	DescriptorsDropped string          `json:"descriptorsDropped,omitempty"`
 }
 
 // probeReport says which tool the check called and that it answered.
@@ -338,6 +356,11 @@ type serverIdentity struct {
 func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err := cfg.serverRefusal(); err != nil {
 		return nil, err
+	}
+	if cfg.Descriptors != nil {
+		if err := cfg.Descriptors.refusal(); err != nil {
+			return nil, err
+		}
 	}
 	env, secrets, err := credentialsEnv(cfg.Credentials)
 	if err != nil {
@@ -387,7 +410,24 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err := rpc.notify("notifications/initialized", map[string]any{}); err != nil {
 		return fail(err)
 	}
-	names, err := listTools(ctx, rpc)
+	// A listing that is captured is pinned, and held to what pinning
+	// needs; each allowed tool is judged as its page is read, and what is
+	// not captured is not kept.
+	var capture *capturer
+	var visit func(listedTool) error
+	if cfg.Descriptors != nil {
+		capturedAt := now().UTC().Truncate(time.Second).Format(stampLayout)
+		if capture, err = newCapturer(*cfg.Descriptors, initialized, secrets, capturedAt); err != nil {
+			return finish(nil, err)
+		}
+		visit = func(tool listedTool) error {
+			if len(cfg.Tools) > 0 && !contains(cfg.Tools, tool.name) {
+				return nil
+			}
+			return capture.add(tool)
+		}
+	}
+	names, err := listTools(ctx, rpc, capture != nil, visit)
 	if err != nil {
 		return fail(err)
 	}
@@ -436,22 +476,57 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if identity.Version == "" {
 		identity.Version = redact.Redact(initialized.version, secrets)
 	}
+	identity = adapterIdentity{Name: capField(identity.Name), Version: capField(identity.Version), Digest: capField(identity.Digest)}
 	redacted := make([]string, 0, len(names))
 	for _, name := range names {
-		redacted = append(redacted, redact.Redact(name, secrets))
+		redacted = append(redacted, reportField(name, secrets))
 	}
-	report, err := canon.EncodeJSON(map[string]any{"check": checkReport{
+	report := checkReport{
 		Status:          "succeeded",
 		Adapter:         identity,
-		Server:          serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)},
-		ProtocolVersion: initialized.protocol,
-		Tools:           redacted,
+		Server:          serverIdentity{Name: reportField(initialized.name, secrets), Version: reportField(initialized.version, secrets)},
+		ProtocolVersion: capField(initialized.protocol),
 		Probe:           probe,
-	}})
+	}
+	report.Tools, report.ToolsUnlisted = capList(redacted, maxReportList)
+	if probe != nil {
+		probe.Tool = capField(probe.Tool)
+	}
+	if capture != nil {
+		snapshot, fallbacks, unlisted, dropped, err := capture.finish()
+		if err != nil {
+			return finish(nil, err)
+		}
+		report.Descriptors, report.DescriptorsDropped = snapshot, dropped
+		report.Fallbacks, report.FallbacksUnlisted = fallbacks, unlisted
+	}
+	out, err := encodeCheckReport(report)
 	if err != nil {
 		return finish(nil, err)
 	}
-	return finish(report, nil)
+	return finish(out, nil)
+}
+
+// encodeCheckReport writes the report within reportBound, which connect
+// holds it to by killing an adapter that writes more. The caps keep it
+// well inside with any snapshot; should it pass anyway, the snapshot is
+// dropped, every tool falls back, and the report says so.
+func encodeCheckReport(report checkReport) ([]byte, error) {
+	out, err := canon.EncodeJSON(map[string]any{"check": report})
+	if err != nil {
+		return nil, err
+	}
+	if len(out) > reportBound && report.Descriptors != nil {
+		report.Descriptors = nil
+		report.DescriptorsDropped = fmt.Sprintf("the report with the snapshot would pass %d bytes, so no tool's descriptors are captured", reportBound)
+		if out, err = canon.EncodeJSON(map[string]any{"check": report}); err != nil {
+			return nil, err
+		}
+	}
+	if len(out) > reportBound {
+		return nil, fmt.Errorf("the check's report would pass %d bytes", reportBound)
+	}
+	return out, nil
 }
 
 type initializeResult struct {
@@ -631,9 +706,18 @@ func findTool(ctx context.Context, rpc *client, name string) (json.RawMessage, [
 }
 
 // listTools is every tool the server offers, by name, in the order the
-// server lists them across its pages.
-func listTools(ctx context.Context, rpc *client) ([]string, error) {
+// server lists them across its pages; visit, when given, is handed each
+// tool with its descriptor as the server wrote it, in that order, as its
+// page is read. A pinned listing -- one a snapshot is captured from --
+// fails on a cursor seen twice, or on a name offered twice anywhere in it,
+// even with the same descriptor: a listing that does either cannot be
+// pinned.
+func listTools(ctx context.Context, rpc *client, pinned bool, visit func(listedTool) error) ([]string, error) {
 	names := []string{}
+	// A cursor is remembered by its digest, and only by a pinned listing:
+	// a server's cursor may be megabytes, and only the one to send next
+	// need be kept whole.
+	seen, cursors := map[string]bool{}, map[[sha256.Size]byte]bool{}
 	params := map[string]any{}
 	for page := 0; page < maxToolPages; page++ {
 		tools, next, err := toolPage(ctx, rpc, params)
@@ -641,10 +725,30 @@ func listTools(ctx context.Context, rpc *client) ([]string, error) {
 			return nil, err
 		}
 		for _, tool := range tools {
+			if pinned {
+				if seen[tool.name] {
+					// The name is not written: it is the server's, and
+					// could hold what moves an operator's terminal.
+					return nil, errors.New("tools/list: the server offers one tool name twice")
+				}
+				seen[tool.name] = true
+			}
 			names = append(names, tool.name)
+			if visit != nil {
+				if err := visit(tool); err != nil {
+					return nil, err
+				}
+			}
 		}
 		if next == "" {
 			return names, nil
+		}
+		if pinned {
+			digest := sha256.Sum256([]byte(next))
+			if cursors[digest] {
+				return nil, errors.New("tools/list: the server gave a cursor it had given before")
+			}
+			cursors[digest] = true
 		}
 		params = map[string]any{"cursor": next}
 	}

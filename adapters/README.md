@@ -200,7 +200,21 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   redacted before it is reported, as every diagnostic is. The report carries `"status":
   "succeeded"`; a check that did not succeed writes `{"check": {"status": "failed",
   "message"}}` on stdout beside its exit status, so a caller reads one shape either way. The
-  report is for the operator (`gateway connect`); nothing is minted from it.
+  report is for the operator (`gateway connect`); nothing is minted from it. Each string in it
+  is at most 512 bytes, the marker of a cut included, and the list of tools at most 64 KiB, with
+  what passes it counted in `toolsUnlisted`.
+- `--descriptors-platform NAME` with `--descriptors-binding NAME@sha256:HEX`, beside `--check`,
+  has the check capture what `connect` keeps for the platform
+  ([docs/design/tool-descriptors.md](../docs/design/tool-descriptors.md)): for each allowed tool
+  its description and its input schema's original text, and the server's name and version as
+  its `initialize` answer gave them. The listing is then pinned, so a cursor given twice or a
+  tool offered twice fails the check. A candidate is captured whole or falls back whole, never
+  stripped: display policy 1 (Unicode 15.0.0 classes, from `mcp/policy_table.go`, which
+  `mcp/gen_policy.go` makes), schema grammar 1 and its limits, and no string holding a value of
+  the credentials. The report gains `descriptors`, the snapshot in canonical form, at most
+  320 KiB with at most 256 KiB of descriptions and schemas, tools admitted in the server's order
+  while both hold; and `fallbacks`, each tool and part not captured with the reason, at most
+  64 KiB with the rest counted in `fallbacksUnlisted`.
 
 The request, as canonical arguments on stdin:
 
