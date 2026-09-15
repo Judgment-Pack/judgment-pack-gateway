@@ -1,11 +1,13 @@
 // A citation of an acquisition receipt, of the shape §1.2a gives
 // action.cites, and the flat token (§3a) its session is named by.
 
-import { member } from "./json.ts";
+import { member, negative } from "./json.ts";
 import type { Value } from "./json.ts";
 
-// A citation of the shape §1.2a gives action.cites.
-export type Citation = { readonly sessionId: string; readonly callIndex: bigint; readonly signature: string };
+// A citation of the shape §1.2a gives action.cites, its index the decimal
+// integer it is written as (-0 as 0): the spelling a receipt file's stem
+// is compared to, whatever its length.
+export type Citation = { readonly sessionId: string; readonly callIndex: string; readonly signature: string };
 
 // citations is the value as a list of citations, or null when it is not an
 // array of objects of that shape.
@@ -25,14 +27,14 @@ export function citations(v: Value): Citation[] | null {
       sessionId?.type !== "string" ||
       !isFlatToken(sessionId.value) ||
       callIndex?.type !== "number" ||
-      callIndex.integer === null ||
-      callIndex.integer < 0n ||
+      !callIndex.integral ||
+      negative(callIndex) ||
       signature?.type !== "string" ||
       !/^[0-9a-f]{128}$/.test(signature.value)
     ) {
       return null;
     }
-    out.push({ sessionId: sessionId.value, callIndex: callIndex.integer, signature: signature.value });
+    out.push({ sessionId: sessionId.value, callIndex: callIndex.text === "-0" ? "0" : callIndex.text, signature: signature.value });
   }
   return out;
 }

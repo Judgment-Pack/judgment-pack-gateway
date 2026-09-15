@@ -420,6 +420,41 @@ test("an index of more than 64 digits is no verdict", () => {
   assert.deepEqual(statuses(store.root, store.registry), ["signature-mismatch", "unregistered-session"]);
   put(store, "s1", "0.json", text.replace('"callIndex":0', '"callIndex":' + "9".repeat(65)));
   assert.ok(refused(store.root, store.registry));
+  // Version 3 likewise; and a long index below zero is malformed, as any
+  // index below zero is.
+  const v3 = JSON.stringify(signed(acquisitionV3()));
+  put(store, "s1", "0.json", v3.replace('"callIndex":0', '"callIndex":' + "9".repeat(65)));
+  assert.ok(refused(store.root, store.registry), "version 3");
+  put(store, "s1", "0.json", v3.replace('"callIndex":0', '"callIndex":-' + "9".repeat(65)));
+  assert.deepEqual(statuses(store.root, store.registry), ["malformed", "unregistered-session"]);
+});
+
+// An integer's value is read to 64 digits and no further: nothing needs a
+// longer one's, and converting one costs time out of proportion to its
+// bytes. A receipt, a decision record and a line each holding an integer
+// of a million digits are verified without it being converted.
+test("a long integer is never converted", () => {
+  const long = "9".repeat(1 << 20);
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  put(store, "s1", "1.json", JSON.stringify(signed(acquisitionV3(1))).replace("{", `{"later":${long},`));
+  const records = tempDir();
+  fs.writeFileSync(path.join(records, "a.json"), `{"cites":[],"fact":${long}}`);
+  fs.writeFileSync(path.join(records, "b.jsonl"), `{"cites":[],"fact":-${long}}\n`);
+  const real = globalThis.BigInt;
+  let longest = 0;
+  globalThis.BigInt = Object.assign((v: string | number | bigint | boolean) => {
+    longest = Math.max(longest, String(v).length);
+    return real(v);
+  }, real) as BigIntConstructor;
+  let found: string[];
+  try {
+    found = statuses(store.root, store.registry, records);
+  } finally {
+    globalThis.BigInt = real;
+  }
+  assert.ok(longest <= 65, `an integer of ${longest} characters converted`);
+  assert.deepEqual(found, ["count-exceeds-seal", "ok", "signature-mismatch"]);
 });
 
 test("a document of more values than are read: a receipt is no verdict, a seal line or record read only if it could not be one", () => {

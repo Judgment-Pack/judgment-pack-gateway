@@ -4,7 +4,7 @@
 // the previous receipt, whether a citation resolves, whether a digest
 // matches bytes, is each checked at its own stage.
 
-import { member } from "./json.ts";
+import { member, negative } from "./json.ts";
 import type { ObjectValue, Value } from "./json.ts";
 import { citations, isFlatToken } from "./citations.ts";
 
@@ -26,7 +26,7 @@ function isKeyId(v: Value | undefined): boolean {
 }
 
 function isInteger(v: Value | undefined): boolean {
-  return v?.type === "number" && v.integer !== null;
+  return v?.type === "number" && v.integral;
 }
 
 // A nullable member is present, as null or as its stated shape.
@@ -137,8 +137,8 @@ export function structureV3(r: ObjectValue): boolean {
     !isString(sessionId) ||
     !isFlatToken(sessionId.value) ||
     callIndex?.type !== "number" ||
-    callIndex.integer === null ||
-    callIndex.integer < 0n ||
+    !callIndex.integral ||
+    negative(callIndex) ||
     !nullableString(member(r, "prevSignature")) ||
     !isString(member(r, "source")) ||
     !isDigest(member(r, "resultDigest")) ||

@@ -5,7 +5,8 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { canonical } from "../src/canon.ts";
-import { TooLarge, hasDuplicate, maxDepth, maxValues, parse } from "../src/json.ts";
+import { TooLarge, hasDuplicate, maxDepth, maxValues, negative, parse } from "../src/json.ts";
+import type { NumberValue } from "../src/json.ts";
 
 const text = (s: string) => parse(Buffer.from(s, "utf8"));
 const canon = (s: string) => {
@@ -70,4 +71,17 @@ test("a long string is written whole, however its UTF-8 outgrows its UTF-16", ()
   // The same value, every character of it escaped in the input.
   const escaped = '"' + "\\u00e9".repeat(1000) + "\\ud83d\\ude00".repeat(500) + '\\n\\"\\\\'.repeat(300) + '"';
   assert.equal(canon(escaped), JSON.stringify(value));
+});
+
+test("an integer's value is read to 64 digits, and a longer one is an integer still", () => {
+  const number = (text: string) => parse(Buffer.from(text)) as NumberValue;
+  const within = number("9".repeat(64));
+  assert.equal(within.integer, 10n ** 64n - 1n);
+  const past = number("-" + "9".repeat(65));
+  assert.equal(past.integral, true);
+  assert.equal(past.integer, null);
+  assert.equal(negative(past), true);
+  assert.equal(negative(number("-0")), false);
+  assert.equal(number("1.0").integral, false);
+  assert.equal(number("1e2").integral, false);
 });

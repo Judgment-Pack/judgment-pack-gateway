@@ -265,6 +265,38 @@ test("an action's citations resolve by the enumeration's own strings", () => {
   assert.ok(findings.includes(JSON.stringify({ callIndex: 1, sessionId: "s1", status: "citation-unresolved" })), findings.join("\n"));
 });
 
+// -0 is 0: a citation's index written -0 names the receipt 0.json, in an
+// action's cites and in a record's.
+test("a citation's index of -0 names the receipt 0.json", () => {
+  const headSignature = signed(acquisitionV3())["signature"] as string;
+  const record = `{"cites":[{"sessionId":"s1","callIndex":-0,"signature":"${headSignature}"}]}`;
+  const { store, seals } = recordStore(record);
+  // The action's own citation rewritten -0: its signature is over the
+  // canonical form, which writes 0.
+  const action = path.join(store.root, "receipts", "s1", "1.json");
+  const text = fs.readFileSync(action, "utf8");
+  assert.equal(text.split('"callIndex":0,"signature"').length, 2);
+  fs.writeFileSync(action, text.replace('"callIndex":0,"signature"', '"callIndex":-0,"signature"'));
+  assert.deepEqual(multiset(verdict(store, seals, withRecords({ "r.json": record })).findings), bothPass);
+});
+
+// A citation's index past 64 digits is an integer still: the action is of
+// its shape, and fails at its signature, which the canonical form cannot
+// hold -- not as malformed.
+test("an action citing an index of more than 64 digits fails at its signature", () => {
+  const { store, seals } = recordStore('{"run":"r"}');
+  const action = path.join(store.root, "receipts", "s1", "1.json");
+  const text = fs.readFileSync(action, "utf8");
+  fs.writeFileSync(action, text.replace('"callIndex":0,"signature"', '"callIndex":' + "9".repeat(65) + ',"signature"'));
+  assert.deepEqual(
+    multiset(verdict(store, seals).findings),
+    multiset([
+      { sessionId: "s1", callIndex: 0, status: "ok" },
+      { sessionId: "s1", callIndex: 1, status: "signature-mismatch" },
+    ]),
+  );
+});
+
 test("decision records are the directory's files whole and each .jsonl line", () => {
   const line = '{"run":"a"}';
   // A line ends before its carriage return and line feed; blank lines are

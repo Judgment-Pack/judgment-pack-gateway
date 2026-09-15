@@ -7,7 +7,7 @@
 export type Value =
   | { readonly type: "null" }
   | { readonly type: "boolean"; readonly value: boolean }
-  | { readonly type: "number"; readonly text: string; readonly integer: bigint | null }
+  | { readonly type: "number"; readonly text: string; readonly integral: boolean; readonly integer: bigint | null }
   | { readonly type: "string"; readonly value: string }
   | { readonly type: "array"; readonly items: Value[] }
   | { readonly type: "object"; readonly members: Member[] };
@@ -15,6 +15,21 @@ export type Value =
 export type Member = { readonly name: string; readonly value: Value };
 
 export type ObjectValue = Extract<Value, { type: "object" }>;
+
+// A number: its spelling; whether it is an integer as written, with no
+// fraction and no exponent; and, for an integer of at most integerDigits
+// digits, its value. Nothing here needs a longer integer's value -- the
+// canonical domain ends at sixteen digits, and the longest index carried
+// into a finding is integerDigits -- and converting one would cost time
+// out of proportion to its bytes.
+export type NumberValue = Extract<Value, { type: "number" }>;
+
+export const integerDigits = 64;
+
+// negative is whether an integer is below zero; -0 is not.
+export function negative(n: NumberValue): boolean {
+  return n.integer !== null ? n.integer < 0n : n.text.startsWith("-");
+}
 
 // The reference reads nothing nested deeper than this (SPEC.md §5), and
 // neither does this reader.
@@ -158,8 +173,10 @@ class Reader {
       throw new NotJSON();
     }
     this.i = numberForm.lastIndex;
-    const integer = m[1] === undefined && m[2] === undefined ? BigInt(m[0]) : null;
-    return { type: "number", text: m[0], integer };
+    const integral = m[1] === undefined && m[2] === undefined;
+    const digits = m[0].length - (m[0].startsWith("-") ? 1 : 0);
+    const integer = integral && digits <= integerDigits ? BigInt(m[0]) : null;
+    return { type: "number", text: m[0], integral, integer };
   }
 
   // name reads a member's name and the colon after it.

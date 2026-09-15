@@ -28,8 +28,8 @@ import {
   readDocument,
   refuseUnsupportedPlatform,
 } from "./inputs.ts";
-import { TooLarge, count, hasDuplicate, maxValues, member, parse } from "./json.ts";
-import type { ObjectValue, Value } from "./json.ts";
+import { TooLarge, count, hasDuplicate, integerDigits, maxValues, member, parse } from "./json.ts";
+import type { NumberValue, ObjectValue, Value } from "./json.ts";
 import { structureV2, structureV3 } from "./structure.ts";
 
 export type Status =
@@ -106,11 +106,6 @@ export const sessionCost = 4 * entryCost;
 // twice, in its session's list and as its stem, so a store is refused for
 // its size before any receipt is read.
 const receiptCost = 8 * entryCost;
-
-// The longest callIndex, in digits, this verifier carries into a finding;
-// one longer cannot verify (the canonical domain ends at sixteen), and is
-// no verdict rather than a finding of unbounded size.
-const maxIndexDigits = 64;
 
 const receiptPrefix: Record<string, string> = {
   "2": "judgment-pack-gateway/receipt/2:",
@@ -250,11 +245,14 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   if (!(version === "3" ? structureV3(receipt) : structureV2(receipt))) {
     return { file, status: "malformed" };
   }
-  const index = member(receipt, "callIndex") as Extract<Value, { type: "number" }>;
-  if (index.text.replace("-", "").length > maxIndexDigits) {
-    throw new NoVerdict(`receipt ${session}/${file} has a callIndex of more than ${maxIndexDigits} digits`);
+  // An index whose value is not read -- more than integerDigits digits --
+  // cannot verify (the canonical domain ends at sixteen), and is no
+  // verdict rather than a finding of unbounded size.
+  const index = member(receipt, "callIndex") as NumberValue;
+  if (index.integer === null) {
+    throw new NoVerdict(`receipt ${session}/${file} has a callIndex of more than ${integerDigits} digits`);
   }
-  const callIndex = index.integer!;
+  const callIndex = index.integer;
   const signature = str(member(receipt, "signature"))!;
   const judged = (status: Status): Judged => ({ file, status, callIndex });
   // 2. unsupported-version
@@ -401,7 +399,7 @@ export function verifyStore(
     sessions.set(session, judged);
     signatures.set(session, stems);
   }
-  const resolves = (c: Citation): boolean => signatures.get(c.sessionId)?.get(c.callIndex.toString()) === c.signature;
+  const resolves = (c: Citation): boolean => signatures.get(c.sessionId)?.get(c.callIndex) === c.signature;
 
   // §4 step 5, now that the enumeration is whole: each action that passed
   // is read again for its citations, and must be the bytes it was.
