@@ -385,9 +385,10 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		beforeCommit()
 	}
 	if held != nil {
-		if err := file.stillHeld(held); err != nil {
-			return out, err
-		}
+		// Judged last, immediately before the rename: the new file names
+		// the snapshot, and the directory holding it must still be the
+		// one its name names.
+		file.beforeRename = func() error { return file.stillHeld(held) }
 	}
 	if err := file.replace(data, text); err != nil {
 		var late errNotDurable
@@ -686,6 +687,10 @@ type configFile struct {
 	// entry: a test's way of putting another file in the entry's place
 	// at exactly that moment.
 	afterOpen func()
+	// beforeRename, when set, is judged immediately before the rename
+	// puts the new file in place, after it is written, synced and the old
+	// one read again: what else the new file relies on is judged last.
+	beforeRename func() error
 }
 
 // openEntry opens a name in the held directory as the entry it is: not a
@@ -890,6 +895,11 @@ func (f *configFile) replace(read, content []byte) error {
 	}
 	if !bytes.Equal(current, read) {
 		return errors.New("engine configuration: the file changed while the checks ran; run connect again")
+	}
+	if f.beforeRename != nil {
+		if err := f.beforeRename(); err != nil {
+			return err
+		}
 	}
 	if err := f.dir.Rename(tmp, f.base); err != nil {
 		return fmt.Errorf("engine configuration: %v", err)

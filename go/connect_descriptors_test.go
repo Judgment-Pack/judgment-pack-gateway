@@ -438,8 +438,51 @@ func TestAToolThatFellBackIsStillRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: explain removed") {
+	// Never captured, it is named by no snapshot, and counted, not named.
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: 1 tool no snapshot names removed") {
 		t.Fatalf("%q", out.answers)
+	}
+}
+
+// A tool the bindings name and no snapshot holds is named, if at all, by
+// the adapter's label: a binding's name may hold a value of the
+// credentials, which the adapter redacted.
+func TestTheComparisonNamesNoToolTheAdapterScreened(t *testing.T) {
+	secretive := strings.Replace(twoToolBinding, `"platform": "postgres"`, `"platform": "postgres3"`, 1)
+	secretive = strings.Replace(secretive, `"tools": ["query", "explain"]`, `"tools": ["query", "lookup_swordfish"]`, 1)
+	f := newConnectFixture(t, restrictedBinding, ``)
+	if err := os.WriteFile(filepath.Join(f.catalog, "postgres3.json"), []byte(secretive), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.captured = `{"query":{"description":"Run a query"}}`
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	// Added: the adapter reports the new tool by its label.
+	req := f.request()
+	req.replace, req.binding = true, "postgres3"
+	f.capturedExtra = `"fallbacks":[{"tool":"lookup_[redacted]","allowed":1,"part":"tool","reason":"its name holds a value of the credentials"}],`
+	out, err := connect(context.Background(), req, f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: lookup_[redacted] added") {
+		t.Fatalf("%q", out.answers)
+	}
+	// Removed: no snapshot and no label names it now.
+	req.binding = "postgres"
+	f.capturedExtra = ""
+	out, err = connect(context.Background(), req, f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: 1 tool no snapshot names removed") {
+		t.Fatalf("%q", out.answers)
+	}
+	for _, line := range out.answers {
+		if strings.Contains(line, "descriptors:") && strings.Contains(line, "swordfish") {
+			t.Fatalf("a screened name is printed: %q", line)
+		}
 	}
 }
 

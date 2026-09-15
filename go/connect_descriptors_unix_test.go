@@ -295,3 +295,38 @@ func TestASnapshotsDirectoryThatWillNotSyncRefusesTheConnect(t *testing.T) {
 		t.Fatal("the configuration is left as it was")
 	}
 }
+
+// The snapshots' directory is judged immediately before the rename, after
+// the configuration is written and synced: a link to the same directory
+// put in its place while the configuration syncs refuses the connect.
+func TestTheSnapshotsDirectoryIsJudgedLast(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	f.captured = capturedQuery
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	dir := f.config + ".descriptors"
+	fileSyncing = func(file *os.File) {
+		if filepath.Base(file.Name()) != "new" {
+			return
+		}
+		fileSyncing = nil
+		if err := os.Rename(dir, dir+".moved"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Base(dir)+".moved", dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { fileSyncing = nil })
+	before := f.fileText(t)
+	req := f.request()
+	req.replace = true
+	f.captured = `{"query":{"description":"Run a query now"}}`
+	if _, err := connect(context.Background(), req, f.host, f.check); err == nil || !strings.Contains(err.Error(), "is not the directory its name held a moment ago") {
+		t.Fatalf("%v", err)
+	}
+	if f.fileText(t) != before {
+		t.Fatal("the configuration is left as it was")
+	}
+}

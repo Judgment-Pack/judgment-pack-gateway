@@ -107,7 +107,7 @@ func readCapture(report []byte, platform, ref string, live *operation) (liveCapt
 // the adapter redacted it, and the snapshot names only tools it captured.
 func captureLines(c liveCapture, live *operation) []string {
 	reasons := map[int][]string{}
-	labels := map[int]string{}
+	labels := fallbackLabels(c)
 	var lines []string
 	for _, f := range c.fallbacks {
 		if f.Allowed == nil {
@@ -121,7 +121,6 @@ func captureLines(c liveCapture, live *operation) []string {
 			part = f.Part
 		}
 		reasons[*f.Allowed] = append(reasons[*f.Allowed], part+": "+f.Reason)
-		labels[*f.Allowed] = f.Tool
 	}
 	if c.data == nil {
 		lines = append(lines, "descriptors: none captured: "+c.dropped)
@@ -160,6 +159,19 @@ func captureLines(c liveCapture, live *operation) []string {
 	return lines
 }
 
+// fallbackLabels are the adapter's labels for the tools that fell back, by
+// their position among the allowed tools: redacted and cut, the one name
+// connect may print for a tool no snapshot holds.
+func fallbackLabels(c liveCapture) map[int]string {
+	labels := map[int]string{}
+	for _, f := range c.fallbacks {
+		if f.Allowed != nil {
+			labels[*f.Allowed] = f.Tool
+		}
+	}
+	return labels
+}
+
 // compareLines says how the snapshot captured now differs from the one
 // the entry pinned before, over every tool either binding allows or either
 // snapshot holds: a tool the binding allows now and did not is added, one
@@ -171,6 +183,9 @@ func captureLines(c liveCapture, live *operation) []string {
 // cannot be read -- a catalog file updated in place no longer digests to
 // the old pin -- and then the comparison says so, and says only what the
 // two snapshots show: never that a tool was added, nor that nothing changed.
+// A tool is named as a snapshot names it, which the adapter screened, or
+// by the adapter's label for it now; one neither names is counted, not
+// named, since a binding's name may hold what the adapter redacted.
 func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCapture, live *operation) []string {
 	if previous == nil {
 		return nil
@@ -206,24 +221,58 @@ func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCap
 	case was == nil && is != nil:
 		changes = append(changes, "the server's identity no longer fallen back")
 	}
+	labels := fallbackLabels(now)
+	position := map[string]int{}
+	for i, tool := range live.tools {
+		position[tool] = i
+	}
+	// safe is how a tool may be printed: as a snapshot names it, else by
+	// the adapter's label for it now, else not at all.
+	safe := func(name string) string {
+		_, before := previous.tools[name]
+		_, after := now.snap.tools[name]
+		if before || after {
+			return name
+		}
+		if i, ok := position[name]; ok {
+			return labels[i]
+		}
+		return ""
+	}
+	unnamed := map[string]int{}
+	add := func(name, what string) {
+		if label := safe(name); label != "" {
+			changes = append(changes, label+" "+what)
+		} else {
+			unnamed[what]++
+		}
+	}
 	known := allowedBefore != nil
 	for _, name := range names {
 		was, inBefore := previous.tools[name]
 		is, inAfter := now.snap.tools[name]
 		switch {
 		case !allowedNow[name] && (inBefore || (known && allowedBefore[name])):
-			changes = append(changes, name+" removed")
+			add(name, "removed")
 		case !allowedNow[name]:
 		case known && !allowedBefore[name]:
-			changes = append(changes, name+" added")
+			add(name, "added")
 		case inBefore && inAfter && !reflect.DeepEqual(was, is):
-			changes = append(changes, name+" changed")
+			add(name, "changed")
 		case inBefore && !inAfter:
-			changes = append(changes, name+" now fallen back")
+			add(name, "now fallen back")
 		case !inBefore && inAfter && known:
-			changes = append(changes, name+" no longer fallen back")
+			add(name, "no longer fallen back")
 		case !inBefore && inAfter:
-			changes = append(changes, name+" captured now and not before")
+			add(name, "captured now and not before")
+		}
+	}
+	for _, what := range []string{"added", "removed"} {
+		switch n := unnamed[what]; {
+		case n == 1:
+			changes = append(changes, "1 tool no snapshot names "+what)
+		case n > 1:
+			changes = append(changes, fmt.Sprintf("%d tools no snapshot names %s", n, what))
 		}
 	}
 	header := "descriptors: against the previous snapshot"
