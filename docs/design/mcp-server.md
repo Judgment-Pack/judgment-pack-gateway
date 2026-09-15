@@ -22,17 +22,18 @@ cannot prove:
 - **The image** carries a second copy of the executable, `/usr/local/bin/engine-mcp`, mode
   `0755`, root-owned, with no file capability — the signer's `0700` binary with its
   capabilities is never the one this process runs — and a user `engine-mcp` (uid `65533`,
-  its own group, no supplementary group, home `/home/engine-mcp`) that no group of the
-  signer's or of a platform's admits. The image check holds the copy's mode and attributes,
-  the user's entry and groups, and that the seed, store and credentials *paths the image
-  ships* are unreadable to it — what an image check can prove, and no more: what an operator
-  mounts at deployment the image never sees.
+  its own group and no other, home `/home/engine-mcp`) that no group of the signer's or of a
+  platform's admits. The image check holds the copy's mode and attributes, the user's entry
+  and groups, that nothing outside that home is the user's or its group's, that no symbolic link
+  is under `/home` and every entry under it but the frontend's own home is closed to others, and that the paths a deployment mounts a seed, a
+  store, a configuration or a credential at are absent from the image — what an image check
+  can prove, and no more: what an operator mounts at deployment the image never sees.
 - **The launch** is the operator's. The executable is the gateway's, copied; the
   subcommand selects the role, as for every other command of the binary, and the one
   supported invocation is, in full:
 
   ```
-  # as uid 65533, gid 65533, no supplementary groups, no capability in any set,
+  # as uid 65533, gid 65533, no supplementary group but its own, no capability in any set,
   # HOME=/home/engine-mcp, working directory /home/engine-mcp
   /usr/local/bin/engine-mcp mcp --config /etc/engine/engine.json --http
   ```
@@ -41,8 +42,9 @@ cannot prove:
   own reach at start**, under the deployment assumptions the operator's note states — the
   configuration and the signer's mounts are in place before it starts, and are not changed
   while it runs — and refuses to run otherwise: its effective, permitted, inheritable and
-  ambient capability sets are empty; its uid and gid are the frontend's and its
-  supplementary groups are none; and opening the configured seed path, every configured
+  ambient capability sets are empty; its uid and gid are the frontend's (`65533`) and its
+  supplementary groups are none but its own — a container runtime lists the primary group
+  there, and that membership admits nothing the gid does not; and opening the configured seed path, every configured
   credentials file and the configured store for reading fails with permission denied — a
   path that does not exist, or any other answer than denial, is refused too, since it says
   nothing. What such a check proves is that this process cannot open those paths now: a
@@ -88,8 +90,10 @@ it — an absolute `https` URL with no query and no fragment — which the signe
 not demand and the frontend does. **There is no
 unprotected HTTP mode**: `--http` without an `identity` is a refusal to start. `--stdio`
 without one is allowed — a host spawning the process on the operator's own machine, the
-signer recording `caller: null`. `origins` are the exact origins the HTTP transport admits,
-loopback by default. The four bounds default as shown and take the ranges stated under
+signer recording `caller: null`. `origins` are the exact origins the HTTP transport admits:
+loopback origins when the member is absent; when it is present and empty, no origin at all,
+so a request carrying an `Origin` header is refused and a native client without one is
+admitted. The four bounds default as shown and take the ranges stated under
 Bounds. The endpoint path is `/mcp`; the transport is chosen at launch, never by a request.
 
 ## What a call becomes
@@ -100,6 +104,22 @@ Bounds. The endpoint path is `/mcp`; the transport is chosen at launch, never by
 | `tools/list` | the table below, in one page, no cursor |
 | `tools/call` | `POST /acquire` to the signer's `listen` address with `source = "<platform>/live"`, the session (below) and `arguments = {"tool": <tool>, "arguments": <the call's arguments, byte for byte>}`; the answer, below |
 | anything else | a JSON-RPC method-not-found; no prompts, no resources, no sampling, no writes |
+
+Messages are read as the pinned protocol has them, by their members' exact names, never
+case-folded, with no member named twice — except the `arguments` of a `tools/call` of a
+platform tool, whose content is the signer's to judge: an id is a string or a number with no fractional part, in any
+spelling (a spelling of at most 64 bytes and an exponent within ±999, since an id is compared
+and echoed, never computed with), and never `null`; `params` is an object; a client's
+response carries an id and exactly one of a `result` object and an `error` object of an
+integer `code` and a string `message`, and no `params`. A message is UTF-8, or it is not a
+message: a byte that is not is refused, never repaired. A request that cannot be served is
+answered with an error that carries its id; any other input that cannot be accepted — a
+notification or a response of the wrong shape, or a message that is neither — is refused as
+input: over HTTP a `400` whose body has no `id` member, over stdio JSON-RPC's error with a
+`null` id. `initialize` is validated — a `protocolVersion` string,
+a `capabilities` object, `clientInfo` with `name` and `version` strings — and happens once per
+session; until it has, `tools/list` and `tools/call` are refused. The seal tool's arguments
+are the server's own and are read the same way as the envelope.
 
 **The tool table.** One tool per `(platform, live tool)` pair the configuration and bindings
 name, held in an explicit table from name to pair, built at start. The name is
@@ -181,7 +201,8 @@ and a request without an acceptable token is refused at the transport with `401`
 discovers where to get a token. What the engine does not do is fetch anything: the token is
 verified by the MCP server itself with the same `verifyToken` the signer uses — same issuer,
 same audience, same key-set file, the key's algorithm, a non-empty subject, `nbf` and `exp`
-with thirty seconds' leeway — before the body is read.
+with thirty seconds' leeway — before the body is read; a request refused before its body is
+read is answered at once, and its connection closed after the answer.
 
 A token that passes is sent on, unchanged, to exactly one destination, the signer's
 configured `listen` address, and nowhere else; the signer verifies it again and names the
@@ -202,20 +223,34 @@ changes neither until it restarts, and restarting one alone makes the two accept
 keys for as long as they differ. A signer restart also empties its session map and cancels a
 running source, so the sessions a consumer relies on are sealed first, and nothing may open
 or extend one between that sealing and the restart. The contract, in order: add the new key
-under a new `kid` beside the old; restart the frontend; **close admission** — the frontend
-answers a new `initialize` `503` and a new acquisition as an overload, and the operator
-closes every other ingress to `/acquire` and `/act` the same way — and wait for what is in
-flight; seal every session to be preserved **by `/seal` directly**, on the signer's loopback
-surface under the operator's own token — the frontend's transport sessions went with its
-restart and `engine.seal` is not reachable through a closed frontend — and the signer's own
-refusal to seal a session with an acquisition still in flight is the drain signal: a seal
-that succeeds means that session is quiet; restart the signer; reopen admission; issue under
-the new key. To retire the old key, wait out the validity window of the tokens it signed,
+under a new `kid` beside the old; restart the frontend; **close admission, at both
+processes** — `SIGUSR1` closes a process's gate and `SIGUSR2` reopens it, and a second
+`SIGUSR1` while closed reports where the closure stands. The frontend's gate is for its
+clients: closed, it answers a new `initialize` `503` and a new acquisition as an overload, and
+forwards nothing it did not pass before the closure. **The signer's gate is the barrier**: it
+is the one place an acquisition or an action is admitted, so once it is closed nothing more is
+admitted, however long a request was in transit to it — a forward the frontend gave up on is
+a request the signer may still receive, and the frontend cannot know whether it did — and
+`/acquire` and `/act` are answered `503` while `/seal` goes on. Each process reports its
+closure on its diagnostics stream, numbered: the signer's is drained ("serve: closure *n*
+drained") when nothing it admitted is in flight; the frontend's when every acquisition it
+forwarded before the closure has returned, naming how many forwards ended without an answer
+since its last drain, which are the signer's closure to vouch for. Closure numbers are each
+process's own: the operator reads each process's current closure, not an order across the
+two. Then seal every
+session to be preserved **by `/seal` directly**, on the signer's loopback
+surface under the operator's own token — which works whether or not a transport session of
+the frontend's is there to carry `engine.seal`: a session opened before the closure still
+carries it, and a new one cannot be opened while closed; stop the signer, then start it, whose
+gate starts open; reopen the frontend's admission; issue under the new key. The operator closes
+any other ingress to `/acquire` and `/act` too; the signer's gate refuses theirs as well. To retire the old key, wait out the validity window of the tokens it signed,
 then remove it from the file and restart both in the same order; to revoke it, remove it and
 restart both at once, accepting that sessions not sealed by then are lost. A key removed
 from the file is still accepted by a process that has not restarted. The token suite holds
 both orders and the stale key; the session suite holds the whole sequence from the
-frontend's restart to a successful `/seal` under closed admission.
+frontend's restart to a successful `/seal` under closed admission, and a request held at the
+signer's door while the frontend's forward gives up: refused once the signer's gate is closed,
+admitted after the frontend's drain when it is not.
 
 Over stdio there is no request header. The process is started by one host for one principal,
 and the token is that principal's, given once at start in the environment (`ENGINE_TOKEN`,
@@ -265,7 +300,28 @@ resolves it; a consumer's verdict is store-wide and fails closed (§5a.1), which
 
 Small and explicit, so a conformance test can hold it. **stdio**: newline-delimited JSON-RPC
 on stdin and stdout, nothing but protocol on stdout, diagnostics on stderr, one MCP session
-for the life of the process.
+for the life of the process. The reader takes a place in a backlog of 64 before it admits a
+line, so at most 64 messages are ever admitted and unanswered, and past that the server stops
+reading until one is answered; each line is admitted in the order it was read — the
+lifecycle, the session a call resolves to, the window, the admission gate and the queue
+place — and an admitted call runs while the next line is read, so answers may come in
+another order, correlated by id, as JSON-RPC allows; an answer the reader gives itself — a
+refusal at admission — waits on the output, which is backpressure; and an answer that cannot
+be written ends the transport with that failure, nothing further run.
+
+**Diagnostics.** A process's diagnostics are two kinds of line on one writer of their own. Its
+reports to the operator — a gate closed, a closure drained or cut short, the transport ended
+— are never dropped and keep the order of the changes they report, each numbered by its
+closure; they are held in memory until the stream takes them, one per operator signal or
+transition, so a stream that never drains holds as many as the operator sent. What it says
+about its traffic is dropped past a buffer and counted. What the process says while it serves names what went wrong by category —
+timed out, connection refused, permission denied, the answer past its bound, the HTTP server
+unable to accept — never an address, a name or a token, since a host may forward its
+servers' stderr anywhere; `net/http`'s own lines reach the stream the same way, their text
+dropped. Nothing waits for the stream: one that does not drain holds up no call, no operator
+control and no start, and what the process says as it ends is given at most a second. A refusal to start is not a diagnostic of traffic: it
+reads the configuration back to whoever started the process — the operator — and names what
+it refuses, member and value.
 
 **Streamable HTTP**, one endpoint at `/mcp`, JSON responses only, protocol `2025-06-18`
 only, one JSON-RPC message per body. Checks run in the order of the rows, each before the
@@ -273,20 +329,22 @@ next, and the first that fails answers:
 
 | Check, in order | Answer |
 |---|---|
-| `Origin` present and not in `mcp.origins` | `403`, before the body is read; absent `Origin` (a native client) is admitted |
+| `Origin` present and not in `mcp.origins` — present twice, or present and empty, included | `403`, before the body is read; absent `Origin` (a native client) is admitted |
 | `Authorization` missing or refused | `401` with `WWW-Authenticate: Bearer resource_metadata="..."`, before the body is read |
-| `MCP-Protocol-Version` present and not `2025-06-18` | `400`; absent, `2025-06-18` is assumed, the one version this server speaks |
+| `MCP-Protocol-Version` present and not `2025-06-18` — present and empty, or named twice, included | `400`, before the body is read; absent, `2025-06-18` is assumed, the one version this server speaks |
 | body over the bound (1 MiB) | `413` |
 | `Mcp-Session-Id` absent, on any method but a `POST` of `initialize` | `400` |
 | `Mcp-Session-Id` unknown, expired or ended, on any method | `404` |
 | `GET` | `405`, whatever `Accept` says |
 | `DELETE` | `200`; the transport session ends, and no receipt session is sealed by it |
-| `POST` under whose `Accept` `application/json` is not acceptable by RFC 9110's rules — wildcards and quality values honoured, so `*/*` and `application/*` accept it and `application/json;q=0` or SSE alone do not | `406` |
-| `POST` an `initialize` request | `200`, JSON body; the response carries a new `Mcp-Session-Id` — the *transport* session, which is not a receipt session and seals nothing — unless `mcp.sessions` are open, then `503` |
+| `POST` under whose `Accept` `application/json` is not acceptable by RFC 9110's rules — every field line read, wildcards and quality values honoured, so `*/*` and `application/*` accept it and `application/json;q=0` or SSE alone do not; a range with a media-type parameter applies to no answer of this server's, and a weight outside the `qvalue` grammar makes the header one this server cannot read | `406` |
+| `POST` an `initialize` request | `200`, JSON body; a successful one carries a new `Mcp-Session-Id` — the *transport* session, which is not a receipt session and seals nothing — and a refused one carries none and keeps none; `503` when `mcp.sessions` are open or admission is closed |
 | `POST` a request | `200`, JSON body, `Content-Type: application/json` |
-| `POST` a notification or a response | `202`, no body |
+| `POST` a notification or a response | `202`, no body, when it is of the protocol's shape; `400` with a JSON-RPC error and no id when it is not, or when the message is neither a request nor one of these |
 
-The response carries `MCP-Protocol-Version` too, an extra the specification permits. A
+The response carries `MCP-Protocol-Version` too, an extra the specification permits. An
+`initialize` that names a live transport session is a request on that session, answered
+`200` with an invalid-request error, since a session initializes once. A
 transport session expires after `mcp.idleSeconds` without a request, answering `404` after;
 expiry seals nothing. A cancelled call cancels nothing at the signer: an acquisition already
 started runs to its end and may mint a receipt the client never sees, and a retry mints
@@ -299,17 +357,30 @@ that bounds what *it* sends the signer, and only that: `mcp.sessions` transport 
 once (`1` to `4096`; a further `initialize` is `503`); `mcp.idleSeconds` before an idle
 transport session expires (`60` to `86400`); `mcp.concurrency` **outstanding forwards** — the
 frontend's own HTTP operations to the signer not yet answered or timed out — across all
-transport sessions (`1` to `64`), with a queue of the same depth behind them in which a call
-waits at most ten seconds before it is an overload error with nothing forwarded, and a call
-arriving at a full queue is that error at once; `mcp.callsPerMinute` calls per transport
+transport sessions (`1` to `64`), with a queue of the same depth behind them, whose place a
+call takes when it is admitted and in which it waits at most ten seconds from then before it
+is an overload error with nothing forwarded, and a call admitted to a full queue is that
+error at once — and a call whose allowance has run out by the time its work begins, or that
+takes its slot after it ran out, is that error too, whatever slot is free; `mcp.callsPerMinute` calls per transport
 session, or per process over stdio (`1` to `6000`), counted in a fixed window of sixty
-seconds from the first call, **a call counted at arrival** whether it is then queued,
+seconds from the first call, **a call counted at arrival** — when its message has been read
+whole and is admitted, one at a time, in the order admission happens, so no window is
+charged an arrival older than its start and no wait named exceeds sixty seconds — whether it is then queued,
 forwarded or refused — so a flood refused at the queue still spends its quota — an excess
 call answered as an overload error naming the seconds until the window turns; and one
 deadline per forward, forty-five seconds — the signer's thirty-second source deadline, its
 five-second wait for the source's pipes, and a margin — after which the outcome is unknown
-as above. When admission closes for maintenance, a queued call is refused as an overload,
-not drained.
+as above, and eight mebibytes of the signer's answer — its own one-mebibyte output bound,
+the receipt, the salts and room — past which the outcome is unknown too. When admission
+closes for maintenance, a queued call is refused as an overload, not drained, and so is one
+that finds its forward slot free at the moment the gate closes, or after the gate closed and
+reopened while it waited: a call admitted before a closure is never forwarded after it. The
+gate's last word for an acquisition is taken with its slot, under the lock a closure takes,
+and counts it as dispatching until it has had its answer; a closure is drained when nothing
+is dispatching. The
+HTTP server's own deadlines sit behind these: thirty seconds to read a request's headers and
+body, then the queue's wait, the forward's deadline and fifteen seconds' margin to answer it,
+from the moment the body is read, and a minute for an idle connection.
 
 What these bounds do not bound is the signer's work. A forward past its deadline releases
 its slot while the signer may still be running the source and writing the receipt, so zero

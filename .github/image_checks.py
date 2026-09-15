@@ -188,10 +188,21 @@ def canonical_id(text, what):
     return int(text)
 
 
-HOMES = {"home/engine": 65532}
+HOMES = {"home/engine": 65532, "home/engine-mcp": 65533}
 HOMES.update({"home/engine-%d" % n: 65600 + n for n in range(1, 9)})
-USERS = {"engine": 65532, **{"engine-%d" % n: 65600 + n for n in range(1, 9)}}
+USERS = {"engine": 65532, "engine-mcp": 65533, **{"engine-%d" % n: 65600 + n for n in range(1, 9)}}
 GATEWAY = "usr/local/bin/gateway"
+# The MCP server's copy of the executable (docs/design/mcp-server.md):
+# the same bytes as the signer's, root's, executable by everyone, and with
+# no capability attribute, since the process that runs it holds none.
+MCP = "usr/local/bin/engine-mcp"
+# The MCP server's user and home, and the paths a deployment mounts a
+# seed, a store, a configuration or a credential at, which the image never
+# ships: what that user must not reach is held by absence where it can be,
+# and by closure where a derived image might add it.
+FRONTEND_UID = 65533
+FRONTEND_HOME = "home/engine-mcp"
+UNSHIPPED = ("etc/engine", "var/lib/engine", "run/secrets")
 ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp", "usr/local/bin/adapter-http")
 RUNTIME = "usr/local/bin/jpack"
 RUNTIME_DOCUMENTS = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES", "usr/share/engine/runtime/CONFORMANCE.md")
@@ -209,6 +220,14 @@ def check(fs, archive, config, checkout, runtime=None):
         fail("the gateway binary's capabilities are %r, not permitted and effective CAP_KILL, CAP_SETGID, CAP_SETUID with nothing inheritable and a root id of 0" % decoded)
     if g.mode != 0o700 or g.uid != 65532 or g.gid != 65532:
         fail("the gateway binary is mode %04o owned by %d:%d; it must be 0700 and the signer's (65532), since it carries file capabilities" % (g.mode, g.uid, g.gid))
+    trusted_path(fs, MCP, readable=True)
+    m = entry(fs, MCP)
+    if not m.isfile or m.mode != 0o755 or m.uid != 0 or m.gid != 0:
+        fail("%s is type %r mode %04o owned by %d:%d; it must be a regular file, 0755, root's" % (MCP, m.type, m.mode, m.uid, m.gid))
+    if m.capability is not None:
+        fail("%s carries a capability attribute; the MCP server holds no capability" % MCP)
+    if content(fs, archive, MCP) != content(fs, archive, GATEWAY):
+        fail("%s is not the gateway executable byte for byte" % MCP)
     for name, e in fs.items():
         if name != GATEWAY and e.capability is not None:
             fail("%s carries a capability attribute; only the gateway binary may" % name)
@@ -299,12 +318,48 @@ def check(fs, archive, config, checkout, runtime=None):
         if gid in gids:
             fail("/etc/group gives gid %d twice" % gid)
         groups[line[0]], gids[gid] = gid, line[0]
+        # the MCP server's user is in no group but its own: a member list
+        # naming it would admit that process to what the group's files admit
+        members = [m for m in line[3].split(",") if m]
+        if "engine-mcp" in members:
+            fail("/etc/group makes engine-mcp a member of %s; the MCP server's user belongs to no group but its own" % line[0])
     for user, uid in USERS.items():
         if groups.get(user) != uid:
             fail("/etc/group has %s as gid %s, not %d" % (user, groups.get(user), uid))
+    closed_to_the_frontend(fs)
     if config.get("Entrypoint") != ["/usr/local/bin/gateway"] or config.get("Cmd") != ["serve", "--config", "/etc/engine/engine.json"] or config.get("User") not in ("engine", "65532"):
         fail("the image starts %r %r as %r" % (config.get("Entrypoint"), config.get("Cmd"), config.get("User")))
-    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
+    return "the image holds: gateway with exactly CAP_SETUID, CAP_SETGID, CAP_KILL, 0700, engine's, on a root-owned path; the MCP server's copy of it root's, 0755, without a capability, the same bytes; nothing else privileged; %d homes at 0700 under a root-owned /home; adapters, runtime%s, catalog and corpus root's, unwritable by others, readable by all, the trees exactly the checkout's; users and groups as the engine reads them, engine-mcp in no group but its own, owning nothing outside its home, every entry under /home but its own closed to it and no link under /home, and no seed, store, configuration or credential path shipped; entrypoint and command" % (len(HOMES), " (the pinned binary, byte for byte)" if runtime is not None else "")
+
+
+def closed_to_the_frontend(fs):
+    """What the MCP server's user (uid 65533) must not reach, the image
+    does not give it: nothing outside its own home is owned by that user
+    or its group; no symbolic link is under /home at all; every entry
+    under /home, but under its own home, carries no bit for others, so a seed, a store or a credentials file put there
+    by a derived image is closed to it as the home itself is -- the homes
+    this check holds are those under /home, and a home elsewhere in
+    /etc/passwd (root's) is not held by it; and the paths a
+    deployment mounts a seed, a store, a configuration or a credential at
+    are not in the image at all -- an image check can prove absence and
+    closure, and no more."""
+    for name, e in sorted(fs.items()):
+        # a symbolic link under /home is a way out of the closure the modes
+        # describe -- /home is root's and traversable, and a link there
+        # reaches wherever it points -- so there is none, the MCP server's
+        # own home included
+        if name.startswith("home/") and e.islink:
+            fail("%s is a symbolic link under /home; no link there may lead the MCP server out of the closure the homes' modes describe" % name)
+        if name == FRONTEND_HOME or name.startswith(FRONTEND_HOME + "/"):
+            continue
+        if e.uid == FRONTEND_UID or e.gid == FRONTEND_UID:
+            fail("%s is owned by the MCP server's user or group (%d:%d); nothing outside /%s is" % (name, e.uid, e.gid, FRONTEND_HOME))
+        if name.startswith("home/") and name != "home" and not e.islink and e.mode & 0o007:
+            fail("%s is mode %04o, open to others; a home's contents are closed to every other user, the MCP server's among them" % (name, e.mode))
+    for prefix in UNSHIPPED:
+        shipped = [name for name in fs if name == prefix or name.startswith(prefix + "/")]
+        if shipped:
+            fail("the image ships %s; a seed, a store, a configuration or a credential is the deployment's mount, never the image's, and the MCP server must be denied each" % shipped[0])
 
 
 def scan_layers(image_dir):

@@ -15,7 +15,7 @@ ENV CGO_ENABLED=0 GOFLAGS=-trimpath GOWORK=off
 WORKDIR /src
 COPY go/ go/
 COPY adapters/ adapters/
-RUN cd go && go build -buildvcs=false -o /out/gateway . \
+RUN cd go && go build -buildvcs=false -o /out/gateway . && cp /out/gateway /out/engine-mcp \
  && cd ../adapters && go build -buildvcs=false -o /out/adapter-airbyte ./cmd/adapter-airbyte \
  && go build -buildvcs=false -o /out/adapter-mcp ./cmd/adapter-mcp \
  && go build -buildvcs=false -o /out/adapter-http ./cmd/adapter-http
@@ -30,8 +30,8 @@ RUN cd /src && go run setcap.go /out/gateway && chmod 0700 /out/gateway
 COPY build/mkhomes.go /src/mkhomes.go
 RUN cd /src && go build -o /out/mkhomes mkhomes.go
 # The platform users: a configuration names one per platform, and the
-# engine refuses a platform whose user is root, the signer's, or another
-# platform's. Eight is a convention, not a limit an operator cannot raise
+# engine refuses a platform whose user is root, the signer's, the MCP
+# server's, or another platform's. Eight is a convention, not a limit an operator cannot raise
 # with a derived image; the signer runs as engine (uid 65532, the base's
 # nonroot user, renamed). The homes are made in the final stage, by
 # build/mkhomes.go, each its user's alone: a directory COPY lands at the
@@ -39,8 +39,8 @@ RUN cd /src && go build -o /out/mkhomes mkhomes.go
 # in what --chmod reaches, so a directory made in place is what holds on
 # every builder.
 RUN set -e; mkdir -p /out/etc; \
-    printf 'root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:engine signer:/home/engine:/sbin/nologin\n' > /out/etc/passwd; \
-    printf 'root:x:0:\nengine:x:65532:\n' > /out/etc/group; \
+    printf 'root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:engine signer:/home/engine:/sbin/nologin\nengine-mcp:x:65533:65533:engine MCP server:/home/engine-mcp:/sbin/nologin\n' > /out/etc/passwd; \
+    printf 'root:x:0:\nengine:x:65532:\nengine-mcp:x:65533:\n' > /out/etc/group; \
     for n in 1 2 3 4 5 6 7 8; do \
       printf 'engine-%s:x:6560%s:6560%s:platform user %s:/home/engine-%s:/sbin/nologin\n' "$n" "$n" "$n" "$n" "$n" >> /out/etc/passwd; \
       printf 'engine-%s:x:6560%s:\n' "$n" "$n" >> /out/etc/group; \
@@ -71,6 +71,13 @@ COPY --from=build /out/adapter-airbyte /out/adapter-mcp /out/adapter-http /usr/l
 COPY --from=runtime /jpack /usr/local/bin/jpack
 COPY --from=runtime /LICENSE /NOTICE /THIRD_PARTY_NOTICES /CONFORMANCE.md /usr/share/engine/runtime/
 COPY --from=build --chown=65532:65532 /out/gateway /usr/local/bin/gateway
+# The MCP server (docs/design/mcp-server.md): the same executable, copied
+# before the capabilities were written to the signer's, root's and
+# executable by everyone with no attribute -- run as engine-mcp, a user
+# of its own that no group of the signer's or a platform's admits, under
+# its `mcp` subcommand. The signer's 0700 binary is never the one that
+# process runs.
+COPY --from=build /out/engine-mcp /usr/local/bin/engine-mcp
 # The homes, made in place as root -- the base's own user is nonroot, so
 # root is taken for this one step and given back below -- and each given
 # to its user; the helper removes itself, so the final filesystem carries

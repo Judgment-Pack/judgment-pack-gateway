@@ -32,7 +32,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | connect | keygen")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | connect | keygen | mcp")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -48,6 +48,8 @@ func main() {
 		os.Exit(cmdConnect(os.Args[2:]))
 	case "keygen":
 		os.Exit(cmdKeygen(os.Args[2:]))
+	case "mcp":
+		os.Exit(cmdMCP(os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)
@@ -301,6 +303,9 @@ func cmdServeEngine(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	service.bindLifetime(ctx)
+	// the signer's admission gate, for the rotation contract: SIGUSR1
+	// closes it, SIGUSR2 reopens it
+	installOperatorControls(ctx, service)
 	if err := service.listenAndServe(cfg.listen); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
@@ -626,6 +631,7 @@ func cmdServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	service.bindLifetime(ctx)
+	installOperatorControls(ctx, service)
 	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1

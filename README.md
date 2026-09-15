@@ -239,7 +239,10 @@ tool reaches the same surface through a client package under [plugins/](plugins/
 community node and an Activepieces piece, each carrying `result`, `receipt` and `salts` into
 the workflow as data and verifying nothing ([docs/design/plugins.md](docs/design/plugins.md));
 [plugins/smoke/](plugins/smoke/README.md) runs the node inside n8n, and the piece's actions
-as the framework calls them, against a live engine.
+as the framework calls them, against a live engine. An MCP client reaches the engine's
+platforms' live tools through `gateway mcp`, a fifth process that forwards each call to
+`/acquire` under the caller's token and answers with the receipt
+([docs/design/mcp-server.md](docs/design/mcp-server.md), [ADR-0003](docs/adr/0003-a-fifth-process-speaks-mcp.md)).
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only

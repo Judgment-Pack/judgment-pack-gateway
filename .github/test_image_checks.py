@@ -9,9 +9,9 @@ import image_checks as ic
 
 CAPS = struct.pack("<IIIII", 0x02000001, 1 << 5 | 1 << 6 | 1 << 7, 0, 0, 0)
 CONFIG = {"Entrypoint": ["/usr/local/bin/gateway"], "Cmd": ["serve", "--config", "/etc/engine/engine.json"], "User": "engine"}
-PASSWD = b"root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:e:/home/engine:/sbin/nologin\n" + b"".join(
+PASSWD = b"root:x:0:0:root:/root:/sbin/nologin\nengine:x:65532:65532:e:/home/engine:/sbin/nologin\nengine-mcp:x:65533:65533:m:/home/engine-mcp:/sbin/nologin\n" + b"".join(
     b"engine-%d:x:%d:%d:p:/home/engine-%d:/sbin/nologin\n" % (n, 65600 + n, 65600 + n, n) for n in range(1, 9))
-GROUP = b"root:x:0:\nengine:x:65532:\n" + b"".join(b"engine-%d:x:%d:\n" % (n, 65600 + n) for n in range(1, 9))
+GROUP = b"root:x:0:\nengine:x:65532:\nengine-mcp:x:65533:\n" + b"".join(b"engine-%d:x:%d:\n" % (n, 65600 + n) for n in range(1, 9))
 RUNTIME = b"released jpack"
 
 
@@ -64,6 +64,7 @@ def good(**over):
     for d in ("usr", "usr/local", "usr/local/bin", "usr/share", "usr/share/engine", "usr/share/engine/catalog", "usr/share/engine/corpus", "usr/share/engine/runtime", "etc", "home"):
         spec[d] = dict(kind="dir")
     spec["usr/local/bin/gateway"] = dict(kind="file", data=b"g", mode=0o700, uid=65532, gid=65532, caps=CAPS)
+    spec["usr/local/bin/engine-mcp"] = dict(kind="file", data=b"g", mode=0o755)
     spec["usr/local/bin/adapter-airbyte"] = dict(kind="file", data=b"a", mode=0o755)
     spec["usr/local/bin/adapter-mcp"] = dict(kind="file", data=b"m", mode=0o755)
     spec["usr/local/bin/adapter-http"] = dict(kind="file", data=b"h", mode=0o755)
@@ -75,6 +76,7 @@ def good(**over):
     spec["etc/passwd"] = dict(kind="file", data=PASSWD)
     spec["etc/group"] = dict(kind="file", data=GROUP)
     spec["home/engine"] = dict(kind="dir", mode=0o700, uid=65532, gid=65532)
+    spec["home/engine-mcp"] = dict(kind="dir", mode=0o700, uid=65533, gid=65533)
     for n in range(1, 9):
         spec["home/engine-%d" % n] = dict(kind="dir", mode=0o700, uid=65600 + n, gid=65600 + n)
     for name, change in over.items():
@@ -161,6 +163,71 @@ class Checks(unittest.TestCase):
         self.refused(good(**{"usr/share/engine/runtime": dict(kind="dir", mode=0o777)}), "unwritable by others")
 
     # The gateway: each of its properties on its own.
+    # The MCP server's copy of the executable: root's, 0755, no capability,
+    # the gateway's bytes; and its user, in no group but its own.
+    def test_mcp_copy_missing(self):
+        self.refused(good(**{"usr/local/bin/engine-mcp": None}), "usr/local/bin/engine-mcp")
+
+    def test_mcp_copy_with_capabilities(self):
+        self.refused(good(**{"usr/local/bin/engine-mcp": dict(caps=CAPS)}), "carries a capability attribute; the MCP server holds no capability")
+
+    def test_mcp_copy_not_executable_by_all(self):
+        self.refused(good(**{"usr/local/bin/engine-mcp": dict(mode=0o700)}), "usr/local/bin/engine-mcp is mode 0700; it must be readable by everyone")
+
+    def test_mcp_copy_not_executable(self):
+        self.refused(good(**{"usr/local/bin/engine-mcp": dict(mode=0o644)}), "it must be a regular file, 0755, root's")
+
+    def test_mcp_copy_owned_by_the_signer(self):
+        self.refused(good(**{"usr/local/bin/engine-mcp": dict(uid=65532, gid=65532)}), "every path to usr/local/bin/engine-mcp must be root's")
+
+    def test_mcp_copy_not_the_gateway_bytes(self):
+        self.refused(good(**{"usr/local/bin/engine-mcp": dict(data=b"other")}), "is not the gateway executable byte for byte")
+
+    def test_mcp_user_missing(self):
+        self.refused(good(**{"etc/passwd": dict(data=PASSWD.replace(b"engine-mcp:x:65533:65533:m:/home/engine-mcp:/sbin/nologin\n", b""))}), "does not name engine-mcp")
+
+    def test_mcp_user_in_another_group(self):
+        self.refused(good(**{"etc/group": dict(data=GROUP.replace(b"engine:x:65532:\n", b"engine:x:65532:engine-mcp\n"))}), "makes engine-mcp a member of engine")
+
+    def test_mcp_home_missing(self):
+        self.refused(good(**{"home/engine-mcp": None}), "home/engine-mcp")
+
+    # What the MCP server's user must not reach: a closed file under another
+    # home holds, an open one, one owned by that user or its group, and a
+    # shipped seed, store, configuration or credential path are each refused
+    def test_a_closed_file_under_the_signers_home_holds(self):
+        self.run_check(good(**{"home/engine/gateway.seed": dict(data=b"s", mode=0o600, uid=65532, gid=65532)}))
+
+    def test_a_world_readable_seed_under_the_signers_home(self):
+        self.refused(good(**{"home/engine/gateway.seed": dict(data=b"s", mode=0o644, uid=65532, gid=65532)}), "home/engine/gateway.seed is mode 0644, open to others")
+
+    def test_a_world_readable_store_under_the_signers_home(self):
+        self.refused(good(**{"home/engine/store": dict(kind="dir", mode=0o755, uid=65532, gid=65532)}), "home/engine/store is mode 0755, open to others")
+
+    def test_a_world_readable_credentials_file_under_a_platform_home(self):
+        self.refused(good(**{"home/engine-1/credentials.json": dict(data=b"c", mode=0o604, uid=65601, gid=65601)}), "home/engine-1/credentials.json is mode 0604, open to others")
+
+    def test_a_file_owned_by_the_mcp_user_outside_its_home(self):
+        self.refused(good(**{"home/engine-1/credentials.json": dict(data=b"c", mode=0o600, uid=65533, gid=65601)}), "is owned by the MCP server's user or group (65533:65601)")
+
+    def test_a_file_in_the_mcp_users_group_outside_its_home(self):
+        self.refused(good(**{"home/engine/store": dict(kind="dir", mode=0o750, uid=65532, gid=65533)}), "is owned by the MCP server's user or group (65532:65533)")
+
+    def test_a_shipped_configuration(self):
+        self.refused(good(**{"etc/engine": dict(kind="dir"), "etc/engine/engine.json": dict(data=b"{}")}), "the image ships etc/engine")
+
+    def test_a_shipped_seed_path(self):
+        self.refused(good(**{"var": dict(kind="dir"), "var/lib": dict(kind="dir"), "var/lib/engine": dict(kind="dir", mode=0o700, uid=65532, gid=65532), "var/lib/engine/gateway.seed": dict(data=b"s", mode=0o600, uid=65532, gid=65532)}), "the image ships var/lib/engine")
+
+    def test_a_link_under_home_that_leads_out(self):
+        self.refused(good(**{"home/shared": dict(kind="link", target="/etc")}), "home/shared is a symbolic link under /home")
+
+    def test_a_link_in_the_mcp_users_own_home(self):
+        self.refused(good(**{"home/engine-mcp/elsewhere": dict(kind="link", target="/home/engine")}), "home/engine-mcp/elsewhere is a symbolic link under /home")
+
+    def test_a_shipped_secret(self):
+        self.refused(good(**{"run": dict(kind="dir"), "run/secrets": dict(kind="dir"), "run/secrets/warehouse": dict(data=b"c", mode=0o600, uid=65601, gid=65601)}), "the image ships run/secrets")
+
     def test_gateway_mode(self):
         self.refused(good(**{"usr/local/bin/gateway": dict(mode=0o750)}), "must be 0700")
 

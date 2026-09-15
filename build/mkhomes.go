@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	homes := map[string]int{"/home/engine": 65532}
+	homes := map[string]int{"/home/engine": 65532, "/home/engine-mcp": 65533}
 	for n := 1; n <= 8; n++ {
 		homes[fmt.Sprintf("/home/engine-%d", n)] = 65600 + n
 	}

@@ -54,11 +54,25 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime` and `identity` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity` and `mcp` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment` and
 `write` optional. Every path is absolute.
 
-- `engineVersion` moves on any member change, as `receiptVersion` does.
+- `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
+  `"1"` and `"2"`: version 2 added `mcp`, and a version-1 file still loads without it and is
+  refused by name with it.
+- `mcp`, when present, is the MCP server's own settings ([mcp-server.md](mcp-server.md)):
+  `listen`, a literal loopback address with an explicit port, where `gateway mcp --http`
+  listens; `resource`, the absolute `https` URL the server is reached as, without a fragment,
+  required for `--http`; `origins`, the exact origins its HTTP transport admits — loopback
+  origins when the member is absent, none at all when it is present and empty; and four bounds with their ranges, `sessions` (`1` to `4096`, default
+  `64`), `idleSeconds` (`60` to `86400`, default `1800`), `concurrency` (`1` to `64`, default `8`)
+  and `callsPerMinute` (`1` to `6000`, default `120`). With `mcp` present the signer's `listen`
+  may not name port `0` — by its number, whatever its spelling — since the MCP server finds
+  the signer by that value and nothing else. The signer reads the member and does nothing with it; the MCP server reads the whole
+  file as metadata and holds `identity.issuer`, when it serves HTTP, to an authorization
+  server's identifier (an absolute `https` URL with no query and no fragment), which the
+  signer does not demand.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
   takes today, named.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve
@@ -131,8 +145,9 @@ engine refuses to start under a configuration the isolation claim of
 [ADR-0001](../adr/0001-one-engine-four-processes.md) does not survive:
 
 - a platform without a `user`, or whose user does not exist, is **root** (an adapter running
-  as root reads the seed), is the **signer's own** (the same), or is **another platform's**
-  (one platform could read the other's credentials);
+  as root reads the seed), is the **signer's own** (the same), is the **MCP server's**
+  (`engine-mcp`, uid 65533: a credentials file would belong to the user that process runs
+  as), or is **another platform's** (one platform could read the other's credentials);
 - a credentials file not owned by the platform's user, or readable beyond its owner (mode
   other than `0600`); and any directory on the way to it that is owned by neither root nor
   that user, or writable beyond its owner without the sticky bit (so someone else could

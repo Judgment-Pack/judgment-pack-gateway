@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -23,7 +24,21 @@ import (
 // refused, integers only, unknown members refused by name -- so a
 // misspelled key is an error, never an intention silently dropped.
 
-const engineVersion = "1"
+// engineVersion is the version this engine writes; engineVersions are the
+// ones it reads. Version 2 adds the optional `mcp` member (docs/design/
+// mcp-server.md): a version-1 file without it still loads, and a version-1
+// file with it is refused by name, as any member a version does not have.
+const engineVersion = "2"
+
+var engineVersions = map[string]bool{"1": true, "2": true}
+
+// The frontend's user (docs/design/mcp-server.md): the MCP server runs as
+// it, so no platform may, or a credentials file could belong to the user
+// that process runs as.
+const (
+	frontendUser = "engine-mcp"
+	frontendUID  = 65533
+)
 
 const maxEngineConfigBytes = 1 << 20
 
@@ -41,6 +56,39 @@ type engineConfig struct {
 	hostRuntime     bool
 	identity        *identitySpec    // who may call; nil records caller null
 	platforms       []platformConfig // in name order
+	version         string
+	mcp             *mcpConfig // the MCP server's own settings; nil when the configuration has none
+}
+
+// mcpConfig is the `mcp` member (docs/design/mcp-server.md): where the MCP
+// server listens, the resource it is reached as, the origins its HTTP
+// transport admits, and its bounds.
+type mcpConfig struct {
+	listen         string
+	resource       string   // the protected resource's identifier; "" when not given
+	origins        []string // exact origins, when given
+	originsGiven   bool     // the member was present, even empty; absent means loopback origins
+	sessions       int
+	idleSeconds    int
+	concurrency    int
+	callsPerMinute int
+}
+
+var mcpMembers = map[string]bool{
+	"listen": true, "resource": false, "origins": false,
+	"sessions": false, "idleSeconds": false, "concurrency": false, "callsPerMinute": false,
+}
+
+// mcpBounds are the four bounds' defaults and ranges, in the note's order.
+var mcpBounds = []struct {
+	name          string
+	def, min, max int
+	into          func(*mcpConfig) *int
+}{
+	{"sessions", 64, 1, 4096, func(m *mcpConfig) *int { return &m.sessions }},
+	{"idleSeconds", 1800, 60, 86400, func(m *mcpConfig) *int { return &m.idleSeconds }},
+	{"concurrency", 8, 1, 64, func(m *mcpConfig) *int { return &m.concurrency }},
+	{"callsPerMinute", 120, 1, 6000, func(m *mcpConfig) *int { return &m.callsPerMinute }},
 }
 
 type platformConfig struct {
@@ -131,6 +179,7 @@ var engineMembers = map[string]bool{
 	"engineVersion": true, "authority": true, "seed": true, "store": true, "registry": true,
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
+	"mcp": false,
 }
 
 var platformMembers = map[string]bool{
@@ -153,8 +202,12 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	}
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
-	if version != engineVersion {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q", version, engineVersion)
+	if !engineVersions[version] {
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q or %q", version, "1", engineVersion)
+	}
+	cfg.version = version
+	if _, present := obj.get("mcp"); present && version == "1" {
+		return engineConfig{}, errors.New("engine configuration: mcp is a version-2 member; engineVersion 1 has no mcp")
 	}
 	authority, err := requireString(obj, "authority")
 	if err != nil || authority == "" {
@@ -231,6 +284,18 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	}
 	if cfg.listen, err = loopbackAddress(listen); err != nil {
 		return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+	}
+	if mcpValue, present := obj.get("mcp"); present {
+		m, err := parseMCPConfig(mcpValue)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		// The frontend finds the signer by the configured address and
+		// nothing else, so an address the kernel picks is no address.
+		if portIsZero(cfg.listen) {
+			return engineConfig{}, errors.New("engine configuration: listen names port 0, which the MCP server cannot find the signer by; with mcp present the signer's port is explicit")
+		}
+		cfg.mcp = m
 	}
 	platformsValue, _ := obj.get("platforms")
 	platforms, err := requireObject(platformsValue, "platforms")
@@ -323,6 +388,107 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	return cfg, nil
 }
 
+// parseMCPConfig holds the `mcp` member to the note's shape: a loopback
+// listen address with an explicit port, a resource identifier that is an
+// absolute https URL without a fragment, exact origins, and the four
+// bounds within their ranges.
+func parseMCPConfig(v value) (*mcpConfig, error) {
+	obj, err := requireObject(v, "mcp")
+	if err != nil {
+		return nil, err
+	}
+	if err := exactlyMembers(obj, mcpMembers, "mcp"); err != nil {
+		return nil, err
+	}
+	m := &mcpConfig{}
+	listen, err := requireString(obj, "listen")
+	if err != nil {
+		return nil, errors.New("mcp.listen must be a string")
+	}
+	if m.listen, err = loopbackAddress(listen); err != nil {
+		return nil, fmt.Errorf("mcp.%v", err)
+	}
+	if portIsZero(m.listen) {
+		return nil, errors.New("mcp.listen names port 0; the MCP server's port is explicit, since the resource it is reached as names it")
+	}
+	if _, present := obj.get("resource"); present {
+		s, err := requireString(obj, "resource")
+		if err != nil {
+			return nil, errors.New("mcp.resource must be a string")
+		}
+		if err := validResourceURL(s); err != nil {
+			return nil, fmt.Errorf("mcp.resource: %v", err)
+		}
+		m.resource = s
+	}
+	if originsValue, present := obj.get("origins"); present {
+		arr, ok := originsValue.(vArray)
+		if !ok {
+			return nil, errors.New("mcp.origins must be an array of origins")
+		}
+		// present and empty is a statement: no origin at all is admitted
+		m.originsGiven = true
+		for _, item := range arr {
+			s, ok := item.(vString)
+			if !ok {
+				return nil, errors.New("mcp.origins must be an array of origins, each a string")
+			}
+			if err := validOrigin(string(s)); err != nil {
+				return nil, fmt.Errorf("mcp.origins: %v", err)
+			}
+			m.origins = append(m.origins, string(s))
+		}
+	}
+	for _, b := range mcpBounds {
+		*b.into(m) = b.def
+		n, present, err := integerMember(obj, b.name)
+		if err != nil {
+			return nil, fmt.Errorf("mcp.%s must be an integer", b.name)
+		}
+		if !present {
+			continue
+		}
+		if n < int64(b.min) || n > int64(b.max) {
+			return nil, fmt.Errorf("mcp.%s %d is outside %d to %d", b.name, n, b.min, b.max)
+		}
+		*b.into(m) = int(n)
+	}
+	return m, nil
+}
+
+// validResourceURL is what a protected resource's identifier must be
+// (RFC 9728, RFC 8707): an absolute https URL with a host and no fragment.
+func validResourceURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.Fragment != "" || u.RawFragment != "" || strings.Contains(s, "#") {
+		return fmt.Errorf("%q is not an absolute https URL without a fragment", s)
+	}
+	return nil
+}
+
+// validIssuerURL is what an authorization server's identifier must be
+// (RFC 8414 §2): an absolute https URL with no query and no fragment.
+func validIssuerURL(s string) error {
+	if err := validResourceURL(s); err != nil {
+		return err
+	}
+	if strings.ContainsAny(s, "?#") {
+		return fmt.Errorf("%q carries a query or a fragment, which an issuer identifier may not", s)
+	}
+	return nil
+}
+
+// validOrigin is an origin as a browser sends it: scheme://host[:port],
+// nothing more -- no path, no query or fragment delimiter even empty, no
+// userinfo, no trailing slash.
+func validOrigin(s string) error {
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "" || u.User != nil || strings.HasSuffix(s, "/") || strings.ContainsAny(s, "?#") || u.Opaque != "" {
+		return fmt.Errorf("%q is not an origin (scheme://host[:port])", s)
+	}
+	return nil
+}
+
 func requireAbsolutePath(obj *vObject, name string) (string, error) {
 	s, err := requireString(obj, name)
 	if err != nil || s == "" {
@@ -383,7 +549,8 @@ func exactlyMembers(obj *vObject, members map[string]bool, what string) error {
 // loopbackAddress holds listen to a literal loopback address with a valid
 // port: 127.0.0.1 or ::1, never a name that a resolver may map elsewhere.
 // The gateway speaks plain HTTP, and reaching it from another host is a
-// front the operator runs.
+// front the operator runs. The address comes back in one spelling: the
+// IP as the parser prints it, the port as a number.
 func loopbackAddress(listen string) (string, error) {
 	host, port, err := net.SplitHostPort(listen)
 	if err != nil {
@@ -394,10 +561,21 @@ func loopbackAddress(listen string) (string, error) {
 		return "", fmt.Errorf("listen %q is not a literal loopback address; the engine listens on 127.0.0.1 or ::1 only", listen)
 	}
 	n, err := strconv.Atoi(port)
-	if err != nil || n < 0 || n > 65535 {
+	if err != nil || n < 0 || n > 65535 || strings.TrimSpace(port) != port || strings.HasPrefix(port, "+") || strings.HasPrefix(port, "-") {
 		return "", fmt.Errorf("listen %q has no valid port", listen)
 	}
-	return net.JoinHostPort(ip.String(), port), nil
+	return net.JoinHostPort(ip.String(), strconv.Itoa(n)), nil
+}
+
+// portIsZero says whether a listen address names port zero, by its number
+// and not its spelling: "00" is as much port zero as "0".
+func portIsZero(listen string) bool {
+	_, port, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n == 0
 }
 
 func isBindingRef(ref string) bool {
@@ -898,6 +1076,9 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 		}
 		if uid == host.euid {
 			return nil, fmt.Errorf("platform %s: user %s is the signer's own; an adapter running as the signer could read the seed", p.name, p.user)
+		}
+		if uid == frontendUID || p.user == frontendUser {
+			return nil, fmt.Errorf("platform %s: user %s is the MCP server's (%s); a credentials file would belong to the user that process runs as", p.name, p.user, frontendUser)
 		}
 		if other, dup := seen[uid]; dup {
 			return nil, fmt.Errorf("platform %s: user %s is also platform %s's; each platform's adapters run as a user of their own, or one could read the other's credentials", p.name, p.user, other)
