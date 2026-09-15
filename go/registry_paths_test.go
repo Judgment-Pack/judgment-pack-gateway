@@ -1,12 +1,14 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -66,28 +68,46 @@ func junctionToNowhere(t *testing.T, target, link string) {
 // alike. A spelling that names the same file either way is taken. The paths
 // are spelled as strings: filepath.Join would clean the cases away.
 func TestAPathSpelledToResolveOtherwiseIsRefused(t *testing.T) {
-	spell := func(parts ...string) string { return strings.Join(parts, string(filepath.Separator)) }
+	sep := string(filepath.Separator)
+	spell := func(parts ...string) string { return strings.Join(parts, sep) }
+	windows := runtime.GOOS == "windows"
 	dir := t.TempDir()
-	refused := []struct{ name, path string }{
+	spelled := func(err error) bool { return err != nil && strings.Contains(err.Error(), "path spelling refused") }
+	nothingMade := func(t *testing.T) {
+		t.Helper()
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+			t.Fatalf("a refused spelling made %v (%v)", entries, err)
+		}
+	}
+	type row struct{ name, path string }
+
+	// refused as the registry and as the decision-record directory
+	refused := []row{
 		{"a .. after a named component", spell(dir, "a", "..", "registry.jsonl")},
 		{"a .. under a directory not yet made", spell(dir, "new", "deeper", "..", "registry.jsonl")},
 		{"a .. after a . and a named component", spell(dir, ".", "a", "..", "..", "registry.jsonl")},
-		{"a trailing separator", spell(dir, "registry.jsonl") + string(filepath.Separator)},
-		{"a trailing separator after a directory", spell(dir, "decisions") + string(filepath.Separator)},
 	}
-	if runtime.GOOS == "windows" {
-		refused = append(refused, []struct{ name, path string }{
+	if windows {
+		refused = append(refused, []row{
 			{"the literal namespace", `\\?\` + spell(dir, "registry.jsonl")},
 			{"the literal namespace in forward slashes", `//?/` + spell(dir, "registry.jsonl")},
 			{"the device namespace", `\\.\` + spell(dir, "registry.jsonl")},
+			{"the object manager's namespace", `\??\` + spell(dir, "registry.jsonl")},
+			{"the object manager's namespace for a share", `\??\UNC\server\share\registry.jsonl`},
 			{"a component ending in a space", spell(dir, "anchor ", "registry.jsonl")},
 			{"a component ending in a period", spell(dir, "anchor.", "registry.jsonl")},
 			{"a last component ending in a period", spell(dir, "registry.jsonl.")},
+			{"a component holding a colon", spell(dir, "registry.jsonl:stream")},
+			{"a reserved device name", spell(dir, "NUL", "registry.jsonl")},
+			{"a reserved device name with an extension", spell(dir, "com1.jsonl")},
+			{"a reserved device name with a superscript digit", spell(dir, "LPT²", "registry.jsonl")},
+			{"a console device name", spell(dir, "conin$")},
+			{"a share's server ending in a period", `\\server.\share\registry.jsonl`},
+			{"a share ending in a space", `\\server\share \registry.jsonl`},
 		}...)
 	}
 	for _, tt := range refused {
-		t.Run(tt.name, func(t *testing.T) {
-			spelled := func(err error) bool { return err != nil && strings.Contains(err.Error(), "path spelling refused") }
+		t.Run("refused: "+tt.name, func(t *testing.T) {
 			if _, _, err := readRegistryBytes(tt.path); !spelled(err) {
 				t.Errorf("the reader: %v", err)
 			}
@@ -103,25 +123,56 @@ func TestAPathSpelledToResolveOtherwiseIsRefused(t *testing.T) {
 			if err := preflightPaths(filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl"), tt.path); !spelled(err) {
 				t.Errorf("the engine's start, for the decision records: %v", err)
 			}
-			// refused before anything was made
-			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-				t.Fatalf("a refused spelling made %v (%v)", entries, err)
-			}
+			nothingMade(t)
 		})
 	}
 
-	taken := []struct{ name, path string }{
+	// a file's path cannot end in a separator; a directory's may
+	for _, tt := range []row{
+		{"a trailing separator", spell(dir, "registry.jsonl") + sep},
+		{"the root", filepath.VolumeName(dir) + sep},
+	} {
+		t.Run("refused as the registry, taken as the directory: "+tt.name, func(t *testing.T) {
+			if _, _, err := readRegistryBytes(tt.path); !spelled(err) {
+				t.Errorf("the reader: %v", err)
+			}
+			if _, err := newRegistryWriter(tt.path, testSeed); !spelled(err) {
+				t.Errorf("the registry writer: %v", err)
+			}
+			if err := requirePlainSpelling(tt.path, false); err != nil {
+				t.Errorf("as the decision-record directory: %v", err)
+			}
+			nothingMade(t)
+		})
+	}
+	t.Run("a decision-record directory with a trailing separator is read", func(t *testing.T) {
+		records := filepath.Join(t.TempDir(), "records")
+		if err := os.Mkdir(records, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(records, "a.json"), []byte(`{"a":1}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		want := hexOf([]byte(`{"a":1}`))
+		found, present, err := decisionCandidates(records+sep, map[string]bool{want: true}, nil)
+		if err != nil || !present || !found[want] {
+			t.Fatalf("present=%v found=%v err=%v", present, found, err)
+		}
+	})
+
+	// taken as either, and absent when nothing is there
+	taken := []row{
 		{"a leading ..", spell("..", "no-registry-here-"+filepath.Base(dir), "registry.jsonl")},
 		{"a . before a leading ..", spell(".", "..", "no-registry-here-"+filepath.Base(dir), "registry.jsonl")},
 		{"a . component", spell(dir, ".", "registry.jsonl")},
-		{"a repeated separator", dir + string(filepath.Separator) + string(filepath.Separator) + "registry.jsonl"},
+		{"a repeated separator", dir + sep + sep + "registry.jsonl"},
 	}
-	if runtime.GOOS != "windows" {
+	if !windows {
 		// a name like any other off Windows, which trims nothing
-		taken = append(taken, struct{ name, path string }{"a component ending in a space", spell(dir, "anchor ", "registry.jsonl")})
+		taken = append(taken, row{"a component ending in a space", spell(dir, "anchor ", "registry.jsonl")})
 	}
 	for _, tt := range taken {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run("taken: "+tt.name, func(t *testing.T) {
 			if _, present, err := readRegistryBytes(tt.path); err != nil || present {
 				t.Fatalf("an absent registry so spelled: present=%v err=%v", present, err)
 			}
@@ -129,6 +180,104 @@ func TestAPathSpelledToResolveOtherwiseIsRefused(t *testing.T) {
 				t.Fatalf("an absent directory so spelled: present=%v err=%v", present, err)
 			}
 		})
+	}
+}
+
+// The directories above a path are its prefixes as spelled, cut before each
+// separator, so that each resolves as that part of the whole path does -- a
+// repeated separator after a drive or a share root included, which
+// filepath.Dir on Windows reads as the start of a UNC path, and stops
+// climbing. An obstructing file above such a path is found.
+func TestTheDirectoriesAboveAPathAreItsPrefixes(t *testing.T) {
+	type row struct {
+		path string
+		want []string
+	}
+	rows := []row{
+		{"/a/b/registry.jsonl", []string{"/a", "/a/b"}},
+		{"a//b/registry.jsonl", []string{"a", "a//b"}},
+		{"../x/registry.jsonl", []string{"..", "../x"}},
+		{"registry.jsonl", nil},
+	}
+	if runtime.GOOS == "windows" {
+		rows = []row{
+			{`C:\a\b\registry.jsonl`, []string{`C:\a`, `C:\a\b`}},
+			{`C:\\anchor\missing\registry.jsonl`, []string{`C:\\anchor`, `C:\\anchor\missing`}},
+			{`C:a\registry.jsonl`, []string{`C:a`}},
+			{`\a\registry.jsonl`, []string{`\a`}},
+			{`\\server\share\\anchor\missing\registry.jsonl`, []string{`\\server\share\\anchor`, `\\server\share\\anchor\missing`}},
+			{`C:/a/b/registry.jsonl`, []string{`C:/a`, `C:/a/b`}},
+		}
+	}
+	for _, tt := range rows {
+		if got := pathAncestors(tt.path); !slices.Equal(got, tt.want) {
+			t.Errorf("pathAncestors(%q) = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+	if runtime.GOOS == "windows" {
+		// a repeated separator after the drive root, above a file
+		dir := t.TempDir()
+		file := filepath.Join(dir, "file")
+		if err := os.WriteFile(file, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		volume := filepath.VolumeName(dir)
+		doubled := volume + `\\` + file[len(volume)+1:]
+		_, _, err := readRegistryBytes(doubled + `\missing\registry.jsonl`)
+		if want := "registry parent path component is not a directory: " + doubled; err == nil || err.Error() != want {
+			t.Fatalf("got %v, want %q", err, want)
+		}
+	}
+}
+
+// A name under the decision-record directory that Windows would not read as
+// spelled -- one ending in a space, made through the literal namespace -- is
+// read by its path as another file: it cannot be read, and is no verdict.
+func TestADecisionRecordNamedAsWindowsWouldNotReadIt(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("a name ending in a space is read as spelled off Windows")
+	}
+	records := t.TempDir()
+	if err := os.WriteFile(filepath.Join(records, "record"), []byte(`{"a":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(`\\?\`+filepath.Join(records, "record")+" ", []byte(`{"b":2}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := decisionCandidates(records, nil, nil); err == nil || !strings.Contains(err.Error(), "would not read as spelled") {
+		t.Fatalf("a record Windows reads as another: %v", err)
+	}
+}
+
+func testPublicKey(t *testing.T) []byte {
+	t.Helper()
+	return ed25519.NewKeyFromSeed(testSeed).Public().(ed25519.PublicKey)
+}
+
+// The spellings are judged where each process takes them, before anything
+// is made or read: a start makes no store for a registry it refuses, and a
+// verification refuses before it reads the store -- here a store that is a
+// file, whose own refusal would come first otherwise.
+func TestSpellingsAreJudgedBeforeAnythingIsMadeOrRead(t *testing.T) {
+	dir := t.TempDir()
+	store := filepath.Join(dir, "new-store")
+	refusedRegistry := strings.Join([]string{store, "..", "registry.jsonl"}, string(filepath.Separator))
+	if _, err := newGatewayService(store, testSeed, "gateway:test", refusedRegistry, nil); err == nil || !strings.Contains(err.Error(), "path spelling refused") {
+		t.Fatalf("a start on a refused registry spelling: %v", err)
+	}
+	if _, err := os.Stat(store); !os.IsNotExist(err) {
+		t.Fatalf("the refused start made the store: %v", err)
+	}
+	file := filepath.Join(dir, "store-file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyWithRegistryAndRecords(file, refusedRegistry, "gateway:test", "", testPublicKey(t)); err == nil || !strings.Contains(err.Error(), "path spelling refused") {
+		t.Fatalf("a verification with a refused registry spelling: %v", err)
+	}
+	refusedRecords := strings.Join([]string{dir, "a", "..", "records"}, string(filepath.Separator))
+	if _, err := verifyWithRegistryAndRecords(file, filepath.Join(dir, "registry.jsonl"), "gateway:test", refusedRecords, testPublicKey(t)); err == nil || !strings.Contains(err.Error(), "path spelling refused") {
+		t.Fatalf("a verification with a refused decision-record spelling: %v", err)
 	}
 }
 

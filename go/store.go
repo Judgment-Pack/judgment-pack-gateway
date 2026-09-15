@@ -262,7 +262,7 @@ func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 	// the registry is read by its spelling, so it is written by its
 	// spelling too: a spelling the platform could resolve otherwise is
 	// refused before a directory is made for it (SPEC.md §4.1)
-	if err := requirePlainSpelling(path); err != nil {
+	if err := requirePlainSpelling(path, true); err != nil {
 		return nil, err
 	}
 	if dir := filepath.Dir(path); dir != "" {

@@ -907,10 +907,10 @@ func preflightPaths(store, registry, decisionRecords string) error {
 	// the registry and the decision-record directory are read by their
 	// spelling: one the platform could resolve otherwise is a start that
 	// fails, as the reader and the writer would refuse it (SPEC.md §4.1)
-	if err := requirePlainSpelling(registry); err != nil {
+	if err := requirePlainSpelling(registry, true); err != nil {
 		return fmt.Errorf("registry: %w", err)
 	}
-	if err := requirePlainSpelling(decisionRecords); err != nil {
+	if err := requirePlainSpelling(decisionRecords, false); err != nil {
 		return fmt.Errorf("decisionRecords: %w", err)
 	}
 	info, err := present("store", store)

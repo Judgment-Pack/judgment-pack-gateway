@@ -165,6 +165,11 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 			return nil, fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
 		}
 	}
+	// the registry's spelling is judged before the store is made: a start
+	// that would refuse it leaves nothing behind (SPEC.md §4.1)
+	if err := requirePlainSpelling(registryPath, true); err != nil {
+		return nil, err
+	}
 	st, err := newStore(storeRoot, seed, authority)
 	if err != nil {
 		return nil, err

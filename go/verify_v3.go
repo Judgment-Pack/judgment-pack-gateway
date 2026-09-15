@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 )
@@ -324,6 +325,9 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 	if dir == "" {
 		return nil, false, nil
 	}
+	if err := requirePlainSpelling(dir, false); err != nil {
+		return nil, false, fmt.Errorf("decision-record directory: %w", err)
+	}
 	if err := registryContainerReachable(dir); err != nil {
 		return nil, false, fmt.Errorf("decision-record directory: %w", err)
 	}
@@ -365,6 +369,11 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		// a name Windows would not read as spelled is read, by its path, as
+		// another file or none: it cannot be read, and is no verdict (§4.1)
+		if runtime.GOOS == "windows" && path != dir && !windowsReadsAsSpelled(d.Name()) {
+			return fmt.Errorf("decision-record directory holds a name Windows would not read as spelled: %s", path)
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil // never followed, whatever it points at

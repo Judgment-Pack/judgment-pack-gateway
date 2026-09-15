@@ -491,18 +491,28 @@ a verdict at all.
 | the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
 | the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below), or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 
-The registry and the decision-record directory are taken by their spelling, so a path spelled
-so that the platform could resolve it to another file than the one the spelling names is
-refused before anything is read — no verdict — and a gateway refuses to start on one: a `..`
-after a named component (Linux and macOS step back from where that component leads, a link's
-target included, while a reading of the spelling steps back from the component), a trailing
-separator (a look at the path itself then follows a link there), and on Windows a path in the
-`\\?\` or `\\.\` namespace or a component ending in a space or a period (Windows takes the
-first literally and trims the second). A leading `..`, a `.` component and a repeated
-separator name the same file either way, and are taken. Only an input the platform confirms is
-not there is absent: when a stat that follows links finds nothing at a path, a look at the path
-itself must find nothing too, and any other answer to that look — a link, or a failure — makes
-the input present and unreadable.
+The registry and the decision-record directory are taken by their spelling, and a path the
+platform could resolve to another file than the one its spelling names is refused before
+anything is read — no verdict — and a gateway refuses to start on one, before it makes
+anything:
+
+- on every platform, a `..` after a named component: Linux and macOS step back from where that
+  component leads, a link's target included, while a reading of the spelling steps back from
+  the component;
+- for the registry, which is a file, a path that ends in a separator;
+- on Windows, a path in the `\\?\` or `\??\` namespace, which Windows takes literally, or in the
+  `\\.\` namespace, which it reads as a device path; and a component — a UNC path's server and
+  share included — that ends in a space or a period, which Windows trims, that holds a colon,
+  which names a stream of a file, or that is a reserved device name (`CON`, `PRN`, `AUX`, `NUL`,
+  `CONIN$`, `CONOUT$`, or `COM` or `LPT` with a digit), with or without an extension.
+
+A leading `..`, a `.` component, a repeated separator and a trailing separator on the
+decision-record directory name the same file either way, and are taken. The directories above
+an input are the prefixes of its path as spelled, each cut before a separator. A name under the
+decision-record directory that Windows would not read as spelled is a file under it that cannot
+be read. Only an input the platform confirms is not there is absent: when a stat that follows
+links finds nothing at a path, a look at the path itself must find nothing too, and any other
+answer to that look — a link, or a failure — makes the input present and unreadable.
 
 Each of these fails **closed**: an absent anchor cannot make a store verify, it can
 only fail to excuse one. A store that is genuinely empty against an empty registry
