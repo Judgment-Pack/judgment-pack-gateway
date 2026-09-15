@@ -212,3 +212,30 @@ func frontendOwns(owner fileOwnerIDs) bool {
 // syncFound syncs a file opened for reading, as one found rather than
 // written is.
 func syncFound(file *os.File) error { return syncFile(file) }
+
+// servedInvariant is why a snapshot, or the snapshots' directory, is not
+// what the frontend may serve from, or nil: owned by root or by the
+// configuration's owner, writable by neither group nor others, and
+// belonging to neither the frontend's user nor its group.
+func servedInvariant(info os.FileInfo, owner fileOwnerIDs) error {
+	if info.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("is writable beyond its owner (mode %04o)", info.Mode().Perm())
+	}
+	holder := ownerIDsOf(info)
+	if !holder.known {
+		return nil
+	}
+	if holder.uid != 0 && !(owner.known && holder.uid == owner.uid) {
+		return fmt.Errorf("is owned by uid %d, neither root nor the configuration's owner", holder.uid)
+	}
+	if holder.uid == frontendUID || holder.gid == frontendUID {
+		return fmt.Errorf("belongs to the MCP server's own user or group (%d)", frontendUID)
+	}
+	return nil
+}
+
+// openServedSnapshot opens a snapshot in the open directory without
+// blocking on what is not a file.
+func openServedSnapshot(dir *os.Root, name string) (*os.File, error) {
+	return dir.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+}

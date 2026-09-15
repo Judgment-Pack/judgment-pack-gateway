@@ -39,6 +39,9 @@ type connectRequest struct {
 	// whose descriptors are confidential beyond what screening finds
 	// (docs/design/tool-descriptors.md): the entry is written without a pin.
 	noDescriptors bool
+	// preview names a platform whose served descriptors are rendered and
+	// nothing written (--preview-descriptors).
+	preview string
 }
 
 // connectOutcome is what connect has to say: the statements the
@@ -64,7 +67,7 @@ const (
 	checkMaxOutput = 1 << 20
 )
 
-const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <operation>=<path>... --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace] [--no-descriptors]"
+const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <operation>=<path>... --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace] [--no-descriptors]\n       gateway connect --config <engine.json> --preview-descriptors <platform>"
 
 // cmdConnect writes a platform entry into the engine's configuration:
 // after holding the configuration it would produce to every refusal
@@ -78,6 +81,20 @@ func cmdConnect(args []string) int {
 	if !ok {
 		fmt.Fprintln(os.Stderr, msg)
 		return 2
+	}
+	if req.preview != "" {
+		cfg, bindings, err := loadEngineConfig(req.config, osEngineHost().account)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "connect:", printable(err.Error()))
+			return 1
+		}
+		preview, err := previewDescriptors(req.config, cfg, bindings, req.preview)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "connect:", printable(err.Error()))
+			return 1
+		}
+		fmt.Fprint(os.Stdout, preview)
+		return 0
 	}
 	closeInheritedDescriptors()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -167,6 +184,7 @@ func parseConnectArgs(args []string) (connectRequest, string, bool) {
 	fs.BoolVar(&req.write, "write", false, "")
 	fs.BoolVar(&req.replace, "replace", false, "")
 	fs.BoolVar(&req.noDescriptors, "no-descriptors", false, "")
+	fs.StringVar(&req.preview, "preview-descriptors", "", "")
 	// Go's flag parsing stops at the first word that is not a flag; the
 	// platform may stand there, and parsing resumes after it.
 	for {
@@ -184,6 +202,14 @@ func parseConnectArgs(args []string) (connectRequest, string, bool) {
 	}
 	if credentialsErr != nil {
 		return req, connectUsage + "\n" + credentialsErr.Error(), false
+	}
+	// A preview reads the configuration and names the platform with the
+	// flag; it takes nothing that would be written.
+	if req.preview != "" {
+		if req.config == "" || req.platform != "" || req.binding != "" || len(req.credentials) > 0 || req.user != "" || req.replace || req.write || req.noDescriptors {
+			return req, connectUsage, false
+		}
+		return req, "", true
 	}
 	if req.platform == "" || req.config == "" || req.binding == "" || len(req.credentials) == 0 || req.user == "" {
 		return req, connectUsage, false

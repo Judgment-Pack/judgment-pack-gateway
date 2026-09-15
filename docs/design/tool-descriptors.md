@@ -238,9 +238,14 @@ The limits below are exact, and when one is reached the overflow is deterministi
 - **The listing:** the frontend's whole `tools/list` answer, serialized, is at most 8 MiB. When
   rendering would pass that, the frontend drops platforms' snapshots whole, in reverse table
   order, until it fits, and its start reports which it dropped. If the listing would still pass
-  8 MiB with every snapshot dropped, the frontend refuses to start and names the size. A
-  binding with tens of thousands of tools does that with today's generated descriptions alone.
-  What it holds in memory is at most the sum of its pinned snapshots.
+  8 MiB with every snapshot dropped, the frontend refuses to start, saying how many of its
+  tools, counted in the configuration's order, pass the bound; it counts no further, and makes
+  its tool table no further. A binding with tens of thousands of tools does that with today's
+  generated descriptions alone. The bound is on what is built, not only on what is sent: a
+  snapshot's labels can render to far more than the snapshot, so the frontend builds no
+  description past the room the listing has left. It reads and verifies one snapshot at a time,
+  every pinned snapshot whether or not the bound drops it, and lets each go once its tools are
+  described; what it holds after start is the listing.
 
 ## What the frontend serves
 
@@ -277,7 +282,7 @@ longest run of backticks in its content, and at least three. It holds, in order:
 3. a line `<label>: <text>` for each `description` at a schema location, in the order the server
    wrote them.
 
-A text spanning lines keeps its lines, each indented by two spaces. A label is the schema
+A text spanning lines keeps its lines, each after its first indented by two spaces. A label is the schema
 location's JSON Pointer from the root: `/properties/billing/properties/id`,
 `/properties/tags/items`, `/anyOf/1/properties/x`, with `~` and `/` in names written `~0` and
 `~1`. The root's own description is labelled `(root)`. The root's JSON Pointer is the empty
@@ -421,9 +426,10 @@ configuration loading the signer shares. For each snapshot, in order:
    happened in the adapter, which did.
 
 Any failure refuses the start. A pinned snapshot is never a fallback; only an entry with no pin
-is. The frontend keeps the verified bytes in memory, and both transports list from that one
-snapshot, subject to the listing budget. Nothing reads the file again, so a rewrite after start
-changes nothing until the next start, and that start then verifies what it reads.
+is. The frontend keeps the listing it builds from the verified snapshots, not the snapshots, and
+both transports list from that one listing, subject to the listing budget. Nothing reads the file
+again, so a rewrite after start changes nothing until the next start, and that start then
+verifies what it reads.
 
 ## Change, and the operator
 
@@ -449,8 +455,9 @@ a tool was added nor that nothing changed. The server's identity is compared as 
 never counts as a change. `connect --preview-descriptors <platform>` renders exactly what the
 frontend would serve for that platform: the templates, the fenced blocks and the schema
 projections, before any listing-budget drop across platforms. Every character outside printable
-ASCII is escaped for the terminal, and the output is labelled a preview. The note claims the
-change waited for an operator, not that the operator read it.
+ASCII is escaped for the terminal, each line the server would serve is written after `  | ` so
+none passes for a line of the preview's own, and the output is labelled a preview. The note
+claims the change waited for an operator, not that the operator read it.
 
 **Staleness is visible, not prevented.** A server that changes a tool after `connect` is served
 with the snapshot until the operator refreshes. A host may then refuse arguments the server

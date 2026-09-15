@@ -115,6 +115,14 @@ jobs:
       - name: Accepted descriptor schemas are valid in both dialects
         working-directory: testdata/tool-descriptors/metaschema
         run: go vet ./... && go test ./...
+      # Every description the MCP server serves, as rendered.json records
+      # it -- the gateway's own test holds the record to its rendering --
+      # parsed by a CommonMark renderer the gateway does not link: what a
+      # server wrote stays inside one fenced block, and nothing else becomes
+      # an element but a paragraph and its code spans.
+      - name: Served descriptions render nothing a server wrote as markup
+        working-directory: testdata/tool-descriptors/commonmark
+        run: go vet ./... && go test ./...
       # The mirror of the core's rule: an adapter may take dependencies the core
       # never will, but no dependency may resolve into the core's directory,
       # under any import name, and nothing may redirect resolution.

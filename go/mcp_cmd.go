@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -90,12 +91,15 @@ func runMCP(ctx context.Context, args []string, stdin io.Reader, stdout, stderr 
 		fmt.Fprintln(stderr, "start:", err)
 		return 1
 	}
-	server, err := newMCPServer(cfg, bindings, identity)
+	server, err := newMCPServer(cfg, bindings, identity, config)
 	if err != nil {
 		fmt.Fprintln(stderr, "start:", err)
 		return 1
 	}
 	server.log = stderr
+	if len(server.dropped) > 0 {
+		server.reports.controlf("mcp: the tool listing would pass %d bytes; the snapshots of %s are not served, and their tools are described as if nothing were captured", listingBound, strings.Join(server.dropped, ", "))
+	}
 	defer server.reports.flush(time.Second)
 	server.operatorControls(ctx)
 	if transport == "--stdio" {

@@ -123,19 +123,20 @@ are the server's own and are read the same way as the envelope.
 
 **The tool table.** One tool per `(platform, live tool)` pair the configuration and bindings
 name, held in an explicit table from name to pair, built at start. The name is
-`<platform>.<tool>`; a name two pairs would share is a refusal to start, never an overwrite,
-and routing is by the table, never by splitting a name. Under protocol `2025-06-18` a tool
-name is a string; a platform or tool name with a character some host refuses is a
-compatibility limit of that host, which the server cannot know and does not report. Each tool's description is generated — the platform,
-the binding and its pin, the tool's name, and that its arguments are what the platform's own
-server defines — and its `inputSchema` is the open object `{"type": "object"}`. The binding
-carries tool names only, and the engine will not run a platform's server just to read its
-schemas: running it means holding its credentials, which this process must never do. The
-consequence is stated plainly: a host that validates arguments validates nothing here, and a
-model must know the platform's tool from elsewhere. Descriptors captured by `connect` — which
-already runs the adapter in check mode under the platform's own user — and stored beside the
-configuration as metadata are the follow-on that closes this, and are not in this design:
-[tool-descriptors.md](tool-descriptors.md) designs it.
+`<platform>.<tool>`; a name two pairs would share is a refusal to start, never an overwrite, and
+routing is by the table, never by splitting a name. Under protocol `2025-06-18` a tool name is a
+string; a platform or tool name with a character some host refuses is a compatibility limit of
+that host, which the server cannot know and does not report. Each tool's description is
+generated — the platform, the binding and its pin, the tool's name, and that its arguments are
+what the platform's own server defines — and its `inputSchema` is the open object `{"type":
+"object"}`. The binding carries tool names only, and the engine will not run a platform's server
+just to read its schemas: running it means holding its credentials, which this process must
+never do. So a host that validates arguments validates nothing here, and a model must know the
+platform's tool from elsewhere — unless the platform pins a snapshot of descriptors that
+`connect` captured. The MCP server then reads and verifies that snapshot once, at start, and
+serves the server's own descriptions, framed and fenced, with the captured schema's projection
+([tool-descriptors.md](tool-descriptors.md)); a tool the snapshot does not hold is described as
+above.
 
 **Arguments, byte for byte.** The call's `arguments` member is carried to `/acquire` as the
 bytes the client sent, inside the wrapping object, never decoded and re-encoded on the way:

@@ -144,12 +144,21 @@ type mcpServer struct {
 	// reports is the diagnostics stream: one writer of its own, which no
 	// lock and no call waits for
 	reports *diagnosticStream
+	// listing is what tools/list answers, each tool's entry serialized
+	// once at start from the table and its platform's verified snapshot;
+	// dropped names the platforms whose snapshots the listing's bound left
+	// out.
+	listing []json.RawMessage
+	dropped []string
 }
 
 // newMCPServer builds the server from a resolved configuration and its
 // bindings: the tool table from every platform's live tools, the seal tool
-// beside them, a collision a refusal.
-func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *identityConfig) (*mcpServer, error) {
+// beside them, a collision a refusal, and the listing counted as it is
+// made; and, from the configuration's path, the listing, with each
+// platform that pins a snapshot described from it, read and verified here,
+// once, in turn (docs/design/tool-descriptors.md).
+func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *identityConfig, configPath string) (*mcpServer, error) {
 	if cfg.mcp == nil {
 		return nil, errors.New("the configuration has no mcp member; the MCP server needs one")
 	}
@@ -176,9 +185,24 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		stdioBacklog:   mcpStdioBacklog,
 	}
 	s.reports = newDiagnosticStream(func() io.Writer { return s.log })
+	// The listing is counted as the table is made, and refused the moment
+	// it passes its bound: the table holds no more than a listing can.
+	of := 1
+	for _, p := range cfg.platforms {
+		if b, ok := bindings[p.name]; ok && b.live != nil {
+			of += len(b.live.tools)
+		}
+	}
+	count, err := newListingCount(of)
+	if err != nil {
+		return nil, err
+	}
 	add := func(t mcpTool) error {
 		if other, taken := s.tools[t.name]; taken {
 			return fmt.Errorf("tool name %q would name both %s and %s; rename a platform", t.name, describeTool(other), describeTool(t))
+		}
+		if err := count.add(t); err != nil {
+			return err
 		}
 		s.tools[t.name] = t
 		s.order = append(s.order, t.name)
@@ -199,6 +223,14 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		}
 	}
 	sort.Strings(s.order)
+	dir, err := openServedDirectory(configPath, cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	if s.listing, s.dropped, err = buildListing(s.order, s.tools, count, cfg.platforms, bindings, dir); err != nil {
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -776,29 +808,10 @@ func buildVersion() string {
 	return "unversioned build"
 }
 
-// toolList is what tools/list answers: one page, no cursor.
-func (s *mcpServer) toolList() []map[string]any {
-	list := make([]map[string]any, 0, len(s.order))
-	for _, name := range s.order {
-		t := s.tools[name]
-		if t.seal {
-			list = append(list, map[string]any{
-				"name":        t.name,
-				"description": "Seal a receipt session at its final count, so it can be verified. Takes the session name; answers the seal record. A session with an acquisition still in flight is refused by the engine.",
-				"inputSchema": map[string]any{"type": "object", "properties": map[string]any{"session": map[string]any{"type": "string"}}, "required": []string{"session"}, "additionalProperties": false},
-			})
-			continue
-		}
-		list = append(list, map[string]any{
-			"name":        t.name,
-			"description": fmt.Sprintf("Tool %s of platform %s (binding %s), called by the engine's own adapter under the engine's key. Its arguments are what the platform's server defines; the engine does not read that server's schema. The answer carries {session, result, receipt, salts}.", t.tool, t.platform, t.binding),
-			"inputSchema": map[string]any{"type": "object"},
-		})
-	}
-	return list
-}
+// toolList is what tools/list answers: one page, no cursor, rendered at
+// start.
+func (s *mcpServer) toolList() []json.RawMessage { return s.listing }
 
-// overload is an overload result naming the session.
 func overload(session, reason string) map[string]any {
 	return toolError(map[string]any{"session": session, "outcome": "overload", "error": reason})
 }
