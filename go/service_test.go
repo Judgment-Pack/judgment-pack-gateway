@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -952,6 +954,82 @@ func TestAcquireAfterSealDoesNotStartTheSource(t *testing.T) {
 	}
 	if _, err := os.Stat(started); err == nil {
 		t.Fatal("the source ran for an acquisition on a sealed session")
+	}
+}
+
+// A seal is final across a restart: a process started on the same store
+// and registry refuses an acquisition into a session an earlier process
+// sealed, before the source is started -- the registry is the one record of
+// that seal, and the new process's session map does not hold it. An
+// unsealed session from before the restart may still be continued by a
+// read, as it always could; and a registry that cannot be read is a
+// refusal, never taken for the absence of a seal.
+func TestAcquireAfterRestartHonoursTheRegistrysSeal(t *testing.T) {
+	service, _ := testService(t)
+	if _, err := service.acquire("restart-sealed", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if _, err := service.sealSession("restart-sealed"); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if _, err := service.acquire("restart-open", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("acquire into the unsealed session: %v", err)
+	}
+	restarted, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// From here the source must never run for the sealed session. It
+	// announces itself by creating this file.
+	started := filepath.Join(t.TempDir(), "source-started")
+	t.Setenv(envSourceReady, started)
+	_, err = restarted.acquire("restart-sealed", "screening", vString("x"), nil)
+	if err == nil || !strings.Contains(err.Error(), "sealed in the registry") || !errors.As(err, new(badRequest)) {
+		t.Fatalf("an acquisition into a session sealed before the restart: %v", err)
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source ran for a session sealed before the restart")
+	}
+	if restarted.started.Load() != 0 {
+		t.Fatalf("%d sources started for a session sealed before the restart", restarted.started.Load())
+	}
+	restarted.mu.Lock()
+	_, entered := restarted.sessions["restart-sealed"]
+	restarted.mu.Unlock()
+	if entered {
+		t.Fatal("the refused session entered the new process's map")
+	}
+	// the unsealed session from before the restart: a read may continue it
+	// as it always could -- its first receipt is on disk, so this one
+	// fails at its stamp, append-only, after the source ran; what matters
+	// here is that the registry did not refuse it
+	if _, err := restarted.acquire("restart-open", "screening", vString("x"), nil); err != nil && strings.Contains(err.Error(), "sealed in the registry") {
+		t.Fatalf("an unsealed session was refused as sealed: %v", err)
+	}
+	// a session new to both processes is admitted and minted
+	if _, err := restarted.acquire("restart-new", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("a new session after the restart: %v", err)
+	}
+	// a registry that cannot be read refuses a session the process does not
+	// hold, and does not start its source
+	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
+		if err := os.Chmod(service.regPath, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		defer os.Chmod(service.regPath, 0o600)
+		os.Remove(started)
+		before := restarted.started.Load()
+		if _, err := restarted.acquire("restart-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry could not be read") {
+			t.Fatalf("an unreadable registry: %v", err)
+		}
+		if restarted.started.Load() != before {
+			t.Fatal("a source started with the registry unreadable")
+		}
+		// a session the process already holds is judged by its map, and is
+		// not refused for a registry it need not read
+		if _, err := restarted.acquire("restart-new", "screening", vString("y"), nil); err != nil {
+			t.Fatalf("a held session with the registry unreadable: %v", err)
+		}
 	}
 }
 

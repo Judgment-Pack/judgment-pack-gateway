@@ -252,10 +252,12 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 // cannot be continued from an empty memory, so a restart never lets an
 // action into a session the store already holds. Admission's own recheck
 // under the lock holds the in-memory state against a seal that lands
-// between here and the spawn. /acquire admits by that memory alone, which
-// is what it has always done; an action is held to the disk too, since a
-// write that ran and could not be receipted is the one outcome this design
-// exists to refuse.
+// between here and the spawn. /acquire consults the registry's seals for a
+// session it does not hold (sealedElsewhere) and otherwise admits by its
+// memory, so a read may still continue an unsealed session from before
+// this start; an action is held to the disk too, since a write that ran
+// and could not be receipted is the one outcome this design exists to
+// refuse.
 func (g *gatewayService) sessionOpen(sessionID string) string {
 	if seals, _, err := loadSeals(g.regPath, g.publicKey); err != nil {
 		return "the registry could not be read"

@@ -376,6 +376,15 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	// subprocess finishes. Every path out of here releases the reservation; the
 	// deferred release is registered before the mutex is taken again below, so
 	// it runs after that unlock rather than deadlocking on it.
+	// A seal is final across a restart too. This process's own seals are in
+	// its session map, and admit refuses them under the lock; a seal an
+	// earlier process wrote is in the registry alone, so a session this
+	// process does not hold is looked up there before anything runs -- a
+	// source started for a session whose count is already sealed could only
+	// fail at its stamp, after whatever it did.
+	if refusal := g.sealedElsewhere(sessionID); refusal != "" {
+		return nil, badRequest{errors.New(refusal)}
+	}
 	if g.beforeReadAdmit != nil {
 		g.beforeReadAdmit()
 	}
@@ -814,6 +823,31 @@ func executableDigest(path string) (string, error) {
 		return "", fmt.Errorf("source executable could not be read for its digest: %w", err)
 	}
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// sealedElsewhere is why a read may not be admitted into a session this
+// process does not hold, or "": the session is sealed in the registry on
+// disk -- by an earlier process, since this one's own seals are in its
+// map -- or the registry could not be read, which is a refusal, never taken
+// for the absence of a seal. A session this process holds is judged by
+// its map alone, under admission's lock. Unlike an action (sessionOpen), a
+// read may still continue an unsealed session the store holds from before
+// this start: that is what it has always done, and it is unchanged.
+func (g *gatewayService) sealedElsewhere(sessionID string) string {
+	g.mu.Lock()
+	_, held := g.sessions[sessionID]
+	g.mu.Unlock()
+	if held {
+		return ""
+	}
+	seals, _, err := loadSeals(g.regPath, g.publicKey)
+	if err != nil {
+		return "the registry could not be read"
+	}
+	if _, sealed := seals[sessionID]; sealed {
+		return "session is sealed in the registry: " + sessionID
+	}
+	return ""
 }
 
 // admit reserves an acquisition against a session, refusing a sealed one before
