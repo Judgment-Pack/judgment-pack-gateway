@@ -94,7 +94,7 @@ const (
 	// EnvListPages names a file of whole lines, one per page of
 	// tools/list, each written with {id} replaced by the request's id: a
 	// request without a cursor is answered with the first line, and one
-	// with cursor N with line N.
+	// whose cursor begins with the digits N with line N.
 	EnvListPages = "MCP_FAKE_LIST_PAGES"
 	// EnvStderrFile names a file whose contents are written to stderr at
 	// start, for text too long for a variable.
@@ -256,7 +256,11 @@ func serve() int {
 			if path := os.Getenv(EnvListPages); path != "" {
 				data, _ := os.ReadFile(path)
 				pages := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-				page, _ := strconv.Atoi(m.Params.Cursor)
+				end := 0
+				for end < len(m.Params.Cursor) && m.Params.Cursor[end] >= '0' && m.Params.Cursor[end] <= '9' {
+					end++
+				}
+				page, _ := strconv.Atoi(m.Params.Cursor[:end])
 				page = min(max(page, 0), len(pages)-1)
 				out.WriteString(strings.ReplaceAll(pages[page], "{id}", string(m.ID)) + "\n")
 				out.Flush()

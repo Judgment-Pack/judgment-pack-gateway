@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -633,5 +634,52 @@ func TestFallbacksAreCutAsTheyAreRecorded(t *testing.T) {
 	}
 	if len(c.fallbacks) != kept || c.unlisted != 2001-kept {
 		t.Fatalf("a later fallback is kept past the bound: %d kept, %d counted", len(c.fallbacks), c.unlisted)
+	}
+}
+
+// A cursor is not kept past the request it is sent with: 31 pages whose
+// cursors are 2 MiB each leave the heap, while the last page is read, no
+// larger than a few pages would make it, pinned or not.
+func TestCursorsAreNotKept(t *testing.T) {
+	const pages, size = 31, 2 << 20
+	var lines []string
+	for i := 0; i < pages; i++ {
+		cursor := fmt.Sprintf("%d", i+1) + strings.Repeat("x", size)
+		lines = append(lines, `{"jsonrpc":"2.0","id":{id},"result":{"tools":[],"nextCursor":"`+cursor+`"}}`)
+	}
+	lines = append(lines, `{"jsonrpc":"2.0","id":{id},"result":{"tools":[{"name":"last","inputSchema":{"type":"object"}}]}}`)
+	path := filepath.Join(t.TempDir(), "pages")
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, pinned := range []bool{false, true} {
+		cfg := fake(t)
+		t.Setenv(fakemcp.EnvListPages, path)
+		ctx := context.Background()
+		srv, err := startServer(ctx, cfg, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rpc := newClient(srv.stdin, srv.stdout)
+		if _, err := rpc.call(ctx, "initialize", map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "0"}}); err != nil {
+			t.Fatal(err)
+		}
+		var inUse uint64
+		names, err := listTools(ctx, rpc, pinned, func(tool listedTool) error {
+			runtime.GC()
+			var stats runtime.MemStats
+			runtime.ReadMemStats(&stats)
+			inUse = stats.HeapAlloc
+			return nil
+		})
+		srv.stop()
+		if err != nil || strings.Join(names, ",") != "last" {
+			t.Fatalf("pinned %v: %v %v", pinned, names, err)
+		}
+		// Every cursor kept would be 62 MiB; a few pages' worth is what a
+		// listing needs.
+		if inUse > 24<<20 {
+			t.Fatalf("pinned %v: %d MiB in use on the last page", pinned, inUse>>20)
+		}
 	}
 }

@@ -714,7 +714,10 @@ func findTool(ctx context.Context, rpc *client, name string) (json.RawMessage, [
 // pinned.
 func listTools(ctx context.Context, rpc *client, pinned bool, visit func(listedTool) error) ([]string, error) {
 	names := []string{}
-	seen, cursors := map[string]bool{}, map[string]bool{}
+	// A cursor is remembered by its digest, and only by a pinned listing:
+	// a server's cursor may be megabytes, and only the one to send next
+	// need be kept whole.
+	seen, cursors := map[string]bool{}, map[[sha256.Size]byte]bool{}
 	params := map[string]any{}
 	for page := 0; page < maxToolPages; page++ {
 		tools, next, err := toolPage(ctx, rpc, params)
@@ -722,12 +725,14 @@ func listTools(ctx context.Context, rpc *client, pinned bool, visit func(listedT
 			return nil, err
 		}
 		for _, tool := range tools {
-			if pinned && seen[tool.name] {
-				// The name is not written: it is the server's, and could
-				// hold what moves an operator's terminal.
-				return nil, errors.New("tools/list: the server offers one tool name twice")
+			if pinned {
+				if seen[tool.name] {
+					// The name is not written: it is the server's, and
+					// could hold what moves an operator's terminal.
+					return nil, errors.New("tools/list: the server offers one tool name twice")
+				}
+				seen[tool.name] = true
 			}
-			seen[tool.name] = true
 			names = append(names, tool.name)
 			if visit != nil {
 				if err := visit(tool); err != nil {
@@ -738,10 +743,13 @@ func listTools(ctx context.Context, rpc *client, pinned bool, visit func(listedT
 		if next == "" {
 			return names, nil
 		}
-		if pinned && cursors[next] {
-			return nil, errors.New("tools/list: the server gave a cursor it had given before")
+		if pinned {
+			digest := sha256.Sum256([]byte(next))
+			if cursors[digest] {
+				return nil, errors.New("tools/list: the server gave a cursor it had given before")
+			}
+			cursors[digest] = true
 		}
-		cursors[next] = true
 		params = map[string]any{"cursor": next}
 	}
 	return nil, fmt.Errorf("tools/list did not end within %d pages", maxToolPages)
