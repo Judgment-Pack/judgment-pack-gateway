@@ -81,8 +81,11 @@ tag naming this package at its version:
 2. The version in `package.json` is raised in an ordinary pull request.
 3. Once that has merged, the tag is pushed on the merged commit:
    `git tag n8n-nodes-judgment-pack@<version> && git push origin n8n-nodes-judgment-pack@<version>`.
-   Whoever may push such a tag may publish; the workflow publishes nothing from a commit not on
-   `main`.
+   Whoever may push such a tag may publish: tag pushers are release authorities, whether a person
+   or a token acting for one, and the workflow runs as the tagged revision holds it. Its checks
+   keep a mistake from publishing, such as a tag on a commit not on `main`; they do not constrain
+   a release authority set on doing otherwise. Restricting who may push these tags is a
+   repository ruleset, the owner's to set.
 4. The workflow checks that the tag names the package and version in `package.json` on a commit
    on `main`, installs from the lock file, builds, runs the tests, and runs `npm run release`:
    inside GitHub Actions, `n8n-node release` lints, builds and publishes with provenance. An

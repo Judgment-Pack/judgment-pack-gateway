@@ -6,8 +6,11 @@ name: Publish the n8n node
 # the tagged commit, built the package. It runs on nothing but a tag naming
 # the package at its version -- n8n-nodes-judgment-pack@0.1.0 -- which a
 # person pushes on a commit already on main
-# (plugins/n8n-nodes-judgment-pack/README.md, "Publishing"): whoever may
-# push such a tag may publish, so the commit it names must have merged.
+# (plugins/n8n-nodes-judgment-pack/README.md, "Publishing"). Whoever may
+# push such a tag may publish, and this workflow runs as the tagged
+# revision holds it: its checks keep a mistake from publishing, such as a
+# tag on a commit that has not merged, and do not constrain a release
+# authority set on doing otherwise.
 #
 # Before the first run, the npm account that is to own the package sets up
 # one of: npm Trusted Publishing for this repository and this workflow file,
