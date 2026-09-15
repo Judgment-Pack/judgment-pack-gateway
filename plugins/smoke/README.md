@@ -100,3 +100,33 @@ and the packages, starts the engine with the synthetic source, runs the two smok
 nothing itself, and verifies the store. It is not part of the pull-request checks: it pulls
 the n8n image and takes minutes, and what it establishes changes only when a package or the
 engine's surface does.
+
+## The checkers' own tests
+
+A checker that cannot fail proves nothing, so `testing/` holds the smoke checkers to their
+refusals without an engine, n8n or a container:
+
+- `stand_in_engine.py` answers the four routes a client plugin calls as a local engine with
+  one synthetic source and no identity answers them — unsigned: it stands in for the shape
+  of the engine's answers, never their verification — and, with `--fault NAME`, answers
+  wrongly in one named way (a receipt of another kind, index, session or signature form, a
+  result that is not the source's, no salt, an act accepted, a seal of another count or
+  session); `--require-length` refuses a request body sent chunked, as a server or proxy
+  that takes no chunked upload would.
+- `test_n8n_check.py` writes executions into a SQLite database the way n8n stores them —
+  the "flatted" form `check.py` decodes — one as the engine must have answered and one for
+  each wrong answer, and requires `check.py` to pass the first and name the fault in each
+  other.
+- `test_activepieces_runner.py` runs `activepieces/run.mjs` against the stand-in, as the
+  engine answers and once for every fault, and requires the run to fail on each; and once
+  against `--require-length`, which the piece passes because it states its body's length.
+  It needs Node and the piece built, and skips without them unless `SMOKE_REQUIRE_PIECE` is
+  set, as CI sets it where it builds the piece.
+
+```
+(cd plugins/activepieces/judgment-pack && npm ci --ignore-scripts && npm run build)
+SMOKE_REQUIRE_PIECE=1 python3 -m unittest discover -s plugins/smoke/testing -v
+```
+
+CI runs them in the plugins job. The runs above against a real engine remain what they
+were: the step before publishing, which these tests do not replace.

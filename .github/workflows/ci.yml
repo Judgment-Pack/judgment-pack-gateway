@@ -301,3 +301,14 @@ jobs:
         run: npm run lint
       - name: Tests
         run: npm test
+      # The smoke checkers' refusals (plugins/smoke/testing): the n8n
+      # checker over executions written as n8n stores them, and -- where the
+      # piece has just been built, and so required -- the Activepieces runner
+      # against the stand-in engine, as the engine answers and in each wrong
+      # answer the stand-in can give. Standard library Python; no engine, no
+      # n8n, no container.
+      - name: Smoke checkers
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_REQUIRE_PIECE: ${{ matrix.package == 'plugins/activepieces/judgment-pack' && '1' || '' }}
+        run: python3 -m unittest discover -s plugins/smoke/testing -v

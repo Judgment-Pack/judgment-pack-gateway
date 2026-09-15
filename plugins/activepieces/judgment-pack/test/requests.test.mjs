@@ -157,7 +157,15 @@ test('the engine’s answer comes back as the JSON it is, and the connection is 
 		const chunks = [];
 		req.on('data', (c) => chunks.push(c));
 		req.on('end', () => {
-			received = { method: req.method, url: req.url, authorization: req.headers.authorization, body: JSON.parse(Buffer.concat(chunks).toString()) };
+			received = {
+				method: req.method,
+				url: req.url,
+				authorization: req.headers.authorization,
+				body: JSON.parse(Buffer.concat(chunks).toString()),
+				length: req.headers['content-length'],
+				chunked: req.headers['transfer-encoding'],
+				bytes: Buffer.concat(chunks).length,
+			};
 			res.statusCode = 200;
 			res.setHeader('Content-Type', 'application/json');
 			res.end('{"result": {"id": 1}, "receipt": {"receiptVersion": 3}, "salts": {"args": "00"}}');
@@ -167,6 +175,12 @@ test('the engine’s answer comes back as the JSON it is, and the connection is 
 	try {
 		const answer = await send(acquireRequest({ engine_url: `http://127.0.0.1:${port}`, token: 'tok' }, { session: 's1', source: 'x', arguments: { id: 1 } }));
 		assert.deepEqual(answer, { result: { id: 1 }, receipt: { receiptVersion: 3 }, salts: { args: '00' } });
+		// the body goes whole, its length stated, never chunked
+		assert.equal(received.chunked, undefined, 'the body was sent chunked');
+		assert.equal(received.length, String(received.bytes));
+		delete received.length;
+		delete received.chunked;
+		delete received.bytes;
 		assert.deepEqual(received, { method: 'POST', url: '/acquire', authorization: 'Bearer tok', body: { session: 's1', source: 'x', arguments: { id: 1 } } });
 		const deadline = Date.now() + 2000;
 		let open = 1;
