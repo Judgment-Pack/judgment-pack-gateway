@@ -28,18 +28,46 @@ var listingBound = maxListingBytes
 // readServedPlatforms reads the snapshot every platform pins, each by the
 // note's five checks in order -- the directory, the file, the digest, the
 // strict decoding and the snapshot's own, then every candidate judged
-// again -- and refuses the start on any failure: a pinned snapshot is never
-// a fallback.
+// again -- and refuses on any failure: a pinned snapshot is never a
+// fallback. The preview reads its one platform so; the MCP server reads
+// each in its turn as it builds the listing.
 func readServedPlatforms(configPath string, cfg engineConfig, bindings map[string]binding) (map[string]*servedPlatform, error) {
-	served := map[string]*servedPlatform{}
-	var pinned []platformConfig
-	for _, p := range cfg.platforms {
-		if p.descriptors != "" {
-			pinned = append(pinned, p)
-		}
+	dir, err := openServedDirectory(configPath, cfg)
+	if err != nil {
+		return nil, err
 	}
-	if len(pinned) == 0 {
-		return served, nil
+	defer dir.Close()
+	served := map[string]*servedPlatform{}
+	for _, p := range cfg.platforms {
+		if p.descriptors == "" {
+			continue
+		}
+		platform, err := dir.read(p, bindings[p.name])
+		if err != nil {
+			return nil, err
+		}
+		served[p.name] = platform
+	}
+	return served, nil
+}
+
+// servedDirectory is the snapshots' directory, opened and judged once,
+// from which each pinned snapshot is read in turn.
+type servedDirectory struct {
+	dir   *os.Root
+	name  string
+	owner fileOwnerIDs
+}
+
+// openServedDirectory opens the directory beside the configuration by the
+// first check, or is nil when no platform pins a snapshot.
+func openServedDirectory(configPath string, cfg engineConfig) (*servedDirectory, error) {
+	pinned := false
+	for _, p := range cfg.platforms {
+		pinned = pinned || p.descriptors != ""
+	}
+	if !pinned {
+		return nil, nil
 	}
 	if configPath == "" {
 		return nil, errors.New("descriptors: a snapshot is read beside the configuration, and the MCP server was not given its path")
@@ -71,9 +99,9 @@ func readServedPlatforms(configPath string, cfg engineConfig, bindings map[strin
 	if err != nil {
 		return nil, fmt.Errorf("descriptors: %v", err)
 	}
-	defer dir.Close()
 	opened, err := dir.Stat(".")
 	if err != nil {
+		dir.Close()
 		return nil, fmt.Errorf("descriptors: %v", err)
 	}
 	// Judged before the open and again after it, each time as what was
@@ -81,19 +109,31 @@ func readServedPlatforms(configPath string, cfg engineConfig, bindings map[strin
 	// in the entry's place is found by the second look.
 	after, err := parent.Lstat(name)
 	if err != nil || after.Mode()&os.ModeSymlink != 0 || !os.SameFile(entry, opened) || !os.SameFile(after, opened) {
+		dir.Close()
 		return nil, fmt.Errorf("descriptors: %s is not the directory its name held a moment ago", name)
 	}
 	if err := servedInvariant(opened, owner); err != nil {
+		dir.Close()
 		return nil, fmt.Errorf("descriptors: %s %v", name, err)
 	}
-	for _, p := range pinned {
-		platform, err := readServedPlatform(dir, name, owner, p, bindings[p.name])
-		if err != nil {
-			return nil, fmt.Errorf("platform %s: descriptors: %w", p.name, err)
-		}
-		served[p.name] = platform
+	return &servedDirectory{dir: dir, name: name, owner: owner}, nil
+}
+
+// read reads the snapshot p pins from the directory, by the remaining
+// checks.
+func (d *servedDirectory) read(p platformConfig, b binding) (*servedPlatform, error) {
+	platform, err := readServedPlatform(d.dir, d.name, d.owner, p, b)
+	if err != nil {
+		return nil, fmt.Errorf("platform %s: descriptors: %w", p.name, err)
 	}
-	return served, nil
+	return platform, nil
+}
+
+// Close lets the directory go; a nil one holds nothing.
+func (d *servedDirectory) Close() {
+	if d != nil {
+		d.dir.Close()
+	}
 }
 
 // readServedPlatform reads one pinned snapshot from the open directory.
@@ -186,12 +226,9 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 			t.description = d
 		}
 		if text := candidates.inputSchemaText; text != nil {
-			if r := judgeSchemaText(*text); r != nil {
+			root, r := judgeSchema(*text)
+			if r != nil {
 				return nil, fmt.Errorf("an input schema: %v", r)
-			}
-			root, err := decodeWritten([]byte(*text))
-			if err != nil {
-				return nil, err
 			}
 			t.schema = root
 			together += len(*text)
@@ -208,44 +245,65 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 	return served, nil
 }
 
-// buildListing is the whole tools/list answer's tools, each platform
-// served from its snapshot while the answer, serialized, stays within
-// listingBound: past that, platforms' snapshots are dropped whole, in
-// reverse table order, until it fits, and dropped says which, in the
-// order dropped. Should it pass the bound with every snapshot dropped,
-// the start is refused, counting no further than the tools that pass it.
-//
-// Nothing past the bound is built. Each tool's entry is serialized as it
-// is sent, and the answer's size counted from the entries: first each
-// without a snapshot, then platform by platform in table order each with
-// its snapshot, its description built only as far as the room left. The
-// entries counted are the entries sent. A tool described
-// from a snapshot is never shorter than described without one (the
-// provenance sentence and the fence outweigh the sentence they replace,
-// and a projection holds at least the open schema), so the answer only
-// grows as platforms are kept: the platforms kept are the longest run from
-// the table's start that fits, which is what dropping from its end until
-// it fits leaves.
-func buildListing(order []string, tools map[string]mcpTool, platforms []platformConfig, served map[string]*servedPlatform) ([]json.RawMessage, []string, error) {
+// listingCount is the listing with no snapshot, counted as the tool table
+// is built: each tool's entry serialized as it is sent, and the answer's
+// size with them. It refuses the start the moment the count passes
+// listingBound, saying how many of the tools, in the table's making, it
+// had counted: neither the table nor the entries grow past what a listing
+// can hold, whatever the bindings allow.
+type listingCount struct {
+	entries map[string]json.RawMessage
+	total   int
+	of      int
+}
+
+// newListingCount is a count of none of the table's tools, of which it
+// will be given at most of.
+func newListingCount(of int) (*listingCount, error) {
 	total, err := listingSize(nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	entries := make(map[string]json.RawMessage)
-	for i, name := range order {
-		entry, err := listingEntry(tools[name], nil, -1)
-		if err != nil {
-			return nil, nil, err
-		}
-		entries[name] = entry
-		total += len(entry)
-		if i > 0 {
-			total++
-		}
-		if total > listingBound {
-			return nil, nil, fmt.Errorf("the tool listing passes %d bytes with every snapshot dropped: its first %d of %d tools do", listingBound, i+1, len(order))
-		}
+	return &listingCount{entries: map[string]json.RawMessage{}, total: total, of: of}, nil
+}
+
+// add counts a tool's entry.
+func (c *listingCount) add(t mcpTool) error {
+	entry, err := listingEntry(t, nil, -1)
+	if err != nil {
+		return err
 	}
+	if len(c.entries) > 0 {
+		c.total++
+	}
+	c.total += len(entry)
+	c.entries[t.name] = entry
+	if c.total > listingBound {
+		return fmt.Errorf("the tool listing passes %d bytes with every snapshot dropped: its first %d of %d tools do", listingBound, len(c.entries), c.of)
+	}
+	return nil
+}
+
+// buildListing is the whole tools/list answer's tools, from the listing
+// counted with no snapshot: each platform that pins one served from it
+// while the answer, serialized, stays within listingBound; past that,
+// platforms' snapshots are dropped whole, in reverse table order, until
+// it fits, and dropped says which, in the order dropped.
+//
+// Nothing past the bound is built, and no snapshot is held past its turn.
+// Platform by platform, in table order, its snapshot is read from dir and
+// verified, its tools' entries built from it only as far as the room left,
+// and the snapshot let go. A platform after the first that does not fit
+// is still read and verified -- a snapshot that fails its checks refuses
+// the start, served or not -- and let go unserved. A tool described from
+// a snapshot is never shorter than described without one (the provenance
+// sentence and the fence outweigh the sentence they replace, and a
+// projection holds at least the open schema), so the answer only grows as
+// platforms are kept: the platforms kept are the longest run from the
+// table's start that fits, which is what dropping from its end until it
+// fits leaves.
+func buildListing(order []string, tools map[string]mcpTool, count *listingCount, platforms []platformConfig, bindings map[string]binding, dir *servedDirectory) ([]json.RawMessage, []string, error) {
+	total, entries := count.total, count.entries
 	byPlatform := map[string][]string{}
 	for _, name := range order {
 		if t := tools[name]; !t.seal {
@@ -255,9 +313,12 @@ func buildListing(order []string, tools map[string]mcpTool, platforms []platform
 	var dropped []string
 	full := false
 	for _, p := range platforms {
-		sp := served[p.name]
-		if sp == nil {
+		if p.descriptors == "" {
 			continue
+		}
+		sp, err := dir.read(p, bindings[p.name])
+		if err != nil {
+			return nil, nil, err
 		}
 		if !full {
 			grown, described := 0, map[string]json.RawMessage{}

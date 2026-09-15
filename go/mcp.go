@@ -154,9 +154,10 @@ type mcpServer struct {
 
 // newMCPServer builds the server from a resolved configuration and its
 // bindings: the tool table from every platform's live tools, the seal tool
-// beside them, a collision a refusal; and, from the configuration's path,
-// the listing, with each platform that pins a snapshot described from it,
-// read and verified here, once (docs/design/tool-descriptors.md).
+// beside them, a collision a refusal, and the listing counted as it is
+// made; and, from the configuration's path, the listing, with each
+// platform that pins a snapshot described from it, read and verified here,
+// once, in turn (docs/design/tool-descriptors.md).
 func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *identityConfig, configPath string) (*mcpServer, error) {
 	if cfg.mcp == nil {
 		return nil, errors.New("the configuration has no mcp member; the MCP server needs one")
@@ -184,9 +185,24 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		stdioBacklog:   mcpStdioBacklog,
 	}
 	s.reports = newDiagnosticStream(func() io.Writer { return s.log })
+	// The listing is counted as the table is made, and refused the moment
+	// it passes its bound: the table holds no more than a listing can.
+	of := 1
+	for _, p := range cfg.platforms {
+		if b, ok := bindings[p.name]; ok && b.live != nil {
+			of += len(b.live.tools)
+		}
+	}
+	count, err := newListingCount(of)
+	if err != nil {
+		return nil, err
+	}
 	add := func(t mcpTool) error {
 		if other, taken := s.tools[t.name]; taken {
 			return fmt.Errorf("tool name %q would name both %s and %s; rename a platform", t.name, describeTool(other), describeTool(t))
+		}
+		if err := count.add(t); err != nil {
+			return err
 		}
 		s.tools[t.name] = t
 		s.order = append(s.order, t.name)
@@ -207,11 +223,12 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		}
 	}
 	sort.Strings(s.order)
-	served, err := readServedPlatforms(configPath, cfg, bindings)
+	dir, err := openServedDirectory(configPath, cfg)
 	if err != nil {
 		return nil, err
 	}
-	if s.listing, s.dropped, err = buildListing(s.order, s.tools, cfg.platforms, served); err != nil {
+	defer dir.Close()
+	if s.listing, s.dropped, err = buildListing(s.order, s.tools, count, cfg.platforms, bindings, dir); err != nil {
 		return nil, err
 	}
 	return s, nil

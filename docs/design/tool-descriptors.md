@@ -239,11 +239,13 @@ The limits below are exact, and when one is reached the overflow is deterministi
   rendering would pass that, the frontend drops platforms' snapshots whole, in reverse table
   order, until it fits, and its start reports which it dropped. If the listing would still pass
   8 MiB with every snapshot dropped, the frontend refuses to start, saying how many of its
-  tools, in the listing's order, pass the bound; it counts no further. A binding with tens of thousands
-  of tools does that with today's generated descriptions alone. The bound is on what is built,
-  not only on what is sent: a snapshot's labels can render to far more than the snapshot, so
-  the frontend builds no description past the room the listing has left, and what it holds
-  after start is the listing.
+  tools, counted in the configuration's order, pass the bound; it counts no further, and makes
+  its tool table no further. A binding with tens of thousands of tools does that with today's
+  generated descriptions alone. The bound is on what is built, not only on what is sent: a
+  snapshot's labels can render to far more than the snapshot, so the frontend builds no
+  description past the room the listing has left. It reads and verifies one snapshot at a time,
+  every pinned snapshot whether or not the bound drops it, and lets each go once its tools are
+  described; what it holds after start is the listing.
 
 ## What the frontend serves
 
@@ -424,9 +426,10 @@ configuration loading the signer shares. For each snapshot, in order:
    happened in the adapter, which did.
 
 Any failure refuses the start. A pinned snapshot is never a fallback; only an entry with no pin
-is. The frontend keeps the verified bytes in memory, and both transports list from that one
-snapshot, subject to the listing budget. Nothing reads the file again, so a rewrite after start
-changes nothing until the next start, and that start then verifies what it reads.
+is. The frontend keeps the listing it builds from the verified snapshots, not the snapshots, and
+both transports list from that one listing, subject to the listing budget. Nothing reads the file
+again, so a rewrite after start changes nothing until the next start, and that start then
+verifies what it reads.
 
 ## Change, and the operator
 

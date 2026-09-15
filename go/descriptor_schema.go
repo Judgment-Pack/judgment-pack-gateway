@@ -235,16 +235,25 @@ var grammarTypeNames = map[string]bool{"null": true, "boolean": true, "object": 
 // judgeSchemaText judges an input schema's original text to grammar 1, its
 // limits and display policy 1, walking members in the order written.
 func judgeSchemaText(text string) *descriptorRefusal {
+	_, refused := judgeSchema(text)
+	return refused
+}
+
+// judgeSchema is the schema's text parsed, once it is judged to grammar 1.
+func judgeSchema(text string) (*jsonNode, *descriptorRefusal) {
 	if len(text) > schemaTextBound {
-		return &descriptorRefusal{code: refusedTextSize, whole: true, detail: fmt.Sprintf("its text is %d bytes, over %d", len(text), schemaTextBound)}
+		return nil, &descriptorRefusal{code: refusedTextSize, whole: true, detail: fmt.Sprintf("its text is %d bytes, over %d", len(text), schemaTextBound)}
 	}
 	root, err := decodeWritten([]byte(text))
 	if err != nil {
-		return &descriptorRefusal{code: refusedJSON, whole: true, detail: "it is not one strict JSON value"}
+		return nil, &descriptorRefusal{code: refusedJSON, whole: true, detail: "it is not one strict JSON value"}
 	}
 	w := &grammarWalk{}
 	w.schema(root, 1)
-	return w.refused
+	if w.refused != nil {
+		return nil, w.refused
+	}
+	return root, nil
 }
 
 type grammarWalk struct {

@@ -346,6 +346,22 @@ func TestTheListingDropsSnapshotsInReverseTableOrder(t *testing.T) {
 	if strings.Count(string(listed), strings.Repeat("w", 3000)) != 1 {
 		t.Fatal("the platform first in the table keeps its snapshot")
 	}
+	// A snapshot the bound drops is verified all the same: one that is not
+	// its pin refuses the start.
+	dropped := filepath.Join(f.snapshots, strings.TrimPrefix(cfg.platforms[1].descriptors, "sha256:")+".json")
+	good, err := os.ReadFile(dropped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dropped, append(good, ' '), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newMCPServer(cfg, mcpBindings(), nil, f.config); err == nil || !strings.Contains(err.Error(), "platform "+cfg.platforms[1].name) {
+		t.Fatalf("a dropped snapshot that is not its pin: %v", err)
+	}
+	if err := os.WriteFile(dropped, good, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	// A first platform whose snapshot cannot fit, before one whose could:
 	// dropping from the table's end drops both, the last first.
 	small := bytes.Replace(canonicalSnapshot(t, `{"lookup":{"description":"s"}}`), []byte(`"platform":"tickets"`), []byte(`"platform":"`+cfg.platforms[1].name+`"`), 1)
@@ -464,12 +480,45 @@ func TestTheListingBoundHoldsForAnyID(t *testing.T) {
 	}
 }
 
+// startAllocation starts the MCP server on cfg and bindings, and is what
+// the start allocated: everything but the configuration and the bindings
+// it is given.
+func startAllocation(cfg engineConfig, bindings map[string]binding, config string) (uint64, *mcpServer, error) {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	s, err := newMCPServer(cfg, bindings, nil, config)
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc, s, err
+}
+
+// pinnedPlatforms is n platforms, each whose one tool, search, the
+// snapshot it pins describes by the schema text given.
+func pinnedPlatforms(t *testing.T, f *servedFixture, cfg engineConfig, n int, schema string) (engineConfig, map[string]binding) {
+	t.Helper()
+	if r := judgeSchemaText(schema); r != nil {
+		t.Fatalf("the schema is not one the grammar accepts: %v", r)
+	}
+	quoted, _ := json.Marshal(schema)
+	cfg.platforms = nil
+	bindings := map[string]binding{}
+	for i := 0; i < n; i++ {
+		name := fmt.Sprintf("p%03d", i)
+		ref := name + "@sha256:" + strings.Repeat("0", 64)
+		snap := bytes.Replace(canonicalSnapshot(t, `{"search":{"inputSchemaText":`+string(quoted)+`}}`), []byte(`"platform":"tickets"`), []byte(`"platform":"`+name+`"`), 1)
+		snap = bytes.Replace(snap, []byte(servedBinding), []byte(ref), 1)
+		cfg.platforms = append(cfg.platforms, platformConfig{name: name, binding: ref, descriptors: f.write(t, snap)})
+		bindings[name] = binding{platform: name, live: &operation{shape: "mcp", tools: []string{"search"}}}
+	}
+	return cfg, bindings
+}
+
 // Building the listing costs what the listing can hold, not what the
 // snapshots could render: 160 platforms whose one tool each renders a
 // mebibyte of labelled descriptions, from a schema of twelve kibibytes,
-// start with at most sixteen times the listing's bound allocated -- the
-// most serializing each entry kept can take -- where rendering each
-// snapshot once would take more.
+// start with what verifying the snapshots allocates and at most sixteen
+// times the listing's bound more -- the most serializing each entry kept
+// can take -- where rendering each snapshot once would take more.
 func TestTheListingIsBuiltWithinItsBound(t *testing.T) {
 	// Thirty levels of 128-byte property names, then 256 leaves each with
 	// a description: every leaf's label is the whole chain.
@@ -488,79 +537,110 @@ func TestTheListingIsBuiltWithinItsBound(t *testing.T) {
 	schema.WriteString("}")
 	schema.WriteString(strings.Repeat("}}", 30))
 	schema.WriteString("}")
-	if r := judgeSchemaText(schema.String()); r != nil {
-		t.Fatalf("the schema is not one the grammar accepts: %v", r)
-	}
-	quoted, _ := json.Marshal(schema.String())
 	f := newServedFixture(t, canonicalSnapshot(t, servedTools))
-	cfg := engineConfig{}
-	bindings := map[string]binding{}
-	for i := 0; i < 160; i++ {
-		name := fmt.Sprintf("p%03d", i)
-		ref := name + "@sha256:" + strings.Repeat("0", 64)
-		snap := bytes.Replace(canonicalSnapshot(t, `{"search":{"inputSchemaText":`+string(quoted)+`}}`), []byte(`"platform":"tickets"`), []byte(`"platform":"`+name+`"`), 1)
-		snap = bytes.Replace(snap, []byte(servedBinding), []byte(ref), 1)
-		cfg.platforms = append(cfg.platforms, platformConfig{name: name, binding: ref, descriptors: f.write(t, snap)})
-		bindings[name] = binding{platform: name, live: &operation{shape: "mcp", tools: []string{"search"}}}
-	}
-	served, err := readServedPlatforms(f.config, cfg, bindings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	order, tools := []string{mcpSealTool}, map[string]mcpTool{mcpSealTool: {name: mcpSealTool, seal: true}}
-	for _, p := range cfg.platforms {
-		name := p.name + ".search"
-		order = append(order, name)
-		tools[name] = mcpTool{name: name, platform: p.name, tool: "search", binding: p.binding}
-	}
+	cfg, bindings := pinnedPlatforms(t, f, newMCPFixture(t, false).server.cfg, 160, schema.String())
+	// What verifying every snapshot allocates, apart from any listing.
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	list, dropped, err := buildListing(order, tools, cfg.platforms, served)
+	served, err := readServedPlatforms(f.config, cfg, bindings)
 	runtime.ReadMemStats(&after)
-	if err != nil || len(dropped) == 0 || len(dropped) == len(cfg.platforms) {
-		t.Fatalf("%v: %d dropped", err, len(dropped))
+	if err != nil {
+		t.Fatal(err)
 	}
-	size, _ := listingSize(list)
-	allocated := after.TotalAlloc - before.TotalAlloc
-	t.Logf("%d of %d snapshots served in %d bytes, %d MiB allocated", len(cfg.platforms)-len(dropped), len(cfg.platforms), size, allocated>>20)
+	verifying := after.TotalAlloc - before.TotalAlloc
 	bound := 16 * uint64(listingBound)
-	if rendered := uint64(len(describePlatformTool(tools["p000.search"], served["p000"])) * len(cfg.platforms)); rendered <= bound {
+	if rendered := uint64(len(describePlatformTool(mcpTool{name: "p000.search", platform: "p000", tool: "search", binding: cfg.platforms[0].binding}, served["p000"])) * len(cfg.platforms)); rendered <= bound {
 		t.Fatalf("the snapshots render to %d MiB, within %d MiB", rendered>>20, bound>>20)
 	}
-	if allocated > bound {
-		t.Fatalf("%d MiB allocated to build a listing of at most %d MiB", allocated>>20, listingBound>>20)
+	served = nil
+	allocated, s, err := startAllocation(cfg, bindings, f.config)
+	if err != nil || len(s.dropped) == 0 || len(s.dropped) == len(cfg.platforms) {
+		t.Fatalf("%v: %v dropped", err, s)
+	}
+	size, _ := listingSize(s.listing)
+	t.Logf("%d of %d snapshots served in %d bytes; %d MiB allocated, %d MiB of it verifying", len(cfg.platforms)-len(s.dropped), len(cfg.platforms), size, allocated>>20, verifying>>20)
+	if allocated > verifying+bound {
+		t.Fatalf("%d MiB allocated past verifying to build a listing of at most %d MiB", (allocated-min(allocated, verifying))>>20, listingBound>>20)
 	}
 }
 
 // A listing past its bound with no snapshot at all is counted no further
-// than the bound: 400,000 tools, whose entries alone would be some 167 MB,
-// are refused with at most sixteen times the bound allocated.
+// than the bound, and neither is the tool table: ten platforms of 100,000
+// tools each, whose entries alone would be some 400 MB, are refused with
+// at most sixteen times the bound allocated.
 func TestAListingPastItsBoundIsCountedNoFurther(t *testing.T) {
-	const count = 400000
-	ref := "tickets@sha256:" + strings.Repeat("0", 64)
-	order, tools := make([]string, 0, count), make(map[string]mcpTool, count)
-	for i := 0; i < count; i++ {
-		tool := fmt.Sprintf("t%06d", i)
-		name := "tickets." + tool
-		order = append(order, name)
-		tools[name] = mcpTool{name: name, platform: "tickets", tool: tool, binding: ref}
+	const platforms, each = 10, 100000
+	cfg := newMCPFixture(t, false).server.cfg
+	cfg.platforms = nil
+	names := make([]string, each)
+	for i := range names {
+		names[i] = fmt.Sprintf("t%06d", i)
+	}
+	bindings := map[string]binding{}
+	for i := 0; i < platforms; i++ {
+		name := fmt.Sprintf("p%02d", i)
+		cfg.platforms = append(cfg.platforms, platformConfig{name: name, binding: name + "@sha256:" + strings.Repeat("0", 64)})
+		bindings[name] = binding{platform: name, live: &operation{shape: "mcp", tools: names}}
 	}
 	bound := 16 * uint64(listingBound)
-	if entry, _ := listingEntry(tools[order[0]], nil, -1); uint64(len(entry)*count) <= bound {
-		t.Fatalf("the entries are %d bytes, within %d", len(entry)*count, bound)
+	entry, _ := listingEntry(mcpTool{name: "p00.t000000", platform: "p00", tool: "t000000", binding: cfg.platforms[0].binding}, nil, -1)
+	if uint64(len(entry)*platforms*each) <= bound {
+		t.Fatalf("the entries are %d bytes, within %d", len(entry)*platforms*each, bound)
 	}
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	_, _, err := buildListing(order, tools, nil, nil)
-	runtime.ReadMemStats(&after)
-	if err == nil || !strings.Contains(err.Error(), "with every snapshot dropped") || !strings.Contains(err.Error(), fmt.Sprintf("of %d tools", count)) {
+	allocated, _, err := startAllocation(cfg, bindings, "")
+	if err == nil || !strings.Contains(err.Error(), "with every snapshot dropped") || !strings.Contains(err.Error(), fmt.Sprintf("of %d tools", 1+platforms*each)) {
 		t.Fatalf("%v", err)
 	}
-	allocated := after.TotalAlloc - before.TotalAlloc
 	t.Logf("%v; %d MiB allocated", err, allocated>>20)
 	if allocated > bound {
 		t.Fatalf("%d MiB allocated to refuse a listing past %d MiB", allocated>>20, listingBound>>20)
+	}
+}
+
+// Snapshots are held one at a time: 100 platforms, each pinning a schema
+// of sixteen kibibytes whose default holds 8,000 numbers -- which the
+// projection removes -- start with the heap, looked at as each snapshot
+// is about to be read, holding a small part of what the parsed snapshots
+// hold together.
+func TestSnapshotsAreHeldOneAtATime(t *testing.T) {
+	const n = 100
+	schema := `{"type":"object","default":[` + strings.Repeat("0,", 7999) + `0]}`
+	f := newServedFixture(t, canonicalSnapshot(t, servedTools))
+	cfg, bindings := pinnedPlatforms(t, f, newMCPFixture(t, false).server.cfg, n, schema)
+	heap := func() uint64 {
+		var m runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&m)
+		return m.HeapAlloc
+	}
+	// What one parsed snapshot holds.
+	first := cfg
+	first.platforms = cfg.platforms[:1]
+	before := heap()
+	served, err := readServedPlatforms(f.config, first, bindings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	one := heap() - before
+	runtime.KeepAlive(served)
+	served = nil
+	saved := entryJudged
+	t.Cleanup(func() { entryJudged = saved })
+	var peak uint64
+	entryJudged = func(name string) {
+		if strings.HasSuffix(name, ".json") {
+			peak = max(peak, heap())
+		}
+	}
+	base := heap()
+	s, err := newMCPServer(cfg, bindings, nil, f.config)
+	if err != nil || len(s.dropped) != 0 {
+		t.Fatalf("%v", err)
+	}
+	held := max(peak, base) - base
+	t.Logf("one parsed snapshot holds %d KiB; the start held at most %d KiB", one>>10, held>>10)
+	if held*8 > one*n {
+		t.Fatalf("the start held %d KiB where %d snapshots hold %d KiB together", held>>10, n, one*n>>10)
 	}
 }
