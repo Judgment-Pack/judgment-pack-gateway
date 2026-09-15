@@ -5,7 +5,9 @@ name: Publish the n8n node
 # 1 May 2026: anyone can check that this workflow, in this repository, at
 # the tagged commit, built the package. It runs on nothing but a tag naming
 # the package at its version -- n8n-nodes-judgment-pack@0.1.0 -- which a
-# person pushes (plugins/n8n-nodes-judgment-pack/README.md, "Publishing").
+# person pushes on a commit already on main
+# (plugins/n8n-nodes-judgment-pack/README.md, "Publishing"): whoever may
+# push such a tag may publish, so the commit it names must have merged.
 #
 # Before the first run, the npm account that is to own the package sets up
 # one of: npm Trusted Publishing for this repository and this workflow file,
@@ -37,16 +39,18 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: "24"
-      - name: The tag names this package at its version
+      - name: The tag names this package at its version, on a commit on main
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          want="n8n-nodes-judgment-pack@$(node -p 'require("./package.json").version')"
+          want="$(node -p 'const p = require("./package.json"); p.name + "@" + p.version')"
           test "$TAG" = "$want" || { echo "the tag $TAG does not name $want"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "the tagged commit $GITHUB_SHA is not on main"; exit 1; }
       # Trusted Publishing needs npm 11.5.1 or later; say so plainly rather
       # than fail in the publish.
       - name: npm can publish from here
@@ -55,11 +59,14 @@ jobs:
             || { echo "npm $(npm --version) is older than 11.5.1"; exit 1; }
       - name: Install from the lock file
         run: npm ci --ignore-scripts --no-audit --no-fund
+      # The tests load the built node, as in CI.
+      - name: Build
+        run: npm run build
       - name: Tests
         run: npm test
       # Inside GitHub Actions, n8n-node release lints, builds and runs npm
-      # publish with provenance; the package's prepublishOnly refuses any
-      # other publish.
+      # publish with provenance; the package's prepublishOnly stops an
+      # ordinary npm publish run any other way.
       - name: Publish
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

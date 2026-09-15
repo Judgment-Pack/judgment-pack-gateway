@@ -81,9 +81,12 @@ tag naming this package at its version:
 2. The version in `package.json` is raised in an ordinary pull request.
 3. Once that has merged, the tag is pushed on the merged commit:
    `git tag n8n-nodes-judgment-pack@<version> && git push origin n8n-nodes-judgment-pack@<version>`.
-4. The workflow checks that the tag names the version in `package.json`, installs from the lock
-   file, runs the tests, and runs `npm run release`: inside GitHub Actions, `n8n-node release`
-   lints, builds and publishes with provenance. `npm publish` run any other way is refused by
-   `prepublishOnly`.
+   Whoever may push such a tag may publish; the workflow publishes nothing from a commit not on
+   `main`.
+4. The workflow checks that the tag names the package and version in `package.json` on a commit
+   on `main`, installs from the lock file, builds, runs the tests, and runs `npm run release`:
+   inside GitHub Actions, `n8n-node release` lints, builds and publishes with provenance. An
+   ordinary `npm publish` run any other way is stopped by `prepublishOnly`, which is a guard
+   against a mistake, not a lock: `npm publish --ignore-scripts` passes it.
 5. Verification is asked for in n8n's Creator Portal, once
    `npx @n8n/scan-community-package n8n-nodes-judgment-pack` passes against the published package.
