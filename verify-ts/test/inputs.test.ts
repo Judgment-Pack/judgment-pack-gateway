@@ -12,7 +12,7 @@ import { test } from "node:test";
 import * as v8 from "node:v8";
 import * as vm from "node:vm";
 
-import { NoVerdict, documentBound } from "../src/inputs.ts";
+import { NoVerdict, documentBound, entryCost, readChunk } from "../src/inputs.ts";
 import { maxValues } from "../src/json.ts";
 import { limits, sessionCost, testHooks, verifyStore, writeVerdict } from "../src/verify.ts";
 import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir, verdictText } from "./support.ts";
@@ -214,18 +214,30 @@ test("a document past the bound: a receipt is no verdict, a seal line no seal, a
   assert.ok(refused(store.root, store.registry, records), "a line that opens an object");
 });
 
-// The heap, looked at between documents: what verification keeps of each
-// receipt and each decision record is small, whatever they hold.
-function heapPeak(run: () => void, where: string): number {
+// Memory, looked at between documents: the heap, and what is held outside
+// it -- a buffer's bytes, and a long string, which the platform may keep
+// outside the heap. What verification keeps of each receipt and each
+// decision record is small, whatever they hold. It is looked at every
+// every'th time verification passes where.
+function memoryPeak(run: () => void, where: string, every = 1): number {
   v8.setFlagsFromString("--expose-gc");
-  const gc = vm.runInNewContext("gc") as () => void;
+  // A collection that finishes before it returns, a buffer's bytes
+  // released with it: otherwise a buffer no longer held can still be
+  // counted after it.
+  const collect = vm.runInNewContext("gc") as (options: object) => void;
+  const gc = () => collect({ type: "major", execution: "sync", flavor: "last-resort" });
+  const used = () => {
+    const m = process.memoryUsage();
+    return m.heapUsed + m.external;
+  };
   gc();
-  const base = process.memoryUsage().heapUsed;
+  const base = used();
   let peak = 0;
+  let passed = 0;
   testHooks.sample = (at) => {
-    if (at === where) {
+    if (at === where && ++passed % every === 0) {
       gc();
-      peak = Math.max(peak, process.memoryUsage().heapUsed - base);
+      peak = Math.max(peak, used() - base);
     }
   };
   try {
@@ -250,7 +262,7 @@ test("what is kept of a receipt does not grow with it", () => {
     put(store, "s4", `${i}.json`, JSON.stringify({ ...receiptV2(i, null), sessionId: "s4", signature: "ab".repeat(1 << 20) }));
   }
   fs.writeFileSync(store.registry, "");
-  const peak = heapPeak(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), "receipt");
+  const peak = memoryPeak(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), "receipt");
   assert.ok(peak < 4 << 20, `${peak >> 20} MiB held between receipts of 2 MiB`);
 });
 
@@ -266,10 +278,31 @@ test("what is kept of a session, empty or not, is within its charge", () => {
   const small = oneSession();
   fs.writeFileSync(small.registry, "");
   verifyStore(small.root, small.registry, authority, undefined, publicKey);
-  const peak = heapPeak(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), "decision records");
+  const peak = memoryPeak(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), "decision records");
   // Each name charged at two bytes a character, as the budget does.
   const charged = n * sessionCost + 2 * Array.from({ length: n }, (_, i) => `e${i}`.length).reduce((a, b) => a + b);
   assert.ok(peak < charged, `${peak} bytes kept for ${n} empty sessions, charged ${charged}`);
+});
+
+// A small buffer is cut from a pool shared with others, and one kept keeps
+// its pool. With a file read between one directory and the next, each
+// directory waiting to be walked, were it kept as such a buffer, would keep
+// a pool of its own: many times what it is charged.
+test("a directory waiting to be walked keeps no more than it is charged", () => {
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  const records = tempDir();
+  const n = 2000;
+  let charged = 0;
+  for (let i = 0; i < n; i++) {
+    fs.mkdirSync(path.join(records, `d${i}`));
+    fs.writeFileSync(path.join(records, `f${i}.json`), " ".repeat(3 << 10) + "{}");
+    charged += entryCost + 2 * Buffer.byteLength(path.join(records, `d${i}`));
+  }
+  const peak = memoryPeak(() => verifyStore(store.root, store.registry, authority, records, publicKey), "candidate", 50);
+  // Beside what one document's reading holds: a chunk, and the document.
+  const reading = 2 * readChunk;
+  assert.ok(peak < charged + reading, `${peak} bytes held with ${n} directories waiting, charged ${charged}`);
 });
 
 test("what is kept of the decision records does not grow with their number", () => {
@@ -277,7 +310,7 @@ test("what is kept of the decision records does not grow with their number", () 
   fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
   const records = tempDir();
   fs.writeFileSync(path.join(records, "log.jsonl"), Array.from({ length: 200000 }, (_, i) => String(i)).join("\n") + "\n");
-  const peak = heapPeak(() => verifyStore(store.root, store.registry, authority, records, publicKey), "decision records");
+  const peak = memoryPeak(() => verifyStore(store.root, store.registry, authority, records, publicKey), "decision records");
   assert.ok(peak < 8 << 20, `${peak >> 20} MiB held after 200,000 candidates no action names`);
 });
 

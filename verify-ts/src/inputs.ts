@@ -435,19 +435,23 @@ export function eachDecisionRecord(anchor: Anchor, budget: Budget, visit: (candi
   }
   // Names are read as the bytes they are, and paths made of them, so two
   // files whose names decode alike are two candidates. A directory is read
-  // an entry at a time, each file read as it is met; each directory still
-  // to walk is charged to the budget until it is walked.
+  // an entry at a time, each file read as it is met. Each directory still
+  // to walk is kept as a string of its path's bytes, a character a byte
+  // (Latin-1), which holds any bytes and, unlike a small buffer, shares its
+  // storage with nothing it could keep alive; it is charged to the budget
+  // until it is walked.
   const separator = Buffer.from(path.sep);
-  const dirs: Buffer[] = [];
-  const cost = (dir: Buffer) => entryCost + dir.length;
+  const dirs: string[] = [];
+  const cost = (dir: string) => entryCost + 2 * dir.length;
   const push = (dir: Buffer) => {
-    budget.charge(cost(dir), "the decision-record directories still to walk");
-    dirs.push(dir);
+    const kept = dir.toString("latin1");
+    budget.charge(cost(kept), "the decision-record directories still to walk");
+    dirs.push(kept);
   };
   push(Buffer.from(p));
   for (let dir = dirs.pop(); dir !== undefined; dir = dirs.pop()) {
     budget.refund(cost(dir));
-    const parent = dir;
+    const parent = Buffer.from(dir, "latin1");
     try {
       eachEntry(parent, "under the decision-record directory,", (name, entry) => {
         const at = Buffer.concat([parent, separator, name]);

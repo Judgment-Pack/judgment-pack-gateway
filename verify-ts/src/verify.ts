@@ -146,7 +146,7 @@ function sha256Hex(bytes: Uint8Array): string {
   return crypto.createHash("sha256").update(bytes).digest("hex");
 }
 
-// testHooks lets a test look at the heap between one document and the
+// testHooks lets a test look at memory between one document and the
 // next; nothing sets it but a test.
 export const testHooks: { sample?: (where: string) => void } = {};
 
@@ -454,6 +454,7 @@ export function verifyStore(
   }
   const recordFindings = new RecordFindings(budget);
   eachDecisionRecord(records, budget, (candidate) => {
+    testHooks.sample?.("candidate");
     const digest = "sha256:" + candidate.digest;
     if (named.has(digest)) {
       named.set(digest, true);
