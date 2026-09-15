@@ -156,6 +156,10 @@ type gatewayService struct {
 	afterReadAdmit  func(error)
 }
 
+// startHook runs between making the store and opening the registry; a test
+// stands in a registry that goes away there.
+var startHook = func() {}
+
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
 	sources map[string]sourceSpec) (*gatewayService, error) {
 	// A shape is one of §1.2a's or nothing: a receipt minted under any other
@@ -175,23 +179,17 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	if err != nil {
 		return nil, err
 	}
+	startHook()
 	// A registry that is not there is made at start only for a store with
-	// no history (SPEC.md §3). A store that holds a session has run before,
-	// and its registry may hold that session's seal: an empty registry made
-	// in its place would reopen the session. An operator who knows no
-	// session was ever sealed makes the registry, empty, by hand.
-	if _, present, err := readRegistryBytes(registryPath); err != nil {
-		return nil, err
-	} else if !present {
+	// no history (SPEC.md §3), decided by the writer on its own read of the
+	// registry, with the store asked after that read.
+	reg, err := newRegistryWriter(registryPath, seed, func() (bool, error) {
 		held, err := os.ReadDir(filepath.Join(storeRoot, "receipts"))
 		if err != nil && !absent(err) {
-			return nil, err
+			return false, err
 		}
-		if len(held) > 0 {
-			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", registryPath)
-		}
-	}
-	reg, err := newRegistryWriter(registryPath, seed)
+		return len(held) > 0, nil
+	})
 	if err != nil {
 		return nil, err
 	}

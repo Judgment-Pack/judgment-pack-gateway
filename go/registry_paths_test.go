@@ -117,7 +117,7 @@ func TestAPathSpelledToResolveOtherwiseIsRefused(t *testing.T) {
 			if _, _, err := decisionCandidates(tt.path, nil, nil); !spelled(err) {
 				t.Errorf("the decision-record walk: %v", err)
 			}
-			if _, err := newRegistryWriter(tt.path, testSeed); !spelled(err) {
+			if _, err := newRegistryWriter(tt.path, testSeed, noHistory); !spelled(err) {
 				t.Errorf("the registry writer: %v", err)
 			}
 			if err := preflightPaths(filepath.Join(dir, "store"), tt.path, filepath.Join(dir, "records")); !spelled(err) {
@@ -139,7 +139,7 @@ func TestAPathSpelledToResolveOtherwiseIsRefused(t *testing.T) {
 			if _, _, err := readRegistryBytes(tt.path); !spelled(err) {
 				t.Errorf("the reader: %v", err)
 			}
-			if _, err := newRegistryWriter(tt.path, testSeed); !spelled(err) {
+			if _, err := newRegistryWriter(tt.path, testSeed, noHistory); !spelled(err) {
 				t.Errorf("the registry writer: %v", err)
 			}
 			if err := requirePlainSpelling(tt.path, false); err != nil {
@@ -451,6 +451,56 @@ func TestAStoreWithHistoryIsNotGivenAFreshRegistry(t *testing.T) {
 	}
 	if _, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources); err != nil {
 		t.Fatalf("a start on a registry made empty by hand: %v", err)
+	}
+}
+
+// A registry that goes away during the start is not made again for a store
+// with history: the writer's own read of the registry decides, and the
+// store's history is asked after that read, so no earlier sight of the
+// registry authorizes making one. Here the registry is there when the start
+// begins and gone by the time the writer reads it.
+func TestARegistryGoneDuringTheStartIsNotMadeAgain(t *testing.T) {
+	service, _ := testService(t)
+	if _, err := service.acquire("mid-start-sealed", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.sealSession("mid-start-sealed"); err != nil {
+		t.Fatal(err)
+	}
+	startHook = func() {
+		if err := os.Remove(service.regPath); err != nil {
+			t.Error(err)
+		}
+	}
+	t.Cleanup(func() { startHook = func() {} })
+	if _, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources); err == nil || !strings.Contains(err.Error(), "the store holds sessions and the registry is not there") {
+		t.Fatalf("a start whose registry went away as it began: %v", err)
+	}
+	if _, err := os.Lstat(service.regPath); !os.IsNotExist(err) {
+		t.Fatalf("the start made the registry again: %v", err)
+	}
+}
+
+// A store whose history cannot be read is not taken for a store with none:
+// with the registry not there, the start is refused on the read's failure.
+func TestAStoreWhoseHistoryCannotBeReadIsNotGivenAFreshRegistry(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("permission bits do not bar this process here")
+	}
+	service, _ := testService(t)
+	if err := os.Remove(service.regPath); err != nil {
+		t.Fatal(err)
+	}
+	receipts := filepath.Join(service.storeRoot, "receipts")
+	if err := os.Chmod(receipts, 0o300); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(receipts, 0o755) })
+	if _, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources); err == nil || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("a start whose store history cannot be read: %v", err)
+	}
+	if _, err := os.Lstat(service.regPath); !os.IsNotExist(err) {
+		t.Fatalf("the start made a registry: %v", err)
 	}
 }
 

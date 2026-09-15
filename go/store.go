@@ -255,7 +255,14 @@ type registryWriter struct {
 // reader of the registry may find the seal there.
 type sealMayBeWritten struct{ error }
 
-func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
+// noHistory reports a store with no sessions: for a registry writer made
+// where no store can hold any.
+func noHistory() (bool, error) { return false, nil }
+
+// newRegistryWriter opens the registry for sealing. history reports whether
+// the store beside it holds a session: a registry that is not there is made
+// only when it does not (SPEC.md §3).
+func newRegistryWriter(path string, seed []byte, history func() (bool, error)) (*registryWriter, error) {
 	if len(seed) != seedBytes {
 		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
 	}
@@ -277,9 +284,23 @@ func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 	// apart. What is at the path is judged as the verifier judges it first,
 	// and the registry is made only where nothing is -- never through a
 	// link to nothing, which an exclusive create does not follow.
+	//
+	// This one read decides, and the store's history is asked after it:
+	// a registry seen present earlier, by anyone, authorizes nothing, since
+	// it can be gone by now. A store that holds a session has run before,
+	// and its registry may hold that session's seal -- an empty one made in
+	// its place would reopen it. An operator who knows no session was ever
+	// sealed makes the registry, empty, by hand.
 	if _, present, err := readRegistryBytes(path); err != nil {
 		return nil, err
 	} else if !present {
+		held, err := history()
+		if err != nil {
+			return nil, err
+		}
+		if held {
+			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", path)
+		}
 		made, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err != nil {
 			return nil, err

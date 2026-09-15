@@ -282,7 +282,7 @@ func testStore(t *testing.T) (*store, *registryWriter, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := newRegistryWriter(registryPath, testSeed)
+	reg, err := newRegistryWriter(registryPath, testSeed, noHistory)
 	if err != nil {
 		t.Fatal(err)
 	}
