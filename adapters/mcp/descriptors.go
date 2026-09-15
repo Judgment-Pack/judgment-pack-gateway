@@ -139,6 +139,12 @@ func newCapturer(target DescriptorTarget, info initializeResult, secrets []strin
 // what a tool adds does not depend on where it sorts: its name, a colon,
 // its candidates, and a comma beside any other tool.
 func (c *capturer) add(tool listedTool) error {
+	if c.over {
+		// Every tool after the first that did not fit falls back, and is
+		// not judged: nothing of it would be captured whatever it holds.
+		c.fallBack(fallback{Tool: tool.name, Part: partTool, Reason: overBudget})
+		return nil
+	}
 	entry, refused := candidates(tool, c.secrets)
 	for _, f := range refused {
 		c.fallBack(f)
@@ -146,27 +152,25 @@ func (c *capturer) add(tool listedTool) error {
 	if entry.Description == nil && entry.InputSchemaText == nil {
 		return nil
 	}
-	if !c.over {
-		name, err := canonicalJSON(tool.name)
-		if err != nil {
-			return err
-		}
-		value, err := canonicalJSON(entry)
-		if err != nil {
-			return err
-		}
-		grow := len(name) + 1 + len(value)
-		if len(c.snap.Tools) > 0 {
-			grow++
-		}
-		parts := len(deref(entry.Description)) + len(deref(entry.InputSchemaText))
-		if c.size+grow <= maxSnapshot && c.text+parts <= maxCandidateText {
-			c.snap.Tools[tool.name] = entry
-			c.size, c.text = c.size+grow, c.text+parts
-			return nil
-		}
-		c.over = true
+	name, err := canonicalJSON(tool.name)
+	if err != nil {
+		return err
 	}
+	value, err := canonicalJSON(entry)
+	if err != nil {
+		return err
+	}
+	grow := len(name) + 1 + len(value)
+	if len(c.snap.Tools) > 0 {
+		grow++
+	}
+	parts := len(deref(entry.Description)) + len(deref(entry.InputSchemaText))
+	if c.size+grow <= maxSnapshot && c.text+parts <= maxCandidateText {
+		c.snap.Tools[tool.name] = entry
+		c.size, c.text = c.size+grow, c.text+parts
+		return nil
+	}
+	c.over = true
 	c.fallBack(fallback{Tool: tool.name, Part: partTool, Reason: overBudget})
 	return nil
 }

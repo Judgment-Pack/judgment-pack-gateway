@@ -683,3 +683,28 @@ func TestCursorsAreNotKept(t *testing.T) {
 		}
 	}
 }
+
+// A value nested thousands deep costs what its bytes do: a schema of 16 KiB
+// whose default is nested arrays, or nested objects, as deep as its text
+// allows is judged within a few MiB of allocation, not a pointer per level.
+func TestADeepValueCostsWhatItsBytesDo(t *testing.T) {
+	for _, tc := range []struct{ name, open, close string }{
+		{"arrays", "[", "]"},
+		{"objects", `{"a":`, "}"},
+	} {
+		depth := (maxSchemaText - 40) / (len(tc.open) + len(tc.close))
+		text := `{"type":"object","default":` + strings.Repeat(tc.open, depth) + "0" + strings.Repeat(tc.close, depth) + "}"
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		r := checkSchema([]byte(text), []string{"secret"})
+		runtime.ReadMemStats(&after)
+		if r != nil {
+			t.Fatalf("%s %d deep: refused %s", tc.name, depth, r.reason())
+		}
+		t.Logf("%s %d deep: %d KiB allocated", tc.name, depth, (after.TotalAlloc-before.TotalAlloc)>>10)
+		if grown := after.TotalAlloc - before.TotalAlloc; grown > 4<<20 {
+			t.Fatalf("%s %d deep: %d MiB allocated for %d bytes", tc.name, depth, grown>>20, len(text))
+		}
+	}
+}
