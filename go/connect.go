@@ -1000,7 +1000,12 @@ func (f *configFile) publishSnapshot(data []byte) (string, *os.Root, error) {
 	if err != nil {
 		return fail(fmt.Errorf("descriptors: %v", err))
 	}
-	defer held.Remove(staged)
+	// From here a failure removes the staging name, before the held
+	// directory is let go: once it is closed, nothing can be removed in it.
+	failStaged := func(err error) (string, *os.Root, error) {
+		held.Remove(staged)
+		return fail(err)
+	}
 	written := func() error {
 		defer file.Close()
 		if _, err := file.Write(data); err != nil {
@@ -1018,14 +1023,14 @@ func (f *configFile) publishSnapshot(data []byte) (string, *os.Root, error) {
 		return file.Close()
 	}
 	if err := written(); err != nil {
-		return fail(fmt.Errorf("descriptors: %v", err))
+		return failStaged(fmt.Errorf("descriptors: %v", err))
 	}
 	if err := held.Link(staged, name); err != nil {
 		if !errors.Is(err, os.ErrExist) {
-			return fail(fmt.Errorf("descriptors: %v", err))
+			return failStaged(fmt.Errorf("descriptors: %v", err))
 		}
 		if err := f.snapshotTaken(held, name, pin); err != nil {
-			return fail(err)
+			return failStaged(err)
 		}
 	}
 	if err := held.Remove(staged); err != nil {

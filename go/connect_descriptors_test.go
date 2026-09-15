@@ -179,6 +179,21 @@ func TestConnectReusesATakenNameOnlyWhenItVerifies(t *testing.T) {
 	if f.fileText(t) != before {
 		t.Fatal("the configuration is left as it was")
 	}
+	noStaging(t, f.config+".descriptors")
+}
+
+// noStaging fails when a staging name is left in the snapshots' directory.
+func noStaging(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".staged") {
+			t.Fatalf("a staging name is left behind: %s", e.Name())
+		}
+	}
 }
 
 func TestConnectFailingBeforeTheCommitPointLeavesTheOldConfiguration(t *testing.T) {

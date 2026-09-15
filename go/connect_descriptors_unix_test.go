@@ -150,6 +150,13 @@ func TestConnectUsesWhatIsThereOnlyWhenItHolds(t *testing.T) {
 			if f.fileText(t) != before {
 				t.Fatal("the configuration is left as it was")
 			}
+			if entries, err := os.ReadDir(f.config + ".descriptors"); err == nil {
+				for _, e := range entries {
+					if strings.HasSuffix(e.Name(), ".staged") {
+						t.Fatalf("a staging name is left behind: %s", e.Name())
+					}
+				}
+			}
 		})
 	}
 }
@@ -294,6 +301,7 @@ func TestASnapshotsDirectoryThatWillNotSyncRefusesTheConnect(t *testing.T) {
 	if f.fileText(t) != before {
 		t.Fatal("the configuration is left as it was")
 	}
+	noStaging(t, f.config+".descriptors")
 }
 
 // The snapshots' directory is judged immediately before the rename, after
