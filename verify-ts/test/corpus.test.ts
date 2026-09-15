@@ -13,8 +13,8 @@ import { test } from "node:test";
 
 import { canonical } from "../src/canon.ts";
 import { maxValues, parse } from "../src/json.ts";
-import { verifyStore, writeVerdict } from "../src/verify.ts";
-import { corpus, materialize, multiset, newStore, publicKey, sealLine, storeVectors } from "./support.ts";
+import { verifyStore } from "../src/verify.ts";
+import { corpus, materialize, multiset, newStore, publicKey, sealLine, storeVectors, verdictText } from "./support.ts";
 
 const main = path.join(import.meta.dirname, "..", "src", "main.ts");
 
@@ -51,7 +51,7 @@ test("every store vector", () => {
   assert.ok(vectors.length >= 39);
   for (const v of vectors) {
     const { root, registry, decisionRecords } = materialize(v);
-    const verdict = JSON.parse(writeVerdict(verifyStore(root, registry, v.authority, decisionRecords, publicKey)));
+    const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey)));
     assert.equal(verdict.ok, v.expected.ok, v.name);
     assert.deepEqual(multiset(verdict.findings), multiset(v.expected.findings), v.name);
   }
@@ -142,17 +142,38 @@ test("a seal of a very long session id fits a small heap", () => {
   assert.equal(verdict.findings[0].sessionId.length, long.length);
 });
 
-// Decision records failing in their millions are refused at the verdict's
-// limit, cleanly, in a process held to a small heap.
+// Decision records failing in their millions are verified in a process
+// held to a heap smaller than their findings written out: each failure is
+// kept as 33 bytes, and the verdict is written as it is made, no finding
+// held for it.
 test("a million failing decision records fit a small heap", () => {
   const v = storeVectors().find((s) => s.name === "valid-sealed")!;
   const { root, registry } = materialize(v);
-  const records = path.join(path.dirname(root), "records");
+  const at = path.dirname(root);
+  const records = path.join(at, "records");
   fs.mkdirSync(records);
-  fs.writeFileSync(path.join(records, "log.jsonl"), '{"cites":null}\n'.repeat(1200000));
-  const verified = spawnSync(process.execPath, ["--max-old-space-size=384", main, "verify", root, registry, v.authority, records], { input: publicKey });
-  assert.equal(verified.status, 2, verified.stderr.toString().slice(0, 400));
-  assert.match(verified.stderr.toString(), /findings a verdict here may hold/);
+  const n = 1200000;
+  fs.writeFileSync(path.join(records, "log.jsonl"), '{"cites":null}\n'.repeat(n));
+  const out = fs.openSync(path.join(at, "verdict"), "w");
+  let verified: ReturnType<typeof spawnSync>;
+  try {
+    verified = spawnSync(process.execPath, ["--max-old-space-size=128", main, "verify", root, registry, v.authority, records], {
+      input: publicKey,
+      stdio: ["pipe", out, "pipe"],
+    });
+  } finally {
+    fs.closeSync(out);
+  }
+  assert.equal(verified.status, 0, String(verified.stderr).slice(0, 400));
+  const verdict = fs.readFileSync(path.join(at, "verdict"));
+  const failure = Buffer.from('{"recordDigest":"sha256:');
+  let failures = 0;
+  for (let i = verdict.indexOf(failure); i !== -1; i = verdict.indexOf(failure, i + failure.length)) {
+    failures++;
+  }
+  assert.equal(failures, n);
+  assert.equal(verdict.subarray(0, 24).toString(), '{"ok":false,"findings":[');
+  assert.equal(verdict.subarray(-3).toString(), "]}\n");
 });
 
 // An argument's bytes are its path. A path ending in 0xff arrives, decoded

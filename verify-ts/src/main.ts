@@ -30,7 +30,7 @@ function readInput(limit: number): Uint8Array | null {
       read = fs.readSync(0, buffer, 0, Math.min(buffer.length, limit + 1 - n), null);
     } catch (e) {
       if (code(e) === "EAGAIN") {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        wait();
         continue;
       }
       if (code(e) === "EOF") {
@@ -48,6 +48,46 @@ function readInput(limit: number): Uint8Array | null {
     }
   }
   return Buffer.concat(parts, n);
+}
+
+// wait is a pause for a descriptor that is not ready.
+function wait(): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+}
+
+// Output is standard output written as it is made: text is held until
+// there is a chunk of it, and a chunk is written whole before more is
+// taken, so no more than a chunk and the text last handed over is held.
+class Output {
+  private parts: string[] = [];
+  private held = 0;
+
+  write(text: string): void {
+    this.parts.push(text);
+    this.held += text.length;
+    if (this.held >= 1 << 16) {
+      this.flush();
+    }
+  }
+
+  flush(): void {
+    let bytes = Buffer.from(this.parts.join(""));
+    this.parts = [];
+    this.held = 0;
+    while (bytes.length > 0) {
+      let n: number;
+      try {
+        n = fs.writeSync(1, bytes);
+      } catch (e) {
+        if (code(e) === "EAGAIN") {
+          wait();
+          continue;
+        }
+        throw e;
+      }
+      bytes = bytes.subarray(n);
+    }
+  }
 }
 
 const strictUTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -132,7 +172,10 @@ function main(args: string[]): number {
       if (key === null) {
         throw new NoVerdict("the public key on standard input is more than 32 bytes");
       }
-      process.stdout.write(writeVerdict(verifyStore(root, registry, authority, decisionRecords, key)));
+      const verdict = verifyStore(root, registry, authority, decisionRecords, key);
+      const output = new Output();
+      writeVerdict(verdict, (text) => output.write(text));
+      output.flush();
       return 0;
     } catch (e) {
       if (e instanceof NoVerdict) {

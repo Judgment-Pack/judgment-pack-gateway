@@ -19,6 +19,34 @@ export class NoVerdict extends Error {}
 // bound; this one keeps memory within reach whatever a store holds.
 export const documentBound = 64 << 20;
 
+// Budget is what verification may keep, in bytes, charged as it is kept:
+// each entry kept -- a session, a receipt file, a seal, a directory still
+// to walk, a finding -- at entryCost, and its strings by their length. A
+// charge past the limit is no verdict, at once, before anything more is
+// kept.
+export class Budget {
+  private used = 0;
+  private readonly limit: number;
+
+  constructor(limit: number) {
+    this.limit = limit;
+  }
+
+  charge(bytes: number, what: string): void {
+    this.used += bytes;
+    if (this.used > this.limit) {
+      throw new NoVerdict(`${what}: more than the ${this.limit} bytes this verifier keeps`);
+    }
+  }
+
+  refund(bytes: number): void {
+    this.used -= bytes;
+  }
+}
+
+// entryCost is what an entry kept is charged beyond its strings.
+export const entryCost = 256;
+
 // readChunk is how much of a file is read at a time.
 export const readChunk = 1 << 20;
 const chunk = readChunk;
@@ -54,6 +82,30 @@ export function nameOf(bytes: Uint8Array, what: string): string {
 // endsWith is whether a name's bytes end with the ASCII suffix.
 export function endsWith(name: Uint8Array, suffix: string): boolean {
   return name.length >= suffix.length && Buffer.from(name.subarray(name.length - suffix.length)).toString("latin1") === suffix;
+}
+
+// eachEntry hands each entry of a directory to visit, one at a time, with
+// its name as the bytes it is: no directory is read whole. A failure to
+// open the directory is thrown as it is, for the caller to read.
+export function eachEntry(dir: fs.PathLike, what: string, visit: (name: Buffer, entry: fs.Dirent) => void): void {
+  // Node reads a name as bytes when asked; its typings do not say so.
+  const handle = fs.opendirSync(dir, { encoding: "buffer" as BufferEncoding });
+  try {
+    for (;;) {
+      let entry: fs.Dirent | null;
+      try {
+        entry = handle.readSync();
+      } catch (e) {
+        throw unreadable(what, dir, e);
+      }
+      if (entry === null) {
+        return;
+      }
+      visit(entry.name as unknown as Buffer, entry);
+    }
+  } finally {
+    handle.closeSync();
+  }
 }
 
 // The Windows spelling rules of §4.1 are not implemented here, so this
@@ -364,7 +416,7 @@ export function digestArtifact(p: string): string | null {
 // Step 7 reads a candidate's bytes; a .jsonl file whole comes without
 // them, since step 7 reads its lines and not the file. An empty line is no
 // candidate.
-export function eachDecisionRecord(anchor: Anchor, visit: (candidate: Read) => void): void {
+export function eachDecisionRecord(anchor: Anchor, budget: Budget, visit: (candidate: Read) => void): void {
   if (anchor.absent) {
     return;
   }
@@ -382,51 +434,63 @@ export function eachDecisionRecord(anchor: Anchor, visit: (candidate: Read) => v
     return;
   }
   // Names are read as the bytes they are, and paths made of them, so two
-  // files whose names decode alike are two candidates.
+  // files whose names decode alike are two candidates. A directory is read
+  // an entry at a time, each file read as it is met; each directory still
+  // to walk is charged to the budget until it is walked.
   const separator = Buffer.from(path.sep);
-  const dirs: Buffer[] = [Buffer.from(p)];
+  const dirs: Buffer[] = [];
+  const cost = (dir: Buffer) => entryCost + dir.length;
+  const push = (dir: Buffer) => {
+    budget.charge(cost(dir), "the decision-record directories still to walk");
+    dirs.push(dir);
+  };
+  push(Buffer.from(p));
   for (let dir = dirs.pop(); dir !== undefined; dir = dirs.pop()) {
-    let entries: fs.Dirent<Buffer>[];
+    budget.refund(cost(dir));
+    const parent = dir;
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true, encoding: "buffer" });
+      eachEntry(parent, "under the decision-record directory,", (name, entry) => {
+        const at = Buffer.concat([parent, separator, name]);
+        if (entry.isDirectory()) {
+          push(at);
+        } else if (entry.isFile()) {
+          readCandidate(at, name, visit);
+        }
+        // a link is not followed, and nothing else is a file
+      });
     } catch (e) {
-      throw unreadable("under the decision-record directory,", dir, e);
+      throw unreadable("under the decision-record directory,", parent, e);
     }
-    for (const entry of entries) {
-      const at = Buffer.concat([dir, separator, entry.name]);
-      if (entry.isDirectory()) {
-        dirs.push(at);
-        continue;
-      }
-      if (!entry.isFile()) {
-        continue; // a link is not followed, and nothing else is a file
-      }
-      const what = "under the decision-record directory, the file";
-      try {
-        withRegular(at, what, (fd) => {
-          if (endsWith(entry.name, ".jsonl")) {
-            const whole = eachLine(fd, (line) => {
-              if (line.bytes === null || line.bytes.length > 0) {
-                visit(line);
-              }
-            });
-            visit({ digest: whole, bytes: null, opensObject: false });
-            return;
+  }
+}
+
+// readCandidate hands visit the candidates of one regular file under the
+// decision-record directory: the file whole, and each line of a .jsonl file.
+function readCandidate(at: Buffer, name: Buffer, visit: (candidate: Read) => void): void {
+  const what = "under the decision-record directory, the file";
+  try {
+    withRegular(at, what, (fd) => {
+      if (endsWith(name, ".jsonl")) {
+        const whole = eachLine(fd, (line) => {
+          if (line.bytes === null || line.bytes.length > 0) {
+            visit(line);
           }
-          const file = new Accumulating();
-          const buffer = Buffer.alloc(chunk);
-          for (;;) {
-            const read = fs.readSync(fd, buffer, 0, buffer.length, null);
-            if (read === 0) {
-              break;
-            }
-            file.add(buffer.subarray(0, read));
-          }
-          visit(file.done());
         });
-      } catch (e) {
-        throw unreadable(what, at, e);
+        visit({ digest: whole, bytes: null, opensObject: false });
+        return;
       }
-    }
+      const file = new Accumulating();
+      const buffer = Buffer.alloc(chunk);
+      for (;;) {
+        const read = fs.readSync(fd, buffer, 0, buffer.length, null);
+        if (read === 0) {
+          break;
+        }
+        file.add(buffer.subarray(0, read));
+      }
+      visit(file.done());
+    });
+  } catch (e) {
+    throw unreadable(what, at, e);
   }
 }

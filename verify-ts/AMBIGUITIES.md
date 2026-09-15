@@ -65,9 +65,6 @@ both parts is held by a test.
     the root is taken as spelled and never normalized, so `file/..` is looked up
     as the platform looks it up — past a file that is no directory, and so no
     verdict — rather than read as the directory above.
-14. **A validly signed seal whose `finalCount` is negative.** §3 says an integer.
-    Read here: it loads like any other, and a session against it is
-    `count-exceeds-seal`, since any count of files exceeds it.
 
 ## Settled: what the text requires, and a reader could miss
 
@@ -91,6 +88,11 @@ both parts is held by a test.
   read, since nothing else in it is.
 - **Two candidates holding the same record report twice**: step 7 reports for
   each candidate.
+- **A validly signed seal whose `finalCount` is below zero loads.** §3 makes
+  `finalCount` an integer and nothing more, and §4 step 2 loads a seal on its
+  key id and signature; it is then the session's first loadable seal, and a
+  session against it is `count-exceeds-seal` (§4 step 3), since any count of
+  files exceeds it.
 - **A spelling §4.1 refuses is refused before anything is read**, the store
   included.
 - **A decision-record directory named without a trailing separator that is a

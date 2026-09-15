@@ -9,13 +9,13 @@ import * as path from "node:path";
 import { test } from "node:test";
 
 import { readChunk } from "../src/inputs.ts";
-import { verifyStore, writeVerdict } from "../src/verify.ts";
-import { acquisitionV3, actionV3, authority, multiset, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir } from "./support.ts";
+import { verifyStore } from "../src/verify.ts";
+import { acquisitionV3, actionV3, authority, multiset, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir, verdictText } from "./support.ts";
 import type { Receipt, Store } from "./support.ts";
 
 function verdict(store: Store, seals: string[], decisionRecords?: string): { ok: boolean; findings: Record<string, unknown>[] } {
   fs.writeFileSync(store.registry, seals.map((line) => line + "\n").join(""));
-  return JSON.parse(writeVerdict(verifyStore(store.root, store.registry, authority, decisionRecords, publicKey)));
+  return JSON.parse(verdictText(verifyStore(store.root, store.registry, authority, decisionRecords, publicKey)));
 }
 
 // alone is the findings for a store whose one session, sealed at one,
@@ -201,7 +201,7 @@ test("seals load by line, the first of a session winning, and any other line is 
   assert.deepEqual(at([sealLine("s1", 1).replace(/("sealedAt":"[^"]*")/, '$1,"sealedAt":"x"')]), unregistered, "a name given twice");
   fs.writeFileSync(store.registry, sealLine("s1", 1));
   assert.deepEqual(
-    multiset(JSON.parse(writeVerdict(verifyStore(store.root, store.registry, authority, undefined, publicKey))).findings),
+    multiset(JSON.parse(verdictText(verifyStore(store.root, store.registry, authority, undefined, publicKey))).findings),
     passes,
     "a last line with no line feed",
   );
@@ -405,6 +405,21 @@ test("a receipt in another session's directory is misfiled there", () => {
     multiset([
       { sessionId: "s1", callIndex: 0, status: "ok" },
       { sessionId: "s2", callIndex: 0, status: "misfiled" },
+    ]),
+  );
+});
+
+// §3 makes finalCount an integer, and nothing more: a validly signed seal
+// counting below zero is loadable, the first for its session, and any
+// count of files exceeds it (§4 step 3).
+test("a seal counting below zero is loaded, and any count exceeds it", () => {
+  const store = newStore();
+  put(store, "s1", "0.json", JSON.stringify(signed(acquisitionV3())));
+  assert.deepEqual(
+    multiset(verdict(store, [sealLine("s1", -1), sealLine("s1", 1)]).findings),
+    multiset([
+      { sessionId: "s1", callIndex: 0, status: "ok" },
+      { sessionId: "s1", status: "count-exceeds-seal", have: 1, sealed: -1 },
     ]),
   );
 });

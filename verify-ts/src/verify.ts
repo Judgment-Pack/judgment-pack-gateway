@@ -11,13 +11,16 @@ import { canonical } from "./canon.ts";
 import { citations } from "./citations.ts";
 import type { Citation } from "./citations.ts";
 import {
+  Budget,
   NoVerdict,
   checkSpellings,
   code,
   digestArtifact,
   documentBound,
   eachDecisionRecord,
+  eachEntry,
   endsWith,
+  entryCost,
   eachRegistryLine,
   locateDecisionRecords,
   locateRegistry,
@@ -44,7 +47,9 @@ export type Status =
 // integer it is.
 export type Finding = ReadonlyArray<readonly [string, string | number | bigint | null]>;
 
-export type Verdict = { readonly ok: boolean; readonly findings: Finding[] };
+// A verdict's findings are made again each time they are read, from what
+// verification kept, so none is held for the verdict to be written.
+export type Verdict = { readonly ok: boolean; readonly findings: Iterable<Finding> };
 
 // A receipt file as the ladder judged it, kept as no more than the rest of
 // verification reads of it, each kept string its own and none long, so no
@@ -75,11 +80,27 @@ function own(s: string): string {
   return /^[\u0000-\u00ff]*$/.test(s) ? Buffer.from(s, "latin1").toString("latin1") : Buffer.from(s, "utf16le").toString("utf16le");
 }
 
-// limits.findings is the most findings a verdict may hold, 2^20: a store
-// of more receipt files than this, or decision records failing more
-// often, is no verdict, rather than a verdict held in memory whatever its
-// size. Only a test lowers it.
-export const limits = { findings: 1 << 20 };
+// size is what a kept string is charged: two bytes a character, the most
+// one takes.
+function size(s: string): number {
+  return 2 * s.length;
+}
+
+// limits.retainedBytes is what verification may keep, 256 MiB, charged to
+// a Budget as it is kept: a store needing more is no verdict, refused as
+// the charge that passes it is made. Only a test lowers it.
+export const limits = { retainedBytes: 256 << 20 };
+
+// receiptCost is what a receipt file is charged beside its name. What is
+// kept of a receipt but its name is bounded: a status and an index; for
+// one that passed, its version, its signature and a previous one of at
+// most 128 characters; for an action, the record it names and its bytes'
+// digest; in the index, its signature when of a citation's form -- 520
+// characters at most, beside a few objects and their entries in maps and
+// sets. A receipt file is charged all of it when it is met, and its name
+// twice, in its session's list and as its stem, so a store is refused for
+// its size before any receipt is read.
+const receiptCost = 8 * entryCost;
 
 // The longest callIndex, in digits, this verifier carries into a finding;
 // one longer cannot verify (the canonical domain ends at sixteen), and is
@@ -157,38 +178,46 @@ function under(root: string, ...names: string[]): string {
 
 // sessionFiles is the store's sessions -- each directory under receipts/,
 // not a link to one -- and each one's .json entries that are not
-// directories. A store root or receipts directory not there holds no
-// session; one there that cannot be read as a directory is no verdict.
-function sessionFiles(root: string): Map<string, string[]> {
+// directories, each charged to the budget as it is met. A store root or
+// receipts directory not there holds no session; one there that cannot be
+// read as a directory is no verdict.
+function sessionFiles(root: string, budget: Budget): Map<string, string[]> {
   const sessions = new Map<string, string[]>();
   const receipts = under(root, "receipts");
   // Names are read as the bytes they are: a name that is not UTF-8 is no
   // verdict (nameOf), rather than decoded into one that could be taken for
   // another entry's.
-  let entries: fs.Dirent<Buffer>[];
+  const eachSession = (name: Buffer, entry: fs.Dirent) => {
+    if (!entry.isDirectory()) {
+      return;
+    }
+    const session = nameOf(name, "a session directory");
+    budget.charge(entryCost + size(session), "the store's sessions");
+    const files: string[] = [];
+    sessions.set(session, files);
+    const what = `session ${JSON.stringify(session)}`;
+    try {
+      eachEntry(under(receipts, session), what, (n, e) => {
+        if (endsWith(n, ".json") && !e.isDirectory()) {
+          const file = nameOf(n, `in ${what}, a receipt file`);
+          budget.charge(receiptCost + 2 * size(file), "the store's receipt files");
+          files.push(file);
+        }
+      });
+    } catch (e) {
+      throw e instanceof NoVerdict ? e : new NoVerdict(`${what} cannot be read: ${code(e) ?? e}`);
+    }
+  };
   try {
-    entries = fs.readdirSync(receipts, { withFileTypes: true, encoding: "buffer" });
+    eachEntry(receipts, "the receipts directory", eachSession);
   } catch (e) {
+    if (e instanceof NoVerdict) {
+      throw e;
+    }
     if (code(e) === "ENOENT") {
       return sessions;
     }
     throw new NoVerdict(`the receipts directory ${JSON.stringify(receipts)} cannot be read: ${code(e) ?? e}`);
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) {
-      continue;
-    }
-    const session = nameOf(entry.name, "a session directory");
-    let names: fs.Dirent<Buffer>[];
-    try {
-      names = fs.readdirSync(under(receipts, session), { withFileTypes: true, encoding: "buffer" });
-    } catch (e) {
-      throw new NoVerdict(`session ${JSON.stringify(session)} cannot be read: ${code(e) ?? e}`);
-    }
-    sessions.set(
-      session,
-      names.filter((n) => endsWith(n.name, ".json") && !n.isDirectory()).map((n) => nameOf(n.name, `in session ${JSON.stringify(session)}, a receipt file`)),
-    );
   }
   return sessions;
 }
@@ -343,18 +372,15 @@ export function verifyStore(
   const key = publicKeyObject(publicKey);
   const keyId = keyIdOf(publicKey);
 
+  // What verification keeps, charged as it is kept.
+  const budget = new Budget(limits.retainedBytes);
+
   // Each receipt, read once: judged, and indexed by stem for the
-  // citations of §4 steps 5 and 7.
+  // citations of §4 steps 5 and 7. Every receipt file is met, and charged
+  // for what is kept of it, before any is read.
   const sessions = new Map<string, Judged[]>();
   const signatures = new Map<string, Map<string, string | undefined>>();
-  const store = sessionFiles(root);
-  let receiptFiles = 0;
-  for (const files of store.values()) {
-    receiptFiles += files.length;
-  }
-  if (receiptFiles > limits.findings) {
-    throw new NoVerdict(`the store holds ${receiptFiles} receipt files, more than the ${limits.findings} findings a verdict here may hold`);
-  }
+  const store = sessionFiles(root, budget);
   for (const [session, files] of store) {
     const judged: Judged[] = [];
     const stems = new Map<string, string | undefined>();
@@ -404,27 +430,28 @@ export function verifyStore(
     }
     const seal = sealOf(line.bytes, key, keyId);
     if (seal !== null && !seals.has(seal.sessionId)) {
+      budget.charge(entryCost + size(seal.sessionId), "the registry's seals");
       seals.set(seal.sessionId, seal);
     }
   });
   testHooks.sample?.("registry");
 
   // §4 step 6's candidates, matched against the records the actions that
-  // passed name, and step 7's findings, from one walk.
-  const named = new Set<string>();
+  // passed name, and step 7's findings, from one walk: each record named
+  // is marked once a candidate is found to be it.
+  const named = new Map<string, boolean>();
   for (const judged of sessions.values()) {
     for (const j of judged) {
       if (j.action !== undefined) {
-        named.add(j.action.recordDigest);
+        named.set(j.action.recordDigest, false);
       }
     }
   }
-  const found = new Set<string>();
-  const recordFindings = new RecordFindings(limits.findings - receiptFiles);
-  eachDecisionRecord(records, (candidate) => {
+  const recordFindings = new RecordFindings(budget);
+  eachDecisionRecord(records, budget, (candidate) => {
     const digest = "sha256:" + candidate.digest;
     if (named.has(digest)) {
-      found.add(digest);
+      named.set(digest, true);
     }
     if (candidate.bytes === null) {
       // Past the bound: a candidate that does not open an object is not
@@ -441,146 +468,137 @@ export function verifyStore(
   });
   testHooks.sample?.("decision records");
 
-  const findings: Finding[] = [];
-  let ok = true;
-  const add = (f: Finding, passing = false) => {
-    findings.push(f);
-    ok &&= passing;
-  };
-  for (const [session, judged] of sessions) {
-    for (const j of judged) {
-      if (j.status === "malformed") {
-        add([
-          ["sessionId", session],
-          ["file", j.file],
-          ["status", "malformed"],
-        ]);
-      } else {
-        add(
-          [
+  // The findings, made from what was kept, each time they are read.
+  function* findings(): Generator<Finding> {
+    for (const [session, judged] of sessions) {
+      for (const j of judged) {
+        if (j.status === "malformed") {
+          yield [
+            ["sessionId", session],
+            ["file", j.file],
+            ["status", "malformed"],
+          ];
+        } else {
+          yield [
             ["sessionId", session],
             ["callIndex", j.callIndex!],
             ["status", j.status],
-          ],
-          j.status === "ok",
-        );
+          ];
+        }
       }
-    }
-    // The sequence and the chain, over the receipts that passed.
-    const passing = judged.filter((j) => j.status === "ok").sort((a, b) => (a.callIndex! < b.callIndex! ? -1 : 1));
-    if (passing.some((j, i) => j.callIndex !== BigInt(i))) {
-      add([
-        ["sessionId", session],
-        ["callIndex", null],
-        ["status", "sequence-broken"],
-      ]);
-    } else {
-      const head = passing[0]?.chain!.version;
-      for (let i = 0; i < passing.length; i++) {
-        const { version, prev } = passing[i]!.chain!;
-        const expected = i === 0 ? null : passing[i - 1]!.chain!.signature;
-        const linked = expected === null ? prev.kind === "null" : prev.kind === "string" && prev.value === expected;
-        if (!linked || version !== head) {
-          add([
+      // The sequence and the chain, over the receipts that passed.
+      const passing = judged.filter((j) => j.status === "ok").sort((a, b) => (a.callIndex! < b.callIndex! ? -1 : 1));
+      if (passing.some((j, i) => j.callIndex !== BigInt(i))) {
+        yield [
+          ["sessionId", session],
+          ["callIndex", null],
+          ["status", "sequence-broken"],
+        ];
+      } else {
+        const head = passing[0]?.chain!.version;
+        for (let i = 0; i < passing.length; i++) {
+          const { version, prev } = passing[i]!.chain!;
+          const expected = i === 0 ? null : passing[i - 1]!.chain!.signature;
+          const linked = expected === null ? prev.kind === "null" : prev.kind === "string" && prev.value === expected;
+          if (!linked || version !== head) {
+            yield [
+              ["sessionId", session],
+              ["callIndex", null],
+              ["status", "chain-broken"],
+            ];
+            break;
+          }
+        }
+      }
+      // §4 step 3: the session's count is its .json files, whether or not
+      // each verified.
+      const seal = seals.get(session);
+      const have = BigInt(judged.length);
+      if (seal === undefined) {
+        yield [
+          ["sessionId", session],
+          ["status", "unregistered-session"],
+        ];
+      } else if (have !== seal.finalCount) {
+        yield [
+          ["sessionId", session],
+          ["status", have < seal.finalCount ? "tail-rollback" : "count-exceeds-seal"],
+          ["have", have],
+          ["sealed", seal.finalCount],
+        ];
+      }
+      // §4 steps 5 and 6, for each version 3 action receipt that passed.
+      for (const j of judged) {
+        if (j.action === undefined) {
+          continue;
+        }
+        if (unresolved.has(j)) {
+          yield [
             ["sessionId", session],
-            ["callIndex", null],
-            ["status", "chain-broken"],
-          ]);
-          break;
+            ["callIndex", j.callIndex!],
+            ["status", "citation-unresolved"],
+          ];
+        }
+        if (named.get(j.action.recordDigest) !== true) {
+          yield [
+            ["sessionId", session],
+            ["callIndex", j.callIndex!],
+            ["status", "decision-record-mismatch"],
+          ];
         }
       }
     }
-    // §4 step 3: the session's count is its .json files, whether or not
-    // each verified.
-    const seal = seals.get(session);
-    const have = BigInt(judged.length);
-    if (seal === undefined) {
-      add([
-        ["sessionId", session],
-        ["status", "unregistered-session"],
-      ]);
-    } else if (have !== seal.finalCount) {
-      add([
-        ["sessionId", session],
-        ["status", have < seal.finalCount ? "tail-rollback" : "count-exceeds-seal"],
-        ["have", have],
-        ["sealed", seal.finalCount],
-      ]);
-    }
-    // §4 steps 5 and 6, for each version 3 action receipt that passed.
-    for (const j of judged) {
-      if (j.action === undefined) {
-        continue;
-      }
-      if (unresolved.has(j)) {
-        add([
-          ["sessionId", session],
-          ["callIndex", j.callIndex!],
-          ["status", "citation-unresolved"],
-        ]);
-      }
-      if (!found.has(j.action.recordDigest)) {
-        add([
-          ["sessionId", session],
-          ["callIndex", j.callIndex!],
-          ["status", "decision-record-mismatch"],
-        ]);
+    // §4 step 4: each sealed session the store does not hold.
+    for (const sessionId of seals.keys()) {
+      if (!sessions.has(sessionId)) {
+        yield [
+          ["sessionId", sessionId],
+          ["status", "sealed-session-missing"],
+        ];
       }
     }
+    yield* recordFindings.findings();
   }
-  // §4 step 4: each sealed session the store does not hold.
-  for (const sessionId of seals.keys()) {
-    if (!sessions.has(sessionId)) {
-      add([
-        ["sessionId", sessionId],
-        ["status", "sealed-session-missing"],
-      ]);
-    }
+  // The verdict is ok when every finding's status is.
+  let ok = true;
+  for (const f of findings()) {
+    ok &&= f.some(([name, value]) => name === "status" && value === "ok");
   }
-  for (const f of recordFindings.findings()) {
-    add(f);
-  }
-  if (findings.length > limits.findings) {
-    throw new NoVerdict(`the verdict would hold ${findings.length} findings, more than ${limits.findings}`);
-  }
-  return { ok, findings };
+  return { ok, findings: { [Symbol.iterator]: findings } };
 }
 
 // RecordFindings is §4 step 7's findings, kept as 33 bytes each -- a
-// record's digest and its status -- until the verdict is written, and no
-// more of them than room allows.
+// record's digest and its status -- in a buffer charged to the budget as
+// it grows.
 class RecordFindings {
-  private buffer = Buffer.alloc(33 * 1024);
+  private buffer = Buffer.alloc(0);
   private n = 0;
-  private readonly room: number;
+  private readonly budget: Budget;
 
-  constructor(room: number) {
-    this.room = room;
+  constructor(budget: Budget) {
+    this.budget = budget;
   }
 
   add(digestHex: string, status: "record-citation-malformed" | "record-citation-unresolved"): void {
-    if (this.n >= this.room) {
-      throw new NoVerdict(`decision records fail to cite more often than the ${limits.findings} findings a verdict here may hold`);
-    }
     if ((this.n + 1) * 33 > this.buffer.length) {
-      const grown = Buffer.alloc(this.buffer.length * 2);
-      this.buffer.copy(grown);
-      this.buffer = grown;
+      const grown = Math.max(33 * 16, this.buffer.length * 2);
+      this.budget.charge(grown - this.buffer.length, "the decision records' findings");
+      const buffer = Buffer.alloc(grown);
+      this.buffer.copy(buffer);
+      this.buffer = buffer;
     }
     this.buffer.write(digestHex, this.n * 33, "hex");
     this.buffer[this.n * 33 + 32] = status === "record-citation-malformed" ? 0 : 1;
     this.n++;
   }
 
-  findings(): Finding[] {
-    const out: Finding[] = [];
+  *findings(): Generator<Finding> {
     for (let i = 0; i < this.n; i++) {
-      out.push([
+      yield [
         ["recordDigest", "sha256:" + this.buffer.toString("hex", i * 33, i * 33 + 32)],
         ["status", this.buffer[i * 33 + 32] === 0 ? "record-citation-malformed" : "record-citation-unresolved"],
-      ]);
+      ];
     }
-    return out;
   }
 }
 
@@ -610,13 +628,18 @@ function recordCitations(bytes: Uint8Array, resolves: (c: Citation) => boolean):
   return cited.every(resolves) ? null : "record-citation-unresolved";
 }
 
-// writeVerdict is the verdict as the process contract writes it.
-export function writeVerdict(v: Verdict): string {
-  const findings = v.findings.map(
-    (f) =>
-      "{" +
-      f.map(([name, value]) => JSON.stringify(name) + ":" + (typeof value === "bigint" ? value.toString() : JSON.stringify(value))).join(",") +
-      "}",
-  );
-  return `{"ok":${v.ok},"findings":[${findings.join(",")}]}\n`;
+// writeVerdict writes the verdict as the process contract does, a finding
+// at a time: no more of it is handed to write at once than one finding.
+export function writeVerdict(v: Verdict, write: (text: string) => void): void {
+  write(`{"ok":${v.ok},"findings":[`);
+  let first = true;
+  for (const f of v.findings) {
+    write(
+      (first ? "{" : ",{") +
+        f.map(([name, value]) => JSON.stringify(name) + ":" + (typeof value === "bigint" ? value.toString() : JSON.stringify(value))).join(",") +
+        "}",
+    );
+    first = false;
+  }
+  write("]}\n");
 }

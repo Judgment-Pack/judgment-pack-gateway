@@ -14,8 +14,8 @@ import * as vm from "node:vm";
 
 import { NoVerdict, documentBound } from "../src/inputs.ts";
 import { maxValues } from "../src/json.ts";
-import { limits, testHooks, verifyStore } from "../src/verify.ts";
-import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir } from "./support.ts";
+import { limits, testHooks, verifyStore, writeVerdict } from "../src/verify.ts";
+import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir, verdictText } from "./support.ts";
 
 // A store of one session, s1, holding one valid receipt.
 function oneSession() {
@@ -25,9 +25,7 @@ function oneSession() {
 }
 
 function statuses(root: string, registry: string, decisionRecords?: string): string[] {
-  return verifyStore(root, registry, authority, decisionRecords, publicKey)
-    .findings.map((f) => String(new Map(f).get("status")))
-    .sort();
+  return [...verifyStore(root, registry, authority, decisionRecords, publicKey).findings].map((f) => String(new Map(f).get("status"))).sort();
 }
 
 function refused(root: string, registry: string, decisionRecords?: string): boolean {
@@ -330,11 +328,11 @@ test("names that are not UTF-8 are read as their bytes, and none is taken for an
   const records = tempDir();
   fs.writeFileSync(named(records, [0xff, ...json]), '{"cites":null}');
   fs.writeFileSync(named(records, [0xef, 0xbf, 0xbd, ...json]), "{}");
-  const verdict = verifyStore(store.root, store.registry, authority, records, publicKey);
+  const findings = [...verifyStore(store.root, store.registry, authority, records, publicKey).findings];
   const record = "sha256:" + crypto.createHash("sha256").update('{"cites":null}').digest("hex");
   assert.ok(
-    verdict.findings.some((f) => new Map(f).get("recordDigest") === record && new Map(f).get("status") === "record-citation-malformed"),
-    JSON.stringify(verdict.findings, (_, v) => (typeof v === "bigint" ? String(v) : v)),
+    findings.some((f) => new Map(f).get("recordDigest") === record && new Map(f).get("status") === "record-citation-malformed"),
+    JSON.stringify(findings, (_, v) => (typeof v === "bigint" ? String(v) : v)),
   );
 
   // Beside a session whose name decodes alike, which a reader decoding with
@@ -360,36 +358,114 @@ test("names that are not UTF-8 are read as their bytes, and none is taken for an
   assert.deepEqual(statuses(store.root, store.registry), ["ok"]);
 });
 
-test("a verdict holds no more findings than its limit, and past it is no verdict", () => {
-  const saved = limits.findings;
-  limits.findings = 3;
+// What verification keeps is charged to a budget as it is kept, each
+// test here lowering it to 16 KiB: within it a store is verified, and past
+// it there is no verdict, refused as the charge that passes it is made.
+const budget = 16 << 10;
+
+function withBudget<T>(run: () => T): T {
+  const saved = limits.retainedBytes;
+  limits.retainedBytes = budget;
   try {
-    const store = oneSession();
-    fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
-    const records = tempDir();
-    fs.writeFileSync(path.join(records, "log.jsonl"), '{"cites":1}\n{"cites":2}\n');
-    // One receipt and two failing records: three findings, within it.
-    assert.deepEqual(statuses(store.root, store.registry, records), ["ok", "record-citation-malformed", "record-citation-malformed"]);
-    fs.appendFileSync(path.join(records, "log.jsonl"), '{"cites":3}\n');
-    assert.ok(refused(store.root, store.registry, records), "a failing record past the limit");
-    for (let i = 1; i <= 3; i++) {
-      put(store, "s1", `${i}.json`, "{}");
-    }
-    // Refused for their number, before any of them is read.
-    assert.throws(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), /holds 4 receipt files/);
-    // Three receipts within it, and a session finding past it.
-    const chained = newStore();
-    let prev: string | null = null;
-    for (let i = 0; i < 3; i++) {
-      const r = signed(acquisitionV3(i, prev));
-      put(chained, "s1", `${i}.json`, JSON.stringify(r));
-      prev = r["signature"] as string;
-    }
-    fs.writeFileSync(chained.registry, "");
-    assert.ok(refused(chained.root, chained.registry), "a finding past the limit beside the receipts");
+    return run();
   } finally {
-    limits.findings = saved;
+    limits.retainedBytes = saved;
   }
+}
+
+// A regular expression is matched against the error as a string, its
+// name before its message.
+const pastBudget = (what: string) => new RegExp(`: ${what}: more than the ${budget} bytes this verifier keeps$`);
+
+test("sessions are charged as they are met, empty ones too", () => {
+  const store = newStore();
+  fs.writeFileSync(store.registry, "");
+  const session = (i: number) => fs.mkdirSync(path.join(store.root, "receipts", `e${i}`), { recursive: true });
+  for (let i = 0; i < 10; i++) {
+    session(i);
+  }
+  assert.equal(withBudget(() => statuses(store.root, store.registry)).length, 10);
+  for (let i = 10; i < 100; i++) {
+    session(i);
+  }
+  assert.throws(() => withBudget(() => verifyStore(store.root, store.registry, authority, undefined, publicKey)), pastBudget("the store's sessions"));
+});
+
+test("a receipt file is charged for what is kept of it when it is met, before any is read", () => {
+  // Every receipt file here is a link that leads nowhere, which a read
+  // finds unreadable: past the budget, none is read.
+  const store = newStore();
+  fs.writeFileSync(store.registry, "");
+  fs.mkdirSync(path.join(store.root, "receipts", "s1"), { recursive: true });
+  const link = (i: number) => fs.symlinkSync(path.join(store.root, "nowhere"), path.join(store.root, "receipts", "s1", `${i}.json`));
+  for (let i = 0; i < 4; i++) {
+    link(i);
+  }
+  assert.throws(() => withBudget(() => verifyStore(store.root, store.registry, authority, undefined, publicKey)), /cannot be read: ENOENT/);
+  for (let i = 4; i < 8; i++) {
+    link(i);
+  }
+  assert.throws(() => withBudget(() => verifyStore(store.root, store.registry, authority, undefined, publicKey)), pastBudget("the store's receipt files"));
+});
+
+test("a seal is charged as it is kept, before the registry is read further", () => {
+  const store = oneSession();
+  const seals = Array.from({ length: 100 }, (_, i) => sealLine(`sealed-${i}`, 1));
+  fs.writeFileSync(store.registry, [sealLine("s1", 1), ...seals.slice(0, 5)].join("\n") + "\n");
+  assert.deepEqual(withBudget(() => statuses(store.root, store.registry)), ["ok", ...Array(5).fill("sealed-session-missing")]);
+  // After them, a line that opens an object and holds more values than are
+  // read, which would be no verdict of its own.
+  fs.writeFileSync(store.registry, [sealLine("s1", 1), ...seals, `{"x":[${"0,".repeat(maxValues)}0]}`].join("\n") + "\n");
+  assert.throws(() => withBudget(() => verifyStore(store.root, store.registry, authority, undefined, publicKey)), pastBudget("the registry's seals"));
+  // A seal's session id at two bytes a character: one of 6,000 fits, two
+  // do not.
+  const long = (c: string) => sealLine(c.repeat(6000), 1);
+  fs.writeFileSync(store.registry, [sealLine("s1", 1), long("x")].join("\n") + "\n");
+  assert.deepEqual(withBudget(() => statuses(store.root, store.registry)), ["ok", "sealed-session-missing"]);
+  fs.writeFileSync(store.registry, [sealLine("s1", 1), long("x"), long("y")].join("\n") + "\n");
+  assert.throws(() => withBudget(() => verifyStore(store.root, store.registry, authority, undefined, publicKey)), pastBudget("the registry's seals"));
+});
+
+test("a directory under the decision records is charged until it is walked", () => {
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  // Sixty directories each inside the last: one waits at a time.
+  const deep = tempDir();
+  fs.mkdirSync(path.join(deep, ...Array(60).fill("d")), { recursive: true });
+  assert.deepEqual(withBudget(() => statuses(store.root, store.registry, deep)), ["ok"]);
+  // A hundred side by side: all wait at once.
+  const wide = tempDir();
+  for (let i = 0; i < 100; i++) {
+    fs.mkdirSync(path.join(wide, `w${i}`));
+  }
+  assert.throws(
+    () => withBudget(() => verifyStore(store.root, store.registry, authority, wide, publicKey)),
+    pastBudget("the decision-record directories still to walk"),
+  );
+});
+
+test("the decision records' findings are charged as their buffer grows", () => {
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  const records = tempDir();
+  fs.writeFileSync(path.join(records, "log.jsonl"), '{"cites":1}\n'.repeat(10));
+  assert.deepEqual(withBudget(() => statuses(store.root, store.registry, records)), ["ok", ...Array(10).fill("record-citation-malformed")]);
+  fs.writeFileSync(path.join(records, "log.jsonl"), '{"cites":1}\n'.repeat(2000));
+  assert.throws(() => withBudget(() => verifyStore(store.root, store.registry, authority, records, publicKey)), pastBudget("the decision records' findings"));
+});
+
+test("the verdict is written a finding at a time, as often as it is read", () => {
+  const store = newStore();
+  fs.writeFileSync(store.registry, "");
+  for (let i = 0; i < 20; i++) {
+    fs.mkdirSync(path.join(store.root, "receipts", `e${i}`), { recursive: true });
+  }
+  const verdict = verifyStore(store.root, store.registry, authority, undefined, publicKey);
+  const chunks: string[] = [];
+  writeVerdict(verdict, (text) => chunks.push(text));
+  assert.equal(chunks.length, 22, "the opening, each finding, and the close");
+  assert.equal(JSON.parse(chunks.join("")).findings.length, 20);
+  assert.equal(verdictText(verdict), chunks.join(""));
 });
 
 test("the store root is taken as spelled, never normalized", () => {

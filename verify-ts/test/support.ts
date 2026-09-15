@@ -8,6 +8,8 @@ import * as path from "node:path";
 
 import { canonical } from "../src/canon.ts";
 import { parse } from "../src/json.ts";
+import { writeVerdict } from "../src/verify.ts";
+import type { Verdict } from "../src/verify.ts";
 
 // tempDir is a fresh directory under the platform's temporary one, taken
 // away, with everything in it, when the test process ends.
@@ -73,6 +75,13 @@ export function materialize(v: StoreVector): { root: string; registry: string; d
     }
   }
   return { root, registry, decisionRecords };
+}
+
+// verdictText is the verdict as the process contract writes it.
+export function verdictText(v: Verdict): string {
+  const parts: string[] = [];
+  writeVerdict(v, (text) => parts.push(text));
+  return parts.join("");
 }
 
 // multiset is the findings, each in a canonical spelling, sorted.
