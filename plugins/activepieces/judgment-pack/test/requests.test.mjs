@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { acquireRequest, actRequest, sealRequest, RequestError } = require('../dist/src/lib/common/requests.js');
-const { send } = require('../dist/src/lib/common/send.js');
+const { send, sendTo } = require('../dist/src/lib/common/send.js');
 
 const engine = { engine_url: 'http://127.0.0.1:8787/', token: 'tok' };
 
@@ -191,6 +191,45 @@ test('the engine’s answer comes back as the JSON it is, and the connection is 
 			}
 		}
 		assert.equal(open, 0, 'the connection stayed open after the answer');
+	} finally {
+		server.closeAllConnections();
+		await closed(server);
+	}
+});
+
+test('the length stated is the body’s length in bytes, whatever its characters, and a request with no body states none', async () => {
+	const http = await import('node:http');
+	const received = [];
+	const server = http.createServer((req, res) => {
+		const chunks = [];
+		req.on('data', (c) => chunks.push(c));
+		req.on('end', () => {
+			received.push({ method: req.method, length: req.headers['content-length'], chunked: req.headers['transfer-encoding'], bytes: Buffer.concat(chunks) });
+			res.statusCode = 200;
+			res.setHeader('Content-Type', 'application/json');
+			res.end('{}');
+		});
+	});
+	const port = await listening(server);
+	try {
+		const url = `http://127.0.0.1:${port}`;
+		// accented, CJK and astral characters: two, three and four bytes
+		// each in UTF-8, and one or two UTF-16 units
+		const words = { subject: 'café 中文 😀', note: 'naïve' };
+		const body = { session: 's1', source: 'x', arguments: words };
+		const text = JSON.stringify(body);
+		assert.ok(Buffer.byteLength(text) > text.length, 'the body is not multibyte: the case tests nothing');
+		await send(acquireRequest({ engine_url: url }, { session: 's1', source: 'x', arguments: words }));
+		assert.equal(received[0].length, String(Buffer.byteLength(text)));
+		assert.equal(received[0].bytes.length, Buffer.byteLength(text));
+		assert.equal(received[0].chunked, undefined, 'the body was sent chunked');
+		assert.deepEqual(JSON.parse(received[0].bytes.toString('utf8')), body);
+		// an empty body states a length of nothing
+		await sendTo(`${url}/seal`, { method: 'POST', headers: {}, body: '' });
+		assert.deepEqual([received[1].method, received[1].length, received[1].chunked, received[1].bytes.length], ['POST', '0', undefined, 0]);
+		// a request with no body states no length, and is not chunked
+		await sendTo(`${url}/publickey`, { method: 'GET', headers: {} });
+		assert.deepEqual([received[2].method, received[2].length, received[2].chunked, received[2].bytes.length], ['GET', undefined, undefined, 0]);
 	} finally {
 		server.closeAllConnections();
 		await closed(server);

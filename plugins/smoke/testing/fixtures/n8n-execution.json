@@ -1,0 +1,106 @@
+{
+ "resultData": {
+  "runData": {
+   "Start": [
+    {
+     "data": {
+      "main": [
+       [
+        {
+         "json": {}
+        }
+       ]
+      ]
+     }
+    }
+   ],
+   "Acquire": [
+    {
+     "data": {
+      "main": [
+       [
+        {
+         "json": {
+          "receipt": {
+           "acquisition": {
+            "adapter": {
+             "digest": "sha256:ef47e9f081a3618a6c4c2f73e31175bd26b96714c4b26d42c0cd03c84c5e034e",
+             "name": "./my_source",
+             "version": ""
+            },
+            "endpoint": null,
+            "observedAt": "2026-09-15T00:00:00Z",
+            "peerIdentity": null,
+            "schema": null,
+            "shape": "command",
+            "snapshot": null,
+            "statement": null,
+            "upstreamToken": null
+           },
+           "argumentsCommitment": "sha256:773bcb005bfd544c192e9894388dec4d6e2861cef477108a87f16bae346bc6bd",
+           "authority": "gateway:smoke",
+           "callIndex": 0,
+           "caller": null,
+           "keyId": "f477d6008dce778c5bb40fc2580315bc",
+           "kind": "acquisition",
+           "prevSignature": null,
+           "receiptVersion": "3",
+           "resultDigest": "sha256:78bddf496c94fe4ffc6e32e967477fb16defc9db80462075e857b9679c0b4050",
+           "servedAt": "2026-09-15T00:00:00Z",
+           "sessionId": "smoke-n8n-test-1",
+           "signature": "69fd21d4abedce4234ad1178c79560603a94783bc6837faf05d737e3e5db7c1456f9e4866a5330c58bbfc16d05f398c10f615632c2dcb22246bb022ff8d10aab",
+           "source": "screening"
+          },
+          "result": {
+           "synthetic": true,
+           "arguments": {
+            "subject": "acme"
+           }
+          },
+          "salts": {
+           "args": "5e1278cde17d3432245e92367067ef5c83fa8c3c81bd982ce03b3e6a4cede4a0"
+          }
+         }
+        }
+       ]
+      ]
+     }
+    }
+   ],
+   "Act (refused: no identity)": [
+    {
+     "data": {
+      "main": [
+       [
+        {
+         "json": {
+          "error": "Authorization failed - please check your credentials"
+         }
+        }
+       ]
+      ]
+     }
+    }
+   ],
+   "Seal": [
+    {
+     "data": {
+      "main": [
+       [
+        {
+         "json": {
+          "finalCount": 1,
+          "keyId": "f477d6008dce778c5bb40fc2580315bc",
+          "sealedAt": "2026-09-15T00:00:00Z",
+          "sessionId": "smoke-n8n-test-1",
+          "signature": "c192b59ed03466b14b01b6169980255bc3904f7e4db00cd2e7401e36e6acfcdd79fb7a59d26a8e222f9b4ec52e8dc7a423d94aa170f16a91bae44ea4647b94ae"
+         }
+        }
+       ]
+      ]
+     }
+    }
+   ]
+  }
+ }
+}

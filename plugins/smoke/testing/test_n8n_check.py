@@ -3,12 +3,22 @@
 check.py reads n8n's own record of an execution -- its SQLite database, the
 execution's data in the "flatted" form n8n stores -- and holds each node's
 output to what the engine must have answered. A checker that cannot fail
-proves nothing, so these tests write executions the way n8n does, one right
-and one for each wrong answer the checker names, and run the checker on
-each. Standard library only; no n8n, no engine, no container.
+proves nothing, so these tests write executions as n8n stores them, one as
+the engine must have answered and one for each wrong answer in
+answers.FAULTS that this checker reads, and require check.py to pass the
+first and to fail each other on the one check the fault names, and on no
+other.
+
+The bytes are flatted's. fixtures/ holds what flatted 3.4.2 -- the copy the
+pinned n8n image stores with -- wrote for the execution and for the
+decoder's hard cases (make_flatted_fixtures.cjs), and the encoder here that
+writes the wrong executions is held to those bytes. Standard library only;
+no n8n, no engine, no container.
 """
+import importlib.util
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -16,50 +26,116 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import answers  # noqa: E402
+
 CHECK = os.path.join(HERE, "..", "n8n", "check.py")
+FIXTURES = os.path.join(HERE, "fixtures")
 SESSION = "smoke-n8n-test-1"
-REFUSAL = "Authorization failed - please check your credentials"
+AT = "2026-09-15T00:00:00Z"
+ACT_NODE = "Act (refused: no identity)"
+NODES = {"acquire": "Acquire", "act": ACT_NODE, "seal": "Seal"}
+
+
+def load_check():
+    spec = importlib.util.spec_from_file_location("n8n_check", CHECK)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+check = load_check()
+
+
+def fixture(name):
+    with open(os.path.join(FIXTURES, name), encoding="utf-8") as f:
+        return f.read()
+
+
+def strict(value):
+    # JSON text, so a comparison tells "7" from 7 and true from 1
+    return json.dumps(value, sort_keys=True, ensure_ascii=False)
+
+
+INDEX_KEY = re.compile(r"0|[1-9][0-9]*")
+
+
+def js_key_order(obj):
+    # a JavaScript object's own keys in the order it enumerates them: the
+    # ones that read as array indices first, ascending, then the rest as
+    # they were added
+    def index(key):
+        return INDEX_KEY.fullmatch(key) is not None and int(key) < 2**32 - 1
+    return sorted((k for k in obj if index(k)), key=int) + [k for k in obj if not index(k)]
 
 
 def flatted(root):
-    """n8n's storage form (the flatted library): an array whose first member
-    is the root, in which every string and every object or array inside an
-    object or array is replaced by the index, as a string, of a member
-    holding it; numbers, booleans and nulls stay inline."""
-    out = [None]
+    """The flatted form as flatted 3.4.2's stringify writes it: the root
+    first, then each string and each object or array in the order it is
+    first met -- the members of the root, then of the first found, and so
+    on -- each distinct string once and each object once however often it is
+    referred to, and every one of them written as its index, as a string,
+    wherever it is referred to. Numbers, booleans and nulls stay inline.
+    test_the_encoder_writes_what_flatted_writes holds it to the library's
+    bytes."""
+    known, members = {}, []
 
-    def ref(value):
-        if isinstance(value, str):
-            out.append(value)
-            return str(len(out) - 1)
-        if isinstance(value, (dict, list)):
-            index = len(out)
-            out.append(None)
-            out[index] = convert(value)
-            return str(index)
-        return value
+    def index_of(value):
+        key = ("string", value) if isinstance(value, str) else ("object", id(value))
+        if key not in known:
+            members.append(value)
+            known[key] = str(len(members) - 1)
+        return known[key]
 
-    def convert(value):
+    def inline(value):
+        if isinstance(value, (str, dict, list)):
+            return json.dumps(index_of(value))
+        return json.dumps(value)
+
+    def written(value):
         if isinstance(value, dict):
-            return {k: ref(v) for k, v in value.items()}
+            return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + inline(value[k]) for k in js_key_order(value)) + "}"
         if isinstance(value, list):
-            return [ref(v) for v in value]
-        return value
+            return "[" + ",".join(inline(v) for v in value) + "]"
+        return json.dumps(value, ensure_ascii=False)
 
-    out[0] = convert(root)
-    return json.dumps(out)
+    index_of(root)
+    out, i = [], 0
+    while i < len(members):
+        out.append(written(members[i]))
+        i += 1
+    return "[" + ",".join(out) + "]"
+
+
+def flatted_cases():
+    # the object make_flatted_fixtures.cjs builds, built the same way
+    shared = {"subject": "acme", "7": "seven"}
+    items = ["7", 7, shared, None, True, False, "", "é中😀"]
+    return {
+        "seven": 7,
+        "7": "7",
+        "sevenAgain": "7",
+        "shared": shared,
+        "list": items,
+        "nested": {"again": shared, "list": items, "10": 10, "2": "two", "02": "not an index"},
+        "empty": {},
+        "none": [],
+    }
 
 
 def good_outputs():
     return {
-        "Acquire": {
-            "result": {"synthetic": True, "arguments": {"subject": "acme"}},
-            "receipt": {"receiptVersion": "3", "kind": "acquisition", "sessionId": SESSION, "callIndex": 0, "signature": "a" * 128},
-            "salts": {"args": "b" * 64},
-        },
-        "Act (refused: no identity)": {"error": REFUSAL},
-        "Seal": {"sessionId": SESSION, "finalCount": 1, "sealedAt": "2026-09-15T00:00:00Z", "keyId": "0" * 16, "signature": "c" * 128},
+        "Acquire": answers.acquisition(SESSION, 0, None, {"subject": "acme"}, AT),
+        ACT_NODE: {"error": check.EXPECTED_REFUSAL},
+        "Seal": answers.seal(SESSION, 1, AT),
     }
+
+
+def outputs_with(fault):
+    outputs = good_outputs()
+    node = NODES[fault.route]
+    outputs[node] = answers.apply(fault, outputs[node])
+    return outputs
 
 
 def execution(outputs, error=None):
@@ -72,7 +148,18 @@ def execution(outputs, error=None):
     return {"resultData": result}
 
 
-def write_database(path, outputs, status="success", error=None, executions=True):
+def write_execution_fixture():
+    """Writes fixtures/n8n-execution.json, the execution as the engine must
+    have answered; make_flatted_fixtures.cjs then writes it as n8n stores
+    it."""
+    with open(os.path.join(FIXTURES, "n8n-execution.json"), "w", encoding="utf-8") as f:
+        json.dump(execution(good_outputs()), f, indent=1, ensure_ascii=False)
+        f.write("\n")
+
+
+def write_database(path, stored, status="success", executions=True):
+    if os.path.exists(path):
+        os.remove(path)
     db = sqlite3.connect(path)
     db.execute("create table execution_entity (id integer primary key, status text)")
     db.execute('create table execution_data ("executionId" integer, data text)')
@@ -81,106 +168,72 @@ def write_database(path, outputs, status="success", error=None, executions=True)
         db.execute("insert into execution_entity values (1, 'error')")
         db.execute("insert into execution_data values (1, ?)", (flatted(execution({}, "an earlier run")),))
         db.execute("insert into execution_entity values (2, ?)", (status,))
-        db.execute("insert into execution_data values (2, ?)", (flatted(execution(outputs, error)),))
+        db.execute("insert into execution_data values (2, ?)", (stored,))
     db.commit()
     db.close()
 
 
+class FlattedTest(unittest.TestCase):
+    def test_the_committed_execution_is_the_engines_answers(self):
+        self.assertEqual(strict(json.loads(fixture("n8n-execution.json"))), strict(execution(good_outputs())),
+                         "the answers changed: regenerate the fixtures (make_flatted_fixtures.cjs)")
+
+    def test_the_encoder_writes_what_flatted_writes(self):
+        self.assertEqual(flatted(json.loads(fixture("n8n-execution.json"))), fixture("n8n-execution.flatted.json"))
+        self.assertEqual(flatted(flatted_cases()), fixture("flatted-cases.flatted.json"))
+
+    def test_the_decoder_reads_what_flatted_writes(self):
+        stored = json.loads(fixture("flatted-cases.flatted.json"))
+        # the cases are what they claim to be: one member for the string
+        # that recurs, one for the shared object, and 7 inline
+        self.assertEqual([m for m in stored if m == "7"], ["7"])
+        self.assertEqual(len([m for m in stored if isinstance(m, dict) and "subject" in m]), 1)
+        self.assertEqual(strict(check.decode(stored)), strict(json.loads(fixture("flatted-cases.json"))))
+        self.assertEqual(strict(check.decode(json.loads(fixture("n8n-execution.flatted.json")))), strict(execution(good_outputs())))
+
+
 class CheckTest(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
-        self.db = os.path.join(self.dir, "database.sqlite")
+        self.db = os.path.join(tempfile.mkdtemp(), "database.sqlite")
 
     def run_check(self):
         return subprocess.run([sys.executable, CHECK, self.db, SESSION], capture_output=True, text=True)
 
-    def refused(self, outputs, says, **kwargs):
-        write_database(self.db, outputs, **kwargs)
+    def failed(self, stored, **kwargs):
+        write_database(self.db, stored, **kwargs)
         done = self.run_check()
         self.assertNotEqual(done.returncode, 0, done.stdout)
-        self.assertIn(says, done.stdout + done.stderr)
+        return [line.split(":", 2)[1].strip() for line in done.stdout.splitlines() if line.startswith("FAIL: ")], done.stdout
 
-    def test_the_execution_the_engine_must_have_answered_passes(self):
-        write_database(self.db, good_outputs())
+    def test_the_execution_as_n8n_stored_it_passes(self):
+        # the library's own bytes, not the encoder's
+        write_database(self.db, fixture("n8n-execution.flatted.json"))
         done = self.run_check()
         self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
         self.assertIn("n8n smoke ok: execution 2", done.stdout)
 
+    def test_each_wrong_answer_fails_its_check_and_no_other(self):
+        for fault in answers.FAULTS:
+            if "n8n" not in fault.checkers:
+                continue
+            with self.subTest(fault=fault.name):
+                failed, out = self.failed(flatted(execution(outputs_with(fault))))
+                self.assertEqual(failed, [fault.check], out)
+
     def test_no_execution(self):
-        self.refused({}, "no execution recorded", executions=False)
+        failed, out = self.failed("", executions=False)
+        self.assertEqual(failed, ["execution"], out)
 
     def test_an_execution_that_did_not_succeed(self):
-        self.refused(good_outputs(), "ended error: the engine was not there", status="error", error="the engine was not there")
-
-    def test_an_action_receipt_where_an_acquisition_belongs(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["receipt"]["kind"] = "action"
-        self.refused(outputs, "did not yield a version-3 acquisition receipt at index 0")
-
-    def test_a_receipt_at_another_index(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["receipt"]["callIndex"] = 1
-        self.refused(outputs, "did not yield a version-3 acquisition receipt at index 0")
-
-    def test_an_index_that_is_not_an_integer(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["receipt"]["callIndex"] = False
-        self.refused(outputs, "did not yield a version-3 acquisition receipt at index 0")
-
-    def test_a_receipt_in_another_session(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["receipt"]["sessionId"] = "another-session"
-        self.refused(outputs, "is in session 'another-session'")
-
-    def test_a_signature_of_another_form(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["receipt"]["signature"] = "A" * 128
-        self.refused(outputs, "carries no signature of the expected form")
-
-    def test_a_result_that_is_not_the_sources_answer(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["result"] = {"synthetic": True, "arguments": {"subject": "someone else"}}
-        self.refused(outputs, "is not the source's answer")
-
-    def test_a_result_with_a_member_more(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["result"]["extra"] = 1
-        self.refused(outputs, "is not the source's answer")
-
-    def test_no_arguments_salt(self):
-        outputs = good_outputs()
-        outputs["Acquire"]["salts"] = {}
-        self.refused(outputs, "no arguments salt of the expected form")
-
-    def test_an_act_that_was_not_refused(self):
-        outputs = good_outputs()
-        outputs["Act (refused: no identity)"] = {"result": {}, "receipt": {"kind": "action"}}
-        self.refused(outputs, "Act was not refused as the engine's 401 reads")
+        failed, out = self.failed(flatted(execution(good_outputs(), "the engine was not there")), status="error")
+        self.assertEqual(failed, ["execution status"], out)
+        self.assertIn("the engine was not there", out)
 
     def test_an_act_refused_for_another_reason(self):
         outputs = good_outputs()
-        outputs["Act (refused: no identity)"] = {"error": "The resource you are requesting could not be found"}
-        self.refused(outputs, "Act was not refused as the engine's 401 reads")
-
-    def test_a_seal_at_another_count(self):
-        outputs = good_outputs()
-        outputs["Seal"]["finalCount"] = 2
-        self.refused(outputs, "Seal did not seal the run's session at one receipt")
-
-    def test_a_seal_of_another_session(self):
-        outputs = good_outputs()
-        outputs["Seal"]["sessionId"] = "another-session"
-        self.refused(outputs, "Seal did not seal the run's session at one receipt")
-
-    def test_the_flatted_form_is_decoded_as_n8n_writes_it(self):
-        # a string that reads as a number and a number are different members:
-        # the decoder must not take the one for the other
-        outputs = good_outputs()
-        outputs["Acquire"]["result"] = {"synthetic": True, "arguments": {"subject": "acme"}}
-        outputs["Seal"]["keyId"] = "7"
-        write_database(self.db, outputs)
-        done = self.run_check()
-        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        outputs[ACT_NODE] = {"error": "The resource you are requesting could not be found"}
+        failed, out = self.failed(flatted(execution(outputs)))
+        self.assertEqual(failed, ["act refusal"], out)
 
 
 if __name__ == "__main__":
