@@ -8,6 +8,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -280,7 +282,7 @@ func testStore(t *testing.T) (*store, *registryWriter, string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reg, err := newRegistryWriter(registryPath, testSeed)
+	reg, err := newRegistryWriter(registryPath, testSeed, noHistory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,8 +382,14 @@ func TestPerReceiptVerificationMissesWhatTheRegistryCatches(t *testing.T) {
 	if err := os.Remove(filepath.Join(storeRoot, "receipts", "sess-a", "2.json")); err != nil {
 		t.Fatal(err)
 	}
-	// Without the anchor: the truncated prefix is a valid chain.
-	inline, err := verifyWithRegistry(storeRoot, os.DevNull, "gateway:test", []byte(mustPublic(t)))
+	// Without the anchor: the truncated prefix is a valid chain. An empty
+	// registry file, not the null device, which Windows names NUL -- a
+	// device name a registry path may not have there (SPEC.md §4.1)
+	empty := filepath.Join(t.TempDir(), "empty-registry.jsonl")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inline, err := verifyWithRegistry(storeRoot, empty, "gateway:test", []byte(mustPublic(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -955,6 +963,297 @@ func TestAcquireAfterSealDoesNotStartTheSource(t *testing.T) {
 	}
 }
 
+// A seal the registry may hold closes the session in the process that
+// asked for it, even when sealing failed after the record was written: the
+// process judges a session it holds by its map, so the map must not stay
+// open behind a seal on disk. A retry of the seal finds the record.
+func TestASealThatMayBeWrittenClosesTheSession(t *testing.T) {
+	service, _ := testService(t)
+	if _, err := service.acquire("seal-unsynced", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	service.registry.sync = func(*os.File) error { return errors.New("the disk would not sync") }
+	if _, err := service.sealSession("seal-unsynced"); err == nil || !strings.Contains(err.Error(), "would not sync") {
+		t.Fatalf("a seal whose sync failed: %v", err)
+	}
+	service.registry.sync = func(f *os.File) error { return f.Sync() }
+	seals, _, err := loadSeals(service.regPath, service.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, onDisk := seals["seal-unsynced"]; !onDisk {
+		t.Fatal("the stand-in failure left no record: the test tests nothing")
+	}
+	started := filepath.Join(t.TempDir(), "source-started")
+	t.Setenv(envSourceReady, started)
+	if _, err := service.acquire("seal-unsynced", "screening", vString("y"), nil); err == nil || !strings.Contains(err.Error(), "session is sealed") {
+		t.Fatalf("an acquisition after a seal that may be written: %v", err)
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source ran for a session whose seal may be written")
+	}
+	if _, err := service.sealSession("seal-unsynced"); err == nil || !strings.Contains(err.Error(), "already sealed") {
+		t.Fatalf("a retry of the seal: %v", err)
+	}
+	// a write that fails with the record written whole but for its
+	// newline leaves a seal a reader loads: the session is closed too
+	if _, err := service.acquire("seal-unended", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	service.registry.write = func(f *os.File, line []byte) (int, error) {
+		n, _ := f.Write(line[:len(line)-1])
+		return n, errors.New("the disk filled before the newline")
+	}
+	if _, err := service.sealSession("seal-unended"); err == nil || !strings.Contains(err.Error(), "before the newline") {
+		t.Fatalf("a seal whose newline was not written: %v", err)
+	}
+	service.registry.write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
+	if seals, _, err := loadSeals(service.regPath, service.publicKey); err != nil {
+		t.Fatal(err)
+	} else if _, onDisk := seals["seal-unended"]; !onDisk {
+		t.Fatal("the stand-in failure left no loadable record: the test tests nothing")
+	}
+	if _, err := service.acquire("seal-unended", "screening", vString("y"), nil); err == nil || !strings.Contains(err.Error(), "session is sealed") {
+		t.Fatalf("an acquisition after a seal written whole but for its newline: %v", err)
+	}
+	// a write that fails before a byte is written is not a seal, and
+	// leaves the session as it was
+	if _, err := service.acquire("seal-unwritten", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	blocked := service.regPath + ".blocked"
+	if err := os.Rename(service.regPath, blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(service.regPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.sealSession("seal-unwritten"); err == nil {
+		t.Fatal("a seal into a registry that cannot be opened succeeded")
+	}
+	os.Remove(service.regPath)
+	os.Rename(blocked, service.regPath)
+	if _, err := service.acquire("seal-unwritten", "screening", vString("y"), nil); err != nil {
+		t.Fatalf("a session whose seal was never written was closed: %v", err)
+	}
+}
+
+// A seal starts on a line of its own. A registry whose last line an earlier
+// seal left unterminated -- written in part, or whole but for its newline --
+// is ended before the next record: joined to that line, the record would make
+// one line that is no seal, so a retried seal would answer sealed here and
+// load as nothing after a restart, and a seal written whole would be lost
+// with the next one.
+func TestASealStartsOnALineOfItsOwn(t *testing.T) {
+	service, _ := testService(t)
+	loaded := func() map[string]seal {
+		t.Helper()
+		seals, _, err := loadSeals(service.regPath, service.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return seals
+	}
+	for _, session := range []string{"torn", "whole", "next"} {
+		if _, err := service.acquire(session, "screening", vString("x"), nil); err != nil {
+			t.Fatalf("acquire %s: %v", session, err)
+		}
+	}
+	// an earlier seal of "torn" written in part: the start of its record
+	handle, err := os.OpenFile(service.regPath, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handle.WriteString(`{"finalCount":1,"keyId":"`); err != nil {
+		t.Fatal(err)
+	}
+	handle.Close()
+	if _, err := service.sealSession("torn"); err != nil {
+		t.Fatalf("the retried seal: %v", err)
+	}
+	if got, ok := loaded()["torn"]; !ok || got.finalCount != 1 {
+		t.Fatalf("the seal retried after a torn record does not load: %v", loaded())
+	}
+	// a seal of "whole" written whole but for its newline
+	if _, err := service.sealSession("whole"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(service.regPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service.regPath, []byte(strings.TrimSuffix(string(data), "\n")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := loaded()["whole"]; !ok {
+		t.Fatal("an unterminated whole seal does not load: the test tests nothing")
+	}
+	if _, err := service.sealSession("next"); err != nil {
+		t.Fatal(err)
+	}
+	seals := loaded()
+	for _, session := range []string{"torn", "whole", "next"} {
+		if _, ok := seals[session]; !ok {
+			t.Fatalf("the seal of %s does not load: %v", session, seals)
+		}
+	}
+	// a write that fails once it has ended the earlier line, and before a
+	// byte of the record, wrote no seal: the session stays open, and a
+	// retry writes the record
+	if _, err := service.acquire("ended", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	unterminated, err := os.OpenFile(service.regPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unterminated.WriteString(`{"finalCount":`); err != nil {
+		t.Fatal(err)
+	}
+	unterminated.Close()
+	service.registry.write = func(f *os.File, line []byte) (int, error) {
+		if line[0] != '\n' {
+			t.Fatal("no newline ended the unterminated line: the test tests nothing")
+		}
+		n, _ := f.Write(line[:1])
+		return n, errors.New("the disk filled after one byte")
+	}
+	if _, err := service.sealSession("ended"); err == nil || !strings.Contains(err.Error(), "after one byte") {
+		t.Fatalf("a seal whose record was never written: %v", err)
+	}
+	service.registry.write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
+	if _, err := service.acquire("ended", "screening", vString("y"), nil); err != nil {
+		t.Fatalf("a session whose record was never written was closed: %v", err)
+	}
+	if _, err := service.sealSession("ended"); err != nil {
+		t.Fatalf("the retried seal: %v", err)
+	}
+	if got, ok := loaded()["ended"]; !ok || got.finalCount != 2 {
+		t.Fatalf("the retried seal does not load at its count: %v", loaded())
+	}
+}
+
+// A seal is final across a restart: a process started on the same store
+// and registry refuses an acquisition into a session an earlier process
+// sealed, before the source is started -- the registry is the one record of
+// that seal, and the new process's session map does not hold it. An
+// unsealed session from before the restart may still be continued by a
+// read, as it always could; and a registry that cannot be read is a
+// refusal, never taken for the absence of a seal.
+func TestAcquireAfterRestartHonoursTheRegistrysSeal(t *testing.T) {
+	service, _ := testService(t)
+	if _, err := service.acquire("restart-sealed", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	if _, err := service.sealSession("restart-sealed"); err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if _, err := service.acquire("restart-open", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("acquire into the unsealed session: %v", err)
+	}
+	restarted, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// From here the source must never run for the sealed session. It
+	// announces itself by creating this file.
+	started := filepath.Join(t.TempDir(), "source-started")
+	t.Setenv(envSourceReady, started)
+	_, err = restarted.acquire("restart-sealed", "screening", vString("x"), nil)
+	if err == nil || !strings.Contains(err.Error(), "sealed in the registry") || !errors.As(err, new(badRequest)) {
+		t.Fatalf("an acquisition into a session sealed before the restart: %v", err)
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source ran for a session sealed before the restart")
+	}
+	if restarted.started.Load() != 0 {
+		t.Fatalf("%d sources started for a session sealed before the restart", restarted.started.Load())
+	}
+	restarted.mu.Lock()
+	_, entered := restarted.sessions["restart-sealed"]
+	restarted.mu.Unlock()
+	if entered {
+		t.Fatal("the refused session entered the new process's map")
+	}
+	// the unsealed session from before the restart: a read may continue it
+	// as it always could -- the registry does not refuse it, its source runs,
+	// and, its first receipt being on disk, the stamp is the append-only
+	// collision it has always been (act_test holds the case where the first
+	// receipt is gone and the read succeeds)
+	startsBefore := restarted.started.Load()
+	_, err = restarted.acquire("restart-open", "screening", vString("x"), nil)
+	if err == nil || !strings.Contains(err.Error(), "receipt already exists (append-only)") {
+		t.Fatalf("an unsealed session from before the restart: %v", err)
+	}
+	if restarted.started.Load() != startsBefore+1 {
+		t.Fatal("the unsealed session's source did not run: the read was refused before it")
+	}
+	// a session new to both processes is admitted and minted
+	if _, err := restarted.acquire("restart-new", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("a new session after the restart: %v", err)
+	}
+	// a registry that cannot be read refuses a session the process does not
+	// hold, and does not start its source, while a held session is still
+	// judged by its map: a directory where the file should be, on every
+	// platform; a link that leads nowhere, wherever the platform will make
+	// one; a file this process may not read, off Windows and not as root.
+	// Each case sets the registry aside first and puts it back after,
+	// whatever happens in between.
+	aside := service.regPath + ".aside"
+	unreadable := func(t *testing.T, stand func(t *testing.T)) {
+		t.Helper()
+		if err := os.Rename(service.regPath, aside); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.RemoveAll(service.regPath); err != nil {
+				t.Error(err)
+			}
+			if err := os.Rename(aside, service.regPath); err != nil {
+				t.Error(err)
+			}
+		})
+		stand(t)
+		os.Remove(started)
+		before := restarted.started.Load()
+		if _, err := restarted.acquire("restart-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry could not be read") {
+			t.Fatalf("an unknown session was not refused for the registry: %v", err)
+		}
+		if restarted.started.Load() != before {
+			t.Fatal("a source started with the registry unreadable")
+		}
+		if _, err := restarted.acquire("restart-new", "screening", vString(t.Name()), nil); err != nil {
+			t.Fatalf("a held session with the registry unreadable: %v", err)
+		}
+	}
+	t.Run("a directory", func(t *testing.T) {
+		unreadable(t, func(t *testing.T) {
+			if err := os.Mkdir(service.regPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	t.Run("a link that leads nowhere", func(t *testing.T) {
+		unreadable(t, func(t *testing.T) {
+			linkOrSkip(t, filepath.Join(t.TempDir(), "nothing"), service.regPath)
+		})
+	})
+	t.Run("a file this process may not read", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("permission bits do not bar this process here")
+		}
+		unreadable(t, func(t *testing.T) {
+			data, err := os.ReadFile(aside)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(service.regPath, data, 0o000); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+}
+
 func TestSealRefusesWhileAnAcquisitionIsInFlight(t *testing.T) {
 	service, _ := testService(t)
 
@@ -1298,11 +1597,12 @@ func TestRegistryEndpointServesRawBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(body) != 0 {
-			t.Fatalf("body = %d bytes, want 0 (empty body for absent registry)", len(body))
+			t.Fatalf("body = %d bytes, want 0 (the empty registry the start made)", len(body))
 		}
 
-		if _, err := os.Stat(service.regPath); err == nil {
-			t.Fatal("registry file should not exist before any seal")
+		// the start made the registry, empty; no seal has been written
+		if info, err := os.Stat(service.regPath); err != nil || info.Size() != 0 {
+			t.Fatalf("registry before any seal: %v %v, want an empty file", info, err)
 		}
 	})
 
@@ -1483,9 +1783,9 @@ func TestMethodContractForStateChangingRoutes(t *testing.T) {
 				t.Errorf("len(entries) = %d, want 0", len(entries))
 			}
 
-			_, err = os.Stat(regPath)
-			if err == nil || !os.IsNotExist(err) {
-				t.Errorf("Stat error = %v, want IsNotExist", err)
+			// nothing sealed: the registry is as the start made it, empty
+			if info, err := os.Stat(regPath); err != nil || info.Size() != 0 {
+				t.Errorf("registry = %v %v, want the empty file the start made", info, err)
 			}
 		})
 	}

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -155,6 +156,10 @@ type gatewayService struct {
 	afterReadAdmit  func(error)
 }
 
+// startHook runs between making the store and opening the registry; a test
+// stands in a registry that goes away there.
+var startHook = func() {}
+
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
 	sources map[string]sourceSpec) (*gatewayService, error) {
 	// A shape is one of §1.2a's or nothing: a receipt minted under any other
@@ -165,11 +170,26 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 			return nil, fmt.Errorf("source %s: unknown adapter shape %q", name, spec.shape)
 		}
 	}
+	// the registry's spelling is judged before the store is made: a start
+	// that would refuse it leaves nothing behind (SPEC.md §4.1)
+	if err := requirePlainSpelling(registryPath, true); err != nil {
+		return nil, err
+	}
 	st, err := newStore(storeRoot, seed, authority)
 	if err != nil {
 		return nil, err
 	}
-	reg, err := newRegistryWriter(registryPath, seed)
+	startHook()
+	// A registry that is not there is made at start only for a store with
+	// no history (SPEC.md §3), decided by the writer on its own read of the
+	// registry, with the store asked after that read.
+	reg, err := newRegistryWriter(registryPath, seed, func() (bool, error) {
+		held, err := os.ReadDir(filepath.Join(storeRoot, "receipts"))
+		if err != nil && !absent(err) {
+			return false, err
+		}
+		return len(held) > 0, nil
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -376,6 +396,15 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	// subprocess finishes. Every path out of here releases the reservation; the
 	// deferred release is registered before the mutex is taken again below, so
 	// it runs after that unlock rather than deadlocking on it.
+	// A seal is final across a restart too. This process's own seals are in
+	// its session map, and admit refuses them under the lock; a seal an
+	// earlier process wrote is in the registry alone, so a session this
+	// process does not hold is looked up there before anything runs -- a
+	// source started for a session whose count is already sealed could only
+	// fail at its stamp, after whatever it did.
+	if refusal := g.sealedElsewhere(sessionID); refusal != "" {
+		return nil, badRequest{errors.New(refusal)}
+	}
 	if g.beforeReadAdmit != nil {
 		g.beforeReadAdmit()
 	}
@@ -816,6 +845,31 @@ func executableDigest(path string) (string, error) {
 	return "sha256:" + hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// sealedElsewhere is why a read may not be admitted into a session this
+// process does not hold, or "": the session is sealed in the registry on
+// disk -- by an earlier process, since this one's own seals are in its
+// map -- or the registry could not be read, which is a refusal, never taken
+// for the absence of a seal. A session this process holds is judged by
+// its map alone, under admission's lock. Unlike an action (sessionOpen), a
+// read may still continue an unsealed session the store holds from before
+// this start: that is what it has always done, and it is unchanged.
+func (g *gatewayService) sealedElsewhere(sessionID string) string {
+	g.mu.Lock()
+	_, held := g.sessions[sessionID]
+	g.mu.Unlock()
+	if held {
+		return ""
+	}
+	seals, err := loadEngineSeals(g.regPath, g.publicKey)
+	if err != nil {
+		return "the registry could not be read"
+	}
+	if _, sealed := seals[sessionID]; sealed {
+		return "session is sealed in the registry: " + sessionID
+	}
+	return ""
+}
+
 // admit reserves an acquisition against a session, refusing a sealed one before
 // any source is constructed or started.
 func (g *gatewayService) admit(sessionID string) error {
@@ -886,6 +940,13 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	}
 	record, err := g.registry.seal(sessionID, state.index, nowStamp())
 	if err != nil {
+		// a seal that may be in the registry closes the session here too:
+		// a reader of the registry may find it, and a session this process
+		// holds is judged by its map, so the map must not stay open behind
+		// a seal on disk. A retry of the seal finds the record, or writes it.
+		if errors.As(err, new(sealMayBeWritten)) {
+			state.sealed = true
+		}
 		return nil, badRequest{err}
 	}
 	state.sealed = true
@@ -897,7 +958,7 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
-	rep, err := verifyWithRegistryAndRecords(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+	rep, err := verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
 	if err != nil {
 		return nil, err
 	}
@@ -1101,10 +1162,14 @@ func (g *gatewayService) handler() http.Handler {
 	})
 
 	mux.HandleFunc("/registry", func(w http.ResponseWriter, r *http.Request) {
-		// The same classifier the verifier uses: an absent registry serves the
-		// empty body an external verifier reads as "no seals", and a registry
-		// that is present and unreachable must not be served as that.
-		data, _, err := readRegistryBytes(g.regPath)
+		// The same classifier the verifier uses. The engine made its
+		// registry at start, so an absent one is served as no registry at
+		// all, never as the empty body an external verifier reads as "no
+		// seals"; nor is a registry that is present and unreachable.
+		data, present, err := readRegistryBytes(g.regPath)
+		if err == nil && !present {
+			err = fmt.Errorf("the registry the engine made at its start is not there: %s", g.regPath)
+		}
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return

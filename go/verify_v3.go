@@ -17,6 +17,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"unicode/utf8"
 )
@@ -324,15 +325,22 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 	if dir == "" {
 		return nil, false, nil
 	}
-	if err := registryContainerReachable(dir); err != nil {
+	if err := requirePlainSpelling(dir, false); err != nil {
 		return nil, false, fmt.Errorf("decision-record directory: %w", err)
 	}
-	info, err := os.Stat(dir)
+	if there, err := registryContainerReachable(dir); err != nil {
+		return nil, false, fmt.Errorf("decision-record directory: %w", err)
+	} else if !there {
+		return nil, false, nil
+	}
+	// a link that leads nowhere is there and cannot be read, at the
+	// directory as above it (§4.1), never the absence it would be taken for
+	info, err := statInput(dir, "the decision-record directory is a link that leads nowhere")
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
 		return nil, false, err
+	}
+	if info == nil {
+		return nil, false, nil
 	}
 	if !info.IsDir() {
 		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
@@ -363,6 +371,11 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
+		}
+		// a name Windows would not read as spelled is read, by its path, as
+		// another file or none: it cannot be read, and is no verdict (§4.1)
+		if runtime.GOOS == "windows" && path != dir && !windowsReadsAsSpelled(d.Name()) {
+			return fmt.Errorf("decision-record directory holds a name Windows would not read as spelled: %s", path)
 		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			return nil // never followed, whatever it points at

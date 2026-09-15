@@ -18,11 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Domain separation. SPEC.md §2: the context prefix is what stops a seal
@@ -181,42 +184,218 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 	return append([]byte(sealContext), canon(covered)...)
 }
 
-// registryContainerReachable checks the directories that must exist above the
-// registry file, walking them from the filesystem root downward so that every
-// stat is taken against a parent already known to be a directory. At each step
-// the only outcomes are an existing directory, an existing non-directory (a
-// refusal, naming the component), and a component that is not there at all (the
-// registry is then genuinely absent, and the caller's stat of the file says so).
+// stat and lstat are os.Stat and os.Lstat. A test stands in a failure for
+// either: for the second look at a path the first found absent, which no
+// settled filesystem makes disagree, only a change between them; and for an
+// answer only a network share that has gone away gives.
+var (
+	stat  = os.Stat
+	lstat = os.Lstat
+)
+
+// errorFileNotFound is ERROR_FILE_NOT_FOUND: the answer by which Windows says
+// a name in a directory it reached has nothing at it.
+const errorFileNotFound = syscall.Errno(2)
+
+// absent reports whether err, from a look at a path whose parent is a
+// directory, confirms that nothing is there. os.IsNotExist is not enough on
+// Windows, where it also answers true for ERROR_PATH_NOT_FOUND and
+// ERROR_BAD_NETPATH: a directory, a drive or a server on the way could not
+// be reached, which is not the absence of the path. A registry on a share
+// that has gone away is there, and cannot be read -- taken for absent, it
+// would load no seals, and a session sealed on the share would take a read.
+func absent(err error) bool {
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if runtime.GOOS != "windows" {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == errorFileNotFound
+}
+
+// requirePlainSpelling refuses an input path -- the registry (a file), the
+// decision-record directory (not a file) -- whose spelling the platform could
+// resolve to another file than the one its spelling names, before anything is
+// read or made (SPEC.md §4.1). What is left names one file for every reader
+// and writer of it: the walk above it (pathAncestors), the look at it, the
+// walk below it and the directories made for it all take the path as
+// spelled, and so does the platform.
+//
+//   - a ".." after a named component: Linux and macOS step back from where
+//     the component leads -- through a link, from the link's target -- and a
+//     reading of the spelling steps back from the component;
+//   - for a file, a trailing separator, which names a directory;
+//   - on Windows, a path in the \\?\ or \??\ namespace, which Windows takes
+//     literally, or the \\.\ namespace, which it reads as a device path; and a
+//     component, the server and share of a UNC path included, that Windows
+//     would not read as spelled (windowsReadsAsSpelled).
+//
+// A leading "..", a "." component, a repeated separator and a directory's
+// trailing separator name the same file either way, and are taken.
+func requirePlainSpelling(path string, file bool) error {
+	refuse := func(why string) error { return fmt.Errorf("path spelling refused (%s): %s", why, path) }
+	volume := filepath.VolumeName(path)
+	components := func(s string) []string {
+		return strings.FieldsFunc(s, func(r rune) bool { return r < 0x80 && os.IsPathSeparator(byte(r)) })
+	}
+	if runtime.GOOS == "windows" {
+		if lead := strings.ReplaceAll(path[:min(len(path), 4)], "/", `\`); lead == `\\?\` || lead == `\??\` || lead == `\\.\` {
+			return refuse(`Windows reads a path in the \\?\, \??\ or \\.\ namespace otherwise than a plain one`)
+		}
+		// a UNC path's server and share, which its volume names -- not a
+		// drive's volume, whose colon is the drive's and no stream's
+		if len(volume) > 2 && os.IsPathSeparator(volume[0]) && os.IsPathSeparator(volume[1]) {
+			for _, component := range components(volume) {
+				if !windowsReadsAsSpelled(component) {
+					return refuse("Windows would not read a component as spelled")
+				}
+			}
+		}
+	}
+	rest := path[len(volume):]
+	if file && (rest == "" || os.IsPathSeparator(rest[len(rest)-1])) {
+		return refuse("a file's path cannot end in a separator")
+	}
+	named := false
+	for _, component := range components(rest) {
+		switch component {
+		case "..":
+			if named {
+				return refuse(`a ".." after a named component can resolve through a link`)
+			}
+		case ".":
+		default:
+			named = true
+			if runtime.GOOS == "windows" && !windowsReadsAsSpelled(component) {
+				return refuse("Windows would not read a component as spelled")
+			}
+		}
+	}
+	return nil
+}
+
+// windowsReadsAsSpelled reports whether Windows opens a path component by the
+// name it is spelled with: not one ending in a space or a period, which
+// Windows trims; not one holding a colon, which names a stream of a file; and
+// not a reserved device name -- CON, PRN, AUX, NUL, CONIN$, CONOUT$, COM and
+// LPT with a digit (superscript 1, 2 and 3 included) -- with or without an
+// extension, which names the device.
+func windowsReadsAsSpelled(component string) bool {
+	if strings.HasSuffix(component, " ") || strings.HasSuffix(component, ".") || strings.Contains(component, ":") {
+		return false
+	}
+	base := strings.ToUpper(component)
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.TrimRight(base, " ")
+	switch base {
+	case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$":
+		return false
+	}
+	if len(base) >= 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) {
+		switch base[3:] {
+		case "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "¹", "²", "³":
+			return false
+		}
+	}
+	return true
+}
+
+// pathAncestors returns the directories the platform passes through on its way
+// to path, deepest last, each spelled as the prefix of the path that ends
+// before a separator -- never cleaned, so that each resolves exactly as that
+// part of the whole path does. The root and the volume are left out, and so
+// is the prefix before a repeated separator, which names no further directory.
+// Prefixes are cut from the path as given rather than taken by filepath.Dir,
+// which on Windows reads a repeated separator after the volume as the start of
+// a UNC path, and stops climbing.
+func pathAncestors(path string) []string {
+	volume := len(filepath.VolumeName(path))
+	var dirs []string
+	for i := volume; i < len(path); i++ {
+		if os.IsPathSeparator(path[i]) && i > volume && !os.IsPathSeparator(path[i-1]) {
+			dirs = append(dirs, path[:i])
+		}
+	}
+	return dirs
+}
+
+// absentOrLink judges a path a stat that follows links found not there. It is
+// absent only when a look at the path itself confirms it: a link that leads
+// nowhere is there and cannot be read, and a second look that fails for any
+// other reason establishes nothing, so both are refusals. The caller has
+// established that the path's parent is a directory, so the look is answered
+// about the last component alone.
+func absentOrLink(path, link string) error {
+	_, err := lstat(path)
+	switch {
+	case err == nil:
+		return fmt.Errorf("%s: %s", link, path)
+	case absent(err):
+		return nil
+	default:
+		return err
+	}
+}
+
+// registryContainerReachable checks the directories that must exist above an
+// input -- the registry file, the decision-record directory -- walking them
+// from the filesystem root downward so that every stat is taken against a
+// parent already known to be a directory. At each step the only outcomes are
+// an existing directory, an existing non-directory (a refusal, naming the
+// component), a link that leads nowhere (a refusal too), and a component that
+// is not there at all (the input is then genuinely absent, and the caller's
+// stat of it says so) -- which only the plain answer for a missing name
+// establishes (absent): a directory, drive or share that cannot be reached is
+// a refusal. The caller has refused a spelling the platform could
+// resolve otherwise (requirePlainSpelling), so the directories walked, the
+// prefixes of the path as spelled, are the ones the platform resolves.
 //
 // Walking downward is what keeps the classification off the platform's error
 // mapping. Statting the registry path — or only its immediate parent — cannot do
 // it: Windows answers ERROR_PATH_NOT_FOUND for any non-directory path component,
 // at any depth, and os.IsNotExist reports that as absence.
-func registryContainerReachable(path string) error {
-	var dirs []string
-	for dir := filepath.Dir(path); ; {
-		dirs = append(dirs, dir)
-		up := filepath.Dir(dir)
-		if up == dir {
-			break
-		}
-		dir = up
-	}
-	// dirs runs deepest-first, so walk it in reverse to start at the root.
-	for i := len(dirs) - 1; i >= 0; i-- {
-		info, err := os.Stat(dirs[i])
+//
+// It reports whether every directory above the input is there. When one is
+// confirmed absent the input is absent too, and the caller does not look at it:
+// on Windows a look at a name under a missing directory answers
+// ERROR_PATH_NOT_FOUND, which is not the plain answer absent() takes.
+func registryContainerReachable(path string) (bool, error) {
+	for _, dir := range pathAncestors(path) {
+		info, err := stat(dir)
 		if err != nil {
-			if os.IsNotExist(err) {
-				// Nothing exists from here down, so neither does the registry.
-				return nil
+			if absent(err) {
+				// nothing reachable from here down -- unless the component
+				// is there as a link that leads nowhere, which a stat that
+				// follows it reports as absent
+				return false, absentOrLink(dir, "registry parent path component is a link that leads nowhere")
 			}
-			return err
+			return false, err
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("registry parent path component is not a directory: %s", dirs[i])
+			return false, fmt.Errorf("registry parent path component is not a directory: %s", dir)
 		}
 	}
-	return nil
+	return true, nil
+}
+
+// statInput stats an input the verifier reads -- the registry file, the
+// decision-record directory -- once the directories above it are known to be
+// reachable. It returns nil info and a nil error only for an input that is
+// genuinely not there; a link that leads nowhere is there and cannot be read,
+// never the absence a stat that follows the link would make of it.
+func statInput(path, link string) (os.FileInfo, error) {
+	info, err := stat(path)
+	if err != nil {
+		if absent(err) {
+			return nil, absentOrLink(path, link)
+		}
+		return nil, err
+	}
+	return info, nil
 }
 
 // readRegistryBytes returns the registry's raw bytes and whether the registry is
@@ -225,17 +404,19 @@ func registryContainerReachable(path string) error {
 // differently.
 //
 // SPEC.md §4.1: only a registry file that is genuinely not there is absent. A
-// registry path that exists but cannot be read, or that has an existing parent
-// path component which is not a directory, is a present and unreachable anchor —
-// the caller must refuse rather than treat the anchor as empty.
+// registry path that exists but cannot be read, that has an existing parent
+// path component which is not a directory, or that is -- or lies under -- a
+// link that leads nowhere, is a present and unreachable anchor: the caller must
+// refuse rather than treat the anchor as empty.
 func readRegistryBytes(path string) ([]byte, bool, error) {
-	if err := registryContainerReachable(path); err != nil {
+	if err := requirePlainSpelling(path, true); err != nil {
 		return nil, false, err
 	}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
-			return nil, false, nil
-		}
+	if there, err := registryContainerReachable(path); err != nil || !there {
+		return nil, false, err
+	}
+	info, err := statInput(path, "the registry is a link that leads nowhere")
+	if err != nil || info == nil {
 		return nil, false, err
 	}
 	data, err := os.ReadFile(path)
@@ -253,16 +434,41 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 // `unregistered-session`. A registry that is present and unreachable is not
 // absent: readRegistryBytes tells the two apart, and this refuses on the second.
 func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error) {
-	seals := map[string]seal{}
-	var order []string
+	return loadSealsOf(path, publicKey, false)
+}
 
+// loadSealsOf is the one read of the registry behind loadSeals and
+// loadEngineSeals: with required, an absent registry is a refusal, decided
+// on the same read the seals come from, never on a look before it.
+func loadSealsOf(path string, publicKey []byte, required bool) (map[string]seal, []string, error) {
 	data, present, err := readRegistryBytes(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	if !present {
-		return seals, order, nil
+	if required && !present {
+		return nil, nil, fmt.Errorf("the registry the engine made at its start is not there: %s", path)
 	}
+	seals, order := parseSeals(data, publicKey)
+	return seals, order, nil
+}
+
+// loadEngineSeals is the engine's own read of the registry it made when it
+// started (newRegistryWriter): the one read, and an absent registry is a
+// refusal, never an empty registry. No lookup can prove an absence -- a
+// device or a share that has gone away can answer as a missing file does,
+// and so can a filesystem that shows an empty directory where the registry
+// was -- so the engine, which knows its registry is there, takes any
+// absence for a registry it cannot read.
+func loadEngineSeals(path string, publicKey []byte) (map[string]seal, error) {
+	seals, _, err := loadSealsOf(path, publicKey, true)
+	return seals, err
+}
+
+// parseSeals keeps each line of the registry that is a seal under the public
+// key, first seal of a session first, and drops every other line.
+func parseSeals(data []byte, publicKey []byte) (map[string]seal, []string) {
+	seals := map[string]seal{}
+	var order []string
 	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
@@ -311,7 +517,7 @@ func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error)
 		seals[sessionID] = seal{sessionID: sessionID, finalCount: int64(count)}
 		order = append(order, sessionID)
 	}
-	return seals, order, nil
+	return seals, order
 }
 
 // topLevelSignature reads a receipt file's own signature member as written:
@@ -390,6 +596,27 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 // per-session findings, the registry anchor, and for version 3 action receipts
 // the citation and decision-record checks of steps 5 and 6.
 func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false)
+}
+
+// verifyAsEngine is the engine's own verification (/verify): the registry it
+// made at its start is required, so a registry that is not there is no
+// verdict, never "no seals" -- which, with no session left to enumerate,
+// would verify.
+func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, true)
+}
+
+func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte, registryRequired bool) (*report, error) {
+	// the inputs' spellings are judged before anything is read (SPEC.md §4.1)
+	if err := requirePlainSpelling(registryPath, true); err != nil {
+		return nil, err
+	}
+	if decisionRecords != "" {
+		if err := requirePlainSpelling(decisionRecords, false); err != nil {
+			return nil, fmt.Errorf("decision-record directory: %w", err)
+		}
+	}
 	// SPEC.md §4.1: A store root that exists but is not a directory is an unreadable evidence container (refusal).
 	if info, err := os.Stat(storeRoot); err != nil {
 		if !os.IsNotExist(err) {
@@ -422,7 +649,7 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 		rep.Findings = append(rep.Findings, result.findings...)
 	}
 
-	seals, sealOrder, err := loadSeals(registryPath, publicKey)
+	seals, sealOrder, err := loadSealsOf(registryPath, publicKey, registryRequired)
 	if err != nil {
 		return nil, err
 	}

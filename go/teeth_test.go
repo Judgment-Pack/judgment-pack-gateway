@@ -1024,6 +1024,62 @@ func TestRegistryPathShapes(t *testing.T) {
 		})
 	}
 
+	// A link that leads nowhere is present and unreadable, never absent: a
+	// stat that follows it reports not-exist, and taking that for the
+	// absence of a registry grades every session from evidence nobody read
+	// -- and lets an acquisition into a session the registry would have
+	// said was sealed. At the file, and at a directory above it: a directory
+	// link made as one (Windows fixes a link's kind when it is made) and, on
+	// Windows, a junction. A symbolic link needs a privilege on some Windows
+	// hosts; where the platform refuses one for that reason the row says so
+	// and stops, and any other failure to make it fails.
+	for _, tt := range []struct {
+		name string
+		// windowsOnly marks a row only Windows can build
+		windowsOnly bool
+		// build returns the registry path, given a directory to work in
+		// and a target that does not exist
+		build func(t *testing.T, dir, nowhere string) string
+		want  func(regPath string) string
+	}{
+		{"the registry is a link that leads nowhere refuses", false, func(t *testing.T, dir, nowhere string) string {
+			regPath := filepath.Join(dir, "registry.jsonl")
+			linkOrSkip(t, nowhere, regPath)
+			return regPath
+		}, func(regPath string) string { return "the registry is a link that leads nowhere: " + regPath }},
+		{"a directory above the registry is a link that leads nowhere refuses", false, func(t *testing.T, dir, nowhere string) string {
+			parent := filepath.Join(dir, "anchor")
+			dirLinkToNowhere(t, nowhere, parent)
+			return filepath.Join(parent, "registry.jsonl")
+		}, func(regPath string) string {
+			return "registry parent path component is a link that leads nowhere: " + filepath.Dir(regPath)
+		}},
+		{"a directory above the registry is a junction that leads nowhere refuses", true, func(t *testing.T, dir, nowhere string) string {
+			parent := filepath.Join(dir, "anchor")
+			junctionToNowhere(t, nowhere, parent)
+			return filepath.Join(parent, "registry.jsonl")
+		}, func(regPath string) string {
+			return "registry parent path component is a link that leads nowhere: " + filepath.Dir(regPath)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.windowsOnly && runtime.GOOS != "windows" {
+				t.Skip("a junction is Windows' own")
+			}
+			st, _, storeRoot, _ := testStore(t)
+			stampSession(t, st, "s1", 2)
+			dir := t.TempDir()
+			regPath := tt.build(t, dir, filepath.Join(dir, "nothing-here"))
+			_, err := verifyWithRegistry(storeRoot, regPath, "gateway:test", st.publicKey)
+			if err == nil || err.Error() != tt.want(regPath) {
+				t.Fatalf("got %v, want %q", err, tt.want(regPath))
+			}
+			if _, _, err := loadSeals(regPath, st.publicKey); err == nil {
+				t.Fatal("loadSeals took a link to nothing for an absent registry")
+			}
+		})
+	}
+
 	// The /registry endpoint hands the anchor to verifiers that never touch this
 	// filesystem, so it must classify the registry path the same way the verifier
 	// does. Serving 200 with an empty body for a registry that is present and

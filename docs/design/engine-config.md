@@ -292,7 +292,8 @@ neither root nor the signer nor another platform's, the credentials file is that
 under directories nobody else can replace it in, and so on through the list above — and
 what `serve` judges before it starts holds too: the store, registry and decision-record
 paths are what it could make or write (a link to nothing in the place of one is not
-absence), and every platform's user, the existing ones included, is one this process can
+absence, and a registry or decision-record path spelled so that the platform could resolve
+it otherwise is refused, as SPEC.md §4.1 has it), and every platform's user, the existing ones included, is one this process can
 switch to, and the identity's key file, when one is configured, reads as a key set. Second, each of the platform's derived sources is run once in check mode, as the platform's user, in
 the environment `serve` would give it: `adapter-airbyte --check` runs the connector's own
 `check` with the credentials; `adapter-mcp --check` starts the server, completes the handshake

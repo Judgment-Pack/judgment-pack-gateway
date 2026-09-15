@@ -363,9 +363,25 @@ The context prefix domain-separates a seal signature from a receipt signature
 
 Checking a seal needs only the **public** key — see §5.
 
-The registry is an append-only file, one seal per line. Sealing a session that is already sealed is **refused** — a session's
+The registry is an append-only file, one seal per line. A seal is appended on a line of its
+own: a gateway that finds the registry's last line unterminated — an earlier seal written in
+part, or whole but for its newline — ends that line before it writes the record, since a
+record joined to it would make one line that is no seal (§4 drops it) and lose both. Sealing a session that is already sealed is **refused** — a session's
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback.
+
+A gateway makes its registry, empty, when it starts without one — only where nothing is, never
+through a link, and only for a store with no history — so that from then on the registry's
+absence is never an empty registry to it. No lookup can prove an absence (§4.1): a device or a
+network share that has gone away can answer as a missing file does. So once the gateway has
+started, a registry that is not there is one it cannot read: an acquisition into a session it
+does not hold (§6), a seal, `/registry` and `/verify` refuse it. A store that holds a session
+has run before, and its registry may hold that session's seal, so a gateway whose store holds a
+session and whose registry is not there refuses to start: the registry is to be restored, or,
+by an operator who knows no session was ever sealed, made empty by hand. What remains cannot be
+told apart: a registry and a session history lost or hidden together — a mount that is not
+there yet, holding both — look like a fresh installation, and the gateway makes a fresh registry
+for it.
 
 ## 3a. Session identifiers
 
@@ -483,14 +499,59 @@ a verdict at all.
 | `<root>/receipts` exists but is not a directory | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 | `<root>/receipts` is a directory that cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 | the registry file does not exist | no seals load — every session in the store is then `unregistered-session` |
-| the registry path exists but cannot be read, or any existing parent path component is not a directory | no verdict — the verifier refuses (non-zero exit); the anchor is present and unreadable, not absent |
+| the registry path exists but cannot be read, or any existing parent path component is not a directory, or the registry or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below) | no verdict — the verifier refuses (non-zero exit); the anchor is present and unreadable, not absent |
 | a session directory holding no receipts | a session with count 0, judged against its seal like any other |
 | the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
-| the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
+| the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below), or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 
-Each of these fails **closed**: an absent anchor cannot make a store verify, it can
-only fail to excuse one. A store that is genuinely empty against an empty registry
-verifies, because there is nothing it contradicts.
+The registry and the decision-record directory are taken by their spelling, and a path the
+platform could resolve to another file than the one its spelling names is refused before
+anything is read — no verdict — and a gateway refuses to start on one, before it makes
+anything:
+
+- on every platform, a `..` after a named component: Linux and macOS step back from where that
+  component leads, a link's target included, while a reading of the spelling steps back from
+  the component;
+- for the registry, which is a file, an empty path or a path that ends in a separator;
+- on Windows, a path in the `\\?\` or `\??\` namespace, which Windows takes literally, or in the
+  `\\.\` namespace, which it reads as a device path; and a component — a UNC path's server and
+  share included — that ends in a space or a period, which Windows trims, that holds a colon,
+  which names a stream of a file, or that is a reserved device name (`CON`, `PRN`, `AUX`, `NUL`,
+  `CONIN$`, `CONOUT$`, or `COM` or `LPT` followed by one of `0`–`9`, `¹`, `²`, `³`), with or
+  without an extension.
+
+A leading `..`, a `.` component and a repeated separator name the same file either way, and
+are taken. A trailing separator on the decision-record directory is taken too; the walk below it
+then follows a link at its last component, as the platform does, where without the separator the
+walk stops at the link. The directories above an input are the prefixes of its path as spelled,
+each cut before a separator. A name under the decision-record directory that Windows would not
+read as spelled is a file under it that cannot be read.
+
+For the registry and the decision-record directory, only an input the platform confirms is not
+there is absent. The confirmation is the plain answer for a missing name in a directory the
+walk has reached: `ENOENT`, or on Windows `ERROR_FILE_NOT_FOUND` — not `ERROR_PATH_NOT_FOUND`
+or `ERROR_BAD_NETPATH`, which say a directory, a drive or a network share on the way cannot be
+reached, and make an input under it present and unreadable. An input under a directory
+confirmed missing is absent, and nothing below that directory is looked at. When a stat that
+follows links finds nothing at a path, a look at the path itself must find nothing too, and any
+other answer to that look — a link, or a failure — makes the input present and unreadable.
+
+That confirmation concerns the namespace the filesystem shows, and no lookup proves more: a
+device that has gone away can answer as a missing name does (Windows before 10 1909), and a
+mount that is missing shows the empty directory beneath it. To a verifier an absent registry
+fails closed every session the store still holds — each is `unregistered-session` — but a
+registry and a session history lost or hidden together look like a genuinely empty store against
+an empty registry, which verifies, and no classifier can tell the two apart: that takes an
+expectation from outside what is read. To the gateway an absent registry could reopen a sealed
+session, so the gateway makes its registry at start and takes any later absence for a registry
+it cannot read (§3). It reads the registry through this classifier
+before it seals into it; started from a configuration, it judges the registry and the
+decision-record directory through it before it starts.
+
+Each of these fails **closed** for what is still there: an absent anchor cannot make a
+store's sessions verify, it can only fail to excuse them. A store that is genuinely empty
+against an empty registry verifies, because there is nothing it contradicts — and so does a
+store whose sessions were lost with its registry, which reads the same (above).
 
 A verifier does **not** re-apply §3a's token rule to the directory names it
 enumerates. Directory enumeration cannot yield `.`, `..` or a path separator, so
@@ -627,7 +688,7 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs. |
+| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
@@ -645,8 +706,8 @@ store under its own key and the record under its decision-record directory —
 the standard §4 applies, and no more. The format was specified before the
 surface so that a verifier written then verifies what is minted now.
 `gateway verify` takes `--decision-records <dir>` for §4 steps 5 and 6.
-| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
-| GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. |
+| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. |
+| GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 
 A `source` is an operator-configured subprocess that reads the canonical arguments on

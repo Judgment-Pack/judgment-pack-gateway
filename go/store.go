@@ -243,14 +243,69 @@ type registryWriter struct {
 	seed  []byte
 	priv  ed25519.PrivateKey
 	keyID string
+	// write appends a seal's line and sync makes it durable; a test
+	// stands in a failure for either
+	write func(*os.File, []byte) (int, error)
+	sync  func(*os.File) error
 }
 
-func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
+// sealMayBeWritten is a failure to seal after the record may already be in
+// the registry -- written and not made durable, or written in part: the
+// session is to be taken as sealed by the process that asked, since a
+// reader of the registry may find the seal there.
+type sealMayBeWritten struct{ error }
+
+// noHistory reports a store with no sessions: for a registry writer made
+// where no store can hold any.
+func noHistory() (bool, error) { return false, nil }
+
+// newRegistryWriter opens the registry for sealing. history reports whether
+// the store beside it holds a session: a registry that is not there is made
+// only when it does not (SPEC.md §3).
+func newRegistryWriter(path string, seed []byte, history func() (bool, error)) (*registryWriter, error) {
 	if len(seed) != seedBytes {
 		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
 	}
+	// the registry is read by its spelling, so it is written by its
+	// spelling too: a spelling the platform could resolve otherwise is
+	// refused before a directory is made for it (SPEC.md §4.1)
+	if err := requirePlainSpelling(path, true); err != nil {
+		return nil, err
+	}
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	// The engine makes its registry, empty, when it starts without one, so
+	// that from then on the registry's absence is never an empty registry
+	// to it (loadEngineSeals): a device or a share that has gone away can
+	// answer as a missing file does, and no lookup could tell the two
+	// apart. What is at the path is judged as the verifier judges it first,
+	// and the registry is made only where nothing is -- never through a
+	// link to nothing, which an exclusive create does not follow.
+	//
+	// This one read decides, and the store's history is asked after it:
+	// a registry seen present earlier, by anyone, authorizes nothing, since
+	// it can be gone by now. A store that holds a session has run before,
+	// and its registry may hold that session's seal -- an empty one made in
+	// its place would reopen it. An operator who knows no session was ever
+	// sealed makes the registry, empty, by hand.
+	if _, present, err := readRegistryBytes(path); err != nil {
+		return nil, err
+	} else if !present {
+		held, err := history()
+		if err != nil {
+			return nil, err
+		}
+		if held {
+			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", path)
+		}
+		made, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		if err := made.Close(); err != nil {
 			return nil, err
 		}
 	}
@@ -258,6 +313,8 @@ func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 	return &registryWriter{
 		path: path, seed: seed, priv: priv,
 		keyID: keyIDFor(priv.Public().(ed25519.PublicKey)),
+		write: func(f *os.File, line []byte) (int, error) { return f.Write(line) },
+		sync:  func(f *os.File) error { return f.Sync() },
 	}, nil
 }
 
@@ -267,9 +324,17 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	if err := requireSession(sessionID); err != nil {
 		return nil, err
 	}
-	existing, err := os.ReadFile(w.path)
-	if err != nil && !os.IsNotExist(err) {
+	// the registry is read as the verifier reads it (readRegistryBytes): a
+	// registry that is there and cannot be read -- a link to nothing, a
+	// directory or a share that cannot be reached -- is not an empty one,
+	// and sealing into it could append a second seal for a session it
+	// already holds, or make the target of a link to nothing
+	existing, present, err := readRegistryBytes(w.path)
+	if err != nil {
 		return nil, err
+	}
+	if !present {
+		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", w.path)
 	}
 	for _, line := range splitLines(existing) {
 		v, err := parseJSON(line)
@@ -291,16 +356,36 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	record.set("keyId", vString(w.keyID))
 	record.set("signature", vString(hex.EncodeToString(signature)))
 
-	handle, err := os.OpenFile(w.path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	// A record starts on a line of its own. A registry whose last line is
+	// unterminated -- an earlier seal written in part, or whole but for its
+	// newline -- is ended first: joined to that line, the record would make
+	// one line that is no seal, and neither would load.
+	var line []byte
+	if len(existing) > 0 && existing[len(existing)-1] != '\n' {
+		line = append(line, '\n')
+	}
+	boundary := len(line)
+	line = append(append(line, canon(record)...), '\n')
+
+	// the registry is there (above); a create here could only follow a
+	// registry that went away between the read and the open
+	handle, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
 	defer handle.Close()
-	if _, err := handle.Write(append(canon(record), '\n')); err != nil {
+	if n, err := w.write(handle, line); err != nil {
+		// once a byte of the record is written the seal may be there --
+		// whole but for its newline, it loads -- and the session is taken
+		// as sealed until a retry settles it; a newline ending an earlier
+		// line is no part of the record
+		if n > boundary {
+			return nil, sealMayBeWritten{err}
+		}
 		return nil, err
 	}
-	if err := handle.Sync(); err != nil {
-		return nil, err
+	if err := w.sync(handle); err != nil {
+		return nil, sealMayBeWritten{err}
 	}
 	return record, nil
 }
