@@ -46,6 +46,17 @@ jobs:
       # it checks.
       - name: The implementation agrees with the frozen corpus
         run: ./gateway conform
+      # The stand-in engine the plugin smoke checkers are tested against
+      # (plugins/smoke/testing) is held to this engine, request for request:
+      # a stand-in that drifts from the engine fails here, not in a smoke run
+      # before publishing. Standard library Python; the source it starts the
+      # engine with is a shell script, so Linux only.
+      - name: The smoke stand-in answers as this engine does
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          GATEWAY_BIN: ${{ github.workspace }}/go/gateway
+          SMOKE_REQUIRE_ENGINE: "1"
+        run: python3 -m unittest discover -s ../plugins/smoke/testing -p test_stand_in_engine.py -v
       - name: No third-party modules
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -301,3 +312,15 @@ jobs:
         run: npm run lint
       - name: Tests
         run: npm test
+      # The smoke checkers' refusals (plugins/smoke/testing): the n8n
+      # checker over executions written as n8n stores them, and -- where the
+      # piece has just been built, and so required -- the Activepieces runner
+      # against the stand-in engine, as the engine answers and in each wrong
+      # answer the stand-in can give. Standard library Python; no n8n, no
+      # container. The stand-in's comparison with the engine runs in the Go
+      # job, which builds the engine; here it skips.
+      - name: Smoke checkers
+        working-directory: ${{ github.workspace }}
+        env:
+          SMOKE_REQUIRE_PIECE: ${{ matrix.package == 'plugins/activepieces/judgment-pack' && '1' || '' }}
+        run: python3 -m unittest discover -s plugins/smoke/testing -v

@@ -34,7 +34,14 @@ export function sendTo(
 		// otherwise leave a socket in the default agent for a later call to
 		// find; nothing outlives the answer
 		agent: false,
-		headers: { ...init.headers, Connection: 'close' },
+		// the body's length, stated: a request body is sent whole with its
+		// Content-Length rather than chunked, which a server or a proxy in
+		// front of the engine may refuse
+		headers: {
+			...init.headers,
+			Connection: 'close',
+			...(init.body !== undefined ? { 'Content-Length': String(Buffer.byteLength(init.body)) } : {}),
+		},
 		// explicit on every connection, so the process's default -- which
 		// another piece's transport may have turned off -- never decides
 		rejectUnauthorized: true,
