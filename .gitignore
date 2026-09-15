@@ -9,3 +9,6 @@ go/gateway
 plugins/**/node_modules/
 plugins/**/dist/
 plugins/**/*.tsbuildinfo
+
+# the second implementation installs its typecheck into node_modules/
+verify-ts/node_modules/
