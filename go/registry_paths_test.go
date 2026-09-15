@@ -162,12 +162,16 @@ func TestAPathSpelledToResolveOtherwiseIsRefused(t *testing.T) {
 
 	// taken as either, and absent when nothing is there
 	taken := []row{
+		{"a plain absolute path", spell(dir, "registry.jsonl")},
 		{"a leading ..", spell("..", "no-registry-here-"+filepath.Base(dir), "registry.jsonl")},
 		{"a . before a leading ..", spell(".", "..", "no-registry-here-"+filepath.Base(dir), "registry.jsonl")},
 		{"a . component", spell(dir, ".", "registry.jsonl")},
 		{"a repeated separator", dir + sep + sep + "registry.jsonl"},
 	}
-	if !windows {
+	if windows {
+		// a drive's volume holds a colon that names the drive, not a stream
+		taken = append(taken, row{"a drive-relative path", filepath.VolumeName(dir) + "no-registry-here-" + filepath.Base(dir) + sep + "registry.jsonl"})
+	} else {
 		// a name like any other off Windows, which trims nothing
 		taken = append(taken, row{"a component ending in a space", spell(dir, "anchor ", "registry.jsonl")})
 	}

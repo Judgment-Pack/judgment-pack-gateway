@@ -217,10 +217,13 @@ func requirePlainSpelling(path string, file bool) error {
 		if lead := strings.ReplaceAll(path[:min(len(path), 4)], "/", `\`); lead == `\\?\` || lead == `\??\` || lead == `\\.\` {
 			return refuse(`Windows reads a path in the \\?\, \??\ or \\.\ namespace otherwise than a plain one`)
 		}
-		// the volume's own components: a UNC path's server and share
-		for _, component := range components(volume) {
-			if !windowsReadsAsSpelled(component) {
-				return refuse("Windows would not read a component as spelled")
+		// a UNC path's server and share, which its volume names -- not a
+		// drive's volume, whose colon is the drive's and no stream's
+		if len(volume) > 2 && os.IsPathSeparator(volume[0]) && os.IsPathSeparator(volume[1]) {
+			for _, component := range components(volume) {
+				if !windowsReadsAsSpelled(component) {
+					return refuse("Windows would not read a component as spelled")
+				}
 			}
 		}
 	}
