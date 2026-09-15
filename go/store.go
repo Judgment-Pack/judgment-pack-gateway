@@ -243,7 +243,15 @@ type registryWriter struct {
 	seed  []byte
 	priv  ed25519.PrivateKey
 	keyID string
+	// sync makes an appended seal durable; a test stands in a failure
+	sync func(*os.File) error
 }
+
+// sealMayBeWritten is a failure to seal after the record may already be in
+// the registry -- written and not made durable, or written in part: the
+// session is to be taken as sealed by the process that asked, since a
+// reader of the registry may find the seal there.
+type sealMayBeWritten struct{ error }
 
 func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 	if len(seed) != seedBytes {
@@ -258,6 +266,7 @@ func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 	return &registryWriter{
 		path: path, seed: seed, priv: priv,
 		keyID: keyIDFor(priv.Public().(ed25519.PublicKey)),
+		sync:  func(f *os.File) error { return f.Sync() },
 	}, nil
 }
 
@@ -296,11 +305,14 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 		return nil, err
 	}
 	defer handle.Close()
-	if _, err := handle.Write(append(canon(record), '\n')); err != nil {
+	if n, err := handle.Write(append(canon(record), '\n')); err != nil {
+		if n > 0 {
+			return nil, sealMayBeWritten{err}
+		}
 		return nil, err
 	}
-	if err := handle.Sync(); err != nil {
-		return nil, err
+	if err := w.sync(handle); err != nil {
+		return nil, sealMayBeWritten{err}
 	}
 	return record, nil
 }

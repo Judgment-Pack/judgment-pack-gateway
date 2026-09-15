@@ -957,6 +957,60 @@ func TestAcquireAfterSealDoesNotStartTheSource(t *testing.T) {
 	}
 }
 
+// A seal the registry may hold closes the session in the process that
+// asked for it, even when sealing failed after the record was written: the
+// process judges a session it holds by its map, so the map must not stay
+// open behind a seal on disk. A retry of the seal finds the record.
+func TestASealThatMayBeWrittenClosesTheSession(t *testing.T) {
+	service, _ := testService(t)
+	if _, err := service.acquire("seal-unsynced", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	service.registry.sync = func(*os.File) error { return errors.New("the disk would not sync") }
+	if _, err := service.sealSession("seal-unsynced"); err == nil || !strings.Contains(err.Error(), "would not sync") {
+		t.Fatalf("a seal whose sync failed: %v", err)
+	}
+	service.registry.sync = func(f *os.File) error { return f.Sync() }
+	seals, _, err := loadSeals(service.regPath, service.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, onDisk := seals["seal-unsynced"]; !onDisk {
+		t.Fatal("the stand-in failure left no record: the test tests nothing")
+	}
+	started := filepath.Join(t.TempDir(), "source-started")
+	t.Setenv(envSourceReady, started)
+	if _, err := service.acquire("seal-unsynced", "screening", vString("y"), nil); err == nil || !strings.Contains(err.Error(), "session is sealed") {
+		t.Fatalf("an acquisition after a seal that may be written: %v", err)
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source ran for a session whose seal may be written")
+	}
+	if _, err := service.sealSession("seal-unsynced"); err == nil || !strings.Contains(err.Error(), "already sealed") {
+		t.Fatalf("a retry of the seal: %v", err)
+	}
+	// a write that fails before a byte is written is not a seal, and
+	// leaves the session as it was
+	if _, err := service.acquire("seal-unwritten", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	blocked := service.regPath + ".blocked"
+	if err := os.Rename(service.regPath, blocked); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(service.regPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.sealSession("seal-unwritten"); err == nil {
+		t.Fatal("a seal into a registry that cannot be opened succeeded")
+	}
+	os.Remove(service.regPath)
+	os.Rename(blocked, service.regPath)
+	if _, err := service.acquire("seal-unwritten", "screening", vString("y"), nil); err != nil {
+		t.Fatalf("a session whose seal was never written was closed: %v", err)
+	}
+}
+
 // A seal is final across a restart: a process started on the same store
 // and registry refuses an acquisition into a session an earlier process
 // sealed, before the source is started -- the registry is the one record of
@@ -1000,18 +1054,66 @@ func TestAcquireAfterRestartHonoursTheRegistrysSeal(t *testing.T) {
 		t.Fatal("the refused session entered the new process's map")
 	}
 	// the unsealed session from before the restart: a read may continue it
-	// as it always could -- its first receipt is on disk, so this one
-	// fails at its stamp, append-only, after the source ran; what matters
-	// here is that the registry did not refuse it
-	if _, err := restarted.acquire("restart-open", "screening", vString("x"), nil); err != nil && strings.Contains(err.Error(), "sealed in the registry") {
-		t.Fatalf("an unsealed session was refused as sealed: %v", err)
+	// as it always could -- the registry does not refuse it, its source runs,
+	// and, its first receipt being on disk, the stamp is the append-only
+	// collision it has always been (act_test holds the case where the first
+	// receipt is gone and the read succeeds)
+	startsBefore := restarted.started.Load()
+	_, err = restarted.acquire("restart-open", "screening", vString("x"), nil)
+	if err == nil || !strings.Contains(err.Error(), "receipt already exists (append-only)") {
+		t.Fatalf("an unsealed session from before the restart: %v", err)
+	}
+	if restarted.started.Load() != startsBefore+1 {
+		t.Fatal("the unsealed session's source did not run: the read was refused before it")
 	}
 	// a session new to both processes is admitted and minted
 	if _, err := restarted.acquire("restart-new", "screening", vString("x"), nil); err != nil {
 		t.Fatalf("a new session after the restart: %v", err)
 	}
 	// a registry that cannot be read refuses a session the process does not
-	// hold, and does not start its source
+	// hold, and does not start its source -- a directory where the file
+	// should be, on every platform, and a link that leads nowhere where
+	// links can be made; a held session is still judged by its map
+	unreadable := func(name string, make func() error, undo func()) {
+		t.Helper()
+		if err := make(); err != nil {
+			t.Logf("%s: cannot be set up here (%v)", name, err)
+			return
+		}
+		defer undo()
+		os.Remove(started)
+		before := restarted.started.Load()
+		if _, err := restarted.acquire("restart-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry") || strings.Contains(err.Error(), "sealed in the registry") {
+			t.Fatalf("%s: an unknown session was not refused for the registry: %v", name, err)
+		}
+		if restarted.started.Load() != before {
+			t.Fatalf("%s: a source started with the registry unreadable", name)
+		}
+		if _, err := restarted.acquire("restart-new", "screening", vString(name), nil); err != nil {
+			t.Fatalf("%s: a held session with the registry unreadable: %v", name, err)
+		}
+	}
+	aside := service.regPath + ".aside"
+	unreadable("a directory",
+		func() error {
+			if err := os.Rename(service.regPath, aside); err != nil {
+				return err
+			}
+			return os.Mkdir(service.regPath, 0o700)
+		},
+		func() { os.Remove(service.regPath); os.Rename(aside, service.regPath) })
+	unreadable("a link that leads nowhere",
+		func() error {
+			if err := os.Rename(service.regPath, aside); err != nil {
+				return err
+			}
+			if err := os.Symlink(filepath.Join(t.TempDir(), "nothing"), service.regPath); err != nil {
+				os.Rename(aside, service.regPath)
+				return err
+			}
+			return nil
+		},
+		func() { os.Remove(service.regPath); os.Rename(aside, service.regPath) })
 	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
 		if err := os.Chmod(service.regPath, 0o000); err != nil {
 			t.Fatal(err)

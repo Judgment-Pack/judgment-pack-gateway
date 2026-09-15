@@ -1024,6 +1024,49 @@ func TestRegistryPathShapes(t *testing.T) {
 		})
 	}
 
+	// A link that leads nowhere is present and unreadable, never absent: a
+	// stat that follows it reports not-exist, and taking that for the
+	// absence of a registry grades every session from evidence nobody read
+	// -- and lets an acquisition into a session the registry would have
+	// said was sealed. At the file, and at a directory above it. Links
+	// need a privilege on some Windows hosts; where one cannot be made the
+	// row says so and stops.
+	for _, tt := range []struct {
+		name string
+		// build returns the registry path, given a directory to work in
+		// and a target that does not exist
+		build func(dir, nowhere string) (string, error)
+		want  func(regPath string) string
+	}{
+		{"the registry is a link that leads nowhere refuses", func(dir, nowhere string) (string, error) {
+			regPath := filepath.Join(dir, "registry.jsonl")
+			return regPath, os.Symlink(nowhere, regPath)
+		}, func(regPath string) string { return "the registry is a link that leads nowhere: " + regPath }},
+		{"a directory above the registry is a link that leads nowhere refuses", func(dir, nowhere string) (string, error) {
+			parent := filepath.Join(dir, "anchor")
+			return filepath.Join(parent, "registry.jsonl"), os.Symlink(nowhere, parent)
+		}, func(regPath string) string {
+			return "registry parent path component is a link that leads nowhere: " + filepath.Dir(regPath)
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, _, storeRoot, _ := testStore(t)
+			stampSession(t, st, "s1", 2)
+			dir := t.TempDir()
+			regPath, err := tt.build(dir, filepath.Join(dir, "nothing-here"))
+			if err != nil {
+				t.Skipf("a link cannot be made here: %v", err)
+			}
+			_, err = verifyWithRegistry(storeRoot, regPath, "gateway:test", st.publicKey)
+			if err == nil || err.Error() != tt.want(regPath) {
+				t.Fatalf("got %v, want %q", err, tt.want(regPath))
+			}
+			if _, _, err := loadSeals(regPath, st.publicKey); err == nil {
+				t.Fatal("loadSeals took a link to nothing for an absent registry")
+			}
+		})
+	}
+
 	// The /registry endpoint hands the anchor to verifiers that never touch this
 	// filesystem, so it must classify the registry path the same way the verifier
 	// does. Serving 200 with an empty body for a registry that is present and

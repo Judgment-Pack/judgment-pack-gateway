@@ -920,6 +920,13 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 	}
 	record, err := g.registry.seal(sessionID, state.index, nowStamp())
 	if err != nil {
+		// a seal that may be in the registry closes the session here too:
+		// a reader of the registry may find it, and a session this process
+		// holds is judged by its map, so the map must not stay open behind
+		// a seal on disk. A retry of the seal finds the record, or writes it.
+		if errors.As(err, new(sealMayBeWritten)) {
+			state.sealed = true
+		}
 		return nil, badRequest{err}
 	}
 	state.sealed = true

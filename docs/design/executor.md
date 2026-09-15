@@ -54,10 +54,12 @@ that what they name exists and compares nothing inside it, which is §4's standa
    another process can end in between, and never by a receipt count, since a read into an old session can recreate a receipt that session
    lost and count on from there; an entry of any kind — a directory, a link, a file — is such a
    session, and a lookup that fails for any reason but absence refuses rather than passes.
-   (`/acquire` is unchanged: it admits by memory alone, runs its source, and then stamps a
-   receipt where none collides — continuing an old session, recreating a receipt it lost — or
-   fails at the stamp where one does; either way it is a read, and a read's session is never
-   an action's unless this process created it.) Admission itself — the atomic reservation
+   (`/acquire` differs: for a session it does not hold in memory it consults the registry's
+   seals first and refuses one sealed there, or a registry it cannot read, before its source
+   runs; otherwise it admits by memory, runs its source, and then stamps a receipt where none
+   collides — continuing an old unsealed session, recreating a receipt it lost — or fails at
+   the stamp where one does; either way it is a read, and a read's session is never an
+   action's unless this process created it.) Admission itself — the atomic reservation
    against sealing — happens once the evidence below is held, as it does for a read, judges the
    session on disk once more under the same lock, and takes the session's directory for this
    process by `Mkdir` before any executor runs: two makers cannot both succeed, so a session

@@ -207,6 +207,15 @@ func registryContainerReachable(path string) error {
 		info, err := os.Stat(dirs[i])
 		if err != nil {
 			if os.IsNotExist(err) {
+				// Nothing reachable from here down -- unless the component is
+				// there as a link that leads nowhere, which a stat that
+				// follows it reports as absent: that is present and
+				// unreadable, not absent, and is refused as such. The parent
+				// is known to be a directory, so the lstat is answered about
+				// this component alone.
+				if _, lerr := os.Lstat(dirs[i]); lerr == nil {
+					return fmt.Errorf("registry parent path component is a link that leads nowhere: %s", dirs[i])
+				}
 				// Nothing exists from here down, so neither does the registry.
 				return nil
 			}
@@ -234,6 +243,12 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
+			// a registry that is a link leading nowhere is there and cannot
+			// be read -- never the absence of a registry, which a stat that
+			// follows the link would make of it
+			if _, lerr := os.Lstat(path); lerr == nil {
+				return nil, false, fmt.Errorf("the registry is a link that leads nowhere: %s", path)
+			}
 			return nil, false, nil
 		}
 		return nil, false, err
