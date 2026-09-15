@@ -23,7 +23,7 @@ import {
   readDocument,
   refuseUnsupportedPlatform,
 } from "./inputs.ts";
-import { count, hasDuplicate, member, parse } from "./json.ts";
+import { TooLarge, count, hasDuplicate, maxValues, member, parse } from "./json.ts";
 import type { ObjectValue, Value } from "./json.ts";
 import { structureV2, structureV3 } from "./structure.ts";
 
@@ -112,6 +112,26 @@ function sha256Hex(bytes: Uint8Array): string {
 // testHooks lets a test look at the heap between one document and the
 // next; nothing sets it but a test.
 export const testHooks: { sample?: (where: string) => void } = {};
+
+// parseOr is the document parsed, and a document past maxValues is
+// answered by tooLarge: a receipt is no verdict; a registry line or a
+// decision record that opens an object could be a seal or a record that
+// cites, and is no verdict, and one that does not is not read.
+function parseOr(bytes: Uint8Array, tooLarge: () => Value | null): Value | null {
+  try {
+    return parse(bytes);
+  } catch (e) {
+    if (e instanceof TooLarge) {
+      return tooLarge();
+    }
+    throw e;
+  }
+}
+
+function opensObject(bytes: Uint8Array): boolean {
+  const at = bytes.findIndex((b) => b !== 0x20 && b !== 0x09 && b !== 0x0a && b !== 0x0d);
+  return at !== -1 && bytes[at] === 0x7b;
+}
 
 function str(v: Value | undefined): string | undefined {
   return v?.type === "string" ? v.value : undefined;
@@ -235,7 +255,15 @@ type Seal = { readonly sessionId: string; readonly finalCount: bigint };
 // verifier's own and whose signature verifies under its key; any other
 // line is no seal and is dropped.
 function sealOf(line: Uint8Array | null, key: crypto.KeyObject, keyId: string): Seal | null {
-  const seal = line === null ? null : parse(line);
+  const seal =
+    line === null
+      ? null
+      : parseOr(line, () => {
+          if (opensObject(line)) {
+            throw new NoVerdict(`a registry line of more than ${maxValues} values cannot be read for a seal`);
+          }
+          return null;
+        });
   if (seal === null || seal.type !== "object" || hasDuplicate(seal)) {
     return null;
   }
@@ -302,7 +330,9 @@ export function verifyStore(
     const stems = new Map<string, string | undefined>();
     for (const file of files) {
       const bytes = readDocument(path.join(root, "receipts", session, file), "the receipt");
-      const parsed = parse(bytes);
+      const parsed = parseOr(bytes, () => {
+        throw new NoVerdict(`receipt ${session}/${file} holds more than ${maxValues} values`);
+      });
       stems.set(file.slice(0, -".json".length), citedSignature(parsed));
       judged.push(judge(parsed, sha256Hex(bytes), root, session, file, key, keyId, authority));
       testHooks.sample?.("receipt");
@@ -491,7 +521,12 @@ export function verifyStore(
 // record that cites, its cites held to the canonical domain and to the
 // shape of action.cites, and each entry resolved.
 function recordCitations(bytes: Uint8Array, resolves: (c: Citation) => boolean): "record-citation-malformed" | "record-citation-unresolved" | null {
-  const record = parse(bytes);
+  const record = parseOr(bytes, () => {
+    if (opensObject(bytes)) {
+      throw new NoVerdict(`a decision record of more than ${maxValues} values cannot be read for its citations`);
+    }
+    return null;
+  });
   if (record === null || record.type !== "object") {
     return null;
   }

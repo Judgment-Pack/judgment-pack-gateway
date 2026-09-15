@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 
 import { canonical } from "../src/canon.ts";
-import { parse } from "../src/json.ts";
+import { maxValues, parse } from "../src/json.ts";
 import { verifyStore, writeVerdict } from "../src/verify.ts";
 import { corpus, materialize, multiset, publicKey, storeVectors } from "./support.ts";
 
@@ -87,10 +87,15 @@ test("the process contract, end to end", () => {
     const endlessKey = spawnSync(process.execPath, [main, "verify", root, registry, v.authority], { stdio: [endless, "pipe", "pipe"], timeout: 20000 });
     assert.equal(endlessKey.status, 2);
     const endlessDocument = spawnSync(process.execPath, [main, "canon"], { stdio: [endless, "pipe", "pipe"], timeout: 20000 });
-    assert.equal(endlessDocument.status, 1);
+    assert.equal(endlessDocument.status, 2);
   } finally {
     fs.closeSync(endless);
   }
+
+  // A document past the values this implementation reads is not refused
+  // as outside the domain: exit 2.
+  const tooMany = spawnSync(process.execPath, [main, "canon"], { input: "[" + "0,".repeat(maxValues) + "0]" });
+  assert.equal(tooMany.status, 2);
 
   // No verdict: the store root is a file.
   const file = path.join(root, "receipts", "s2", "0.json");

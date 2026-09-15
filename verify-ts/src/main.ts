@@ -3,7 +3,8 @@
 // corpus.
 //
 //   main.ts canon      stdin: one JSON document; stdout: its canonical
-//                      bytes; exit 0 inside the domain, 1 refused
+//                      bytes; exit 0 inside the domain, 1 refused, 2
+//                      past what this implementation reads
 //   main.ts verify <store-root> <registry-path> <authority> [<decision-records-dir>]
 //                      stdin: the 32-byte Ed25519 public key; stdout:
 //                      {"ok": bool, "findings": [...]}; exit 0 whenever a
@@ -13,7 +14,8 @@ import * as fs from "node:fs";
 
 import { canonical } from "./canon.ts";
 import { NoVerdict, code, documentBound } from "./inputs.ts";
-import { parse } from "./json.ts";
+import { TooLarge, maxValues, parse } from "./json.ts";
+import type { Value } from "./json.ts";
 import { verifyStore, writeVerdict } from "./verify.ts";
 
 // readInput is standard input to its end, or null past limit bytes: no
@@ -52,7 +54,20 @@ function main(args: string[]): number {
   const [command, ...rest] = args;
   if (command === "canon" && rest.length === 0) {
     const input = readInput(documentBound);
-    const value = input === null ? null : parse(input);
+    if (input === null) {
+      process.stderr.write(`canon: the document is more than ${documentBound} bytes, more than this implementation reads\n`);
+      return 2;
+    }
+    let value: Value | null;
+    try {
+      value = parse(input);
+    } catch (e) {
+      if (e instanceof TooLarge) {
+        process.stderr.write(`canon: the document holds more than ${maxValues} values, more than this implementation reads\n`);
+        return 2;
+      }
+      throw e;
+    }
     const bytes = value === null ? null : canonical(value);
     if (bytes === null) {
       process.stderr.write("canon: outside the domain\n");

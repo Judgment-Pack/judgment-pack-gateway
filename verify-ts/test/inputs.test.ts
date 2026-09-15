@@ -12,6 +12,7 @@ import * as v8 from "node:v8";
 import * as vm from "node:vm";
 
 import { NoVerdict, documentBound } from "../src/inputs.ts";
+import { maxValues } from "../src/json.ts";
 import { testHooks, verifyStore } from "../src/verify.ts";
 import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir } from "./support.ts";
 
@@ -292,4 +293,25 @@ test("an index of more than 64 digits is no verdict", () => {
   assert.deepEqual(statuses(store.root, store.registry), ["signature-mismatch", "unregistered-session"]);
   put(store, "s1", "0.json", text.replace('"callIndex":0', '"callIndex":' + "9".repeat(65)));
   assert.ok(refused(store.root, store.registry));
+});
+
+test("a document of more values than are read: a receipt is no verdict, a seal line or record read only if it could not be one", () => {
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  const many = "0,".repeat(maxValues) + "0";
+  // Flat, within the byte bound, and millions of values: the case that
+  // would take gigabytes parsed whole.
+  put(store, "s1", "1.json", "[" + "1,".repeat(31 * 2 ** 20 - 1) + "1]");
+  assert.ok(refused(store.root, store.registry), "a receipt");
+  fs.rmSync(path.join(store.root, "receipts", "s1", "1.json"));
+  const registry = path.join(path.dirname(store.registry), "many");
+  fs.writeFileSync(registry, `[${many}]\n` + sealLine("s1", 1) + "\n");
+  assert.deepEqual(statuses(store.root, registry), ["ok"], "a registry line that opens no object");
+  fs.writeFileSync(registry, `{"x":[${many}]}\n` + sealLine("s1", 1) + "\n");
+  assert.ok(refused(store.root, registry), "a registry line that opens an object");
+  const records = tempDir();
+  fs.writeFileSync(path.join(records, "a.json"), `[${many}]`);
+  assert.deepEqual(statuses(store.root, store.registry, records), ["ok"], "a record that opens no object");
+  fs.writeFileSync(path.join(records, "b.jsonl"), `{"cites":[],"x":[${many}]}\n`);
+  assert.ok(refused(store.root, store.registry, records), "a record that opens an object");
 });

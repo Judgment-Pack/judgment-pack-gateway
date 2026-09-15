@@ -20,6 +20,17 @@ export type ObjectValue = Extract<Value, { type: "object" }>;
 // neither does this reader.
 export const maxDepth = 10000;
 
+// maxValues is the most values -- scalars and containers alike -- one
+// document may hold. Parsed, a value costs far more than its bytes: a
+// document within the byte bound holding millions of small values would
+// take gigabytes. SPEC.md sets no such bound; this reader's is this.
+export const maxValues = 1 << 20;
+
+// TooLarge is a document holding more than maxValues values: not a
+// refusal of it as JSON, but a limit of this reader's, for the caller to
+// answer as the input deserves.
+export class TooLarge extends Error {}
+
 class NotJSON extends Error {}
 
 type Frame =
@@ -30,7 +41,8 @@ const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // parse is the one JSON value the bytes hold, or null when they are not
 // UTF-8 holding exactly one JSON value (RFC 8259), whitespace around it
-// allowed and a byte order mark not.
+// allowed and a byte order mark not. A document of more than maxValues
+// values throws TooLarge.
 export function parse(bytes: Uint8Array): Value | null {
   let text: string;
   try {
@@ -52,6 +64,7 @@ const numberForm = /-?(?:0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?/y;
 
 class Reader {
   private i = 0;
+  private values = 0;
   private readonly s: string;
 
   constructor(s: string) {
@@ -104,6 +117,9 @@ class Reader {
   // opening reads the start of a value: a scalar whole, or an empty
   // container whole, or else it opens a container on the stack and is null.
   private opening(stack: Frame[]): Value | null {
+    if (++this.values > maxValues) {
+      throw new TooLarge();
+    }
     this.space();
     const c = this.s.charCodeAt(this.i);
     if (c === 0x7b || c === 0x5b) {

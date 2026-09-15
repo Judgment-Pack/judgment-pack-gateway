@@ -14,7 +14,8 @@ to the same vectors it holds the Go implementation to:
 cd go && go build -o gateway . && ./gateway conform --impl ../verify-ts/impl
 ```
 
-`impl canon` reads one JSON document on stdin and writes its canonical bytes;
+`impl canon` reads one JSON document on stdin and writes its canonical bytes,
+exiting 1 for a document outside the domain and 2 for one past what it reads;
 `impl verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
 reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
 exiting 0 whenever it reached a verdict and 2 when it could not.
@@ -57,12 +58,21 @@ no verdict rather than in a verdict reached on less than the store holds.
   not read — a record is still hashed for §4 step 6. Artifacts and `.jsonl`
   files are hashed as they are read, whatever their size. Standard input is held
   to the same bound, and the key on it to 32 bytes.
+- **A million values in a JSON document.** Parsed, a value costs far more than
+  its bytes, so a document of more than 2²⁰ values — scalars and containers
+  alike — is read no further. A receipt past it is no verdict. A registry line
+  or a decision record past it is no verdict if it opens an object, which could
+  be a seal or a record that cites, and otherwise is not read. `canon` exits 2,
+  which is not a refusal of the document as outside the domain.
 - **What is kept.** One document is held at a time. Of each receipt only its
   file name, status and index are kept; of one that passed, also what the chain
   walk compares; of an action that passed, the record it names and its bytes'
   digest, its citations being read again once every receipt is indexed — and
-  its bytes then must be what they were, or there is no verdict. Of the
-  decision records, only which of the named ones were found.
+  its bytes then must be what they were, or there is no verdict. Beside those,
+  the index citations are resolved against: each receipt file's stem, and its
+  signature when it has the form a citation can match. Of the decision records,
+  only which of the named ones were found, and the findings for those that fail,
+  one each, as reported.
 - **An index of more than 64 digits.** A receipt whose `callIndex` is that long
   is no verdict: it cannot verify, the canonical domain ending at sixteen
   digits, and its finding would carry it whole.

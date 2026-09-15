@@ -5,7 +5,7 @@ import * as assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { canonical } from "../src/canon.ts";
-import { hasDuplicate, maxDepth, parse } from "../src/json.ts";
+import { TooLarge, hasDuplicate, maxDepth, maxValues, parse } from "../src/json.ts";
 
 const text = (s: string) => parse(Buffer.from(s, "utf8"));
 const canon = (s: string) => {
@@ -52,4 +52,11 @@ test("names are strings the canonical form holds to its own rules", () => {
   assert.equal(canon('"\\/"'), '"/"');
   // A name before another it begins.
   assert.equal(canon('{"requester":1,"request":2,"":3}'), '{"":3,"request":2,"requester":1}');
+});
+
+test("a document of up to maxValues values is read, and one more throws TooLarge", () => {
+  // An array of n - 1 zeros is n values.
+  const flat = (n: number) => "[" + "0,".repeat(n - 2) + "0]";
+  assert.notEqual(text(flat(maxValues)), null);
+  assert.throws(() => text(flat(maxValues + 1)), TooLarge);
 });
