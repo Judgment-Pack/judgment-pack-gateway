@@ -4,6 +4,7 @@
 
 import * as assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
@@ -314,4 +315,42 @@ test("a document of more values than are read: a receipt is no verdict, a seal l
   assert.deepEqual(statuses(store.root, store.registry, records), ["ok"], "a record that opens no object");
   fs.writeFileSync(path.join(records, "b.jsonl"), `{"cites":[],"x":[${many}]}\n`);
   assert.ok(refused(store.root, store.registry, records), "a record that opens an object");
+});
+
+// Names are the bytes they are. Two decision records whose names decode
+// alike -- 0xff and U+FFFD's own bytes -- are two candidates; a session or
+// a receipt named in bytes that are not UTF-8 has no string to be found
+// under, and is no verdict. (Linux takes such names; not every platform
+// does.)
+test("names that are not UTF-8 are read as their bytes, and none is taken for another", { skip: process.platform !== "linux" }, () => {
+  const named = (dir: string, name: number[]) => Buffer.concat([Buffer.from(dir + path.sep), Buffer.from(name)]);
+  const json = [0x2e, 0x6a, 0x73, 0x6f, 0x6e];
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  const records = tempDir();
+  fs.writeFileSync(named(records, [0xff, ...json]), '{"cites":null}');
+  fs.writeFileSync(named(records, [0xef, 0xbf, 0xbd, ...json]), "{}");
+  const verdict = verifyStore(store.root, store.registry, authority, records, publicKey);
+  const record = "sha256:" + crypto.createHash("sha256").update('{"cites":null}').digest("hex");
+  assert.ok(
+    verdict.findings.some((f) => new Map(f).get("recordDigest") === record && new Map(f).get("status") === "record-citation-malformed"),
+    JSON.stringify(verdict.findings, (_, v) => (typeof v === "bigint" ? String(v) : v)),
+  );
+
+  // Beside a session whose name decodes alike, which a reader decoding with
+  // replacement would read for it.
+  const other = named(path.join(store.root, "receipts"), [0x73, 0xff]);
+  const alike = named(path.join(store.root, "receipts"), [0x73, 0xef, 0xbf, 0xbd]);
+  fs.mkdirSync(other);
+  fs.mkdirSync(alike);
+  assert.ok(refused(store.root, store.registry), "a session so named");
+  fs.rmdirSync(other);
+  fs.rmdirSync(alike);
+  const receipt = named(path.join(store.root, "receipts", "s1"), [0xff, ...json]);
+  fs.writeFileSync(receipt, "{}");
+  assert.ok(refused(store.root, store.registry), "a receipt so named");
+  fs.rmSync(receipt);
+  // A name not ending .json is not a receipt, whatever its bytes.
+  fs.writeFileSync(named(path.join(store.root, "receipts", "s1"), [0xff]), "{}");
+  assert.deepEqual(statuses(store.root, store.registry), ["ok"]);
 });

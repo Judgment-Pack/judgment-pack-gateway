@@ -17,9 +17,11 @@ import {
   digestArtifact,
   documentBound,
   eachDecisionRecord,
+  endsWith,
   eachRegistryLine,
   locateDecisionRecords,
   locateRegistry,
+  nameOf,
   readDocument,
   refuseUnsupportedPlatform,
 } from "./inputs.ts";
@@ -147,9 +149,12 @@ function str(v: Value | undefined): string | undefined {
 function sessionFiles(root: string): Map<string, string[]> {
   const sessions = new Map<string, string[]>();
   const receipts = path.join(root, "receipts");
-  let entries: fs.Dirent[];
+  // Names are read as the bytes they are: a name that is not UTF-8 is no
+  // verdict (nameOf), rather than decoded into one that could be taken for
+  // another entry's.
+  let entries: fs.Dirent<Buffer>[];
   try {
-    entries = fs.readdirSync(receipts, { withFileTypes: true });
+    entries = fs.readdirSync(receipts, { withFileTypes: true, encoding: "buffer" });
   } catch (e) {
     if (code(e) === "ENOENT") {
       return sessions;
@@ -160,15 +165,16 @@ function sessionFiles(root: string): Map<string, string[]> {
     if (!entry.isDirectory()) {
       continue;
     }
-    let names: fs.Dirent[];
+    const session = nameOf(entry.name, "a session directory");
+    let names: fs.Dirent<Buffer>[];
     try {
-      names = fs.readdirSync(path.join(receipts, entry.name), { withFileTypes: true });
+      names = fs.readdirSync(path.join(receipts, session), { withFileTypes: true, encoding: "buffer" });
     } catch (e) {
-      throw new NoVerdict(`session ${JSON.stringify(entry.name)} cannot be read: ${code(e) ?? e}`);
+      throw new NoVerdict(`session ${JSON.stringify(session)} cannot be read: ${code(e) ?? e}`);
     }
     sessions.set(
-      entry.name,
-      names.filter((n) => n.name.endsWith(".json") && !n.isDirectory()).map((n) => n.name),
+      session,
+      names.filter((n) => endsWith(n.name, ".json") && !n.isDirectory()).map((n) => nameOf(n.name, `in session ${JSON.stringify(session)}, a receipt file`)),
     );
   }
   return sessions;

@@ -27,8 +27,33 @@ export function code(e: unknown): string | undefined {
   return (e as NodeJS.ErrnoException | undefined)?.code;
 }
 
-function unreadable(what: string, p: string, e: unknown): NoVerdict {
-  return e instanceof NoVerdict ? e : new NoVerdict(`${what} ${JSON.stringify(p)} cannot be read: ${code(e) ?? e}`);
+// shown is a path as a message shows it; the bytes of a name that is not
+// UTF-8 are shown with replacement characters, and read as they are.
+function shown(p: fs.PathLike): string {
+  return JSON.stringify(typeof p === "string" ? p : p.toString());
+}
+
+function unreadable(what: string, p: fs.PathLike, e: unknown): NoVerdict {
+  return e instanceof NoVerdict ? e : new NoVerdict(`${what} ${shown(p)} cannot be read: ${code(e) ?? e}`);
+}
+
+const strictUTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// nameOf is a name read from a directory, as the string it is in UTF-8. A
+// name that is not UTF-8 has no string to be in a finding, and decoded
+// with replacement it could be taken for another entry's, so it is no
+// verdict.
+export function nameOf(bytes: Uint8Array, what: string): string {
+  try {
+    return strictUTF8.decode(bytes);
+  } catch {
+    throw new NoVerdict(`${what} ${JSON.stringify(Buffer.from(bytes).toString())} is named in bytes that are not UTF-8`);
+  }
+}
+
+// endsWith is whether a name's bytes end with the ASCII suffix.
+export function endsWith(name: Uint8Array, suffix: string): boolean {
+  return name.length >= suffix.length && Buffer.from(name.subarray(name.length - suffix.length)).toString("latin1") === suffix;
 }
 
 // The Windows spelling rules of §4.1 are not implemented here, so this
@@ -137,7 +162,7 @@ export function locateDecisionRecords(p: string | undefined): Anchor {
 // hands its descriptor and size to use when it is a regular file; anything
 // else there is no verdict. A failure to open is thrown as it is, for the
 // caller to read.
-export function withRegular<T>(p: string, what: string, use: (fd: number, size: number) => T): T {
+export function withRegular<T>(p: fs.PathLike, what: string, use: (fd: number, size: number) => T): T {
   const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
   try {
     let stat: fs.Stats;
@@ -147,7 +172,7 @@ export function withRegular<T>(p: string, what: string, use: (fd: number, size: 
       throw unreadable(what, p, e);
     }
     if (!stat.isFile()) {
-      throw new NoVerdict(`${what} ${JSON.stringify(p)} is not a regular file`);
+      throw new NoVerdict(`${what} ${shown(p)} is not a regular file`);
     }
     try {
       return use(fd, stat.size);
@@ -356,16 +381,19 @@ export function eachDecisionRecord(anchor: Anchor, visit: (candidate: Read) => v
   if (!top.isDirectory()) {
     return;
   }
-  const dirs = [p];
+  // Names are read as the bytes they are, and paths made of them, so two
+  // files whose names decode alike are two candidates.
+  const separator = Buffer.from(path.sep);
+  const dirs: Buffer[] = [Buffer.from(p)];
   for (let dir = dirs.pop(); dir !== undefined; dir = dirs.pop()) {
-    let entries: fs.Dirent[];
+    let entries: fs.Dirent<Buffer>[];
     try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
+      entries = fs.readdirSync(dir, { withFileTypes: true, encoding: "buffer" });
     } catch (e) {
       throw unreadable("under the decision-record directory,", dir, e);
     }
     for (const entry of entries) {
-      const at = path.join(dir, entry.name);
+      const at = Buffer.concat([dir, separator, entry.name]);
       if (entry.isDirectory()) {
         dirs.push(at);
         continue;
@@ -376,7 +404,7 @@ export function eachDecisionRecord(anchor: Anchor, visit: (candidate: Read) => v
       const what = "under the decision-record directory, the file";
       try {
         withRegular(at, what, (fd) => {
-          if (entry.name.endsWith(".jsonl")) {
+          if (endsWith(entry.name, ".jsonl")) {
             const whole = eachLine(fd, (line) => {
               if (line.bytes === null || line.bytes.length > 0) {
                 visit(line);

@@ -53,6 +53,13 @@ both parts is held by a test.
     here: nothing resolves against it.
 11. **A public key of another length than 32 bytes on stdin.** Outside the
     process contract. Read here: no verdict.
+12. **A session directory or receipt file named in bytes that are not UTF-8.**
+    §4.1 says a verifier does not re-apply §3a's token rule to the names it
+    enumerates, and nothing of their encoding. A finding carries the name as a
+    JSON string, which such bytes are not; decoded with replacement, two names
+    could be taken for one. Read here: no verdict. Under the decision-record
+    directory, where no name is carried into a finding, names are read as the
+    bytes they are, and every file is a candidate.
 
 ## Settled: what the text requires, and a reader could miss
 
