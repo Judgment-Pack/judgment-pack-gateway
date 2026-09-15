@@ -532,3 +532,35 @@ func TestTheListingIsBuiltWithinItsBound(t *testing.T) {
 		t.Fatalf("%d MiB allocated to build a listing of at most %d MiB", allocated>>20, listingBound>>20)
 	}
 }
+
+// A listing past its bound with no snapshot at all is counted no further
+// than the bound: 400,000 tools, whose entries alone would be some 167 MB,
+// are refused with at most sixteen times the bound allocated.
+func TestAListingPastItsBoundIsCountedNoFurther(t *testing.T) {
+	const count = 400000
+	ref := "tickets@sha256:" + strings.Repeat("0", 64)
+	order, tools := make([]string, 0, count), make(map[string]mcpTool, count)
+	for i := 0; i < count; i++ {
+		tool := fmt.Sprintf("t%06d", i)
+		name := "tickets." + tool
+		order = append(order, name)
+		tools[name] = mcpTool{name: name, platform: "tickets", tool: tool, binding: ref}
+	}
+	bound := 16 * uint64(listingBound)
+	if entry, _ := listingEntry(tools[order[0]], nil, -1); uint64(len(entry)*count) <= bound {
+		t.Fatalf("the entries are %d bytes, within %d", len(entry)*count, bound)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	_, _, err := buildListing(order, tools, nil, nil)
+	runtime.ReadMemStats(&after)
+	if err == nil || !strings.Contains(err.Error(), "with every snapshot dropped") || !strings.Contains(err.Error(), fmt.Sprintf("of %d tools", count)) {
+		t.Fatalf("%v", err)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	t.Logf("%v; %d MiB allocated", err, allocated>>20)
+	if allocated > bound {
+		t.Fatalf("%d MiB allocated to refuse a listing past %d MiB", allocated>>20, listingBound>>20)
+	}
+}

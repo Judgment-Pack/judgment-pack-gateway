@@ -238,11 +238,12 @@ The limits below are exact, and when one is reached the overflow is deterministi
 - **The listing:** the frontend's whole `tools/list` answer, serialized, is at most 8 MiB. When
   rendering would pass that, the frontend drops platforms' snapshots whole, in reverse table
   order, until it fits, and its start reports which it dropped. If the listing would still pass
-  8 MiB with every snapshot dropped, the frontend refuses to start and names the size. A
-  binding with tens of thousands of tools does that with today's generated descriptions alone.
-  The bound is on what is built, not only on what is sent: a snapshot's labels can render to
-  far more than the snapshot, so the frontend builds no description past the room the listing
-  has left, and what it holds after start is the listing.
+  8 MiB with every snapshot dropped, the frontend refuses to start, saying how many of its
+  tools, in the listing's order, pass the bound; it counts no further. A binding with tens of thousands
+  of tools does that with today's generated descriptions alone. The bound is on what is built,
+  not only on what is sent: a snapshot's labels can render to far more than the snapshot, so
+  the frontend builds no description past the room the listing has left, and what it holds
+  after start is the listing.
 
 ## What the frontend serves
 

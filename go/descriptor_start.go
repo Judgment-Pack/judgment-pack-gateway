@@ -213,7 +213,7 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 // listingBound: past that, platforms' snapshots are dropped whole, in
 // reverse table order, until it fits, and dropped says which, in the
 // order dropped. Should it pass the bound with every snapshot dropped,
-// the start is refused.
+// the start is refused, counting no further than the tools that pass it.
 //
 // Nothing past the bound is built. Each tool's entry is serialized as it
 // is sent, and the answer's size counted from the entries: first each
@@ -231,7 +231,7 @@ func buildListing(order []string, tools map[string]mcpTool, platforms []platform
 	if err != nil {
 		return nil, nil, err
 	}
-	entries := make(map[string]json.RawMessage, len(order))
+	entries := make(map[string]json.RawMessage)
 	for i, name := range order {
 		entry, err := listingEntry(tools[name], nil, -1)
 		if err != nil {
@@ -242,9 +242,9 @@ func buildListing(order []string, tools map[string]mcpTool, platforms []platform
 		if i > 0 {
 			total++
 		}
-	}
-	if total > listingBound {
-		return nil, nil, fmt.Errorf("the tool listing is %d bytes with every snapshot dropped, over %d", total, listingBound)
+		if total > listingBound {
+			return nil, nil, fmt.Errorf("the tool listing passes %d bytes with every snapshot dropped: its first %d of %d tools do", listingBound, i+1, len(order))
+		}
 	}
 	byPlatform := map[string][]string{}
 	for _, name := range order {

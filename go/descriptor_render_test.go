@@ -104,9 +104,6 @@ func TestADescriptionIsBuiltToItsLimit(t *testing.T) {
 		if d, ok := describePlatformToolWithin(tool, p, len(whole)); !ok || d != whole {
 			t.Fatalf("at its own length, the description is whole: %q", d)
 		}
-		if p == nil {
-			continue
-		}
 		if d, ok := describePlatformToolWithin(tool, p, len(whole)-1); ok {
 			t.Fatalf("a byte short, the description is none: %q", d)
 		}

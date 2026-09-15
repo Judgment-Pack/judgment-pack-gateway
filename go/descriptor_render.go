@@ -46,7 +46,11 @@ func describePlatformToolWithin(t mcpTool, p *servedPlatform, limit int) (string
 		captured = p.tools[t.tool]
 	}
 	if captured.description == nil && captured.schema == nil {
-		return head + " Its arguments are what the platform's server defines; the engine does not read that server's schema. " + answerCarries, true
+		description := head + " Its arguments are what the platform's server defines; the engine does not read that server's schema. " + answerCarries
+		if limit >= 0 && len(description) > limit {
+			return "", false
+		}
+		return description, true
 	}
 	arguments := "what the platform's server defines"
 	if captured.schema != nil {
