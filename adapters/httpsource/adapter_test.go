@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -620,14 +621,50 @@ func TestAcquireRefusesAnUntrustedCertificate(t *testing.T) {
 	}
 }
 
+// loopbackBuffering is the most a loopback connection holds between a writer
+// and a reader that has stopped reading: the writer's send buffer and the
+// reader's receive buffer, each at its ceiling on this platform. Linux states
+// both ceilings; elsewhere a generous figure stands in.
+func loopbackBuffering() int64 {
+	var total int64
+	for _, name := range []string{"/proc/sys/net/ipv4/tcp_wmem", "/proc/sys/net/ipv4/tcp_rmem"} {
+		data, err := os.ReadFile(name)
+		fields := strings.Fields(string(data))
+		if err != nil || len(fields) != 3 {
+			return 64 << 20
+		}
+		ceiling, err := strconv.ParseInt(fields[2], 10, 64)
+		if err != nil {
+			return 64 << 20
+		}
+		total += ceiling
+	}
+	return total
+}
+
+// Reading stops at the bound. What the endpoint manages to write is the
+// adapter's reading plus whatever the connection's two ends buffer after the
+// adapter stops, and the kernel sizes those buffers as it sees fit up to their
+// ceilings -- so the allowance is the bound, both ceilings and the chunk in
+// hand, not a round figure the buffering can outgrow. An adapter that kept
+// reading would take everything: the endpoint stops at twice the allowance, so
+// such an adapter fails here rather than reading forever.
 func TestReadingStopsAtTheBound(t *testing.T) {
+	const maxOutput = 256 << 10
+	chunk := bytes.Repeat([]byte("x"), 64<<10)
+	allowance := int64(maxOutput) + loopbackBuffering() + int64(len(chunk))
 	var written int64
 	var mu sync.Mutex
 	e := newEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
-		chunk := bytes.Repeat([]byte("x"), 64<<10)
 		flusher, _ := w.(http.Flusher)
 		for {
+			mu.Lock()
+			enough := written >= 2*allowance
+			mu.Unlock()
+			if enough {
+				return
+			}
 			n, err := w.Write(chunk)
 			mu.Lock()
 			written += int64(n)
@@ -646,15 +683,15 @@ func TestReadingStopsAtTheBound(t *testing.T) {
 		}
 	})
 	cfg := e.config(t)
-	cfg.MaxOutput = 256 << 10
+	cfg.MaxOutput = maxOutput
 	_, err := Acquire(context.Background(), cfg, parseRequest(t, `{"path":"/search","body":{}}`))
 	if err == nil || !strings.Contains(err.Error(), "exceeds the output bound") {
 		t.Fatalf("%v", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if written > 4<<20 {
-		t.Fatalf("the adapter kept reading past its bound: %d bytes were written", written)
+	if written > allowance {
+		t.Fatalf("the adapter kept reading past its bound: %d bytes were written, past the %d a stopped reader allows", written, allowance)
 	}
 }
 
