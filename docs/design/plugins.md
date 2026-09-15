@@ -5,8 +5,8 @@ node, a ContextForge gateway plugin — so that a team already running a workflo
 gateway gets receipts without adopting anything new. This note says what a plugin is with
 respect to the engine, which of the three are the same thing and which is not, what each ships
 with, and what none of them claims. The packages live under `plugins/` in this repository and
-are built and linted by the CI job "plugins"; their upstream submissions are a separate,
-outward-facing step this note does not take.
+are built and linted by the CI job "plugins"; publishing them, and asking each ecosystem to
+list them, are separate, outward-facing steps a person takes ("Publishing", below).
 
 ## Two kinds of plugin
 
@@ -83,19 +83,33 @@ from an agent still needs a person's token and passes the engine's judgment gate
 `@activepieces/piece-judgment-pack`, with the three actions; a custom auth of URL and token.
 Its source is laid out as the Activepieces monorepo's pieces are (`src/index.ts`,
 `src/lib/auth.ts`, `src/lib/actions/`) and builds standalone here against the framework's
-published packages, pinned. The upstream contribution is not a copy: the monorepo generates a
-piece's scaffold with workspace dependencies and its own lint rules, so the source is copied
-into that scaffold and adapted to the revision it targets.
+published packages, pinned. An upstream contribution would not be a copy: the monorepo
+generates a piece's scaffold with workspace dependencies and its own lint rules, so the source
+would be copied into that scaffold and adapted to the revision it targets. Activepieces takes no
+such contribution now (below).
 
 ## The witness: what a ContextForge plugin would need
 
-ContextForge's plugin framework (the `cpex` package) runs a plugin at named hooks —
-`tool_pre_invoke` with the tool name and arguments, `tool_post_invoke` with the result — and a
-hook answers with `continue_processing`, an optional `modified_payload` or a `violation`; a
-plugin runs in the gateway's process or as an external service over MCP (`kind: external`),
-in `enforce` or `permissive` mode. A receipting plugin is a `tool_post_invoke` hook that has
-seen the call and its answer and wants them signed. Two designs would serve it; the second
-is built ([mcp-server.md](mcp-server.md)), the first is not:
+ContextForge's plugin framework is now the external CPEX package, which replaced the framework
+ContextForge carried in its own tree (CPEX 0.1's documentation and ContextForge 1.0.10's
+dependencies, read 2026-09-15). It runs a plugin at named hooks: `tool_pre_invoke` with the
+tool's name and arguments, and `tool_post_invoke` with its name and result — the arguments are
+not in the second, and a plugin that wants both keeps them in its own `PluginContext`, which
+persists across a request's hooks. A hook answers with `continue_processing`, an optional
+`modified_payload` or a `violation`. A plugin runs in the gateway's process, in an isolated
+virtual environment, or as an external service (`kind: external`) over MCP, gRPC or a Unix
+socket. Beside the modes this note first recorded — `enforce` and `permissive`, with
+`enforce_ignore_error` and `disabled` — ContextForge now accepts CPEX's own: `sequential`,
+`transform`, `audit`, `concurrent` and `fire_and_forget`, which run as phases in that order, a
+phase's plugins by priority. So which result a `tool_post_invoke` hook sees depends on where it
+sits: in CPEX's modes, an `audit` or `fire_and_forget` hook sees the result after every plugin
+that transforms it, and a `sequential` hook of low priority sees it before most of them. A
+receipting plugin is then a pair — a `tool_pre_invoke` hook that keeps the call, and a
+`tool_post_invoke` hook that has the answer and wants both signed — placed by a choice of which
+answer to report. A second gateway offers a comparable hook with less to go on: Docker's MCP
+Gateway runs interceptors `before` and `after` a tool call, and an `after` interceptor is
+handed the response alone, with no call and nothing to pair it with one. Two designs would
+serve such a plugin; the second is built ([mcp-server.md](mcp-server.md)), the first is not:
 
 1. **A remote-adapter surface on the engine.** A new `POST` that takes an envelope of §6's form
    from an authenticated remote party — the plugin's identity as the adapter, the MCP server
@@ -118,14 +132,32 @@ process. The first stays an RFC question for the specification, because "receipt
 tool call" across servers the engine never touches is a witness claim, and the specification
 should say what such a receipt is worth before an engine mints one.
 
+## Publishing, and what reaches each ecosystem
+
+**n8n.** n8n verifies a community node only if it was published to npm from GitHub Actions with
+a provenance statement, from 1 May 2026. `.github/workflows/publish-n8n.yml` publishes the node
+that way, through `n8n-node release`, on a tag naming the package at its version; the node's
+README gives the steps. Two stay with people: the npm account that is to own the package sets
+up Trusted Publishing for that workflow, or a token, and asks for verification in n8n's Creator
+Portal.
+
+**Activepieces.** Activepieces has paused unsolicited pull requests from outside its core team,
+closing them automatically, and asks that a piece be published as its own package instead (its
+`CONTRIBUTING.md`, read 2026-09-15). The piece here is named
+`@activepieces/piece-judgment-pack`, in a scope only Activepieces publishes to, so it cannot be
+published as it stands: reaching Activepieces users means publishing it under a name in a scope
+its publisher owns, for self-hosted instances to install. That name is the publisher's choice,
+and this repository does not make it.
+
 ## Where the code lives and what checks it
 
 `plugins/` holds one directory per ecosystem package, each with its own manifest, lock file,
 licence and README, none linked to the Go modules: the core stays standard-library-only and the
 adapters module's dependency rule is untouched. The CI job "plugins" installs each package from
 its lock file, builds it, runs its linter (n8n's own for the node) and its tests — unit tests
-over the request-building code, run with Node's test runner, no test dependency added. Publishing
-to npm and the upstream pull requests are not CI's to do.
+over the request-building code, run with Node's test runner, no test dependency added. CI
+publishes nothing: the n8n node is published by its own workflow, on a tag a person pushes
+(above).
 
 ## What this does not claim
 

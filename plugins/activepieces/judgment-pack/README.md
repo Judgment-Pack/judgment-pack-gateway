@@ -70,7 +70,12 @@ npm install
 npm run build && npm run lint && npm test
 ```
 
-Contributing it upstream is not a copy: the monorepo generates a piece's scaffold (`npm run cli
-pieces create`) with workspace dependencies and its own lint rules (which, for one, restrict
-imports from `@activepieces/shared`), so the source here is copied into that scaffold and
-adapted to the monorepo revision it targets, then registered in `tsconfig.base.json`.
+Activepieces is not taking contributions from outside its core team for now, and asks that a
+piece be published as its own package instead; its name here, `@activepieces/piece-judgment-pack`,
+is in a scope only Activepieces publishes to, so publishing it means a name in a scope the
+publisher owns ([plugins.md](../../../docs/design/plugins.md), "Publishing, and what reaches
+each ecosystem"). Should upstream contributions reopen, one would not be a copy: the monorepo
+generates a piece's scaffold (`npm run cli pieces create`) with workspace dependencies and its
+own lint rules (which, for one, restrict imports from `@activepieces/shared`), so the source here
+would be copied into that scaffold and adapted to the monorepo revision it targets, then
+registered in `tsconfig.base.json`.

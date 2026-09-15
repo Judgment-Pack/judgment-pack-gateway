@@ -66,3 +66,30 @@ npm run build && npm run lint && npm test
 ```
 
 Built with `@n8n/node-cli`; MIT; no runtime dependencies, no environment variables, no files.
+
+## Publishing
+
+n8n verifies a community node only if it was published to npm from GitHub Actions with a
+provenance statement. The workflow `.github/workflows/publish-n8n.yml` does that, and only on a
+tag naming this package at its version:
+
+1. Once, the npm account that is to own `n8n-nodes-judgment-pack` sets up either npm Trusted
+   Publishing for the repository `Judgment-Pack/judgment-pack-gateway` and the workflow
+   `publish-n8n.yml`, or a granular token with publish access, saved as the repository secret
+   `NPM_TOKEN`. npm sets up Trusted Publishing in a package's settings, so while the package does
+   not exist, its first publish uses the token.
+2. The version in `package.json` is raised in an ordinary pull request.
+3. Once that has merged, the tag is pushed on the merged commit:
+   `git tag n8n-nodes-judgment-pack@<version> && git push origin n8n-nodes-judgment-pack@<version>`.
+   Whoever may push such a tag may publish: tag pushers are release authorities, whether a person
+   or a token acting for one, and the workflow runs as the tagged revision holds it. Its checks
+   keep a mistake from publishing, such as a tag on a commit not on `main`; they do not constrain
+   a release authority set on doing otherwise. Restricting who may push these tags is a
+   repository ruleset, the owner's to set.
+4. The workflow checks that the tag names the package and version in `package.json` on a commit
+   on `main`, installs from the lock file, builds, runs the tests, and runs `npm run release`:
+   inside GitHub Actions, `n8n-node release` lints, builds and publishes with provenance. An
+   ordinary `npm publish` run any other way is stopped by `prepublishOnly`, which is a guard
+   against a mistake, not a lock: `npm publish --ignore-scripts` passes it.
+5. Verification is asked for in n8n's Creator Portal, once
+   `npx @n8n/scan-community-package n8n-nodes-judgment-pack` passes against the published package.

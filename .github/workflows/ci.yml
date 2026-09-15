@@ -322,8 +322,8 @@ jobs:
       # Lifecycle scripts are not run: the n8n CLI's dependency tree carries
       # a native module (isolated-vm, under @n8n/ai-utilities) the build,
       # lint and tests never load, and nothing here needs one compiled.
-      # Nothing here publishes: npm and the upstream submissions are not
-      # CI's to do.
+      # Nothing here publishes: the n8n node is published by its own
+      # workflow, publish-n8n.yml, on a tag a person pushes.
       - name: Install from the lock file
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build
