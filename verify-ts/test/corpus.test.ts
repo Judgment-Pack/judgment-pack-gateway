@@ -14,7 +14,7 @@ import { test } from "node:test";
 import { canonical } from "../src/canon.ts";
 import { maxValues, parse } from "../src/json.ts";
 import { verifyStore, writeVerdict } from "../src/verify.ts";
-import { corpus, materialize, multiset, publicKey, storeVectors } from "./support.ts";
+import { corpus, materialize, multiset, newStore, publicKey, sealLine, storeVectors } from "./support.ts";
 
 const main = path.join(import.meta.dirname, "..", "src", "main.ts");
 
@@ -124,4 +124,20 @@ test("a string of millions of escapes fits a small heap", () => {
   const verified = spawnSync(process.execPath, [heap, main, "verify", root, registry, v.authority], { input: publicKey, maxBuffer: 1 << 20 });
   assert.equal(verified.status, 0, verified.stderr.toString().slice(0, 400));
   assert.ok(JSON.parse(verified.stdout.toString()).findings.some((f: { status: string }) => f.status === "signature-mismatch"));
+});
+
+// A validly signed seal naming a session of 60 MiB is loaded, and its
+// finding written, in a process held to a small heap.
+test("a seal of a very long session id fits a small heap", () => {
+  const store = newStore();
+  const long = "s".repeat(60 << 20);
+  fs.writeFileSync(store.registry, sealLine(long, 0) + "\n");
+  const verified = spawnSync(process.execPath, ["--max-old-space-size=384", main, "verify", store.root, store.registry, "gateway:test"], {
+    input: publicKey,
+    maxBuffer: 80 << 20,
+  });
+  assert.equal(verified.status, 0, verified.stderr.toString().slice(0, 400));
+  const verdict = JSON.parse(verified.stdout.toString());
+  assert.deepEqual(verdict.findings.map((f: { status: string }) => f.status), ["sealed-session-missing"]);
+  assert.equal(verdict.findings[0].sessionId.length, long.length);
 });

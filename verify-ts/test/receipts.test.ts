@@ -152,6 +152,18 @@ test("a version 2 receipt is held to §1.4 order 1's list, and its signature's c
   assert.deepEqual(alone(JSON.stringify(r).replace("{", '{"x":{"y":1,"y":1},')), malformed);
 });
 
+test("a version 3 prevSignature is any string, and one naming nothing breaks the chain", () => {
+  const store = newStore();
+  put(store, "s1", "0.json", JSON.stringify(signed(acquisitionV3(0, "x"))));
+  assert.deepEqual(
+    multiset(verdict(store, [sealLine("s1", 1)]).findings),
+    multiset([
+      { sessionId: "s1", callIndex: 0, status: "ok" },
+      { sessionId: "s1", callIndex: null, status: "chain-broken" },
+    ]),
+  );
+});
+
 test("the head of a chain names no previous receipt", () => {
   const store = newStore();
   put(store, "s1", "0.json", JSON.stringify(signed(acquisitionV3(0, "b".repeat(128)))));
@@ -467,4 +479,11 @@ test("a .jsonl file's lines are its lines whatever the reads that find them", ()
     const { store, seals } = recordStore(line);
     assert.deepEqual(multiset(verdict(store, seals, withRecords({ "e.jsonl": text })).findings), bothPass, name);
   }
+});
+
+test("a session named beyond Latin-1 is sealed by its seal", () => {
+  const name = "会话-\u{1f600}";
+  const store = newStore();
+  put(store, name, "0.json", JSON.stringify(signed({ ...receiptV2(), sessionId: name })));
+  assert.deepEqual(multiset(verdict(store, [sealLine(name, 1)]).findings), multiset([{ sessionId: name, callIndex: 0, status: "ok" }]));
 });

@@ -64,10 +64,13 @@ type Judged = {
 // short enough to be a signature, or neither.
 type Prev = { readonly kind: "null" } | { readonly kind: "string"; readonly value: string } | { readonly kind: "other" };
 
-// own is a copy of a short string held by nothing else: a string read out
-// of a document can otherwise keep the whole document's text alive.
+// own is a copy of a string held by nothing else: a string read out of a
+// document can otherwise keep the whole document's text alive. The copy is
+// made through a buffer, at the cost of its bytes whatever its length --
+// Latin-1 when every code unit fits, so a one-byte string stays one, and
+// UTF-16 otherwise, which keeps every code unit as it is.
 function own(s: string): string {
-  return s.split("").join("");
+  return /^[\u0000-\u00ff]*$/.test(s) ? Buffer.from(s, "latin1").toString("latin1") : Buffer.from(s, "utf16le").toString("utf16le");
 }
 
 // The longest callIndex, in digits, this verifier carries into a finding;
