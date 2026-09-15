@@ -75,6 +75,12 @@ function own(s: string): string {
   return /^[\u0000-\u00ff]*$/.test(s) ? Buffer.from(s, "latin1").toString("latin1") : Buffer.from(s, "utf16le").toString("utf16le");
 }
 
+// limits.findings is the most findings a verdict may hold, 2^20: a store
+// of more receipt files than this, or decision records failing more
+// often, is no verdict, rather than a verdict held in memory whatever its
+// size. Only a test lowers it.
+export const limits = { findings: 1 << 20 };
+
 // The longest callIndex, in digits, this verifier carries into a finding;
 // one longer cannot verify (the canonical domain ends at sixteen), and is
 // no verdict rather than a finding of unbounded size.
@@ -142,13 +148,20 @@ function str(v: Value | undefined): string | undefined {
   return v?.type === "string" ? v.value : undefined;
 }
 
+// under is a path below root as its spelling says, never normalized: a
+// ".." in root steps back from where the platform finds root's last
+// component, as it would for any path, not from the component as written.
+function under(root: string, ...names: string[]): string {
+  return [root, ...names].join(path.sep);
+}
+
 // sessionFiles is the store's sessions -- each directory under receipts/,
 // not a link to one -- and each one's .json entries that are not
 // directories. A store root or receipts directory not there holds no
 // session; one there that cannot be read as a directory is no verdict.
 function sessionFiles(root: string): Map<string, string[]> {
   const sessions = new Map<string, string[]>();
-  const receipts = path.join(root, "receipts");
+  const receipts = under(root, "receipts");
   // Names are read as the bytes they are: a name that is not UTF-8 is no
   // verdict (nameOf), rather than decoded into one that could be taken for
   // another entry's.
@@ -168,7 +181,7 @@ function sessionFiles(root: string): Map<string, string[]> {
     const session = nameOf(entry.name, "a session directory");
     let names: fs.Dirent<Buffer>[];
     try {
-      names = fs.readdirSync(path.join(receipts, session), { withFileTypes: true, encoding: "buffer" });
+      names = fs.readdirSync(under(receipts, session), { withFileTypes: true, encoding: "buffer" });
     } catch (e) {
       throw new NoVerdict(`session ${JSON.stringify(session)} cannot be read: ${code(e) ?? e}`);
     }
@@ -236,7 +249,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   // 7. artifact-missing, and 8. artifact-mismatch: the artifact at the
   // result digest's hex, re-digested.
   const hex = str(member(receipt, "resultDigest"))!.slice("sha256:".length);
-  const digest = digestArtifact(path.join(root, "artifacts", hex));
+  const digest = digestArtifact(under(root, "artifacts", hex));
   if (digest === null) {
     return judged("artifact-missing");
   }
@@ -334,11 +347,19 @@ export function verifyStore(
   // citations of §4 steps 5 and 7.
   const sessions = new Map<string, Judged[]>();
   const signatures = new Map<string, Map<string, string | undefined>>();
-  for (const [session, files] of sessionFiles(root)) {
+  const store = sessionFiles(root);
+  let receiptFiles = 0;
+  for (const files of store.values()) {
+    receiptFiles += files.length;
+  }
+  if (receiptFiles > limits.findings) {
+    throw new NoVerdict(`the store holds ${receiptFiles} receipt files, more than the ${limits.findings} findings a verdict here may hold`);
+  }
+  for (const [session, files] of store) {
     const judged: Judged[] = [];
     const stems = new Map<string, string | undefined>();
     for (const file of files) {
-      const bytes = readDocument(path.join(root, "receipts", session, file), "the receipt");
+      const bytes = readDocument(under(root, "receipts", session, file), "the receipt");
       const parsed = parseOr(bytes, () => {
         throw new NoVerdict(`receipt ${session}/${file} holds more than ${maxValues} values`);
       });
@@ -359,7 +380,7 @@ export function verifyStore(
       if (j.action === undefined) {
         continue;
       }
-      const bytes = readDocument(path.join(root, "receipts", session, j.file), "the receipt");
+      const bytes = readDocument(under(root, "receipts", session, j.file), "the receipt");
       if (sha256Hex(bytes) !== j.action.bytes) {
         throw new NoVerdict(`receipt ${session}/${j.file} changed while it was verified`);
       }
@@ -399,7 +420,7 @@ export function verifyStore(
     }
   }
   const found = new Set<string>();
-  const recordFindings: Finding[] = [];
+  const recordFindings = new RecordFindings(limits.findings - receiptFiles);
   eachDecisionRecord(records, (candidate) => {
     const digest = "sha256:" + candidate.digest;
     if (named.has(digest)) {
@@ -415,10 +436,7 @@ export function verifyStore(
     }
     const status = recordCitations(candidate.bytes, resolves);
     if (status !== null) {
-      recordFindings.push([
-        ["recordDigest", digest],
-        ["status", status],
-      ]);
+      recordFindings.add(candidate.digest, status);
     }
   });
   testHooks.sample?.("decision records");
@@ -519,10 +537,51 @@ export function verifyStore(
       ]);
     }
   }
-  for (const f of recordFindings) {
+  for (const f of recordFindings.findings()) {
     add(f);
   }
+  if (findings.length > limits.findings) {
+    throw new NoVerdict(`the verdict would hold ${findings.length} findings, more than ${limits.findings}`);
+  }
   return { ok, findings };
+}
+
+// RecordFindings is §4 step 7's findings, kept as 33 bytes each -- a
+// record's digest and its status -- until the verdict is written, and no
+// more of them than room allows.
+class RecordFindings {
+  private buffer = Buffer.alloc(33 * 1024);
+  private n = 0;
+  private readonly room: number;
+
+  constructor(room: number) {
+    this.room = room;
+  }
+
+  add(digestHex: string, status: "record-citation-malformed" | "record-citation-unresolved"): void {
+    if (this.n >= this.room) {
+      throw new NoVerdict(`decision records fail to cite more often than the ${limits.findings} findings a verdict here may hold`);
+    }
+    if ((this.n + 1) * 33 > this.buffer.length) {
+      const grown = Buffer.alloc(this.buffer.length * 2);
+      this.buffer.copy(grown);
+      this.buffer = grown;
+    }
+    this.buffer.write(digestHex, this.n * 33, "hex");
+    this.buffer[this.n * 33 + 32] = status === "record-citation-malformed" ? 0 : 1;
+    this.n++;
+  }
+
+  findings(): Finding[] {
+    const out: Finding[] = [];
+    for (let i = 0; i < this.n; i++) {
+      out.push([
+        ["recordDigest", "sha256:" + this.buffer.toString("hex", i * 33, i * 33 + 32)],
+        ["status", this.buffer[i * 33 + 32] === 0 ? "record-citation-malformed" : "record-citation-unresolved"],
+      ]);
+    }
+    return out;
+  }
 }
 
 // recordCitations is §4 step 7's finding for a candidate it reads, or

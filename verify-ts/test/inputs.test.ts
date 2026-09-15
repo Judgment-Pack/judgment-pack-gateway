@@ -14,7 +14,7 @@ import * as vm from "node:vm";
 
 import { NoVerdict, documentBound } from "../src/inputs.ts";
 import { maxValues } from "../src/json.ts";
-import { testHooks, verifyStore } from "../src/verify.ts";
+import { limits, testHooks, verifyStore } from "../src/verify.ts";
 import { acquisitionV3, actionV3, authority, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir } from "./support.ts";
 
 // A store of one session, s1, holding one valid receipt.
@@ -346,11 +346,59 @@ test("names that are not UTF-8 are read as their bytes, and none is taken for an
   assert.ok(refused(store.root, store.registry), "a session so named");
   fs.rmdirSync(other);
   fs.rmdirSync(alike);
+  // Beside a receipt whose name decodes alike, which a reader decoding
+  // with replacement would read for it.
   const receipt = named(path.join(store.root, "receipts", "s1"), [0xff, ...json]);
+  const alikeReceipt = named(path.join(store.root, "receipts", "s1"), [0xef, 0xbf, 0xbd, ...json]);
   fs.writeFileSync(receipt, "{}");
+  fs.writeFileSync(alikeReceipt, "{}");
   assert.ok(refused(store.root, store.registry), "a receipt so named");
   fs.rmSync(receipt);
+  fs.rmSync(alikeReceipt);
   // A name not ending .json is not a receipt, whatever its bytes.
   fs.writeFileSync(named(path.join(store.root, "receipts", "s1"), [0xff]), "{}");
   assert.deepEqual(statuses(store.root, store.registry), ["ok"]);
+});
+
+test("a verdict holds no more findings than its limit, and past it is no verdict", () => {
+  const saved = limits.findings;
+  limits.findings = 3;
+  try {
+    const store = oneSession();
+    fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+    const records = tempDir();
+    fs.writeFileSync(path.join(records, "log.jsonl"), '{"cites":1}\n{"cites":2}\n');
+    // One receipt and two failing records: three findings, within it.
+    assert.deepEqual(statuses(store.root, store.registry, records), ["ok", "record-citation-malformed", "record-citation-malformed"]);
+    fs.appendFileSync(path.join(records, "log.jsonl"), '{"cites":3}\n');
+    assert.ok(refused(store.root, store.registry, records), "a failing record past the limit");
+    for (let i = 1; i <= 3; i++) {
+      put(store, "s1", `${i}.json`, "{}");
+    }
+    // Refused for their number, before any of them is read.
+    assert.throws(() => verifyStore(store.root, store.registry, authority, undefined, publicKey), /holds 4 receipt files/);
+    // Three receipts within it, and a session finding past it.
+    const chained = newStore();
+    let prev: string | null = null;
+    for (let i = 0; i < 3; i++) {
+      const r = signed(acquisitionV3(i, prev));
+      put(chained, "s1", `${i}.json`, JSON.stringify(r));
+      prev = r["signature"] as string;
+    }
+    fs.writeFileSync(chained.registry, "");
+    assert.ok(refused(chained.root, chained.registry), "a finding past the limit beside the receipts");
+  } finally {
+    limits.findings = saved;
+  }
+});
+
+test("the store root is taken as spelled, never normalized", () => {
+  const store = oneSession();
+  fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
+  // A file beside the receipts directory: file/.. would name the store
+  // were the path normalized, but the platform steps back from a file
+  // that is no directory, and finds nothing.
+  const file = path.join(store.root, "file");
+  fs.writeFileSync(file, "");
+  assert.ok(refused(file + path.sep + "..", store.registry));
 });

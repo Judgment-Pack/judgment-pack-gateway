@@ -141,3 +141,55 @@ test("a seal of a very long session id fits a small heap", () => {
   assert.deepEqual(verdict.findings.map((f: { status: string }) => f.status), ["sealed-session-missing"]);
   assert.equal(verdict.findings[0].sessionId.length, long.length);
 });
+
+// Decision records failing in their millions are refused at the verdict's
+// limit, cleanly, in a process held to a small heap.
+test("a million failing decision records fit a small heap", () => {
+  const v = storeVectors().find((s) => s.name === "valid-sealed")!;
+  const { root, registry } = materialize(v);
+  const records = path.join(path.dirname(root), "records");
+  fs.mkdirSync(records);
+  fs.writeFileSync(path.join(records, "log.jsonl"), '{"cites":null}\n'.repeat(1200000));
+  const verified = spawnSync(process.execPath, ["--max-old-space-size=384", main, "verify", root, registry, v.authority, records], { input: publicKey });
+  assert.equal(verified.status, 2, verified.stderr.toString().slice(0, 400));
+  assert.match(verified.stderr.toString(), /findings a verdict here may hold/);
+});
+
+// An argument's bytes are its path. A path ending in 0xff arrives, decoded
+// with replacement, as the path ending in U+FFFD -- which here names a
+// store, a registry and a directory that would verify -- and is no
+// verdict rather than read as that other path. (Linux shows a process its
+// arguments' bytes.)
+test("an argument that is not UTF-8 is no verdict, and never another path", { skip: process.platform !== "linux" }, () => {
+  const v = storeVectors().find((s) => s.name === "valid-sealed")!;
+  const good = materialize(v);
+  const at = path.dirname(good.root);
+  const byName = (name: string, last: number[]) => Buffer.concat([Buffer.from(path.join(at, name)), Buffer.from(last)]);
+  // Each 0xff path beside its U+FFFD twin, the twin the one that verifies.
+  fs.renameSync(good.root, byName("st", [0xef, 0xbf, 0xbd]));
+  fs.mkdirSync(byName("st", [0xff]));
+  fs.copyFileSync(good.registry, byName("reg", [0xef, 0xbf, 0xbd]));
+  fs.writeFileSync(byName("reg", [0xff]), "");
+  fs.mkdirSync(byName("dr", [0xef, 0xbf, 0xbd]));
+  fs.mkdirSync(byName("dr", [0xff]));
+  fs.writeFileSync(Buffer.concat([byName("dr", [0xff]), Buffer.from("/r.json")]), '{"cites":null}');
+  const run = (script: string) =>
+    spawnSync("/bin/sh", ["-c", script], {
+      input: publicKey,
+      env: { ...process.env, NODE: process.execPath, MAIN: main, AT: at + path.sep, TWIN_ROOT: byName("st", [0xef, 0xbf, 0xbd]).toString() },
+    });
+  const ff = (name: string) => `"$(printf '%s%s\\377' "$AT" ${name})"`;
+  const twin = (name: string) => `"$AT${name}\u{fffd}"`;
+  // The twins, named as they are, verify.
+  const twins = run(`exec "$NODE" "$MAIN" verify ${twin("st")} ${twin("reg")} ${v.authority} ${twin("dr")}`);
+  assert.equal(twins.status, 0, twins.stderr.toString());
+  for (const [what, script] of [
+    ["the store root", `exec "$NODE" "$MAIN" verify ${ff("st")} ${twin("reg")} ${v.authority}`],
+    ["the registry", `exec "$NODE" "$MAIN" verify ${twin("st")} ${ff("reg")} ${v.authority}`],
+    ["the decision-record directory", `exec "$NODE" "$MAIN" verify ${twin("st")} ${twin("reg")} ${v.authority} ${ff("dr")}`],
+  ] as const) {
+    const r = run(script);
+    assert.equal(r.status, 2, `${what}: ${r.stdout} ${r.stderr}`);
+    assert.match(r.stderr.toString(), /not UTF-8/, what);
+  }
+});

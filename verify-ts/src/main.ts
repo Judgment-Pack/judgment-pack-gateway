@@ -50,6 +50,55 @@ function readInput(limit: number): Uint8Array | null {
   return Buffer.concat(parts, n);
 }
 
+const strictUTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// exactArguments is the arguments as the strings their bytes are. The
+// platform hands a program its arguments decoded as UTF-8 with
+// replacement, so a path holding a byte that is not UTF-8 would arrive as
+// another path, one that may exist. Where the platform shows a process
+// its own arguments' bytes (Linux, /proc/self/cmdline), each is decoded
+// strictly and one that is not UTF-8 is no verdict; where it does not, an
+// argument holding a replacement character cannot be told from one that
+// was not UTF-8, and is no verdict.
+function exactArguments(args: string[]): string[] {
+  let raw: Buffer | undefined;
+  try {
+    raw = fs.readFileSync("/proc/self/cmdline");
+  } catch {
+    raw = undefined;
+  }
+  if (raw === undefined) {
+    for (const a of args) {
+      if (a.includes("\ufffd")) {
+        throw new NoVerdict(`an argument holds U+FFFD, which here cannot be told from bytes that are not UTF-8: ${JSON.stringify(a)}`);
+      }
+    }
+    return args;
+  }
+  // The arguments are the command line's last entries, each ended by a
+  // NUL; the platform's and node's own come before them.
+  const entries: Buffer[] = [];
+  let start = 0;
+  for (let i = raw.indexOf(0); i !== -1; i = raw.indexOf(0, start)) {
+    entries.push(raw.subarray(start, i));
+    start = i + 1;
+  }
+  const mine = entries.slice(entries.length - args.length - 1);
+  return args.map((a, k) => {
+    const bytes = mine[k + 1];
+    let exact: string;
+    try {
+      exact = bytes === undefined ? a : strictUTF8.decode(bytes);
+    } catch {
+      throw new NoVerdict(`an argument is not UTF-8: ${JSON.stringify(a)}`);
+    }
+    if (exact !== a) {
+      throw new NoVerdict(`an argument is not the string it was given as: ${JSON.stringify(a)}`);
+    }
+    return exact;
+  });
+}
+
 function main(args: string[]): number {
   const [command, ...rest] = args;
   if (command === "canon" && rest.length === 0) {
@@ -77,8 +126,8 @@ function main(args: string[]): number {
     return 0;
   }
   if (command === "verify" && (rest.length === 3 || rest.length === 4)) {
-    const [root, registry, authority, decisionRecords] = rest as [string, string, string, string | undefined];
     try {
+      const [root, registry, authority, decisionRecords] = exactArguments(rest) as [string, string, string, string | undefined];
       const key = readInput(32);
       if (key === null) {
         throw new NoVerdict("the public key on standard input is more than 32 bytes");

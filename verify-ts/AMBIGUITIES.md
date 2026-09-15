@@ -60,6 +60,14 @@ both parts is held by a test.
     could be taken for one. Read here: no verdict. Under the decision-record
     directory, where no name is carried into a finding, names are read as the
     bytes they are, and every file is a candidate.
+13. **How the store root is spelled.** §4.1 gives spelling rules for the
+    registry and the decision-record directory, not for the root. Read here:
+    the root is taken as spelled and never normalized, so `file/..` is looked up
+    as the platform looks it up — past a file that is no directory, and so no
+    verdict — rather than read as the directory above.
+14. **A validly signed seal whose `finalCount` is negative.** §3 says an integer.
+    Read here: it loads like any other, and a session against it is
+    `count-exceeds-seal`, since any count of files exceeds it.
 
 ## Settled: what the text requires, and a reader could miss
 

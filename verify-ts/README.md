@@ -76,6 +76,15 @@ reference.
   signature when it has the form a citation can match. Of the decision records,
   only which of the named ones were found, and the findings for those that fail,
   one each, as reported.
+- **A million findings.** A verdict holds at most 2²⁰ findings: a store of more
+  receipt files, or decision records failing more often, is no verdict, rather
+  than a verdict held in memory whatever its size. Failing records are kept as
+  33 bytes each until the verdict is written.
+- **Arguments are their bytes.** The platform hands a program its arguments
+  decoded as UTF-8 with replacement, so a path holding a byte that is not UTF-8
+  would arrive as another path. On Linux, which shows a process its arguments'
+  bytes, an argument that is not UTF-8 is no verdict; elsewhere, an argument
+  holding U+FFFD, which cannot be told from one, is no verdict.
 - **An index of more than 64 digits.** A receipt whose `callIndex` is that long
   is no verdict: it cannot verify, the canonical domain ending at sixteen
   digits, and its finding would carry it whole.
