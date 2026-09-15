@@ -9,9 +9,11 @@ import (
 	"syscall"
 )
 
-// operatorControls closes admission on SIGUSR1 and reopens it on SIGUSR2
-// (docs/design/mcp-server.md, "Rotation"), until the context ends.
-func (s *mcpServer) operatorControls(ctx context.Context) {
+// installOperatorControls closes a process's admission gate on SIGUSR1 and
+// reopens it on SIGUSR2 (docs/design/mcp-server.md, "Rotation"), until the
+// context ends. A second SIGUSR1 while closed reports where the closure
+// stands.
+func installOperatorControls(ctx context.Context, gate operatorGate) {
 	signals := make(chan os.Signal, 4)
 	signal.Notify(signals, syscall.SIGUSR1, syscall.SIGUSR2)
 	go func() {
@@ -22,11 +24,14 @@ func (s *mcpServer) operatorControls(ctx context.Context) {
 				return
 			case sig := <-signals:
 				if sig == syscall.SIGUSR1 {
-					s.closeAdmission()
+					gate.closeAdmission()
 				} else {
-					s.openAdmission()
+					gate.openAdmission()
 				}
 			}
 		}
 	}()
 }
+
+// operatorControls installs the MCP server's.
+func (s *mcpServer) operatorControls(ctx context.Context) { installOperatorControls(ctx, s) }

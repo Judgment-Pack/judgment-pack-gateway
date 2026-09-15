@@ -96,6 +96,9 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 		refuseUnread(w, http.StatusRequestEntityTooLarge, map[string]any{"error": "the message exceeds the bound"})
 		return
 	}
+	if s.beforeBody != nil {
+		s.beforeBody()
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, mcpMaxMessageBytes+1))
 	if err != nil {
 		mcpWriteJSON(w, http.StatusBadRequest, map[string]any{"error": "the body could not be read"})
@@ -184,7 +187,7 @@ func (s *mcpServer) serveMCP(w http.ResponseWriter, r *http.Request) {
 		// an error status, with the JSON-RPC error that says why
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = w.Write(outcome.response)
+		_, _ = w.Write(outcome.rejection)
 		return
 	}
 	if outcome.response == nil {
@@ -325,7 +328,7 @@ func (s *mcpServer) openSession() *mcpSession {
 	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed {
+	if s.gate.closed {
 		return nil
 	}
 	for id, sess := range s.sessions {

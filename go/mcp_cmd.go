@@ -11,17 +11,25 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 const mcpUsage = "usage: gateway mcp --config <engine.json> (--http | --stdio)"
 
 func cmdMCP(args []string) int {
-	return runMCP(args, os.Stderr, osMCPReachHost())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return runMCP(ctx, args, os.Stdin, os.Stdout, os.Stderr, osMCPReachHost())
 }
 
-// runMCP is the command with its diagnostics stream and its view of the
-// host given, so a test reads what a refusal says.
-func runMCP(args []string, stderr io.Writer, reach mcpReachHost) int {
+// runMCP is the command with its context, its streams and its view of the
+// host given, so a test reads what a refusal says and runs the serving
+// paths with a stderr that never drains. A refusal to start is written
+// before anything is served, and reads the configuration back to the
+// operator who started the process; once serving, everything the process
+// says goes through its diagnostics stream, which nothing waits for, and
+// what it says as it ends is flushed for at most a second.
+func runMCP(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, reach mcpReachHost) int {
 	var config, transport string
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
@@ -88,21 +96,20 @@ func runMCP(args []string, stderr io.Writer, reach mcpReachHost) int {
 		return 1
 	}
 	server.log = stderr
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	defer server.reports.flush(time.Second)
 	server.operatorControls(ctx)
 	if transport == "--stdio" {
-		if err := server.serveStdio(ctx, os.Stdin, os.Stdout, os.Getenv(mcpTokenEnv)); err != nil {
-			fmt.Fprintln(stderr, "mcp:", err)
+		if err := server.serveStdio(ctx, stdin, stdout, os.Getenv(mcpTokenEnv)); err != nil {
+			server.reports.controlf("mcp: %v", err)
 			return 1
 		}
 		return 0
 	}
 	// the diagnostics stream names no address: a host may forward it
 	// anywhere
-	fmt.Fprintf(stderr, "mcp: serving --http at the configured address (authority %s, %d tools)\n", cfg.authority, len(server.order))
+	server.reports.controlf("mcp: serving --http at the configured address (authority %s, %d tools)", cfg.authority, len(server.order))
 	if err := server.listenHTTP(ctx); err != nil {
-		fmt.Fprintln(stderr, "mcp: the transport ended:", transportErrorCategory(err))
+		server.reports.controlf("mcp: the transport ended: %s", transportErrorCategory(err))
 		return 1
 	}
 	return 0

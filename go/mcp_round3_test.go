@@ -84,7 +84,7 @@ func TestMCPClosureDrainsWhatPassedTheGate(t *testing.T) {
 	if r := <-answer; r["isError"] != nil {
 		t.Fatalf("the acquisition that passed the gate: %v", r)
 	}
-	waitUntil(t, "the drain to be said", func() bool { return strings.Contains(diagnostics.String(), "closed and drained") })
+	waitUntil(t, "the drain to be said", func() bool { return strings.Contains(diagnostics.String(), "mcp: closure 1 drained") })
 	// the operator seals now, directly: the session holds the acquisition
 	// that passed the gate, and it is the last
 	if code, body := post(t, f.signer, "/seal", `{"session":"late-1"}`); code != http.StatusOK || body["finalCount"] != float64(1) {
@@ -224,9 +224,90 @@ func TestMCPBlockedDiagnosticsBlockNothing(t *testing.T) {
 	within("a failed forward's report", func() {
 		f.call(t, http.MethodPost, sid, toolCall(3, "screen.lookup", `{}`, ""), nil)
 	})
-	if f.server.dropped.Load() == 0 {
+	// traffic past the buffer is dropped and counted; the operator's
+	// reports are not
+	for i := 0; i < 400; i++ {
+		f.server.diag("mcp: traffic line %d", i)
+	}
+	if f.server.reports.dropped.Load() == 0 {
 		t.Fatal("nothing was counted as dropped with the stream blocked")
 	}
+}
+
+// The operator's reports survive a stream that stops and starts: every
+// closure's report arrives once it drains, in order, with its number, and
+// the dropped traffic is counted in a line of its own; a closure asked
+// for again says where it stands; and a closure reopened before it
+// drained says so, and its drain is never reported for a later one.
+func TestMCPClosureReportsAreReliableAndNumbered(t *testing.T) {
+	f := newMCPFixture(t, false)
+	stream := &gatedWriter{release: make(chan struct{})}
+	stream.n = 1 // every write blocks until released
+	release := sync.OnceFunc(func() { close(stream.release) })
+	defer release()
+	lines := &syncBuffer{}
+	f.server.log = io.MultiWriter(stream, lines)
+	sid := f.open(t)
+	// a forward held between the gate's last word and the forward
+	paused := make(chan struct{})
+	resume := make(chan struct{})
+	resumeOnce := sync.OnceFunc(func() { close(resume) })
+	defer resumeOnce()
+	var once sync.Once
+	f.server.beforeForward = func() {
+		once.Do(func() {
+			close(paused)
+			<-resume
+		})
+	}
+	answer := make(chan struct{})
+	go func() {
+		f.call(t, http.MethodPost, sid, toolCall(1, "screen.lookup", `{}`, ""), nil)
+		close(answer)
+	}()
+	<-paused
+	for i := 0; i < 400; i++ { // saturate the traffic buffer
+		f.server.diag("mcp: traffic line %d", i)
+	}
+	first := f.server.closeAdmission() // closure 1: one pending
+	f.server.closeAdmission()          // asked again: where it stands
+	f.server.openAdmission()           // reopened before it drained
+	<-first
+	second := f.server.closeAdmission() // closure 2: still one pending
+	select {
+	case <-second:
+		t.Fatal("closure 2 drained with a forward pending")
+	case <-time.After(200 * time.Millisecond):
+	}
+	resumeOnce()
+	<-answer
+	<-second
+	release() // the stream drains
+	want := []string{
+		"mcp: admission closed (closure 1); 1 acquisitions forwarded before it have not returned",
+		"mcp: admission is closed (closure 1); 1 acquisitions forwarded before it have not returned",
+		"mcp: closure 1 ended: admission reopened before it drained",
+		"mcp: admission open; closure 1 is over",
+		"mcp: admission closed (closure 2); 1 acquisitions forwarded before it have not returned",
+		"mcp: closure 2 drained: every acquisition forwarded before it has returned; 0 forwards ended without an answer since the last drain",
+	}
+	waitUntil(t, "every report", func() bool { return strings.Contains(lines.String(), "closure 2 drained") })
+	text := lines.String()
+	at := 0
+	for _, w := range want {
+		i := strings.Index(text[at:], w)
+		if i < 0 {
+			t.Fatalf("missing, or out of order: %q\n---\n%s", w, text)
+		}
+		at += i + len(w)
+	}
+	if strings.Contains(text, "closure 1 drained") {
+		t.Fatalf("closure 1's drain was reported after it was reopened:\n%s", text)
+	}
+	if !strings.Contains(text, "diagnostics were dropped") {
+		t.Fatalf("the dropped traffic was not counted:\n%s", text)
+	}
+	f.server.openAdmission()
 }
 
 // net/http's own log lines -- an accept error names the listener's
@@ -298,8 +379,12 @@ func TestMCPHTTPWindowCountsAtAdmission(t *testing.T) {
 	sid := f.open(t)
 	// the window that opens at 0 is spent
 	f.call(t, http.MethodPost, sid, toolCall(1, "screen.lookup", `{}`, ""), nil)
-	// A's headers at 59, its body withheld
+	// A's headers at 59, its body withheld; A's handler is at its body
+	// before the clock moves on
 	clock.Store(59)
+	atBody := make(chan struct{})
+	var atBodyOnce sync.Once
+	f.server.beforeBody = func() { atBodyOnce.Do(func() { close(atBody) }) }
 	conn, err := net.Dial("tcp", strings.TrimPrefix(f.front.URL, "http://"))
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +392,11 @@ func TestMCPHTTPWindowCountsAtAdmission(t *testing.T) {
 	defer conn.Close()
 	body := toolCall(2, "screen.lookup", `{}`, "")
 	fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: engine.test\r\nContent-Type: application/json\r\nMcp-Session-Id: %s\r\nContent-Length: %d\r\n\r\n%s", mcpEndpoint, sid, len(body), body[:10])
-	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-atBody:
+	case <-time.After(5 * time.Second):
+		t.Fatal("A's handler never reached its body")
+	}
 	// B at 61 opens a new window and spends it
 	clock.Store(61)
 	if _, _, b := f.call(t, http.MethodPost, sid, toolCall(3, "screen.lookup", `{}`, ""), nil); resultOf(t, b)["isError"] != nil {

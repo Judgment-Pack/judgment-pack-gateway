@@ -4,7 +4,10 @@ package main
 
 import "context"
 
-// operatorControls: the admission signals are Unix signals, and the
-// process runs in the engine's Linux image; elsewhere admission stays
+// installOperatorControls: the admission signals are Unix signals, and the
+// engine's processes run in its Linux image; elsewhere the gates stay
 // open.
-func (s *mcpServer) operatorControls(context.Context) {}
+func installOperatorControls(context.Context, operatorGate) {}
+
+// operatorControls installs the MCP server's.
+func (s *mcpServer) operatorControls(ctx context.Context) { installOperatorControls(ctx, s) }

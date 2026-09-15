@@ -430,11 +430,19 @@ func TestMCPHTTPConformanceAndTheDifferential(t *testing.T) {
 		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":"x"}}`, rpcInvalidParams, request, 1.0},
 		{`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"screen.lookup","_meta":{"` + mcpSessionMeta + `":1}}}`, rpcInvalidParams, request, 1.0},
 		{`not json`, rpcParse, other, nil},
+		{"{\"jsonrpc\":\"2.0\",\"id\":\"a\xffb\",\"method\":\"ping\"}", rpcParse, other, nil},
+		{"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"screen.lookup\",\"arguments\":{\"q\":\"\xc3\x28\"}}}", rpcParse, other, nil},
 		{`{"jsonrpc":"2.0","id":1,"method":"ping"} trailing`, rpcParse, other, nil},
 	} {
 		code, _, body := f.call(t, http.MethodPost, sid, c.body, nil)
-		if code != c.status || body["error"] == nil || body["error"].(map[string]any)["code"] != c.code || body["id"] != c.id || body["result"] != nil {
+		id, hasID := body["id"]
+		if code != c.status || body["error"] == nil || body["error"].(map[string]any)["code"] != c.code || body["result"] != nil {
 			t.Fatalf("%s: %d %v", c.body, code, body)
+		}
+		// a request's refusal carries its id; a rejected input's body has
+		// no id member at all
+		if (c.status == request && (!hasID || id != c.id)) || (c.status == other && hasID) {
+			t.Fatalf("%s: the id member is %v (present %v)", c.body, id, hasID)
 		}
 	}
 	// what the pinned protocol admits is admitted in any spelling: the

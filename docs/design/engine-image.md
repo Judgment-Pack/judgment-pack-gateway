@@ -105,7 +105,11 @@ timestamps, and the claim this image makes rests on its contents.
 ## The processes
 
 The container's first process is `gateway serve`, reading the engine configuration
-([engine-config.md](engine-config.md)). It is the only process that ever holds the seed.
+([engine-config.md](engine-config.md)). It is the only process that ever holds the seed. It
+carries the admission gate the rotation contract closes ([mcp-server.md](mcp-server.md),
+"Rotation"): `SIGUSR1` closes it — every acquisition and action is then refused `503` at
+admission and sealing goes on — `SIGUSR2` reopens it, and each closure's drain is reported on
+its stderr.
 
 The MCP server ([mcp-server.md](mcp-server.md)) is a fifth process the operator starts
 beside it, as the runtime and the verifier are started: `/usr/local/bin/engine-mcp mcp

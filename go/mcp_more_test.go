@@ -492,7 +492,7 @@ func TestMCPCommandRefusals(t *testing.T) {
 		{"a process that is not the frontend's user", []string{"--config", write(v2(`{"listen":"127.0.0.1:8788"}`, ``)), "--stdio"}, elsewhere, 1, "runs as uid 1000"},
 	} {
 		var stderr bytes.Buffer
-		if got := runMCP(c.args, &stderr, c.reach); got != c.want || !strings.Contains(stderr.String(), c.says) {
+		if got := runMCP(context.Background(), c.args, strings.NewReader(""), io.Discard, &stderr, c.reach); got != c.want || !strings.Contains(stderr.String(), c.says) {
 			t.Errorf("%s: exit %d, want %d, saying %q, want %q", c.name, got, c.want, stderr.String(), c.says)
 		}
 	}

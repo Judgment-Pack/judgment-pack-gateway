@@ -303,6 +303,9 @@ func cmdServeEngine(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	service.bindLifetime(ctx)
+	// the signer's admission gate, for the rotation contract: SIGUSR1
+	// closes it, SIGUSR2 reopens it
+	installOperatorControls(ctx, service)
 	if err := service.listenAndServe(cfg.listen); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1
@@ -628,6 +631,7 @@ func cmdServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	service.bindLifetime(ctx)
+	installOperatorControls(ctx, service)
 	if err := service.listenAndServe("127.0.0.1:" + opts.port); err != nil {
 		fmt.Fprintln(os.Stderr, "serve:", err)
 		return 1

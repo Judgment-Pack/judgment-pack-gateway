@@ -24,8 +24,8 @@ cannot prove:
   capabilities is never the one this process runs — and a user `engine-mcp` (uid `65533`,
   its own group and no other, home `/home/engine-mcp`) that no group of the signer's or of a
   platform's admits. The image check holds the copy's mode and attributes, the user's entry
-  and groups, that nothing outside that home is the user's or its group's, that every other
-  home's contents are closed to others, and that the paths a deployment mounts a seed, a
+  and groups, that nothing outside that home is the user's or its group's, that every entry
+  under `/home` but the frontend's own home is closed to others, and that the paths a deployment mounts a seed, a
   store, a configuration or a credential at are absent from the image — what an image check
   can prove, and no more: what an operator mounts at deployment the image never sees.
 - **The launch** is the operator's. The executable is the gateway's, copied; the
@@ -111,10 +111,12 @@ platform tool, whose content is the signer's to judge: an id is a string or a nu
 spelling (a spelling of at most 64 bytes and an exponent within ±999, since an id is compared
 and echoed, never computed with), and never `null`; `params` is an object; a client's
 response carries an id and exactly one of a `result` object and an `error` object of an
-integer `code` and a string `message`, and no `params`. A request that cannot be served is
+integer `code` and a string `message`, and no `params`. A message is UTF-8, or it is not a
+message: a byte that is not is refused, never repaired. A request that cannot be served is
 answered with an error that carries its id; any other input that cannot be accepted — a
 notification or a response of the wrong shape, or a message that is neither — is refused as
-input, an error with no id. `initialize` is validated — a `protocolVersion` string,
+input: over HTTP a `400` whose body has no `id` member, over stdio JSON-RPC's error with a
+`null` id. `initialize` is validated — a `protocolVersion` string,
 a `capabilities` object, `clientInfo` with `name` and `version` strings — and happens once per
 session; until it has, `tools/list` and `tools/call` are refused. The seal tool's arguments
 are the server's own and are read the same way as the envelope.
@@ -221,25 +223,31 @@ changes neither until it restarts, and restarting one alone makes the two accept
 keys for as long as they differ. A signer restart also empties its session map and cancels a
 running source, so the sessions a consumer relies on are sealed first, and nothing may open
 or extend one between that sealing and the restart. The contract, in order: add the new key
-under a new `kid` beside the old; restart the frontend; **close admission** — `SIGUSR1` to
-the frontend closes it and `SIGUSR2` reopens it; closed, the frontend
-answers a new `initialize` `503` and a new acquisition as an overload, and the operator
-closes every other ingress to `/acquire` and `/act` the same way — and wait for what is in
-flight: first the frontend's own drain, which it reports on its diagnostics stream ("admission
-closed and drained") once every acquisition that passed its gate before the closure has had
-its answer — a forward the signer has not yet received is one the signer's own check cannot
-see, and one that has had its answer has reached the signer or never will; then seal every
+under a new `kid` beside the old; restart the frontend; **close admission, at both
+processes** — `SIGUSR1` closes a process's gate and `SIGUSR2` reopens it, and a second
+`SIGUSR1` while closed reports where the closure stands. The frontend's gate is for its
+clients: closed, it answers a new `initialize` `503` and a new acquisition as an overload, and
+forwards nothing it did not pass before the closure. **The signer's gate is the barrier**: it
+is the one place an acquisition or an action is admitted, so once it is closed nothing more is
+admitted, however long a request was in transit to it — a forward the frontend gave up on is
+a request the signer may still receive, and the frontend cannot know whether it did — and
+`/acquire` and `/act` are answered `503` while `/seal` goes on. Each process reports its
+closure on its diagnostics stream, numbered: the signer's is drained ("serve: closure *n*
+drained") when nothing it admitted is in flight; the frontend's when every acquisition it
+forwarded before the closure has returned, naming how many forwards ended without an answer
+since its last drain, which are the signer's closure to vouch for. Then seal every
 session to be preserved **by `/seal` directly**, on the signer's loopback
 surface under the operator's own token — the frontend's transport sessions went with its
-restart and `engine.seal` is not reachable through a closed frontend — and the signer's own
-refusal to seal a session with an acquisition still in flight is the drain signal: a seal
-that succeeds means that session is quiet; restart the signer; reopen admission; issue under
-the new key. To retire the old key, wait out the validity window of the tokens it signed,
+restart and `engine.seal` is not reachable through a closed frontend; restart the signer, whose
+gate starts open; reopen the frontend's admission; issue under the new key. The operator closes
+any other ingress to `/acquire` and `/act` too; the signer's gate refuses theirs as well. To retire the old key, wait out the validity window of the tokens it signed,
 then remove it from the file and restart both in the same order; to revoke it, remove it and
 restart both at once, accepting that sessions not sealed by then are lost. A key removed
 from the file is still accepted by a process that has not restarted. The token suite holds
 both orders and the stale key; the session suite holds the whole sequence from the
-frontend's restart to a successful `/seal` under closed admission.
+frontend's restart to a successful `/seal` under closed admission, and a request held at the
+signer's door while the frontend's forward gives up: refused once the signer's gate is closed,
+admitted after the frontend's drain when it is not.
 
 Over stdio there is no request header. The process is started by one host for one principal,
 and the token is that principal's, given once at start in the environment (`ENGINE_TOKEN`,
@@ -298,13 +306,15 @@ another order, correlated by id, as JSON-RPC allows; an answer the reader gives 
 refusal at admission — waits on the output, which is backpressure; and an answer that cannot
 be written ends the transport with that failure, nothing further run.
 
-**Diagnostics.** What the process says while it serves names what went wrong by category —
+**Diagnostics.** A process's diagnostics are two kinds of line on one writer of their own. Its
+reports to the operator — a gate closed, a closure drained or cut short, the transport ended
+— are never dropped and keep the order of the changes they report, each numbered by its
+closure. What it says about its traffic is dropped past a buffer and counted. What the process says while it serves names what went wrong by category —
 timed out, connection refused, permission denied, the answer past its bound, the HTTP server
 unable to accept — never an address, a name or a token, since a host may forward its
 servers' stderr anywhere; `net/http`'s own lines reach the stream the same way, their text
-dropped. Diagnostics are delivered by one writer of their own and never waited for: a stream
-that does not drain holds up no call and no operator control, and the lines it cannot take
-are counted and said when it drains. A refusal to start is not a diagnostic of traffic: it
+dropped. Nothing waits for the stream: one that does not drain holds up no call, no operator
+control and no start, and what the process says as it ends is given at most a second. A refusal to start is not a diagnostic of traffic: it
 reads the configuration back to whoever started the process — the operator — and names what
 it refuses, member and value.
 
@@ -345,7 +355,8 @@ frontend's own HTTP operations to the signer not yet answered or timed out — a
 transport sessions (`1` to `64`), with a queue of the same depth behind them, whose place a
 call takes when it is admitted and in which it waits at most ten seconds from then before it
 is an overload error with nothing forwarded, and a call admitted to a full queue is that
-error at once; `mcp.callsPerMinute` calls per transport
+error at once — and a call whose allowance has run out by the time its work begins, or that
+takes its slot after it ran out, is that error too, whatever slot is free; `mcp.callsPerMinute` calls per transport
 session, or per process over stdio (`1` to `6000`), counted in a fixed window of sixty
 seconds from the first call, **a call counted at arrival** — when its message has been read
 whole and is admitted, one at a time, in the order admission happens, so no window is

@@ -137,6 +137,21 @@ type gatewayService struct {
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
+	// gate is the signer's admission gate (docs/design/mcp-server.md,
+	// "Rotation"): the one place every acquisition and every action is
+	// admitted, so once it is closed nothing more is admitted, however
+	// long a request was in transit to it, and sealing goes on; a closure
+	// is drained when nothing admitted is in flight. Its state changes
+	// under mu, which admission holds.
+	gate admissionGate
+	// reports is where the gate's transitions are said, on the signer's
+	// stderr unless a test gives it another writer (reportsOut)
+	reports    *diagnosticStream
+	reportsOut io.Writer
+	// beforeReadAdmit, when a test sets it, runs as an acquisition's
+	// request is about to be admitted: where a request that was in transit
+	// meets a closure
+	beforeReadAdmit func()
 }
 
 func newGatewayService(storeRoot string, seed []byte, authority, registryPath string,
@@ -164,7 +179,14 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 		receiptVersion: receiptVersion3,
 		waitDelay:      sourceWaitDelay,
 		sessions:       map[string]*sessionState{},
+		gate:           newAdmissionGate(),
 	}
+	g.reports = newDiagnosticStream(func() io.Writer {
+		if g.reportsOut != nil {
+			return g.reportsOut
+		}
+		return os.Stderr
+	})
 	g.bindLifetime(context.Background())
 	return g, nil
 }
@@ -172,6 +194,35 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 // bindLifetime makes the service's lifetime end when parent ends, and gives
 // the service its own way to end it: serveOn cancels it on every exit path,
 // so a source in flight is killed whichever way serving stopped.
+// gateReports says the signer's gate's transitions on its reports.
+func (g *gatewayService) gateReports() gateReports {
+	return gateReports{reports: g.reports, who: "serve", outstanding: "acquisitions and actions admitted and not finished",
+		drainedWord: func(*gateClosure) string {
+			return "nothing admitted is in flight, and nothing will be admitted until admission reopens"
+		}}
+}
+
+// closeAdmission closes the signer's gate: from here no acquisition and no
+// action is admitted, and sealing goes on. It returns the channel that
+// closes when the closure ends -- drained, or reopened first -- and
+// reports each, with the closure's number.
+func (g *gatewayService) closeAdmission() <-chan struct{} {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	c, fresh := g.gate.closeLocked()
+	g.gateReports().closed(c, fresh, g.gate.pending)
+	return c.done
+}
+
+// openAdmission reopens the signer's gate.
+func (g *gatewayService) openAdmission() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if c, fresh := g.gate.openLocked(); fresh {
+		g.gateReports().opened(c)
+	}
+}
+
 func (g *gatewayService) bindLifetime(parent context.Context) {
 	g.ctx, g.cancel = context.WithCancel(parent)
 }
@@ -324,6 +375,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	// subprocess finishes. Every path out of here releases the reservation; the
 	// deferred release is registered before the mutex is taken again below, so
 	// it runs after that unlock rather than deadlocking on it.
+	if g.beforeReadAdmit != nil {
+		g.beforeReadAdmit()
+	}
 	if err := g.admit(sessionID); err != nil {
 		return nil, err
 	}
@@ -762,6 +816,11 @@ func executableDigest(path string) (string, error) {
 func (g *gatewayService) admit(sessionID string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// the gate first, before anything is made: a closed signer admits
+	// nothing, whatever the request carries
+	if g.gate.closed {
+		return unavailable{errAdmissionClosed}
+	}
 	state, seen := g.sessions[sessionID]
 	if !seen {
 		state = &sessionState{}
@@ -771,6 +830,7 @@ func (g *gatewayService) admit(sessionID string) error {
 		return badRequest{fmt.Errorf("session is sealed: %s", sessionID)}
 	}
 	state.inFlight++
+	g.gate.admitLocked()
 	return nil
 }
 
@@ -790,6 +850,9 @@ func (g *gatewayService) release(sessionID string) {
 		return
 	}
 	state.inFlight--
+	if c := g.gate.finishLocked(); c != nil {
+		g.gateReports().drained(c)
+	}
 	// A session this process created stays known whatever it holds: its
 	// directory is on disk and is this process's own (sessionState.created).
 	if state.inFlight <= 0 && state.index == 0 && !state.sealed && !state.created {
@@ -865,6 +928,11 @@ func (g *gatewayService) handler() http.Handler {
 		_, _ = w.Write(payload)
 	}
 	fail := func(w http.ResponseWriter, err error) {
+		var down unavailable
+		if errors.As(err, &down) {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return
+		}
 		var caller badRequest
 		if errors.As(err, &caller) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})

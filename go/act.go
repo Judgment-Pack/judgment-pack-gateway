@@ -308,6 +308,11 @@ func (g *gatewayService) sessionMintedHere(sessionID string) string {
 func (g *gatewayService) admitAction(sessionID string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// the gate first, before any directory is made: a closed signer admits
+	// no action
+	if g.gate.closed {
+		return unavailable{errAdmissionClosed}
+	}
 	state, seen := g.sessions[sessionID]
 	if !seen {
 		state = &sessionState{}
@@ -334,6 +339,7 @@ func (g *gatewayService) admitAction(sessionID string) error {
 		}
 	}
 	state.inFlight++
+	g.gate.admitLocked()
 	return nil
 }
 

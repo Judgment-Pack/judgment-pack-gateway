@@ -31,6 +31,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -117,32 +118,32 @@ type mcpServer struct {
 	stdioBacklog int
 	mu           sync.Mutex
 	sessions     map[string]*mcpSession
-	// admission is open unless the operator closed it for maintenance:
-	// closed, a new transport session is refused, a new acquisition is an
+	// gate is the MCP server's own admission gate, for its clients: closed,
+	// a new transport session is refused, a new acquisition is an
 	// overload, a queued one is woken and refused, and sealing goes on.
 	// Every closure is a generation: a call admitted under one generation
-	// is refused under another, whether it is still queued or has its slot.
-	// An acquisition that passed the gate and has not had its answer is
-	// dispatching; a closure is drained when none is, and only then may the
-	// operator seal, since a dispatch the signer has not yet received is
-	// one its own in-flight check cannot see.
-	closed      bool
-	generation  uint64
-	closing     chan struct{} // closed when admission closes, replaced on reopen
-	opening     chan struct{} // closed when admission reopens, replaced on close
-	dispatching int
-	drained     chan struct{} // closed once a closure finds nothing dispatching
+	// is refused under another, whether it is still queued or has its
+	// slot. An acquisition that passed the gate is pending until its
+	// forward returns. The certainty that nothing more is admitted is the
+	// signer's own gate's, since a forward that ended without an answer
+	// may still reach it.
+	gate admissionGate
+	// unanswered counts forwards that ended without an answer since the
+	// last drain: requests that may yet reach the signer, whenever they
+	// ended, which the MCP server's drain cannot vouch for and says so
+	unanswered int
 	// afterSlot and beforeForward, when a test sets them, run once the
 	// call has its slot and before the gate's last word, and between that
 	// word and the forward: where a closure must still be seen
 	afterSlot     func()
 	beforeForward func()
-	// diagnostics are delivered by one goroutine, so a blocked stderr
-	// holds up no lock and no call; past the buffer they are dropped and
-	// counted
-	diagnostics chan string
-	dropped     atomic.Int64
-	diagOnce    sync.Once
+	// beforeBody, when a test sets it, runs as an HTTP request's body is
+	// about to be read: the moment the arrival would have been taken
+	// before arrival meant admission
+	beforeBody func()
+	// reports is the diagnostics stream: one writer of its own, which no
+	// lock and no call waits for
+	reports *diagnosticStream
 }
 
 // newMCPServer builds the server from a resolved configuration and its
@@ -166,10 +167,7 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		forwards: make(chan struct{}, cfg.mcp.concurrency),
 		queue:    make(chan struct{}, cfg.mcp.concurrency),
 		sessions: map[string]*mcpSession{},
-		closing:  make(chan struct{}),
-		opening:  make(chan struct{}),
-
-		diagnostics: make(chan string, 256),
+		gate:     newAdmissionGate(),
 
 		forwardTimeout: mcpForwardTimeout,
 		queueWait:      mcpQueueWait,
@@ -177,6 +175,7 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		responseMargin: mcpResponseMargin,
 		stdioBacklog:   mcpStdioBacklog,
 	}
+	s.reports = newDiagnosticStream(func() io.Writer { return s.log })
 	add := func(t mcpTool) error {
 		if other, taken := s.tools[t.name]; taken {
 			return fmt.Errorf("tool name %q would name both %s and %s; rename a platform", t.name, describeTool(other), describeTool(t))
@@ -232,76 +231,44 @@ func (s *mcpServer) responseBudget() time.Duration {
 	return s.queueWait + s.forwardTimeout + s.responseMargin
 }
 
-// --- diagnostics -----------------------------------------------------------
+// --- diagnostics and admission -------------------------------------------
 
-// diag queues one diagnostic line for the diagnostics stream. It never
-// blocks: a stream that does not drain fills the buffer, and what does not
-// fit is counted and said later.
-func (s *mcpServer) diag(format string, args ...any) {
-	s.diagOnce.Do(func() { go s.deliverDiagnostics() })
-	select {
-	case s.diagnostics <- fmt.Sprintf(format, args...):
-	default:
-		s.dropped.Add(1)
-	}
+// diag says one thing about traffic on the diagnostics stream; it never
+// waits, and past the buffer it is dropped and counted.
+func (s *mcpServer) diag(format string, args ...any) { s.reports.trafficf(format, args...) }
+
+// gateReports says the gate's transitions on the diagnostics stream.
+func (s *mcpServer) gateReports() gateReports {
+	return gateReports{reports: s.reports, who: "mcp", outstanding: "acquisitions forwarded before it have not returned",
+		drainedWord: func(c *gateClosure) string {
+			return fmt.Sprintf("every acquisition forwarded before it has returned; %d forwards ended without an answer since the last drain, and whether the signer admitted those is for the signer's own closure to say", c.unresolved)
+		}}
 }
-
-func (s *mcpServer) deliverDiagnostics() {
-	for line := range s.diagnostics {
-		if n := s.dropped.Swap(0); n > 0 {
-			fmt.Fprintf(s.log, "mcp: %d diagnostics were dropped; the stream was not draining\n", n)
-		}
-		fmt.Fprintln(s.log, line)
-	}
-}
-
-// --- admission ------------------------------------------------------------
 
 // closeAdmission closes the gate for maintenance (the rotation contract of
 // the note): what waits is woken and refused, what arrives is refused, and
-// sealing goes on. It returns the channel that closes when no acquisition
-// that passed the gate before the closure is still dispatching -- the
-// frontend's half of the drain -- and says both on the diagnostics stream.
+// sealing goes on. It returns the channel that closes when the closure
+// ends -- drained, when every acquisition that passed the gate before it
+// has returned, or reopened first -- and reports each, with the closure's
+// number; a closure asked for again reports where it stands.
 func (s *mcpServer) closeAdmission() <-chan struct{} {
 	s.mu.Lock()
-	if s.closed {
-		d := s.drained
-		s.mu.Unlock()
-		return d
+	defer s.mu.Unlock()
+	c, fresh := s.gate.closeLocked()
+	if fresh && c.drained {
+		s.settleUnanswered(c)
 	}
-	s.closed = true
-	s.generation++
-	close(s.closing)
-	s.opening = make(chan struct{})
-	drained, opening, pending := make(chan struct{}), s.opening, s.dispatching
-	if pending == 0 {
-		close(drained)
-	}
-	s.drained = drained
-	s.mu.Unlock()
-	s.diag("mcp: admission closed; %d acquisitions forwarded before the closure have not had their answer", pending)
-	go func() {
-		select {
-		case <-drained:
-			s.diag("mcp: admission closed and drained; every acquisition forwarded before the closure has had its answer, and none will be forwarded until admission reopens")
-		case <-opening:
-		}
-	}()
-	return drained
+	s.gateReports().closed(c, fresh, s.gate.pending)
+	return c.done
 }
 
 // openAdmission reopens the gate.
 func (s *mcpServer) openAdmission() {
 	s.mu.Lock()
-	if !s.closed {
-		s.mu.Unlock()
-		return
+	defer s.mu.Unlock()
+	if c, fresh := s.gate.openLocked(); fresh {
+		s.gateReports().opened(c)
 	}
-	s.closed = false
-	s.closing = make(chan struct{})
-	close(s.opening)
-	s.mu.Unlock()
-	s.diag("mcp: admission open")
 }
 
 // admission reports the gate, the channel that closes with it, and the
@@ -309,36 +276,40 @@ func (s *mcpServer) openAdmission() {
 func (s *mcpServer) admission() (closed bool, wake <-chan struct{}, generation uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.closed, s.closing, s.generation
+	return s.gate.closed, s.gate.closing, s.gate.generation
 }
 
 // dispatch is the gate's last word for an acquisition that has its slot:
-// under the lock that a closure takes, it is refused if a closure came
-// since it was admitted, and otherwise counted as dispatching, so a
-// closure after this point waits for its answer before it is drained.
+// under the lock a closure takes, it is refused if a closure came since it
+// was admitted, and otherwise counted as pending, so a closure after this
+// point waits for its forward to return before it is drained.
 func (s *mcpServer) dispatch(generation uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.closed || s.generation != generation {
+	if s.gate.closed || s.gate.generation != generation {
 		return false
 	}
-	s.dispatching++
-	return true
+	return s.gate.admitLocked()
 }
 
-// dispatched counts an acquisition's answer in, and drains a closure that
-// was waiting for it.
-func (s *mcpServer) dispatched() {
+// dispatched counts an acquisition's forward returned -- with its answer,
+// or without one, which a closure waiting for it counts as unresolved.
+func (s *mcpServer) dispatched(answered bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.dispatching--
-	if s.closed && s.dispatching == 0 {
-		select {
-		case <-s.drained:
-		default:
-			close(s.drained)
-		}
+	if !answered {
+		s.unanswered++
 	}
+	if c := s.gate.finishLocked(); c != nil {
+		s.settleUnanswered(c)
+		s.gateReports().drained(c)
+	}
+}
+
+// settleUnanswered gives a drained closure the forwards that ended without
+// an answer since the last drain (under the lock).
+func (s *mcpServer) settleUnanswered(c *gateClosure) {
+	c.unresolved, s.unanswered = s.unanswered, 0
 }
 
 // --- JSON-RPC ---------------------------------------------------------------
@@ -445,6 +416,12 @@ func validID(raw json.RawMessage) bool {
 // comes back with that request's id and method, so the answer carries the
 // id; any other refusal comes back with neither.
 func parseMCPMessage(data []byte) (mcpRequest, *jsonrpcError) {
+	// a message is UTF-8 (the pinned transports say so); encoding/json
+	// would repair a byte that is not, and what it repaired is not what was
+	// sent
+	if !utf8.Valid(data) {
+		return mcpRequest{}, &jsonrpcError{rpcParse, "the message is not UTF-8"}
+	}
 	if !json.Valid(data) {
 		return mcpRequest{}, &jsonrpcError{rpcParse, "the message is not JSON"}
 	}
@@ -533,10 +510,16 @@ func parseMCPMessage(data []byte) (mcpRequest, *jsonrpcError) {
 	return mcpRequest{id: id, method: method, params: m["params"]}, nil
 }
 
+// walkPathSteps counts the ancestors the duplicate walk visits to compare
+// a path; a test holds the walk to linear work with it.
+var walkPathSteps atomic.Int64
+
 // noDuplicateMembers walks a JSON text and refuses an object naming a
 // member twice, at any depth, so no member can mean one thing to one
 // reader and another to the next -- except under the paths given, whose
-// values are another reader's to judge and are stepped over whole.
+// values are another reader's to judge and are stepped over whole. A path
+// is compared only at a depth some skip path has, so the walk's work is
+// linear in the text however deep it nests.
 func noDuplicateMembers(data []byte, skip [][]string) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
@@ -546,32 +529,33 @@ func noDuplicateMembers(data []byte, skip [][]string) error {
 		key    bool   // an object frame expecting a key next
 		last   string // the key whose value comes next
 	}
-	var stack []*frame
-	path := func() []string {
-		var p []string
-		for _, f := range stack {
-			if f.object {
-				p = append(p, f.last)
-			} else {
-				p = append(p, "[]")
-			}
-		}
-		return p
+	depths := map[int]bool{}
+	for _, s := range skip {
+		depths[len(s)] = true
 	}
+	var stack []*frame
 	skipping := func() bool {
-		p := path()
+		if !depths[len(stack)] {
+			return false
+		}
 		for _, s := range skip {
-			if len(p) == len(s) {
-				same := true
-				for i := range s {
-					if p[i] != s[i] {
-						same = false
-						break
-					}
+			if len(s) != len(stack) {
+				continue
+			}
+			same := true
+			for i, f := range stack {
+				walkPathSteps.Add(1)
+				name := "[]"
+				if f.object {
+					name = f.last
 				}
-				if same {
-					return true
+				if name != s[i] {
+					same = false
+					break
 				}
+			}
+			if same {
+				return true
 			}
 		}
 		return false
@@ -657,8 +641,11 @@ type mcpOutcome struct {
 	// rejected says the input was not a request and could not be
 	// accepted -- a notification or a response of the wrong shape, or
 	// something that is neither -- which the HTTP transport answers with
-	// an error status, not a 200 or a 202
-	rejected bool
+	// an error status, not a 200 or a 202, and a body with no id member
+	// (the stdio transport writes response, whose id is null, as JSON-RPC
+	// has an error it cannot attribute)
+	rejected  bool
+	rejection []byte
 }
 
 // mcpTransportRefusal is a refusal the HTTP transport answers with a
@@ -670,6 +657,13 @@ type mcpTransportRefusal struct {
 
 func rpcResult(id json.RawMessage, result any) []byte {
 	out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "result": result})
+	return out
+}
+
+// rpcRejection is the body the HTTP transport answers an input it cannot
+// accept with: the error, and no id member at all.
+func rpcRejection(e jsonrpcError) []byte {
+	out, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "error": e})
 	return out
 }
 
@@ -699,7 +693,10 @@ func (s *mcpServer) handle(ctx context.Context, sess *mcpSession, token string, 
 func (s *mcpServer) admit(sess *mcpSession, token string, data []byte) mcpOutcome {
 	req, perr := parseMCPMessage(data)
 	if perr != nil {
-		return mcpOutcome{response: rpcFailure(req.id, *perr), rejected: !req.isRequest()}
+		if !req.isRequest() {
+			return mcpOutcome{response: rpcFailure(nil, *perr), rejected: true, rejection: rpcRejection(*perr)}
+		}
+		return mcpOutcome{response: rpcFailure(req.id, *perr)}
 	}
 	if req.isResponse {
 		return mcpOutcome{}
@@ -904,9 +901,15 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 			return closedMeanwhile()
 		}
 	}
+	queueExpired := func() mcpOutcome {
+		return mcpOutcome{response: rpcResult(id, overload(session, "no forward slot within "+s.queueWait.String()+"; nothing was forwarded"))}
+	}
+	// a call whose wait ran out before it waited is an overload, whatever
+	// slot is free now
 	wait := time.Until(deadline)
-	if wait < 0 {
-		wait = 0
+	if wait <= 0 {
+		<-s.queue
+		return queueExpired()
 	}
 	waited := time.NewTimer(wait)
 	select {
@@ -915,7 +918,7 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 		<-s.queue
 	case <-waited.C:
 		<-s.queue
-		return mcpOutcome{response: rpcResult(id, overload(session, "no forward slot within "+s.queueWait.String()+"; nothing was forwarded"))}
+		return queueExpired()
 	case <-wake:
 		waited.Stop()
 		<-s.queue
@@ -926,14 +929,20 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 		return mcpOutcome{response: rpcResult(id, overload(session, "the call ended before a forward slot was free; nothing was forwarded"))}
 	}
 	defer func() { <-s.forwards }()
+	// a slot taken after the wait ran out -- the two ready together -- is
+	// given back: a call waits at most its allowance
+	if time.Now().After(deadline) {
+		return queueExpired()
+	}
 	if s.afterSlot != nil {
 		s.afterSlot()
 	}
+	answered := false
 	if !tool.seal {
 		if !s.dispatch(generation) {
 			return closedMeanwhile()
 		}
-		defer s.dispatched()
+		defer func() { s.dispatched(answered) }()
 	}
 	if s.beforeForward != nil {
 		s.beforeForward()
@@ -957,6 +966,7 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 		body = []byte(`{"session":` + string(sessionJSON) + `,"source":` + string(sourceJSON) + `,"arguments":{"tool":` + string(toolJSON) + `,"arguments":` + string(bytes.TrimSpace(arguments)) + `}}`)
 	}
 	status, answer, err := s.forward(ctx, path, token, body)
+	answered = err == nil
 	if err != nil {
 		// the category stays here, token-free and address-free; the
 		// client learns only that the answer did not arrive

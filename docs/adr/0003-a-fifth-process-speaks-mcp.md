@@ -53,6 +53,10 @@ signer does and forwards it to the signer alone; it never seals a session on its
   and the loader.
 - Bad, because a fifth process is one more the operator starts and keeps current with the
   signer's configuration, and its rotation contract touches the signer's restart.
+- Changed in the signer, because a request the fifth process gave up on may still reach
+  the signer: the signer gains an admission gate (`SIGUSR1` closes, `SIGUSR2` reopens) at the
+  one place acquisitions and actions are admitted, which the rotation contract closes before
+  sessions are sealed.
 - Bad, because the tool list carries names only: a host that validates arguments validates
   nothing, until descriptors captured by `connect` close that, which is a follow-on.
 - Not changed: calls to servers the engine does not front are not receipted; that is the
