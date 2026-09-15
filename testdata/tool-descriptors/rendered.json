@@ -1,0 +1,22 @@
+[
+ {
+  "name": "both captured",
+  "captured": true,
+  "markdown": "Tool ``se`arch\\u{000A}# \u003ch1\u003ex\u003c/h1\u003e`` of platform `tick\u003cb\u003eets` (binding `tick\u003cb\u003eets@sha256:0000000000000000000000000000000000000000000000000000000000000000`), called by the engine's own adapter under the engine's key. Its arguments are declared by the platform's server's schema, as captured. The answer carries {session, result, receipt, salts}. When `connect` ran at `2026-09-15T01:02:03Z`, the platform's server described it as follows, in its own words, which are not the engine's and which no receipt covers:\n\n``````\nserver: srv \u003cb\u003e 1\n  # v\nClick [here](http://evil.example) ![x](http://evil.example/i.png) \u003cscript\u003ealert(1)\u003c/script\u003e \u003cb\u003ebold\u003c/b\u003e\n  # Heading\n  ```\n  fenced\n  ```\n  ~~~\n  tilde\n  ~~~\n      indented\n  \u003e quote\n  - item\n  ***\n  \u003c!-- comment --\u003e\n(root): ``\u003ci\u003ex\u003c/i\u003e``\n/properties/q: [link](http://evil.example) `````\n``````"
+ },
+ {
+  "name": "the schema alone",
+  "captured": true,
+  "markdown": "Tool ``se`arch\\u{000A}# \u003ch1\u003ex\u003c/h1\u003e`` of platform `tick\u003cb\u003eets` (binding `tick\u003cb\u003eets@sha256:0000000000000000000000000000000000000000000000000000000000000000`), called by the engine's own adapter under the engine's key. Its arguments are declared by the platform's server's schema, as captured. The answer carries {session, result, receipt, salts}. When `connect` ran at `2026-09-15T01:02:03Z`, the platform's server described it as follows, in its own words, which are not the engine's and which no receipt covers:\n\n``````\nserver: srv \u003cb\u003e 1\n  # v\n(root): ``\u003ci\u003ex\u003c/i\u003e``\n/properties/q: [link](http://evil.example) `````\n``````"
+ },
+ {
+  "name": "the description alone",
+  "captured": true,
+  "markdown": "Tool ``se`arch\\u{000A}# \u003ch1\u003ex\u003c/h1\u003e`` of platform `tick\u003cb\u003eets` (binding `tick\u003cb\u003eets@sha256:0000000000000000000000000000000000000000000000000000000000000000`), called by the engine's own adapter under the engine's key. Its arguments are what the platform's server defines. The answer carries {session, result, receipt, salts}. When `connect` ran at `2026-09-15T01:02:03Z`, the platform's server described it as follows, in its own words, which are not the engine's and which no receipt covers:\n\n````\nserver: srv \u003cb\u003e 1\n  # v\nClick [here](http://evil.example) ![x](http://evil.example/i.png) \u003cscript\u003ealert(1)\u003c/script\u003e \u003cb\u003ebold\u003c/b\u003e\n  # Heading\n  ```\n  fenced\n  ```\n  ~~~\n  tilde\n  ~~~\n      indented\n  \u003e quote\n  - item\n  ***\n  \u003c!-- comment --\u003e\n````"
+ },
+ {
+  "name": "nothing captured",
+  "captured": false,
+  "markdown": "Tool ``se`arch\\u{000A}# \u003ch1\u003ex\u003c/h1\u003e`` of platform `tick\u003cb\u003eets` (binding `tick\u003cb\u003eets@sha256:0000000000000000000000000000000000000000000000000000000000000000`), called by the engine's own adapter under the engine's key. Its arguments are what the platform's server defines; the engine does not read that server's schema. The answer carries {session, result, receipt, salts}."
+ }
+]

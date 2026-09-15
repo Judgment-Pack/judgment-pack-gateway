@@ -288,6 +288,7 @@ is fetched both ways and must derive to byte-identical canonical facts.
 gateway connect --config engine.json service-desk --binding jira \
   --credentials-file live=/run/secrets/service-desk --user engine-service-desk \
   [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace] [--no-descriptors]
+gateway connect --config engine.json --preview-descriptors service-desk
 ```
 
 writes the platform entry — the binding pinned by the digest of the catalog file as it is
@@ -323,7 +324,9 @@ the entry pins it. A capture of no tool pins nothing, and `--replace` without a 
 member. With `--replace`, `connect` compares the capture with the snapshot the entry pinned
 before, once that verifies against its pin. It then says which processes must restart: the MCP
 server alone when only the descriptors' pin changed, and both when anything the signer reads
-changed.
+changed. `--preview-descriptors <platform>` writes nothing: it renders what the MCP server would
+serve for the platform's tools, from the snapshot the platform pins, read and verified as the
+server reads it, with every character outside printable ASCII escaped.
 
 It refuses a binding that is not in the catalog, a platform already configured unless
 `--replace` is given — and with it the entry replaced is not resolved, since its pin may be

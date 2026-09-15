@@ -73,7 +73,7 @@ func newMCPFixture(t *testing.T, withIdentity bool) *mcpFixture {
 		f.token = f.issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
 	}
 	cfg := mcpTestConfig(t, signer, spec)
-	server, err := newMCPServer(cfg, mcpBindings(), identity)
+	server, err := newMCPServer(cfg, mcpBindings(), identity, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,15 +243,15 @@ func TestMCPToolTableAndCollisions(t *testing.T) {
 		"a":   {live: &operation{tools: []string{"b.c", "x"}}},
 		"a.b": {live: &operation{tools: []string{"c"}}},
 	}
-	if _, err := newMCPServer(cfg, bindings, nil); err == nil || !strings.Contains(err.Error(), `tool name "a.b.c" would name both`) {
+	if _, err := newMCPServer(cfg, bindings, nil, ""); err == nil || !strings.Contains(err.Error(), `tool name "a.b.c" would name both`) {
 		t.Fatalf("a colliding name started: %v", err)
 	}
 	cfg.platforms = []platformConfig{{name: "engine"}}
-	if _, err := newMCPServer(cfg, map[string]binding{"engine": {live: &operation{tools: []string{"seal"}}}}, nil); err == nil || !strings.Contains(err.Error(), "the engine's seal tool") {
+	if _, err := newMCPServer(cfg, map[string]binding{"engine": {live: &operation{tools: []string{"seal"}}}}, nil, ""); err == nil || !strings.Contains(err.Error(), "the engine's seal tool") {
 		t.Fatalf("a platform tool shadowing the seal tool started: %v", err)
 	}
 	cfg.platforms = []platformConfig{{name: "z"}, {name: "a"}}
-	s, err := newMCPServer(cfg, map[string]binding{"z": {live: &operation{tools: []string{"t"}}}, "a": {live: &operation{tools: []string{"u"}}}, "noLive": {}}, nil)
+	s, err := newMCPServer(cfg, map[string]binding{"z": {live: &operation{tools: []string{"t"}}}, "a": {live: &operation{tools: []string{"u"}}}, "noLive": {}}, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestMCPToolTableAndCollisions(t *testing.T) {
 		t.Fatalf("the table lists %v", s.order)
 	}
 	cfg.mcp = nil
-	if _, err := newMCPServer(cfg, bindings, nil); err == nil {
+	if _, err := newMCPServer(cfg, bindings, nil, ""); err == nil {
 		t.Fatal("a configuration without mcp built a server")
 	}
 }

@@ -516,6 +516,16 @@
    "refusal": null
   },
   {
+   "name": "an empty property name",
+   "text": "{\"type\":\"object\",\"properties\":{\"\":{\"type\":\"string\"}},\"required\":[\"\"]}",
+   "refusal": null
+  },
+  {
+   "name": "an empty member name in data",
+   "text": "{\"type\":\"object\",\"properties\":{\"x\":{\"default\":{\"\":{\"\":1}}}}}",
+   "refusal": null
+  },
+  {
    "name": "a member name twice",
    "text": "{\"type\":\"object\",\"type\":\"object\"}",
    "refusal": {

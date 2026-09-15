@@ -40,3 +40,9 @@ func frontendOwns(owner fileOwnerIDs) bool { return false }
 // Elsewhere than Unix a file opened for reading cannot be synced, and
 // connect writes nothing on such hosts.
 func syncFound(file *os.File) error { return nil }
+
+// Elsewhere than Unix a snapshot's owner and mode are not judged: the
+// frontend runs on Unix.
+func servedInvariant(info os.FileInfo, owner fileOwnerIDs) error { return nil }
+
+func openServedSnapshot(dir *os.Root, name string) (*os.File, error) { return dir.Open(name) }

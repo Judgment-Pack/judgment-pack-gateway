@@ -57,7 +57,7 @@ func TestMCPRotationSequence(t *testing.T) {
 	// token still works end to end; the new one passes the frontend and is
 	// the signer's refusal, made the transport's
 	both := keysOf(t, f.issuer, old, new)
-	restarted, err := newMCPServer(f.server.cfg, mcpBindings(), &both)
+	restarted, err := newMCPServer(f.server.cfg, mcpBindings(), &both, "")
 	if err != nil {
 		t.Fatal(err)
 	}

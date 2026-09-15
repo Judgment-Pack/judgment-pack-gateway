@@ -157,6 +157,8 @@ SCHEMAS = [
     accept("a number of 32 characters", '{"type":"object","properties":{"x":{"default":0.100000000000000000000000000001}}}'),
     accept("exponents at 308", '{"type":"object","properties":{"x":{"minimum":-1e308,"maximum":1E+0308,"multipleOf":1e-308}}}'),
     accept("the largest length", text(prop("x", {"maxLength": 9007199254740991}))),
+    accept("an empty property name", '{"type":"object","properties":{"":{"type":"string"}},"required":[""]}'),
+    accept("an empty member name in data", '{"type":"object","properties":{"x":{"default":{"":{"":1}}}}}'),
 
     # A text that is not one strict JSON value.
     refuse("a member name twice", '{"type":"object","type":"object"}', "json"),

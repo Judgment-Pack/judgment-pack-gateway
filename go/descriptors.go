@@ -17,8 +17,10 @@ import (
 // frontend. The signer never reads one, and no receipt covers one.
 
 const (
-	// maxSnapshotBytes bounds a snapshot, the whole file.
-	maxSnapshotBytes = 320 << 10
+	// maxSnapshotBytes bounds a snapshot, the whole file, and
+	// maxCandidateTextBytes its descriptions and schema texts together.
+	maxSnapshotBytes      = 320 << 10
+	maxCandidateTextBytes = 256 << 10
 	// descriptorPolicy is the display policy this engine implements.
 	descriptorPolicy = 1
 )
