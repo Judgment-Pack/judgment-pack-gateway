@@ -434,9 +434,19 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 // `unregistered-session`. A registry that is present and unreachable is not
 // absent: readRegistryBytes tells the two apart, and this refuses on the second.
 func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error) {
-	data, _, err := readRegistryBytes(path)
+	return loadSealsOf(path, publicKey, false)
+}
+
+// loadSealsOf is the one read of the registry behind loadSeals and
+// loadEngineSeals: with required, an absent registry is a refusal, decided
+// on the same read the seals come from, never on a look before it.
+func loadSealsOf(path string, publicKey []byte, required bool) (map[string]seal, []string, error) {
+	data, present, err := readRegistryBytes(path)
 	if err != nil {
 		return nil, nil, err
+	}
+	if required && !present {
+		return nil, nil, fmt.Errorf("the registry the engine made at its start is not there: %s", path)
 	}
 	seals, order := parseSeals(data, publicKey)
 	return seals, order, nil
@@ -450,15 +460,8 @@ func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error)
 // was -- so the engine, which knows its registry is there, takes any
 // absence for a registry it cannot read.
 func loadEngineSeals(path string, publicKey []byte) (map[string]seal, error) {
-	data, present, err := readRegistryBytes(path)
-	if err != nil {
-		return nil, err
-	}
-	if !present {
-		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", path)
-	}
-	seals, _ := parseSeals(data, publicKey)
-	return seals, nil
+	seals, _, err := loadSealsOf(path, publicKey, true)
+	return seals, err
 }
 
 // parseSeals keeps each line of the registry that is a seal under the public
@@ -593,6 +596,18 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 // per-session findings, the registry anchor, and for version 3 action receipts
 // the citation and decision-record checks of steps 5 and 6.
 func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false)
+}
+
+// verifyAsEngine is the engine's own verification (/verify): the registry it
+// made at its start is required, so a registry that is not there is no
+// verdict, never "no seals" -- which, with no session left to enumerate,
+// would verify.
+func verifyAsEngine(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
+	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, true)
+}
+
+func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte, registryRequired bool) (*report, error) {
 	// the inputs' spellings are judged before anything is read (SPEC.md §4.1)
 	if err := requirePlainSpelling(registryPath, true); err != nil {
 		return nil, err
@@ -634,7 +649,7 @@ func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRe
 		rep.Findings = append(rep.Findings, result.findings...)
 	}
 
-	seals, sealOrder, err := loadSeals(registryPath, publicKey)
+	seals, sealOrder, err := loadSealsOf(registryPath, publicKey, registryRequired)
 	if err != nil {
 		return nil, err
 	}

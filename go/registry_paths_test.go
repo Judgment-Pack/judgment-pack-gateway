@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"errors"
 	"io/fs"
@@ -419,6 +420,60 @@ func TestTheEngineMakesItsRegistryAtStart(t *testing.T) {
 			t.Fatal("a start on a registry that is a directory")
 		}
 	})
+}
+
+// A registry that is not there is made at start only for a store with no
+// history. A store that holds a session has run before, and its registry may
+// hold that session's seal: an engine restarted on that store with its
+// registry gone refuses to start, rather than make an empty registry that
+// would let a read into the sealed session start its source. An operator who
+// knows no session was ever sealed makes the registry, empty, by hand, and the
+// start takes it.
+func TestAStoreWithHistoryIsNotGivenAFreshRegistry(t *testing.T) {
+	service, _ := testService(t)
+	if _, err := service.acquire("history-sealed", "screening", vString("x"), nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.sealSession("history-sealed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(service.regPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources); err == nil || !strings.Contains(err.Error(), "the store holds sessions and the registry is not there") {
+		t.Fatalf("a restart on a store with history and no registry: %v", err)
+	}
+	if _, err := os.Lstat(service.regPath); !os.IsNotExist(err) {
+		t.Fatalf("the refused start made a registry: %v", err)
+	}
+	if err := os.WriteFile(service.regPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newGatewayService(service.storeRoot, testSeed, "gateway:test", service.regPath, service.sources); err != nil {
+		t.Fatalf("a start on a registry made empty by hand: %v", err)
+	}
+}
+
+// The engine's own verification requires the registry it made at its start:
+// a registry that is not there is no verdict from /verify, never "no seals" --
+// which, with no session left in the store to enumerate, would verify. The
+// standalone verifier keeps §4.1's absence: to it, an absent registry is no
+// seals.
+func TestTheEnginesVerifyRequiresItsRegistry(t *testing.T) {
+	service, _ := testService(t)
+	if err := os.Remove(service.regPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.verify(); err == nil || !strings.Contains(err.Error(), "is not there") {
+		t.Fatalf("the engine's verification without its registry: %v", err)
+	}
+	rep, err := verifyWithRegistry(service.storeRoot, service.regPath, "gateway:test", service.publicKey)
+	if err != nil {
+		t.Fatalf("the standalone verifier refused an absent registry: %v", err)
+	}
+	if raw, _ := rep.marshal(); !bytes.Contains(raw, []byte(`"ok":true`)) {
+		t.Fatalf("an empty store against an absent registry, standalone: %s", raw)
+	}
 }
 
 // After the start the registry's absence is never an empty registry to the

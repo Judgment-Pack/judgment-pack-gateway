@@ -891,9 +891,9 @@ func preflightPaths(store, registry, decisionRecords string) error {
 	}
 	// judged is what is at the registry or the decision-record directory, as
 	// the verifier's reader judges it (SPEC.md §4.1) -- the walk above it, a
-	// link to nothing refused, absence confirmed by a directory that lists no
-	// such name -- or nil for absence; a directory above it that is not there
-	// is a start that fails.
+	// link to nothing refused, absence only by the plain answer for a
+	// missing name, and a second look at the path itself -- or nil for
+	// absence; a directory above it that is not there is a start that fails.
 	judged := func(name, path, link string) (os.FileInfo, error) {
 		there, err := registryContainerReachable(path)
 		if err != nil {

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -173,6 +174,22 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	st, err := newStore(storeRoot, seed, authority)
 	if err != nil {
 		return nil, err
+	}
+	// A registry that is not there is made at start only for a store with
+	// no history (SPEC.md §3). A store that holds a session has run before,
+	// and its registry may hold that session's seal: an empty registry made
+	// in its place would reopen the session. An operator who knows no
+	// session was ever sealed makes the registry, empty, by hand.
+	if _, present, err := readRegistryBytes(registryPath); err != nil {
+		return nil, err
+	} else if !present {
+		held, err := os.ReadDir(filepath.Join(storeRoot, "receipts"))
+		if err != nil && !absent(err) {
+			return nil, err
+		}
+		if len(held) > 0 {
+			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", registryPath)
+		}
 	}
 	reg, err := newRegistryWriter(registryPath, seed)
 	if err != nil {
@@ -943,7 +960,7 @@ func (g *gatewayService) sealSession(sessionID string) (map[string]any, error) {
 }
 
 func (g *gatewayService) verify() (map[string]any, error) {
-	rep, err := verifyWithRegistryAndRecords(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
+	rep, err := verifyAsEngine(g.storeRoot, g.regPath, g.authority, g.decisionRecords, g.publicKey)
 	if err != nil {
 		return nil, err
 	}

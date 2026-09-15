@@ -371,13 +371,17 @@ record joined to it would make one line that is no seal (§4 drops it) and lose 
 backward to excuse a rollback.
 
 A gateway makes its registry, empty, when it starts without one — only where nothing is, never
-through a link — so that from then on the registry's absence is never an empty registry to it.
-No lookup can prove an absence (§4.1): a device or a network share that has gone away can
-answer as a missing file does. So once the gateway has started, a registry that is not there
-is one it cannot read: an acquisition into a session it does not hold (§6), a seal, and
-`/registry` refuse it. A registry missing when the gateway starts — a mount that is not there
-yet, say — cannot be told from none, and the gateway makes a fresh one in the directory it
-sees.
+through a link, and only for a store with no history — so that from then on the registry's
+absence is never an empty registry to it. No lookup can prove an absence (§4.1): a device or a
+network share that has gone away can answer as a missing file does. So once the gateway has
+started, a registry that is not there is one it cannot read: an acquisition into a session it
+does not hold (§6), a seal, `/registry` and `/verify` refuse it. A store that holds a session
+has run before, and its registry may hold that session's seal, so a gateway whose store holds a
+session and whose registry is not there refuses to start: the registry is to be restored, or,
+by an operator who knows no session was ever sealed, made empty by hand. What remains cannot be
+told apart: a registry and a session history lost or hidden together — a mount that is not
+there yet, holding both — look like a fresh installation, and the gateway makes a fresh registry
+for it.
 
 ## 3a. Session identifiers
 
@@ -535,15 +539,19 @@ other answer to that look — a link, or a failure — makes the input present a
 That confirmation concerns the namespace the filesystem shows, and no lookup proves more: a
 device that has gone away can answer as a missing name does (Windows before 10 1909), and a
 mount that is missing shows the empty directory beneath it. To a verifier an absent registry
-only fails a store closed — its sessions are `unregistered-session` — but to the gateway it
-could reopen a sealed session, so the gateway makes its registry at start and takes any later
-absence for a registry it cannot read (§3). It reads the registry through this classifier
+fails closed every session the store still holds — each is `unregistered-session` — but a
+registry and a session history lost or hidden together look like a genuinely empty store against
+an empty registry, which verifies, and no classifier can tell the two apart: that takes an
+expectation from outside what is read. To the gateway an absent registry could reopen a sealed
+session, so the gateway makes its registry at start and takes any later absence for a registry
+it cannot read (§3). It reads the registry through this classifier
 before it seals into it; started from a configuration, it judges the registry and the
 decision-record directory through it before it starts.
 
-Each of these fails **closed**: an absent anchor cannot make a store verify, it can
-only fail to excuse one. A store that is genuinely empty against an empty registry
-verifies, because there is nothing it contradicts.
+Each of these fails **closed** for what is still there: an absent anchor cannot make a
+store's sessions verify, it can only fail to excuse them. A store that is genuinely empty
+against an empty registry verifies, because there is nothing it contradicts — and so does a
+store whose sessions were lost with its registry, which reads the same (above).
 
 A verifier does **not** re-apply §3a's token rule to the directory names it
 enumerates. Directory enumeration cannot yield `.`, `..` or a path separator, so
@@ -698,7 +706,7 @@ store under its own key and the record under its decision-record directory —
 the standard §4 applies, and no more. The format was specified before the
 surface so that a verifier written then verifies what is minted now.
 `gateway verify` takes `--decision-records <dir>` for §4 steps 5 and 6.
-| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`. |
+| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 
