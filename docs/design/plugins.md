@@ -94,26 +94,30 @@ ContextForge's plugin framework is now the external CPEX package, which replaced
 ContextForge carried in its own tree (CPEX 0.1's documentation and ContextForge 1.0.10's
 dependencies, read 2026-09-15). It runs a plugin at named hooks: `tool_pre_invoke` with the
 tool's name and arguments, and `tool_post_invoke` with its name and result — the arguments are
-not in the second, and a plugin that wants both keeps them in its own `PluginContext`, which
-persists across a request's hooks. A hook answers with `continue_processing`, an optional
-`modified_payload` or a `violation`. A plugin runs in the gateway's process, in an isolated
-virtual environment, or as an external service (`kind: external`) over MCP, gRPC or a Unix
-socket. Beside the modes this note first recorded — `enforce` and `permissive`, with
-`enforce_ignore_error` and `disabled` — ContextForge now accepts CPEX's own: `sequential`,
-`transform`, `audit`, `concurrent` and `fire_and_forget`, which run as phases in that order, the
-plugins within each serial phase in ascending numeric priority (a lower number runs first). So
-which result a `tool_post_invoke` hook sees depends on where it sits: a `sequential` hook sees the
-changes of earlier `sequential` hooks, before later ones and the `transform` phase, and an `audit`
-hook, when reached, sees the chained result after both. A `fire_and_forget` hook does not: in
-CPEX 0.1.3, the version ContextForge pins, it is handed a snapshot of the payload the hook was
-invoked with, before any plugin transformed it, and it is scheduled on an early halt as well
-(`cpex/framework/manager.py` at the `0.1.3` tag), though CPEX's documentation speaks of the final
-payload. A receipting plugin is then a pair — a `tool_pre_invoke` hook that keeps the call, and a
-`tool_post_invoke` hook that has the answer and wants both signed — placed by a choice of which
-answer to report. A second gateway offers a comparable hook with less to go on: Docker's MCP
-Gateway runs interceptors `before` and `after` a tool call, and an `after` interceptor is
-handed the response alone, with no call and nothing to pair it with one. Two designs would
-serve such a plugin; the second is built ([mcp-server.md](mcp-server.md)), the first is not:
+not in the second, and a plugin that wants both keeps them in its own `PluginContext`, which, for
+a plugin in one of the serial modes below, persists across a request's hooks. A hook answers with
+`continue_processing`, an optional `modified_payload` or a `violation`. A plugin runs in the
+gateway's process, in an isolated virtual environment, or as an external service
+(`kind: external`) over MCP, gRPC or a Unix socket. Beside the modes this note first recorded —
+`enforce` and `permissive`, with `enforce_ignore_error` and `disabled` — ContextForge now accepts
+CPEX's own: `sequential`, `transform`, `audit`, `concurrent` and `fire_and_forget`, which run as
+phases in that order, the plugins within each serial phase in ascending numeric priority (a lower
+number runs first). So which result a `tool_post_invoke` hook sees depends on where it sits: a
+`sequential` hook sees the changes of earlier `sequential` hooks, before later ones and the
+`transform` phase, and an `audit` hook, when reached, sees the chained result after both. A
+`fire_and_forget` hook does not. In CPEX 0.1.3, the version ContextForge pins
+(`cpex/framework/manager.py` at the `0.1.3` tag), it is handed a snapshot of the payload the hook
+was invoked with, before any plugin transformed it, though a comment there calls it the final
+payload; it is given a fresh `PluginContext`, so it cannot read what its plugin kept at
+`tool_pre_invoke`; and it is scheduled when a plugin halts the chain by returning a violation,
+but not when one is raised as an exception, as ContextForge's tool calls raise them. A receipting
+plugin is then a pair — a `tool_pre_invoke` hook that keeps the call, and a `tool_post_invoke`
+hook that has the answer and wants both signed — run in a serial mode and placed by a choice of
+which answer to report; run as `fire_and_forget`, it would have to pair the two by means of its
+own. A second gateway offers a comparable hook with less to go on: Docker's MCP Gateway runs
+interceptors `before` and `after` a tool call, and an `after` interceptor is handed the response
+alone, with no call and nothing to pair it with one. Two designs would serve such a plugin; the
+second is built ([mcp-server.md](mcp-server.md)), the first is not:
 
 1. **A remote-adapter surface on the engine.** A new `POST` that takes an envelope of §6's form
    from an authenticated remote party — the plugin's identity as the adapter, the MCP server
