@@ -401,8 +401,10 @@ def canonical_arguments(value):
                 if "." in item:
                     raise Refusal("non-integer number is outside the canonical domain")
                 raise Refusal("exponent notation is outside the canonical domain")
-            number = int(item)
-            if not -(2**63) <= number < 2**63:
+            # past 19 digits no literal is a 64-bit integer, and Python would
+            # refuse to convert a long enough one at all
+            number = int(item) if len(item.lstrip("-")) <= 19 else None
+            if number is None or not -(2**63) <= number < 2**63:
                 raise Refusal(f"integer {item} is outside the canonical domain")
             if abs(number) > MAX_SAFE_INTEGER:
                 raise Refusal(f"integer {item} is outside the safe-integer range")

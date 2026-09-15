@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # answers nested hundreds deep are formed and written here recursively
 sys.setrecursionlimit(20000)
 import answers  # noqa: E402
-from harness import Engine, StandIn, early_act, exchange, raw_exchange  # noqa: E402
+from harness import Engine, StandIn, early_act, exchange, raw_exchange, unfinished_upload  # noqa: E402
 
 HEX = {n: re.compile(f"[0-9a-f]{{{n}}}") for n in (32, 64, 128)}
 SHA256 = re.compile(r"sha256:[0-9a-f]{64}")
@@ -101,6 +101,8 @@ REQUESTS = (
     ("arguments nested as deep as the engine takes", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 9999 + b"]" * 9999 + b"}", parse=False)),
     ("arguments nested past the engine's depth", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 10000 + b"]" * 10000 + b"}")),
     ("a body past 1 MiB", acquire(raw=b'{"session":"diff-big","source":"screening","arguments":"' + b"a" * (1 << 20) + b'"}')),
+    ("a body past 1 MiB whose rest never arrives", lambda p: unfinished_upload(p, "/acquire", 2 << 20, b'{"session":"diff-big","source":"screening","arguments":"' + b"a" * ((1 << 20) + 10))),
+    ("an integer 5000 digits long", arguments(b"9" * 5000)),
     ("a source with a lone surrogate", acquire(raw=b'{"session":"diff-2","source":"\\ud800"}')),
     ("a source with a byte that is not UTF-8", acquire(raw=b'{"session":"diff-2","source":"\xff"}')),
     ("a body that is null", acquire(raw=b"null")),

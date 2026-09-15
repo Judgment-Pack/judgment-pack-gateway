@@ -136,6 +136,35 @@ def raw_exchange(port, head):
     return read_answer(int(lines[0].split()[1]), fields, text)
 
 
+def unfinished_upload(port, path, declared, sent):
+    """A request whose head declares a body longer than it sends: sent, and
+    then nothing, on a connection the client asks to close; the answer read
+    as it comes, and whether it came within five seconds -- before the rest,
+    which never arrives, could have been read."""
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    head = f"POST {path} HTTP/1.1\r\nHost: engine\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {declared}\r\n\r\n".encode()
+    started, data = time.time(), b""
+    try:
+        s.sendall(head + sent)
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    except OSError:
+        pass
+    finally:
+        s.close()
+    top, _, text = data.partition(b"\r\n\r\n")
+    if not top:
+        return {"status": 0, "early": False}
+    lines = top.decode().split("\r\n")
+    fields = {k.strip().lower(): v.strip() for k, _, v in (line.partition(":") for line in lines[1:])}
+    answer = read_answer(int(lines[0].split()[1]), fields, text)
+    answer["early"] = time.time() - started < 5
+    return answer
+
+
 def early_act(port):
     """An action whose body has not arrived: the head, a length of 1000, and
     eleven bytes of it, on a connection the client asks to close; the answer

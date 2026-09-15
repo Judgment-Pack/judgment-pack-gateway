@@ -119,17 +119,27 @@ def make_handler(fault, require_length):
             return "chunked" in self.headers.get("Transfer-Encoding", "").lower()
 
         def _body(self):
+            """The body, read to one byte past the engine's bound and no
+            further, as its limitBody reads it: what lies past that is left
+            unread, and the answer's close lingers over it."""
+            limit = answers.MAX_BODY_BYTES + 1
             if self._chunked():
                 raw = b""
-                while True:
+                while len(raw) < limit:
                     size = int(self.rfile.readline().split(b";")[0].strip() or b"0", 16)
                     if size == 0:
                         while self.rfile.readline() not in (b"\r\n", b"\n", b""):
                             pass
                         return raw
-                    raw += self.rfile.read(size)
-                    self.rfile.readline()
-            return self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                    raw += self.rfile.read(min(size, limit - len(raw)))
+                    if len(raw) < limit:
+                        self.rfile.readline()
+                self.close_unread = True
+                return raw
+            declared = int(self.headers.get("Content-Length") or 0)
+            if declared > limit:
+                self.close_unread = True
+            return self.rfile.read(min(declared, limit))
 
         def _linger(self):
             # answered before the body was read: end the answer, then take
@@ -154,6 +164,8 @@ def make_handler(fault, require_length):
                 return answers.request_fields(self._body(), names)
             except answers.Refusal as refusal:
                 self._send(400, {"error": refusal.message})
+                if getattr(self, "close_unread", False):
+                    self._linger()
                 return None
 
         def _elsewhere(self):
