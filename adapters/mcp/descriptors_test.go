@@ -563,9 +563,75 @@ func TestScreeningFollowsEachStringsRole(t *testing.T) {
 	}
 }
 
+// A description written in more than six times its bound is refused for
+// its size before it is decoded: a text that would not decode says so
+// only when it was decoded.
 func TestADescriptionWrittenPastSixTimesItsBoundIsNotDecoded(t *testing.T) {
-	raw := []byte(`"` + strings.Repeat("a", 6*maxDescription+1) + `"`)
+	raw := []byte(`"` + strings.Repeat("a", 6*maxDescription+1) + `\x"`)
 	if _, r := checkDescription(raw, nil); r == nil || r.code != codeStringSize {
-		t.Fatalf("%v", r)
+		t.Fatalf("refused unread for its size: %v", r)
+	}
+	if _, r := checkDescription([]byte(`"abc\x"`), nil); r == nil || r.code != codeValue {
+		t.Fatalf("a short one is read, and refused as no string: %v", r)
+	}
+}
+
+// What a capture keeps of a fallback is what the report carries: each
+// field redacted and cut, the list within its bound, the rest counted --
+// while the listing runs, not after it.
+func TestFallbacksAreCutAsTheyAreRecorded(t *testing.T) {
+	c, err := newCapturer(DescriptorTarget{Platform: "tickets", Binding: testBinding}, initializeResult{name: "srv", version: "1"}, []string{"hunter2"}, "2026-09-15T00:00:00Z")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every other tool's schema holds a keyword of 16000 bytes, which its
+	// reason's pointer names; the rest are named with a credential.
+	keyword := strings.Repeat("k", 16000)
+	for i := 0; i < 2000; i++ {
+		name := fmt.Sprintf("tool_%04d", i)
+		if i%2 == 1 {
+			name = fmt.Sprintf("tool_hunter2_%04d", i)
+		}
+		schema := json.RawMessage(`{"type":"object","` + keyword + `":1}`)
+		descriptor, _ := json.Marshal(map[string]any{"name": name, "inputSchema": schema})
+		if err := c.add(listedTool{name: name, descriptor: descriptor}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	encoded, _ := json.Marshal(c.fallbacks)
+	if len(encoded) > maxReportList || c.unlisted == 0 || len(c.fallbacks)+c.unlisted != 2000 {
+		t.Fatalf("kept %d bytes in %d fallbacks, %d counted", len(encoded), len(c.fallbacks), c.unlisted)
+	}
+	// What is kept is the list's front, whole: no fallback after the first
+	// that did not fit, however small.
+	for i, f := range c.fallbacks {
+		want := fmt.Sprintf("tool_%04d", i)
+		if i%2 == 1 {
+			want = fmt.Sprintf("tool_[redacted]_%04d", i)
+		}
+		if f.Tool != want {
+			t.Fatalf("fallback %d is %q, not %q: the kept list is not the front of the whole", i, f.Tool, want)
+		}
+	}
+	cut := 0
+	for _, f := range c.fallbacks {
+		if len(f.Reason) > maxReportField || len(f.Tool) > maxReportField || strings.Contains(f.Tool, "hunter2") {
+			t.Fatalf("a fallback kept as it was written: %d %q", len(f.Reason), f.Tool)
+		}
+		if len(f.Reason) == maxReportField {
+			cut++
+		}
+	}
+	if cut == 0 {
+		t.Fatal("no long reason was recorded, so none was cut")
+	}
+	// Once the list is over its bound, a fallback small enough to fit is
+	// counted all the same, as the whole list would be cut.
+	kept := len(c.fallbacks)
+	if err := c.add(listedTool{name: "t", descriptor: json.RawMessage(`{"name":"t"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.fallbacks) != kept || c.unlisted != 2001-kept {
+		t.Fatalf("a later fallback is kept past the bound: %d kept, %d counted", len(c.fallbacks), c.unlisted)
 	}
 }

@@ -92,8 +92,9 @@ const (
 // capturer judges each allowed tool as the listing reaches it and admits
 // it, in the server's order, while the snapshot and its candidates' text
 // both stay within their bounds with the tool added; every later tool
-// falls back. It keeps only what it admits and why the rest fell back, so
-// a descriptor's bytes last no longer than the page they came on.
+// falls back. It keeps only what it admits, and why the rest fell back as
+// the report will carry it, so neither a descriptor's bytes nor a reason
+// built from them last longer than the page they came on.
 type capturer struct {
 	secrets   []string
 	snap      snapshot
@@ -102,6 +103,8 @@ type capturer struct {
 	over      bool
 	dropped   string // why the report carries no snapshot, when it carries none
 	fallbacks []fallback
+	listed    int // the fallbacks' size as JSON, brackets included
+	unlisted  int // fallbacks past maxReportList, counted and not kept
 }
 
 const overBudget = "over the platform's budget: a snapshot of at most 327680 bytes, its descriptions and schemas at most 262144 together"
@@ -115,7 +118,7 @@ func newCapturer(target DescriptorTarget, info initializeResult, secrets []strin
 	c := &capturer{secrets: secrets, snap: snapshot{Binding: target.Binding, CapturedAt: capturedAt, Platform: target.Platform, Policy: displayPolicy, Tools: map[string]capturedTool{}}}
 	if r := checkIdentity(info.name, info.version, secrets); r != nil {
 		// A refused identity is omitted, and nothing names the server.
-		c.fallbacks = append(c.fallbacks, fallback{Part: partServer, Reason: r.reason()})
+		c.fallBack(fallback{Part: partServer, Reason: r.reason()})
 	} else {
 		c.snap.Server = &serverIdentity{Name: info.name, Version: info.version}
 	}
@@ -137,7 +140,9 @@ func newCapturer(target DescriptorTarget, info initializeResult, secrets []strin
 // its candidates, and a comma beside any other tool.
 func (c *capturer) add(tool listedTool) error {
 	entry, refused := candidates(tool, c.secrets)
-	c.fallbacks = append(c.fallbacks, refused...)
+	for _, f := range refused {
+		c.fallBack(f)
+	}
 	if entry.Description == nil && entry.InputSchemaText == nil {
 		return nil
 	}
@@ -162,24 +167,52 @@ func (c *capturer) add(tool listedTool) error {
 		}
 		c.over = true
 	}
-	c.fallbacks = append(c.fallbacks, fallback{Tool: tool.name, Part: partTool, Reason: overBudget})
+	c.fallBack(fallback{Tool: tool.name, Part: partTool, Reason: overBudget})
 	return nil
 }
 
+// fallBack records why a candidate was not captured, as the report carries
+// it: its tool and reason redacted and cut to maxReportField, kept while the
+// list stays within maxReportList as JSON, and past that counted and not
+// kept -- as capList would cut the whole list, once it is over.
+func (c *capturer) fallBack(f fallback) {
+	f.Tool = reportField(f.Tool, c.secrets)
+	f.Reason = reportField(f.Reason, c.secrets)
+	if c.unlisted > 0 {
+		c.unlisted++
+		return
+	}
+	if c.listed == 0 {
+		c.listed = len("[]")
+	}
+	encoded, err := canon.EncodeJSON(f)
+	grow := len(encoded)
+	if len(c.fallbacks) > 0 {
+		grow++
+	}
+	if err != nil || c.listed+grow > maxReportList {
+		c.unlisted++
+		return
+	}
+	c.fallbacks = append(c.fallbacks, f)
+	c.listed += grow
+}
+
 // finish is the snapshot in canonical form -- the bytes connect writes and
-// pins -- or, when there is none, why; and every fallback, in order.
-func (c *capturer) finish() ([]byte, []fallback, string, error) {
+// pins -- or, when there is none, why; and the fallbacks, in order, with
+// how many passed the list's bound.
+func (c *capturer) finish() ([]byte, []fallback, int, string, error) {
 	if c.dropped != "" {
-		return nil, c.fallbacks, c.dropped, nil
+		return nil, c.fallbacks, c.unlisted, c.dropped, nil
 	}
 	out, err := canonicalJSON(c.snap)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, 0, "", err
 	}
 	if len(out) != c.size || len(out) > maxSnapshot {
-		return nil, nil, "", fmt.Errorf("the snapshot is %d bytes where %d were counted, of at most %d", len(out), c.size, maxSnapshot)
+		return nil, nil, 0, "", fmt.Errorf("the snapshot is %d bytes where %d were counted, of at most %d", len(out), c.size, maxSnapshot)
 	}
-	return out, c.fallbacks, "", nil
+	return out, c.fallbacks, c.unlisted, "", nil
 }
 
 // candidates judges one tool's description and input schema, each on its

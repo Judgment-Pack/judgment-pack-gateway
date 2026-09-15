@@ -493,16 +493,12 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		probe.Tool = capField(probe.Tool)
 	}
 	if capture != nil {
-		snapshot, fallbacks, dropped, err := capture.finish()
+		snapshot, fallbacks, unlisted, dropped, err := capture.finish()
 		if err != nil {
 			return finish(nil, err)
 		}
 		report.Descriptors, report.DescriptorsDropped = snapshot, dropped
-		for i := range fallbacks {
-			fallbacks[i].Tool = reportField(fallbacks[i].Tool, secrets)
-			fallbacks[i].Reason = reportField(fallbacks[i].Reason, secrets)
-		}
-		report.Fallbacks, report.FallbacksUnlisted = capList(fallbacks, maxReportList)
+		report.Fallbacks, report.FallbacksUnlisted = fallbacks, unlisted
 	}
 	out, err := encodeCheckReport(report)
 	if err != nil {
