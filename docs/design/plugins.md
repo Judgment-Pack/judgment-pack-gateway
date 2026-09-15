@@ -110,14 +110,14 @@ number runs first). So which result a `tool_post_invoke` hook sees depends on wh
 was invoked with, before any plugin transformed it, though a comment there calls it the final
 payload; it is given a fresh `PluginContext`, so it cannot read what its plugin kept at
 `tool_pre_invoke`; and it is scheduled when a plugin halts the chain by returning a violation,
-but not when one is raised as an exception, as ContextForge's tool calls raise them. A receipting
-plugin is then a pair — a `tool_pre_invoke` hook that keeps the call, and a `tool_post_invoke`
-hook that has the answer and wants both signed — run in a serial mode and placed by a choice of
-which answer to report; run as `fire_and_forget`, it would have to pair the two by means of its
-own. A second gateway offers a comparable hook with less to go on: Docker's MCP Gateway runs
-interceptors `before` and `after` a tool call, and an `after` interceptor is handed the response
-alone, with no call and nothing to pair it with one. Two designs would serve such a plugin; the
-second is built ([mcp-server.md](mcp-server.md)), the first is not:
+but not when one is raised as an exception, as ContextForge's normal tool-invocation path raises
+them. A receipting plugin is then a pair — a `tool_pre_invoke` hook that keeps the call, and a
+`tool_post_invoke` hook that has the answer and wants both signed — run in a serial mode and
+placed by a choice of which answer to report; run as `fire_and_forget`, it would have to pair the
+two by means of its own. A second gateway offers a comparable hook with less to go on: Docker's
+MCP Gateway runs interceptors `before` and `after` a tool call, and an `after` interceptor is
+handed the response alone, with no call and nothing to pair it with one. Two designs would serve
+such a plugin; the second is built ([mcp-server.md](mcp-server.md)), the first is not:
 
 1. **A remote-adapter surface on the engine.** A new `POST` that takes an envelope of §6's form
    from an authenticated remote party — the plugin's identity as the adapter, the MCP server
