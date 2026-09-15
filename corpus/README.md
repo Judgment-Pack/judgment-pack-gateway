@@ -142,6 +142,19 @@ this one:
 
 Findings are compared as a **multiset**: order is not normative.
 
+## Two implementations again
+
+[`../verify-ts/`](../verify-ts/README.md) is a second implementation of the
+format — the canonical form, and registry-anchored verification of both
+receipt versions — in TypeScript, written from `SPEC.md` and these vectors
+without reading the Go source. CI drives it through the contract above, with
+`gateway conform --impl ../verify-ts/impl`, so each implementation answers to
+the corpus and neither to the other. Its author was not barred from the
+reference, as the Go implementation's author was from the Python one; its
+README says what it is on those terms, and its
+[`AMBIGUITIES.md`](../verify-ts/AMBIGUITIES.md) records the questions it had
+to answer that these vectors do not settle.
+
 ## Ambiguities this corpus surfaced
 
 Recorded rather than silently pinned. Both are now stated in `SPEC.md`, but the

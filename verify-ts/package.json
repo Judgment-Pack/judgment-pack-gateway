@@ -1,0 +1,18 @@
+{
+	"name": "verify-ts",
+	"private": true,
+	"description": "A second implementation of the gateway's attestation format: the canonical form and registry-anchored verification of receipt versions 2 and 3, written from SPEC.md and the frozen corpus",
+	"license": "MIT",
+	"type": "module",
+	"engines": {
+		"node": ">=22.18"
+	},
+	"scripts": {
+		"test": "node --test \"test/*.test.ts\"",
+		"typecheck": "tsc -p tsconfig.json"
+	},
+	"devDependencies": {
+		"@types/node": "22.19.0",
+		"typescript": "5.9.3"
+	}
+}
