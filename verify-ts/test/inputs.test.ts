@@ -362,9 +362,12 @@ test("what is kept of a session, empty or not, is within its charge", () => {
 });
 
 // A small buffer is cut from a pool shared with others, and one kept keeps
-// its pool. With a file read between one directory and the next, each
-// directory waiting to be walked, were it kept as such a buffer, would keep
-// a pool of its own: many times what it is charged.
+// its pool. Were each directory waiting to be walked kept as such a buffer,
+// then with something taking from the pool between one directory and the
+// next, each would keep a pool of its own: many times what it is charged.
+// Here each file read between them takes 4,000 bytes from the pool, by the
+// test's own hand, so the test does not rest on what reading happens to
+// take.
 test("a directory waiting to be walked keeps no more than it is charged", () => {
   const store = oneSession();
   fs.writeFileSync(store.registry, sealLine("s1", 1) + "\n");
@@ -373,13 +376,27 @@ test("a directory waiting to be walked keeps no more than it is charged", () => 
   let charged = 0;
   for (let i = 0; i < n; i++) {
     fs.mkdirSync(path.join(records, `d${i}`));
-    fs.writeFileSync(path.join(records, `f${i}.json`), " ".repeat(3 << 10) + "{}");
+    fs.writeFileSync(path.join(records, `f${i}.json`), "{}");
     charged += entryCost + 2 * Buffer.byteLength(path.join(records, `d${i}`));
   }
-  const peak = memoryPeak(() => verifyStore(store.root, store.registry, authority, records, publicKey), "candidate", 50);
+  const gauge = memoryGauge();
+  let candidates = 0;
+  testHooks.sample = (at) => {
+    if (at === "candidate") {
+      Buffer.allocUnsafe(4000).fill(0);
+      if (++candidates % 50 === 0) {
+        gauge.look();
+      }
+    }
+  };
+  try {
+    verifyStore(store.root, store.registry, authority, records, publicKey);
+  } finally {
+    delete testHooks.sample;
+  }
   // Beside what one document's reading holds: a chunk, and the document.
   const reading = 2 * readChunk;
-  assert.ok(peak < charged + reading, `${peak} bytes held with ${n} directories waiting, charged ${charged}`);
+  assert.ok(gauge.peak() < charged + reading, `${gauge.peak()} bytes held with ${n} directories waiting, charged ${charged}`);
 });
 
 test("what is kept of the decision records does not grow with their number", () => {
