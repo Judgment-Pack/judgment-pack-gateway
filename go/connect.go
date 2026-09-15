@@ -1064,7 +1064,7 @@ func (f *configFile) snapshotTaken(name, pin string) error {
 	}
 	// A file found, not written, may never have reached the disk: the
 	// configuration will name it, so it is synced before that.
-	if err := syncFile(file); err != nil {
+	if err := syncFound(file); err != nil {
 		return fmt.Errorf("descriptors: %s could not be synced: %v", name, err)
 	}
 	return nil

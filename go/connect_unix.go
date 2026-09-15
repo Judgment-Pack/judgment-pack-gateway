@@ -208,3 +208,7 @@ func snapshotHeld(info os.FileInfo, owner fileOwnerIDs, dir bool) error {
 func frontendOwns(owner fileOwnerIDs) bool {
 	return owner.known && (owner.uid == frontendUID || owner.gid == frontendUID)
 }
+
+// syncFound syncs a file opened for reading, as one found rather than
+// written is.
+func syncFound(file *os.File) error { return syncFile(file) }

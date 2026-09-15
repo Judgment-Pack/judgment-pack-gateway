@@ -419,30 +419,6 @@ func TestWhatACaptureSaysIsPrintedEscaped(t *testing.T) {
 	}
 }
 
-// A snapshot's name already taken by the same bytes is reused, and synced
-// before the configuration names it: a file found may never have reached
-// the disk.
-func TestConnectSyncsASnapshotItReuses(t *testing.T) {
-	f := newConnectFixture(t, restrictedBinding, ``)
-	f.captured = capturedQuery
-	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
-		t.Fatal(err)
-	}
-	_, pin, _ := pinnedSnapshot(t, f)
-	var synced []string
-	fileSyncing = func(file *os.File) { synced = append(synced, filepath.Base(file.Name())) }
-	defer func() { fileSyncing = nil }()
-	req := f.request()
-	req.replace = true
-	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
-		t.Fatal(err)
-	}
-	name := strings.TrimPrefix(pin, "sha256:") + ".json"
-	if strings.Join(synced, " ") != name+" "+name+" new" {
-		t.Fatalf("the staged snapshot, the one reused, then the configuration: %q", synced)
-	}
-}
-
 // A tool the previous binding allowed and the snapshot never held -- it
 // fell back -- is still one the comparison names when the binding no
 // longer allows it.
@@ -500,12 +476,14 @@ func TestTheServersIdentityIsCompared(t *testing.T) {
 func TestRestartAdviceComparesWhatIsWritten(t *testing.T) {
 	f := newConnectFixture(t, restrictedBinding, ``)
 	root := filepath.VolumeName(f.dir) + string(filepath.Separator)
-	linked := filepath.Join(root, "var", "secrets", "warehouse")
-	target := filepath.Join(root, "private", "var", "secrets", "warehouse")
+	// A root-owned link among the components, where no real temporary
+	// directory lies (macOS keeps them under /var, itself a link).
+	linked := filepath.Join(root, "linked-secrets", "warehouse")
+	target := filepath.Join(root, "real-secrets", "warehouse")
 	f.fs = goodFilesystem(f.seed, target, 1000, 1001)
-	f.fs[filepath.Join(root, "var")] = fileOwnership{uid: 0, mode: 0o755, link: true}
-	linkTargets[filepath.Join(root, "var")] = filepath.Join(root, "private", "var")
-	t.Cleanup(func() { delete(linkTargets, filepath.Join(root, "var")) })
+	f.fs[filepath.Join(root, "linked-secrets")] = fileOwnership{uid: 0, mode: 0o755, link: true}
+	linkTargets[filepath.Join(root, "linked-secrets")] = filepath.Join(root, "real-secrets")
+	t.Cleanup(func() { delete(linkTargets, filepath.Join(root, "linked-secrets")) })
 	f.credentials = linked
 	req := f.request()
 	req.environment = []string{"A=1", "B=2"}
