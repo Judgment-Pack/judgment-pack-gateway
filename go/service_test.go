@@ -1187,68 +1187,65 @@ func TestAcquireAfterRestartHonoursTheRegistrysSeal(t *testing.T) {
 		t.Fatalf("a new session after the restart: %v", err)
 	}
 	// a registry that cannot be read refuses a session the process does not
-	// hold, and does not start its source -- a directory where the file
-	// should be, on every platform, and a link that leads nowhere where
-	// links can be made; a held session is still judged by its map
-	unreadable := func(name string, make func() error, undo func()) {
-		t.Helper()
-		if err := make(); err != nil {
-			t.Logf("%s: cannot be set up here (%v)", name, err)
-			return
-		}
-		defer undo()
-		os.Remove(started)
-		before := restarted.started.Load()
-		if _, err := restarted.acquire("restart-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry") || strings.Contains(err.Error(), "sealed in the registry") {
-			t.Fatalf("%s: an unknown session was not refused for the registry: %v", name, err)
-		}
-		if restarted.started.Load() != before {
-			t.Fatalf("%s: a source started with the registry unreadable", name)
-		}
-		if _, err := restarted.acquire("restart-new", "screening", vString(name), nil); err != nil {
-			t.Fatalf("%s: a held session with the registry unreadable: %v", name, err)
-		}
-	}
+	// hold, and does not start its source, while a held session is still
+	// judged by its map: a directory where the file should be, on every
+	// platform; a link that leads nowhere, wherever the platform will make
+	// one; a file this process may not read, off Windows and not as root.
+	// Each case sets the registry aside first and puts it back after,
+	// whatever happens in between.
 	aside := service.regPath + ".aside"
-	unreadable("a directory",
-		func() error {
-			if err := os.Rename(service.regPath, aside); err != nil {
-				return err
-			}
-			return os.Mkdir(service.regPath, 0o700)
-		},
-		func() { os.Remove(service.regPath); os.Rename(aside, service.regPath) })
-	unreadable("a link that leads nowhere",
-		func() error {
-			if err := os.Rename(service.regPath, aside); err != nil {
-				return err
-			}
-			if err := os.Symlink(filepath.Join(t.TempDir(), "nothing"), service.regPath); err != nil {
-				os.Rename(aside, service.regPath)
-				return err
-			}
-			return nil
-		},
-		func() { os.Remove(service.regPath); os.Rename(aside, service.regPath) })
-	if runtime.GOOS != "windows" && os.Geteuid() != 0 {
-		if err := os.Chmod(service.regPath, 0o000); err != nil {
+	unreadable := func(t *testing.T, stand func(t *testing.T)) {
+		t.Helper()
+		if err := os.Rename(service.regPath, aside); err != nil {
 			t.Fatal(err)
 		}
-		defer os.Chmod(service.regPath, 0o600)
+		t.Cleanup(func() {
+			if err := os.RemoveAll(service.regPath); err != nil {
+				t.Error(err)
+			}
+			if err := os.Rename(aside, service.regPath); err != nil {
+				t.Error(err)
+			}
+		})
+		stand(t)
 		os.Remove(started)
 		before := restarted.started.Load()
 		if _, err := restarted.acquire("restart-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry could not be read") {
-			t.Fatalf("an unreadable registry: %v", err)
+			t.Fatalf("an unknown session was not refused for the registry: %v", err)
 		}
 		if restarted.started.Load() != before {
 			t.Fatal("a source started with the registry unreadable")
 		}
-		// a session the process already holds is judged by its map, and is
-		// not refused for a registry it need not read
-		if _, err := restarted.acquire("restart-new", "screening", vString("y"), nil); err != nil {
+		if _, err := restarted.acquire("restart-new", "screening", vString(t.Name()), nil); err != nil {
 			t.Fatalf("a held session with the registry unreadable: %v", err)
 		}
 	}
+	t.Run("a directory", func(t *testing.T) {
+		unreadable(t, func(t *testing.T) {
+			if err := os.Mkdir(service.regPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
+	t.Run("a link that leads nowhere", func(t *testing.T) {
+		unreadable(t, func(t *testing.T) {
+			linkOrSkip(t, filepath.Join(t.TempDir(), "nothing"), service.regPath)
+		})
+	})
+	t.Run("a file this process may not read", func(t *testing.T) {
+		if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("permission bits do not bar this process here")
+		}
+		unreadable(t, func(t *testing.T) {
+			data, err := os.ReadFile(aside)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(service.regPath, data, 0o000); err != nil {
+				t.Fatal(err)
+			}
+		})
+	})
 }
 
 func TestSealRefusesWhileAnAcquisitionIsInFlight(t *testing.T) {

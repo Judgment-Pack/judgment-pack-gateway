@@ -259,6 +259,12 @@ func newRegistryWriter(path string, seed []byte) (*registryWriter, error) {
 	if len(seed) != seedBytes {
 		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
 	}
+	// the registry is read by its spelling, so it is written by its
+	// spelling too: a spelling the platform could resolve otherwise is
+	// refused before a directory is made for it (SPEC.md §4.1)
+	if err := requirePlainSpelling(path); err != nil {
+		return nil, err
+	}
 	if dir := filepath.Dir(path); dir != "" {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nil, err

@@ -188,31 +188,52 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 // absence.
 var lstat = os.Lstat
 
-// resolvedAncestors returns the directories the platform passes through on its
-// way to path, deepest last, each spelled so that it resolves as the whole
-// path's resolution resolves it. On Linux and macOS that is each prefix of the
-// path exactly as given: a ".." is resolved against the directory the
-// component before it leads to -- through a link, the link's target -- so a
-// lexically cleaned parent can name another directory than the one the
-// platform reaches. Windows removes "." and ".." by their spelling before it
-// looks at anything, except in a path given with the \\?\ prefix, which it
-// takes literally; there the prefixes are those of the cleaned path, since
-// they are what Windows resolves. The root and a bare volume name are left
-// out: a root is a directory, and a bare volume names its current directory.
-func resolvedAncestors(path string) []string {
-	if runtime.GOOS == "windows" && !strings.HasPrefix(path, `\\?\`) {
-		path = filepath.Clean(path)
-	}
-	volume := len(filepath.VolumeName(path))
-	var dirs []string
-	for i := volume; i < len(path); i++ {
-		// a separator ends a component, unless it ends the volume (the
-		// root) or follows another separator (no component between them)
-		if os.IsPathSeparator(path[i]) && i > volume && !os.IsPathSeparator(path[i-1]) {
-			dirs = append(dirs, path[:i])
+// requirePlainSpelling refuses an input path -- the registry, the
+// decision-record directory -- whose spelling the platform could resolve to
+// another file than the one the spelling names, before anything is read or
+// made (SPEC.md §4.1). What is left names one file for every reader and
+// writer of it: the walk above it, the look at it, the walk below it and the
+// directories made for it all take the path by its spelling, and so does the
+// platform.
+//
+//   - a ".." after a named component: Linux and macOS step back from where
+//     the component leads -- through a link, from the link's target -- and a
+//     reading of the spelling steps back from the component;
+//   - a trailing separator: a look at the path itself then follows a link
+//     there, and a link that leads nowhere reads as absent;
+//   - on Windows, a path in the \\?\ or \\.\ namespace, which Windows takes
+//     literally, and a component ending in a space or a period, which
+//     Windows trims when it is the last one looked at.
+//
+// A leading "..", a "." component and a repeated separator name the same
+// file either way, and are taken.
+func requirePlainSpelling(path string) error {
+	refuse := func(why string) error { return fmt.Errorf("path spelling refused (%s): %s", why, path) }
+	rest := path[len(filepath.VolumeName(path)):]
+	if runtime.GOOS == "windows" {
+		if lead := strings.ReplaceAll(path[:min(len(path), 4)], "/", `\`); lead == `\\?\` || lead == `\\.\` {
+			return refuse(`Windows takes a path in the \\?\ or \\.\ namespace literally`)
 		}
 	}
-	return dirs
+	if rest != "" && os.IsPathSeparator(rest[len(rest)-1]) {
+		return refuse("a trailing separator makes a look at the path follow a link there")
+	}
+	named := false
+	for _, component := range strings.FieldsFunc(rest, func(r rune) bool { return r < 0x80 && os.IsPathSeparator(byte(r)) }) {
+		switch component {
+		case "..":
+			if named {
+				return refuse(`a ".." after a named component can resolve through a link`)
+			}
+		case ".":
+		default:
+			named = true
+			if runtime.GOOS == "windows" && (strings.HasSuffix(component, " ") || strings.HasSuffix(component, ".")) {
+				return refuse("Windows trims a component ending in a space or a period")
+			}
+		}
+	}
+	return nil
 }
 
 // absentOrLink judges a path a stat that follows links found not there. It is
@@ -239,29 +260,42 @@ func absentOrLink(path, link string) error {
 // the only outcomes are an existing directory, an existing non-directory (a
 // refusal, naming the component), a link that leads nowhere (a refusal too),
 // and a component that is not there at all (the registry is then genuinely
-// absent, and the caller's stat of the file says so). The directories are the
-// ones the platform resolves on its way to the file (resolvedAncestors), so
-// the walk judges the path the reader and the writer open, however it is
-// spelled.
+// absent, and the caller's stat of the file says so). A path spelled so that
+// the platform could resolve it otherwise is refused first
+// (requirePlainSpelling): what is left is walked by its spelling, which is
+// what the platform resolves.
 //
 // Walking downward is what keeps the classification off the platform's error
 // mapping. Statting the registry path — or only its immediate parent — cannot do
 // it: Windows answers ERROR_PATH_NOT_FOUND for any non-directory path component,
 // at any depth, and os.IsNotExist reports that as absence.
 func registryContainerReachable(path string) error {
-	for _, dir := range resolvedAncestors(path) {
-		info, err := os.Stat(dir)
+	if err := requirePlainSpelling(path); err != nil {
+		return err
+	}
+	var dirs []string
+	for dir := filepath.Dir(path); ; {
+		dirs = append(dirs, dir)
+		up := filepath.Dir(dir)
+		if up == dir {
+			break
+		}
+		dir = up
+	}
+	// dirs runs deepest-first, so walk it in reverse to start at the root.
+	for i := len(dirs) - 1; i >= 0; i-- {
+		info, err := os.Stat(dirs[i])
 		if err != nil {
 			if os.IsNotExist(err) {
 				// nothing reachable from here down -- unless the component
 				// is there as a link that leads nowhere, which a stat that
 				// follows it reports as absent
-				return absentOrLink(dir, "registry parent path component is a link that leads nowhere")
+				return absentOrLink(dirs[i], "registry parent path component is a link that leads nowhere")
 			}
 			return err
 		}
 		if !info.IsDir() {
-			return fmt.Errorf("registry parent path component is not a directory: %s", dir)
+			return fmt.Errorf("registry parent path component is not a directory: %s", dirs[i])
 		}
 	}
 	return nil

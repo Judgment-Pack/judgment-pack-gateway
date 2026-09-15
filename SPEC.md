@@ -486,20 +486,23 @@ a verdict at all.
 | `<root>/receipts` exists but is not a directory | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 | `<root>/receipts` is a directory that cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 | the registry file does not exist | no seals load — every session in the store is then `unregistered-session` |
-| the registry path exists but cannot be read, or any existing parent path component is not a directory, or the registry or a directory above it is a link that leads nowhere | no verdict — the verifier refuses (non-zero exit); the anchor is present and unreadable, not absent |
+| the registry path exists but cannot be read, or any existing parent path component is not a directory, or the registry or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below) | no verdict — the verifier refuses (non-zero exit); the anchor is present and unreadable, not absent |
 | a session directory holding no receipts | a session with count 0, judged against its seal like any other |
 | the decision-record directory (§4 step 6) does not exist, or the verifier was given none | absent — every version 3 action receipt that passed the ladder is `decision-record-mismatch`; an absent directory cannot make an action verify, it can only fail to excuse one |
-| the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
+| the decision-record path exists but is not a directory, or cannot be read, or any existing parent path component is not a directory, or it or a directory above it is a link that leads nowhere, or the path is spelled so that the platform could resolve it otherwise (below), or a directory or regular file under it cannot be read | no verdict — the verifier refuses (non-zero exit); the evidence is present and unreadable, not absent |
 
-A directory above the registry or the decision-record directory is one the platform passes
-through on its way to the path as given. On Linux and macOS a `..` after a link steps back
-from the link's target, not from the link, so those directories are the prefixes of the path
-as spelled; Windows removes `.` and `..` by their spelling before it resolves anything —
-except in a path given with the `\\?\` prefix, which it takes literally — so there they are
-the prefixes of the path so cleaned. Only an input the platform confirms is not there is
-absent: when a stat that follows links finds nothing at a path, a look at the path itself must
-find nothing too, and any other answer to that look — a link, or a failure — makes the input
-present and unreadable.
+The registry and the decision-record directory are taken by their spelling, so a path spelled
+so that the platform could resolve it to another file than the one the spelling names is
+refused before anything is read — no verdict — and a gateway refuses to start on one: a `..`
+after a named component (Linux and macOS step back from where that component leads, a link's
+target included, while a reading of the spelling steps back from the component), a trailing
+separator (a look at the path itself then follows a link there), and on Windows a path in the
+`\\?\` or `\\.\` namespace or a component ending in a space or a period (Windows takes the
+first literally and trims the second). A leading `..`, a `.` component and a repeated
+separator name the same file either way, and are taken. Only an input the platform confirms is
+not there is absent: when a stat that follows links finds nothing at a path, a look at the path
+itself must find nothing too, and any other answer to that look — a link, or a failure — makes
+the input present and unreadable.
 
 Each of these fails **closed**: an absent anchor cannot make a store verify, it can
 only fail to excuse one. A store that is genuinely empty against an empty registry

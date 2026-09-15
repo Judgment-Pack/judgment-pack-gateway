@@ -59,104 +59,77 @@ func junctionToNowhere(t *testing.T, target, link string) {
 	}
 }
 
-// The directories above an input are judged as the platform resolves the path
-// as given, never as its spelling cleans it. On Linux and macOS a ".." after a
-// link is resolved through the link, so a parent cleaned by its spelling can
-// be another directory than the one the reader and the writer open: a
-// registry that is absent would be refused, and one under a link to nothing
-// taken for absent. Windows removes ".." by its spelling before it resolves
-// anything, so there the cleaned path is the one it opens, and each row says
-// what Windows makes of it. The paths are spelled as strings: filepath.Join
-// would clean the case away.
-func TestRegistryPathsAreJudgedAsThePlatformResolvesThem(t *testing.T) {
+// An input path is taken by its spelling, so a spelling the platform could
+// resolve to another file than the spelling names is refused before anything
+// is read or made (SPEC.md §4.1): by the verifier's reader, by the
+// decision-record walk, by the registry writer and by the engine's start
+// alike. A spelling that names the same file either way is taken. The paths
+// are spelled as strings: filepath.Join would clean the cases away.
+func TestAPathSpelledToResolveOtherwiseIsRefused(t *testing.T) {
 	spell := func(parts ...string) string { return strings.Join(parts, string(filepath.Separator)) }
-	windows := runtime.GOOS == "windows"
-
-	t.Run("a file the path steps back over", func(t *testing.T) {
-		a := filepath.Join(t.TempDir(), "a")
-		if err := os.Mkdir(a, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(a, "file"), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(a, "registry.jsonl"), []byte("\n"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, present, err := readRegistryBytes(spell(a, "file", "..", "registry.jsonl"))
-		if windows {
-			// Windows opens a\registry.jsonl, which is there
-			if err != nil || !present {
-				t.Fatalf("present=%v err=%v", present, err)
+	dir := t.TempDir()
+	refused := []struct{ name, path string }{
+		{"a .. after a named component", spell(dir, "a", "..", "registry.jsonl")},
+		{"a .. under a directory not yet made", spell(dir, "new", "deeper", "..", "registry.jsonl")},
+		{"a .. after a . and a named component", spell(dir, ".", "a", "..", "..", "registry.jsonl")},
+		{"a trailing separator", spell(dir, "registry.jsonl") + string(filepath.Separator)},
+		{"a trailing separator after a directory", spell(dir, "decisions") + string(filepath.Separator)},
+	}
+	if runtime.GOOS == "windows" {
+		refused = append(refused, []struct{ name, path string }{
+			{"the literal namespace", `\\?\` + spell(dir, "registry.jsonl")},
+			{"the literal namespace in forward slashes", `//?/` + spell(dir, "registry.jsonl")},
+			{"the device namespace", `\\.\` + spell(dir, "registry.jsonl")},
+			{"a component ending in a space", spell(dir, "anchor ", "registry.jsonl")},
+			{"a component ending in a period", spell(dir, "anchor.", "registry.jsonl")},
+			{"a last component ending in a period", spell(dir, "registry.jsonl.")},
+		}...)
+	}
+	for _, tt := range refused {
+		t.Run(tt.name, func(t *testing.T) {
+			spelled := func(err error) bool { return err != nil && strings.Contains(err.Error(), "path spelling refused") }
+			if _, _, err := readRegistryBytes(tt.path); !spelled(err) {
+				t.Errorf("the reader: %v", err)
 			}
-			return
-		}
-		// Linux and macOS cannot pass through the file
-		if want := "registry parent path component is not a directory: " + spell(a, "file"); err == nil || err.Error() != want {
-			t.Fatalf("got %v, want %q", err, want)
-		}
-	})
-
-	t.Run("a link the path steps back through", func(t *testing.T) {
-		dir := t.TempDir()
-		for _, d := range []string{filepath.Join(dir, "a"), filepath.Join(dir, "b", "dir")} {
-			if err := os.MkdirAll(d, 0o755); err != nil {
-				t.Fatal(err)
+			if _, _, err := decisionCandidates(tt.path, nil, nil); !spelled(err) {
+				t.Errorf("the decision-record walk: %v", err)
 			}
-		}
-		linkOrSkip(t, filepath.Join(dir, "b", "dir"), filepath.Join(dir, "a", "jump"))
-		dirLinkToNowhere(t, filepath.Join(dir, "nowhere"), filepath.Join(dir, "a", "broken"))
-		_, present, err := readRegistryBytes(spell(dir, "a", "jump", "..", "broken", "registry.jsonl"))
-		if windows {
-			// Windows opens a\broken\registry.jsonl, under the link to nothing
-			if want := "registry parent path component is a link that leads nowhere: " + spell(dir, "a", "broken"); err == nil || err.Error() != want {
-				t.Fatalf("got %v, want %q", err, want)
+			if _, err := newRegistryWriter(tt.path, testSeed); !spelled(err) {
+				t.Errorf("the registry writer: %v", err)
 			}
-			return
-		}
-		// Linux and macOS step back from b/dir to b, where broken is not there
-		if err != nil || present {
-			t.Fatalf("an absent registry: present=%v err=%v", present, err)
-		}
-	})
-
-	t.Run("a link to nothing the path steps back over", func(t *testing.T) {
-		dir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(dir, "a"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		dirLinkToNowhere(t, filepath.Join(dir, "nowhere"), filepath.Join(dir, "a", "dangling"))
-		_, present, err := readRegistryBytes(spell(dir, "a", "dangling", "..", "registry.jsonl"))
-		if windows {
-			// Windows opens a\registry.jsonl, which is not there
-			if err != nil || present {
-				t.Fatalf("an absent registry: present=%v err=%v", present, err)
+			if err := preflightPaths(filepath.Join(dir, "store"), tt.path, filepath.Join(dir, "records")); !spelled(err) {
+				t.Errorf("the engine's start, for the registry: %v", err)
 			}
-			return
-		}
-		// Linux and macOS must pass through the link, which leads nowhere
-		if want := "registry parent path component is a link that leads nowhere: " + spell(dir, "a", "dangling"); err == nil || err.Error() != want {
-			t.Fatalf("got %v, want %q", err, want)
-		}
-	})
+			if err := preflightPaths(filepath.Join(dir, "store"), filepath.Join(dir, "registry.jsonl"), tt.path); !spelled(err) {
+				t.Errorf("the engine's start, for the decision records: %v", err)
+			}
+			// refused before anything was made
+			if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+				t.Fatalf("a refused spelling made %v (%v)", entries, err)
+			}
+		})
+	}
 
-	t.Run("a path Windows takes literally", func(t *testing.T) {
-		if !windows {
-			t.Skip(`the \\?\ prefix is Windows' own`)
-		}
-		dir := t.TempDir()
-		if err := os.Mkdir(filepath.Join(dir, "a"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		dirLinkToNowhere(t, filepath.Join(dir, "nowhere"), filepath.Join(dir, "a", "dangling"))
-		// given with the \\?\ prefix, a path keeps its "..": Windows must
-		// pass through the link, which leads nowhere
-		literal := `\\?\` + dir
-		_, _, err := readRegistryBytes(spell(literal, "a", "dangling", "..", "registry.jsonl"))
-		if want := "registry parent path component is a link that leads nowhere: " + spell(literal, "a", "dangling"); err == nil || err.Error() != want {
-			t.Fatalf("got %v, want %q", err, want)
-		}
-	})
+	taken := []struct{ name, path string }{
+		{"a leading ..", spell("..", "no-registry-here-"+filepath.Base(dir), "registry.jsonl")},
+		{"a . before a leading ..", spell(".", "..", "no-registry-here-"+filepath.Base(dir), "registry.jsonl")},
+		{"a . component", spell(dir, ".", "registry.jsonl")},
+		{"a repeated separator", dir + string(filepath.Separator) + string(filepath.Separator) + "registry.jsonl"},
+	}
+	if runtime.GOOS != "windows" {
+		// a name like any other off Windows, which trims nothing
+		taken = append(taken, struct{ name, path string }{"a component ending in a space", spell(dir, "anchor ", "registry.jsonl")})
+	}
+	for _, tt := range taken {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, present, err := readRegistryBytes(tt.path); err != nil || present {
+				t.Fatalf("an absent registry so spelled: present=%v err=%v", present, err)
+			}
+			if _, present, err := decisionCandidates(tt.path, nil, nil); err != nil || present {
+				t.Fatalf("an absent directory so spelled: present=%v err=%v", present, err)
+			}
+		})
+	}
 }
 
 // A second look that fails is not absence. When the stat that follows links
