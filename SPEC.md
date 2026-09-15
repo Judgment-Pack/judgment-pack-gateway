@@ -499,20 +499,27 @@ anything:
 - on every platform, a `..` after a named component: Linux and macOS step back from where that
   component leads, a link's target included, while a reading of the spelling steps back from
   the component;
-- for the registry, which is a file, a path that ends in a separator;
+- for the registry, which is a file, an empty path or a path that ends in a separator;
 - on Windows, a path in the `\\?\` or `\??\` namespace, which Windows takes literally, or in the
   `\\.\` namespace, which it reads as a device path; and a component — a UNC path's server and
   share included — that ends in a space or a period, which Windows trims, that holds a colon,
   which names a stream of a file, or that is a reserved device name (`CON`, `PRN`, `AUX`, `NUL`,
-  `CONIN$`, `CONOUT$`, or `COM` or `LPT` with a digit), with or without an extension.
+  `CONIN$`, `CONOUT$`, or `COM` or `LPT` followed by one of `0`–`9`, `¹`, `²`, `³`), with or
+  without an extension.
 
-A leading `..`, a `.` component, a repeated separator and a trailing separator on the
-decision-record directory name the same file either way, and are taken. The directories above
-an input are the prefixes of its path as spelled, each cut before a separator. A name under the
-decision-record directory that Windows would not read as spelled is a file under it that cannot
-be read. Only an input the platform confirms is not there is absent: when a stat that follows
-links finds nothing at a path, a look at the path itself must find nothing too, and any other
-answer to that look — a link, or a failure — makes the input present and unreadable.
+A leading `..`, a `.` component and a repeated separator name the same file either way, and
+are taken. A trailing separator on the decision-record directory is taken too; the walk below it
+then follows a link at its last component, as the platform does, where without the separator the
+walk stops at the link. The directories above an input are the prefixes of its path as spelled,
+each cut before a separator. A name under the decision-record directory that Windows would not
+read as spelled is a file under it that cannot be read.
+
+Only an input the platform confirms is not there is absent. The confirmation is the plain answer
+for a missing name in a directory the walk has reached: on Windows `ERROR_FILE_NOT_FOUND`, and
+not `ERROR_PATH_NOT_FOUND` or `ERROR_BAD_NETPATH`, which say a directory, a drive or a network
+share on the way cannot be reached — an input under one is present and unreadable. When a stat
+that follows links finds nothing at a path, a look at the path itself must find nothing too, and
+any other answer to that look — a link, or a failure — makes the input present and unreadable.
 
 Each of these fails **closed**: an absent anchor cannot make a store verify, it can
 only fail to excuse one. A store that is genuinely empty against an empty registry

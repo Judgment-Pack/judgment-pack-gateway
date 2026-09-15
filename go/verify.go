@@ -18,12 +18,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // Domain separation. SPEC.md §2: the context prefix is what stops a seal
@@ -182,11 +184,36 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 	return append([]byte(sealContext), canon(covered)...)
 }
 
-// lstat is os.Lstat. A test stands in a failure for the second look at a
-// path the first found absent: no settled filesystem makes the two looks
-// disagree, only a change between them, and a failure then is not taken for
-// absence.
-var lstat = os.Lstat
+// stat and lstat are os.Stat and os.Lstat. A test stands in a failure for
+// either: for the second look at a path the first found absent, which no
+// settled filesystem makes disagree, only a change between them; and for an
+// answer only a network share that has gone away gives.
+var (
+	stat  = os.Stat
+	lstat = os.Lstat
+)
+
+// errorFileNotFound is ERROR_FILE_NOT_FOUND: the answer by which Windows says
+// a name in a directory it reached has nothing at it.
+const errorFileNotFound = syscall.Errno(2)
+
+// absent reports whether err, from a look at a path whose parent is a
+// directory, confirms that nothing is there. os.IsNotExist is not enough on
+// Windows, where it also answers true for ERROR_PATH_NOT_FOUND and
+// ERROR_BAD_NETPATH: a directory, a drive or a server on the way could not
+// be reached, which is not the absence of the path. A registry on a share
+// that has gone away is there, and cannot be read -- taken for absent, it
+// would load no seals, and a session sealed on the share would take a read.
+func absent(err error) bool {
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	if runtime.GOOS != "windows" {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == errorFileNotFound
+}
 
 // requirePlainSpelling refuses an input path -- the registry (a file), the
 // decision-record directory (not a file) -- whose spelling the platform could
@@ -307,7 +334,7 @@ func absentOrLink(path, link string) error {
 	switch {
 	case err == nil:
 		return fmt.Errorf("%s: %s", link, path)
-	case os.IsNotExist(err):
+	case absent(err):
 		return nil
 	default:
 		return err
@@ -321,7 +348,9 @@ func absentOrLink(path, link string) error {
 // an existing directory, an existing non-directory (a refusal, naming the
 // component), a link that leads nowhere (a refusal too), and a component that
 // is not there at all (the input is then genuinely absent, and the caller's
-// stat of it says so). The caller has refused a spelling the platform could
+// stat of it says so) -- which only the plain answer for a missing name
+// establishes (absent): a directory, drive or share that cannot be reached is
+// a refusal. The caller has refused a spelling the platform could
 // resolve otherwise (requirePlainSpelling), so the directories walked, the
 // prefixes of the path as spelled, are the ones the platform resolves.
 //
@@ -331,9 +360,9 @@ func absentOrLink(path, link string) error {
 // at any depth, and os.IsNotExist reports that as absence.
 func registryContainerReachable(path string) error {
 	for _, dir := range pathAncestors(path) {
-		info, err := os.Stat(dir)
+		info, err := stat(dir)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if absent(err) {
 				// nothing reachable from here down -- unless the component
 				// is there as a link that leads nowhere, which a stat that
 				// follows it reports as absent
@@ -354,9 +383,9 @@ func registryContainerReachable(path string) error {
 // genuinely not there; a link that leads nowhere is there and cannot be read,
 // never the absence a stat that follows the link would make of it.
 func statInput(path, link string) (os.FileInfo, error) {
-	info, err := os.Stat(path)
+	info, err := stat(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if absent(err) {
 			return nil, absentOrLink(path, link)
 		}
 		return nil, err

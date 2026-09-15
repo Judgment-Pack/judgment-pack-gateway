@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -282,6 +284,78 @@ func TestSpellingsAreJudgedBeforeAnythingIsMadeOrRead(t *testing.T) {
 	refusedRecords := strings.Join([]string{dir, "a", "..", "records"}, string(filepath.Separator))
 	if _, err := verifyWithRegistryAndRecords(file, filepath.Join(dir, "registry.jsonl"), "gateway:test", refusedRecords, testPublicKey(t)); err == nil || !strings.Contains(err.Error(), "path spelling refused") {
 		t.Fatalf("a verification with a refused decision-record spelling: %v", err)
+	}
+}
+
+// Absence is the plain answer for a missing name, and only that: on Windows
+// os.IsNotExist also answers true for a path, a drive or a network share that
+// cannot be reached, which is not the absence of what lies beyond it.
+func TestAbsenceIsThePlainAnswerForAMissingName(t *testing.T) {
+	if _, err := os.Stat(filepath.Join(t.TempDir(), "missing")); !absent(err) {
+		t.Fatalf("a missing name in a directory is not absent: %v", err)
+	}
+	if absent(nil) {
+		t.Fatal("no error is not absence")
+	}
+	rows := map[syscall.Errno]bool{syscall.ENOENT: true, syscall.ENOTDIR: false, syscall.EACCES: false}
+	if runtime.GOOS == "windows" {
+		// ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, ERROR_BAD_NETPATH,
+		// ERROR_ACCESS_DENIED
+		rows = map[syscall.Errno]bool{2: true, 3: false, 53: false, 5: false}
+	}
+	for errno, want := range rows {
+		if got := absent(&fs.PathError{Op: "stat", Path: "p", Err: errno}); got != want {
+			t.Errorf("absent(%v) = %v, want %v", errno, got, want)
+		}
+	}
+}
+
+// A registry on a network share that has gone away is there and cannot be
+// read -- never the absence that would load no seals and let a read into a
+// session sealed on the share, which is what this change exists to stop.
+// Windows reports such a share as ERROR_BAD_NETPATH, which os.IsNotExist takes
+// for absence. At the registry and at the directory above it, the reader, the
+// /registry endpoint and an acquisition all refuse, and no source starts. Off
+// Windows every not-exist answer is the plain one, and there is nothing to
+// stand in.
+func TestAShareThatHasGoneAwayIsNotAbsence(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("every not-exist answer is the plain one off Windows")
+	}
+	service, _ := testService(t)
+	badNetpath := syscall.Errno(53)
+	for name, at := range map[string]string{"at the registry": service.regPath, "at the directory above it": filepath.Dir(service.regPath)} {
+		t.Run(name, func(t *testing.T) {
+			stat = func(path string) (fs.FileInfo, error) {
+				if path == at {
+					return nil, &fs.PathError{Op: "stat", Path: path, Err: badNetpath}
+				}
+				return os.Stat(path)
+			}
+			lstat = func(path string) (fs.FileInfo, error) {
+				if path == at {
+					return nil, &fs.PathError{Op: "lstat", Path: path, Err: badNetpath}
+				}
+				return os.Lstat(path)
+			}
+			t.Cleanup(func() { stat, lstat = os.Stat, os.Lstat })
+			if _, _, err := readRegistryBytes(service.regPath); !errors.Is(err, badNetpath) {
+				t.Fatalf("the reader took an unreachable share for absence: %v", err)
+			}
+			rec := httptest.NewRecorder()
+			service.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/registry", nil))
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("/registry answered %d for an unreachable share: %q", rec.Code, rec.Body.String())
+			}
+			started := filepath.Join(t.TempDir(), "source-started")
+			t.Setenv(envSourceReady, started)
+			if _, err := service.acquire("share-unknown", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "registry could not be read") {
+				t.Fatalf("an acquisition with the share gone: %v", err)
+			}
+			if _, err := os.Stat(started); err == nil {
+				t.Fatal("a source started with the share gone")
+			}
+		})
 	}
 }
 
