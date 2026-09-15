@@ -132,7 +132,7 @@ Nothing else is a schema: the members of `properties` are names, and `examples`,
 | `items` | a schema; the array form is refused |
 | `enum` | a non-empty array of at most 256 distinct scalars |
 | `const` | a scalar |
-| `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` | a number (draft-07's boolean exclusive forms are refused) |
+| `minimum`, `maximum`, `exclusiveMinimum`, `exclusiveMaximum` | a number (the older boolean exclusive forms, from draft-04, are refused) |
 | `multipleOf` | a number greater than zero |
 | `minLength`, `maxLength`, `minItems`, `maxItems`, `minProperties`, `maxProperties` | a non-negative integer, written without fraction or exponent, at most 2^53−1 |
 | `anyOf`, `oneOf`, `allOf` | a non-empty array of at most 16 schemas |
@@ -194,16 +194,20 @@ The limits below are exact, and when one is reached the overflow is deterministi
   256 KiB, leaving the rest for names, identity and the wrapper. The adapter admits tools in
   the server's order while both bounds hold with the tool added. Every later tool falls back,
   reported as over the platform's budget.
-- **The check report:** at most 1 MiB, as `connect` bounds it today. Fallback reasons past 64 KiB
-  are counted, not described. If the report would still exceed its bound, the adapter drops the
-  `descriptors` member, so every tool falls back, and says so; it never lets `connect` kill the
+- **The check report:** at most 1 MiB, as `connect` bounds it today. Today the report lists
+  every tool the server offers. That list, and the fallback reasons, are each capped at 64 KiB,
+  and what passes a cap is counted, not listed. So the report without `descriptors` is bounded
+  well inside 1 MiB. If the report would still exceed its bound with them, the adapter drops the
+  `descriptors` member, so every tool falls back, and says so. It never lets `connect` kill the
   check.
 - **The configuration:** checked, as today, against 1 MiB as it would be written, pins and
   version included.
 - **The listing:** the frontend's whole `tools/list` answer, serialized, is at most 8 MiB. When
   rendering would pass that, the frontend drops platforms' snapshots whole, in reverse table
-  order, until it fits, and its start reports which it dropped. What it holds in memory is at
-  most the sum of its pinned snapshots.
+  order, until it fits, and its start reports which it dropped. If the listing would still pass
+  8 MiB with every snapshot dropped, the frontend refuses to start and names the size. A
+  binding with tens of thousands of tools does that with today's generated descriptions alone.
+  What it holds in memory is at most the sum of its pinned snapshots.
 
 ## What the frontend serves
 
@@ -241,7 +245,9 @@ longest run of backticks in its content, and at least three. It holds, in order:
 A text spanning lines keeps its lines, each indented by two spaces. A label is the schema
 location's JSON Pointer from the root: `/properties/billing/properties/id`,
 `/properties/tags/items`, `/anyOf/1/properties/x`, with `~` and `/` in names written `~0` and
-`~1`. The root's own description is labelled `/`. Every label is unique by construction. The
+`~1`. The root's own description is labelled `(root)`. The root's JSON Pointer is the empty
+string, which would show as nothing, and `(root)` cannot be a pointer, since every pointer to a
+schema location below the root begins with `/`. Every label is unique by construction. The
 traversal follows schema locations only: a property named `description` is a name, not an
 annotation. Block items 1 and 3 appear in the schema-only and description-only templates when
 they have content.
@@ -249,10 +255,15 @@ they have content.
 **Literal text.** In a CommonMark or GitHub-flavored Markdown renderer, a fenced code block's
 content is literal: no link, image, heading or HTML inside it renders, and a fence longer than
 any run of backticks inside cannot be closed from inside. Every string the server wrote is
-inside the block. The provenance sentence holds only the engine's words, the engine's
-identifiers (tool and platform names, which pass the binding's naming rules, and the pin) and
-the capture time. A host that renders other markup is outside this claim. To a host that
-renders nothing, the fences are two lines of backticks.
+inside the block. The provenance sentence holds only the engine's words, the capture time, and
+the identifiers an operator chose: the tool's and platform's names and the binding's pin. The
+binding's rules let a tool's name hold a line break or markup. So each identifier is written in
+the prose as a code span, whose backtick run is longer than any inside it. Every control
+character in it, line feed included, is written as a visible escape, `\u{XXXX}`, as is every
+character of the display policy's classes. No identifier then leaves its line, opens an HTML
+block, or reaches the fence. The value the table routes by is untouched; only its rendering
+changes. A host that renders other markup is outside this claim. To a host that renders
+nothing, the fences are two lines of backticks.
 
 **The schema served** is the projection. Its annotations (`description`, `title`, `examples`,
 `default`, `$comment`, `deprecated`, `readOnly`, `writeOnly`) are removed at schema locations,
@@ -426,6 +437,8 @@ time. A tool that fell back, and `engine.seal`, name none.
   - the four templates;
   - a fence against content holding backtick runs;
   - Markdown and HTML inside the block rendering as text in a CommonMark renderer;
+  - the complete rendered template, surrounding prose included, with a tool name holding a line
+    break and markup, rendering no HTML block and no element;
   - JSON Pointer labels, including escaped names and a property named `description`;
   - annotations removed at schema locations only;
   - routing unchanged, whatever a description says.
