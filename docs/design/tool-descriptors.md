@@ -194,12 +194,17 @@ The limits below are exact, and when one is reached the overflow is deterministi
   256 KiB, leaving the rest for names, identity and the wrapper. The adapter admits tools in
   the server's order while both bounds hold with the tool added. Every later tool falls back,
   reported as over the platform's budget.
-- **The check report:** at most 1 MiB, as `connect` bounds it today. Today the report lists
-  every tool the server offers. That list, and the fallback reasons, are each capped at 64 KiB,
-  and what passes a cap is counted, not listed. So the report without `descriptors` is bounded
-  well inside 1 MiB. If the report would still exceed its bound with them, the adapter drops the
-  `descriptors` member, so every tool falls back, and says so. It never lets `connect` kill the
-  check.
+- **The check report:** at most 1 MiB, as `connect` bounds it today. Every field outside
+  `descriptors` is capped:
+  - the list of offered tool names, and the fallback reasons, at 64 KiB each, with what passes
+    a cap counted, not listed;
+  - every other string field, at 512 bytes, as today's redaction already caps the server's name
+    and version: the adapter's identity, the probe's tool name, the protocol version.
+
+  So the report without `descriptors` is at most about 130 KiB, and with a snapshot of at most
+  320 KiB it stays inside 1 MiB. The adapter checks the serialized report against 1 MiB before
+  writing it. Should it pass anyway, the adapter drops `descriptors`, so every tool falls back,
+  and says so. It never lets `connect` kill the check.
 - **The configuration:** checked, as today, against 1 MiB as it would be written, pins and
   version included.
 - **The listing:** the frontend's whole `tools/list` answer, serialized, is at most 8 MiB. When
@@ -220,10 +225,12 @@ The limits below are exact, and when one is reached the overflow is deterministi
 | captured | refused | the description-only template | `{"type": "object"}` |
 | absent or refused | refused | today's template, unchanged | `{"type": "object"}` |
 
-**Today's template** stays word for word for the last case: "Tool `<tool>` of platform
-`<platform>` (binding `<pin>`), called by the engine's own adapter under the engine's key. Its
-arguments are what the platform's server defines; the engine does not read that server's
-schema. The answer carries {session, result, receipt, salts}."
+**Today's template** stays for the last case, word for word except for how identifiers are
+rendered: "Tool `<tool>` of platform `<platform>` (binding `<pin>`), called by the engine's own
+adapter under the engine's key. Its arguments are what the platform's server defines; the engine
+does not read that server's schema. The answer carries {session, result, receipt, salts}." The
+identifier rendering under "Literal text" applies to all four templates, this one included.
+Today the frontend writes identifiers raw; that changes for every tool.
 
 **The other three** replace its middle sentence, which would be false once a schema is served,
 and add a provenance sentence and a quoted block:
@@ -420,7 +427,8 @@ time. A tool that fell back, and `engine.seal`, name none.
     offline;
   - accepted fixtures from Pydantic and `zod-to-json-schema` output;
   - a credential in a description, a property name or the identity refused without disclosure;
-  - the snapshot and report budgets, with their deterministic overflow.
+  - the snapshot and report budgets, with their deterministic overflow, including an
+    oversized server name and version in the `initialize` answer.
 - **connect:**
   - the write order and its syncs, including today's writer changed;
   - a taken name reused only when it verifies;
@@ -437,8 +445,9 @@ time. A tool that fell back, and `engine.seal`, name none.
   - the four templates;
   - a fence against content holding backtick runs;
   - Markdown and HTML inside the block rendering as text in a CommonMark renderer;
-  - the complete rendered template, surrounding prose included, with a tool name holding a line
-    break and markup, rendering no HTML block and no element;
+  - the complete rendered template, surrounding prose included, in all four cases, fallback
+    included, with a tool name holding a line break and markup, rendering no HTML block and no
+    element;
   - JSON Pointer labels, including escaped names and a property named `description`;
   - annotations removed at schema locations only;
   - routing unchanged, whatever a description says.
