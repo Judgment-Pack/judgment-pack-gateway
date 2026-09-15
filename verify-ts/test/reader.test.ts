@@ -29,6 +29,7 @@ test("only UTF-8 holding one JSON value, whitespace around it, is read", () => {
   assert.equal(parse(Buffer.from([0x22, 0xff, 0x22])), null, "not UTF-8");
   assert.equal(parse(Buffer.from([0x22, 0xed, 0xa0, 0x80, 0x22])), null, "a surrogate encoded in UTF-8");
   assert.equal(parse(Buffer.from([0x22, 0x01, 0x22])), null, "a control character unescaped");
+  assert.equal(parse(Buffer.from([0x22, 0x5c, 0x6e, 0x01, 0x22])), null, "a control character unescaped after an escape");
   for (const bad of ["", "{} {}", "[1,]", '{"a":1,}', "01", "1.", "1e", "-", "+1", "'a'", "tru", "nul", '{"a" 1}', "[1 2]", '"\\x"', '"\\u00"', '"\\u00zz"']) {
     assert.equal(text(bad), null, JSON.stringify(bad));
   }
@@ -59,4 +60,14 @@ test("a document of up to maxValues values is read, and one more throws TooLarge
   const flat = (n: number) => "[" + "0,".repeat(n - 2) + "0]";
   assert.notEqual(text(flat(maxValues)), null);
   assert.throws(() => text(flat(maxValues + 1)), TooLarge);
+});
+
+test("a long string is written whole, however its UTF-8 outgrows its UTF-16", () => {
+  // Two bytes of UTF-8 for each of the first, four for each pair after,
+  // and escapes among them: past any first guess at the output's size.
+  const value = "é".repeat(1000) + "\u{1f600}".repeat(500) + '\n"\\'.repeat(300);
+  assert.equal(canon(JSON.stringify(value)), JSON.stringify(value));
+  // The same value, every character of it escaped in the input.
+  const escaped = '"' + "\\u00e9".repeat(1000) + "\\ud83d\\ude00".repeat(500) + '\\n\\"\\\\'.repeat(300) + '"';
+  assert.equal(canon(escaped), JSON.stringify(value));
 });

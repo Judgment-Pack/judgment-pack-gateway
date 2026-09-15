@@ -103,3 +103,25 @@ test("the process contract, end to end", () => {
   assert.equal(none.status, 2);
   assert.equal(none.stdout.length, 0);
 });
+
+// A string of millions of escapes, one value and within every bound, is
+// read and written at the cost of its bytes: in a process held to a small
+// heap, canonicalized whole, and verified inside a receipt.
+test("a string of millions of escapes fits a small heap", () => {
+  const heap = "--max-old-space-size=384";
+  const escapes = '"' + "\\n".repeat(33554430) + '"';
+  const canon = spawnSync(process.execPath, [heap, main, "canon"], { input: escapes, maxBuffer: 80 << 20 });
+  assert.equal(canon.status, 0, canon.stderr.toString().slice(0, 400));
+  assert.equal(canon.stdout.length, Buffer.byteLength(escapes));
+  assert.ok(canon.stdout.equals(Buffer.from(escapes)));
+
+  const v = storeVectors().find((s) => s.name === "valid-sealed")!;
+  const { root, registry } = materialize(v);
+  const receipt = path.join(root, "receipts", "s1", "0.json");
+  // The receipt, with the rest of it, still within the 64 MiB a receipt may take.
+  const within = '"' + "\\n".repeat(33000000) + '"';
+  fs.writeFileSync(receipt, fs.readFileSync(receipt, "utf8").replace("{", '{"later":' + within + ","));
+  const verified = spawnSync(process.execPath, [heap, main, "verify", root, registry, v.authority], { input: publicKey, maxBuffer: 1 << 20 });
+  assert.equal(verified.status, 0, verified.stderr.toString().slice(0, 400));
+  assert.ok(JSON.parse(verified.stdout.toString()).findings.some((f: { status: string }) => f.status === "signature-mismatch"));
+});

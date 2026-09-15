@@ -40,8 +40,11 @@ bar is for whoever holds the bar to judge.
 
 ## Its limits
 
-`SPEC.md` sets none of these; each is this implementation's, and each ends in
-no verdict rather than in a verdict reached on less than the store holds.
+`SPEC.md` sets none of these but the last; each is this implementation's, and
+each ends in no verdict rather than in a verdict reached on less than the store
+holds — but for the nesting bound, the reference's own, past which a document is
+unparseable, so that a receipt nested too deep is `malformed`, as it is to the
+reference.
 
 - **Windows.** §4.1's Windows spelling rules are not implemented, so it refuses to
   run there rather than read a path Windows would resolve otherwise.

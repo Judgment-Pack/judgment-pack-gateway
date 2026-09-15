@@ -7,39 +7,44 @@ const maxInteger = 2n ** 53n - 1n;
 
 // canonical is the value's canonical bytes, or null when the value is
 // outside the domain: a float literal, an integer past ±(2^53 - 1), a
-// string holding a lone surrogate, or an object giving a name twice.
+// string holding a lone surrogate, or an object giving a name twice. The
+// bytes are written as they are made, into a buffer that grows, so a
+// string of millions of escapes costs its bytes and no more.
 export function canonical(v: Value): Uint8Array | null {
-  const out: string[] = [];
-  // Work still to write, last first: a value, or text written as it is.
-  const work: (Value | string)[] = [v];
+  const out = new ByteWriter();
+  // Work still to write, last first: a value, text written as it is, or a
+  // member's name with its colon.
+  const work: (Value | string | { readonly memberName: string })[] = [v];
   for (let w = work.pop(); w !== undefined; w = work.pop()) {
     if (typeof w === "string") {
-      out.push(w);
+      out.ascii(w);
+      continue;
+    }
+    if ("memberName" in w) {
+      writeQuoted(out, w.memberName);
+      out.ascii(":");
       continue;
     }
     switch (w.type) {
       case "null":
-        out.push("null");
+        out.ascii("null");
         break;
       case "boolean":
-        out.push(w.value ? "true" : "false");
+        out.ascii(w.value ? "true" : "false");
         break;
       case "number":
         if (w.integer === null || w.integer > maxInteger || w.integer < -maxInteger) {
           return null;
         }
-        out.push(w.integer.toString()); // -0 is 0n, written 0
+        out.ascii(w.integer.toString()); // -0 is 0n, written 0
         break;
-      case "string": {
-        const quoted = quote(w.value);
-        if (quoted === null) {
+      case "string":
+        if (!writeQuoted(out, w.value)) {
           return null;
         }
-        out.push(quoted);
         break;
-      }
       case "array":
-        out.push("[");
+        out.ascii("[");
         work.push("]");
         for (let k = w.items.length - 1; k >= 0; k--) {
           work.push(w.items[k]!);
@@ -62,12 +67,12 @@ export function canonical(v: Value): Uint8Array | null {
             return null;
           }
         }
-        out.push("{");
+        out.ascii("{");
         work.push("}");
         for (let k = members.length - 1; k >= 0; k--) {
           const m = members[k]!;
           work.push(m.value);
-          work.push(quote(m.name)! + ":");
+          work.push({ memberName: m.name });
           if (k > 0) {
             work.push(",");
           }
@@ -76,7 +81,43 @@ export function canonical(v: Value): Uint8Array | null {
       }
     }
   }
-  return new TextEncoder().encode(out.join(""));
+  return out.bytes();
+}
+
+// ByteWriter is bytes written one piece after another, into a buffer that
+// doubles as it fills.
+class ByteWriter {
+  private buffer = Buffer.alloc(256);
+  private n = 0;
+
+  private room(k: number): void {
+    if (this.n + k <= this.buffer.length) {
+      return;
+    }
+    let size = this.buffer.length * 2;
+    while (size < this.n + k) {
+      size *= 2;
+    }
+    const grown = Buffer.alloc(size);
+    this.buffer.copy(grown, 0, 0, this.n);
+    this.buffer = grown;
+  }
+
+  // ascii writes a string of ASCII characters.
+  ascii(s: string): void {
+    this.room(s.length);
+    this.n += this.buffer.write(s, this.n, "latin1");
+  }
+
+  // utf8 writes a well-formed string as UTF-8.
+  utf8(s: string): void {
+    this.room(Buffer.byteLength(s, "utf8"));
+    this.n += this.buffer.write(s, this.n, "utf8");
+  }
+
+  bytes(): Uint8Array {
+    return this.buffer.subarray(0, this.n);
+  }
 }
 
 // compareCodePoints orders two well-formed strings by Unicode code point,
@@ -96,14 +137,15 @@ export function compareCodePoints(a: string, b: string): number {
   return a.length - i - (b.length - j);
 }
 
-// quote is the string as the canonical form writes it: raw UTF-8 but for
-// the quote, the backslash, the short escapes and the rest of C0 as \u00xx
-// in lowercase hex; or null for a string holding a lone surrogate.
-export function quote(s: string): string | null {
+// writeQuoted writes the string as the canonical form writes one: raw
+// UTF-8 but for the quote, the backslash, the short escapes and the rest
+// of C0 as \u00xx in lowercase hex; or is false, writing nothing more,
+// for a string holding a lone surrogate.
+function writeQuoted(out: ByteWriter, s: string): boolean {
   if (!s.isWellFormed()) {
-    return null;
+    return false;
   }
-  let out = '"';
+  out.ascii('"');
   let start = 0;
   for (let i = 0; i < s.length; i++) {
     const c = s.charCodeAt(i);
@@ -116,11 +158,18 @@ export function quote(s: string): string | null {
       escaped = shortForms.get(c) ?? "\\u00" + c.toString(16).padStart(2, "0");
     }
     if (escaped !== undefined) {
-      out += s.slice(start, i) + escaped;
+      if (i > start) {
+        out.utf8(s.slice(start, i));
+      }
+      out.ascii(escaped);
       start = i + 1;
     }
   }
-  return out + s.slice(start) + '"';
+  if (s.length > start) {
+    out.utf8(s.slice(start));
+  }
+  out.ascii('"');
+  return true;
 }
 
 const shortForms = new Map<number, string>([

@@ -179,46 +179,74 @@ class Reader {
 
   // string reads a string from its opening quote. An escaped surrogate
   // stays what it was escaped as, paired or not: the canonical form refuses
-  // one that is alone, and a reader that does not canonicalize need not.
+  // one that is alone, and a reader that does not canonicalize need not. A
+  // string with no escape is a slice of the text; one with escapes is
+  // decoded into a buffer of code units, not built piece by piece, which
+  // for a string of millions of escapes would take gigabytes.
   private string(): string {
     const s = this.s;
-    let i = this.i + 1;
-    let start = i;
-    let out = "";
+    const open = this.i + 1;
+    let i = open;
     for (;;) {
       if (i >= s.length) {
         throw new NotJSON();
       }
       const c = s.charCodeAt(i);
       if (c === 0x22) {
-        out += s.slice(start, i);
         this.i = i + 1;
-        return out;
+        return s.slice(open, i);
+      }
+      if (c === 0x5c) {
+        break;
+      }
+      if (c < 0x20) {
+        throw new NotJSON();
+      }
+      i++;
+    }
+    // Escapes. The string ends at the first quote not escaped, and every
+    // code unit decoded is at most one of the text's before it.
+    let close = i;
+    while (close < s.length && s.charCodeAt(close) !== 0x22) {
+      close += s.charCodeAt(close) === 0x5c ? 2 : 1;
+    }
+    const units = new Uint16Array(Math.max(0, close - open));
+    let n = 0;
+    for (let j = open; j < i; j++) {
+      units[n++] = s.charCodeAt(j);
+    }
+    for (;;) {
+      if (i >= s.length) {
+        throw new NotJSON();
+      }
+      const c = s.charCodeAt(i);
+      if (c === 0x22) {
+        this.i = i + 1;
+        return fromUnits(units, n);
       }
       if (c < 0x20) {
         throw new NotJSON();
       }
       if (c !== 0x5c) {
+        units[n++] = c;
         i++;
         continue;
       }
-      out += s.slice(start, i);
       const e = s.charCodeAt(i + 1);
       const short = shortEscapes.get(e);
       if (short !== undefined) {
-        out += short;
+        units[n++] = short;
         i += 2;
       } else if (e === 0x75) {
         const hex = s.slice(i + 2, i + 6);
         if (!/^[0-9a-fA-F]{4}$/.test(hex)) {
           throw new NotJSON();
         }
-        out += String.fromCharCode(parseInt(hex, 16));
+        units[n++] = parseInt(hex, 16);
         i += 6;
       } else {
         throw new NotJSON();
       }
-      start = i;
     }
   }
 
@@ -242,16 +270,27 @@ const literals: ReadonlyArray<readonly [string, Value]> = [
   ["null", { type: "null" }],
 ];
 
-const shortEscapes = new Map<number, string>([
-  [0x22, '"'],
-  [0x5c, "\\"],
-  [0x2f, "/"],
-  [0x62, "\b"],
-  [0x66, "\f"],
-  [0x6e, "\n"],
-  [0x72, "\r"],
-  [0x74, "\t"],
+// Each short escape's letter, and the code unit it stands for.
+const shortEscapes = new Map<number, number>([
+  [0x22, 0x22],
+  [0x5c, 0x5c],
+  [0x2f, 0x2f],
+  [0x62, 0x08],
+  [0x66, 0x0c],
+  [0x6e, 0x0a],
+  [0x72, 0x0d],
+  [0x74, 0x09],
 ]);
+
+// fromUnits is the string of the first n code units, made a few thousand
+// at a time.
+function fromUnits(units: Uint16Array, n: number): string {
+  const parts: string[] = [];
+  for (let at = 0; at < n; at += 8192) {
+    parts.push(String.fromCharCode(...units.subarray(at, Math.min(at + 8192, n))));
+  }
+  return parts.join("");
+}
 
 // member is the value of the object's first member of that name.
 export function member(o: ObjectValue, name: string): Value | undefined {
