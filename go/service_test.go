@@ -382,8 +382,14 @@ func TestPerReceiptVerificationMissesWhatTheRegistryCatches(t *testing.T) {
 	if err := os.Remove(filepath.Join(storeRoot, "receipts", "sess-a", "2.json")); err != nil {
 		t.Fatal(err)
 	}
-	// Without the anchor: the truncated prefix is a valid chain.
-	inline, err := verifyWithRegistry(storeRoot, os.DevNull, "gateway:test", []byte(mustPublic(t)))
+	// Without the anchor: the truncated prefix is a valid chain. An empty
+	// registry file, not the null device, which Windows names NUL -- a
+	// device name a registry path may not have there (SPEC.md §4.1)
+	empty := filepath.Join(t.TempDir(), "empty-registry.jsonl")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	inline, err := verifyWithRegistry(storeRoot, empty, "gateway:test", []byte(mustPublic(t)))
 	if err != nil {
 		t.Fatal(err)
 	}
