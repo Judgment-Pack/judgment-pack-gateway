@@ -285,10 +285,13 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	if err := requireSession(sessionID); err != nil {
 		return nil, err
 	}
-	// a registry that cannot be reached is not an empty one: sealing into
-	// it could append a second seal for a session it already holds (absent)
-	existing, err := os.ReadFile(w.path)
-	if err != nil && !absent(err) {
+	// the registry is read as the verifier reads it (readRegistryBytes): a
+	// registry that is there and cannot be read -- a link to nothing, a
+	// directory or a share that cannot be reached -- is not an empty one,
+	// and sealing into it could append a second seal for a session it
+	// already holds, or make the target of a link to nothing
+	existing, _, err := readRegistryBytes(w.path)
+	if err != nil {
 		return nil, err
 	}
 	for _, line := range splitLines(existing) {

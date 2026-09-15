@@ -191,6 +191,16 @@ func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string
 var (
 	stat  = os.Stat
 	lstat = os.Lstat
+	// readDirNames lists a directory's names; a test stands in a directory
+	// that cannot be read
+	readDirNames = func(dir string) ([]string, error) {
+		f, err := os.Open(dir)
+		if err != nil {
+			return nil, err
+		}
+		defer f.Close()
+		return f.Readdirnames(-1)
+	}
 )
 
 // errorFileNotFound is ERROR_FILE_NOT_FOUND: the answer by which Windows says
@@ -323,6 +333,51 @@ func pathAncestors(path string) []string {
 	return dirs
 }
 
+// parentAndName splits a path, as spelled, into the directory a lookup of it
+// reaches last and the name it looks up there. A trailing separator is not a
+// name; a path with no separator after its volume is looked up in the
+// current directory (of the volume's drive, when it names one).
+func parentAndName(path string) (string, string) {
+	volume := len(filepath.VolumeName(path))
+	end := len(path)
+	for end > volume+1 && os.IsPathSeparator(path[end-1]) {
+		end--
+	}
+	i := end - 1
+	for i >= volume && !os.IsPathSeparator(path[i]) {
+		i--
+	}
+	name := path[i+1 : end]
+	switch {
+	case i < volume:
+		return path[:volume] + ".", name
+	case i == volume:
+		return path[:volume+1], name
+	default:
+		return path[:i], name
+	}
+}
+
+// notListed confirms that nothing is at a path a lookup found absent: the
+// directory it would be in -- one the walk has reached -- is read, and does not
+// list its name. A lookup's plain not-found is not proof alone: Windows before
+// 10 1909 answers a storage device that has gone away with
+// ERROR_FILE_NOT_FOUND, as it answers a missing name. A directory that cannot
+// be read, or that lists the name, is a refusal.
+func notListed(path string) error {
+	dir, name := parentAndName(path)
+	names, err := readDirNames(dir)
+	if err != nil {
+		return fmt.Errorf("a lookup found nothing at %s, and its directory cannot be read: %w", path, err)
+	}
+	for _, listed := range names {
+		if listed == name {
+			return fmt.Errorf("a lookup found nothing at %s, but its directory lists it", path)
+		}
+	}
+	return nil
+}
+
 // absentOrLink judges a path a stat that follows links found not there. It is
 // absent only when a look at the path itself confirms it: a link that leads
 // nowhere is there and cannot be read, and a second look that fails for any
@@ -335,7 +390,7 @@ func absentOrLink(path, link string) error {
 	case err == nil:
 		return fmt.Errorf("%s: %s", link, path)
 	case absent(err):
-		return nil
+		return notListed(path)
 	default:
 		return err
 	}

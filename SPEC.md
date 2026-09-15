@@ -514,12 +514,18 @@ walk stops at the link. The directories above an input are the prefixes of its p
 each cut before a separator. A name under the decision-record directory that Windows would not
 read as spelled is a file under it that cannot be read.
 
-Only an input the platform confirms is not there is absent. The confirmation is the plain answer
-for a missing name in a directory the walk has reached: on Windows `ERROR_FILE_NOT_FOUND`, and
-not `ERROR_PATH_NOT_FOUND` or `ERROR_BAD_NETPATH`, which say a directory, a drive or a network
-share on the way cannot be reached — an input under one is present and unreadable. When a stat
-that follows links finds nothing at a path, a look at the path itself must find nothing too, and
-any other answer to that look — a link, or a failure — makes the input present and unreadable.
+Only an input the platform confirms is not there is absent, and the confirmation is two answers
+that agree. The first is the plain answer for a missing name in a directory the walk has
+reached: `ENOENT`, or on Windows `ERROR_FILE_NOT_FOUND` — not `ERROR_PATH_NOT_FOUND` or
+`ERROR_BAD_NETPATH`, which say a directory, a drive or a network share on the way cannot be
+reached. The second is that directory, read, listing no such name. Neither alone is proof:
+Windows before 10 1909 answers a storage device that has gone away as it answers a missing
+name, and a directory that cannot be read, or that lists the name, makes the input present and
+unreadable. An input under a directory confirmed missing is absent, and nothing below that
+directory is looked at. When a stat that follows links finds nothing at a path, a look at the
+path itself must find nothing too, and any other answer to that look — a link, or a failure —
+makes the input present and unreadable. A gateway judges the registry this way before it seals
+into it, and the registry and the decision-record directory this way before it starts.
 
 Each of these fails **closed**: an absent anchor cannot make a store verify, it can
 only fail to excuse one. A store that is genuinely empty against an empty registry

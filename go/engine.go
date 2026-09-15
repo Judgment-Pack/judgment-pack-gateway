@@ -889,6 +889,25 @@ func preflightPaths(store, registry, decisionRecords string) error {
 		}
 		return target, nil
 	}
+	// judged is what is at the registry or the decision-record directory, as
+	// the verifier's reader judges it (SPEC.md §4.1) -- the walk above it, a
+	// link to nothing refused, absence confirmed by a directory that lists no
+	// such name -- or nil for absence; a directory above it that is not there
+	// is a start that fails.
+	judged := func(name, path, link string) (os.FileInfo, error) {
+		there, err := registryContainerReachable(path)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %v", name, path, err)
+		}
+		if !there {
+			return nil, fmt.Errorf("%s %s cannot be made: its directory is not there", name, path)
+		}
+		info, err := statInput(path, link)
+		if err != nil {
+			return nil, fmt.Errorf("%s %s: %v", name, path, err)
+		}
+		return info, nil
+	}
 	// makeable holds a path that must be made to a parent that is there
 	// and that this process may write into.
 	makeable := func(name, path string) error {
@@ -947,7 +966,7 @@ func preflightPaths(store, registry, decisionRecords string) error {
 			}
 		}
 	}
-	info, err = present("registry", registry)
+	info, err = judged("registry", registry, "the registry is a link that leads nowhere")
 	if err != nil {
 		return err
 	}
@@ -961,7 +980,7 @@ func preflightPaths(store, registry, decisionRecords string) error {
 	case !canWrite(registry):
 		return fmt.Errorf("registry %s: this process may not write it", registry)
 	}
-	info, err = present("decisionRecords", decisionRecords)
+	info, err = judged("decisionRecords", decisionRecords, "the decision-record directory is a link that leads nowhere")
 	if err != nil {
 		return err
 	}
