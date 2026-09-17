@@ -465,8 +465,10 @@ that applied:
 | `--max-output` | 1 MiB | the record on stdout; at or below the gateway's `--source-max-output`. A record that would exceed it is not cut: the adapter refuses with `record-over-bound`, and a document whose text or inline original cannot be carried is one the operator sizes the bounds for |
 | `--timeout` | 25 s | the adapter's deadline, a whole number of milliseconds, reported as `timeoutMs`; past it, `timeout` or `ocr-timeout` |
 
-Each bound is a positive integer, and `--timeout` a positive duration in whole milliseconds; any
-other value is a usage error, and the adapter exits 2 without reading the request. Object count,
+Each bound is a positive integer no larger than the ceiling the adapter states for it in its
+documentation, and `--timeout` a positive duration in whole milliseconds under its ceiling; any
+other value is a usage error, and the adapter exits 2 without reading the request. Every ceiling
+keeps the bound, and every figure derived from it, within the canonical domain's integers. Object count,
 nesting depth, cross-reference chain length, page-tree depth and operators per page are bounded
 by constants the adapter states in its documentation: one met while the document is opened or
 its page tree walked is `pdf-malformed` (step 4), and one met in a page's content fails that
