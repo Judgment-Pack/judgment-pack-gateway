@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"adapters/internal/redact"
 )
 
 func TestRunUsage(t *testing.T) {
@@ -156,9 +158,23 @@ func TestRunRedactsAndBoundsEveryDiagnostic(t *testing.T) {
 	}
 	stdout.Reset()
 	stderr.Reset()
-	// A flag the command does not know: the usage that follows is bounded.
-	if code := run([]string{"--endpoint", "https://api.example", "--paths", "/", "--" + strings.Repeat("z", 5000)}, neverRead{t}, &stdout, &stderr); code != 2 || stderr.Len() > 1024 {
-		t.Fatalf("%d: %d bytes", code, stderr.Len())
+	// A flag the command does not know: the quotation of the operator's own
+	// command line is bounded, and the listing of the command's flags, which
+	// quotes nothing of that line, follows it whole -- so the guidance a flag
+	// carries can be read from the command that carries it.
+	if code := run([]string{"--endpoint", "https://api.example", "--paths", "/", "--" + strings.Repeat("z", 5000)}, neverRead{t}, &stdout, &stderr); code != 2 ||
+		strings.Contains(stderr.String(), strings.Repeat("z", redact.MaxDiagnostic+1)) ||
+		!strings.Contains(stderr.String(), "-timeout duration") {
+		t.Fatalf("%d: %d bytes of diagnostic: %s", code, stderr.Len(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	// And the usage an operator asks for reaches the flags past the bound
+	// the diagnostic is held to, the timeout's guidance among them, which is
+	// what the gateway's source timeout has to be kept under.
+	if code := run([]string{"-h"}, neverRead{t}, &stdout, &stderr); code != 2 || stdout.Len() != 0 ||
+		!strings.Contains(stderr.String(), "-timeout duration") || !strings.Contains(stderr.String(), "--source-timeout") {
+		t.Fatalf("-h: %d %s", code, stderr.String())
 	}
 }
 

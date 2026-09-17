@@ -311,7 +311,7 @@ func (p *parser) parseObject() (value, error) {
 		if _, dup := obj.get(name); dup {
 			// SPEC.md does not say; see AMBIGUITIES.md. A signed format cannot
 			// afford two readers disagreeing about which value is meant.
-			return nil, fmt.Errorf("duplicate member name %q", name)
+			return nil, fmt.Errorf("duplicate member name %q", requestText(name))
 		}
 		p.skipWhitespace()
 		if p.pos >= len(p.data) || p.data[p.pos] != ':' {
@@ -512,10 +512,10 @@ func (p *parser) parseNumber() (value, error) {
 	lit := string(p.data[start:p.pos])
 	n, err := strconv.ParseInt(lit, 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("integer %s is outside the canonical domain", lit)
+		return nil, fmt.Errorf("integer %s is outside the canonical domain", requestText(lit))
 	}
 	if n > maxSafeInteger || n < minSafeInteger {
-		return nil, fmt.Errorf("integer %s is outside the safe-integer range", lit)
+		return nil, fmt.Errorf("integer %s is outside the safe-integer range", requestText(lit))
 	}
 	return vInt(n), nil
 }

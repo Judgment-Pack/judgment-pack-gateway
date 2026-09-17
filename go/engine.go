@@ -553,7 +553,7 @@ func cleanAbsolutePath(name, s string) (string, error) {
 func exactlyMembers(obj *vObject, members map[string]bool, what string) error {
 	for _, name := range obj.names {
 		if _, known := members[name]; !known {
-			return fmt.Errorf("%s: unknown member %q", what, name)
+			return fmt.Errorf("%s: unknown member %q", what, requestText(name))
 		}
 	}
 	for name, required := range members {

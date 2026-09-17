@@ -195,7 +195,14 @@ and are not bounds: which of the shapes measured cost most changed between runs,
 measured may cost more, and requests in flight at the same time add to them. The arguments are held to a budget of 524,288 JSON values, past which the
 request is refused with 400 — a budget a one-mebibyte body cannot reach, so it changes nothing
 under the default bound. It limits how many values a raised bound admits, not the memory they
-take: member names are not counted. Parsing and canonicalization run before the source's timeout
+take: member names are not counted. A refusal quotes text taken from the request — a source
+name, a member name, a number, a tool name a message to the engine's MCP server carried —
+bounded: short text as it was sent, longer text as its first bytes and how long the whole was,
+so an answer to a refused request is not itself a multiple of the body sent. What is answered
+costs as well: an answer is built whole in memory before any of it is written, and JSON spells
+some bytes six times over (`<` becomes `\u003c`), so a result raised towards
+`--source-max-output` is answered as a multiple of its own size.
+Parsing and canonicalization run before the source's timeout
 starts and are not bounded by it; their time grows with the body. `--max-request` and
 `--source-timeout` are command-line options: under an engine configuration `/acquire` keeps its
 one-mebibyte bound and the derived sources keep the thirty-second timeout.

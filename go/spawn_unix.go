@@ -119,6 +119,20 @@ func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
 	return group, nil
 }
 
+// exitedOnItsOwn is whether a source's wait error is an exit the source made
+// itself -- a status it returned -- rather than a signal that ended it: the
+// group's kill reports success whether or not the source was still running
+// (prepareSourceProcess), so the status is what tells a source the kill ended
+// from one that had exited before it.
+func exitedOnItsOwn(waitErr error) bool {
+	var exit *exec.ExitError
+	if !errors.As(waitErr, &exit) {
+		return false
+	}
+	status, ok := exit.Sys().(syscall.WaitStatus)
+	return ok && status.Exited()
+}
+
 // start starts the source. One that runs as another user is started from
 // a thread held to no_new_privs (denyNewPrivilegesHere), which the forked
 // process inherits and can never clear: an execve then grants it no

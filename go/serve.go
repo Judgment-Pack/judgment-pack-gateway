@@ -24,10 +24,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 type sessionState struct {
@@ -127,6 +129,11 @@ type gatewayService struct {
 	// overtaken by its deadline, which must not be reported as a timeout.
 	sourceDeadline  func(source string, deadline time.Time)
 	afterSourceWait func()
+	// sourceContext, when a test sets it, makes a source's context in place
+	// of context.WithTimeout, so a test can end the deadline when it chooses
+	// -- after the source has started, or after it has been waited for --
+	// and os/exec's own cancellation runs as it does at a real deadline.
+	sourceContext func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc)
 	// beforeAdmit, when a test sets it, runs between an action's evidence
 	// checks and its admission: the window in which another request may
 	// have put the session on disk or sealed it, which admission's own
@@ -369,6 +376,30 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 // rather than 500.
 type badRequest struct{ error }
 
+// maxRequestText is how many bytes of quoted text a diagnostic carries
+// (requestText).
+const maxRequestText = 64
+
+// requestText is text a refusal or a diagnostic quotes: whole when it is at
+// most maxRequestText bytes; otherwise its first bytes up to that bound, cut
+// before a UTF-8 sequence the bound would split, followed by how many bytes
+// the whole was. What it is for is text a caller sent, which is otherwise
+// quoted whole: an answer is JSON, which spells some bytes six times over, so
+// a source name as long as a raised request bound made an answer several
+// times the body. It bounds the same quotation wherever a diagnostic makes
+// one -- exactlyMembers quotes a member of an engine configuration, or of an
+// adapter's snapshot, through it as well as a member of a request.
+func requestText(s string) string {
+	if len(s) <= maxRequestText {
+		return s
+	}
+	cut := maxRequestText
+	for back := 0; back < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(s[cut]); back++ {
+		cut--
+	}
+	return s[:cut] + "…(" + strconv.Itoa(len(s)) + " bytes)"
+}
+
 // maxRequestBody bounds what /seal and /act will read before deciding
 // anything, and is /acquire's bound unless --max-request sets another, from
 // one byte to maxRequestCeiling. /seal carries one session id; /acquire carries a session
@@ -439,7 +470,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	if !known || strings.HasSuffix(source, "/write") {
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
-		return nil, badRequest{fmt.Errorf("unknown source: %s", source)}
+		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
 	}
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
 		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
@@ -617,7 +648,11 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if timeout <= 0 {
 		timeout = g.defaultTimeout
 	}
-	ctx, cancel := context.WithTimeout(g.ctx, timeout)
+	makeContext := context.WithTimeout
+	if g.sourceContext != nil {
+		makeContext = g.sourceContext
+	}
+	ctx, cancel := makeContext(g.ctx, timeout)
 	defer cancel()
 	if g.sourceDeadline != nil {
 		// Read from the context itself rather than worked out again from
@@ -657,23 +692,33 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("source %s: %w", source, err)
 	}
-	// cancelled records that os/exec cancelled the source. os/exec watches
-	// the context until Wait has waited for the source's process, and calls
-	// Cancel when the context ends before then -- not while Wait is still
-	// waiting on the source's output pipes, nor once Wait has returned. It is
-	// what tells a source its deadline ended from one that failed on its own
-	// and was only reaped, or reported, after its deadline had passed. A
-	// source that exits on its own in the instant its deadline passes can
-	// still be cancelled, and is then reported as timed out. The Cancel
-	// wrapped is not nil: CommandContext sets one, and prepareSourceProcess
-	// replaces it with the group's kill on Unix and leaves it in place
-	// elsewhere.
+	// cancelled records that os/exec cancelled the source and that the
+	// cancellation succeeded. os/exec watches the context until Wait has
+	// collected the source's exit, and calls Cancel when the context ends
+	// before then -- not while Wait is still waiting on the source's output
+	// pipes, nor once Wait has returned -- so a source that failed on its own
+	// and was only reaped, or reported, after its deadline had passed is not
+	// cancelled at all. The watcher can still call Cancel after the source
+	// has exited and before Wait has taken that exit from it. Elsewhere than
+	// Unix the kill of a process whose exit os/exec has collected returns an
+	// error, and the flag stays unset. On Unix the group's kill succeeds
+	// whether or not the source is still running, since the group's anchor
+	// is, and the exit status is what tells the two apart (sourceTimedOut): a
+	// source the kill ended reports the signal, one that exited on its own
+	// reports its status. Cases this does not separate include a source that
+	// exits with status zero as its deadline passes, before Wait has taken
+	// the exit: os/exec then returns the deadline's error in place of a
+	// status, and the source is reported as timed out; a source a signal of
+	// its own ended in that window -- a crash, an operator's kill, the
+	// kernel's -- which reports a signal as the gateway's kill does; and,
+	// elsewhere than Unix, a kill the platform reports as successful for a
+	// process that had exited and was not yet collected. Each of those is
+	// reported as the timeout, since what ended the source in its deadline's
+	// window is not something this can read. The Cancel wrapped is not nil:
+	// CommandContext sets one, and prepareSourceProcess replaces it with the
+	// group's kill on Unix and leaves it in place elsewhere.
 	var cancelled atomic.Bool
-	cancelSource := cmd.Cancel
-	cmd.Cancel = func() error {
-		cancelled.Store(true)
-		return cancelSource()
-	}
+	cmd.Cancel = recordCancellation(cmd.Cancel, &cancelled)
 	cmd.WaitDelay = g.waitDelay
 	// stdout is bounded and its overflow kills the source; stderr is bounded
 	// and simply truncated, because only its first line is ever reported and
@@ -712,12 +757,9 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		if errors.Is(waitErr, exec.ErrWaitDelay) {
 			return nil, "", "", errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
 		}
-		if cancelled.Load() && errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			// The source's own deadline, not the gateway's shutdown nor an
-			// overflow (both of which cancel rather than expire the context),
-			// and it ended a source still running: said as such, since
-			// whatever the source wrote on stderr before it was killed is not
-			// why it failed.
+		if sourceTimedOut(cancelled.Load(), ctx.Err(), waitErr) {
+			// Said as such, since whatever the source wrote on stderr before
+			// it was killed is not why it failed.
 			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
 		}
 		trimmed := stderr.buf.String()
@@ -733,6 +775,27 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	}
 	return result, adapterDigest, observedAt, nil
 
+}
+
+// recordCancellation wraps a source's Cancel so that cancelled is set when
+// the cancellation it makes succeeds, and left as it was when it fails.
+func recordCancellation(cancel func() error, cancelled *atomic.Bool) func() error {
+	return func() error {
+		err := cancel()
+		if err == nil {
+			cancelled.Store(true)
+		}
+		return err
+	}
+}
+
+// sourceTimedOut is whether a source's failure is reported as its timeout:
+// its cancellation succeeded (recordCancellation); its context ended at its
+// deadline, not by the gateway's shutdown nor an overflow, both of which
+// cancel rather than expire it; and the source did not exit on its own
+// (exitedOnItsOwn), which on Unix a successful group kill does not show.
+func sourceTimedOut(cancelled bool, ctxErr, waitErr error) bool {
+	return cancelled && errors.Is(ctxErr, context.DeadlineExceeded) && !exitedOnItsOwn(waitErr)
 }
 
 func newSalt() ([]byte, error) {
@@ -808,7 +871,7 @@ func parseEnvelope(v value) (*envelope, error) {
 		switch name {
 		case "acquisition", "result", "page":
 		default:
-			return nil, fmt.Errorf("unknown member %q", name)
+			return nil, fmt.Errorf("unknown member %q", requestText(name))
 		}
 	}
 	result, ok := obj.get("result")
@@ -835,7 +898,7 @@ func parseEnvelope(v value) (*envelope, error) {
 	}
 	for _, name := range acquisition.names {
 		if !envelopeMembers[name] {
-			return nil, fmt.Errorf("acquisition member %q is not one an adapter reports", name)
+			return nil, fmt.Errorf("acquisition member %q is not one an adapter reports", requestText(name))
 		}
 	}
 	adapter, ok := acquisition.get("adapter")
@@ -851,7 +914,7 @@ func parseEnvelope(v value) (*envelope, error) {
 		switch name {
 		case "name", "version", "digest":
 		default:
-			return nil, fmt.Errorf("adapter member %q is not one an adapter reports", name)
+			return nil, fmt.Errorf("adapter member %q is not one an adapter reports", requestText(name))
 		}
 	}
 	for _, name := range []string{"endpoint", "snapshot", "peerIdentity", "upstreamToken", "statement"} {

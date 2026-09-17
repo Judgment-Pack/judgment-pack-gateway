@@ -382,7 +382,11 @@ and counts it as dispatching until it has had its answer; a closure is drained w
 is dispatching. The
 HTTP server's own deadlines sit behind these: thirty seconds to read a request's headers and
 body, then the queue's wait, the forward's deadline and fifteen seconds' margin to answer it,
-from the moment the body is read, and a minute for an idle connection.
+from the moment the body is read, and a minute for an idle connection. What the server's own
+refusals quote of a message — a method, a tool name, a member name, a session name the signer
+would refuse — is bounded as well, so a mebibyte of text in a message is not answered as
+several mebibytes of JSON; a session name the signer admits is 128 bytes at most (§3a) and is
+quoted as it was sent, and what is *forwarded* is the name as given either way.
 
 What these bounds do not bound is the signer's work. A forward past its deadline releases
 its slot while the signer may still be running the source and writing the receipt, so zero

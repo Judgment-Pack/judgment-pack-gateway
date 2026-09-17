@@ -324,12 +324,12 @@ func verifyToken(token string, id identityConfig, now time.Time) (caller, error)
 	}
 	key, ok := id.keys[kid]
 	if !ok {
-		return caller{}, fmt.Errorf("token is signed by key %q, which is not in the key file", kid)
+		return caller{}, fmt.Errorf("token is signed by key %q, which is not in the key file", requestText(kid))
 	}
 	// The algorithm is the key's, never the token's word: a token that
 	// says otherwise is refused, and "none" with it.
 	if alg != key.alg {
-		return caller{}, fmt.Errorf("token says alg %q; key %q is for %s", alg, kid, key.alg)
+		return caller{}, fmt.Errorf("token says alg %q; key %q is for %s", requestText(alg), kid, key.alg)
 	}
 	signature, err := segment("signature", parts[2])
 	if err != nil {

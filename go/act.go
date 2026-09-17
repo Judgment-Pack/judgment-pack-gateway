@@ -57,14 +57,14 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	source := platform + "/write"
 	spec, known := g.sources[source]
 	if !known {
-		return nil, actRefusal{"platform", fmt.Sprintf("platform %s allows no writes: a write source is derived only for a platform whose configuration sets write: true and whose binding states a write operation", platform)}
+		return nil, actRefusal{"platform", fmt.Sprintf("platform %s allows no writes: a write source is derived only for a platform whose configuration sets write: true and whose binding states a write operation", requestText(platform))}
 	}
 	tool, err := parseString("tool", toolRaw)
 	if err != nil {
 		return nil, actRefusal{"tool", err.Error()}
 	}
 	if !contains(spec.tools, tool) {
-		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", tool)}
+		return nil, actRefusal{"tool", fmt.Sprintf("tool %q is not one the platform's write binding names", requestText(tool))}
 	}
 	// The executor is started for this tool alone (executor.md): a binding
 	// naming several write tools offers each request one of them.

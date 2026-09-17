@@ -29,7 +29,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	endpoint := fs.String("endpoint", "", "the host the connector reaches, as the operator names it; recorded as the receipt's endpoint")
 	maxRecords := fs.Int("max-records", 10000, "cap on records read in one acquisition")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
-	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for reading; stopping the container takes up to seven seconds more, and the sum stays under the gateway's default source timeout of thirty seconds, so a slow connector is reported rather than killed; keep the sum under the source's --source-timeout when the gateway sets one")
+	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for reading; the adapter's cleanup wait budget for stopping the container is seven seconds on top of it. The gateway's source timeout (thirty seconds by default, or the --source-timeout given that source) starts before the adapter does, so keep this plus that budget under it, with further margin for that start and for the adapter's report: the margin is what a connector reaching this deadline needs to be reported rather than killed")
 	check := fs.Bool("check", false, "run the connector's check with the credentials and report what the platform answered on stdout, instead of reading a request and a page; nothing is minted from the report")
 	if err := fs.Parse(args); err != nil {
 		return 2
