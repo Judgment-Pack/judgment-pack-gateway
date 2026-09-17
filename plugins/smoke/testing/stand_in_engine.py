@@ -223,7 +223,7 @@ def make_handler(fault, require_length):
             if not flat_token(session):
                 return self._send(400, {"error": answers.SESSION_REFUSAL})
             if source != answers.SOURCE:
-                return self._send(400, {"error": f"unknown source: {source}"})
+                return self._send(400, {"error": f"unknown source: {answers.request_text(source)}"})
             with lock:
                 state = sessions.setdefault(session, {"count": 0, "last": None, "sealed": False})
                 if state["sealed"]:
