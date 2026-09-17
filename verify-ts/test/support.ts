@@ -186,8 +186,8 @@ export function receiptV2(callIndex = 0, prevSignature: string | null = null): R
 }
 
 // sealLine is a registry line sealing the session at its count.
-export function sealLine(sessionId: string, finalCount: number): string {
-  const payload = { sessionId, finalCount, sealedAt: "2026-09-15T00:00:02Z", keyId };
+export function sealLine(sessionId: string, finalCount: number, sealedAt = "2026-09-15T00:00:02Z"): string {
+  const payload = { sessionId, finalCount, sealedAt, keyId };
   return JSON.stringify({ ...payload, signature: sign("judgment-pack-gateway/seal/2:", payload) });
 }
 

@@ -193,6 +193,16 @@ test("seals load by line, the first of a session winning, and any other line is 
       { sessionId: "s1", status: "tail-rollback", have: 1, sealed: 5 },
     ]),
   );
+  // First by line: the earliest or latest sealedAt, the last line, and the
+  // smallest or largest count each pick a seal other than the one counting 3.
+  assert.deepEqual(
+    at([sealLine("s1", 3, "2026-09-15T00:00:02Z"), sealLine("s1", 1, "2026-09-15T00:00:01Z"), sealLine("s1", 5, "2026-09-15T00:00:03Z")]),
+    multiset([
+      { sessionId: "s1", callIndex: 0, status: "ok" },
+      { sessionId: "s1", status: "tail-rollback", have: 1, sealed: 3 },
+    ]),
+    "the first seal wins by line, not by sealedAt or count",
+  );
   assert.deepEqual(at(["{not json", "", sealLine("s1", 1)]), passes, "lines that are no seal are dropped");
   assert.deepEqual(at([sealLine("s1", 1).replace('"finalCount":1', '"finalCount":1.0')]), unregistered, "a float count");
   assert.deepEqual(at([sealLine("s1", 1).replace(/"keyId":"[0-9a-f]+"/, (k) => k.toUpperCase().replace("KEYID", "keyId"))]), unregistered, "another key id");

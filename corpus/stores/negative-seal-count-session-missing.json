@@ -1,0 +1,24 @@
+{
+  "name": "negative-seal-count-session-missing",
+  "note": "Two seals, both signed by the key and naming its keyId. s1's counts 1 and matches the one receipt in the store. s2's counts -9007199254740991, the least integer §1.1 admits, and s2 is not in the store. §3 makes finalCount an integer (§1.1) and nothing more, so s2's seal loads like any other, and a sealed session absent from the store is sealed-session-missing (§4 step 4), whatever its count. A verifier that drops a seal for counting below zero, or below any bound inside §1.1's range, grades this store ok.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:fab115d81199f3eb681db3e8c6162d350fad4bb9fd4546b7bd39b8c2e803ac66\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-07-31T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"71672d29c6a129073a08d2037003bba815742b869cc215a4fe68e9a23167f67a2491eafaca46bbb7c93d0afd494a0eccb808e8f13e53674ed476b1684be6800c\"}\n{\"finalCount\":-9007199254740991,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-07-31T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"98469f127476c20d43a76cba04d61954f4975a52ca24e4cd8e587de42cca7e258ffe86d9004d8394c9970d38f1676f7f134e42eaa3761309bdb3aa4b5df5c70a\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s2",
+        "status": "sealed-session-missing"
+      }
+    ]
+  }
+}

@@ -1254,6 +1254,68 @@ func TestAcquireAfterRestartHonoursTheRegistrysSeal(t *testing.T) {
 	})
 }
 
+// A seal counting below zero closes its session where the engine checks
+// sealing, as it is loaded where the verifier reads the registry (SPEC.md §4
+// step 2; §6 loads a seal for /acquire as §4 does). No gateway writes one,
+// but a registry holding one, signed under the engine's key and naming its
+// keyId, seals the session, at -1 as at the least integer §1.1 admits: an acquisition into it is refused before its
+// source starts, an action is refused at the session step, and sealing it
+// again is refused. A session the registry does not seal is the control.
+func TestASealCountingBelowZeroClosesItsSession(t *testing.T) {
+	service, _ := testService(t)
+	registry, err := os.OpenFile(service.regPath, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv := ed25519.NewKeyFromSeed(testSeed)
+	if _, err := registry.WriteString(sealLine(t, priv, "below-zero", -1) + sealLine(t, priv, "least", minSafeInteger)); err != nil {
+		registry.Close()
+		t.Fatal(err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, check := range []struct {
+		name string
+		why  func(string) string
+	}{
+		{"an acquisition's registry check", service.sealedElsewhere},
+		{"an action's session step", service.sessionOpen},
+	} {
+		if got := check.why("below-zero"); !strings.Contains(got, "sealed in the registry") {
+			t.Fatalf("%s took a session sealed at -1 for open: %q", check.name, got)
+		}
+		if got := check.why("least"); !strings.Contains(got, "sealed in the registry") {
+			t.Fatalf("%s took a session sealed at the least integer SPEC.md §1.1 admits for open: %q", check.name, got)
+		}
+		if got := check.why("unsealed"); got != "" {
+			t.Fatalf("%s refused a session the registry does not seal: %q", check.name, got)
+		}
+	}
+
+	started := filepath.Join(t.TempDir(), "source-started")
+	t.Setenv(envSourceReady, started)
+	if _, err := service.acquire("below-zero", "screening", vString("x"), nil); err == nil || !strings.Contains(err.Error(), "sealed in the registry") || !errors.As(err, new(badRequest)) {
+		t.Fatalf("an acquisition into a session sealed at -1: %v", err)
+	}
+	if service.started.Load() != 0 {
+		t.Fatal("a source started for a session sealed at -1")
+	}
+	if _, err := os.Stat(started); err == nil {
+		t.Fatal("the source ran for a session sealed at -1")
+	}
+	// Unchanged behaviour, not the fix: the writer refuses a seal for a
+	// session that any parseable line of the registry names, whatever that
+	// line's count or signature, so it refused this one before the fix too.
+	if _, err := service.registry.seal("below-zero", 0, nowStamp()); err == nil || !strings.Contains(err.Error(), "already sealed") {
+		t.Fatalf("a second seal of a session sealed at -1: %v", err)
+	}
+	if _, err := service.acquire("unsealed", "screening", vString("x"), nil); err != nil {
+		t.Fatalf("an acquisition into a session the registry does not seal: %v", err)
+	}
+}
+
 func TestSealRefusesWhileAnAcquisitionIsInFlight(t *testing.T) {
 	service, _ := testService(t)
 

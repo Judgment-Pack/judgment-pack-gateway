@@ -92,7 +92,11 @@ both parts is held by a test.
   `finalCount` an integer and nothing more, and §4 step 2 loads a seal on its
   key id and signature; it is then the session's first loadable seal, and a
   session against it is `count-exceeds-seal` (§4 step 3), since any count of
-  files exceeds it.
+  files exceeds it. The reference dropped such a seal when this was written;
+  it now loads it too: `corpus/stores/negative-seal-count-loads.json` holds
+  both implementations to the reading, and
+  `corpus/stores/negative-seal-count-session-missing.json` holds them to it
+  for a session the store lacks, sealed at the least integer §1.1 admits.
 - **A spelling §4.1 refuses is refused before anything is read**, the store
   included.
 - **A decision-record directory named without a trailing separator that is a

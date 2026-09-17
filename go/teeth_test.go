@@ -772,12 +772,6 @@ func TestLoadSealDropShapes(t *testing.T) {
 			why: "parseJSON rejects duplicate names (canon.go:254); never reaches the seal checks",
 		},
 		{
-			name:     "negative finalCount with correct signature",
-			lines:    sealLine(t, priv, session, -1),
-			wantSeal: 0,
-			why:      "correctly signed but count < 0; isolates the count check",
-		},
-		{
 			name: "signature is valid hex but wrong length (4 chars)",
 			lines: func() string {
 				sig := ed25519.Sign(priv, sealSigningInput(session, 5, "t", kid))
@@ -834,6 +828,11 @@ func TestLoadSealDropShapes(t *testing.T) {
 			}(),
 			why: "signature is well-formed but fails verification",
 		},
+		{
+			name:  "finalCount one below the canonical range, correctly signed",
+			lines: sealLine(t, priv, session, minSafeInteger-1),
+			why:   "parseJSON refuses an integer outside SPEC.md §1.1's range, so a seal counting -2^53 never reaches the seal checks, while one counting -(2^53-1) loads (below)",
+		},
 
 		// must NOT drop
 		{
@@ -849,6 +848,20 @@ func TestLoadSealDropShapes(t *testing.T) {
 			wantSeal: 1,
 			wantCID:  0,
 			why:      "0 is a valid finalCount",
+		},
+		{
+			name:     "negative finalCount with correct signature loads",
+			lines:    sealLine(t, priv, session, -1),
+			wantSeal: 1,
+			wantCID:  -1,
+			why:      "SPEC.md §3 makes finalCount an integer (§1.1) and nothing more, and §4 step 2 drops a seal for its keyId or its signature, never for its count: a validly signed seal counting below zero loads",
+		},
+		{
+			name:     "the least finalCount the canonical parser admits loads",
+			lines:    sealLine(t, priv, session, minSafeInteger),
+			wantSeal: 1,
+			wantCID:  minSafeInteger,
+			why:      "a validly signed seal counting -(2^53-1), the least integer SPEC.md §1.1 admits, loads",
 		},
 		{
 			name:     "blank and whitespace lines beside a good seal",
@@ -873,6 +886,22 @@ func TestLoadSealDropShapes(t *testing.T) {
 			wantCID:  3,
 			why:      "both orders must agree: the first line's count wins",
 		},
+		{
+			name:     "tie-break: first wins (-1 then 1)",
+			lines:    sealLine(t, priv, session, -1) + sealLine(t, priv, session, 1),
+			wantSeal: 1,
+			wantCID:  -1,
+			why:      "a seal counting below zero is loadable, so it is the first loadable seal and the later one is dropped",
+		},
+		{
+			name: "tie-break: first by line, not by sealedAt (3 at :02, 1 at :01, 5 at :03)",
+			lines: sealLineAt(t, priv, session, 3, "2026-07-31T00:00:02Z") +
+				sealLineAt(t, priv, session, 1, "2026-07-31T00:00:01Z") +
+				sealLineAt(t, priv, session, 5, "2026-07-31T00:00:03Z"),
+			wantSeal: 1,
+			wantCID:  3,
+			why:      "the first seal is the first line (§3's registry is append-only, one seal per line); a reader letting the earliest or latest sealedAt, the last line, or the smallest or largest count win loads 1 or 5",
+		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			regPath := filepath.Join(t.TempDir(), "registry.jsonl")
@@ -880,7 +909,7 @@ func TestLoadSealDropShapes(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			seals, _, err := loadSeals(regPath, pub)
+			seals, order, err := loadSeals(regPath, pub)
 			if err != nil {
 				t.Fatalf("loadSeals returned error: %v", err)
 			}
@@ -888,11 +917,86 @@ func TestLoadSealDropShapes(t *testing.T) {
 			if len(seals) != tt.wantSeal {
 				t.Fatalf("loadSeals loaded %d seal(s), want %d — %s", len(seals), tt.wantSeal, tt.why)
 			}
+			// The order is what §4 step 4 walks for a sealed session the
+			// store lacks, so a loaded seal missing from it is never
+			// reported missing.
+			if len(order) != len(seals) {
+				t.Fatalf("loadSeals ordered %d session(s) for %d seal(s): %v — %s", len(order), len(seals), order, tt.why)
+			}
+			for _, sessionID := range order {
+				if _, ok := seals[sessionID]; !ok {
+					t.Fatalf("loadSeals ordered session %q it did not load — %s", sessionID, tt.why)
+				}
+			}
 
 			for _, s := range seals {
 				if s.finalCount != tt.wantCID {
 					t.Fatalf("got finalCount=%d, want %d — %s", s.finalCount, tt.wantCID, tt.why)
 				}
+			}
+		})
+	}
+}
+
+// A seal counting below zero is a session's seal like any other (SPEC.md §3,
+// §4 step 2), and the store of issue #131 is judged against it: one receipt
+// in s1, and two validly signed seals for s1, counting -1 and then 1. The
+// first loadable seal wins, so the session's one receipt exceeds a sealed
+// count of -1 -- never ok against the seal that follows it. In the other
+// order the seal counting 1 is first, and the session verifies.
+func TestASealCountingBelowZeroIsTheSessionsSeal(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		counts []int64
+		wantOK bool
+		want   []map[string]any
+	}{
+		{
+			name:   "-1 then 1",
+			counts: []int64{-1, 1},
+			wantOK: false,
+			want: []map[string]any{
+				{"sessionId": "s1", "callIndex": 0, "status": "ok"},
+				{"sessionId": "s1", "status": "count-exceeds-seal", "have": 1, "sealed": -1},
+			},
+		},
+		{
+			name:   "1 then -1",
+			counts: []int64{1, -1},
+			wantOK: true,
+			want: []map[string]any{
+				{"sessionId": "s1", "callIndex": 0, "status": "ok"},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			st, _, storeRoot, registryPath := testStore(t)
+			stampSession(t, st, "s1", 1)
+			var lines string
+			for _, count := range tt.counts {
+				lines += sealLine(t, st.private, "s1", count)
+			}
+			if err := os.WriteFile(registryPath, []byte(lines), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			rep, err := verifyWithRegistry(storeRoot, registryPath, "gateway:test", st.publicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := rep.marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded struct {
+				OK       bool             `json:"ok"`
+				Findings []map[string]any `json:"findings"`
+			}
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			have, want := strings.Join(sortedFindings(decoded.Findings), "|"), strings.Join(sortedFindings(tt.want), "|")
+			if decoded.OK != tt.wantOK || have != want {
+				t.Fatalf("ok=%v findings %s\nwant ok=%v findings %s", decoded.OK, have, tt.wantOK, want)
 			}
 		})
 	}

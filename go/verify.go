@@ -1,6 +1,6 @@
 package main
 
-// Registry-anchored verification of a receipt store (SPEC.md §1-§3).
+// Registry-anchored verification of a receipt store (SPEC.md §1-§4).
 //
 // The shape is: run the inline per-receipt verification over every session in
 // the store, reconstruct each session's callIndex sequence and prevSignature
@@ -28,7 +28,7 @@ import (
 	"syscall"
 )
 
-// Domain separation. SPEC.md §2: the context prefix is what stops a seal
+// Domain separation. SPEC.md §3: the context prefix is what stops a seal
 // signature being replayed as a receipt signature or vice versa.
 const (
 	receiptContext = "judgment-pack-gateway/receipt/2:"
@@ -52,7 +52,7 @@ func (r *report) marshal() ([]byte, error) {
 
 // keyIDFor is the identifier a receipt carries so an implementation can tell
 // "signed by a key I do not hold" from "signed by my key and tampered with",
-// without the receipt ever carrying a key (SPEC.md §4).
+// without the receipt ever carrying a key (SPEC.md §5).
 func keyIDFor(publicKey []byte) string {
 	sum := sha256.Sum256(publicKey)
 	return hex.EncodeToString(sum[:])[:32]
@@ -173,7 +173,7 @@ type seal struct {
 	finalCount int64
 }
 
-// sealSigningInput is spelled out by SPEC.md §2: the seal context prefix, then
+// sealSigningInput is spelled out by SPEC.md §3: the seal context prefix, then
 // canon over exactly these four members.
 func sealSigningInput(sessionID string, finalCount int64, sealedAt, keyID string) []byte {
 	covered := newObject()
@@ -428,7 +428,9 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 
 // loadSeals reads the append-only registry and drops any seal whose keyId is not
 // the verifier's own or whose signature does not verify under the public key. A malformed line is
-// likewise not a seal, so it is dropped too.
+// likewise not a seal, so it is dropped too. A finalCount below zero is not
+// malformed: it is an integer within SPEC.md §1.1's range, which is all §3
+// asks of it.
 //
 // An absent registry loads no seals, which grades every session in the store
 // `unregistered-session`. A registry that is present and unreachable is not
@@ -489,8 +491,15 @@ func parseSeals(data []byte, publicKey []byte) (map[string]seal, []string) {
 		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
 			continue
 		}
+		// Any integer the canonical parser admits: SPEC.md §3 makes
+		// finalCount an integer (§1.1) and nothing more, and parseJSON has
+		// already refused a line holding one outside §1.1's range. So a seal
+		// counting below zero that passes the checks below loads like any
+		// other -- and, as the first for its session, is the one the
+		// session's count is compared with
+		// (corpus/stores/negative-seal-count-loads.json).
 		count, ok := countV.(vInt)
-		if !ok || count < 0 {
+		if !ok {
 			continue
 		}
 		sig, err := hex.DecodeString(sigHex)
@@ -510,8 +519,10 @@ func parseSeals(data []byte, publicKey []byte) (map[string]seal, []string) {
 			continue
 		}
 		if _, seen := seals[sessionID]; seen {
-			// SPEC.md §2 says re-sealing a session is refused, so a second
-			// seal for one session should not exist. See AMBIGUITIES.md.
+			// SPEC.md §3 refuses re-sealing a session, so a conforming
+			// gateway writes no second seal for one; where a registry holds
+			// one anyway, §4 step 2 lets the first loadable seal win, first
+			// in the registry's lines. See AMBIGUITIES.md, section 9.
 			continue
 		}
 		seals[sessionID] = seal{sessionID: sessionID, finalCount: int64(count)}
@@ -654,7 +665,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		return nil, err
 	}
 
-	// SPEC.md §3 step 3: every session in the store must be anchored.
+	// SPEC.md §4 step 3: every session in the store must be anchored.
 	for _, sessionID := range sessions {
 		s, sealed := seals[sessionID]
 		have := counts[sessionID]
@@ -675,7 +686,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 			})
 		}
 	}
-	// SPEC.md §3 step 4: every sealed session must still be in the store.
+	// SPEC.md §4 step 4: every sealed session must still be in the store.
 	inStore := map[string]bool{}
 	for _, s := range sessions {
 		inStore[s] = true

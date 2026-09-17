@@ -1,0 +1,26 @@
+{
+  "name": "negative-seal-count-loads",
+  "note": "Three seals for session s1, all signed by the key and naming its keyId. In line order they count -1 (sealedAt 2026-07-31T00:00:02Z), -2 (00:00:01Z) and 1 (00:00:03Z). §3 makes finalCount an integer (§1.1) and nothing more, and §4 step 2 loads a seal on its keyId and signature, the first loadable seal for a session winning: first in the registry, which §3 makes an append-only file of one seal per line, and whose sealedAt it gives no form to order by. So the seal counting -1 LOADS and wins, and the one receipt present exceeds it: count-exceeds-seal against -1. A verifier that drops a seal for counting below zero, or lets the last seal, the largest count or the latest sealedAt win, grades this store ok; one that lets the smallest count or the earliest sealedAt win compares the receipt with -2.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:fab115d81199f3eb681db3e8c6162d350fad4bb9fd4546b7bd39b8c2e803ac66\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-07-31T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"a8a6b7901c6a116adba1475806576d5bf31a8d9b6543ed0cd338e2f729876ffe041e8df6c5cbbaacf6d7ef491ce1a9cccc0a736bbc09903252487ff87c330f06\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":-1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-07-31T00:00:02Z\",\"sessionId\":\"s1\",\"signature\":\"5d25c3ced900ae39cedf3c6a6b6305fa80f4caa005f32c4b108a3f4dc4d4e7cec222f0383d5ba3f698b71522dbc8d951e441182cb45b2564c4f7f0ae5eb82a0d\"}\n{\"finalCount\":-2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-07-31T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"222a0601d0cae3a014928fa1bdfb0fff349431cb9b08e2a1cb94763898846be186869db2a499b6b5d19a3e264be4375fdf6ed7226af56f337258a5f168dafe0b\"}\n{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-07-31T00:00:03Z\",\"sessionId\":\"s1\",\"signature\":\"9220465e3ab642d3c7fd303c77fccc54830b6d15912a5e5c0c31994c1baca567fa9aa3574919c8048a1b2a344c328d734667743c8699b9b48aaa1afe13222f0c\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "status": "count-exceeds-seal",
+        "have": 1,
+        "sealed": -1
+      }
+    ]
+  }
+}
