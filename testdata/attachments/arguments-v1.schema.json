@@ -31,7 +31,7 @@
         "bytes": {
           "type": "string",
           "minLength": 4,
-          "description": "the document in standard base64 (RFC 4648 section 4), padded, no line breaks"
+          "description": "the document in standard base64 (RFC 4648 section 4), padded, no line breaks, every unused bit of the last group zero: the one encoding of its bytes"
         },
         "sha256": {
           "type": "string",

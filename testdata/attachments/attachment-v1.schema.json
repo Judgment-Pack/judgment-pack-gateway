@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Document attachment record, version 1",
-  "description": "The result adapter-document writes for one document (docs/design/attachments.md). The producer's schema: members and enumerations closed. The design note is normative, and names rules this schema does not hold; a consumer validates for compatibility (unknown members and enumeration values tolerated), not with this schema.",
+  "description": "The result adapter-document writes for one document (docs/design/attachments.md), each value checked on its own: member sets, types, enumerations, ranges and lexical forms. It relates no value to another; the note's rules that do are checked by attachment.Check (adapters/attachment). A consumer validates for compatibility, not with this producer's schema.",
   "type": "object",
   "required": [
     "attachmentVersion",
@@ -28,19 +28,20 @@
       ],
       "properties": {
         "id": {
-          "$ref": "#/$defs/digest"
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
         },
         "name": {
           "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
           "minLength": 1,
           "maxLength": 255,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
-          "description": "at most 255 bytes of UTF-8, no control character; maxLength counts code points, so the byte limit is an application check"
+          "description": "1 to 255 bytes of UTF-8 with no control character; maxLength counts code points, so the byte limit is the check's"
         },
         "mediaType": {
           "type": "string",
-          "maxLength": 255,
-          "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
+          "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(?![\\s\\S])",
+          "maxLength": 255
         },
         "detectedMediaType": {
           "enum": [
@@ -51,8 +52,8 @@
         },
         "size": {
           "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "minimum": 0
         },
         "version": {
           "type": [
@@ -61,29 +62,43 @@
           ]
         },
         "encryption": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "required": [
-            "handler",
-            "revision",
-            "opened"
-          ],
-          "properties": {
-            "handler": {
-              "type": "string"
+          "anyOf": [
+            {
+              "type": "null"
             },
-            "revision": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 9007199254740991
-            },
-            "opened": {
-              "type": "boolean"
+            {
+              "type": "object",
+              "required": [
+                "handler",
+                "revision",
+                "opened"
+              ],
+              "properties": {
+                "handler": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "revision": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "integer",
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991
+                    }
+                  ]
+                },
+                "opened": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
             }
-          },
-          "additionalProperties": false
+          ]
         }
       },
       "additionalProperties": false
@@ -109,12 +124,16 @@
           ]
         },
         "bytes": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 4,
-          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?(?![\\s\\S])",
+              "minLength": 4
+            }
+          ]
         }
       },
       "additionalProperties": false
@@ -144,193 +163,93 @@
         },
         "pageCount": {
           "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "minimum": 0
         },
         "truncated": {
           "type": "boolean"
         },
         "chars": {
           "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "minimum": 0
         },
         "pages": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/page"
+            "type": "object",
+            "required": [
+              "number",
+              "status",
+              "extraction",
+              "text",
+              "chars",
+              "unmapped"
+            ],
+            "properties": {
+              "number": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "minimum": 1
+              },
+              "status": {
+                "enum": [
+                  "ok",
+                  "no-text",
+                  "needs-ocr",
+                  "failed"
+                ]
+              },
+              "extraction": {
+                "enum": [
+                  "text-layer",
+                  "ocr",
+                  "verbatim",
+                  "none"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "a string text normalisation can yield (docs/design/attachments.md, Text normalisation): no character from U+0000 to U+0008, U+000B to U+001F or U+007F, so no carriage return; and, unless empty, a first line and a last line each holding a character other than U+0020, U+0009 and a line feed",
+                "allOf": [
+                  {
+                    "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F]*(?![\\s\\S])"
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "maxLength": 0
+                      },
+                      {
+                        "allOf": [
+                          {
+                            "pattern": "^[ \\t]*[^ \\t\\n]"
+                          },
+                          {
+                            "pattern": "[^ \\t\\n][^\\n]*(?![\\s\\S])"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "chars": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "minimum": 0
+              },
+              "unmapped": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
           }
         }
       },
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "extraction": {
-                "const": "none"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "pages": {
-                "items": {
-                  "properties": {
-                    "extraction": {
-                      "enum": [
-                        "none"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "extraction": {
-                "const": "text-layer"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "pages": {
-                "items": {
-                  "properties": {
-                    "extraction": {
-                      "enum": [
-                        "text-layer",
-                        "none"
-                      ]
-                    }
-                  }
-                },
-                "contains": {
-                  "properties": {
-                    "extraction": {
-                      "const": "text-layer"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "extraction": {
-                "const": "ocr"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "pages": {
-                "items": {
-                  "properties": {
-                    "extraction": {
-                      "enum": [
-                        "ocr",
-                        "none"
-                      ]
-                    }
-                  }
-                },
-                "contains": {
-                  "properties": {
-                    "extraction": {
-                      "const": "ocr"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "extraction": {
-                "const": "mixed"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "pages": {
-                "items": {
-                  "properties": {
-                    "extraction": {
-                      "enum": [
-                        "text-layer",
-                        "ocr",
-                        "none"
-                      ]
-                    }
-                  }
-                },
-                "allOf": [
-                  {
-                    "contains": {
-                      "properties": {
-                        "extraction": {
-                          "const": "text-layer"
-                        }
-                      }
-                    }
-                  },
-                  {
-                    "contains": {
-                      "properties": {
-                        "extraction": {
-                          "const": "ocr"
-                        }
-                      }
-                    }
-                  }
-                ]
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "extraction": {
-                "const": "verbatim"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "pages": {
-                "items": {
-                  "properties": {
-                    "extraction": {
-                      "enum": [
-                        "verbatim",
-                        "none"
-                      ]
-                    }
-                  }
-                },
-                "contains": {
-                  "properties": {
-                    "extraction": {
-                      "const": "verbatim"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      ]
+      "additionalProperties": false
     },
     "processing": {
       "type": "object",
@@ -351,7 +270,52 @@
         "errors": {
           "type": "array",
           "items": {
-            "$ref": "#/$defs/error"
+            "type": "object",
+            "required": [
+              "code",
+              "message",
+              "page"
+            ],
+            "properties": {
+              "code": {
+                "enum": [
+                  "media-type-unsupported",
+                  "media-type-mismatch",
+                  "document-over-bound",
+                  "document-empty",
+                  "pdf-malformed",
+                  "pdf-encrypted",
+                  "pdf-unsupported",
+                  "pdf-page-failed",
+                  "pdf-pages-over-bound",
+                  "text-over-bound",
+                  "stream-over-bound",
+                  "timeout",
+                  "ocr-not-run",
+                  "ocr-failed",
+                  "ocr-incomplete",
+                  "ocr-timeout"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 512,
+                "description": "at most 512 bytes of UTF-8; maxLength counts code points, so the byte limit is the check's"
+              },
+              "page": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "minimum": 1
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
           }
         },
         "bounds": {
@@ -367,41 +331,41 @@
           "properties": {
             "maxBytes": {
               "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 9007199254740991,
+              "minimum": 1
             },
             "maxPages": {
               "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 9007199254740991,
+              "minimum": 1
             },
             "maxTextBytes": {
               "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 9007199254740991,
+              "minimum": 1
             },
             "maxInflateBytes": {
               "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 9007199254740991,
+              "minimum": 1
             },
             "maxOcrOutputBytes": {
               "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 9007199254740991,
+              "minimum": 1
             },
             "timeoutMs": {
               "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 9007199254740991,
+              "minimum": 1
             }
           },
           "additionalProperties": false
         },
         "durationMs": {
           "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
+          "maximum": 9007199254740991,
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -432,7 +396,8 @@
               "type": "string"
             },
             "digest": {
-              "$ref": "#/$defs/digest"
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
             }
           },
           "additionalProperties": false
@@ -452,667 +417,63 @@
               "additionalProperties": false
             }
           ],
-          "description": "one variant per source kind; version 1 has one, and a later kind is added with its members as the note's changelog records"
+          "description": "one variant per source kind; version 1 has one, and a later kind arrives with its members as the note's changelog records"
         },
         "observedAt": {
           "type": "string",
-          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
-          "description": "YYYY-MM-DDThh:mm:ssZ, UTC, whole seconds; that the date and time exist is an application check"
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])",
+          "description": "YYYY-MM-DDThh:mm:ssZ, UTC, whole seconds; that the day exists in its month is the check's"
         },
         "processor": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
-        },
-        "ocr": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "required": [
-            "program",
-            "digest",
-            "pages"
-          ],
-          "properties": {
-            "program": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
               "type": "string",
               "minLength": 1
-            },
-            "digest": {
-              "$ref": "#/$defs/digest"
-            },
-            "pages": {
-              "type": "array",
-              "items": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 9007199254740991
-              },
-              "minItems": 1,
-              "uniqueItems": true
             }
-          },
-          "additionalProperties": false
+          ]
+        },
+        "ocr": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "program",
+                "digest",
+                "pages"
+              ],
+              "properties": {
+                "program": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+                },
+                "pages": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "minimum": 1
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "additionalProperties": false
     }
   },
-  "$defs": {
-    "digest": {
-      "type": "string",
-      "description": "\"sha256:\" followed by exactly 64 lowercase hexadecimal characters",
-      "pattern": "^sha256:[0-9a-f]{64}$"
-    },
-    "page": {
-      "type": "object",
-      "required": [
-        "number",
-        "status",
-        "extraction",
-        "text",
-        "chars",
-        "unmapped"
-      ],
-      "properties": {
-        "number": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
-        },
-        "status": {
-          "enum": [
-            "ok",
-            "no-text",
-            "needs-ocr",
-            "failed"
-          ]
-        },
-        "extraction": {
-          "enum": [
-            "text-layer",
-            "ocr",
-            "verbatim",
-            "none"
-          ]
-        },
-        "text": {
-          "type": "string",
-          "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F]*$",
-          "description": "normalised text (docs/design/attachments.md, Text normalisation): no carriage return and no control character but tab and line feed; the other normalisation rules are application checks"
-        },
-        "chars": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
-        "unmapped": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        }
-      },
-      "additionalProperties": false,
-      "allOf": [
-        {
-          "if": {
-            "properties": {
-              "status": {
-                "const": "ok"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "text": {
-                "minLength": 1
-              },
-              "extraction": {
-                "enum": [
-                  "text-layer",
-                  "ocr",
-                  "verbatim"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "status": {
-                "const": "no-text"
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "text": {
-                "const": ""
-              },
-              "chars": {
-                "const": 0
-              },
-              "extraction": {
-                "enum": [
-                  "text-layer",
-                  "ocr",
-                  "verbatim"
-                ]
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "status": {
-                "enum": [
-                  "needs-ocr",
-                  "failed"
-                ]
-              }
-            }
-          },
-          "then": {
-            "properties": {
-              "text": {
-                "const": ""
-              },
-              "chars": {
-                "const": 0
-              },
-              "extraction": {
-                "const": "none"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "extraction": {
-                "const": "text-layer"
-              }
-            }
-          },
-          "then": true,
-          "else": {
-            "properties": {
-              "unmapped": {
-                "const": 0
-              }
-            }
-          }
-        }
-      ]
-    },
-    "error": {
-      "type": "object",
-      "required": [
-        "code",
-        "message",
-        "page"
-      ],
-      "properties": {
-        "code": {
-          "enum": [
-            "media-type-unsupported",
-            "media-type-mismatch",
-            "document-over-bound",
-            "document-empty",
-            "pdf-malformed",
-            "pdf-encrypted",
-            "pdf-unsupported",
-            "pdf-page-failed",
-            "pdf-pages-over-bound",
-            "text-over-bound",
-            "stream-over-bound",
-            "timeout",
-            "ocr-not-run",
-            "ocr-failed",
-            "ocr-incomplete",
-            "ocr-timeout"
-          ]
-        },
-        "message": {
-          "type": "string",
-          "maxLength": 512,
-          "description": "at most 512 bytes of UTF-8; maxLength counts code points, so the byte limit is an application check"
-        },
-        "page": {
-          "type": [
-            "integer",
-            "null"
-          ],
-          "minimum": 1,
-          "maximum": 9007199254740991
-        }
-      },
-      "additionalProperties": false
-    }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "processing": {
-            "properties": {
-              "status": {
-                "const": "failed"
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "content": {
-            "properties": {
-              "pages": {
-                "maxItems": 0
-              }
-            }
-          },
-          "processing": {
-            "properties": {
-              "errors": {
-                "minItems": 1,
-                "items": {
-                  "properties": {
-                    "code": {
-                      "not": {
-                        "enum": [
-                          "pdf-page-failed",
-                          "ocr-not-run",
-                          "ocr-failed",
-                          "ocr-incomplete",
-                          "ocr-timeout"
-                        ]
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "processing": {
-            "properties": {
-              "status": {
-                "const": "partial"
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "content": {
-            "properties": {
-              "pages": {
-                "minItems": 1
-              }
-            }
-          },
-          "processing": {
-            "properties": {
-              "errors": {
-                "minItems": 1,
-                "items": {
-                  "properties": {
-                    "code": {
-                      "not": {
-                        "enum": [
-                          "media-type-unsupported",
-                          "media-type-mismatch",
-                          "document-over-bound",
-                          "document-empty",
-                          "pdf-malformed",
-                          "pdf-encrypted"
-                        ]
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "processing": {
-            "properties": {
-              "status": {
-                "const": "complete"
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "content": {
-            "properties": {
-              "truncated": {
-                "const": false
-              },
-              "pages": {
-                "minItems": 1,
-                "items": {
-                  "properties": {
-                    "status": {
-                      "enum": [
-                        "ok",
-                        "no-text"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "processing": {
-            "properties": {
-              "errors": {
-                "maxItems": 0
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "content": {
-            "properties": {
-              "pages": {
-                "contains": {
-                  "properties": {
-                    "extraction": {
-                      "const": "ocr"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "provenance": {
-            "properties": {
-              "ocr": {
-                "type": "object"
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "provenance": {
-            "properties": {
-              "ocr": {
-                "const": null
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "processing": {
-            "properties": {
-              "errors": {
-                "contains": {
-                  "properties": {
-                    "code": {
-                      "enum": [
-                        "ocr-not-run",
-                        "ocr-failed",
-                        "ocr-timeout"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "content": {
-            "properties": {
-              "pages": {
-                "items": {
-                  "properties": {
-                    "extraction": {
-                      "not": {
-                        "const": "ocr"
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "document": {
-            "properties": {
-              "encryption": {
-                "type": "object",
-                "properties": {
-                  "opened": {
-                    "const": false
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "processing": {
-            "properties": {
-              "status": {
-                "const": "failed"
-              },
-              "errors": {
-                "contains": {
-                  "properties": {
-                    "code": {
-                      "const": "pdf-encrypted"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "processing": {
-            "properties": {
-              "errors": {
-                "contains": {
-                  "properties": {
-                    "code": {
-                      "enum": [
-                        "pdf-encrypted"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "document": {
-            "properties": {
-              "encryption": {
-                "type": "object",
-                "properties": {
-                  "opened": {
-                    "const": false
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "processing": {
-            "properties": {
-              "errors": {
-                "contains": {
-                  "properties": {
-                    "code": {
-                      "enum": [
-                        "media-type-unsupported",
-                        "media-type-mismatch",
-                        "document-over-bound",
-                        "document-empty"
-                      ]
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "provenance": {
-            "properties": {
-              "processor": {
-                "const": null
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "provenance": {
-            "properties": {
-              "processor": {
-                "type": "string"
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "provenance": {
-            "properties": {
-              "source": {
-                "properties": {
-                  "kind": {
-                    "const": "inline"
-                  }
-                }
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "document": {
-            "properties": {
-              "version": {
-                "const": null
-              }
-            }
-          },
-          "original": {
-            "properties": {
-              "retention": {
-                "const": "caller"
-              }
-            }
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "original": {
-            "properties": {
-              "retention": {
-                "const": "inline"
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "properties": {
-          "original": {
-            "properties": {
-              "encoding": {
-                "const": "base64"
-              },
-              "bytes": {
-                "type": "string"
-              }
-            }
-          }
-        }
-      },
-      "else": {
-        "properties": {
-          "original": {
-            "properties": {
-              "encoding": {
-                "const": null
-              },
-              "bytes": {
-                "const": null
-              }
-            }
-          }
-        }
-      }
-    }
-  ],
   "additionalProperties": false
 }

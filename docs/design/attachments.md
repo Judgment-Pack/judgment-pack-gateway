@@ -94,23 +94,31 @@ refuses the request before anything is read.
 | `document` | object | required |
 | `document.name` | string | the name the caller gives the document: 1 to 255 bytes of UTF-8, no control character (U+0000–U+001F, U+007F). A label, carried into the record as given; the adapter derives nothing from it |
 | `document.mediaType` | string | the media type the caller declares: `type/subtype`, each part 1 to 127 characters, starting with a lowercase letter or digit and continuing with lowercase letters, digits and `! # $ & ^ _ . + -` (RFC 6838's restricted names, lowercase only), with no parameters. A declaration outside that syntax refuses the request. Version 1 processes `application/pdf`, `text/plain`, `text/markdown`, `text/csv` and `application/json`; any other declaration within the syntax yields a record whose processing failed with `media-type-unsupported` |
-| `document.bytes` | string | the document, in standard base64 (RFC 4648 §4, padded, no line breaks). Empty, or not base64, refuses the request |
+| `document.bytes` | string | the document, in standard base64 (RFC 4648 §4), padded, with no line break and every unused bit of the last group zero — the one encoding of its bytes, so that decoding and encoding again gives the same string. Empty, or anything else, refuses the request |
 | `document.sha256` | string — optional | the caller's own digest of the bytes, `"sha256:"` + 64 lowercase hex. When present it must equal the digest the adapter computes, or the request is refused: a mismatch is a transport defect, not a document to record |
 | `options` | object — optional | |
 | `options.ocr` | string — optional | `"auto"` (default): run the configured OCR program for the pages that need it; `"never"`: run it for none, and report those pages as needing it |
 
-**Refusals.** A refused request is the adapter exiting 1 with one line on stderr and nothing on
-stdout; the gateway then mints nothing and retains nothing. The request is refused when:
+**What the gateway refuses first.** The gateway reads `/acquire`'s body and parses the arguments
+before it starts a source (the acquire handler in `go/serve.go`): a body past its request bound,
+arguments that are not JSON, and arguments outside the canonical domain — a member name given
+twice, a fraction — are answered by the gateway in its own words, and the adapter never runs.
+What follows is the contract for requests that reach the adapter.
 
-- stdin holds more than the **read bound**, 4 × ⌈`--max-bytes` / 3⌉ + 65,536 bytes — the base64
-  length of a document at `--max-bytes`, plus room for the name, the media type, the digest and
-  the options at their longest — with the refusal code `request-over-bound`;
-- the decoded document is longer than `--max-bytes`, with `document-over-bound`: a request can
-  fit the read bound and still decode past the document bound, so the two are checked apart;
-- the decoded document's digest differs from `document.sha256`, with `digest-mismatch`;
-- anything else the arguments table refuses — not a JSON object, a member missing, unknown,
-  duplicated or of another type, a name or media type outside its rule, `bytes` empty or not
-  base64 — with `arguments-invalid`.
+**Refusals.** A refused request is the adapter exiting 1 with one line on stderr and nothing on
+stdout; the gateway then mints nothing and retains nothing. The adapter checks in this order and
+refuses at the first check that fails:
+
+1. stdin holds more than the **read bound**, 4 × ⌈`--max-bytes` / 3⌉ + 65,536 bytes — the base64
+   length of a document at `--max-bytes`, plus room for the name, the media type, the digest and
+   the options at their longest: `request-over-bound`;
+2. the arguments are not what the arguments table admits — not a JSON object, a member missing,
+   unknown, duplicated or of another type, a name or media type outside its rule, `bytes` empty
+   or not its one encoding, a `sha256` not in digest form, an `options.ocr` of another value:
+   `arguments-invalid`;
+3. the decoded document is longer than `--max-bytes`: `document-over-bound`. A request can fit
+   the read bound and still decode past the document bound, so the two are checked apart;
+4. the decoded document's digest differs from `document.sha256`: `digest-mismatch`.
 
 **An oversized inline document is refused, never recorded**, and a desk that knows the bound
 refuses it before the call. Everything the adapter admits — an unsupported type, an encrypted or
@@ -192,7 +200,7 @@ is frozen; what may be added within version 1 is in [Versioning](#versioning).
 | `detectedMediaType` | `"application/pdf"`, `"text/plain"` or `null` | what the bytes look like to the adapter, for the declarations it checks: `"application/pdf"` for a declared PDF whose first 1024 bytes contain `%PDF-`; `"text/plain"` for a declared text type whose bytes are valid UTF-8; `null` otherwise, and for a declaration version 1 does not process |
 | `size` | integer | the original's length in bytes |
 | `version` | string or `null` | a version the *source* reported for the document — a drive's file version — `null` for a document the caller supplied |
-| `encryption` | object or `null` | for a PDF that declares encryption: `{"handler": string, "revision": integer, "opened": boolean}` — the security handler's name and revision as the document states them, and whether the adapter could open it. Version 1 opens the standard handler with an empty user password (revisions 2 to 6: RC4 and AES); a document that needs a password, or uses another handler, is not opened and fails with `pdf-encrypted`. `null` for a document that declares no encryption |
+| `encryption` | object or `null` | `{"handler": string or null, "revision": integer or null, "opened": boolean}` when the adapter read a trailer that names an encryption dictionary: the dictionary's `/Filter` name as the document declares it, or `null` when that is absent or not a name; its `/R` as declared, any integer, or `null` when that is absent or not an integer; and whether the adapter opened the document. Version 1 opens only handler `Standard` at revisions 2 to 6 (RC4 and AES) with an empty user password; a document that needs a password, declares another handler or revision, or whose encryption dictionary cannot be read is not opened and fails with `pdf-encrypted`. `null` when the adapter read a trailer that names no encryption dictionary, and also when it did not get as far as a trailer — a mismatched or unsupported declaration, or a PDF that failed as `pdf-malformed` before its trailer was read — so `null` says no encryption was found, not that none exists |
 
 ### `original` — where the bytes are
 
@@ -213,8 +221,8 @@ bytes it holds (`"caller"`) or the bytes in the record (`"inline"`), checked aga
 |---|---|---|
 | `kind` | `"text"` | the only kind in version 1 |
 | `extraction` | `"text-layer"`, `"ocr"`, `"mixed"`, `"verbatim"` or `"none"` | derived from the listed pages' `extraction` values other than `"none"`: none of them — `"none"`; only `"text-layer"` — `"text-layer"`; only `"ocr"` — `"ocr"`; both of those — `"mixed"`; `"verbatim"` — `"verbatim"`. A page counts whatever its status, so a document of blank text-layer pages is `"text-layer"` |
-| `pageCount` | integer | how many pages the page-tree walk found, at most `maxPages` ([step 4](#how-a-document-is-processed)); `1` for a text document that reached step 3; `0` for a document that reached neither step |
-| `truncated` | boolean | `true` exactly when the document has, or may have, pages that are not listed: the walk stopped at the page bound or the deadline, or fewer pages are listed than `pageCount`. A page that is listed but still needs OCR does not make a record truncated. **Every listed page is whole**: its `text` is the whole of what produced it, never a fragment |
+| `pageCount` | integer | how many pages the page-tree walk found, at most `maxPages` ([step 4](#how-a-document-is-processed)); `1` for a text document that reached step 3; `0` for a document that reached neither step, or whose walk ended at a defect |
+| `truncated` | boolean | `true` exactly when the page-tree walk stopped at the page bound or at the deadline ([step 4](#how-a-document-is-processed)), or fewer pages are listed than `pageCount`; `false` otherwise, a document that failed before or during the walk for any other reason included. A page that is listed but still needs OCR does not make a record truncated. **Every listed page is whole**: its `text` is the whole of what produced it, never a fragment |
 | `chars` | integer | the sum of the pages' `chars` |
 | `pages` | array of page objects | in page order, one per listed page, numbers ascending and distinct, never more than `pageCount` |
 
@@ -281,8 +289,9 @@ of these four steps reproduces exactly.
 
 `document.id` says which bytes. It does not say which extraction: the same bytes under another
 bound, another `options.ocr`, another deadline, another OCR program or another `processor`
-yield other pages, and an OCR program's digest names the file started, not what that program in
-turn runs. So:
+yield other pages, and an OCR program's digest identifies the file the adapter read before it
+started the program — not a file replaced after that read, and not what the program in turn
+runs. So:
 
 - deduplicate **documents** by `document.id`;
 - bind a **citation** to the record it was taken from — the receipt's `sessionId`, `callIndex`
@@ -315,13 +324,13 @@ rule above and the step that meets each code:
 | `media-type-mismatch` | failed | the bytes are not what the declared type says: a declared PDF without `%PDF-` in its first 1024 bytes, a declared text type that is not valid UTF-8 |
 | `document-over-bound` | failed | a **retrieved** document exceeds `maxBytes`; nothing past the size check was done. An inline document past the bound is refused at the request and never reaches a record |
 | `document-empty` | failed | zero bytes — refused at the request, but named here for a source that fetched an empty file |
-| `pdf-malformed` | failed | not parseable as a PDF past recovery: no usable cross-reference and no objects found by scanning, no page tree or a page tree with no page, or a structure past the adapter's structure bounds |
+| `pdf-malformed` | failed | the reader stopped before the page-tree walk completed, for a reason other than encryption or the deadline ([step 4](#how-a-document-is-processed)) |
 | `pdf-encrypted` | failed | the document is encrypted and was not opened: a user password is required, or the handler or revision is not one the adapter implements |
-| `pdf-unsupported` | partial or failed | a feature the extractor does not implement stopped it: a stream filter it cannot decode, a predefined CMap it does not carry. With a page number when it stopped one page, which is then `"failed"`; without one when it stopped the document |
-| `pdf-page-failed` | partial | a page's content stream could not be interpreted; the page is listed as `"failed"` |
+| `pdf-unsupported` | partial | a page's content uses a stream filter the reader does not implement; the page named is listed as `"failed"` ([step 5](#how-a-document-is-processed)) |
+| `pdf-page-failed` | partial | a page's content could not be interpreted for another reason; the page named is listed as `"failed"` |
 | `pdf-pages-over-bound` | partial or failed | the walk found more pages than `maxPages`; the rest were not processed |
 | `text-over-bound` | partial or failed | a page's text would have taken the listed text past `maxTextBytes` ([steps 5 and 6](#how-a-document-is-processed)); the page named is the first one this stopped |
-| `stream-over-bound` | partial or failed | a stream inflated past the per-stream or total inflate bound; the object depending on it was not read |
+| `stream-over-bound` | partial | a stream of a page's content inflated past the per-stream or total inflate bound; the page named is listed as `"failed"`. A stream met in step 4 that does so is `pdf-malformed` |
 | `timeout` | partial or failed | a check of the adapter's deadline found it passed ([How a document is processed](#how-a-document-is-processed)); what was done before it is reported |
 | `ocr-not-run` | partial | pages need OCR and no program was started: none is configured, or the caller asked `"never"`. The message says which |
 | `ocr-failed` | partial | the OCR program was not resolved, digested or started, exited with a non-zero status, wrote past `maxOcrOutputBytes`, or wrote an answer that [step 6](#how-a-document-is-processed) refuses. **No answer of it is applied** |
@@ -343,10 +352,14 @@ status still says what the record is good for.
 
 ## How a document is processed
 
-The adapter works in this order, and the record is what these steps produced. The deadline
-(`--timeout`) is checked at the points named; the first check that finds it passed records
-`timeout` once, and the adapter goes to step 7. [Bounds and
-cancellation](#bounds-and-cancellation) says what the deadline does not interrupt.
+The adapter works in this order, and the record is what these steps produced.
+
+**The deadline.** `--timeout` runs from when the adapter starts, before it reads the request.
+Steps 4 and 5 check it at the points they name; the first of those checks to find it passed
+records `timeout`, and the adapter goes to step 7. Step 6 checks it once before it starts the OCR
+program — `timeout` again if it has passed — and a program already running when it passes is
+ended under `ocr-timeout` instead. A record carries at most one of the two.
+[Bounds and cancellation](#bounds-and-cancellation) says what the deadline does not interrupt.
 
 1. **Admit the request**, or refuse it ([Refusals](#the-arguments)). A refused request has no
    record.
@@ -355,22 +368,39 @@ cancellation](#bounds-and-cancellation) says what the deadline does not interrup
    declared text type whose bytes are not valid UTF-8, yields `media-type-mismatch`. Either is a
    `"failed"` record with `processor` `null`, and the adapter goes to step 7.
 3. **A text document** is one page: its characters, normalised, as [Page outcomes](#page-outcomes)
-   assigns them. If the page's text is longer than `maxTextBytes` in bytes of UTF-8, it is not
-   listed and `text-over-bound` names page 1. The adapter then goes to step 7.
-4. **A PDF is opened and its pages counted.** A document that cannot be parsed is
-   `pdf-malformed`; one that is encrypted and cannot be opened is `pdf-encrypted`, with
-   `encryption.opened` `false`; either is a `"failed"` record, and the adapter goes to step 7.
-   Otherwise the page tree is walked in document order until it ends or until `maxPages` + 1
-   pages are found, the deadline checked before each page-tree node. `pageCount` is the number found, at most `maxPages`. Finding
-   `maxPages` + 1 records `pdf-pages-over-bound`.
-5. **Each counted page is extracted**, from page 1 to page `pageCount`, the deadline checked
-   before each page, so a page not yet extracted when it passes is not listed, nor is any later
-   page. The page's outcome is assigned from [Page outcomes](#page-outcomes). An `"ok"` page's
-   text takes bytes of UTF-8 from the **text budget**, `maxTextBytes`; a page of any other
-   status takes none. An `"ok"` page whose text does not fit the budget left — a sum that
-   reaches the bound exactly fits — is not listed, `text-over-bound` names it, and no later page
-   is extracted or listed.
-6. **OCR**, when step 5 listed at least one `"needs-ocr"` page:
+   assigns them, and `pageCount` is 1. If the page's text is longer than `maxTextBytes` in bytes
+   of UTF-8, it is not listed and `text-over-bound` names page 1. The adapter then goes to
+   step 7.
+4. **A PDF is opened and its pages counted.** The adapter reads the cross-reference, the trailer
+   and the encryption dictionary the trailer names, and then walks the page tree in document
+   order, the deadline checked before each page-tree node. The walk ends in one of four ways:
+   - **it completes**: the tree ended, having named at least one page. `pageCount` is the
+     number of pages found, and the adapter goes on to step 5;
+   - **at the page bound**: a page past `maxPages` was found. `pageCount` is `maxPages`,
+     `pdf-pages-over-bound` is recorded, `truncated` is `true`, and the adapter goes on to
+     step 5;
+   - **at the deadline**: `pageCount` is the number of pages found so far, `timeout` is recorded,
+     `truncated` is `true`, and the adapter goes to step 7;
+   - **at a defect**: the document is encrypted and not opened — `pdf-encrypted`, with
+     `encryption.opened` `false` — or anything else stops the reader before the walk completes:
+     no usable cross-reference and no objects found by scanning, a page tree with no page, a
+     page-tree node that cannot be read, a stream it cannot decode or that inflates past a
+     bound, or a structure past a structure bound. That is `pdf-malformed`. Either way no page
+     is listed, `pageCount` is 0, `truncated` is `false`, and the adapter goes to step 7.
+5. **Each counted page is extracted**, from page 1 to page `pageCount`. The deadline is checked
+   before each page and between the operators the adapter interprets on it; a page whose
+   extraction the deadline interrupts is not listed, nor is any later page. The page's outcome
+   is assigned from [Page outcomes](#page-outcomes). A page whose content cannot be
+   interpreted is listed as `"failed"`, with one error naming it: `pdf-unsupported` for a
+   stream filter the reader does not implement, `stream-over-bound` for a stream that inflates
+   past a bound, and `pdf-page-failed` for anything else, a structure bound met on the page
+   included. A font the reader cannot use leaves its glyphs unmapped and counted in `unmapped`,
+   and an image is an image drawn whether or not it could be decoded; neither is an error. An
+   `"ok"` page's text takes bytes of UTF-8 from the **text budget**, `maxTextBytes`; a page of
+   any other status takes none. An `"ok"` page whose text does not fit the budget left — a sum
+   that reaches the bound exactly fits — is not listed, `text-over-bound` names it, and no later
+   page is extracted or listed.
+6. **OCR**, when step 5 listed at least one `"needs-ocr"` page and recorded no `timeout`:
    - with `options.ocr` `"never"`, or no `--ocr` program configured, nothing is started:
      `ocr-not-run`, and the pages stay `"needs-ocr"`;
    - otherwise the deadline is checked, and then the program named by `--ocr` is resolved on
@@ -400,12 +430,8 @@ cancellation](#bounds-and-cancellation) says what the deadline does not interrup
    - the numbers the program was given and its admitted answer did not include stay
      `"needs-ocr"`, and one `ocr-incomplete` counts them. An admitted answer of no pages is
      incomplete for all of them.
-7. **The record is written**: `truncated`, `content.extraction`, `chars` and `status` derived as
-   their tables say, `provenance.ocr` from the pages that took an answer.
-
-A page that fails in step 5 records `pdf-page-failed`, or `pdf-unsupported` or
-`stream-over-bound` with its page number, and is listed as `"failed"`. A condition that stops
-the document before any page is listed makes a `"failed"` record whatever its code.
+7. **The record is written**: `content.extraction`, `chars` and `status` derived as their
+   tables say, `provenance.ocr` from the pages that took an answer.
 
 A wrapper that renders pages and runs Tesseract is the expected OCR program; the contract admits
 any that keeps to step 6. The record says which pages took its answer, and nothing more: a wrong
@@ -421,22 +447,25 @@ that applied:
 | `--max-bytes` | 16 MiB | the decoded document; the read bound derives from it ([Refusals](#the-arguments)). A retrieved document past it is `document-over-bound` |
 | `--max-pages` | 500 | pages counted and listed; past it, `pdf-pages-over-bound` and `truncated` |
 | `--max-text` | 8 MiB | the text budget: the sum of applied page text, in bytes of UTF-8 after normalisation, OCR included; past it, `text-over-bound` ([steps 5 and 6](#how-a-document-is-processed)) |
-| `--max-inflate` | 64 MiB | the total a document's streams may inflate to, with 16 MiB for any one stream; past it, `stream-over-bound` — a small file that inflates without end is not read further |
+| `--max-inflate` | 64 MiB | the total a document's streams may inflate to, with 16 MiB for any one stream; past it, `stream-over-bound` on a page or `pdf-malformed` before the walk completes — a small file that inflates without end is not read further |
 | `--ocr-max-output` | 32 MiB | the OCR program's stdout; past it, `ocr-failed` |
 | `--max-output` | 1 MiB | the record on stdout; at or below the gateway's `--source-max-output`. A record that would exceed it is not cut: the adapter refuses with `record-over-bound`, and a document whose text or inline original cannot be carried is one the operator sizes the bounds for |
 | `--timeout` | 25 s | the adapter's deadline; past it, `timeout` or `ocr-timeout` |
 
-Object count, nesting depth, cross-reference chain length and page-tree depth are bounded by
-constants the adapter states in its documentation; a document past any of them is
-`pdf-malformed`.
+Each bound is a positive integer, and a duration for `--timeout`; a bound of zero or less is a
+usage error, and the adapter exits 2 without reading the request. Object count, nesting depth,
+cross-reference chain length, page-tree depth and operators per page are bounded by constants
+the adapter states in its documentation: one met while the document is opened or its page tree
+walked is `pdf-malformed` (step 4), and one met while a page is extracted fails that page
+(step 5).
 
 **A deadline is when work stops being started, not a completion guarantee.** The adapter checks
-its deadline at the points [the steps](#how-a-document-is-processed) name and between the
-objects it reads; an operation between two checks runs to its end. At the deadline it kills the
-OCR program — the process it started, not that process's own children — and waits up to two
-seconds for that process to exit and its pipes to close before writing the record. The record is therefore written some
-time after the deadline, which is why `--timeout` sits under the gateway's thirty seconds with
-room to spare.
+its deadline at the points [the steps](#how-a-document-is-processed) name, and an operation
+between two checks runs to its end. At the deadline it kills the OCR program — the process it
+started, not that process's own children — and waits up to two seconds for that process to exit
+and its pipes to close before writing the record. The record is therefore written some time
+after the deadline, which is why `--timeout` sits under the gateway's thirty seconds with room
+to spare.
 
 The gateway, for its part, cancels the source's context at thirty seconds (`runSource`,
 `go/serve.go`). On Unix it kills the source's process group, which holds the adapter, an OCR
@@ -501,9 +530,9 @@ ever removed, renamed, retyped or given another meaning. Within version `"1"`:
   that first writes it;
 - a value may be added to an enumeration, or a variant to `provenance.source`, recorded the
   same way;
-- an adapter writes exactly what this note and its changelog say, and the record schema beside
-  it is the **producer's** schema: members closed, enumerations closed, additions added as they
-  are made;
+- an adapter writes exactly what this note and its changelog say; the record schema beside it
+  and `attachment.Check` are the **producer's**: members closed, enumerations closed, additions
+  added as they are made;
 - a **consumer** validates for compatibility, not conformance: it tolerates a member it does
   not know at any depth, and reads an enumeration value it does not know as the class's
   unknown — an unknown `status` is not `"complete"`, an unknown page `status` is not `"ok"`, an
@@ -518,30 +547,34 @@ Changelog:
 
 - `"1"` — this note. Written by `adapter-document` from its first release.
 
-## The schemas and the examples
+## The schemas, the check and the examples
 
-`testdata/attachments/attachment-v1.schema.json` is the producer's record schema. It holds the
-member set, the types, the enumerations, the lexical forms of names, media types, digests,
-timestamps and base64, the combinations of page `status`, `extraction` and empty `text` that
-[Page outcomes](#page-outcomes) allows, the status rule where it can be written in JSON Schema,
-the codes each status admits, the derivation of `content.extraction`, and when
-`provenance.ocr` is an object. It is not the whole contract: rules that relate numbers or
-strings to each other are not in it — among them that `chars` counts the scalar values of `text` and
-`content.chars` sums them, that page numbers ascend and do not exceed `pageCount` or
-`maxPages`, that the listed text fits `maxTextBytes`, that `name` and `message` keep to their
-**byte** limits (`maxLength` counts code points), that `provenance.ocr.pages` names exactly the
-`"ocr"` pages, and that text is normalised. A producer's tests check those; a record that passes
-the schema is not thereby a record this note describes.
+`adapters/attachment` is the reference check of this note: `attachment.Check` takes a record's
+bytes and returns every rule of this note it finds broken, each under a rule identifier, or
+nothing. Its tests hold every example below to it, hold each of its rules to a record built to
+break it that must be refused under that rule's identifier, and fail when a rule has no such
+record; `adapter-document`, which follows this note in its own change, is to hold every record
+it writes to the same check. Where the check and this note disagree, the note is right and the
+check is a defect. The same package carries `NormalizeText`, which answers to
+`testdata/attachments/normalisation-v1.json`, and `IsNormalized`, the test for a string
+normalisation can yield — which is not "normalising it again changes nothing": a text that
+begins with U+FEFF behind a removed blank line keeps it, and a second pass would not.
+
+`testdata/attachments/attachment-v1.schema.json` checks **each value on its own**: the member
+set of every object, types, enumerations, ranges, and the lexical forms of names, media types,
+digests, timestamps, base64 and page text, with patterns written to mean the same under a
+JavaScript and a Python regular-expression engine. It relates no value to another — a page's
+status to its text, a code to a status, a count to a list — and a record that passes it is not
+thereby a record this note describes. Those relations are the check's.
 
 `testdata/attachments/arguments-v1.schema.json` describes the arguments within the descriptor
 grammar version 1 (`docs/design/tool-descriptors.md`), which admits no pattern: the media type's
-syntax, the base64 alphabet and the digest's form are the adapter's checks.
+syntax, the base64 encoding and the digest's form are the adapter's checks.
 
-`testdata/attachments/examples/` holds one record per outcome, each valid under the record
-schema. Every example's document fits the reference gateway's request bound as it stands. The
-digests in them are illustrative, except in `complete-verbatim-text.json` and
-`complete-blank-text.json`, whose documents are small enough to state: `"line one\r\nline
-two\r\n"` and `"\n"`.
+`testdata/attachments/examples/` holds one record per outcome. Every example's document fits the
+reference gateway's request bound as it stands. The digests in them are illustrative, except in
+`complete-verbatim-text.json` and `complete-blank-text.json`, whose documents are small enough to
+state: `"line one\r\nline two\r\n"` and `"\n"`.
 
 ## What this is not
 
