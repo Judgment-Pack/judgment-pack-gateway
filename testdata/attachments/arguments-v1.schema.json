@@ -25,7 +25,8 @@
         },
         "mediaType": {
           "type": "string",
-          "description": "type/subtype, lowercase, no parameters; version 1 processes application/pdf, text/plain, text/markdown, text/csv and application/json"
+          "maxLength": 255,
+          "description": "type/subtype, lowercase RFC 6838 restricted names, each part 1 to 127 characters, no parameters; a declaration outside that syntax is refused; version 1 processes application/pdf, text/plain, text/markdown, text/csv and application/json, and any other declaration within the syntax is recorded as media-type-unsupported"
         },
         "bytes": {
           "type": "string",

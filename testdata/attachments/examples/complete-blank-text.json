@@ -1,29 +1,29 @@
 {
   "attachmentVersion": "1",
   "content": {
-    "chars": 9,
-    "extraction": "text-layer",
+    "chars": 0,
+    "extraction": "verbatim",
     "kind": "text",
-    "pageCount": 40,
+    "pageCount": 1,
     "pages": [
       {
-        "chars": 9,
-        "extraction": "text-layer",
+        "chars": 0,
+        "extraction": "verbatim",
         "number": 1,
-        "status": "ok",
-        "text": "Chapter 1",
+        "status": "no-text",
+        "text": "",
         "unmapped": 0
       }
     ],
-    "truncated": true
+    "truncated": false
   },
   "document": {
-    "detectedMediaType": "application/pdf",
+    "detectedMediaType": "text/plain",
     "encryption": null,
-    "id": "sha256:e7bfdb9b8b40b3815d6c3b2df632f2e8819260d37c4212e21316c54b4c473a4f",
-    "mediaType": "application/pdf",
-    "name": "slow.pdf",
-    "size": 698880,
+    "id": "sha256:01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+    "mediaType": "text/plain",
+    "name": "blank.txt",
+    "size": 1,
     "version": null
   },
   "original": {
@@ -40,15 +40,9 @@
       "maxTextBytes": 8388608,
       "timeoutMs": 25000
     },
-    "durationMs": 25004,
-    "errors": [
-      {
-        "code": "timeout",
-        "message": "the deadline of 25000 ms had passed before page 2; pages 2 to 40 are not listed",
-        "page": null
-      }
-    ],
-    "status": "partial"
+    "durationMs": 1,
+    "errors": [],
+    "status": "complete"
   },
   "provenance": {
     "adapter": {
@@ -58,7 +52,7 @@
     },
     "observedAt": "2026-09-16T14:05:11Z",
     "ocr": null,
-    "processor": "adapter-document/pdf/1",
+    "processor": "adapter-document/text/1",
     "source": {
       "kind": "inline"
     }

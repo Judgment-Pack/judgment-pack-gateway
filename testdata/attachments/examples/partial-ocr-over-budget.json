@@ -1,32 +1,32 @@
 {
   "attachmentVersion": "1",
   "content": {
-    "chars": 264,
-    "extraction": "text-layer",
+    "chars": 55,
+    "extraction": "mixed",
     "kind": "text",
     "pageCount": 3,
     "pages": [
       {
-        "chars": 159,
+        "chars": 36,
         "extraction": "text-layer",
         "number": 1,
         "status": "ok",
-        "text": "Federal Skilled Worker Program\nMinimum requirements\n\nTo be eligible you must meet the minimum requirements for work experience, language ability and education.",
+        "text": "Re: your application\nDecision letter",
         "unmapped": 0
       },
       {
-        "chars": 105,
-        "extraction": "text-layer",
+        "chars": 19,
+        "extraction": "ocr",
         "number": 2,
         "status": "ok",
-        "text": "Work experience\nYour work experience must be at least one year, continuous, paid, in the same occupation.",
+        "text": "SIGNED\nOfficer 4412",
         "unmapped": 0
       },
       {
         "chars": 0,
-        "extraction": "text-layer",
+        "extraction": "none",
         "number": 3,
-        "status": "no-text",
+        "status": "needs-ocr",
         "text": "",
         "unmapped": 0
       }
@@ -36,10 +36,10 @@
   "document": {
     "detectedMediaType": "application/pdf",
     "encryption": null,
-    "id": "sha256:fb8533950579cf680ea38bc2d04ba14f415958571671060a654d13283f7e56f3",
+    "id": "sha256:2518474b655897c2df7eb87751f4e91eb67b51f750e348b64da8930ce9a4612d",
     "mediaType": "application/pdf",
-    "name": "fswp.pdf",
-    "size": 184320,
+    "name": "letter-4.pdf",
+    "size": 486400,
     "version": null
   },
   "original": {
@@ -53,12 +53,18 @@
       "maxInflateBytes": 67108864,
       "maxOcrOutputBytes": 33554432,
       "maxPages": 500,
-      "maxTextBytes": 8388608,
+      "maxTextBytes": 64,
       "timeoutMs": 25000
     },
-    "durationMs": 118,
-    "errors": [],
-    "status": "complete"
+    "durationMs": 9120,
+    "errors": [
+      {
+        "code": "text-over-bound",
+        "message": "the OCR answer for page 3 would take the text past 64 bytes; it and later answered pages were not applied",
+        "page": 3
+      }
+    ],
+    "status": "partial"
   },
   "provenance": {
     "adapter": {
@@ -67,7 +73,13 @@
       "version": "0"
     },
     "observedAt": "2026-09-16T14:05:11Z",
-    "ocr": null,
+    "ocr": {
+      "digest": "sha256:ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+      "pages": [
+        2
+      ],
+      "program": "ocr-pages"
+    },
     "processor": "adapter-document/pdf/1",
     "source": {
       "kind": "inline"

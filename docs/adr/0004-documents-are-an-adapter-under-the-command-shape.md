@@ -47,32 +47,37 @@ promises — settled before the adapter exists, so a desk integration can be bui
 
 ## Decision outcome
 
-Chosen option: "an adapter under the command shape", because it is honest by construction —
-the receipt names the program that ran and pins it by digest, and every acquisition member a
+Chosen option: "an adapter under the command shape", because it records no more than the
+gateway knows — the receipt names the command as configured and the digest of the file that
+command resolved to, read before the process was started, and every acquisition member a
 command cannot record is `null`, which is what a supplied document has — and because it needs
 no change to the specification or to any verifier. The record the adapter writes carries what
-the adapter can add, in the clear inside the signed artifact: its own identity, when it read
-the bytes, the document's digest, the extraction per page, the bounds that applied, and the
-OCR program it ran. Retrieval from a drive, which does have an endpoint, a version and a TLS
-peer, is a later note and a separate source under the `http` shape, writing the same record.
+the adapter can add, as its testimony, in the clear inside the signed artifact: its account of
+itself, when it read the request, the document's digest, the outcome of every listed page, the
+bounds that applied, and the OCR program whose answers it applied. Retrieval from a drive,
+which does have an endpoint, a version and a TLS peer, is a later note and a separate source
+under the `http` shape, writing the same record.
 
 Processing in the desk was rejected as a matter of what this feature chooses to attest, not
 of what the specification forbids: SPEC.md §6 attests whatever a configured source returns,
 and a source that echoed caller-supplied text would be within it. The evidence this feature
-wants is stronger — the text was derived, by a program the receipt pins, from bytes whose
-digest the record states — and a desk-side extractor cannot give it, since the gateway would
-never have seen the bytes the text came from. A new shape was rejected for this line because
-it is a normative change every verifier must follow before a single receipt is useful, and the
-command shape already says the true thing: it opts the source out of the envelope's
-acquisition reporting, which for a supplied document has nothing to report. The adapter takes
+wants is stronger — the text was derived by the source the gateway started, whose file the
+receipt digests, from bytes the arguments commitment covers and whose digest the record states —
+and a desk-side extractor cannot give it, since the gateway would never have seen the bytes the
+text came from. That the file digested is the program that ran assumes it was not replaced
+between the gateway's read and the start, a race SECURITY.md states and the gateway does not
+detect. A new shape was rejected for this line because it is a normative change every
+verifier must follow before a single receipt is useful, and the command shape already says the
+true thing: it opts the source out of the envelope's acquisition reporting, which for a
+supplied document has nothing to report. The adapter takes
 no third-party dependency in its first release: the PDF reader is written in the module
 against the standard library, with every bound explicit, so what runs in the engine image is
 what the repository reviews.
 
 ### Consequences
 
-- Good, because a document receipt verifies today under every verifier that verifies a
-  version 3 receipt, the desk's included.
+- Good, because a document receipt is a version 3 receipt of a shape SPEC.md §1.2a already
+  defines, so a verifier of version 3 receipts needs no change to verify it.
 - Good, because the signer's attack surface does not grow: the parser of hostile input runs as
   a source, under the bounds and the kill every source runs under — and away from the seed
   when the operator gives it a user of its own (`--source-user`), which the engine image does
