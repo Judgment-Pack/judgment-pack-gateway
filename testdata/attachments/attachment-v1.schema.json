@@ -329,11 +329,6 @@
             "timeoutMs"
           ],
           "properties": {
-            "maxBytes": {
-              "type": "integer",
-              "maximum": 9007199254740991,
-              "minimum": 1
-            },
             "maxPages": {
               "type": "integer",
               "maximum": 9007199254740991,
@@ -358,6 +353,12 @@
               "type": "integer",
               "maximum": 9007199254740991,
               "minimum": 1
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6755399441006589,
+              "description": "at most 6,755,399,441,006,589, so the read bound 4 x ceil(maxBytes / 3) + 65,536 derived from it stays within 2^53 - 1"
             }
           },
           "additionalProperties": false

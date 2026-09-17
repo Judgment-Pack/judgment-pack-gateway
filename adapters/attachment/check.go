@@ -217,6 +217,10 @@ func oneOf(value string, allowed ...string) bool {
 	return false
 }
 
+// MaxBytesCeiling is the largest maxBytes whose read bound,
+// 4 x ceil(maxBytes / 3) + 65,536, is at most 2^53 - 1.
+const MaxBytesCeiling = 6755399441006589
+
 // ValidName is the rule for document.name: 1 to 255 bytes of UTF-8 and no
 // character from U+0000 to U+001F or U+007F.
 func ValidName(name string) bool {
@@ -316,6 +320,11 @@ func (c *checker) values(rec *Record) {
 	b := pr.Bounds
 	if b.MaxBytes < 1 || b.MaxPages < 1 || b.MaxTextBytes < 1 || b.MaxInflateBytes < 1 || b.MaxOcrOutputBytes < 1 || b.TimeoutMs < 1 {
 		c.fail("bounds-positive", "processing.bounds holds a bound below 1")
+	}
+	// The read bound, 4 x ceil(maxBytes / 3) + 65,536, is a figure derived
+	// from maxBytes, and stays a canonical integer only up to this maxBytes.
+	if b.MaxBytes > MaxBytesCeiling {
+		c.fail("bounds-derived", "processing.bounds.maxBytes %d derives a read bound past the canonical domain's integers", b.MaxBytes)
 	}
 	if pr.DurationMs < 0 {
 		c.fail("duration-negative", "processing.durationMs is negative")

@@ -336,7 +336,7 @@ rule above and the step that meets each code:
 | `ocr-not-run` | partial | pages need OCR and no program was started: none is configured, or the caller asked `"never"`. The message says which |
 | `ocr-failed` | partial | the OCR program was not resolved, digested or started, exited with a non-zero status, wrote past `maxOcrOutputBytes`, or wrote an answer that [step 6](#how-a-document-is-processed) refuses. **No answer of it is applied** |
 | `ocr-incomplete` | partial | the OCR program's answer was admitted and left out pages it was asked for; the message counts them, and they stay `"needs-ocr"` |
-| `ocr-timeout` | partial | the OCR program was started and had not finished at the deadline; it was ended, and no answer of it is applied |
+| `ocr-timeout` | partial | the OCR program was started, and the deadline had passed when the adapter took its outcome: a program not yet finished was ended, one that had finished was not, and in either case no answer of it is applied |
 
 A consumer treats a code it does not know as an error whose class it does not know: the
 status still says what the record is good for.
@@ -468,7 +468,9 @@ that applied:
 Each bound is a positive integer no larger than the ceiling the adapter states for it in its
 documentation, and `--timeout` a positive duration in whole milliseconds under its ceiling; any
 other value is a usage error, and the adapter exits 2 without reading the request. Every ceiling
-keeps the bound, and every figure derived from it, within the canonical domain's integers. Object count,
+keeps the bound, and every figure derived from it, within the canonical domain's integers; for
+`--max-bytes`, whose read bound is derived from it, that holds up to 6,755,399,441,006,589, and
+`attachment.Check` refuses a record reporting a larger `maxBytes`. Object count,
 nesting depth, cross-reference chain length, page-tree depth and operators per page are bounded
 by constants the adapter states in its documentation: one met while the document is opened or
 its page tree walked is `pdf-malformed` (step 4), and one met in a page's content fails that

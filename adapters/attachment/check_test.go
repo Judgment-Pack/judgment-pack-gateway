@@ -188,6 +188,9 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			errorsOf(v)[0].(map[string]any)["message"] = strings.Repeat("m", 513)
 		}},
 		{"a zero bound", "complete-text-layer", "bounds-positive", func(v map[string]any) { obj(v, "processing", "bounds")["maxTextBytes"] = num(0) }},
+		{"a maxBytes whose read bound leaves the canonical domain", "complete-text-layer", "bounds-derived", func(v map[string]any) {
+			obj(v, "processing", "bounds")["maxBytes"] = json.Number("6755399441006590")
+		}},
 		{"a calendar date that does not exist", "complete-text-layer", "observed-at-time", func(v map[string]any) {
 			obj(v, "provenance")["observedAt"] = "2026-02-30T00:00:00Z"
 		}},
@@ -592,6 +595,9 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 
 // Records the steps can write, near the rules above: each is accepted.
 func TestCheckAcceptsWhatTheStepsCanWrite(t *testing.T) {
+	if 4*((MaxBytesCeiling+2)/3)+65536 > 1<<53-1 || 4*((MaxBytesCeiling+1+2)/3)+65536 <= 1<<53-1 {
+		t.Fatalf("MaxBytesCeiling %d is not the largest maxBytes whose read bound is canonical", MaxBytesCeiling)
+	}
 	ex := examples(t)
 	cases := []struct {
 		name, base string
@@ -615,6 +621,9 @@ func TestCheckAcceptsWhatTheStepsCanWrite(t *testing.T) {
 			obj(v, "document")["size"] = num(4)
 		}},
 		{"a PDF read from five bytes", "failed-malformed", func(v map[string]any) { obj(v, "document")["size"] = num(5) }},
+		{"maxBytes at its ceiling", "complete-text-layer", func(v map[string]any) {
+			obj(v, "processing", "bounds")["maxBytes"] = json.Number("6755399441006589")
+		}},
 	}
 	for _, c := range cases {
 		if err := Check(mutate(t, ex[c.base], c.change)); err != nil {
