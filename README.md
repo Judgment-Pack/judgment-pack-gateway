@@ -243,6 +243,12 @@ as the framework calls them, against a live engine. An MCP client reaches the en
 platforms' live tools through `gateway mcp`, a fifth process that forwards each call to
 `/acquire` under the caller's token and answers with the receipt
 ([docs/design/mcp-server.md](docs/design/mcp-server.md), [ADR-0003](docs/adr/0003-a-fifth-process-speaks-mcp.md)).
+A document a person attaches in a desk — a PDF, a scanned form, a text export — is to reach
+the same surface as a bare source, `adapter-document`, whose contract is written ahead of it:
+the adapter establishes the document's identity by digest, extracts what it can within stated
+bounds, names the pages it could not read, and writes one versioned record the gateway attests
+under the `command` shape
+([docs/design/attachments.md](docs/design/attachments.md), [ADR-0004](docs/adr/0004-documents-are-an-adapter-under-the-command-shape.md)).
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only

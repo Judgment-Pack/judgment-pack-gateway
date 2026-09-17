@@ -1,0 +1,480 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Document attachment record, version 1",
+  "description": "The result adapter-document writes for one document (docs/design/attachments.md), each value checked on its own: member sets, types, enumerations, ranges and lexical forms. It relates no value to another; the note's rules that do are checked by attachment.Check (adapters/attachment). A consumer validates for compatibility, not with this producer's schema.",
+  "type": "object",
+  "required": [
+    "attachmentVersion",
+    "document",
+    "original",
+    "content",
+    "processing",
+    "provenance"
+  ],
+  "properties": {
+    "attachmentVersion": {
+      "const": "1"
+    },
+    "document": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mediaType",
+        "detectedMediaType",
+        "size",
+        "version",
+        "encryption"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "1 to 255 bytes of UTF-8 with no control character; maxLength counts code points, so the byte limit is the check's"
+        },
+        "mediaType": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(?![\\s\\S])",
+          "maxLength": 255
+        },
+        "detectedMediaType": {
+          "enum": [
+            "application/pdf",
+            "text/plain",
+            null
+          ]
+        },
+        "size": {
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "minimum": 0
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "encryption": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "handler",
+                "revision",
+                "opened"
+              ],
+              "properties": {
+                "handler": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "revision": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "integer",
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991
+                    }
+                  ]
+                },
+                "opened": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "original": {
+      "type": "object",
+      "required": [
+        "retention",
+        "encoding",
+        "bytes"
+      ],
+      "properties": {
+        "retention": {
+          "enum": [
+            "caller",
+            "inline"
+          ]
+        },
+        "encoding": {
+          "enum": [
+            "base64",
+            null
+          ]
+        },
+        "bytes": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?(?![\\s\\S])",
+              "minLength": 4
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "content": {
+      "type": "object",
+      "required": [
+        "kind",
+        "extraction",
+        "pageCount",
+        "truncated",
+        "chars",
+        "pages"
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "extraction": {
+          "enum": [
+            "text-layer",
+            "ocr",
+            "mixed",
+            "verbatim",
+            "none"
+          ]
+        },
+        "pageCount": {
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "chars": {
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "minimum": 0
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "number",
+              "status",
+              "extraction",
+              "text",
+              "chars",
+              "unmapped"
+            ],
+            "properties": {
+              "number": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "minimum": 1
+              },
+              "status": {
+                "enum": [
+                  "ok",
+                  "no-text",
+                  "needs-ocr",
+                  "failed"
+                ]
+              },
+              "extraction": {
+                "enum": [
+                  "text-layer",
+                  "ocr",
+                  "verbatim",
+                  "none"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "a string text normalisation can yield (docs/design/attachments.md, Text normalisation): no character from U+0000 to U+0008, U+000B to U+001F or U+007F, so no carriage return; and, unless empty, a first line and a last line each holding a character other than U+0020, U+0009 and a line feed",
+                "allOf": [
+                  {
+                    "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F]*(?![\\s\\S])"
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "maxLength": 0
+                      },
+                      {
+                        "allOf": [
+                          {
+                            "pattern": "^[ \\t]*[^ \\t\\n]"
+                          },
+                          {
+                            "pattern": "[^ \\t\\n][^\\n]*(?![\\s\\S])"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              "chars": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "minimum": 0
+              },
+              "unmapped": {
+                "type": "integer",
+                "maximum": 9007199254740991,
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "processing": {
+      "type": "object",
+      "required": [
+        "status",
+        "errors",
+        "bounds",
+        "durationMs"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "failed"
+          ]
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "code",
+              "message",
+              "page"
+            ],
+            "properties": {
+              "code": {
+                "enum": [
+                  "media-type-unsupported",
+                  "media-type-mismatch",
+                  "document-over-bound",
+                  "document-empty",
+                  "pdf-malformed",
+                  "pdf-encrypted",
+                  "pdf-unsupported",
+                  "pdf-page-failed",
+                  "pdf-pages-over-bound",
+                  "text-over-bound",
+                  "stream-over-bound",
+                  "timeout",
+                  "ocr-not-run",
+                  "ocr-failed",
+                  "ocr-incomplete",
+                  "ocr-timeout"
+                ]
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 512,
+                "description": "at most 512 bytes of UTF-8; maxLength counts code points, so the byte limit is the check's"
+              },
+              "page": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "minimum": 1
+                  }
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "bounds": {
+          "type": "object",
+          "required": [
+            "maxBytes",
+            "maxPages",
+            "maxTextBytes",
+            "maxInflateBytes",
+            "maxOcrOutputBytes",
+            "timeoutMs"
+          ],
+          "properties": {
+            "maxPages": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "minimum": 1
+            },
+            "maxTextBytes": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "minimum": 1
+            },
+            "maxInflateBytes": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "minimum": 1
+            },
+            "maxOcrOutputBytes": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "minimum": 1
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "maximum": 9007199254740991,
+              "minimum": 1
+            },
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6755399441006589,
+              "description": "at most 6,755,399,441,006,589, so the read bound 4 x ceil(maxBytes / 3) + 65,536 derived from it stays within 2^53 - 1"
+            }
+          },
+          "additionalProperties": false
+        },
+        "durationMs": {
+          "type": "integer",
+          "maximum": 9007199254740991,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "source",
+        "observedAt",
+        "processor",
+        "ocr"
+      ],
+      "properties": {
+        "adapter": {
+          "type": "object",
+          "required": [
+            "name",
+            "version",
+            "digest"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "version": {
+              "type": "string"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          },
+          "additionalProperties": false
+        },
+        "source": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "inline"
+                }
+              },
+              "additionalProperties": false
+            }
+          ],
+          "description": "one variant per source kind; version 1 has one, and a later kind arrives with its members as the note's changelog records"
+        },
+        "observedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])",
+          "description": "YYYY-MM-DDThh:mm:ssZ, UTC, whole seconds; that the day exists in its month is the check's"
+        },
+        "processor": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ]
+        },
+        "ocr": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "required": [
+                "program",
+                "digest",
+                "pages"
+              ],
+              "properties": {
+                "program": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "digest": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+                },
+                "pages": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "maximum": 9007199254740991,
+                    "minimum": 1
+                  },
+                  "minItems": 1,
+                  "uniqueItems": true
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

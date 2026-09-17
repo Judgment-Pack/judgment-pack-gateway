@@ -1,0 +1,458 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 341,
+    "extraction": "text-layer",
+    "kind": "text",
+    "pageCount": 50,
+    "pages": [
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 1,
+        "status": "ok",
+        "text": "Page 1",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 2,
+        "status": "ok",
+        "text": "Page 2",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 3,
+        "status": "ok",
+        "text": "Page 3",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 4,
+        "status": "ok",
+        "text": "Page 4",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 5,
+        "status": "ok",
+        "text": "Page 5",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 6,
+        "status": "ok",
+        "text": "Page 6",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 7,
+        "status": "ok",
+        "text": "Page 7",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 8,
+        "status": "ok",
+        "text": "Page 8",
+        "unmapped": 0
+      },
+      {
+        "chars": 6,
+        "extraction": "text-layer",
+        "number": 9,
+        "status": "ok",
+        "text": "Page 9",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 10,
+        "status": "ok",
+        "text": "Page 10",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 11,
+        "status": "ok",
+        "text": "Page 11",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 12,
+        "status": "ok",
+        "text": "Page 12",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 13,
+        "status": "ok",
+        "text": "Page 13",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 14,
+        "status": "ok",
+        "text": "Page 14",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 15,
+        "status": "ok",
+        "text": "Page 15",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 16,
+        "status": "ok",
+        "text": "Page 16",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 17,
+        "status": "ok",
+        "text": "Page 17",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 18,
+        "status": "ok",
+        "text": "Page 18",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 19,
+        "status": "ok",
+        "text": "Page 19",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 20,
+        "status": "ok",
+        "text": "Page 20",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 21,
+        "status": "ok",
+        "text": "Page 21",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 22,
+        "status": "ok",
+        "text": "Page 22",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 23,
+        "status": "ok",
+        "text": "Page 23",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 24,
+        "status": "ok",
+        "text": "Page 24",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 25,
+        "status": "ok",
+        "text": "Page 25",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 26,
+        "status": "ok",
+        "text": "Page 26",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 27,
+        "status": "ok",
+        "text": "Page 27",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 28,
+        "status": "ok",
+        "text": "Page 28",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 29,
+        "status": "ok",
+        "text": "Page 29",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 30,
+        "status": "ok",
+        "text": "Page 30",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 31,
+        "status": "ok",
+        "text": "Page 31",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 32,
+        "status": "ok",
+        "text": "Page 32",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 33,
+        "status": "ok",
+        "text": "Page 33",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 34,
+        "status": "ok",
+        "text": "Page 34",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 35,
+        "status": "ok",
+        "text": "Page 35",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 36,
+        "status": "ok",
+        "text": "Page 36",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 37,
+        "status": "ok",
+        "text": "Page 37",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 38,
+        "status": "ok",
+        "text": "Page 38",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 39,
+        "status": "ok",
+        "text": "Page 39",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 40,
+        "status": "ok",
+        "text": "Page 40",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 41,
+        "status": "ok",
+        "text": "Page 41",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 42,
+        "status": "ok",
+        "text": "Page 42",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 43,
+        "status": "ok",
+        "text": "Page 43",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 44,
+        "status": "ok",
+        "text": "Page 44",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 45,
+        "status": "ok",
+        "text": "Page 45",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 46,
+        "status": "ok",
+        "text": "Page 46",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 47,
+        "status": "ok",
+        "text": "Page 47",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 48,
+        "status": "ok",
+        "text": "Page 48",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 49,
+        "status": "ok",
+        "text": "Page 49",
+        "unmapped": 0
+      },
+      {
+        "chars": 7,
+        "extraction": "text-layer",
+        "number": 50,
+        "status": "ok",
+        "text": "Page 50",
+        "unmapped": 0
+      }
+    ],
+    "truncated": true
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": null,
+    "id": "sha256:0f73d10c7423fff6352bc58a2e0cb91d2fe3e2734e43f7b621a46d0bcaf08de8",
+    "mediaType": "application/pdf",
+    "name": "long.pdf",
+    "size": 262144,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 50,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 220,
+    "errors": [
+      {
+        "code": "pdf-pages-over-bound",
+        "message": "the document has more than 50 pages; pages past the bound were not processed",
+        "page": null
+      }
+    ],
+    "status": "partial"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e",
+      "name": "adapter-document",
+      "version": "0"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

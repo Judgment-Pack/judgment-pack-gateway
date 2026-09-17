@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Document attachment arguments, version 1",
+  "description": "The canonical arguments a caller hands /acquire for the documents source, and the adapter reads on stdin (docs/design/attachments.md). Written within the descriptor grammar version 1 of docs/design/tool-descriptors.md: objects with primitive fields, no reference or identifier keyword, no format, no pattern.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "document"
+  ],
+  "properties": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "mediaType",
+        "bytes"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "a label; no control character"
+        },
+        "mediaType": {
+          "type": "string",
+          "maxLength": 255,
+          "description": "type/subtype, lowercase RFC 6838 restricted names, each part 1 to 127 characters, no parameters; a declaration outside that syntax is refused; version 1 processes application/pdf, text/plain, text/markdown, text/csv and application/json, and any other declaration within the syntax is recorded as media-type-unsupported"
+        },
+        "bytes": {
+          "type": "string",
+          "minLength": 4,
+          "description": "the document in standard base64 (RFC 4648 section 4), padded, no line breaks, every unused bit of the last group zero: the one encoding of its bytes"
+        },
+        "sha256": {
+          "type": "string",
+          "minLength": 71,
+          "maxLength": 71,
+          "description": "optional: the caller's own digest of the bytes, \"sha256:\" + 64 lowercase hex; refused when it does not match"
+        }
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ocr": {
+          "enum": [
+            "auto",
+            "never"
+          ],
+          "description": "auto (default): run the configured OCR program for pages with no text layer; never: report them as needing it"
+        }
+      }
+    }
+  }
+}

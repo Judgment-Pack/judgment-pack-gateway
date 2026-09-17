@@ -1,0 +1,150 @@
+{
+  "description": "Input and output pairs for the text normalisation of docs/design/attachments.md, version 1: an implementation of its four steps maps each input to its output exactly.",
+  "vectors": [
+    {
+      "name": "unchanged",
+      "input": "a\nb",
+      "output": "a\nb"
+    },
+    {
+      "name": "empty",
+      "input": "",
+      "output": ""
+    },
+    {
+      "name": "a byte-order mark at the start is removed",
+      "input": "\ufeffa",
+      "output": "a"
+    },
+    {
+      "name": "only the first byte-order mark is removed",
+      "input": "\ufeff\ufeffa",
+      "output": "\ufeffa"
+    },
+    {
+      "name": "a byte-order mark after the start stays",
+      "input": "a\ufeffb",
+      "output": "a\ufeffb"
+    },
+    {
+      "name": "a control character before a byte-order mark keeps it at step 1",
+      "input": "\u0000\ufeffa",
+      "output": "\ufeffa"
+    },
+    {
+      "name": "CRLF becomes LF",
+      "input": "a\r\nb\r\n",
+      "output": "a\nb"
+    },
+    {
+      "name": "a lone CR becomes LF",
+      "input": "a\rb",
+      "output": "a\nb"
+    },
+    {
+      "name": "CR CR LF is two line breaks",
+      "input": "a\r\r\nb",
+      "output": "a\n\nb"
+    },
+    {
+      "name": "control characters are removed",
+      "input": "a\u0000b\u0007c\u000bd\fe\u001ff\u007fg",
+      "output": "abcdefg"
+    },
+    {
+      "name": "tab stays",
+      "input": "a\tb",
+      "output": "a\tb"
+    },
+    {
+      "name": "C1 controls stay, NEL included",
+      "input": "a\u0085b",
+      "output": "a\u0085b"
+    },
+    {
+      "name": "U+2028 is not a line break",
+      "input": "a\u2028b",
+      "output": "a\u2028b"
+    },
+    {
+      "name": "leading empty lines are removed",
+      "input": "\n\na",
+      "output": "a"
+    },
+    {
+      "name": "a leading line of spaces and tabs is blank",
+      "input": " \t\nA\n",
+      "output": "A"
+    },
+    {
+      "name": "trailing blank lines are removed",
+      "input": "A\n \n\t\n",
+      "output": "A"
+    },
+    {
+      "name": "a single trailing line break is removed",
+      "input": "A\n",
+      "output": "A"
+    },
+    {
+      "name": "trailing spaces on the last line that is not blank stay",
+      "input": "A  \n",
+      "output": "A  "
+    },
+    {
+      "name": "leading spaces on the first line that is not blank stay",
+      "input": "  A",
+      "output": "  A"
+    },
+    {
+      "name": "blank lines between lines stay",
+      "input": "A\n\n \nB",
+      "output": "A\n\n \nB"
+    },
+    {
+      "name": "a line of U+00A0 is not blank",
+      "input": "\u00a0\nA",
+      "output": "\u00a0\nA"
+    },
+    {
+      "name": "a line of U+3000 is not blank",
+      "input": "\u3000",
+      "output": "\u3000"
+    },
+    {
+      "name": "only blank lines become empty",
+      "input": " \n\t\n",
+      "output": ""
+    },
+    {
+      "name": "a lone line break becomes empty",
+      "input": "\n",
+      "output": ""
+    },
+    {
+      "name": "a line left empty by step 3 is blank at step 4",
+      "input": "\u0001\nA",
+      "output": "A"
+    },
+    {
+      "name": "CR line breaks with blank lines",
+      "input": "\r\rA\r",
+      "output": "A"
+    },
+    {
+      "name": "a byte-order mark then a blank line",
+      "input": "\ufeff\nA",
+      "output": "A"
+    },
+    {
+      "name": "a byte-order mark on the second line is not at the start",
+      "input": "\n\ufeffA",
+      "output": "\ufeffA"
+    },
+    {
+      "name": "U+FFFD stays",
+      "input": "\ufffd",
+      "output": "\ufffd"
+    }
+  ]
+}

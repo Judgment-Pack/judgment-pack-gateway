@@ -22,6 +22,9 @@
 //	                       over stdio, one tool call per acquisition
 //	httpsource/            the HTTP-shaped adapter: one request over TLS to an
 //	                       endpoint the operator fixed, one request per acquisition
+//	attachment/            the document attachment record, version 1
+//	                       (docs/design/attachments.md): its types, its text
+//	                       normalisation and Check, the reference check of its rules
 //	cmd/adapter-airbyte/   their commands
 //	cmd/adapter-mcp/
 //	cmd/adapter-http/

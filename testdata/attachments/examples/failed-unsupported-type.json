@@ -1,0 +1,57 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 0,
+    "extraction": "none",
+    "kind": "text",
+    "pageCount": 0,
+    "pages": [],
+    "truncated": false
+  },
+  "document": {
+    "detectedMediaType": null,
+    "encryption": null,
+    "id": "sha256:bd1625695cf02fc8e38c208433fb5676c5dddcac8ac5a90cfc0b92f9adfdf31a",
+    "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "name": "brief.docx",
+    "size": 90112,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 1,
+    "errors": [
+      {
+        "code": "media-type-unsupported",
+        "message": "version 1 processes application/pdf, text/plain, text/markdown, text/csv and application/json",
+        "page": null
+      }
+    ],
+    "status": "failed"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e",
+      "name": "adapter-document",
+      "version": "0"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": null,
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

@@ -1,0 +1,82 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 36,
+    "extraction": "text-layer",
+    "kind": "text",
+    "pageCount": 3,
+    "pages": [
+      {
+        "chars": 36,
+        "extraction": "text-layer",
+        "number": 1,
+        "status": "ok",
+        "text": "Re: your application\nDecision letter",
+        "unmapped": 0
+      },
+      {
+        "chars": 0,
+        "extraction": "none",
+        "number": 2,
+        "status": "needs-ocr",
+        "text": "",
+        "unmapped": 0
+      },
+      {
+        "chars": 0,
+        "extraction": "none",
+        "number": 3,
+        "status": "needs-ocr",
+        "text": "",
+        "unmapped": 0
+      }
+    ],
+    "truncated": false
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": null,
+    "id": "sha256:3c8430afe737530a3e633ef96ad410aa4df37c97a543e452f9df39930b895c09",
+    "mediaType": "application/pdf",
+    "name": "letter-dup.pdf",
+    "size": 402113,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 9310,
+    "errors": [
+      {
+        "code": "ocr-failed",
+        "message": "the OCR program answered page 3 twice; no page of its answer was applied",
+        "page": null
+      }
+    ],
+    "status": "partial"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e",
+      "name": "adapter-document",
+      "version": "0"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}
