@@ -53,7 +53,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	paths := fs.String("paths", "", "the only paths a request may name, comma-separated (required)")
 	methods := fs.String("methods", "POST", "the methods a request may name, comma-separated: GET, POST")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
-	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the request, under the gateway's thirty seconds")
+	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the request, under the gateway's default source timeout of thirty seconds; keep it under the source's --source-timeout when the gateway sets one")
 	caFile := fs.String("ca-file", "", "PEM file of the only roots trusted for the endpoint, instead of the system's")
 	check := fs.Bool("check", false, "hold the configuration and credentials to their rules and reach the endpoint, then report on stdout instead of reading a request; nothing is minted from the report")
 	checkPath := fs.String("check-path", "", "with --check, a path to GET, which must answer 2xx; without it the check is the TLS handshake alone")

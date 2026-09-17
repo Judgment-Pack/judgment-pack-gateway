@@ -319,6 +319,15 @@ func TestParseServeOptions(t *testing.T) {
 			},
 		},
 		{
+			name: "max request at the ceiling is accepted",
+			args: []string{"store", "seed", "authority", "registry", "--max-request", "67108864"},
+			wantOptions: serveOptions{
+				sources:    map[string]sourceSpec{},
+				port:       "8787",
+				maxRequest: 67108864,
+			},
+		},
+		{
 			name:    "max request zero",
 			args:    []string{"store", "seed", "authority", "registry", "--max-request", "0"},
 			wantErr: `--max-request "0" is not a number of bytes from 1 to 67108864`,
@@ -365,6 +374,101 @@ func TestParseServeOptions(t *testing.T) {
 			name:    "source timeout past the ceiling",
 			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=601"},
 			wantErr: `--source-timeout "601" is not a whole number of seconds from 1 to 600`,
+		},
+		{
+			name: "source timeout at the ceiling is accepted",
+			args: []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=600"},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{"screening": {argv: []string{"go"}, timeout: 600 * time.Second}},
+				port:    "8787",
+			},
+		},
+		{
+			name: "source timeout of one second is accepted",
+			args: []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=1"},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{"screening": {argv: []string{"go"}, timeout: time.Second}},
+				port:    "8787",
+			},
+		},
+		{
+			// Multiplied into nanoseconds first, this count wraps an int64
+			// Duration negative, which a comparison made after multiplying
+			// with no lower bound on the Duration would pass.
+			name:    "source timeout that would overflow a duration",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=9223372037"},
+			wantErr: `--source-timeout "9223372037" is not a whole number of seconds from 1 to 600`,
+		},
+		{
+			// A count that parses as an int64 and is refused by the seconds
+			// ceiling: multiplied first, it would wrap a Duration to a small
+			// positive one, 290,448,384 nanoseconds -- under a second, so a
+			// comparison made after multiplying passes it only when it has no
+			// lower bound on the Duration.
+			name:    "source timeout that would wrap a duration to a small positive one",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=18446744074"},
+			wantErr: `--source-timeout "18446744074" is not a whole number of seconds from 1 to 600`,
+		},
+		{
+			// 2^55+1 seconds: multiplied first, it wraps a Duration to exactly
+			// one second (2^55 times 10^9 is a multiple of 2^64), so a
+			// comparison of the Duration against the accepted range, made
+			// after multiplying, would pass it.
+			name:    "source timeout that would wrap a duration to one second",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=36028797018963969"},
+			wantErr: `--source-timeout "36028797018963969" is not a whole number of seconds from 1 to 600`,
+		},
+		{
+			// 2^55+120 seconds, which wraps the same way to exactly 120 seconds.
+			name:    "source timeout that would wrap a duration to 120 seconds",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=36028797018964088"},
+			wantErr: `--source-timeout "36028797018964088" is not a whole number of seconds from 1 to 600`,
+		},
+		{
+			name: "source timeout beside environment, user and shape",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source-timeout", "screening=120", "--source-env", "screening=FOO=bar",
+				"--source-user", "screening=nobody", "--source-shape", "screening=http",
+				"--receipt-version", "3", "--source", "screening=go",
+			},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{"screening": {
+					argv: []string{"go"}, env: []string{"FOO=bar"}, user: "nobody", shape: "http", timeout: 120 * time.Second,
+				}},
+				port:           "8787",
+				receiptVersion: receiptVersion3,
+			},
+		},
+		{
+			name: "source timeout beside environment, user and shape, declared after them",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source", "screening=go", "--receipt-version", "3",
+				"--source-shape", "screening=http", "--source-user", "screening=nobody",
+				"--source-env", "screening=FOO=bar", "--source-timeout", "screening=120",
+			},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{"screening": {
+					argv: []string{"go"}, env: []string{"FOO=bar"}, user: "nobody", shape: "http", timeout: 120 * time.Second,
+				}},
+				port:           "8787",
+				receiptVersion: receiptVersion3,
+			},
+		},
+		{
+			name: "source timeout reaches the named source alone",
+			args: []string{
+				"store", "seed", "authority", "registry",
+				"--source", "screening=go", "--source", "other=go", "--source-timeout", "screening=120",
+			},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{
+					"screening": {argv: []string{"go"}, timeout: 120 * time.Second},
+					"other":     {argv: []string{"go"}},
+				},
+				port: "8787",
+			},
 		},
 		{
 			name:    "source timeout as a duration",
@@ -1196,5 +1300,15 @@ func TestServeOptionsReachTheService(t *testing.T) {
 	}
 	if service.maxRequest != maxRequestBody || service.sources["screening"].timeout != 0 {
 		t.Fatalf("defaults: maxRequest %d, timeout %v", service.maxRequest, service.sources["screening"].timeout)
+	}
+	// Options built without a request bound keep the default rather than a
+	// zero bound that would refuse every /acquire body.
+	opts.maxRequest = 0
+	service, err = buildService(filepath.Join(root, "store3"), testSeed, args[2], filepath.Join(root, "registry3.jsonl"), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.maxRequest != maxRequestBody {
+		t.Fatalf("options without a request bound: maxRequest %d, want %d", service.maxRequest, maxRequestBody)
 	}
 }

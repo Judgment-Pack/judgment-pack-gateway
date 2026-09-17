@@ -25,7 +25,7 @@ import (
 // wait delay. Seven seconds at most -- nine for a container with stdin,
 // which is first given the wait delay to end on end-of-input; the commands'
 // default timeouts leave that room, and some to report, under the
-// gateway's thirty.
+// gateway's default source timeout of thirty seconds.
 const (
 	KillWindow    = 3 * time.Second
 	InspectWindow = time.Second

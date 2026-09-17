@@ -31,7 +31,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	tools := fs.String("tools", "", "the only tools a request may name, comma-separated; all offered when empty")
 	errorResults := fs.Bool("error-results", false, "envelope a tool result that reports an error as the result of the call instead of failing: what an executor needs, since a target's refusal of a write is a response to receipt")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
-	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; stopping the server takes up to seven seconds more, under the gateway's thirty")
+	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; stopping the server takes up to nine seconds more (seven for a --command server), under the gateway's default source timeout of thirty seconds; keep the sum under the source's --source-timeout when the gateway sets one")
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
 	probe := fs.String("probe", "", "with --check, a tool to call once with no arguments, so a server that lists its tools without reaching its platform is found out; its result is read for an error and discarded")
 	probeFailure := fs.String("probe-failure", "", "with --probe, text the probe's answer begins with when the platform was not reached, for a server that answers its own failure as ordinary text")

@@ -543,8 +543,11 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			if !found || strings.TrimSpace(name) == "" {
 				return opts, "--source-timeout expects NAME=SECONDS", false
 			}
+			// Compared as seconds, before anything is multiplied: a count of
+			// seconds past the ceiling can overflow a Duration into a small or
+			// negative one that would pass a comparison made after it.
 			seconds, err := strconv.ParseInt(value, 10, 64)
-			if err != nil || seconds < 1 || time.Duration(seconds)*time.Second > maxSourceTimeout {
+			if err != nil || seconds < 1 || seconds > int64(maxSourceTimeout/time.Second) {
 				return opts, fmt.Sprintf("--source-timeout %q is not a whole number of seconds from 1 to %d", value, int64(maxSourceTimeout/time.Second)), false
 			}
 			if _, exists := pendingTimeout[name]; exists {

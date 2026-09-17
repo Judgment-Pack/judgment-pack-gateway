@@ -119,6 +119,14 @@ type gatewayService struct {
 	// executor to the tool it was narrowed to.
 	started     atomic.Int64
 	startedWith atomic.Pointer[[]string]
+	// sourceDeadline, when a test sets it, is handed a source's name and its
+	// context's deadline as soon as that context is made, for a test that
+	// holds the deadline to the source's timeout without waiting it out.
+	// afterSourceWait, when a test sets it, runs as soon as a source has been
+	// waited for: the window in which a source that ended on its own may be
+	// overtaken by its deadline, which must not be reported as a timeout.
+	sourceDeadline  func(source string, deadline time.Time)
+	afterSourceWait func()
 	// beforeAdmit, when a test sets it, runs between an action's evidence
 	// checks and its admission: the window in which another request may
 	// have put the session on disk or sealed it, which admission's own
@@ -149,6 +157,10 @@ type gatewayService struct {
 	// stderr to reach end of file. A descendant that escaped the source's
 	// process group and holds a pipe would otherwise hold the acquisition.
 	waitDelay time.Duration
+	// defaultTimeout is how long a source that --source-timeout does not
+	// name may run: defaultSourceTimeout, which a test lowers to reach the
+	// timeout's message for such a source without waiting thirty seconds.
+	defaultTimeout time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
@@ -213,6 +225,7 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 		sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody,
 		receiptVersion: receiptVersion3,
 		waitDelay:      sourceWaitDelay,
+		defaultTimeout: defaultSourceTimeout,
 		sessions:       map[string]*sessionState{},
 		gate:           newAdmissionGate(),
 	}
@@ -356,22 +369,39 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 // rather than 500.
 type badRequest struct{ error }
 
-// maxRequestBody bounds what /acquire and /seal will read before deciding
-// anything. /seal carries one session id; /acquire carries a session id, a
-// source name, and a caller-supplied `arguments` value, so /acquire is the one
-// with a real payload and sets the number. One mebibyte is far above any
-// argument object this gateway is meant to serve and far below a body worth
-// buffering from an unauthenticated caller -- and there IS no authentication
-// here, so the only thing standing between a request and this process's memory
-// is this limit. listenAndServe already bounds header delivery with
+// maxRequestBody bounds what /seal and /act will read before deciding
+// anything, and is /acquire's bound unless --max-request sets another, from
+// one byte to maxRequestCeiling. /seal carries one session id; /acquire carries a session
+// id, a source name, and a caller-supplied `arguments` value, so /acquire is
+// the one with a real payload and the number was set for it. One mebibyte is
+// far above any argument object this gateway is meant to serve and far below
+// a body worth buffering from a caller who need not authenticate where no
+// identity is configured. The body bound stands between such a request and
+// this process's memory, with the value budget (maxArgumentValues) beside it
+// for /acquire's arguments. listenAndServe already bounds header delivery with
 // ReadHeaderTimeout; this is the same concern for the body.
 const maxRequestBody = 1 << 20
 
 // maxRequestCeiling is the largest --max-request accepts. A body is read
-// whole before anything is decided, and the arguments it carries are held
-// again, canonicalized, for the source's stdin: an operator raising the bound
-// raises what one request may make this process hold, several times over.
+// whole before anything is decided, its arguments are parsed into values, and
+// they are held again, canonicalized, for the source's stdin: an operator
+// raising the bound raises what one request may make this process hold, by a
+// multiple of the body that depends on the arguments' shape (SECURITY.md
+// gives the figures measured).
 const maxRequestCeiling = 64 << 20
+
+// maxArgumentValues is the value budget of an /acquire body's arguments: the
+// parser counts each JSON value it makes of them and refuses the one past
+// this, which is answered 400 like any other malformed arguments. A
+// one-mebibyte body cannot hold more values than this (the shortest value
+// plus its separator is two bytes), so the default bound's behaviour is
+// unchanged, and raising --max-request admits longer strings and member
+// names, not more values than this -- a 64 MiB body of empty objects would
+// otherwise be parsed into over twenty million of them before anything is
+// decided. It bounds how many values are made, not the memory they take:
+// member names are not counted, and one kind of value costs more than
+// another.
+const maxArgumentValues = 1 << 19
 
 // limitBody caps r.Body in place at maxRequestBody. http.MaxBytesReader needs
 // the ResponseWriter to signal the client properly, so it can only be applied
@@ -585,10 +615,17 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
 	timeout := spec.timeout
 	if timeout <= 0 {
-		timeout = defaultSourceTimeout
+		timeout = g.defaultTimeout
 	}
 	ctx, cancel := context.WithTimeout(g.ctx, timeout)
 	defer cancel()
+	if g.sourceDeadline != nil {
+		// Read from the context itself rather than worked out again from
+		// timeout, so the deadline a test is handed is the one the source
+		// runs under.
+		deadline, _ := ctx.Deadline()
+		g.sourceDeadline(source, deadline)
+	}
 	// The command is resolved once, here, to the file that will be started,
 	// and that file is what a version 3 receipt digests -- os/exec would
 	// otherwise give a relative Windows command its extension only at start,
@@ -620,6 +657,23 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("source %s: %w", source, err)
 	}
+	// cancelled records that os/exec cancelled the source. os/exec watches
+	// the context until Wait has waited for the source's process, and calls
+	// Cancel when the context ends before then -- not while Wait is still
+	// waiting on the source's output pipes, nor once Wait has returned. It is
+	// what tells a source its deadline ended from one that failed on its own
+	// and was only reaped, or reported, after its deadline had passed. A
+	// source that exits on its own in the instant its deadline passes can
+	// still be cancelled, and is then reported as timed out. The Cancel
+	// wrapped is not nil: CommandContext sets one, and prepareSourceProcess
+	// replaces it with the group's kill on Unix and leaves it in place
+	// elsewhere.
+	var cancelled atomic.Bool
+	cancelSource := cmd.Cancel
+	cmd.Cancel = func() error {
+		cancelled.Store(true)
+		return cancelSource()
+	}
 	cmd.WaitDelay = g.waitDelay
 	// stdout is bounded and its overflow kills the source; stderr is bounded
 	// and simply truncated, because only its first line is ever reported and
@@ -639,6 +693,9 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		return nil, "", "", fmt.Errorf("source could not be started: %v", err)
 	}
 	waitErr := cmd.Wait()
+	if g.afterSourceWait != nil {
+		g.afterSourceWait()
+	}
 	// Whatever Wait returned, nothing of the source's process group survives
 	// the acquisition. os/exec stops watching the context once the direct
 	// child has exited, so an overflow written by a descendant after that
@@ -655,10 +712,12 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		if errors.Is(waitErr, exec.ErrWaitDelay) {
 			return nil, "", "", errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
 		}
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			// The source's own deadline, not the gateway's shutdown: said as
-			// such, since whatever the source wrote on stderr before it was
-			// killed is not why it failed.
+		if cancelled.Load() && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// The source's own deadline, not the gateway's shutdown nor an
+			// overflow (both of which cancel rather than expire the context),
+			// and it ended a source still running: said as such, since
+			// whatever the source wrote on stderr before it was killed is not
+			// why it failed.
 			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
 		}
 		trimmed := stderr.buf.String()
@@ -1087,7 +1146,7 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		arguments := value(newObject())
 		if len(body.Arguments) > 0 {
-			parsed, err := parseJSON(body.Arguments)
+			parsed, err := parseJSONWithin(body.Arguments, maxArgumentValues)
 			if err != nil {
 				fail(w, badRequest{err})
 				return

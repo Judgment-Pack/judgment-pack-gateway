@@ -105,8 +105,11 @@ that cannot say (a daemon that is down, a host that cannot be resolved), fails t
 acquisition and says so first, since the container holds the credentials mount.
 `--timeout` (twenty seconds) is the time for reading; stopping takes up to seven seconds
 more (a kill, an inspect and the drain of its output, and the wait for the client's
-pipes), and the sum stays under the gateway's thirty, so a slow connector is reported as
-a deadline rather than killed mid-report.
+pipes), and the sum stays under the gateway's default source timeout of thirty seconds, so
+a slow connector is reported as a deadline rather than killed mid-report. A source given a
+`--source-timeout` of its own needs the same room under it: keep `--timeout`, plus those
+seven seconds, under the source's timeout, so a connector that reaches the deadline is still
+reported rather than killed.
 
 **Diagnostics.** A connector's error — the first line of its stderr, or a `TRACE`
 message, or the runtime's answer about a container that would not stop — is reported to
@@ -345,7 +348,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   receipt would carry — the `ETag` among them — fails the acquisition with nothing minted,
   because an artifact and a receipt are signed and in the clear, and an answer rewritten to
   hide it would not be the endpoint's. `--timeout` (twenty seconds) bounds the request under
-  the gateway's thirty; `--max-output` bounds the answer and the envelope (at most 1 TiB, so
+  the gateway's default source timeout of thirty seconds — keep it under the source's
+  `--source-timeout` when the gateway sets one, so a request that reaches the deadline is
+  reported rather than killed; `--max-output` bounds the answer and the envelope (at most 1 TiB, so
   the bounded read's sentinel byte cannot overflow), and an answer past it is refused, never
   cut — the read stops at the bound rather than draining what follows. Keep it at or below the
   gateway's `--source-max-output`: a reader service that renders a long PDF answers megabytes,

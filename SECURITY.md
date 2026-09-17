@@ -146,7 +146,8 @@ configuration — give a source a path to a file its own identity can read.
 the source and reaps only after the group has been killed. A group is addressed by its leader's
 pid, and a leader that has been reaped frees a pid another process can take; the anchor holds the
 group id until the last kill has been sent, so no kill reaches an unrelated process. Cancelling a
-source — on the thirty-second timeout, on overflow, or on the gateway's own shutdown — kills the
+source — on the source's timeout (thirty seconds unless `--source-timeout` sets another), on
+overflow, or on the gateway's own shutdown — kills the
 source and every descendant still in the group, and the group is killed again after the source is
 waited for, since an overflow a descendant writes after the source has exited cancels nothing
 os/exec still watches. A descendant that has left the group is not reached: it gets a bounded wait
@@ -175,12 +176,30 @@ file capabilities and is executable by anyone but its owner. A process stripped 
 check only where capabilities cannot be read, and fails at its first acquisition, where the
 operating system's reason is reported. **A
 source's run is bounded in time** (thirty seconds, or its own `--source-timeout`, at most ten
-minutes), **a request body in size** (one mebibyte; `/acquire`'s raised by `--max-request` to at
-most 64 MiB, which an operator weighs against the memory each request may take: the body is
-read whole, and its arguments held again, canonicalized, as the source's stdin), and **a
-source's stdout** (`--source-max-output`, one mebibyte by default); its stderr is bounded and
-truncated: a source that crosses the stdout bound is killed, its acquisition fails, and
-nothing it wrote is retained. **The seed is opened once and judged as the file that was opened** —
+minutes), **a request body in size** (one mebibyte; `/acquire`'s set by `--max-request`, from 1 byte
+to 64 MiB), and **a source's stdout** (`--source-max-output`, one mebibyte by default); its
+stderr is bounded and truncated: a source that crosses the stdout bound is killed, its
+acquisition fails, and nothing it wrote is retained. An operator raising `--max-request` weighs
+it against what one request may cost. The body is read whole, and its arguments are parsed into
+values and canonicalized again for the source's stdin, so a request holds a multiple of its body
+that depends on the arguments' shape. As measured on this implementation (the heap's peak,
+sampled every millisecond, for one request under Go's default `GOGC`, in a test that streams the
+body to the handler), and varying from run to run: an argument that is one large string peaked
+at about five and a half to six and a half times the body, 360 to 410 MiB for a 64 MiB body; arguments of
+many small values cost far more for each byte — a one-mebibyte body of one-member objects nested
+in one another (`{"":{"":0}}`, a hundred deep) peaked at about 85 MiB, and half a million empty
+objects, about 1.5 MiB, at about 67 MiB; at the 64 MiB ceiling, one-member objects nested a
+hundred deep with names of 129 to 140 bytes peaked at about 550 to 690 MiB of heap, around ten
+times the body, with resident memory reaching about 800 MiB. These figures are for one request
+and are not bounds: which of the shapes measured cost most changed between runs, a shape not
+measured may cost more, and requests in flight at the same time add to them. The arguments are held to a budget of 524,288 JSON values, past which the
+request is refused with 400 — a budget a one-mebibyte body cannot reach, so it changes nothing
+under the default bound. It limits how many values a raised bound admits, not the memory they
+take: member names are not counted. Parsing and canonicalization run before the source's timeout
+starts and are not bounded by it; their time grows with the body. `--max-request` and
+`--source-timeout` are command-line options: under an engine configuration `/acquire` keeps its
+one-mebibyte bound and the derived sources keep the thirty-second timeout.
+**The seed is opened once and judged as the file that was opened** —
 a regular file, on Unix also owned by the gateway's own user and readable by nobody else — before
 it is read through that same descriptor, so the file checked is the file loaded, and a file larger
 than a seed file can be is refused rather than read in part. A Unix seed that fails is refused at

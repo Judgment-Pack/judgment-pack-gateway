@@ -177,11 +177,17 @@ killed — on Unix its whole process group, elsewhere the direct child — and t
 acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
 than the acquisition. `--source-timeout NAME=SECONDS` gives source `NAME` a timeout of its
 own, a whole number of seconds from 1 to 600 (thirty by default); past it the source is killed
-the same way and the caller is told it did not finish within its timeout. `--max-request
+the same way and the caller is told it did not finish within its timeout. Keep an adapter's
+own `--timeout`, and the time it takes to stop, under its source's timeout, so a read that
+reaches the adapter's deadline is reported by the adapter rather than killed with it
+([adapters](adapters/README.md)). `--max-request
 BYTES` bounds an `/acquire` body, from 1 byte to 64 MiB (one mebibyte by default); `/seal` and
 `/act` keep one mebibyte, and every body must still arrive within the server's thirty-second
-read timeout. Both are command-line options: an engine configuration's derived sources keep the
-defaults. On Unix, `serve` refuses a seed file that is not a regular file
+read timeout. `--source-timeout` and `--max-request` are command-line options: under an engine
+configuration the derived sources keep the thirty-second timeout and `/acquire` keeps one
+mebibyte. An `/acquire` body's arguments are refused past 524,288 JSON values, a count a
+one-mebibyte body cannot reach, and raising the bound does not raise it.
+On Unix, `serve` refuses a seed file that is not a regular file
 owned by the gateway's own user and readable by it alone, says which `chmod` to run,
 and marks every descriptor its launcher left open close-on-exec so none reaches a
 source; on Windows it checks that the seed is a regular file and says the rest is the
