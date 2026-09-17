@@ -1,0 +1,65 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 9,
+    "extraction": "text-layer",
+    "kind": "text",
+    "pageCount": 1,
+    "pages": [
+      {
+        "chars": 9,
+        "extraction": "text-layer",
+        "number": 1,
+        "status": "ok",
+        "text": "Chapter 1",
+        "unmapped": 0
+      }
+    ],
+    "truncated": true
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": null,
+    "id": "sha256:e7bfdb9b8b40b3815d6c3b2df632f2e8819260d37c4212e21316c54b4c473a4f",
+    "mediaType": "application/pdf",
+    "name": "slow.pdf",
+    "size": 8000000,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 25004,
+    "errors": [
+      {
+        "code": "timeout",
+        "message": "the deadline of 25000 ms passed after page 1; later pages were not processed",
+        "page": null
+      }
+    ],
+    "status": "partial"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e",
+      "name": "adapter-document",
+      "version": "0"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

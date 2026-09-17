@@ -1,0 +1,362 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://judgment-pack.dev/gateway/attachment/1",
+  "title": "Document attachment record, version 1",
+  "description": "The result adapter-document writes for one document (docs/design/attachments.md). Informative: the design note is normative, and a consumer tolerates a member it does not know at any depth.",
+  "type": "object",
+  "required": [
+    "attachmentVersion",
+    "document",
+    "original",
+    "content",
+    "processing",
+    "provenance"
+  ],
+  "properties": {
+    "attachmentVersion": {
+      "const": "1"
+    },
+    "document": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mediaType",
+        "detectedMediaType",
+        "size",
+        "version",
+        "encryption"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/digest"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "mediaType": {
+          "type": "string"
+        },
+        "detectedMediaType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "encryption": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "handler",
+            "revision",
+            "opened"
+          ],
+          "properties": {
+            "handler": {
+              "type": "string"
+            },
+            "revision": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "opened": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "original": {
+      "type": "object",
+      "required": [
+        "retention",
+        "encoding",
+        "bytes"
+      ],
+      "properties": {
+        "retention": {
+          "enum": [
+            "caller",
+            "inline"
+          ]
+        },
+        "encoding": {
+          "enum": [
+            "base64",
+            null
+          ]
+        },
+        "bytes": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "required": [
+        "kind",
+        "extraction",
+        "pageCount",
+        "truncated",
+        "chars",
+        "pages"
+      ],
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "extraction": {
+          "enum": [
+            "text-layer",
+            "ocr",
+            "mixed",
+            "verbatim",
+            "none"
+          ]
+        },
+        "pageCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "chars": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "number",
+              "status",
+              "extraction",
+              "text",
+              "chars",
+              "unmapped"
+            ],
+            "properties": {
+              "number": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "status": {
+                "enum": [
+                  "ok",
+                  "no-text",
+                  "needs-ocr",
+                  "failed"
+                ]
+              },
+              "extraction": {
+                "enum": [
+                  "text-layer",
+                  "ocr",
+                  "verbatim",
+                  "none"
+                ]
+              },
+              "text": {
+                "type": "string"
+              },
+              "chars": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "unmapped": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "processing": {
+      "type": "object",
+      "required": [
+        "status",
+        "errors",
+        "bounds",
+        "durationMs"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "complete",
+            "partial",
+            "failed"
+          ]
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "code",
+              "message",
+              "page"
+            ],
+            "properties": {
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string",
+                "maxLength": 512
+              },
+              "page": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "minimum": 1
+              }
+            }
+          }
+        },
+        "bounds": {
+          "type": "object",
+          "required": [
+            "maxBytes",
+            "maxPages",
+            "maxTextBytes",
+            "maxInflateBytes",
+            "timeoutMs"
+          ],
+          "properties": {
+            "maxBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxPages": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxTextBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "maxInflateBytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "adapter",
+        "source",
+        "observedAt",
+        "processor",
+        "ocr"
+      ],
+      "properties": {
+        "adapter": {
+          "type": "object",
+          "required": [
+            "name",
+            "version",
+            "digest"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        "source": {
+          "type": "object",
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string"
+            }
+          }
+        },
+        "observedAt": {
+          "type": "string",
+          "description": "YYYY-MM-DDThh:mm:ssZ, UTC, whole seconds"
+        },
+        "processor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ocr": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "required": [
+            "program",
+            "digest",
+            "pages"
+          ],
+          "properties": {
+            "program": {
+              "type": "string"
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            },
+            "pages": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "description": "\"sha256:\" followed by exactly 64 lowercase hexadecimal characters",
+      "minLength": 71,
+      "maxLength": 71
+    }
+  }
+}

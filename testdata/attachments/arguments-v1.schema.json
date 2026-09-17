@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://judgment-pack.dev/gateway/attachment-arguments/1",
+  "title": "Document attachment arguments, version 1",
+  "description": "The canonical arguments a caller hands /acquire for the documents source, and the adapter reads on stdin (docs/design/attachments.md). Written within the descriptor grammar the MCP server serves: objects with primitive fields, no reference, no format, no pattern.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["document"],
+  "properties": {
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "mediaType", "bytes"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1, "maxLength": 255, "description": "a label; no control character"},
+        "mediaType": {"type": "string", "description": "type/subtype, lowercase, no parameters; version 1 processes application/pdf, text/plain, text/markdown, text/csv and application/json"},
+        "bytes": {"type": "string", "minLength": 4, "description": "the document in standard base64 (RFC 4648 section 4), padded, no line breaks"},
+        "sha256": {"type": "string", "minLength": 71, "maxLength": 71, "description": "optional: the caller's own digest of the bytes, \"sha256:\" + 64 lowercase hex; refused when it does not match"}
+      }
+    },
+    "options": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ocr": {"enum": ["auto", "never"], "description": "auto (default): run the configured OCR program for pages with no text layer; never: report them as needing it"}
+      }
+    }
+  }
+}
