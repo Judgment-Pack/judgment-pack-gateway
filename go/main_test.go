@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseServeOptions(t *testing.T) {
@@ -309,6 +310,86 @@ func TestParseServeOptions(t *testing.T) {
 			wantErr: `--source-max-output "1MiB" is not a positive number of bytes`,
 		},
 		{
+			name: "max request",
+			args: []string{"store", "seed", "authority", "registry", "--max-request", "16777216"},
+			wantOptions: serveOptions{
+				sources:    map[string]sourceSpec{},
+				port:       "8787",
+				maxRequest: 16777216,
+			},
+		},
+		{
+			name:    "max request zero",
+			args:    []string{"store", "seed", "authority", "registry", "--max-request", "0"},
+			wantErr: `--max-request "0" is not a number of bytes from 1 to 67108864`,
+		},
+		{
+			name:    "max request past the ceiling",
+			args:    []string{"store", "seed", "authority", "registry", "--max-request", "67108865"},
+			wantErr: `--max-request "67108865" is not a number of bytes from 1 to 67108864`,
+		},
+		{
+			name:    "max request not a number",
+			args:    []string{"store", "seed", "authority", "registry", "--max-request", "16MiB"},
+			wantErr: `--max-request "16MiB" is not a number of bytes`,
+		},
+		{
+			name:    "max request missing value",
+			args:    []string{"store", "seed", "authority", "registry", "--max-request"},
+			wantErr: "--max-request requires",
+		},
+		{
+			name:    "duplicate max request",
+			args:    []string{"store", "seed", "authority", "registry", "--max-request", "1", "--max-request", "2"},
+			wantErr: "duplicate --max-request option",
+		},
+		{
+			name: "source timeout",
+			args: []string{"store", "seed", "authority", "registry", "--source-timeout", "screening=120", "--source", "screening=go"},
+			wantOptions: serveOptions{
+				sources: map[string]sourceSpec{"screening": {argv: []string{"go"}, timeout: 120 * time.Second}},
+				port:    "8787",
+			},
+		},
+		{
+			name:    "source timeout for an undeclared source",
+			args:    []string{"store", "seed", "authority", "registry", "--source-timeout", "nosuch=10"},
+			wantErr: `--source-timeout names undeclared source "nosuch"`,
+		},
+		{
+			name:    "source timeout zero",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=0"},
+			wantErr: `--source-timeout "0" is not a whole number of seconds from 1 to 600`,
+		},
+		{
+			name:    "source timeout past the ceiling",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=601"},
+			wantErr: `--source-timeout "601" is not a whole number of seconds from 1 to 600`,
+		},
+		{
+			name:    "source timeout as a duration",
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=30s"},
+			wantErr: `--source-timeout "30s" is not a whole number of seconds`,
+		},
+		{
+			name:    "source timeout without a name",
+			args:    []string{"store", "seed", "authority", "registry", "--source-timeout", "=30"},
+			wantErr: "--source-timeout expects NAME=SECONDS",
+		},
+		{
+			name:    "source timeout missing value",
+			args:    []string{"store", "seed", "authority", "registry", "--source-timeout"},
+			wantErr: "--source-timeout requires",
+		},
+		{
+			name: "duplicate source timeout",
+			args: []string{
+				"store", "seed", "authority", "registry", "--source", "screening=go",
+				"--source-timeout", "screening=10", "--source-timeout", "screening=20",
+			},
+			wantErr: `duplicate --source-timeout for "screening"`,
+		},
+		{
 			name: "duplicate source max output",
 			args: []string{
 				"store", "seed", "authority", "registry",
@@ -347,6 +428,13 @@ func TestParseServeOptions(t *testing.T) {
 			if got.maxSourceOutput != wantMax {
 				t.Fatalf("maxSourceOutput = %d, want %d", got.maxSourceOutput, wantMax)
 			}
+			wantRequest := tt.wantOptions.maxRequest
+			if wantRequest == 0 {
+				wantRequest = maxRequestBody
+			}
+			if got.maxRequest != wantRequest {
+				t.Fatalf("maxRequest = %d, want %d", got.maxRequest, wantRequest)
+			}
 			wantVersion := tt.wantOptions.receiptVersion
 			if wantVersion == "" {
 				wantVersion = receiptVersion3
@@ -382,6 +470,8 @@ func TestCmdServeRejectsMalformedOptions(t *testing.T) {
 		{name: "empty source command", args: []string{"store", "seed", "authority", "registry", "--source", "name="}},
 		{name: "source env for undeclared source", args: []string{"store", "seed", "authority", "registry", "--source-env", "nosuch=FOO"}},
 		{name: "source max output zero", args: []string{"store", "seed", "authority", "registry", "--source-max-output", "0"}},
+		{name: "max request past the ceiling", args: []string{"store", "seed", "authority", "registry", "--max-request", "67108865"}},
+		{name: "source timeout for undeclared source", args: []string{"store", "seed", "authority", "registry", "--source-timeout", "nosuch=10"}},
 		{
 			name: "duplicate source name",
 			args: []string{
@@ -1077,5 +1167,34 @@ func TestBuildServiceAppliesTheSourceShape(t *testing.T) {
 	}
 	if spec := service.sources["screening"]; spec.shape != "mcp" || !reflect.DeepEqual(spec.env, []string{"FOO=bar"}) {
 		t.Fatalf("shape, or the environment beside it, did not reach the service: %+v", spec)
+	}
+}
+
+// The options reach the service: the /acquire bound from --max-request and
+// each source's timeout from --source-timeout.
+func TestServeOptionsReachTheService(t *testing.T) {
+	root := t.TempDir()
+	args := []string{
+		filepath.Join(root, "store"), "seed", "gateway:test", filepath.Join(root, "registry.jsonl"),
+		"--source", "screening=go", "--source-timeout", "screening=45", "--max-request", "2097152",
+	}
+	opts, msg, ok := parseServeOptions(args)
+	if !ok {
+		t.Fatal(msg)
+	}
+	service, err := buildService(args[0], testSeed, args[2], args[3], opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.maxRequest != 2097152 || service.sources["screening"].timeout != 45*time.Second {
+		t.Fatalf("maxRequest %d, timeout %v", service.maxRequest, service.sources["screening"].timeout)
+	}
+	opts, _, _ = parseServeOptions(args[:6])
+	service, err = buildService(filepath.Join(root, "store2"), testSeed, args[2], filepath.Join(root, "registry2.jsonl"), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.maxRequest != maxRequestBody || service.sources["screening"].timeout != 0 {
+		t.Fatalf("defaults: maxRequest %d, timeout %v", service.maxRequest, service.sources["screening"].timeout)
 	}
 }

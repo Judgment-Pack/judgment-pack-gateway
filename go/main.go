@@ -25,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -241,6 +242,9 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 		return nil, err
 	}
 	service.maxSourceOutput = opts.maxSourceOutput
+	if opts.maxRequest > 0 {
+		service.maxRequest = opts.maxRequest
+	}
 	service.receiptVersion = opts.receiptVersion
 	service.identity = opts.identity
 	service.decisionRecords = opts.decisionRecords
@@ -371,7 +375,9 @@ type serveOptions struct {
 	sources         map[string]sourceSpec
 	port            string
 	maxSourceOutput int64
-	receiptVersion  string
+	// maxRequest bounds an /acquire body (--max-request).
+	maxRequest     int64
+	receiptVersion string
 	// identity, when set, is who may call: every request that acquires,
 	// seals or verifies carries a bearer token this issuer signed, and a
 	// receipt names the caller it proved. Nil records caller null.
@@ -423,13 +429,15 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	if len(args) < 4 {
 		return serveOptions{}, "usage: gateway serve --config <engine.json> | gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
-			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--receipt-version 2|3] [--port N]", false
+			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--source-timeout NAME=SECONDS ...] " +
+			"[--max-request BYTES] [--receipt-version 2|3] [--port N]", false
 	}
 
 	opts := serveOptions{
 		sources:         map[string]sourceSpec{},
 		port:            "8787",
 		maxSourceOutput: defaultMaxSourceOutput,
+		maxRequest:      maxRequestBody,
 		receiptVersion:  receiptVersion3,
 	}
 	// --source-env and --source-user name a source that may be declared
@@ -438,9 +446,11 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	pendingEnv := map[string][]string{}
 	pendingUser := map[string]string{}
 	pendingShape := map[string]string{}
+	pendingTimeout := map[string]time.Duration{}
 	rest := args[4:]
 	portSeen := false
 	maxOutputSeen := false
+	maxRequestSeen := false
 	versionSeen := false
 	for i := 0; i < len(rest); i++ {
 		switch {
@@ -511,6 +521,37 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			opts.maxSourceOutput = number
 			maxOutputSeen = true
 			i++
+		case rest[i] == "--max-request":
+			if i+1 >= len(rest) {
+				return opts, "--max-request requires a following value", false
+			}
+			if maxRequestSeen {
+				return opts, "duplicate --max-request option", false
+			}
+			number, err := strconv.ParseInt(rest[i+1], 10, 64)
+			if err != nil || number < 1 || number > maxRequestCeiling {
+				return opts, fmt.Sprintf("--max-request %q is not a number of bytes from 1 to %d", rest[i+1], maxRequestCeiling), false
+			}
+			opts.maxRequest = number
+			maxRequestSeen = true
+			i++
+		case rest[i] == "--source-timeout":
+			if i+1 >= len(rest) {
+				return opts, "--source-timeout requires a following NAME=SECONDS value", false
+			}
+			name, value, found := strings.Cut(rest[i+1], "=")
+			if !found || strings.TrimSpace(name) == "" {
+				return opts, "--source-timeout expects NAME=SECONDS", false
+			}
+			seconds, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || seconds < 1 || time.Duration(seconds)*time.Second > maxSourceTimeout {
+				return opts, fmt.Sprintf("--source-timeout %q is not a whole number of seconds from 1 to %d", value, int64(maxSourceTimeout/time.Second)), false
+			}
+			if _, exists := pendingTimeout[name]; exists {
+				return opts, fmt.Sprintf("duplicate --source-timeout for %q", name), false
+			}
+			pendingTimeout[name] = time.Duration(seconds) * time.Second
+			i++
 		case rest[i] == "--source":
 			if i+1 >= len(rest) {
 				return opts, "--source requires a following NAME=CMD value", false
@@ -576,6 +617,14 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			return opts, fmt.Sprintf("--source-user names undeclared source %q", name), false
 		}
 		spec.user = account
+		opts.sources[name] = spec
+	}
+	for name, timeout := range pendingTimeout {
+		spec, declared := opts.sources[name]
+		if !declared {
+			return opts, fmt.Sprintf("--source-timeout names undeclared source %q", name), false
+		}
+		spec.timeout = timeout
 		opts.sources[name] = spec
 	}
 	for name, shape := range pendingShape {

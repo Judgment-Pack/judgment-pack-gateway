@@ -175,7 +175,13 @@ refused otherwise rather than run as the signer). `--source-max-output BYTES` bo
 what a source may write on stdout (one mebibyte by default); past it the source is
 killed — on Unix its whole process group, elsewhere the direct child — and the
 acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
-than the acquisition. On Unix, `serve` refuses a seed file that is not a regular file
+than the acquisition. `--source-timeout NAME=SECONDS` gives source `NAME` a timeout of its
+own, a whole number of seconds from 1 to 600 (thirty by default); past it the source is killed
+the same way and the caller is told it did not finish within its timeout. `--max-request
+BYTES` bounds an `/acquire` body, from 1 byte to 64 MiB (one mebibyte by default); `/seal` and
+`/act` keep one mebibyte, and every body must still arrive within the server's thirty-second
+read timeout. Both are command-line options: an engine configuration's derived sources keep the
+defaults. On Unix, `serve` refuses a seed file that is not a regular file
 owned by the gateway's own user and readable by it alone, says which `chmod` to run,
 and marks every descriptor its launcher left open close-on-exec so none reaches a
 source; on Windows it checks that the seed is a regular file and says the rest is the

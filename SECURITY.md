@@ -174,8 +174,12 @@ any set-user-id file — grants it nothing; and the engine refuses to start when
 file capabilities and is executable by anyone but its owner. A process stripped of the capability to switch passes the startup
 check only where capabilities cannot be read, and fails at its first acquisition, where the
 operating system's reason is reported. **A
-source's stdout is bounded** (`--source-max-output`, one mebibyte by default) and its stderr is
-bounded and truncated: a source that crosses the stdout bound is killed, its acquisition fails, and
+source's run is bounded in time** (thirty seconds, or its own `--source-timeout`, at most ten
+minutes), **a request body in size** (one mebibyte; `/acquire`'s raised by `--max-request` to at
+most 64 MiB, which an operator weighs against the memory each request may take: the body is
+read whole, and its arguments held again, canonicalized, as the source's stdin), and **a
+source's stdout** (`--source-max-output`, one mebibyte by default); its stderr is bounded and
+truncated: a source that crosses the stdout bound is killed, its acquisition fails, and
 nothing it wrote is retained. **The seed is opened once and judged as the file that was opened** —
 a regular file, on Unix also owned by the gateway's own user and readable by nobody else — before
 it is read through that same descriptor, so the file checked is the file loaded, and a file larger

@@ -1566,6 +1566,62 @@ func TestOversizedRequestBodyIsRefusedWithoutBufferingIt(t *testing.T) {
 	}
 }
 
+// --max-request raises the /acquire bound and nothing else: a body past the
+// default is admitted to /acquire and still refused by /seal, and a body past
+// the raised bound is refused without being buffered.
+func TestMaxRequestRaisesTheAcquireBoundAlone(t *testing.T) {
+	service, server := testService(t)
+	service.maxRequest = 2 * maxRequestBody
+	pad := strings.Repeat("x", maxRequestBody+maxRequestBody/2)
+	payload := fmt.Sprintf(`{"session":"raised","source":"screening","arguments":{"pad":%q}}`, pad)
+	resp, err := http.Post(server.URL+"/acquire", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a body past the default under a raised bound: %d %s", resp.StatusCode, raw)
+	}
+	seal := fmt.Sprintf(`{"session":"raised","pad":%q}`, pad)
+	resp, err = http.Post(server.URL+"/seal", "application/json", strings.NewReader(seal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("/seal under a raised /acquire bound: %d, want 400", resp.StatusCode)
+	}
+	body := newCountingBody(20 * service.maxRequest)
+	rec := httptest.NewRecorder()
+	service.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/acquire", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("past the raised bound: %d", rec.Code)
+	}
+	if limit := service.maxRequest + 64*1024; body.read > limit {
+		t.Fatalf("server read %d bytes past a raised bound of %d", body.read, service.maxRequest)
+	}
+}
+
+// A source's timeout is its own: a source that does not finish is cancelled
+// at the timeout declared for it, and the caller is told so.
+func TestSourceTimeoutEndsTheSource(t *testing.T) {
+	service, server := testService(t)
+	spec := service.sources["screening"]
+	spec.timeout = time.Second
+	service.sources["screening"] = spec
+	t.Setenv(envSourceWait, filepath.Join(t.TempDir(), "never"))
+	started := time.Now()
+	code, answer := post(t, server, "/acquire", `{"session":"slow","source":"screening","arguments":{}}`)
+	elapsed := time.Since(started)
+	if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), "did not finish within its 1-second timeout") {
+		t.Fatalf("a source past its timeout: %d %v", code, answer)
+	}
+	if elapsed < time.Second || elapsed > 10*time.Second {
+		t.Fatalf("the source was ended after %v, not at its one-second timeout", elapsed)
+	}
+}
+
 func TestBodyAtOrBelowTheLimitIsUnaffected(t *testing.T) {
 	service, server := testService(t)
 	_ = service

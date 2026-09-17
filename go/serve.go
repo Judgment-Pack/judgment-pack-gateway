@@ -75,6 +75,9 @@ type sourceSpec struct {
 	// endpoint an action receipt names; /acquire reads neither.
 	tools    []string
 	endpoint string
+	// timeout is how long the source may run before its context is
+	// cancelled, from --source-timeout; zero is defaultSourceTimeout.
+	timeout time.Duration
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -89,6 +92,14 @@ var adapterShapes = map[string]bool{"airbyte": true, "mcp": true, "http": true}
 // memory without limit.
 const defaultMaxSourceOutput int64 = 1 << 20
 
+// defaultSourceTimeout is how long a source runs before its context is
+// cancelled, unless --source-timeout sets another for it; maxSourceTimeout
+// is the longest --source-timeout accepts.
+const (
+	defaultSourceTimeout = 30 * time.Second
+	maxSourceTimeout     = 10 * time.Minute
+)
+
 type gatewayService struct {
 	store           *store
 	registry        *registryWriter
@@ -99,6 +110,9 @@ type gatewayService struct {
 	keyID           string
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
+	// maxRequest bounds an /acquire body, from --max-request; /seal and /act
+	// keep maxRequestBody.
+	maxRequest int64
 	// started counts the sources this service has started; a test reads it
 	// to prove that a refusal came before any source ran. startedWith is the
 	// command line the last one was started with, for a test that holds the
@@ -196,7 +210,7 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	g := &gatewayService{
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
-		sources: sources, maxSourceOutput: defaultMaxSourceOutput,
+		sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody,
 		receiptVersion: receiptVersion3,
 		waitDelay:      sourceWaitDelay,
 		sessions:       map[string]*sessionState{},
@@ -353,10 +367,22 @@ type badRequest struct{ error }
 // ReadHeaderTimeout; this is the same concern for the body.
 const maxRequestBody = 1 << 20
 
-// limitBody caps r.Body in place. http.MaxBytesReader needs the ResponseWriter
-// to signal the client properly, so it can only be applied inside a handler.
+// maxRequestCeiling is the largest --max-request accepts. A body is read
+// whole before anything is decided, and the arguments it carries are held
+// again, canonicalized, for the source's stdin: an operator raising the bound
+// raises what one request may make this process hold, several times over.
+const maxRequestCeiling = 64 << 20
+
+// limitBody caps r.Body in place at maxRequestBody. http.MaxBytesReader needs
+// the ResponseWriter to signal the client properly, so it can only be applied
+// inside a handler.
 func limitBody(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	limitBodyTo(w, r, maxRequestBody)
+}
+
+// limitBodyTo caps r.Body in place at limit bytes.
+func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 }
 
 func decodeSingleJSON(r io.Reader, dst any) error {
@@ -557,7 +583,11 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 // through the same boundary as a read, and the receipt's claims about the
 // process are the same claims.
 func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
-	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
+	timeout := spec.timeout
+	if timeout <= 0 {
+		timeout = defaultSourceTimeout
+	}
+	ctx, cancel := context.WithTimeout(g.ctx, timeout)
 	defer cancel()
 	// The command is resolved once, here, to the file that will be started,
 	// and that file is what a version 3 receipt digests -- os/exec would
@@ -624,6 +654,12 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if waitErr != nil {
 		if errors.Is(waitErr, exec.ErrWaitDelay) {
 			return nil, "", "", errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			// The source's own deadline, not the gateway's shutdown: said as
+			// such, since whatever the source wrote on stderr before it was
+			// killed is not why it failed.
+			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
 		}
 		trimmed := stderr.buf.String()
 		if len(trimmed) > 200 {
@@ -1039,7 +1075,7 @@ func (g *gatewayService) handler() http.Handler {
 		if !ok {
 			return
 		}
-		limitBody(w, r)
+		limitBodyTo(w, r, g.maxRequest)
 		var body struct {
 			Session   string          `json:"session"`
 			Source    string          `json:"source"`

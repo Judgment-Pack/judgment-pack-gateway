@@ -1306,7 +1306,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords}
+	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords}
 }
 
 // maxKeySetBytes bounds the issuer's key file.
