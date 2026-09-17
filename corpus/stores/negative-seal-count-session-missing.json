@@ -1,6 +1,6 @@
 {
   "name": "negative-seal-count-session-missing",
-  "note": "Two seals, both signed by the key and naming its keyId. s1's counts 1 and matches the one receipt in the store. s2's counts -9007199254740991, the least integer §1.1 admits, and s2 is not in the store. §3 makes finalCount an integer (§1.1) and nothing more, so s2's seal loads like any other, and a sealed session absent from the store is sealed-session-missing (§4 step 4), whatever its count. A verifier that drops a seal for counting below zero, or below any bound inside §1.1's range, grades this store ok.",
+  "note": "Two seals, both signed by the key and naming its keyId. s1's counts 1 and matches the one receipt in the store. s2's counts -9007199254740991, the least integer §1.1 admits, and s2 is not in the store. §3 makes finalCount an integer (§1.1) and nothing more, so s2's seal loads like any other, and a sealed session absent from the store is sealed-session-missing (§4 step 4), whatever its count. A verifier that drops a seal for counting below zero, or below any other bound greater than the least integer and at most 1, grades this store ok.",
   "authority": "gateway:corpus",
   "files": {
     "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",

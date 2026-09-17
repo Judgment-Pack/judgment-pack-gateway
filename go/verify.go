@@ -428,9 +428,9 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 
 // loadSeals reads the append-only registry and drops any seal whose keyId is not
 // the verifier's own or whose signature does not verify under the public key. A malformed line is
-// likewise not a seal, so it is dropped too. A finalCount below zero is not
-// malformed: it is an integer within SPEC.md §1.1's range, which is all §3
-// asks of it.
+// likewise not a seal, so it is dropped too. A finalCount below zero is not, of
+// itself, malformed: §3 asks of it only that it be an integer, which §1.1
+// holds to ±(2^53-1), and a count outside that range never parses.
 //
 // An absent registry loads no seals, which grades every session in the store
 // `unregistered-session`. A registry that is present and unreachable is not

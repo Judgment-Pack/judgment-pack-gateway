@@ -89,10 +89,12 @@ both parts is held by a test.
 - **Two candidates holding the same record report twice**: step 7 reports for
   each candidate.
 - **A validly signed seal whose `finalCount` is below zero loads.** §3 makes
-  `finalCount` an integer and nothing more, and §4 step 2 loads a seal on its
-  key id and signature; it is then the session's first loadable seal, and a
-  session against it is `count-exceeds-seal` (§4 step 3), since any count of
-  files exceeds it. The reference dropped such a seal when this was written;
+  `finalCount` an integer (within §1.1's range) and nothing more, and §4 step 2
+  loads a seal on its key id and signature, so such a seal is loadable like
+  any other. Where it is the session's first loadable seal it is the one that
+  counts, and a session the store holds is then `count-exceeds-seal` against
+  it (§4 step 3), since any count of files exceeds it; where a loadable seal
+  precedes it, that seal counts instead. The reference dropped such a seal when this was written;
   it now loads it too: `corpus/stores/negative-seal-count-loads.json` holds
   both implementations to the reading, and
   `corpus/stores/negative-seal-count-session-missing.json` holds them to it
