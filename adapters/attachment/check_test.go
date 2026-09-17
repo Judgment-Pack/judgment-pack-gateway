@@ -513,6 +513,34 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			setErrors(v, errorOf("ocr-incomplete", nil))
 		}},
 		{"a complete answer leaving a page needing OCR", "partial-ocr-incomplete", "ocr-outcome", func(v map[string]any) { setErrors(v) }},
+		// round 5
+		{"ocr-incomplete beside a budget stop with nothing else left", "partial-ocr-over-budget", "ocr-outcome", func(v map[string]any) {
+			setErrors(v, errorOf("text-over-bound", num(3)), errorOf("ocr-incomplete", nil))
+		}},
+		{"applied answers past the OCR output bound", "complete-mixed-with-ocr", "ocr-answer-size", func(v map[string]any) {
+			obj(v, "processing", "bounds")["maxOcrOutputBytes"] = num(1)
+		}},
+		{"an empty admitted answer past a tiny output bound", "partial-ocr-incomplete", "ocr-answer-size", func(v map[string]any) {
+			page(v, 1)["status"] = "needs-ocr"
+			page(v, 1)["extraction"] = "none"
+			page(v, 1)["text"] = ""
+			page(v, 1)["chars"] = num(0)
+			obj(v, "content")["chars"] = num(36)
+			obj(v, "content")["extraction"] = "text-layer"
+			obj(v, "provenance")["ocr"] = nil
+			obj(v, "processing", "bounds")["maxOcrOutputBytes"] = num(11)
+		}},
+		{"a budget stop the output bound could not carry", "partial-ocr-over-budget", "ocr-answer-size", func(v map[string]any) {
+			obj(v, "processing", "bounds")["maxTextBytes"] = num(100)
+			obj(v, "processing", "bounds")["maxOcrOutputBytes"] = num(100)
+		}},
+		{"a text of only U+FEFF from three bytes", "complete-verbatim-text", "text-document-size", func(v map[string]any) {
+			page(v, 0)["text"] = "\xef\xbb\xbf"
+			page(v, 0)["chars"] = num(1)
+			obj(v, "content")["chars"] = num(1)
+			obj(v, "document")["size"] = num(3)
+		}},
+		{"a PDF read from one byte", "failed-malformed", "pdf-size", func(v map[string]any) { obj(v, "document")["size"] = num(1) }},
 	}
 	names := map[string]bool{}
 	covered := map[string]bool{}
@@ -559,5 +587,38 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 	sort.Strings(missing)
 	if len(missing) > 0 {
 		t.Errorf("rules with no case: %s", strings.Join(missing, ", "))
+	}
+}
+
+// Records the steps can write, near the rules above: each is accepted.
+func TestCheckAcceptsWhatTheStepsCanWrite(t *testing.T) {
+	ex := examples(t)
+	cases := []struct {
+		name, base string
+		change     func(map[string]any)
+	}{
+		{"ocr-incomplete beside a budget stop, another page unanswered", "partial-ocr-over-budget", func(v map[string]any) {
+			pages := pagesOf(v)
+			fourth := map[string]any{"number": num(4), "status": "needs-ocr", "extraction": "none", "text": "", "chars": num(0), "unmapped": num(0)}
+			obj(v, "content")["pages"] = append(pages, fourth)
+			obj(v, "content")["pageCount"] = num(4)
+			setErrors(v, errorOf("text-over-bound", num(3)), errorOf("ocr-incomplete", nil))
+		}},
+		{"an answer exactly at the output bound's lower limit", "complete-mixed-with-ocr", func(v map[string]any) {
+			text := page(v, 1)["text"].(string)
+			obj(v, "processing", "bounds")["maxOcrOutputBytes"] = num(12 + 21 + 1 + len(text))
+		}},
+		{"a text beginning with U+FEFF from one byte more", "complete-verbatim-text", func(v map[string]any) {
+			page(v, 0)["text"] = "\xef\xbb\xbf"
+			page(v, 0)["chars"] = num(1)
+			obj(v, "content")["chars"] = num(1)
+			obj(v, "document")["size"] = num(4)
+		}},
+		{"a PDF read from five bytes", "failed-malformed", func(v map[string]any) { obj(v, "document")["size"] = num(5) }},
+	}
+	for _, c := range cases {
+		if err := Check(mutate(t, ex[c.base], c.change)); err != nil {
+			t.Errorf("%s: refused: %v", c.name, err)
+		}
 	}
 }

@@ -50,7 +50,8 @@ promises — settled before the adapter exists, so a desk integration can be bui
 Chosen option: "an adapter under the command shape", because it records no more than the
 gateway knows — the receipt names the command's first word as configured and the digest of the
 file that word resolved to, read before the process was started, and every acquisition member a
-command cannot record is `null`, which is what a supplied document has — and because it needs
+command cannot record is `null` or, for `pageItems`, absent, which is what a supplied document
+has — and because it needs
 no change to the specification or to any verifier. The record the adapter writes carries what
 the adapter can add, as its testimony, in the clear inside the signed artifact: its account of
 itself, when it read the request, the document's digest, the outcome of every listed page, the
@@ -61,16 +62,18 @@ under the `http` shape, writing the same record.
 Processing in the desk was rejected as a matter of what this feature chooses to attest, not
 of what the specification forbids: SPEC.md §6 attests whatever a configured source returns,
 and a source that echoed caller-supplied text would be within it. The evidence this feature
-wants is stronger — the text was derived by the source the gateway started, whose file the
-receipt digests, from bytes the arguments commitment covers and whose digest the record states —
-and a desk-side extractor cannot give it, since the gateway would never have seen the bytes the
-text came from. That the file digested is the program that ran assumes it was not replaced
-between the gateway's read and the start, a race SECURITY.md states and the gateway does not
-detect. A new shape was rejected for this line because it is a normative change every
-verifier must follow before a single receipt is useful, and the command shape already says the
-true thing: it opts the source out of the envelope's acquisition reporting, which for a
-supplied document has nothing to report. The adapter takes
-no third-party dependency in its first release: the PDF reader is written in the module
+wants is stronger — the configured adapter's testimony, attributed by the receipt, that it
+derived the text from bytes the arguments commitment covers and whose digest the record states,
+given by a source the gateway started and whose file the receipt digests. Neither the receipt
+nor any check establishes that derivation; the gateway commits to the arguments and to the
+output separately. A desk-side extractor cannot give even that testimony, since the gateway
+would never have seen the bytes the text came from. That the file digested is the program that
+ran assumes it was not replaced between the gateway's read and the start, a race SECURITY.md
+states and the gateway does not detect. A new shape was rejected for this line because it is a
+normative change every verifier must follow before a single receipt is useful, and the command
+shape already says the true thing: it opts the source out of the envelope's acquisition
+reporting, which for a supplied document has nothing to report. The adapter takes no third-party
+dependency in its first release: the PDF reader is written in the module
 against the standard library, with every bound explicit, so what runs in the engine image is
 what the repository reviews.
 

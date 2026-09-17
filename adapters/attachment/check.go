@@ -546,6 +546,11 @@ func (c *checker) textStep(rec *Record) {
 	if listed && int64(len(pages[0].Text)) > rec.Document.Size {
 		c.fail("text-document-size", "a text document of %d bytes lists %d bytes of text", rec.Document.Size, len(pages[0].Text))
 	}
+	// A U+FEFF that begins the text survived step 1 only behind something
+	// steps 2 to 4 removed, so the document had at least one byte more.
+	if listed && strings.HasPrefix(pages[0].Text, "\xef\xbb\xbf") && int64(len(pages[0].Text)) >= rec.Document.Size {
+		c.fail("text-document-size", "a text document of %d bytes lists a text of %d bytes that begins with U+FEFF, which needs a removed byte before it", rec.Document.Size, len(pages[0].Text))
+	}
 	if overBudget && rec.Document.Size <= rec.Processing.Bounds.MaxTextBytes {
 		c.fail("text-document-size", "a text document of %d bytes cannot be past maxTextBytes %d", rec.Document.Size, rec.Processing.Bounds.MaxTextBytes)
 	}
@@ -555,6 +560,10 @@ func (c *checker) textStep(rec *Record) {
 func (c *checker) pdfSteps(rec *Record, counts map[string]int) {
 	errs, pages := rec.Processing.Errors, rec.Content.Pages
 	n, k := rec.Content.PageCount, int64(len(pages))
+	// Step 2 let the PDF reader run only on bytes holding %PDF-.
+	if rec.Document.Size < int64(len("%PDF-")) {
+		c.fail("pdf-size", "a PDF the reader read is %d bytes, shorter than the %%PDF- header step 2 requires", rec.Document.Size)
+	}
 	// Step 4 ended at a defect: its one error, and nothing else.
 	if counts[CodePDFMalformed]+counts[CodePDFEncrypted] > 0 {
 		if len(errs) != 1 || k != 0 || n != 0 || rec.Content.Truncated {
@@ -677,6 +686,7 @@ func (c *checker) ocrStep(rec *Record, counts map[string]int, stopTimeout bool, 
 		return
 	}
 	incomplete := counts[CodeOCRIncomplete] > 0
+	c.ocrAnswerSize(rec, applied, ocrBudget)
 	if len(ocrBudget) == 1 {
 		cut := ocrBudget[0]
 		for _, p := range applied {
@@ -691,6 +701,19 @@ func (c *checker) ocrStep(rec *Record, counts map[string]int, stopTimeout bool, 
 				}
 			}
 		}
+		// The page the budget stopped at was answered, so an incomplete
+		// answer left out some other page that still needs OCR.
+		if incomplete {
+			other := false
+			for _, p := range needs {
+				if p != cut {
+					other = true
+				}
+			}
+			if !other {
+				c.fail("ocr-outcome", "ocr-incomplete beside a budget stop at page %d, and no other page still needs OCR", cut)
+			}
+		}
 		return
 	}
 	if incomplete && len(needs) == 0 {
@@ -698,6 +721,49 @@ func (c *checker) ocrStep(rec *Record, counts map[string]int, stopTimeout bool, 
 	}
 	if !incomplete && len(needs) > 0 {
 		c.fail("ocr-outcome", "an admitted, complete answer within the budget and page %d still needs OCR", needs[0])
+	}
+}
+
+// ocrAnswerSize holds an admitted answer to maxOcrOutputBytes: the answer
+// was at most that many bytes, and the pages the record shows it answered
+// need at least this many. The smallest answer is {"pages":[]}, 12 bytes;
+// each entry {"number":N,"text":"T"} is 21 bytes, the digits of N, and T's
+// JSON encoding, which is never shorter than T's UTF-8 bytes, which in turn
+// are never shorter than T normalised; entries are separated by commas. An
+// applied page's T is at least its text; the page a budget stop names had a
+// T longer than the budget left before it. Pages whose answer the record
+// does not show are not counted, so this bound is never too high.
+func (c *checker) ocrAnswerSize(rec *Record, applied, ocrBudget []int64) {
+	pages := map[int64]Page{}
+	var layerBytes int64
+	for _, p := range rec.Content.Pages {
+		pages[p.Number] = p
+		if p.Extraction == ExtractionTextLayer {
+			layerBytes += int64(len(p.Text))
+		}
+	}
+	digits := func(n int64) int64 { return int64(len(fmt.Sprint(n))) }
+	least := int64(12)
+	entries := 0
+	usedBefore := layerBytes
+	for _, n := range applied {
+		least += 21 + digits(n) + int64(len(pages[n].Text))
+		usedBefore += int64(len(pages[n].Text))
+		entries++
+	}
+	for _, n := range ocrBudget {
+		left := rec.Processing.Bounds.MaxTextBytes - usedBefore
+		if left < 0 {
+			left = 0
+		}
+		least += 21 + digits(n) + left + 1
+		entries++
+	}
+	if entries > 1 {
+		least += int64(entries - 1)
+	}
+	if least > rec.Processing.Bounds.MaxOcrOutputBytes {
+		c.fail("ocr-answer-size", "the OCR answer the record shows needs at least %d bytes, past maxOcrOutputBytes %d", least, rec.Processing.Bounds.MaxOcrOutputBytes)
 	}
 }
 

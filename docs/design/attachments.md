@@ -42,8 +42,8 @@ The adapter is a bare source: no `--source-shape`, so the receipt's `acquisition
 The gateway names the adapter by the first word of the command as the operator configured it
 (the program, without its flags) and by the digest of the file that word resolved to, read
 before the process was started — a replacement of the file between that read and the start is
-not detected (SECURITY.md) — sets every other acquisition member to `null`, and stamps its own
-`observedAt`. That is the true shape for a
+not detected (SECURITY.md) — sets the other nullable acquisition members to `null`, leaves
+`pageItems` absent, and stamps its own `observedAt`. That is the true shape for a
 document the caller supplied: there is no endpoint, no snapshot and no peer to record, and the
 arguments commitment already commits to the bytes. The record carries what the adapter adds —
 its own account of itself, when it read the request, which extractor it ran — inside the signed
@@ -360,8 +360,10 @@ Steps 4 and 5 check it at the points they name; the first of those checks to fin
 records `timeout`, and the adapter goes to step 7. Step 6 checks it once, after the OCR program
 is resolved and digested and immediately before it is started: if the deadline has passed, the
 program is not started, `timeout` is recorded, and the adapter goes to step 7. A program that
-was started and is still running when the deadline passes is ended under `ocr-timeout`. A record
-carries at most one of the two.
+was started has **finished** when it has exited and its stdout has reached its end; one that
+has not finished when the deadline passes — still running, or exited with its stdout held open
+by a process it left behind — is ended under `ocr-timeout`. A record carries at most one of the
+two.
 [Bounds and cancellation](#bounds-and-cancellation) says what the deadline does not interrupt.
 
 1. **Admit the request**, or refuse it ([Refusals](#the-arguments)). A refused request has no
@@ -419,8 +421,9 @@ carries at most one of the two.
      adapter's process group. A name that does not resolve, a file that cannot be digested or a
      program that cannot be started is `ocr-failed`;
    - its stdout is read up to `maxOcrOutputBytes`; a byte more ends it and is `ocr-failed`. A
-     non-zero exit is `ocr-failed`. At the deadline it is ended and the outcome is
-     `ocr-timeout`;
+     non-zero exit is `ocr-failed`, and so is a program that exits and whose stdout has not
+     reached its end two seconds later — its pipe is then closed. At the deadline, not finished,
+     it is ended and the outcome is `ocr-timeout`;
    - its output is **admitted** only if all of these hold, or it is `ocr-failed`: it is one JSON
      value in the domain the gateway's canonicalizer admits (`adapters/internal/canon`: valid
      UTF-8, no duplicate member name, no unpaired surrogate escape, no number with a fraction
@@ -454,7 +457,7 @@ that applied:
 | `--max-bytes` | 16 MiB | the decoded document; the read bound derives from it ([Refusals](#the-arguments)). A retrieved document past it is `document-over-bound` |
 | `--max-pages` | 500 | pages counted and listed; past it, `pdf-pages-over-bound` and `truncated` |
 | `--max-text` | 8 MiB | the text budget: the sum of applied page text, in bytes of UTF-8 after normalisation, OCR included; past it, `text-over-bound` ([steps 5 and 6](#how-a-document-is-processed)) |
-| `--max-inflate` | 64 MiB | the total a document's streams may inflate to, with 16 MiB for any one stream; past it, `stream-over-bound` on a page or `pdf-malformed` before the walk completes — a small file that inflates without end is not read further |
+| `--max-inflate` | 64 MiB | the total a document's streams may inflate to, with 16 MiB for any one stream. Every stream the reader decodes counts against the total, a font's or an image's included. Past either bound, a stream of a page's content is `stream-over-bound` and fails that page, a stream read before the walk completes is `pdf-malformed`, and a font or image stream is no error (step 5); a later stream that finds the total spent is past it too — a small file that inflates without end is not read further |
 | `--ocr-max-output` | 32 MiB | the OCR program's stdout; past it, `ocr-failed` |
 | `--max-output` | 1 MiB | the record on stdout; at or below the gateway's `--source-max-output`. A record that would exceed it is not cut: the adapter refuses with `record-over-bound`, and a document whose text or inline original cannot be carried is one the operator sizes the bounds for |
 | `--timeout` | 25 s | the adapter's deadline, a whole number of milliseconds, reported as `timeoutMs`; past it, `timeout` or `ocr-timeout` |
@@ -468,11 +471,12 @@ page (step 5).
 
 **A deadline is when work stops being started, not a completion guarantee.** The adapter checks
 its deadline at the points [the steps](#how-a-document-is-processed) name, and an operation
-between two checks runs to its end. At the deadline it kills the OCR program — the process it
-started, not that process's own children — and waits up to two seconds for that process to exit
-and its pipes to close before writing the record. The record is therefore written some time
-after the deadline, which is why `--timeout` sits under the gateway's thirty seconds with room
-to spare.
+between two checks runs to its end. At the deadline, an OCR program that has not finished is
+ended: the adapter kills the process it started, not that process's own children, waits up to
+two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
+itself, so a process left behind holding it does not delay the record past those two seconds.
+The record is therefore written some time after the deadline, which is why `--timeout` sits
+under the gateway's thirty seconds with room to spare.
 
 The gateway, for its part, cancels the source's context at thirty seconds (`runSource`,
 `go/serve.go`). On Unix it kills the source's process group, which holds the adapter, an OCR
