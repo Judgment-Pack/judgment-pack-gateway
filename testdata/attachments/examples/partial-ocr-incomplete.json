@@ -36,10 +36,10 @@
   "document": {
     "detectedMediaType": "application/pdf",
     "encryption": null,
-    "id": "sha256:8df9146e58d2e62b9ad8436a80f9befffae993a9e943228b814856cbd265db9c",
+    "id": "sha256:dfb8dfab820c6aad055e8ac518ade52f7d8b4c132005043d09d5355767191af1",
     "mediaType": "application/pdf",
-    "name": "letter.pdf",
-    "size": 402113,
+    "name": "letter-3.pdf",
+    "size": 512000,
     "version": null
   },
   "original": {
@@ -51,16 +51,17 @@
     "bounds": {
       "maxBytes": 16777216,
       "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
       "maxPages": 500,
       "maxTextBytes": 8388608,
       "timeoutMs": 25000
     },
-    "durationMs": 9310,
+    "durationMs": 8800,
     "errors": [
       {
-        "code": "ocr-failed",
-        "message": "the OCR program answered page 3 twice; its answer for that page was not applied",
-        "page": 3
+        "code": "ocr-incomplete",
+        "message": "the OCR program was asked for 2 pages and answered 1; the rest need OCR",
+        "page": null
       }
     ],
     "status": "partial"

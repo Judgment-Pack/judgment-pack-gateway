@@ -1,33 +1,29 @@
 {
   "attachmentVersion": "1",
   "content": {
-    "chars": 29,
+    "chars": 40,
     "extraction": "text-layer",
     "kind": "text",
-    "pageCount": 1,
+    "pageCount": 3,
     "pages": [
       {
-        "chars": 29,
+        "chars": 40,
         "extraction": "text-layer",
         "number": 1,
         "status": "ok",
-        "text": "Confidential policy\nSection 1",
+        "text": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
         "unmapped": 0
       }
     ],
-    "truncated": false
+    "truncated": true
   },
   "document": {
     "detectedMediaType": "application/pdf",
-    "encryption": {
-      "handler": "Standard",
-      "opened": true,
-      "revision": 3
-    },
-    "id": "sha256:e52ba07a8fb5e37cc69d50730c303ccd5edb9962fbe54cd6c2c4094a84a47393",
+    "encryption": null,
+    "id": "sha256:e3d920843c2c9753ba75ef4dd4f9330a25955ab65839629b27592b7b00f5d1f4",
     "mediaType": "application/pdf",
-    "name": "owner-only.pdf",
-    "size": 61200,
+    "name": "dense.pdf",
+    "size": 2097152,
     "version": null
   },
   "original": {
@@ -41,12 +37,18 @@
       "maxInflateBytes": 67108864,
       "maxOcrOutputBytes": 33554432,
       "maxPages": 500,
-      "maxTextBytes": 8388608,
+      "maxTextBytes": 64,
       "timeoutMs": 25000
     },
-    "durationMs": 41,
-    "errors": [],
-    "status": "complete"
+    "durationMs": 30,
+    "errors": [
+      {
+        "code": "text-over-bound",
+        "message": "listing page 2 would take the text past 64 bytes; pages 2 to 3 are not listed",
+        "page": 2
+      }
+    ],
+    "status": "partial"
   },
   "provenance": {
     "adapter": {

@@ -1,8 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://judgment-pack.dev/gateway/attachment/1",
   "title": "Document attachment record, version 1",
-  "description": "The result adapter-document writes for one document (docs/design/attachments.md). Informative: the design note is normative, and a consumer tolerates a member it does not know at any depth.",
+  "description": "The result adapter-document writes for one document (docs/design/attachments.md). The producer's schema: strict, enumerations closed. The design note is normative and lists what this schema cannot check; a consumer validates for compatibility (unknown members and enumeration values tolerated), not with this schema.",
   "type": "object",
   "required": [
     "attachmentVersion",
@@ -34,7 +33,8 @@
         "name": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 255
+          "maxLength": 255,
+          "description": "at most 255 bytes of UTF-8; maxLength counts code points and cannot express that"
         },
         "mediaType": {
           "type": "string"
@@ -47,7 +47,8 @@
         },
         "size": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "version": {
           "type": [
@@ -71,14 +72,17 @@
             },
             "revision": {
               "type": "integer",
-              "minimum": 0
+              "minimum": 0,
+              "maximum": 9007199254740991
             },
             "opened": {
               "type": "boolean"
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     },
     "original": {
       "type": "object",
@@ -106,7 +110,8 @@
             "null"
           ]
         }
-      }
+      },
+      "additionalProperties": false
     },
     "content": {
       "type": "object",
@@ -133,14 +138,16 @@
         },
         "pageCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "truncated": {
           "type": "boolean"
         },
         "chars": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         },
         "pages": {
           "type": "array",
@@ -157,7 +164,8 @@
             "properties": {
               "number": {
                 "type": "integer",
-                "minimum": 1
+                "minimum": 1,
+                "maximum": 9007199254740991
               },
               "status": {
                 "enum": [
@@ -180,16 +188,20 @@
               },
               "chars": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "maximum": 9007199254740991
               },
               "unmapped": {
                 "type": "integer",
-                "minimum": 0
+                "minimum": 0,
+                "maximum": 9007199254740991
               }
-            }
+            },
+            "additionalProperties": false
           }
         }
-      }
+      },
+      "additionalProperties": false
     },
     "processing": {
       "type": "object",
@@ -222,16 +234,19 @@
               },
               "message": {
                 "type": "string",
-                "maxLength": 512
+                "maxLength": 512,
+                "description": "at most 512 bytes of UTF-8; maxLength counts code points and cannot express that"
               },
               "page": {
                 "type": [
                   "integer",
                   "null"
                 ],
-                "minimum": 1
+                "minimum": 1,
+                "maximum": 9007199254740991
               }
-            }
+            },
+            "additionalProperties": false
           }
         },
         "bounds": {
@@ -241,36 +256,50 @@
             "maxPages",
             "maxTextBytes",
             "maxInflateBytes",
+            "maxOcrOutputBytes",
             "timeoutMs"
           ],
           "properties": {
             "maxBytes": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 9007199254740991
             },
             "maxPages": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 9007199254740991
             },
             "maxTextBytes": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 9007199254740991
             },
             "maxInflateBytes": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 9007199254740991
             },
             "timeoutMs": {
               "type": "integer",
-              "minimum": 1
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "maxOcrOutputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
             }
-          }
+          },
+          "additionalProperties": false
         },
         "durationMs": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
-      }
+      },
+      "additionalProperties": false
     },
     "provenance": {
       "type": "object",
@@ -299,7 +328,8 @@
             "digest": {
               "$ref": "#/$defs/digest"
             }
-          }
+          },
+          "additionalProperties": false
         },
         "source": {
           "type": "object",
@@ -343,12 +373,16 @@
               "type": "array",
               "items": {
                 "type": "integer",
-                "minimum": 1
-              }
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "uniqueItems": true
             }
-          }
+          },
+          "additionalProperties": false
         }
-      }
+      },
+      "additionalProperties": false
     }
   },
   "$defs": {
@@ -356,7 +390,141 @@
       "type": "string",
       "description": "\"sha256:\" followed by exactly 64 lowercase hexadecimal characters",
       "minLength": 71,
-      "maxLength": 71
+      "maxLength": 71,
+      "pattern": "^sha256:[0-9a-f]{64}$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "processing": {
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "properties": {
+              "pages": {
+                "maxItems": 0
+              },
+              "extraction": {
+                "const": "none"
+              }
+            }
+          },
+          "processing": {
+            "properties": {
+              "errors": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "processing": {
+            "properties": {
+              "status": {
+                "const": "partial"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "processing": {
+            "properties": {
+              "errors": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "processing": {
+            "properties": {
+              "status": {
+                "const": "complete"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "content": {
+            "properties": {
+              "truncated": {
+                "const": false
+              }
+            }
+          },
+          "processing": {
+            "properties": {
+              "errors": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "original": {
+            "properties": {
+              "retention": {
+                "const": "inline"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "original": {
+            "properties": {
+              "encoding": {
+                "const": "base64"
+              },
+              "bytes": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "original": {
+            "properties": {
+              "encoding": {
+                "const": null
+              },
+              "bytes": {
+                "const": null
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false
 }

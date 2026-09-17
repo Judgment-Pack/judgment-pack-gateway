@@ -1,17 +1,17 @@
 {
   "attachmentVersion": "1",
   "content": {
-    "chars": 18,
+    "chars": 17,
     "extraction": "verbatim",
     "kind": "text",
     "pageCount": 1,
     "pages": [
       {
-        "chars": 18,
+        "chars": 17,
         "extraction": "verbatim",
         "number": 1,
         "status": "ok",
-        "text": "line one\nline two\n",
+        "text": "line one\nline two",
         "unmapped": 0
       }
     ],
@@ -20,10 +20,10 @@
   "document": {
     "detectedMediaType": "text/plain",
     "encryption": null,
-    "id": "sha256:e39538e7f27a7bf579cd9b85a103c0f0b86b60b788534295538d0301a9c5dce6",
+    "id": "sha256:6612d9c94c2da8d2544e1188348fc7baf717ffff1bacde51929a166404a41ffc",
     "mediaType": "text/plain",
     "name": "notes.txt",
-    "size": 58,
+    "size": 20,
     "version": null
   },
   "original": {
@@ -35,6 +35,7 @@
     "bounds": {
       "maxBytes": 16777216,
       "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
       "maxPages": 500,
       "maxTextBytes": 8388608,
       "timeoutMs": 25000

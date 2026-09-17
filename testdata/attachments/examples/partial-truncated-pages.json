@@ -427,7 +427,8 @@
     "bounds": {
       "maxBytes": 16777216,
       "maxInflateBytes": 67108864,
-      "maxPages": 500,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 50,
       "maxTextBytes": 8388608,
       "timeoutMs": 25000
     },

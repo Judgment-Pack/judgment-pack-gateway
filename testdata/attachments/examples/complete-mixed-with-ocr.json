@@ -1,17 +1,25 @@
 {
   "attachmentVersion": "1",
   "content": {
-    "chars": 29,
-    "extraction": "text-layer",
+    "chars": 55,
+    "extraction": "mixed",
     "kind": "text",
-    "pageCount": 1,
+    "pageCount": 2,
     "pages": [
       {
-        "chars": 29,
+        "chars": 36,
         "extraction": "text-layer",
         "number": 1,
         "status": "ok",
-        "text": "Confidential policy\nSection 1",
+        "text": "Re: your application\nDecision letter",
+        "unmapped": 0
+      },
+      {
+        "chars": 19,
+        "extraction": "ocr",
+        "number": 2,
+        "status": "ok",
+        "text": "SIGNED\nOfficer 4412",
         "unmapped": 0
       }
     ],
@@ -19,15 +27,11 @@
   },
   "document": {
     "detectedMediaType": "application/pdf",
-    "encryption": {
-      "handler": "Standard",
-      "opened": true,
-      "revision": 3
-    },
-    "id": "sha256:e52ba07a8fb5e37cc69d50730c303ccd5edb9962fbe54cd6c2c4094a84a47393",
+    "encryption": null,
+    "id": "sha256:8df9146e58d2e62b9ad8436a80f9befffae993a9e943228b814856cbd265db9c",
     "mediaType": "application/pdf",
-    "name": "owner-only.pdf",
-    "size": 61200,
+    "name": "letter.pdf",
+    "size": 402113,
     "version": null
   },
   "original": {
@@ -44,7 +48,7 @@
       "maxTextBytes": 8388608,
       "timeoutMs": 25000
     },
-    "durationMs": 41,
+    "durationMs": 9310,
     "errors": [],
     "status": "complete"
   },
@@ -55,7 +59,13 @@
       "version": "0"
     },
     "observedAt": "2026-09-16T14:05:11Z",
-    "ocr": null,
+    "ocr": {
+      "digest": "sha256:ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12ab12",
+      "pages": [
+        2
+      ],
+      "program": "ocr-pages"
+    },
     "processor": "adapter-document/pdf/1",
     "source": {
       "kind": "inline"

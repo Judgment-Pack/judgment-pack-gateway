@@ -1,17 +1,33 @@
 {
   "attachmentVersion": "1",
   "content": {
-    "chars": 29,
+    "chars": 36,
     "extraction": "text-layer",
     "kind": "text",
-    "pageCount": 1,
+    "pageCount": 3,
     "pages": [
       {
-        "chars": 29,
+        "chars": 36,
         "extraction": "text-layer",
         "number": 1,
         "status": "ok",
-        "text": "Confidential policy\nSection 1",
+        "text": "Re: your application\nDecision letter",
+        "unmapped": 0
+      },
+      {
+        "chars": 0,
+        "extraction": "none",
+        "number": 2,
+        "status": "needs-ocr",
+        "text": "",
+        "unmapped": 0
+      },
+      {
+        "chars": 0,
+        "extraction": "none",
+        "number": 3,
+        "status": "needs-ocr",
+        "text": "",
         "unmapped": 0
       }
     ],
@@ -19,15 +35,11 @@
   },
   "document": {
     "detectedMediaType": "application/pdf",
-    "encryption": {
-      "handler": "Standard",
-      "opened": true,
-      "revision": 3
-    },
-    "id": "sha256:e52ba07a8fb5e37cc69d50730c303ccd5edb9962fbe54cd6c2c4094a84a47393",
+    "encryption": null,
+    "id": "sha256:3c8430afe737530a3e633ef96ad410aa4df37c97a543e452f9df39930b895c09",
     "mediaType": "application/pdf",
-    "name": "owner-only.pdf",
-    "size": 61200,
+    "name": "letter-dup.pdf",
+    "size": 402113,
     "version": null
   },
   "original": {
@@ -44,9 +56,15 @@
       "maxTextBytes": 8388608,
       "timeoutMs": 25000
     },
-    "durationMs": 41,
-    "errors": [],
-    "status": "complete"
+    "durationMs": 9310,
+    "errors": [
+      {
+        "code": "ocr-failed",
+        "message": "the OCR program answered page 3 twice; no page of its answer was applied",
+        "page": null
+      }
+    ],
+    "status": "partial"
   },
   "provenance": {
     "adapter": {

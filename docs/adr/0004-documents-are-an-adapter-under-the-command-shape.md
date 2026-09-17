@@ -56,20 +56,27 @@ the bytes, the document's digest, the extraction per page, the bounds that appli
 OCR program it ran. Retrieval from a drive, which does have an endpoint, a version and a TLS
 peer, is a later note and a separate source under the `http` shape, writing the same record.
 
-Processing in the desk was rejected because the gateway would then attest text it never
-derived from bytes it never saw — a witness posture SPEC.md §6 admits from no caller. A new
-shape was rejected for this line because it is a normative change every verifier must follow
-before a single receipt is useful, and the command shape already says the true thing. The
-adapter takes no third-party dependency in its first release: the PDF reader is written in
-the module against the standard library, with every bound explicit, so what runs in the
-engine image is what the repository reviews.
+Processing in the desk was rejected as a matter of what this feature chooses to attest, not
+of what the specification forbids: SPEC.md §6 attests whatever a configured source returns,
+and a source that echoed caller-supplied text would be within it. The evidence this feature
+wants is stronger — the text was derived, by a program the receipt pins, from bytes whose
+digest the record states — and a desk-side extractor cannot give it, since the gateway would
+never have seen the bytes the text came from. A new shape was rejected for this line because
+it is a normative change every verifier must follow before a single receipt is useful, and the
+command shape already says the true thing: it opts the source out of the envelope's
+acquisition reporting, which for a supplied document has nothing to report. The adapter takes
+no third-party dependency in its first release: the PDF reader is written in the module
+against the standard library, with every bound explicit, so what runs in the engine image is
+what the repository reviews.
 
 ### Consequences
 
 - Good, because a document receipt verifies today under every verifier that verifies a
   version 3 receipt, the desk's included.
 - Good, because the signer's attack surface does not grow: the parser of hostile input runs as
-  a source, under the bounds and the kill every source runs under.
+  a source, under the bounds and the kill every source runs under — and away from the seed
+  when the operator gives it a user of its own (`--source-user`), which the engine image does
+  and a single-user desk deployment does not.
 - Good, because scanned pages are a stated status, OCR is an operator's program run out of
   process and recorded, and nothing pretends to have read what it did not.
 - Bad, because a command-shaped receipt records less than an envelope would: the adapter's
