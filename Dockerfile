@@ -18,7 +18,8 @@ COPY adapters/ adapters/
 RUN cd go && go build -buildvcs=false -o /out/gateway . && cp /out/gateway /out/engine-mcp \
  && cd ../adapters && go build -buildvcs=false -o /out/adapter-airbyte ./cmd/adapter-airbyte \
  && go build -buildvcs=false -o /out/adapter-mcp ./cmd/adapter-mcp \
- && go build -buildvcs=false -o /out/adapter-http ./cmd/adapter-http
+ && go build -buildvcs=false -o /out/adapter-http ./cmd/adapter-http \
+ && go build -buildvcs=false -o /out/adapter-document ./cmd/adapter-document
 # The signer runs as a user of its own and switches each adapter to its
 # platform's user: that takes CAP_SETUID, CAP_SETGID and CAP_KILL, held
 # as file capabilities on the gateway binary and nothing more -- no
@@ -62,7 +63,7 @@ COPY --from=build /out/etc/passwd /out/etc/group /etc/
 # executable by the signer alone: with file capabilities on it, a
 # platform user's process that executed it would take them up, and the
 # engine refuses to start otherwise.
-COPY --from=build /out/adapter-airbyte /out/adapter-mcp /out/adapter-http /usr/local/bin/
+COPY --from=build /out/adapter-airbyte /out/adapter-mcp /out/adapter-http /out/adapter-document /usr/local/bin/
 # The runtime beside them, root's and executable by everyone like the
 # adapters: it holds no seed and no credential, and whoever runs it -- a
 # desk, an orchestrator, a shell in a derived image -- runs it as itself.

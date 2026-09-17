@@ -1,0 +1,60 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 28,
+    "extraction": "verbatim",
+    "kind": "text",
+    "pageCount": 1,
+    "pages": [
+      {
+        "chars": 28,
+        "extraction": "verbatim",
+        "number": 1,
+        "status": "ok",
+        "text": "line one\nline two\nline three",
+        "unmapped": 0
+      }
+    ],
+    "truncated": false
+  },
+  "document": {
+    "detectedMediaType": "text/plain",
+    "encryption": null,
+    "id": "sha256:9be9c997ccb8da9f9c9cfdbc676e7dc920d84238c7f06f2768ae10d5035ef879",
+    "mediaType": "text/plain",
+    "name": "notes.txt",
+    "size": 33,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 0,
+    "errors": [],
+    "status": "complete"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "adapter-document",
+      "version": "fixture"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/text/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

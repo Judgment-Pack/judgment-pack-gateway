@@ -203,7 +203,7 @@ MCP = "usr/local/bin/engine-mcp"
 FRONTEND_UID = 65533
 FRONTEND_HOME = "home/engine-mcp"
 UNSHIPPED = ("etc/engine", "var/lib/engine", "run/secrets")
-ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp", "usr/local/bin/adapter-http")
+ADAPTERS = ("usr/local/bin/adapter-airbyte", "usr/local/bin/adapter-mcp", "usr/local/bin/adapter-http", "usr/local/bin/adapter-document")
 RUNTIME = "usr/local/bin/jpack"
 RUNTIME_DOCUMENTS = ("usr/share/engine/runtime/LICENSE", "usr/share/engine/runtime/NOTICE", "usr/share/engine/runtime/THIRD_PARTY_NOTICES", "usr/share/engine/runtime/CONFORMANCE.md")
 

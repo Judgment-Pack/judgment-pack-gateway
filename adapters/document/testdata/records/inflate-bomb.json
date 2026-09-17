@@ -1,0 +1,79 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 0,
+    "extraction": "none",
+    "kind": "text",
+    "pageCount": 2,
+    "pages": [
+      {
+        "chars": 0,
+        "extraction": "none",
+        "number": 1,
+        "status": "failed",
+        "text": "",
+        "unmapped": 0
+      },
+      {
+        "chars": 0,
+        "extraction": "none",
+        "number": 2,
+        "status": "failed",
+        "text": "",
+        "unmapped": 0
+      }
+    ],
+    "truncated": false
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": null,
+    "id": "sha256:bf03e58c4ce473c79ac715d3579ab8cc4833caadf26a1fc6070725b19d56c966",
+    "mediaType": "application/pdf",
+    "name": "inflate-bomb.pdf",
+    "size": 21387,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 4194304,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 0,
+    "errors": [
+      {
+        "code": "stream-over-bound",
+        "message": "a stream of page 1 inflates past the bound",
+        "page": 1
+      },
+      {
+        "code": "stream-over-bound",
+        "message": "a stream of page 2 inflates past the bound",
+        "page": 2
+      }
+    ],
+    "status": "partial"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "adapter-document",
+      "version": "fixture"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}
