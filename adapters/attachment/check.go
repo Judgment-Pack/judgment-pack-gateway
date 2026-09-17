@@ -23,8 +23,11 @@ func (p Problems) Error() string { return strings.Join(p, "; ") }
 // Check holds a record's bytes to the rules of docs/design/attachments.md,
 // version 1, and returns every rule it breaks, or nil. It is the reference
 // check of the note: where the two disagree, the note is right and Check
-// is a defect. It checks what the record alone can show; that a record is
-// what the adapter derived from a document takes the document.
+// is a defect. Beside each value and each page, it holds the record to the
+// note's processing steps: the step that ended the run, and what each step
+// on the way leaves in the record. It checks what the record alone can
+// show; that a record is what the adapter derived from a document takes the
+// document.
 func Check(raw []byte) error {
 	if _, err := canon.Canonicalize(raw, canon.RefuseNumbers); err != nil {
 		return Problems{"canonical-domain: the record is not in the canonical domain: " + err.Error()}
@@ -47,8 +50,8 @@ func Check(raw []byte) error {
 	c.values(&rec)
 	c.pages(&rec)
 	c.status(&rec)
-	c.codes(&rec)
-	c.declaration(&rec)
+	c.errors(&rec)
+	c.steps(&rec)
 	c.encryption(&rec)
 	c.source(&rec)
 	c.ocr(&rec)
@@ -345,12 +348,10 @@ func (c *checker) pages(rec *Record) {
 	ct := rec.Content
 	var chars, textBytes int64
 	methods := map[string]bool{}
-	var last int64
 	for i, p := range ct.Pages {
-		if p.Number <= last {
-			c.fail("page-order", "content.pages[%d].number %d does not ascend", i, p.Number)
+		if p.Number != int64(i+1) {
+			c.fail("page-contiguous", "content.pages[%d] is page %d: pages are listed from page 1 without a gap", i, p.Number)
 		}
-		last = p.Number
 		if p.Chars != int64(utf8.RuneCountInString(p.Text)) {
 			c.fail("page-chars", "content.pages[%d].chars is %d and its text has %d scalar values", i, p.Chars, utf8.RuneCountInString(p.Text))
 		}
@@ -383,9 +384,6 @@ func (c *checker) pages(rec *Record) {
 	if int64(len(ct.Pages)) > ct.PageCount {
 		c.fail("pages-past-count", "content lists %d pages and pageCount is %d", len(ct.Pages), ct.PageCount)
 	}
-	if last > ct.PageCount {
-		c.fail("page-past-count", "content lists page %d past pageCount %d", last, ct.PageCount)
-	}
 	if ct.PageCount > rec.Processing.Bounds.MaxPages {
 		c.fail("count-past-max-pages", "content.pageCount %d is past maxPages %d", ct.PageCount, rec.Processing.Bounds.MaxPages)
 	}
@@ -413,9 +411,6 @@ func (c *checker) pages(rec *Record) {
 	} else if ct.Extraction != want {
 		c.fail("extraction-derived", "content.extraction is %q and the pages derive %q", ct.Extraction, want)
 	}
-	if int64(len(ct.Pages)) < ct.PageCount && !ct.Truncated {
-		c.fail("truncated-listing", "fewer pages are listed than counted and the record is not truncated")
-	}
 }
 
 func (c *checker) status(rec *Record) {
@@ -423,9 +418,6 @@ func (c *checker) status(rec *Record) {
 	switch {
 	case len(rec.Content.Pages) == 0:
 		want = StatusFailed
-		if len(rec.Processing.Errors) == 0 {
-			c.fail("failed-without-error", "no page is listed and no error says why")
-		}
 	case len(rec.Processing.Errors) == 0 && !rec.Content.Truncated:
 		want = StatusComplete
 	}
@@ -434,52 +426,40 @@ func (c *checker) status(rec *Record) {
 	}
 }
 
-// --- the codes --------------------------------------------------------------
+// --- the errors, each on its own -------------------------------------------
 
-// A code's class: which statuses a record carrying it can have, and whether
-// its page is required, forbidden, or named by its own rule.
-type class struct {
-	statuses string // "failed", "partial", or "either"
-	page     string // "none", "failed-page" (a listed failed page), or "text" (text-over-bound's rule)
-	once     bool
+// pageFailureCodes are the codes that name a failed page, one each.
+var pageFailureCodes = map[string]bool{CodePDFPageFailed: true, CodePDFUnsupported: true, CodeStreamOverBound: true}
+
+// declarationCodes are the codes of a record no extractor read.
+var declarationCodes = map[string]bool{CodeMediaTypeUnsupported: true, CodeMediaTypeMismatch: true, CodeDocumentOverBound: true, CodeDocumentEmpty: true}
+
+// ocrCodes are the codes of an OCR run's outcome.
+var ocrCodes = map[string]bool{CodeOCRNotRun: true, CodeOCRFailed: true, CodeOCRIncomplete: true, CodeOCRTimeout: true}
+
+// codeClass says, per code, whether its page is required or forbidden and
+// whether a record carries it at most once.
+var codeClass = map[string]struct{ page, once bool }{
+	CodeMediaTypeUnsupported: {false, true},
+	CodeMediaTypeMismatch:    {false, true},
+	CodeDocumentOverBound:    {false, true},
+	CodeDocumentEmpty:        {false, true},
+	CodePDFMalformed:         {false, true},
+	CodePDFEncrypted:         {false, true},
+	CodePDFUnsupported:       {true, false},
+	CodePDFPageFailed:        {true, false},
+	CodeStreamOverBound:      {true, false},
+	CodePDFPagesOverBound:    {false, true},
+	CodeTextOverBound:        {true, false},
+	CodeTimeout:              {false, true},
+	CodeOCRNotRun:            {false, true},
+	CodeOCRFailed:            {false, true},
+	CodeOCRIncomplete:        {false, true},
+	CodeOCRTimeout:           {false, true},
 }
 
-var codeClass = map[string]class{
-	CodeMediaTypeUnsupported: {"failed", "none", true},
-	CodeMediaTypeMismatch:    {"failed", "none", true},
-	CodeDocumentOverBound:    {"failed", "none", true},
-	CodeDocumentEmpty:        {"failed", "none", true},
-	CodePDFMalformed:         {"failed", "none", true},
-	CodePDFEncrypted:         {"failed", "none", true},
-	CodePDFUnsupported:       {"partial", "failed-page", false},
-	CodePDFPageFailed:        {"partial", "failed-page", false},
-	CodeStreamOverBound:      {"partial", "failed-page", false},
-	CodePDFPagesOverBound:    {"either", "none", true},
-	CodeTextOverBound:        {"either", "text", false},
-	CodeTimeout:              {"either", "none", true},
-	CodeOCRNotRun:            {"partial", "none", true},
-	CodeOCRFailed:            {"partial", "none", true},
-	CodeOCRIncomplete:        {"partial", "none", true},
-	CodeOCRTimeout:           {"partial", "none", true},
-}
-
-func (c *checker) codes(rec *Record) {
-	pages := rec.Content.Pages
-	byNumber := map[int64]Page{}
-	needsOCR := false
-	ocrPages := false
-	for _, p := range pages {
-		byNumber[p.Number] = p
-		if p.Status == PageNeedsOCR {
-			needsOCR = true
-		}
-		if p.Extraction == ExtractionOCR {
-			ocrPages = true
-		}
-	}
+func (c *checker) errors(rec *Record) {
 	seen := map[string]int{}
-	failedPages := map[int64]bool{}
-	budgetOnNeedsOCR := false
 	for i, e := range rec.Processing.Errors {
 		cl, known := codeClass[e.Code]
 		if !known {
@@ -489,124 +469,239 @@ func (c *checker) codes(rec *Record) {
 		if cl.once && seen[e.Code] == 2 {
 			c.fail("code-once", "processing.errors carries %s more than once", e.Code)
 		}
-		switch cl.statuses {
-		case "failed":
-			if rec.Processing.Status != StatusFailed {
-				c.fail("code-failed-only", "processing.errors[%d] is %s, which only a failed record carries", i, e.Code)
-			}
-		case "partial":
-			if rec.Processing.Status != StatusPartial {
-				c.fail("code-partial-only", "processing.errors[%d] is %s, which only a partial record carries", i, e.Code)
-			}
+		if cl.page && e.Page == nil {
+			c.fail("code-page-required", "processing.errors[%d] is %s without a page", i, e.Code)
 		}
-		switch cl.page {
-		case "none":
-			if e.Page != nil {
-				c.fail("code-page-forbidden", "processing.errors[%d] is %s with a page", i, e.Code)
-			}
-		case "failed-page":
-			if e.Page == nil {
-				c.fail("code-page-required", "processing.errors[%d] is %s without a page", i, e.Code)
-			} else if p, ok := byNumber[*e.Page]; !ok || p.Status != PageFailed {
-				c.fail("code-failed-page", "processing.errors[%d] is %s and page %d is not a listed failed page", i, e.Code, *e.Page)
-			} else {
-				failedPages[*e.Page] = true
-			}
-		case "text":
-			switch {
-			case e.Page == nil:
-				c.fail("code-page-required", "processing.errors[%d] is %s without a page", i, e.Code)
-			case byNumber[*e.Page].Status == PageNeedsOCR:
-				budgetOnNeedsOCR = true
-			case *e.Page == int64(len(pages))+1 && *e.Page <= rec.Content.PageCount && lastListed(pages) == int64(len(pages)):
-				// Step 3 or 5: the first page not listed, every page before it listed.
-			default:
-				c.fail("text-over-bound-page", "processing.errors[%d] is %s and page %d is neither a listed page that needs OCR nor the first page not listed", i, e.Code, *e.Page)
-			}
+		if !cl.page && e.Page != nil {
+			c.fail("code-page-forbidden", "processing.errors[%d] is %s with a page", i, e.Code)
 		}
-	}
-	for _, p := range pages {
-		if p.Status == PageFailed && !failedPages[p.Number] {
-			c.fail("failed-page-unnamed", "page %d is failed and no error names it", p.Number)
-		}
-	}
-	if seen[CodePDFPagesOverBound] > 0 && (!rec.Content.Truncated || rec.Content.PageCount != rec.Processing.Bounds.MaxPages) {
-		c.fail("pages-over-bound", "pdf-pages-over-bound with a record that is not truncated at maxPages")
-	}
-	if seen[CodeTimeout] > 0 && seen[CodeOCRTimeout] > 0 {
-		c.fail("deadline-once", "both timeout and ocr-timeout: one deadline records one code")
-	}
-	outcomes := seen[CodeOCRNotRun] + seen[CodeOCRFailed] + seen[CodeOCRIncomplete] + seen[CodeOCRTimeout]
-	if outcomes > 1 {
-		c.fail("ocr-outcome-once", "more than one of ocr-not-run, ocr-failed, ocr-incomplete and ocr-timeout: one document has one OCR outcome")
-	}
-	if outcomes > 0 && !needsOCR {
-		c.fail("ocr-outcome-without-page", "an OCR outcome is reported and no listed page needs OCR")
-	}
-	if (seen[CodeOCRNotRun] > 0 || seen[CodeOCRFailed] > 0 || seen[CodeOCRTimeout] > 0) && ocrPages {
-		c.fail("ocr-applied-nothing", "a page took an OCR answer in a record whose OCR program applied nothing")
-	}
-	if needsOCR && outcomes == 0 && seen[CodeTimeout] == 0 && !budgetOnNeedsOCR {
-		c.fail("needs-ocr-unexplained", "a listed page needs OCR and no error says why")
 	}
 }
 
-func lastListed(pages []Page) int64 {
-	if len(pages) == 0 {
-		return 0
-	}
-	return pages[len(pages)-1].Number
-}
+// --- the steps ----------------------------------------------------------------
 
-// --- the declaration, the encryption, the source, the OCR provenance --------
-
-func (c *checker) declaration(rec *Record) {
+// steps holds the record to the step that ended the run: the declaration
+// (step 2), a text document (step 3), or a PDF (steps 4 to 6).
+func (c *checker) steps(rec *Record) {
 	d := rec.Document
-	codes := map[string]bool{}
-	for _, e := range rec.Processing.Errors {
-		codes[e.Code] = true
-	}
-	noExtractor := codes[CodeMediaTypeUnsupported] || codes[CodeMediaTypeMismatch] || codes[CodeDocumentOverBound] || codes[CodeDocumentEmpty]
-	if noExtractor != (rec.Provenance.Processor == nil) {
-		c.fail("processor-null", "provenance.processor is null exactly when no extractor ran, and this record says otherwise")
-	}
 	processor, processed := ProcessedMediaTypes[d.MediaType]
-	if processed == codes[CodeMediaTypeUnsupported] {
-		c.fail("media-type-unsupported", "document.mediaType %q and media-type-unsupported disagree", d.MediaType)
-	}
-	if codes[CodeMediaTypeMismatch] || !processed {
-		if d.DetectedMediaType != nil {
-			c.fail("detected-unprocessed", "document.detectedMediaType is set on a record whose declaration was not processed")
-		}
+	counts := map[string]int{}
+	for _, e := range rec.Processing.Errors {
+		counts[e.Code]++
 	}
 	if rec.Provenance.Processor == nil {
-		if len(rec.Content.Pages) != 0 || rec.Content.PageCount != 0 || rec.Content.Truncated {
-			c.fail("no-extractor-pages", "a record with no extractor counts or lists pages")
-		}
+		c.declarationStep(rec, counts, processed)
 		return
 	}
-	if *rec.Provenance.Processor != processor {
-		c.fail("processor-type", "provenance.processor %q does not read %q", *rec.Provenance.Processor, d.MediaType)
+	switch got := *rec.Provenance.Processor; {
+	case got != ProcessorPDF && got != ProcessorText:
+		c.fail("processor-type", "provenance.processor %q is not one version 1 names", got)
+		return
+	case !processed || got != processor:
+		c.fail("processor-type", "provenance.processor %q does not read %q", got, d.MediaType)
 	}
 	want := MediaPDF
-	if processor == ProcessorText {
+	if *rec.Provenance.Processor == ProcessorText {
 		want = MediaText
 	}
 	if d.DetectedMediaType == nil || *d.DetectedMediaType != want {
 		c.fail("detected-read", "document.detectedMediaType is not %q for a %s document that was read", want, d.MediaType)
 	}
-	for i, p := range rec.Content.Pages {
-		if processor == ProcessorText && (p.Extraction == ExtractionTextLayer || p.Extraction == ExtractionOCR || p.Number != 1) {
-			c.fail("text-document-page", "content.pages[%d] is not the one verbatim page of a text document", i)
+	if *rec.Provenance.Processor == ProcessorText {
+		c.textStep(rec)
+		return
+	}
+	c.pdfSteps(rec, counts)
+}
+
+// declarationStep is a record step 2 ended: one of the declaration's codes
+// and nothing else.
+func (c *checker) declarationStep(rec *Record, counts map[string]int, processed bool) {
+	errs := rec.Processing.Errors
+	if len(errs) != 1 || !declarationCodes[errs[0].Code] || len(rec.Content.Pages) != 0 || rec.Content.PageCount != 0 || rec.Content.Truncated {
+		c.fail("declaration-outcome", "a record no extractor read carries exactly one of media-type-unsupported, media-type-mismatch, document-over-bound and document-empty, and no content")
+	}
+	if (counts[CodeMediaTypeUnsupported] > 0 && processed) || (counts[CodeMediaTypeMismatch] > 0 && !processed) {
+		c.fail("media-type-unsupported", "document.mediaType %q and the declaration's code disagree", rec.Document.MediaType)
+	}
+	if rec.Document.DetectedMediaType != nil {
+		c.fail("detected-unprocessed", "document.detectedMediaType is set on a record no extractor read")
+	}
+}
+
+// textStep is step 3: the one verbatim page, or nothing listed under
+// text-over-bound, and never more text than the document has bytes.
+func (c *checker) textStep(rec *Record) {
+	errs, pages := rec.Processing.Errors, rec.Content.Pages
+	if rec.Content.PageCount != 1 {
+		c.fail("text-document-count", "a text document counts %d pages", rec.Content.PageCount)
+	}
+	listed := len(pages) == 1 && len(errs) == 0 && !rec.Content.Truncated && pages[0].Extraction == ExtractionVerbatim && (pages[0].Status == PageOK || pages[0].Status == PageNoText)
+	overBudget := len(pages) == 0 && len(errs) == 1 && errs[0].Code == CodeTextOverBound && errs[0].Page != nil && *errs[0].Page == 1 && rec.Content.Truncated
+	if !listed && !overBudget {
+		c.fail("text-document-outcome", "a text document is its one verbatim page, or no page under text-over-bound on page 1")
+	}
+	// Normalisation never lengthens valid UTF-8, so the text is at most the
+	// document's size, and a document past the budget is longer than it.
+	if listed && int64(len(pages[0].Text)) > rec.Document.Size {
+		c.fail("text-document-size", "a text document of %d bytes lists %d bytes of text", rec.Document.Size, len(pages[0].Text))
+	}
+	if overBudget && rec.Document.Size <= rec.Processing.Bounds.MaxTextBytes {
+		c.fail("text-document-size", "a text document of %d bytes cannot be past maxTextBytes %d", rec.Document.Size, rec.Processing.Bounds.MaxTextBytes)
+	}
+}
+
+// pdfSteps are steps 4 to 6.
+func (c *checker) pdfSteps(rec *Record, counts map[string]int) {
+	errs, pages := rec.Processing.Errors, rec.Content.Pages
+	n, k := rec.Content.PageCount, int64(len(pages))
+	// Step 4 ended at a defect: its one error, and nothing else.
+	if counts[CodePDFMalformed]+counts[CodePDFEncrypted] > 0 {
+		if len(errs) != 1 || k != 0 || n != 0 || rec.Content.Truncated {
+			c.fail("walk-defect", "a walk that ended at a defect carries its one error and counts, lists and truncates nothing")
 		}
-		if processor == ProcessorPDF && p.Extraction == ExtractionVerbatim {
+		return
+	}
+	for _, e := range errs {
+		if !pdfStepCode(e.Code) {
+			c.fail("stray-error", "%s is not a code steps 4 to 6 record", e.Code)
+		}
+	}
+	for i, p := range pages {
+		if p.Extraction == ExtractionVerbatim {
 			c.fail("pdf-verbatim", "content.pages[%d] is verbatim in a PDF", i)
 		}
 	}
-	if processor == ProcessorText && rec.Content.PageCount != 1 {
-		c.fail("text-document-count", "a text document counts %d pages", rec.Content.PageCount)
+	bound := counts[CodePDFPagesOverBound] > 0
+	if bound && n != rec.Processing.Bounds.MaxPages {
+		c.fail("pages-over-bound", "pdf-pages-over-bound with pageCount %d, not maxPages %d", n, rec.Processing.Bounds.MaxPages)
+	}
+	if n == 0 && !(len(errs) == 1 && counts[CodeTimeout] == 1) {
+		c.fail("walk-empty", "a PDF with no page counted is a walk the deadline ended, under timeout alone")
+	}
+	if want := bound || k < n || n == 0; rec.Content.Truncated != want {
+		c.fail("truncated", "content.truncated is %v and the walk and the listing derive %v", rec.Content.Truncated, want)
+	}
+	listed := map[int64]Page{}
+	for _, p := range pages {
+		listed[p.Number] = p
+	}
+	// Each failed page is named by exactly one failure, and each failure
+	// names a failed page.
+	named := map[int64]int{}
+	for i, e := range errs {
+		if !pageFailureCodes[e.Code] || e.Page == nil {
+			continue
+		}
+		named[*e.Page]++
+		if listed[*e.Page].Status != PageFailed {
+			c.fail("failed-page-errors", "processing.errors[%d] is %s and page %d is not a listed failed page", i, e.Code, *e.Page)
+		}
+	}
+	for _, p := range pages {
+		if p.Status == PageFailed && named[p.Number] != 1 {
+			c.fail("failed-page-errors", "failed page %d is named by %d failures, not one", p.Number, named[p.Number])
+		}
+	}
+	// Step 5's stop: the first page not listed under text-over-bound, or the
+	// deadline. A text-over-bound on a listed page is step 6's.
+	stopBudget := false
+	var ocrBudget []int64
+	for i, e := range errs {
+		if e.Code != CodeTextOverBound || e.Page == nil {
+			continue
+		}
+		switch p := *e.Page; {
+		case p == k+1 && p <= n && !stopBudget:
+			stopBudget = true
+		case listed[p].Status == PageNeedsOCR:
+			ocrBudget = append(ocrBudget, p)
+		default:
+			c.fail("text-over-bound-page", "processing.errors[%d] is text-over-bound and page %d is neither the first page not listed nor a listed page that needs OCR", i, p)
+		}
+	}
+	stopTimeout := n == 0
+	if k < n && !stopBudget {
+		if counts[CodeTimeout] == 0 {
+			c.fail("extraction-stop", "pages %d to %d are counted and not listed, and neither timeout nor text-over-bound says why", k+1, n)
+		}
+		stopTimeout = true
+	}
+	c.ocrStep(rec, counts, stopTimeout, ocrBudget)
+}
+
+func pdfStepCode(code string) bool {
+	return code == CodePDFPagesOverBound || code == CodeTimeout || code == CodeTextOverBound || pageFailureCodes[code] || ocrCodes[code]
+}
+
+// ocrStep is step 6: none when there was no page needing OCR or the
+// deadline ended step 4 or 5; otherwise exactly one outcome -- not run, the
+// deadline before the start, failed, ended at the deadline, or an admitted
+// answer, applied in ascending page order up to a budget stop.
+func (c *checker) ocrStep(rec *Record, counts map[string]int, stopTimeout bool, ocrBudget []int64) {
+	var needs, applied []int64
+	for _, p := range rec.Content.Pages {
+		if p.Status == PageNeedsOCR {
+			needs = append(needs, p.Number)
+		}
+		if p.Extraction == ExtractionOCR {
+			applied = append(applied, p.Number)
+		}
+	}
+	startTimeout := counts[CodeTimeout] == 1 && !stopTimeout
+	outcomeCodes := counts[CodeOCRNotRun] + counts[CodeOCRFailed] + counts[CodeOCRIncomplete] + counts[CodeOCRTimeout]
+	work := (len(needs) > 0 || len(applied) > 0) && !stopTimeout
+	if !work {
+		if outcomeCodes > 0 || startTimeout || len(ocrBudget) > 0 || len(applied) > 0 {
+			c.fail("ocr-without-work", "an OCR outcome or answer in a record where step 6 did not run")
+		}
+		return
+	}
+	admitted := len(applied) > 0 || counts[CodeOCRIncomplete] > 0 || len(ocrBudget) > 0
+	outcomes := counts[CodeOCRNotRun] + counts[CodeOCRFailed] + counts[CodeOCRTimeout]
+	if startTimeout {
+		outcomes++
+	}
+	if admitted {
+		outcomes++
+	}
+	if outcomes != 1 {
+		c.fail("ocr-outcome", "pages needed OCR and the record carries %d OCR outcomes, not one", outcomes)
+		return
+	}
+	if !admitted {
+		return
+	}
+	if len(ocrBudget) > 1 {
+		c.fail("ocr-outcome", "an admitted answer stops at the text budget once, and the record names %d pages", len(ocrBudget))
+		return
+	}
+	incomplete := counts[CodeOCRIncomplete] > 0
+	if len(ocrBudget) == 1 {
+		cut := ocrBudget[0]
+		for _, p := range applied {
+			if p > cut {
+				c.fail("ocr-outcome", "page %d took an OCR answer after the budget stopped the answers at page %d", p, cut)
+			}
+		}
+		if !incomplete {
+			for _, p := range needs {
+				if p < cut {
+					c.fail("ocr-outcome", "page %d needs OCR before the budget stop at page %d, and the answer was complete", p, cut)
+				}
+			}
+		}
+		return
+	}
+	if incomplete && len(needs) == 0 {
+		c.fail("ocr-outcome", "ocr-incomplete and no page still needs OCR")
+	}
+	if !incomplete && len(needs) > 0 {
+		c.fail("ocr-outcome", "an admitted, complete answer within the budget and page %d still needs OCR", needs[0])
 	}
 }
+
+// --- the encryption, the source, the OCR provenance --------------------------
 
 func (c *checker) encryption(rec *Record) {
 	enc := rec.Document.Encryption

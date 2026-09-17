@@ -48,8 +48,8 @@ promises — settled before the adapter exists, so a desk integration can be bui
 ## Decision outcome
 
 Chosen option: "an adapter under the command shape", because it records no more than the
-gateway knows — the receipt names the command as configured and the digest of the file that
-command resolved to, read before the process was started, and every acquisition member a
+gateway knows — the receipt names the command's first word as configured and the digest of the
+file that word resolved to, read before the process was started, and every acquisition member a
 command cannot record is `null`, which is what a supplied document has — and because it needs
 no change to the specification or to any verifier. The record the adapter writes carries what
 the adapter can add, as its testimony, in the clear inside the signed artifact: its account of

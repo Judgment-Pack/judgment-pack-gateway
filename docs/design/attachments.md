@@ -39,10 +39,11 @@ version `"1"`. What a version promises, and what may change without a new one, i
 
 The adapter is a bare source: no `--source-shape`, so the receipt's `acquisition.shape` is
 `"command"` (SPEC.md §1.2a) — the shape that opts out of the envelope's acquisition members.
-The gateway names the adapter by the command as the operator configured it and by the digest of
-the file that command resolved to, read before the process was started — a replacement of the
-file between that read and the start is not detected (SECURITY.md) — sets every other
-acquisition member to `null`, and stamps its own `observedAt`. That is the true shape for a
+The gateway names the adapter by the first word of the command as the operator configured it
+(the program, without its flags) and by the digest of the file that word resolved to, read
+before the process was started — a replacement of the file between that read and the start is
+not detected (SECURITY.md) — sets every other acquisition member to `null`, and stamps its own
+`observedAt`. That is the true shape for a
 document the caller supplied: there is no endpoint, no snapshot and no peer to record, and the
 arguments commitment already commits to the bytes. The record carries what the adapter adds —
 its own account of itself, when it read the request, which extractor it ran — inside the signed
@@ -344,7 +345,7 @@ status still says what the record is good for.
 
 | Member | Type | Meaning |
 |---|---|---|
-| `adapter` | `{"name": string, "version": string, "digest": digest}` | the adapter **as it describes itself**: its name, its own version string, and the SHA-256 of the file the operating system reports as its own executable, read by the adapter at run time. This is testimony. The receipt's `acquisition.adapter` is the **gateway's** record: the command as the operator configured it, the version `""` a bare command has (`commandAcquisition`), and the digest of the file the gateway read before starting the process. They are separate readings from separate sources; nothing checks one against the other, and they need not agree — a command configured by path names the path, and a file replaced between the readings yields two digests |
+| `adapter` | `{"name": string, "version": string, "digest": digest}` | the adapter **as it describes itself**: its name, its own version string, and the SHA-256 of the file the operating system reports as its own executable, read by the adapter at run time. This is testimony. The receipt's `acquisition.adapter` is the **gateway's** record: the first word of the command as the operator configured it, the version `""` a bare command has (`commandAcquisition`), and the digest of the file the gateway read before starting the process. They are separate readings from separate sources; nothing checks one against the other, and they need not agree — a command configured by path names the path, and a file replaced between the readings yields two digests |
 | `source` | object | where the bytes came from. Version 1 has one kind: `{"kind": "inline"}`, a document the caller supplied, with no other member. Retrieval from a drive will add its own kind with its members, recorded in the changelog; a consumer reads `kind` first, and a `kind` it does not know is a source it does not know — the record is still a record, its provenance unread |
 | `observedAt` | string | when the adapter had read the request in full, `YYYY-MM-DDThh:mm:ssZ`, UTC, whole seconds, by the adapter's clock. The receipt's own `observedAt` for a bare command is the gateway's stamp of when it read the output, which happens later; the two are readings of clocks at whole seconds that nothing relates, so they may be equal and a clock step can put the gateway's first. A consumer infers no order from them |
 | `processor` | string or `null` | the extraction implementation and its algorithm version: `"adapter-document/pdf/1"`, `"adapter-document/text/1"`. It moves when the extractor's output for the same bytes changes. `null` when no extractor ran: an unsupported or mismatched type, a retrieved document that is empty or past the size bound |
@@ -356,9 +357,11 @@ The adapter works in this order, and the record is what these steps produced.
 
 **The deadline.** `--timeout` runs from when the adapter starts, before it reads the request.
 Steps 4 and 5 check it at the points they name; the first of those checks to find it passed
-records `timeout`, and the adapter goes to step 7. Step 6 checks it once before it starts the OCR
-program — `timeout` again if it has passed — and a program already running when it passes is
-ended under `ocr-timeout` instead. A record carries at most one of the two.
+records `timeout`, and the adapter goes to step 7. Step 6 checks it once, after the OCR program
+is resolved and digested and immediately before it is started: if the deadline has passed, the
+program is not started, `timeout` is recorded, and the adapter goes to step 7. A program that
+was started and is still running when the deadline passes is ended under `ocr-timeout`. A record
+carries at most one of the two.
 [Bounds and cancellation](#bounds-and-cancellation) says what the deadline does not interrupt.
 
 1. **Admit the request**, or refuse it ([Refusals](#the-arguments)). A refused request has no
@@ -391,11 +394,15 @@ ended under `ocr-timeout` instead. A record carries at most one of the two.
    before each page and between the operators the adapter interprets on it; a page whose
    extraction the deadline interrupts is not listed, nor is any later page. The page's outcome
    is assigned from [Page outcomes](#page-outcomes). A page whose content cannot be
-   interpreted is listed as `"failed"`, with one error naming it: `pdf-unsupported` for a
-   stream filter the reader does not implement, `stream-over-bound` for a stream that inflates
-   past a bound, and `pdf-page-failed` for anything else, a structure bound met on the page
-   included. A font the reader cannot use leaves its glyphs unmapped and counted in `unmapped`,
-   and an image is an image drawn whether or not it could be decoded; neither is an error. An
+   interpreted is listed as `"failed"`, with one error naming it. The page's content is its
+   content streams and the streams of the form XObjects it draws, and the operators in them:
+   `pdf-unsupported` when one of those streams uses a filter the reader does not implement,
+   `stream-over-bound` when one inflates past a bound, and `pdf-page-failed` for anything else,
+   a structure bound or the operator bound met on the page included. Every other resource the
+   page names is not its content, and nothing about one is an error, whatever the reason — a
+   filter, a bound, an object that cannot be read or is not there: a font the reader cannot use
+   leaves its glyphs unmapped and counted in `unmapped`, an image counts as drawn whether or
+   not it could be decoded, and a form XObject that cannot be found is not drawn. An
    `"ok"` page's text takes bytes of UTF-8 from the **text budget**, `maxTextBytes`; a page of
    any other status takes none. An `"ok"` page whose text does not fit the budget left — a sum
    that reaches the bound exactly fits — is not listed, `text-over-bound` names it, and no later
@@ -403,14 +410,14 @@ ended under `ocr-timeout` instead. A record carries at most one of the two.
 6. **OCR**, when step 5 listed at least one `"needs-ocr"` page and recorded no `timeout`:
    - with `options.ocr` `"never"`, or no `--ocr` program configured, nothing is started:
      `ocr-not-run`, and the pages stay `"needs-ocr"`;
-   - otherwise the deadline is checked, and then the program named by `--ocr` is resolved on
-     the adapter's `PATH`, its file is digested, and it is started, once, with the numbers of
-     the listed `"needs-ocr"` pages as its arguments, in decimal, ascending, and the original
-     document's bytes on stdin. Its environment is the adapter's own: what the gateway
-     declared with `--source-env`, plus `PATH`, which the gateway copies unless declared (and
-     `SYSTEMROOT` on Windows). Its stderr is discarded. It stays in the adapter's process group.
-     A name that does not resolve, a file that cannot be digested or a program that cannot be
-     started is `ocr-failed`;
+   - otherwise the program named by `--ocr` is resolved on the adapter's `PATH` and its file
+     digested; the deadline is then checked, as "The deadline" says; and it is started, once,
+     with the numbers of the listed `"needs-ocr"` pages as its arguments, in decimal,
+     ascending, and the original document's bytes on stdin. Its environment is the adapter's
+     own: what the gateway declared with `--source-env`, plus `PATH`, which the gateway copies
+     unless declared (and `SYSTEMROOT` on Windows). Its stderr is discarded. It stays in the
+     adapter's process group. A name that does not resolve, a file that cannot be digested or a
+     program that cannot be started is `ocr-failed`;
    - its stdout is read up to `maxOcrOutputBytes`; a byte more ends it and is `ocr-failed`. A
      non-zero exit is `ocr-failed`. At the deadline it is ended and the outcome is
      `ocr-timeout`;
@@ -450,14 +457,14 @@ that applied:
 | `--max-inflate` | 64 MiB | the total a document's streams may inflate to, with 16 MiB for any one stream; past it, `stream-over-bound` on a page or `pdf-malformed` before the walk completes — a small file that inflates without end is not read further |
 | `--ocr-max-output` | 32 MiB | the OCR program's stdout; past it, `ocr-failed` |
 | `--max-output` | 1 MiB | the record on stdout; at or below the gateway's `--source-max-output`. A record that would exceed it is not cut: the adapter refuses with `record-over-bound`, and a document whose text or inline original cannot be carried is one the operator sizes the bounds for |
-| `--timeout` | 25 s | the adapter's deadline; past it, `timeout` or `ocr-timeout` |
+| `--timeout` | 25 s | the adapter's deadline, a whole number of milliseconds, reported as `timeoutMs`; past it, `timeout` or `ocr-timeout` |
 
-Each bound is a positive integer, and a duration for `--timeout`; a bound of zero or less is a
-usage error, and the adapter exits 2 without reading the request. Object count, nesting depth,
-cross-reference chain length, page-tree depth and operators per page are bounded by constants
-the adapter states in its documentation: one met while the document is opened or its page tree
-walked is `pdf-malformed` (step 4), and one met while a page is extracted fails that page
-(step 5).
+Each bound is a positive integer, and `--timeout` a positive duration in whole milliseconds; any
+other value is a usage error, and the adapter exits 2 without reading the request. Object count,
+nesting depth, cross-reference chain length, page-tree depth and operators per page are bounded
+by constants the adapter states in its documentation: one met while the document is opened or
+its page tree walked is `pdf-malformed` (step 4), and one met in a page's content fails that
+page (step 5).
 
 **A deadline is when work stops being started, not a completion guarantee.** The adapter checks
 its deadline at the points [the steps](#how-a-document-is-processed) name, and an operation
@@ -496,8 +503,8 @@ failed receipt covers:
 
 1. **Verify the receipt first**, as for any acquisition. Its `acquisition.shape` is
    `"command"`, which SPEC.md §1.2a defines and a version 3 verifier admits (this repository's
-   `verify-ts` does); `acquisition.adapter.name` is the command as the gateway was configured,
-   and its `digest` is of the file the gateway read before starting it.
+   `verify-ts` does); `acquisition.adapter.name` is the first word of the command as the gateway
+   was configured, and its `digest` is of the file the gateway read before starting it.
 2. **Keep what reproduces the commitment.** The arguments commitment is over the whole
    canonical arguments — the bytes, the name, the media type, and whether `sha256` and
    `options` were given — under the salt `salts.args`. The salt alone reproduces nothing: a

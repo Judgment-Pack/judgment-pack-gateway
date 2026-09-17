@@ -193,7 +193,7 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 		}},
 		{"an invented source kind", "complete-text-layer", "source-kind", func(v map[string]any) { obj(v, "provenance", "source")["kind"] = "drive" }},
 		// pages
-		{"pages out of order", "complete-text-layer", "page-order", func(v map[string]any) {
+		{"pages out of order", "complete-text-layer", "page-contiguous", func(v map[string]any) {
 			ps := pagesOf(v)
 			ps[0], ps[1] = ps[1], ps[0]
 		}},
@@ -223,7 +223,7 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			obj(v, "content")["chars"] = num(0)
 			obj(v, "content")["extraction"] = "none"
 		}},
-		{"fewer pages listed than counted, not truncated", "partial-timeout", "truncated-listing", func(v map[string]any) { obj(v, "content")["truncated"] = false }},
+		{"fewer pages listed than counted, not truncated", "partial-timeout", "truncated", func(v map[string]any) { obj(v, "content")["truncated"] = false }},
 		// status
 		{"complete while truncated", "complete-text-layer", "status-derived", func(v map[string]any) {
 			obj(v, "content")["truncated"] = true
@@ -243,12 +243,12 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			obj(v, "content")["chars"] = num(1)
 			obj(v, "content")["extraction"] = "text-layer"
 		}},
-		{"no page and no error", "failed-malformed", "failed-without-error", func(v map[string]any) { setErrors(v) }},
+		{"no page and no error", "failed-malformed", "walk-empty", func(v map[string]any) { setErrors(v) }},
 		// codes
-		{"a failed-only code in a partial record", "partial-needs-ocr", "code-failed-only", func(v map[string]any) {
+		{"a defect beside an OCR outcome", "partial-needs-ocr", "walk-defect", func(v map[string]any) {
 			setErrors(v, errorOf("ocr-not-run", nil), errorOf("pdf-malformed", nil))
 		}},
-		{"a partial-only code in a failed record", "failed-malformed", "code-partial-only", func(v map[string]any) {
+		{"an OCR outcome beside a defect", "failed-malformed", "walk-defect", func(v map[string]any) {
 			setErrors(v, errorOf("pdf-malformed", nil), errorOf("ocr-not-run", nil))
 		}},
 		{"a document-level code with a page", "partial-needs-ocr", "code-page-forbidden", func(v map[string]any) { setErrors(v, errorOf("ocr-not-run", num(1))) }},
@@ -258,7 +258,7 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			obj(v, "processing")["status"] = "partial"
 			setErrors(v, errorOf("pdf-page-failed", nil))
 		}},
-		{"a failed page no error names", "complete-text-layer", "failed-page-unnamed", func(v map[string]any) {
+		{"a failed page no error names", "complete-text-layer", "failed-page-errors", func(v map[string]any) {
 			page(v, 2)["status"] = "failed"
 			page(v, 2)["extraction"] = "none"
 			obj(v, "processing")["status"] = "partial"
@@ -276,33 +276,33 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 		{"a code twice", "partial-needs-ocr", "code-once", func(v map[string]any) {
 			setErrors(v, errorOf("ocr-not-run", nil), errorOf("ocr-not-run", nil))
 		}},
-		{"two deadline codes", "partial-ocr-failed", "deadline-once", func(v map[string]any) {
+		{"two deadline codes", "partial-ocr-failed", "ocr-outcome", func(v map[string]any) {
 			setErrors(v, errorOf("timeout", nil), errorOf("ocr-timeout", nil))
 		}},
-		{"two OCR outcomes", "partial-needs-ocr", "ocr-outcome-once", func(v map[string]any) {
+		{"two OCR outcomes", "partial-needs-ocr", "ocr-outcome", func(v map[string]any) {
 			setErrors(v, errorOf("ocr-not-run", nil), errorOf("ocr-failed", nil))
 		}},
-		{"an OCR outcome with no page needing OCR", "complete-text-layer", "ocr-outcome-without-page", func(v map[string]any) {
+		{"an OCR outcome with no page needing OCR", "complete-text-layer", "ocr-without-work", func(v map[string]any) {
 			obj(v, "processing")["status"] = "partial"
 			setErrors(v, errorOf("ocr-not-run", nil))
 		}},
-		{"a needs-ocr page no error explains", "partial-needs-ocr", "needs-ocr-unexplained", func(v map[string]any) {
+		{"a needs-ocr page no error explains", "partial-needs-ocr", "ocr-outcome", func(v map[string]any) {
 			setErrors(v, errorOf("pdf-pages-over-bound", nil))
 			obj(v, "content")["truncated"] = true
 			obj(v, "processing", "bounds")["maxPages"] = num(2)
 		}},
-		{"ocr-failed beside an applied answer", "partial-ocr-incomplete", "ocr-applied-nothing", func(v map[string]any) {
+		{"ocr-failed beside an applied answer", "partial-ocr-incomplete", "ocr-outcome", func(v map[string]any) {
 			setErrors(v, errorOf("ocr-failed", nil))
 		}},
 		// the declaration
-		{"a PDF with no processor", "complete-text-layer", "processor-null", func(v map[string]any) { obj(v, "provenance")["processor"] = nil }},
-		{"an unsupported record with a processor", "failed-unsupported-type", "processor-null", func(v map[string]any) {
+		{"a PDF with no processor", "complete-text-layer", "declaration-outcome", func(v map[string]any) { obj(v, "provenance")["processor"] = nil }},
+		{"an unsupported record with a processor", "failed-unsupported-type", "processor-type", func(v map[string]any) {
 			obj(v, "provenance")["processor"] = "adapter-document/pdf/1"
 		}},
 		{"a processed type called unsupported", "failed-unsupported-type", "media-type-unsupported", func(v map[string]any) {
 			obj(v, "document")["mediaType"] = "text/csv"
 		}},
-		{"a read record of an unprocessed type", "complete-text-layer", "media-type-unsupported", func(v map[string]any) {
+		{"a read record of an unprocessed type", "complete-text-layer", "processor-type", func(v map[string]any) {
 			obj(v, "document")["mediaType"] = "application/zip"
 		}},
 		{"a mismatch with a detected type", "failed-mismatch", "detected-unprocessed", func(v map[string]any) {
@@ -378,13 +378,13 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 		}},
 		{"an empty processor", "complete-text-layer", "processor-empty", func(v map[string]any) { obj(v, "provenance")["processor"] = "" }},
 		{"an OCR program with no name", "complete-mixed-with-ocr", "ocr-identity", func(v map[string]any) { obj(v, "provenance", "ocr")["program"] = "" }},
-		{"a page listed past the count", "complete-text-layer", "page-past-count", func(v map[string]any) { page(v, 2)["number"] = num(4) }},
+		{"a page listed past the count", "complete-text-layer", "page-contiguous", func(v map[string]any) { page(v, 2)["number"] = num(4) }},
 		{"verbatim beside text-layer", "complete-text-layer", "extraction-mix", func(v map[string]any) { page(v, 2)["extraction"] = "verbatim" }},
-		{"a code the status forbids twice over", "partial-ocr-failed", "code-failed-page", func(v map[string]any) {
+		{"a failure naming a page that did not fail", "partial-ocr-failed", "failed-page-errors", func(v map[string]any) {
 			setErrors(v, errorOf("ocr-failed", nil), errorOf("pdf-page-failed", num(2)))
 		}},
-		{"a record with no extractor counting pages", "failed-unsupported-type", "no-extractor-pages", func(v map[string]any) { obj(v, "content")["pageCount"] = num(1) }},
-		{"a PDF text page that is not page 1", "complete-verbatim-text", "text-document-page", func(v map[string]any) {
+		{"a record with no extractor counting pages", "failed-unsupported-type", "declaration-outcome", func(v map[string]any) { obj(v, "content")["pageCount"] = num(1) }},
+		{"a text page that is not page 1", "complete-verbatim-text", "text-document-count", func(v map[string]any) {
 			page(v, 0)["number"] = num(2)
 			obj(v, "content")["pageCount"] = num(2)
 		}},
@@ -395,6 +395,124 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			setErrors(v, errorOf("document-empty", nil))
 			obj(v, "document")["mediaType"] = "application/pdf"
 		}},
+		// round 4: records the steps cannot write
+		{"page 1 skipped", "complete-text-layer", "page-contiguous", func(v map[string]any) {
+			obj(v, "content")["pages"] = pagesOf(v)[1:]
+			obj(v, "content")["chars"] = num(105)
+			obj(v, "content")["truncated"] = true
+			obj(v, "processing")["status"] = "partial"
+			setErrors(v, errorOf("timeout", nil))
+		}},
+		{"every page listed and truncated", "complete-text-layer", "truncated", func(v map[string]any) {
+			obj(v, "content")["truncated"] = true
+			obj(v, "processing")["status"] = "partial"
+		}},
+		{"a walk deadline not truncated", "failed-malformed", "truncated", func(v map[string]any) { setErrors(v, errorOf("timeout", nil)) }},
+		{"counted pages omitted with no stop", "complete-text-layer", "extraction-stop", func(v map[string]any) {
+			obj(v, "content")["pages"] = pagesOf(v)[:1]
+			obj(v, "content")["chars"] = page(v, 0)["chars"]
+			obj(v, "content")["truncated"] = true
+			obj(v, "processing")["status"] = "partial"
+			obj(v, "processing", "bounds")["maxPages"] = num(3)
+			setErrors(v, errorOf("pdf-pages-over-bound", nil))
+		}},
+		{"two declaration codes", "failed-unsupported-type", "declaration-outcome", func(v map[string]any) {
+			setErrors(v, errorOf("media-type-unsupported", nil), errorOf("media-type-mismatch", nil))
+		}},
+		{"a declaration code with a PDF code", "failed-mismatch", "declaration-outcome", func(v map[string]any) {
+			setErrors(v, errorOf("media-type-mismatch", nil), errorOf("pdf-malformed", nil))
+		}},
+		{"a defect with pages counted", "failed-malformed", "walk-defect", func(v map[string]any) {
+			obj(v, "content")["pageCount"] = num(1)
+			obj(v, "content")["truncated"] = true
+		}},
+		{"a text document needing OCR", "complete-blank-text", "text-document-outcome", func(v map[string]any) {
+			page(v, 0)["status"] = "needs-ocr"
+			page(v, 0)["extraction"] = "none"
+			obj(v, "content")["extraction"] = "none"
+			obj(v, "processing")["status"] = "partial"
+			setErrors(v, errorOf("ocr-not-run", nil))
+		}},
+		{"a text document with a failed page", "complete-blank-text", "text-document-outcome", func(v map[string]any) {
+			page(v, 0)["status"] = "failed"
+			page(v, 0)["extraction"] = "none"
+			obj(v, "content")["extraction"] = "none"
+			obj(v, "processing")["status"] = "partial"
+			setErrors(v, errorOf("pdf-page-failed", num(1)))
+		}},
+		{"text longer than its document", "complete-verbatim-text", "text-document-size", func(v map[string]any) { obj(v, "document")["size"] = num(1) }},
+		{"a text document past a budget it fits", "complete-verbatim-text", "text-document-size", func(v map[string]any) {
+			obj(v, "content")["pages"] = []any{}
+			obj(v, "content")["chars"] = num(0)
+			obj(v, "content")["extraction"] = "none"
+			obj(v, "content")["truncated"] = true
+			obj(v, "processing")["status"] = "failed"
+			setErrors(v, errorOf("text-over-bound", num(1)))
+		}},
+		{"applied OCR answers and a deadline before the start", "complete-mixed-with-ocr", "ocr-outcome", func(v map[string]any) {
+			obj(v, "processing")["status"] = "partial"
+			setErrors(v, errorOf("timeout", nil))
+		}},
+		{"a deadline before the start and ocr-not-run", "partial-needs-ocr", "ocr-outcome", func(v map[string]any) {
+			setErrors(v, errorOf("timeout", nil), errorOf("ocr-not-run", nil))
+		}},
+		{"ocr-not-run and an OCR budget stop", "partial-needs-ocr", "ocr-outcome", func(v map[string]any) {
+			setErrors(v, errorOf("ocr-not-run", nil), errorOf("text-over-bound", num(1)))
+		}},
+		{"an answer applied after the budget stop", "partial-ocr-over-budget", "ocr-outcome", func(v map[string]any) {
+			page(v, 1)["status"] = "needs-ocr"
+			page(v, 1)["extraction"] = "none"
+			page(v, 1)["text"] = ""
+			page(v, 1)["chars"] = num(0)
+			page(v, 2)["status"] = "ok"
+			page(v, 2)["extraction"] = "ocr"
+			page(v, 2)["text"] = "x"
+			page(v, 2)["chars"] = num(1)
+			obj(v, "content")["chars"] = num(37)
+			obj(v, "provenance", "ocr")["pages"] = []any{num(3)}
+			errorsOf(v)[0].(map[string]any)["page"] = num(2)
+		}},
+		{"one omitted page named twice", "partial-text-over-bound", "text-over-bound-page", func(v map[string]any) {
+			setErrors(v, errorOf("text-over-bound", num(2)), errorOf("text-over-bound", num(2)))
+		}},
+		{"a failed page named by two failures", "complete-text-layer", "failed-page-errors", func(v map[string]any) {
+			page(v, 2)["status"] = "failed"
+			page(v, 2)["extraction"] = "none"
+			obj(v, "processing")["status"] = "partial"
+			setErrors(v, errorOf("pdf-page-failed", num(3)), errorOf("stream-over-bound", num(3)))
+		}},
+		{"a declaration code among a PDF's steps", "partial-needs-ocr", "stray-error", func(v map[string]any) {
+			setErrors(v, errorOf("ocr-not-run", nil), errorOf("media-type-mismatch", nil))
+		}},
+		{"an unknown processor", "complete-text-layer", "processor-type", func(v map[string]any) { obj(v, "provenance")["processor"] = "adapter-document/docx/1" }},
+		// branches of shared rules
+		{"an OCR page number that is a string", "complete-mixed-with-ocr", "member-type", func(v map[string]any) {
+			obj(v, "provenance", "ocr")["pages"] = []any{"2"}
+		}},
+		{"two OCR budget stops", "partial-ocr-over-budget", "ocr-outcome", func(v map[string]any) {
+			page(v, 1)["status"] = "needs-ocr"
+			page(v, 1)["extraction"] = "none"
+			page(v, 1)["text"] = ""
+			page(v, 1)["chars"] = num(0)
+			obj(v, "content")["chars"] = num(36)
+			obj(v, "content")["extraction"] = "text-layer"
+			obj(v, "provenance")["ocr"] = nil
+			setErrors(v, errorOf("text-over-bound", num(2)), errorOf("text-over-bound", num(3)))
+		}},
+		{"a page before the budget stop left unanswered by a complete answer", "partial-ocr-over-budget", "ocr-outcome", func(v map[string]any) {
+			page(v, 1)["status"] = "needs-ocr"
+			page(v, 1)["extraction"] = "none"
+			page(v, 1)["text"] = ""
+			page(v, 1)["chars"] = num(0)
+			obj(v, "content")["chars"] = num(36)
+			obj(v, "content")["extraction"] = "text-layer"
+			obj(v, "provenance")["ocr"] = nil
+		}},
+		{"ocr-incomplete with nothing left needing OCR", "complete-mixed-with-ocr", "ocr-outcome", func(v map[string]any) {
+			obj(v, "processing")["status"] = "partial"
+			setErrors(v, errorOf("ocr-incomplete", nil))
+		}},
+		{"a complete answer leaving a page needing OCR", "partial-ocr-incomplete", "ocr-outcome", func(v map[string]any) { setErrors(v) }},
 	}
 	names := map[string]bool{}
 	covered := map[string]bool{}
