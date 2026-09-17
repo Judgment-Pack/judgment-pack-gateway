@@ -4,6 +4,8 @@ store/
 *.key
 *.seed
 go/gateway
+# `go test -c` writes the test binary beside the package
+*.test
 
 # ecosystem packages under plugins/ build into dist/ and install into node_modules/
 plugins/**/node_modules/
