@@ -201,7 +201,7 @@ is frozen; what may be added within version 1 is in [Versioning](#versioning).
 | `detectedMediaType` | `"application/pdf"`, `"text/plain"` or `null` | what the bytes look like to the adapter, for the declarations it checks: `"application/pdf"` for a declared PDF whose first 1024 bytes contain `%PDF-`; `"text/plain"` for a declared text type whose bytes are valid UTF-8; `null` otherwise, and for a declaration version 1 does not process |
 | `size` | integer | the original's length in bytes |
 | `version` | string or `null` | a version the *source* reported for the document — a drive's file version — `null` for a document the caller supplied |
-| `encryption` | object or `null` | `{"handler": string or null, "revision": integer or null, "opened": boolean}` when the adapter read a trailer that names an encryption dictionary: the dictionary's `/Filter` name as the document declares it, or `null` when that is absent or not a name; its `/R` as declared, any integer, or `null` when that is absent or not an integer; and whether the adapter opened the document. Version 1 opens only handler `Standard` at revisions 2 to 6 (RC4 and AES) with an empty user password; a document that needs a password, declares another handler or revision, or whose encryption dictionary cannot be read is not opened and fails with `pdf-encrypted`. `null` when the adapter read a trailer that names no encryption dictionary, and also when it did not get as far as a trailer — a mismatched or unsupported declaration, or a PDF that failed as `pdf-malformed` before its trailer was read — so `null` says no encryption was found, not that none exists |
+| `encryption` | object or `null` | `{"handler": string or null, "revision": integer or null, "opened": boolean}` when the adapter read a trailer that names an encryption dictionary: the dictionary's `/Filter` name as the document declares it, or `null` when that is absent or not a name; its `/R` as declared when that is an integer from −(2^53 − 1) to 2^53 − 1, the canonical domain's range, and `null` when it is absent, not an integer (a real such as `4.0` included), or outside that range; and whether the adapter opened the document. Version 1 opens only handler `Standard` at revisions 2 to 6 (RC4 and AES) with an empty user password; a document that needs a password, declares another handler or revision, or whose encryption dictionary cannot be read is not opened and fails with `pdf-encrypted`. `null` when the adapter read a trailer that names no encryption dictionary, and also when it did not get as far as a trailer — a mismatched or unsupported declaration, or a PDF that failed as `pdf-malformed` before its trailer was read — so `null` says no encryption was found, not that none exists |
 
 ### `original` — where the bytes are
 
@@ -360,10 +360,12 @@ Steps 4 and 5 check it at the points they name; the first of those checks to fin
 records `timeout`, and the adapter goes to step 7. Step 6 checks it once, after the OCR program
 is resolved and digested and immediately before it is started: if the deadline has passed, the
 program is not started, `timeout` is recorded, and the adapter goes to step 7. A program that
-was started has **finished** when it has exited and its stdout has reached its end; one that
-has not finished when the deadline passes — still running, or exited with its stdout held open
-by a process it left behind — is ended under `ocr-timeout`. A record carries at most one of the
-two.
+was started has **finished** when it has exited and its stdout has reached its end, as the
+adapter observes both. The adapter takes the program's outcome only once it has observed both
+or ended the program; if the deadline has passed by then, the outcome is `ocr-timeout` and no
+answer is applied, even when the answer the program wrote was complete. A program still running
+at the deadline, or exited with its stdout held open by a process it left behind, is ended. A
+record carries at most one of the two.
 [Bounds and cancellation](#bounds-and-cancellation) says what the deadline does not interrupt.
 
 1. **Admit the request**, or refuse it ([Refusals](#the-arguments)). A refused request has no
@@ -422,8 +424,9 @@ two.
      program that cannot be started is `ocr-failed`;
    - its stdout is read up to `maxOcrOutputBytes`; a byte more ends it and is `ocr-failed`. A
      non-zero exit is `ocr-failed`, and so is a program that exits and whose stdout has not
-     reached its end two seconds later — its pipe is then closed. At the deadline, not finished,
-     it is ended and the outcome is `ocr-timeout`;
+     reached its end two seconds later, its pipe then closed, unless the deadline has passed by
+     then. A deadline passed before the adapter has taken the outcome makes it `ocr-timeout`, as
+     "The deadline" says;
    - its output is **admitted** only if all of these hold, or it is `ocr-failed`: it is one JSON
      value in the domain the gateway's canonicalizer admits (`adapters/internal/canon`: valid
      UTF-8, no duplicate member name, no unpaired surrogate escape, no number with a fraction
