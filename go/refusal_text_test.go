@@ -449,3 +449,53 @@ func TestAnMCPOverloadQuotesABoundedSession(t *testing.T) {
 		})
 	}
 }
+
+// What the front repeats of the signer's own refusal is bounded too, at a
+// bound of its own (maxSignerReason): the refusals this gateway writes are
+// bounded where they are written and come back whole, so the case this covers
+// is a signer that answers with more -- an answer of the front is JSON around
+// that reason, and it carries it twice.
+func TestAnMCPAnswerBoundsTheSignersReason(t *testing.T) {
+	long := strings.Repeat("a", 3<<20)
+	marker := fmt.Sprintf("…(%d bytes)", len(long))
+	whole := strings.Repeat("b", maxSignerReason)
+	for _, tc := range []struct {
+		name    string
+		status  int
+		refusal string
+		code    int
+		want    string
+	}{
+		{"a refusal carrying an error member", http.StatusBadRequest, `{"error":"` + long + `"}`, http.StatusOK, marker},
+		{"a refusal that is not JSON", http.StatusBadRequest, long, http.StatusOK, marker},
+		{"a refusal of the token, which the transport answers itself", http.StatusUnauthorized, `{"error":"` + long + `"}`, http.StatusUnauthorized, marker},
+		{"a reason at the bound, answered as it was given", http.StatusBadRequest, `{"error":"` + whole + `"}`, http.StatusOK, whole},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// a signer of this front's own, which answers one refusal
+			signer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.refusal)
+			}))
+			defer signer.Close()
+			server, err := newMCPServer(mcpTestConfig(t, signer, nil), mcpBindings(), nil, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			f := &mcpFixture{server: server, front: httptest.NewServer(server.httpHandler())}
+			defer f.front.Close()
+			code, raw := postMCP(t, f, f.open(t), toolCall(1, "screen.lookup", `{}`, ""))
+			if code != tc.code {
+				t.Fatalf("%d, want %d: %s", code, tc.code, first(raw, 400))
+			}
+			if len(raw) > maxMCPAnswer {
+				t.Fatalf("the answer is %d bytes to a %d-byte refusal; it repeats the signer's reason past the bound: %s",
+					len(raw), len(tc.refusal), first(raw, 400))
+			}
+			if !strings.Contains(string(raw), tc.want) {
+				t.Fatalf("the answer does not carry %d bytes of the reason: %s", len(tc.want), first(raw, 400))
+			}
+		})
+	}
+}

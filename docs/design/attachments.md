@@ -74,13 +74,15 @@ POST /acquire
 
 The answer is `{result, receipt, salts}` as for any acquisition; `result` is the record below.
 
-**The request bound, stated plainly.** `/acquire` reads at most 1 MiB of body
+**The request bound, stated plainly.** `/acquire` reads at most 1 MiB of body by default
 (`maxRequestBody`, SPEC.md §6 reference implementation), and the gateway cancels a source's
-context at thirty seconds. A document travels inline, base64-encoded, so until the gateway grows
-operator bounds for both — `--max-request BYTES` and `--source-timeout NAME=SECONDS`, a separate
-change to the core with its own review — an inline document is at most about 760 KiB, and its
-processing, OCR included, is cancelled at thirty seconds; what cancelling does and does not
-guarantee is in [Bounds and cancellation](#bounds-and-cancellation). The adapter's own
+context at thirty seconds by default. A document travels inline, base64-encoded, so at those
+defaults an inline document is at most about 760 KiB, and its processing, OCR included, is
+cancelled at thirty seconds. Both are what the operator sets: `--max-request BYTES` raises the
+`/acquire` body bound, and `--source-timeout NAME=SECONDS` gives the documents source a timeout
+of its own — a later change to the core, made after this note was written, so an operator who
+wants a larger document or a longer read has the options for it. What cancelling does and does
+not guarantee is in [Bounds and cancellation](#bounds-and-cancellation). The adapter's own
 `--max-bytes` and `--timeout` sit under whatever the gateway allows; the record's
 `processing.bounds` says which bounds applied.
 
@@ -483,11 +485,12 @@ ended: the adapter kills the process it started, not that process's own children
 two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
 itself, so a process left behind holding it does not delay the record past those two seconds.
 The record is therefore written some time after the deadline, which is why `--timeout` sits
-under the gateway's thirty seconds with room to spare.
+under the source's timeout — thirty seconds by default — with room to spare.
 
-The gateway, for its part, cancels the source's context at thirty seconds (`runSource`,
-`go/serve.go`). On Unix it kills the source's process group, which holds the adapter, an OCR
-program the adapter started, and any descendant of either that did not leave the group; it
+The gateway, for its part, cancels the source's context at thirty seconds, or at the seconds
+`--source-timeout` names for that source (`runSource`, `go/serve.go`). On Unix it kills the
+source's process group, which holds the adapter, an OCR program the adapter started, and any
+descendant of either that did not leave the group; it
 kills that group again once the source has been waited for. On other platforms it kills the
 source process alone (`go/spawn_other.go`), and an OCR program or its descendants can outlive
 the adapter. After cancelling, the gateway waits up to five seconds (`sourceWaitDelay`) for the
@@ -603,8 +606,8 @@ state: `"line one\r\nline two\r\n"` and `"\n"`.
   every result; a document whose original is retained inline is in the store because the
   adapter put it in the record. Neither the gateway nor the adapter indexes, lists or serves
   documents.
-- **Not a change to the signer.** Nothing here touches the core module; a new bound on the
-  request body and a per-source timeout are proposed as a separate change, and the contract
+- **Not a change to the signer.** Nothing here touches the core module; the bound on the
+  request body and the per-source timeout were a separate change to it, and the contract
   holds with or without them.
 - **Not reachable through the engine's MCP server.** The MCP server serves the tools of
   platforms bound in an engine configuration, and this release binds no bare command and no

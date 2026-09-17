@@ -161,9 +161,12 @@ func TestRunRedactsAndBoundsEveryDiagnostic(t *testing.T) {
 	// A flag the command does not know: the quotation of the operator's own
 	// command line is bounded, and the listing of the command's flags, which
 	// quotes nothing of that line, follows it whole -- so the guidance a flag
-	// carries can be read from the command that carries it.
+	// carries can be read from the command that carries it. The quotation is
+	// written once: the listing flushes what the parser wrote, so the flush
+	// that follows the parse has nothing left to write.
 	if code := run([]string{"--endpoint", "https://api.example", "--paths", "/", "--" + strings.Repeat("z", 5000)}, neverRead{t}, &stdout, &stderr); code != 2 ||
 		strings.Contains(stderr.String(), strings.Repeat("z", redact.MaxDiagnostic+1)) ||
+		strings.Count(stderr.String(), "flag provided but not defined") != 1 ||
 		!strings.Contains(stderr.String(), "-timeout duration") {
 		t.Fatalf("%d: %d bytes of diagnostic: %s", code, stderr.Len(), stderr.String())
 	}

@@ -198,10 +198,14 @@ under the default bound. It limits how many values a raised bound admits, not th
 take: member names are not counted. A refusal quotes text taken from the request — a source
 name, a member name, a number, a tool name a message to the engine's MCP server carried —
 bounded: short text as it was sent, longer text as its first bytes and how long the whole was,
-so an answer to a refused request is not itself a multiple of the body sent. What is answered
+so an answer to a refused request is not itself a multiple of the body sent. The engine's MCP
+server holds what it repeats of the signer's own refusal to a bound of its own — 512 bytes and
+how long the whole was — so that answer is bounded at the front as well, whatever the signer
+sent. What is answered
 costs as well: an answer is built whole in memory before any of it is written, and JSON spells
 some bytes six times over (`<` becomes `\u003c`), so a result raised towards
-`--source-max-output` is answered as a multiple of its own size.
+`--source-max-output` can be answered as several times its own size — six, for a result made of
+such bytes; about its own size for ordinary text.
 Parsing and canonicalization run before the source's timeout
 starts and are not bounded by it; their time grows with the body. `--max-request` and
 `--source-timeout` are command-line options: under an engine configuration `/acquire` keeps its

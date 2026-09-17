@@ -1127,22 +1127,29 @@ func (s *mcpServer) forward(ctx context.Context, path, token string, body []byte
 	return res.StatusCode, answer, nil
 }
 
-// signerReason is the reason a signer's refusal carries.
+// maxSignerReason is how much of a signer's refusal an answer of this front
+// repeats. It is wider than requestText's bound because the text is the
+// signer's own rather than the caller's: what this gateway writes quotes a
+// caller under that narrower bound and measured a few hundred bytes, so a
+// refusal of its own comes back as it was written. The bound is for what a
+// signer may otherwise put in the member -- up to the answer bound, megabytes
+// -- since this front's answer is JSON around that text and carries it twice.
+const maxSignerReason = 512
+
+// signerReason is the reason a signer's refusal carries, quoted under that
+// bound whether the refusal is JSON with an error member or text.
 func signerReason(answer []byte) string {
 	var e struct {
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(answer, &e) == nil && e.Error != "" {
-		return e.Error
+		return boundedText(e.Error, maxSignerReason)
 	}
 	text := strings.TrimSpace(string(answer))
 	if text == "" {
 		return "no reason given"
 	}
-	if len(text) > 512 {
-		text = text[:512]
-	}
-	return text
+	return boundedText(text, maxSignerReason)
 }
 
 // --- identity ---------------------------------------------------------------

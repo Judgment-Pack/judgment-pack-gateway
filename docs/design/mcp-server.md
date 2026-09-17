@@ -386,7 +386,13 @@ from the moment the body is read, and a minute for an idle connection. What the 
 refusals quote of a message — a method, a tool name, a member name, a session name the signer
 would refuse — is bounded as well, so a mebibyte of text in a message is not answered as
 several mebibytes of JSON; a session name the signer admits is 128 bytes at most (§3a) and is
-quoted as it was sent, and what is *forwarded* is the name as given either way.
+quoted as it was sent, and what is *forwarded* is the name as given either way. Forwarding it
+costs what JSON spells it: a name the signer will refuse is escaped into the forward body
+before the signer reads it, so a mebibyte of such text is several mebibytes on the way out,
+for as long as that call holds its forward slot. What the frontend repeats of the signer's
+*own* refusal is held to 512 bytes and how long the whole was — a wider bound, since that text
+is the signer's rather than the caller's, and the refusals this gateway writes measured a few
+hundred bytes.
 
 What these bounds do not bound is the signer's work. A forward past its deadline releases
 its slot while the signer may still be running the source and writing the receipt, so zero

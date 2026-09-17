@@ -205,4 +205,7 @@ func (b *boundedBuffer) firstLine(redactor func(string, bool) string) string {
 	return text
 }
 
-var errNoServer = errors.New("exactly one of --image and --command names the server")
+// errNoServer is a configuration that names no server to run, or two.
+// The command spells the pair as the operator gives it: --image, or a
+// server command after --.
+var errNoServer = errors.New("exactly one of --image and a server command after -- names the server")

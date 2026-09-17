@@ -389,11 +389,18 @@ const maxRequestText = 64
 // times the body. It bounds the same quotation wherever a diagnostic makes
 // one -- exactlyMembers quotes a member of an engine configuration, or of an
 // adapter's snapshot, through it as well as a member of a request.
-func requestText(s string) string {
-	if len(s) <= maxRequestText {
+func requestText(s string) string { return boundedText(s, maxRequestText) }
+
+// boundedText is s whole when it is at most bound bytes; otherwise its first
+// bytes up to that bound, cut before a UTF-8 sequence the bound would split,
+// followed by how many bytes the whole was. requestText quotes a caller's own
+// text by it; the engine's MCP server quotes a signer's refusal by it at a
+// bound of its own (maxSignerReason), since that text is not a caller's.
+func boundedText(s string, bound int) string {
+	if len(s) <= bound {
 		return s
 	}
-	cut := maxRequestText
+	cut := bound
 	for back := 0; back < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(s[cut]); back++ {
 		cut--
 	}
