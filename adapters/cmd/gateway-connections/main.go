@@ -52,10 +52,7 @@ func run() int {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 		result, err := b.Handle(ctx, r.Method, r.Params)
 		cancel()
-		out := map[string]any{"id": r.ID, "result": result}
-		if err != nil {
-			out["error"] = err.Error()
-		}
+		out := response(r.ID, result, err)
 		if enc.Encode(out) != nil {
 			return 1
 		}
@@ -64,4 +61,15 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// Failed operations must never include partial metadata or grants.
+func response(id string, result any, err error) map[string]any {
+	out := map[string]any{"id": id}
+	if err != nil {
+		out["error"] = err.Error()
+	} else {
+		out["result"] = result
+	}
+	return out
 }

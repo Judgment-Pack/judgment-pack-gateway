@@ -621,7 +621,7 @@ uses a separate provider namespace under the same private custody root. It share
 `status`, `configure`, `connect`, `poll`, `cancel`, and `disconnect` with Drive.
 Gmail uses fixed read-only scope, and has no `pick`, send, delete or write operation.
 `search` accepts `{ "query": "from:person@example.com", "pageToken": "optional" }`
-and returns up to ten metadata previews. `select` accepts `{ "messageIds": ["hex-id"] }`
+and returns up to ten metadata previews. Search also returns an opaque `selectionContext`. `select` accepts `{ "messageIds": ["hex-id"], "selectionContext": "context-from-search" }`
 (up to four) and returns message-bound single-use grants. These controls belong to
 the authenticated user-facing picker; search results are not automatically model context.
 

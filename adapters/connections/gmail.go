@@ -55,8 +55,9 @@ type MailPreview struct {
 	Date    string `json:"date"`
 }
 type MailSearch struct {
-	Messages      []MailPreview `json:"messages"`
-	NextPageToken string        `json:"nextPageToken,omitempty"`
+	SelectionContext string        `json:"selectionContext"`
+	Messages         []MailPreview `json:"messages"`
+	NextPageToken    string        `json:"nextPageToken,omitempty"`
 }
 
 func (p provider) mailAccount(ctx context.Context, token string) (account, error) {
@@ -137,9 +138,10 @@ func (b *Broker) mailOperation(ctx context.Context, method string, raw []byte) (
 	}
 	if method == "select" {
 		var q struct {
-			IDs []string `json:"messageIds"`
+			IDs              []string `json:"messageIds"`
+			SelectionContext string   `json:"selectionContext"`
 		}
-		if decode(raw, &q) != nil || len(q.IDs) == 0 || len(q.IDs) > 4 {
+		if decode(raw, &q) != nil || !opaque.MatchString(q.SelectionContext) || len(q.IDs) == 0 || len(q.IDs) > 4 {
 			return nil, ErrRequest
 		}
 		seen := map[string]bool{}
@@ -151,7 +153,7 @@ func (b *Broker) mailOperation(ctx context.Context, method string, raw []byte) (
 		}
 		var selected []MailSelection
 		err = b.store.locked(func(v *state) error {
-			if v.Disabled || v.Epoch != epoch || v.Connection == nil || v.Connection.ID != credentials.ID {
+			if v.Disabled || v.Epoch != epoch || q.SelectionContext != v.Epoch || v.Connection == nil || v.Connection.ID != credentials.ID {
 				return ErrCanceled
 			}
 			grants, err := b.store.makeGrants(credentials.ID, q.IDs)
@@ -160,7 +162,10 @@ func (b *Broker) mailOperation(ctx context.Context, method string, raw []byte) (
 			}
 			return err
 		})
-		return selected, err
+		if err != nil {
+			return nil, err
+		}
+		return selected, nil
 	}
 	var q struct {
 		Query     string `json:"query"`
@@ -193,7 +198,7 @@ func (b *Broker) mailOperation(ctx context.Context, method string, raw []byte) (
 	if json.Unmarshal(data, &list) != nil || len(list.Messages) > 10 || len(list.NextPageToken) > 2048 {
 		return nil, ErrProvider
 	}
-	out := MailSearch{Messages: []MailPreview{}, NextPageToken: list.NextPageToken}
+	out := MailSearch{SelectionContext: epoch, Messages: []MailPreview{}, NextPageToken: list.NextPageToken}
 	for _, item := range list.Messages {
 		m, err := b.provider.mailMessage(ctx, token, item.ID, "metadata")
 		if err != nil {
@@ -208,7 +213,10 @@ func (b *Broker) mailOperation(ctx context.Context, method string, raw []byte) (
 		}
 		return nil
 	})
-	return out, err
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // mailText produces a bounded text export. Attachments and external resources
@@ -217,11 +225,24 @@ func mailFile(part mailPart) bool {
 	return part.Filename != "" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(header(part.Headers, "Content-Disposition"))), "attachment")
 }
 
+// Skip a known empty alternative without fetching an unused body. Invalid
+// encoded content remains selected so normal validation fails closed.
+func mailPartHasBody(part mailPart) bool {
+	if part.Body.AttachmentID != "" {
+		return part.Body.Size != 0
+	}
+	if len(part.Body.Data) > 6<<20 {
+		return true
+	}
+	data, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(part.Body.Data, "="))
+	return err != nil || part.Body.Size != int64(len(data)) || strings.TrimSpace(string(data)) != ""
+}
+
 func mailBodyParts(part mailPart) []mailPart {
 	if strings.EqualFold(part.MimeType, "multipart/alternative") {
 		for _, preferred := range []string{"text/plain", "text/html"} {
 			for _, child := range part.Parts {
-				if strings.EqualFold(child.MimeType, preferred) && !mailFile(child) {
+				if strings.EqualFold(child.MimeType, preferred) && !mailFile(child) && mailPartHasBody(child) {
 					return []mailPart{child}
 				}
 			}
@@ -370,13 +391,15 @@ func mailText(part mailPart, depth int, budget *int) (string, error) {
 			if suppressed == "" && (tag == "script" || tag == "style" || tag == "head") {
 				suppressed = tag
 			}
-			if suppressed == "" && (tag == "br" || tag == "p" || tag == "div" || tag == "li" || tag == "tr") {
-				out.WriteByte('\n')
+			if suppressed == "" {
+				mailHTMLBoundary(&out, tag)
 			}
 		case html.EndTagToken:
 			name, _ := tokenizer.TagName()
 			if string(name) == suppressed {
 				suppressed = ""
+			} else if suppressed == "" {
+				mailHTMLBoundary(&out, string(name))
 			}
 		case html.TextToken:
 			if suppressed == "" {
@@ -388,6 +411,24 @@ func mailText(part mailPart, depth int, budget *int) (string, error) {
 		}
 	}
 	return out.String(), nil
+}
+
+// Preserve visible word/number boundaries when removing layout markup.
+// Inline elements deliberately do not add spaces (e.g. inter<strong>net</strong>).
+func mailHTMLBoundary(out *strings.Builder, tag string) {
+	switch tag {
+	case "td", "th":
+		if out.Len() > 0 {
+			last := out.String()[out.Len()-1]
+			if last != '\t' && last != '\n' {
+				out.WriteByte('\t')
+			}
+		}
+	case "br", "hr", "p", "div", "li", "tr", "table", "thead", "tbody", "tfoot", "ul", "ol", "dl", "dt", "dd", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header", "footer", "blockquote", "pre", "address", "figure", "figcaption":
+		if out.Len() == 0 || out.String()[out.Len()-1] != '\n' {
+			out.WriteByte('\n')
+		}
+	}
 }
 
 func ReadGmail(ctx context.Context, s *Store, raw []byte) ([]byte, error) {

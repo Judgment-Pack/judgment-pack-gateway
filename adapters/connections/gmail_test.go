@@ -99,7 +99,7 @@ func TestGmailSearchSelectAndVerifiedTextExport(t *testing.T) {
 	if strings.Contains(string(mustJSON(list)), "test email body") {
 		t.Fatal("search disclosed message body")
 	}
-	selected, err := b.Handle(ctx, "select", []byte(`{"messageIds":["abc1"]}`))
+	selected, err := b.Handle(ctx, "select", mailSelectRequest(t, b, "abc1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,11 +144,16 @@ func TestGmailSelectionScopeAndDisconnect(t *testing.T) {
 		}
 	}
 	for _, q := range []string{`{"messageIds":["../token"]}`, `{"messageIds":["abc1","abc1"]}`, `{"messageIds":[]}`, `{"messageIds":["a","b","c","d","e"]}`} {
-		if _, err := b.Handle(ctx, "select", []byte(q)); err != ErrRequest {
+		var request map[string]any
+		json.Unmarshal([]byte(q), &request)
+		var valid map[string]any
+		json.Unmarshal(mailSelectRequest(t, b, "abc1"), &valid)
+		request["selectionContext"] = valid["selectionContext"]
+		if _, err := b.Handle(ctx, "select", mustJSON(request)); err != ErrRequest {
 			t.Fatalf("bad selection accepted: %s %v", q, err)
 		}
 	}
-	r, err := b.Handle(ctx, "select", []byte(`{"messageIds":["abc1"]}`))
+	r, err := b.Handle(ctx, "select", mailSelectRequest(t, b, "abc1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,8 +216,12 @@ func TestGmailBodyRenderingIsBoundedAndDoesNotLoadResources(t *testing.T) {
 		want string
 		err  error
 	}{
+		{"table boundaries", makePart("text/html", "<table><tr><th>Limit</th><th>Actual</th></tr><tr><td>10</td><td>20</td></tr></table>"), "\nLimit\tActual\t\n10\t20\t\n", nil},
+		{"paragraph boundaries", makePart("text/html", "<p>first</p>second<h2>Heading</h2>third"), "\nfirst\nsecond\nHeading\nthird", nil},
+		{"inline emphasis", makePart("text/html", "inter<strong>net</strong>"), "internet", nil},
+		{"empty alternative", mailPart{MimeType: "multipart/alternative", Parts: []mailPart{makePart("text/plain", " \r\n"), makePart("text/html", "<p>available</p>")}}, "\navailable\n", nil},
 		{"plain", makePart("text/plain", "plain body"), "plain body", nil},
-		{"html", makePart("text/html", `<html><head><style>hidden</style></head><body><p>Visible &amp; readable<img src="https://example.invalid/track"><script>hidden</script></p></body></html>`), "\nVisible & readable", nil},
+		{"html", makePart("text/html", `<html><head><style>hidden</style></head><body><p>Visible &amp; readable<img src="https://example.invalid/track"><script>hidden</script></p></body></html>`), "\nVisible & readable\n", nil},
 		{"alternative", mailPart{MimeType: "multipart/alternative", Parts: []mailPart{makePart("text/plain", "once"), makePart("text/html", "<p>twice</p>")}}, "once", nil},
 		{"separate body", func() mailPart { p := makePart("text/plain", ""); p.Body.AttachmentID = "external-body"; return p }(), "", ErrUnsupported},
 		{"excluded attachment", func() mailPart {
@@ -239,5 +248,34 @@ func TestGmailBodyRenderingIsBoundedAndDoesNotLoadResources(t *testing.T) {
 	}
 	if mailJSONBounded([]byte(strings.Repeat("[", 65) + strings.Repeat("]", 65))) {
 		t.Fatal("deep JSON accepted")
+	}
+}
+
+// Bind selection to the connection that returned the user's search results.
+func mailSelectRequest(t *testing.T, b *Broker, ids ...string) []byte {
+	t.Helper()
+	var epoch string
+	if err := b.store.locked(func(v *state) error { epoch = v.Epoch; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return mustJSON(map[string]any{"messageIds": ids, "selectionContext": epoch})
+}
+func TestGmailSelectionRefusesConnectionChangedAfterSearch(t *testing.T) {
+	b, _ := testGmail(t)
+	ctx := context.Background()
+	found, err := b.Handle(ctx, "search", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := mustJSON(map[string]any{"messageIds": []string{"abc1"}, "selectionContext": found.(MailSearch).SelectionContext})
+	if err := b.store.locked(func(v *state) error {
+		v.Epoch = randomID()
+		v.Connection.ID = "new-account"
+		return b.store.write("state.json", v)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := b.Handle(ctx, "select", request); err != ErrCanceled || result != nil {
+		t.Fatalf("stale selection accepted: %v %v", result, err)
 	}
 }

@@ -48,3 +48,7 @@ reader) and its golang.org/x/text v0.42.0 dependency. They convert bounded email
 bodies into text without executing markup or fetching resources. Neither signer
 module nor receipt verification depends on these packages. Review impact includes
 dependency and security.
+
+Search returns an opaque connection context. Selection must echo it, and the
+gateway verifies it atomically before issuing grants. Disconnect, reconnect, or
+account changes invalidate old search results even if Desk has not polled status.
