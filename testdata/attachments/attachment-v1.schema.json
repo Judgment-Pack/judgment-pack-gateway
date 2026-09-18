@@ -435,11 +435,14 @@
                 },
                 "version": {
                   "type": "string",
-                  "minLength": 1
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "description": "1 to 32 bytes of UTF-8; maxLength counts code points, so the byte limit is the check's"
                 },
                 "mediaType": {
                   "type": "string",
-                  "minLength": 1
+                  "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(?![\\s\\S])",
+                  "maxLength": 255
                 }
               },
               "additionalProperties": false

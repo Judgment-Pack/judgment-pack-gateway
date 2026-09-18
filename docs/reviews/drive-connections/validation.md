@@ -28,3 +28,5 @@ implementation text was adopted. Deadline and actual-output schema regressions
 were authored separately. The schema check uses a pinned test-only Python
 validator; neither gateway module gains a runtime dependency. Corrected-head
 verification is still required before this review is treated as complete.
+
+The verification pass also identified G5: the Drive source schema was looser than the checker for version length and media-type syntax. Both lexical constraints now match the existing document/checker forms, with schema boundary and invalid-variant coverage. The UTF-8 byte limit remains the checker's responsibility, as with existing byte-bounded fields.

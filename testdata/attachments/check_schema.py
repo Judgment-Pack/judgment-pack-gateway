@@ -22,4 +22,17 @@ for value in ('', 'bad/file', 'a' * 201):
 broken = copy.deepcopy(record)
 broken['provenance']['source']['token'] = 'must-not-be-present'
 assert not validator.is_valid(broken), 'unexpected source credential member accepted'
-print('PASS: actual Drive record matches producer schema; seven invalid variants refused')
+for key, values in (
+    ('version', ('', 'v' * 33)),
+    ('mediaType', ('', 'TEXT/PLAIN', 'text/plain\n', 'not-a-mime-type', 'text/plain; charset=utf-8')),
+):
+    for value in values:
+        broken = copy.deepcopy(record)
+        broken['provenance']['source'][key] = value
+        assert not validator.is_valid(broken), f'invalid source {key} accepted: {value!r}'
+for media_type in ('text/plain', 'application/pdf', 'application/vnd.google-apps.document'):
+    boundary = copy.deepcopy(record)
+    boundary['document']['version'] = 'v' * 32
+    boundary['provenance']['source'].update(version='v' * 32, mediaType=media_type)
+    validator.validate(boundary)
+print('PASS: actual Drive record and lexical boundaries match producer schema; 14 invalid variants refused')
