@@ -228,7 +228,17 @@ func sealLine(t *testing.T, priv ed25519.PrivateKey, session string, count int64
 
 func sealLineKeyID(t *testing.T, priv ed25519.PrivateKey, session string, count int64, keyID string) string {
 	t.Helper()
-	sealedAt := "2026-07-31T00:00:01Z"
+	return sealLineKeyIDAt(t, priv, session, count, keyID, "2026-07-31T00:00:01Z")
+}
+
+// sealLineAt is sealLine with the seal's sealedAt given.
+func sealLineAt(t *testing.T, priv ed25519.PrivateKey, session string, count int64, sealedAt string) string {
+	t.Helper()
+	return sealLineKeyIDAt(t, priv, session, count, keyIDFor(priv.Public().(ed25519.PublicKey)), sealedAt)
+}
+
+func sealLineKeyIDAt(t *testing.T, priv ed25519.PrivateKey, session string, count int64, keyID, sealedAt string) string {
+	t.Helper()
 	sig := ed25519.Sign(priv, sealSigningInput(session, count, sealedAt, keyID))
 	obj := map[string]any{
 		"sessionId": session, "finalCount": count, "sealedAt": sealedAt,
