@@ -54,6 +54,9 @@ type Broker struct {
 func New(s *Store, disabled bool) *Broker {
 	return &Broker{store: s, provider: google(), disabled: disabled}
 }
+func NewGmail(s *Store, disabled bool) *Broker {
+	return &Broker{store: s, provider: googleMail(), disabled: disabled}
+}
 func (b *Broker) Close() { b.mu.Lock(); defer b.mu.Unlock(); b.cancel() }
 func (b *Broker) cancel() {
 	if b.active != nil {
@@ -82,7 +85,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if b.disabled {
 		b.cancel()
 		if method == "status" {
-			return Status{1, "google-drive", "blocked", nil, MaxFileBytes, 4}, nil
+			return Status{1, b.provider.kind(), "blocked", nil, MaxFileBytes, 4}, nil
 		}
 		return nil, ErrPolicy
 	}
@@ -92,7 +95,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if decode(raw, &empty) != nil {
 			return nil, ErrRequest
 		}
-		out := Status{1, "google-drive", "setup-required", nil, MaxFileBytes, 4}
+		out := Status{1, b.provider.kind(), "setup-required", nil, MaxFileBytes, 4}
 		err := b.store.locked(func(v *state) error {
 			if v.Client.ID != "" {
 				out.State = "not-connected"
@@ -119,7 +122,15 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return b.store.write("state.json", v)
 		})
 		return map[string]bool{"saved": err == nil}, err
+	case "search", "select":
+		if !b.provider.gmail {
+			return nil, ErrRequest
+		}
+		return b.mailOperation(ctx, method, raw)
 	case "connect", "pick":
+		if method == "pick" && b.provider.gmail {
+			return nil, ErrRequest
+		}
 		var empty struct{}
 		if decode(raw, &empty) != nil {
 			return nil, ErrRequest
@@ -209,7 +220,7 @@ func (b *Broker) start(pick bool) (FlowResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	f := &flow{FlowResult: FlowResult{ID: randomID(), State: "pending"}, state: randomID(), verifier: randomID(), client: client, connection: connection, epoch: epoch, pick: pick, until: time.Now().Add(5 * time.Minute), cancel: cancel, listener: listener}
 	f.redirect = "http://" + listener.Addr().String() + "/oauth/callback"
-	q := url.Values{"client_id": {client.ID}, "redirect_uri": {f.redirect}, "response_type": {"code"}, "scope": {driveScope}, "access_type": {"offline"}, "prompt": {"consent"}, "state": {f.state}, "code_challenge": {challenge(f.verifier)}, "code_challenge_method": {"S256"}}
+	q := url.Values{"client_id": {client.ID}, "redirect_uri": {f.redirect}, "response_type": {"code"}, "scope": {b.provider.scope()}, "access_type": {"offline"}, "include_granted_scopes": {"false"}, "prompt": {"consent"}, "state": {f.state}, "code_challenge": {challenge(f.verifier)}, "code_challenge_method": {"S256"}}
 	if login != "" {
 		q.Set("login_hint", login)
 	}

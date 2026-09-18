@@ -18,16 +18,24 @@ func run() int {
 	fs.SetOutput(io.Discard)
 	dir := fs.String("state-dir", "", "")
 	principal := fs.String("principal", "", "")
+	provider := fs.String("provider", "google-drive", "")
 	disabled := fs.Bool("disabled", false, "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || (*provider != "google-drive" && *provider != "gmail") {
 		return 2
 	}
-	s, err := connections.OpenStore(*dir, *principal)
+	open := connections.OpenStore
+	if *provider == "gmail" {
+		open = connections.OpenGmailStore
+	}
+	s, err := open(*dir, *principal)
 	if err != nil {
 		return 1
 	}
 	defer s.Close()
 	b := connections.New(s, *disabled)
+	if *provider == "gmail" {
+		b = connections.NewGmail(s, *disabled)
+	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
 	scan.Buffer(make([]byte, 4096), 64<<10)
@@ -44,10 +52,7 @@ func run() int {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 		result, err := b.Handle(ctx, r.Method, r.Params)
 		cancel()
-		out := map[string]any{"id": r.ID, "result": result}
-		if err != nil {
-			out["error"] = err.Error()
-		}
+		out := response(r.ID, result, err)
 		if enc.Encode(out) != nil {
 			return 1
 		}
@@ -56,4 +61,15 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// Failed operations must never include partial metadata or grants.
+func response(id string, result any, err error) map[string]any {
+	out := map[string]any{"id": id}
+	if err != nil {
+		out["error"] = err.Error()
+	} else {
+		out["result"] = result
+	}
+	return out
 }

@@ -613,3 +613,32 @@ credential custody currently supports Linux and macOS; other platforms refuse
 startup rather than use unchecked file permissions. Signing and provider processes
 are separate modules, but running them as the same OS user does not isolate what
 that user can read.
+
+## Personal Gmail connections
+
+`gateway-connections --provider gmail --state-dir /private/connections --principal desktop-owner`
+uses a separate provider namespace under the same private custody root. It shares
+`status`, `configure`, `connect`, `poll`, `cancel`, and `disconnect` with Drive.
+Gmail uses fixed read-only scope, and has no `pick`, send, delete or write operation.
+`search` accepts `{ "query": "from:person@example.com", "pageToken": "optional" }`
+and returns up to ten metadata previews. Search also returns an opaque `selectionContext`. `select` accepts `{ "messageIds": ["hex-id"], "selectionContext": "context-from-search" }`
+(up to four) and returns message-bound single-use grants. These controls belong to
+the authenticated user-facing picker; search results are not automatically model context.
+
+`adapter-gmail --state-dir /private/connections --principal desktop-owner` accepts
+`{ "messageId": "hex-id", "grant": "64-lowercase-hex" }` as a source with
+`--source-shape gmail=http` and explicit `--source-env gmail=JPACK_CONNECTIONS_DIR`.
+Use a 60-second source timeout and 16 MiB output bound. It emits a bounded 4 MiB
+plain-text email export with retained export bytes, message/thread IDs, source
+history version, and `provenance.source.format = "text-export-v1"`. The export is
+not the raw MIME message. Separate mail attachments are excluded; HTML is converted
+to text without scripts or remote resources. UTF-8 and supported legacy charsets
+are decoded through Go's x/net package, only in the adapters module.
+
+Enable Gmail API and configure a Desktop OAuth application for `gmail.readonly`.
+This grants mailbox-wide read permission at Google; application selection narrows
+what is attached to chat, not Google's permission. Google revocation is project-wide,
+so disconnecting may require other connections using that Cloud project to sign in
+again. Separate provider stores do not change upstream revocation semantics.
+See [Gmail design and limits](../docs/design/gmail-connections.md). Live production
+consent/retrieval has not been tested without an operator's registration and consent.

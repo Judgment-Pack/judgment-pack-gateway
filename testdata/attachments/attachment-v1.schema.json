@@ -446,9 +446,40 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "messageId",
+                "threadId",
+                "version",
+                "format"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "gmail"
+                },
+                "messageId": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{1,64}(?![\\s\\S])"
+                },
+                "threadId": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{1,64}(?![\\s\\S])"
+                },
+                "version": {
+                  "type": "string",
+                  "pattern": "^[0-9]{1,32}(?![\\s\\S])"
+                },
+                "format": {
+                  "const": "text-export-v1"
+                }
+              },
+              "additionalProperties": false
             }
           ],
-          "description": "One variant per source kind: inline uploads and gateway-owned Google Drive retrieval."
+          "description": "One variant per source kind: inline uploads, Google Drive retrieval, and Gmail text exports."
         },
         "observedAt": {
           "type": "string",

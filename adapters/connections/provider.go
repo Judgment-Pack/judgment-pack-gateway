@@ -14,6 +14,8 @@ import (
 	"time"
 )
 
+const gmailScope = "https://www.googleapis.com/auth/gmail.readonly"
+
 const driveScope = "https://www.googleapis.com/auth/drive.file"
 const MaxFileBytes = 4 << 20
 const MaxOutputBytes = 16 << 20
@@ -22,6 +24,7 @@ const MaxOutputBytes = 16 << 20
 type provider struct {
 	auth, token, revoke, api string
 	client                   *http.Client
+	gmail                    bool
 }
 
 func google() provider {
@@ -31,7 +34,7 @@ func google() provider {
 	t.ResponseHeaderTimeout = 15 * time.Second
 	t.TLSHandshakeTimeout = 10 * time.Second
 	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
-	return provider{"https://accounts.google.com/o/oauth2/v2/auth", "https://oauth2.googleapis.com/token", "https://oauth2.googleapis.com/revoke", "https://www.googleapis.com/drive/v3", &http.Client{Transport: t, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
+	return provider{"https://accounts.google.com/o/oauth2/v2/auth", "https://oauth2.googleapis.com/token", "https://oauth2.googleapis.com/revoke", "https://www.googleapis.com/drive/v3", &http.Client{Transport: t, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, false}
 }
 func (p provider) request(ctx context.Context, method, endpoint, token string, form url.Values, max int64) ([]byte, *http.Response, error) {
 	var body io.Reader
@@ -96,7 +99,7 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 	if json.Unmarshal(raw, &t) != nil || len(t.Access) == 0 || len(t.Access) > 8192 || len(t.Refresh) > 8192 || t.Expires <= 0 || t.Expires > 86400 || !strings.EqualFold(t.Type, "Bearer") {
 		return t, ErrProvider
 	}
-	if t.Scope != "" && t.Scope != driveScope {
+	if t.Scope != "" && t.Scope != p.scope() {
 		return t, ErrProvider
 	}
 	return t, nil
@@ -146,7 +149,28 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	})
 	return access, err
 }
+func (p provider) scope() string {
+	if p.gmail {
+		return gmailScope
+	}
+	return driveScope
+}
+func (p provider) kind() string {
+	if p.gmail {
+		return "gmail"
+	}
+	return "google-drive"
+}
+func googleMail() provider {
+	p := google()
+	p.gmail = true
+	p.api = "https://gmail.googleapis.com/gmail/v1/users/me"
+	return p
+}
 func (p provider) who(ctx context.Context, access string) (account, error) {
+	if p.gmail {
+		return p.mailAccount(ctx, access)
+	}
 	raw, _, err := p.request(ctx, "GET", p.api+"/about?fields=user(permissionId,emailAddress,displayName)", access, nil, 64<<10)
 	if err != nil {
 		return account{}, err
