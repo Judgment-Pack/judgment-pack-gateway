@@ -30,7 +30,8 @@ version `"1"`. What a version promises, and what may change without a new one, i
   the receipt. It reads nothing of the document.
 - **The adapter**, `adapter-document`, reads the arguments on stdin, establishes the document's
   identity, extracts what it can within its bounds, and writes the record on stdout. It holds
-  no credential in this release; retrieval from a drive, which does, is the next note.
+  no credential. The separate Drive companion and retrieval adapter hold provider
+  credentials; see the source vocabulary extension below.
 - **An OCR program**, when the operator configures one, is a separate executable the adapter
   runs for the pages that have no text layer. The record says which pages took its answer; it
   vouches for nothing the program did.
@@ -209,7 +210,7 @@ is frozen; what may be added within version 1 is in [Versioning](#versioning).
 
 | Member | Type | Meaning |
 |---|---|---|
-| `retention` | `"caller"` or `"inline"` | `"caller"`: the caller supplied the bytes and holds them; this record binds them by `document.id` and the receipt's arguments commitment commits to them. `"inline"`: the bytes are in this record, base64, and the retained artifact therefore holds the original — the form retrieval from a drive will use, since the caller never had the bytes. Version 1's only source kind, `"inline"`, is a document the caller supplied, so its records carry `"caller"` |
+| `retention` | `"caller"` or `"inline"` | `"caller"`: the caller supplied the bytes and holds them; this record binds them by `document.id` and the receipt's arguments commitment commits to them. `"inline"`: the bytes are in this record, base64, and the retained artifact therefore holds the original — the form retrieval from a drive will use, since the caller never had the bytes. For source kind `"inline"`, the caller supplied the document and records carry `"caller"`. Source `"google-drive"` retains the acquired/exported original inline |
 | `encoding` | `"base64"` or `null` | `"base64"` exactly when `retention` is `"inline"` |
 | `bytes` | string or `null` | the original, base64, exactly when `retention` is `"inline"` |
 
@@ -348,7 +349,7 @@ status still says what the record is good for.
 | Member | Type | Meaning |
 |---|---|---|
 | `adapter` | `{"name": string, "version": string, "digest": digest}` | the adapter **as it describes itself**: its name, its own version string, and the SHA-256 of the file the operating system reports as its own executable, read by the adapter at run time. This is testimony. The receipt's `acquisition.adapter` is the **gateway's** record: the first word of the command as the operator configured it, the version `""` a bare command has (`commandAcquisition`), and the digest of the file the gateway read before starting the process. They are separate readings from separate sources; nothing checks one against the other, and they need not agree — a command configured by path names the path, and a file replaced between the readings yields two digests |
-| `source` | object | where the bytes came from. Version 1 has one kind: `{"kind": "inline"}`, a document the caller supplied, with no other member. Retrieval from a drive will add its own kind with its members, recorded in the changelog; a consumer reads `kind` first, and a `kind` it does not know is a source it does not know — the record is still a record, its provenance unread |
+| `source` | object | where the bytes came from. The initial kind is `{"kind": "inline"}`, a document the caller supplied, with no other member. The Google Drive source extension below adds `"google-drive"` with its named members; a consumer reads `kind` first, and a `kind` it does not know is a source it does not know — the record is still a record, its provenance unread |
 | `observedAt` | string | when the adapter had read the request in full, `YYYY-MM-DDThh:mm:ssZ`, UTC, whole seconds, by the adapter's clock. The receipt's own `observedAt` for a bare command is the gateway's stamp of when it read the output, which happens later; the two are readings of clocks at whole seconds that nothing relates, so they may be equal and a clock step can put the gateway's first. A consumer infers no order from them |
 | `processor` | string or `null` | the extraction implementation and its algorithm version: `"adapter-document/pdf/1"`, `"adapter-document/text/1"`. It moves when the extractor's output for the same bytes changes. `null` when no extractor ran: an unsupported or mismatched type, a retrieved document that is empty or past the size bound |
 | `ocr` | object or `null` | the provenance of **applied** OCR answers: `{"program": string, "digest": digest, "pages": array of integers}` — the program as configured, the SHA-256 of the file that name resolved to, read by the adapter before starting it, with a replacement between that read and the start not detected, and the numbers of the pages whose `extraction` is `"ocr"`, ascending and distinct. An object exactly when at least one page's `extraction` is `"ocr"`, and `null` otherwise. A run that applied nothing — `ocr-failed`, `ocr-timeout` and an admitted answer of no pages among them — is recorded only by its errors, and the record does not identify the program that ran |
@@ -612,8 +613,24 @@ state: `"line one\r\nline two\r\n"` and `"\n"`.
 - **Not reachable through the engine's MCP server.** The MCP server serves the tools of
   platforms bound in an engine configuration, and this release binds no bare command and no
   `http` shape there. A desk reaches the documents source over `/acquire`.
-- **Not retrieval.** A document fetched from a drive on the caller's behalf, with the
-  caller's authorisation, is the next note; it writes this same record with a
+- **The document parser does not retrieve.** The separate Drive adapter fetches on
+  the caller's behalf under the connection contract below; it writes this same record with a
   `provenance.source.kind` naming the drive, `document.version` from the drive, and the
   original retained inline, under the `http` shape, whose acquisition members it can honestly
   fill.
+
+## Source vocabulary extension: Google Drive (2026-09-18)
+
+The gateway connection companion and `adapter-drive` implement retrieval described
+above. Version 1 now also names a source object with exactly four members:
+`{"kind":"google-drive","fileId":"…","version":"…","mediaType":"…"}`.
+File IDs use 1–200 ASCII letters, digits, underscores or hyphens; the source version
+is nonempty, at most 32 bytes, and equals `document.version`. `mediaType` identifies
+the source before an export. The acquired/exported bytes use the ordinary
+`document.mediaType`. The adapter checks source version before and after reading.
+
+For this source `original.retention` is `inline`, encoding is `base64`, and the
+nonempty decoded original must match `document.id`, `document.size`, and the stated
+byte bound. The extension does not change any prior inline-source record or receipt
+format. Existing consumers that know only inline sources must refuse use of this
+new source until upgraded. See [Drive connections](drive-connections.md).

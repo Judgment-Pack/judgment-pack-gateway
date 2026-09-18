@@ -2,7 +2,9 @@ package attachment
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -186,7 +188,13 @@ func (c *checker) shape(v any) {
 		"adapter": "object", "source": "object", "observedAt": "string", "processor": "string|null", "ocr": "object|null",
 	}); prov != nil {
 		c.object("provenance.adapter", prov["adapter"], map[string]string{"name": "string", "version": "string", "digest": "string"})
-		c.object("provenance.source", prov["source"], map[string]string{"kind": "string"})
+		sourceMembers := map[string]string{"kind": "string"}
+		if source, ok := prov["source"].(map[string]any); ok && source["kind"] == SourceGoogleDrive {
+			sourceMembers["fileId"] = "string"
+			sourceMembers["version"] = "string"
+			sourceMembers["mediaType"] = "string"
+		}
+		c.object("provenance.source", prov["source"], sourceMembers)
 		if prov["ocr"] != nil {
 			if ocr := c.object("provenance.ocr", prov["ocr"], map[string]string{"program": "string", "digest": "string", "pages": "array"}); ocr != nil {
 				items, _ := ocr["pages"].([]any)
@@ -333,7 +341,7 @@ func (c *checker) values(rec *Record) {
 	if pv.Adapter.Name == "" || !ValidDigest(pv.Adapter.Digest) {
 		c.fail("adapter-identity", "provenance.adapter has an empty name or a digest that is not one")
 	}
-	if pv.Source.Kind != SourceInline {
+	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive {
 		c.fail("source-kind", "provenance.source.kind is %q, which version 1 does not name", pv.Source.Kind)
 	}
 	if !stampForm.MatchString(pv.ObservedAt) {
@@ -804,6 +812,23 @@ func (c *checker) encryption(rec *Record) {
 }
 
 func (c *checker) source(rec *Record) {
+	if rec.Provenance.Source.Kind == SourceGoogleDrive {
+		src, o := rec.Provenance.Source, rec.Original
+		if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`).MatchString(src.FileID) || src.Version == "" || len(src.Version) > 32 || !mediaTypeForm.MatchString(src.MediaType) || rec.Document.Version == nil || *rec.Document.Version != src.Version {
+			c.fail("drive-source", "Drive source identity/version is invalid")
+		}
+		if o.Retention != RetentionInline || o.Encoding == nil || *o.Encoding != "base64" || o.Bytes == nil {
+			c.fail("drive-original", "Drive original must be retained inline")
+			return
+		}
+		raw, err := base64.StdEncoding.Strict().DecodeString(*o.Bytes)
+		hash := sha256.Sum256(raw)
+		if err != nil || len(raw) == 0 || base64.StdEncoding.EncodeToString(raw) != *o.Bytes || int64(len(raw)) != rec.Document.Size || rec.Document.Size > rec.Processing.Bounds.MaxBytes || "sha256:"+hex.EncodeToString(hash[:]) != rec.Document.ID {
+			c.fail("drive-original", "Drive original bytes do not match the document")
+		}
+		return
+	}
+
 	if rec.Provenance.Source.Kind != SourceInline {
 		return
 	}

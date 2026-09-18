@@ -1,0 +1,2 @@
+# Test-only validator; neither gateway module links this dependency.
+jsonschema==4.23.0

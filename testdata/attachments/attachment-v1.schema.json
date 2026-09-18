@@ -416,9 +416,39 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "fileId",
+                "version",
+                "mediaType"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "google-drive"
+                },
+                "fileId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,200}(?![\\s\\S])"
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 32,
+                  "description": "1 to 32 bytes of UTF-8; maxLength counts code points, so the byte limit is the check's"
+                },
+                "mediaType": {
+                  "type": "string",
+                  "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}(?![\\s\\S])",
+                  "maxLength": 255
+                }
+              },
+              "additionalProperties": false
             }
           ],
-          "description": "one variant per source kind; version 1 has one, and a later kind arrives with its members as the note's changelog records"
+          "description": "One variant per source kind: inline uploads and gateway-owned Google Drive retrieval."
         },
         "observedAt": {
           "type": "string",
