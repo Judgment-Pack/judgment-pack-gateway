@@ -110,6 +110,9 @@ type Identity struct {
 // Source is where the bytes came from.
 type Source struct {
 	Kind      string `json:"kind"`
+	MessageID string `json:"messageId,omitempty"`
+	ThreadID  string `json:"threadId,omitempty"`
+	Format    string `json:"format,omitempty"`
 	FileID    string `json:"fileId,omitempty"`
 	Version   string `json:"version,omitempty"`
 	MediaType string `json:"mediaType,omitempty"`
@@ -144,6 +147,7 @@ const (
 
 	SourceInline      = "inline"
 	SourceGoogleDrive = "google-drive"
+	SourceGmail       = "gmail"
 
 	ProcessorPDF  = "adapter-document/pdf/1"
 	ProcessorText = "adapter-document/text/1"

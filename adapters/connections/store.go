@@ -88,6 +88,20 @@ type state struct {
 }
 type Store struct{ root *os.Root }
 
+// OpenGmailStore separates Gmail consent, credentials and grants from Drive.
+func OpenGmailStore(dir, principal string) (*Store, error) {
+	if !filepath.IsAbs(dir) {
+		return nil, ErrRequest
+	}
+	// Validate the operator-supplied custody root before creating a provider
+	// namespace beneath it. This also refuses a permissive or symlink root.
+	root, err := OpenStore(dir, principal)
+	if err != nil {
+		return nil, err
+	}
+	root.Close()
+	return OpenStore(filepath.Join(dir, "gmail"), principal)
+}
 func OpenStore(dir, principal string) (*Store, error) {
 	if !filepath.IsAbs(dir) || !identifier.MatchString(principal) {
 		return nil, ErrRequest

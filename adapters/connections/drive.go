@@ -56,27 +56,7 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	if decode(raw, &req) != nil || !opaque.MatchString(req.Grant) || !identifier.MatchString(req.FileID) {
 		return nil, ErrRequest
 	}
-	var client Client
-	var credentialSnapshot credential
-	var epoch string
-	err := s.locked(func(v *state) error {
-		if v.Disabled {
-			return ErrPolicy
-		}
-		b, err := s.read("grant-" + req.Grant)
-		if err != nil {
-			return ErrGrant
-		}
-		var g grant
-		if decode(b, &g) != nil || g.File != req.FileID || g.Expires <= time.Now().Unix() || v.Connection == nil || v.Connection.ID != g.Connection {
-			return ErrGrant
-		}
-		if s.root.Remove("grant-"+req.Grant) != nil {
-			return ErrGrant
-		}
-		client, credentialSnapshot, epoch = v.Client, *v.Connection, v.Epoch
-		return nil
-	})
+	client, credentialSnapshot, epoch, err := s.consumeGrant(req.Grant, req.FileID)
 	if err != nil {
 		return nil, err
 	}
@@ -189,4 +169,29 @@ func processDriveDocument(ctx context.Context, cfg document.Config, request docu
 	processing, cancel := context.WithDeadline(ctx, started.Add(cfg.Timeout))
 	defer cancel()
 	return document.Process(processing, cfg, request, identity, started)
+}
+
+func (s *Store) consumeGrant(token, fileID string) (Client, credential, string, error) {
+	var client Client
+	var credentialSnapshot credential
+	var epoch string
+	err := s.locked(func(v *state) error {
+		if v.Disabled {
+			return ErrPolicy
+		}
+		b, err := s.read("grant-" + token)
+		if err != nil {
+			return ErrGrant
+		}
+		var g grant
+		if decode(b, &g) != nil || g.File != fileID || g.Expires <= time.Now().Unix() || v.Connection == nil || v.Connection.ID != g.Connection {
+			return ErrGrant
+		}
+		if s.root.Remove("grant-"+token) != nil {
+			return ErrGrant
+		}
+		client, credentialSnapshot, epoch = v.Client, *v.Connection, v.Epoch
+		return nil
+	})
+	return client, credentialSnapshot, epoch, err
 }

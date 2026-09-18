@@ -189,6 +189,12 @@ func (c *checker) shape(v any) {
 	}); prov != nil {
 		c.object("provenance.adapter", prov["adapter"], map[string]string{"name": "string", "version": "string", "digest": "string"})
 		sourceMembers := map[string]string{"kind": "string"}
+		if source, ok := prov["source"].(map[string]any); ok && source["kind"] == SourceGmail {
+			sourceMembers["messageId"] = "string"
+			sourceMembers["threadId"] = "string"
+			sourceMembers["version"] = "string"
+			sourceMembers["format"] = "string"
+		}
 		if source, ok := prov["source"].(map[string]any); ok && source["kind"] == SourceGoogleDrive {
 			sourceMembers["fileId"] = "string"
 			sourceMembers["version"] = "string"
@@ -341,7 +347,7 @@ func (c *checker) values(rec *Record) {
 	if pv.Adapter.Name == "" || !ValidDigest(pv.Adapter.Digest) {
 		c.fail("adapter-identity", "provenance.adapter has an empty name or a digest that is not one")
 	}
-	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive {
+	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive && pv.Source.Kind != SourceGmail {
 		c.fail("source-kind", "provenance.source.kind is %q, which version 1 does not name", pv.Source.Kind)
 	}
 	if !stampForm.MatchString(pv.ObservedAt) {
@@ -812,9 +818,13 @@ func (c *checker) encryption(rec *Record) {
 }
 
 func (c *checker) source(rec *Record) {
-	if rec.Provenance.Source.Kind == SourceGoogleDrive {
+	if rec.Provenance.Source.Kind == SourceGoogleDrive || rec.Provenance.Source.Kind == SourceGmail {
 		src, o := rec.Provenance.Source, rec.Original
-		if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`).MatchString(src.FileID) || src.Version == "" || len(src.Version) > 32 || !mediaTypeForm.MatchString(src.MediaType) || rec.Document.Version == nil || *rec.Document.Version != src.Version {
+		if src.Kind == SourceGmail {
+			if !regexp.MustCompile(`^[a-f0-9]{1,64}$`).MatchString(src.MessageID) || !regexp.MustCompile(`^[a-f0-9]{1,64}$`).MatchString(src.ThreadID) || !regexp.MustCompile(`^[0-9]{1,32}$`).MatchString(src.Version) || src.Format != "text-export-v1" || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText {
+				c.fail("gmail-source", "Gmail message export identity/version/format is invalid")
+			}
+		} else if !regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`).MatchString(src.FileID) || src.Version == "" || len(src.Version) > 32 || !mediaTypeForm.MatchString(src.MediaType) || rec.Document.Version == nil || *rec.Document.Version != src.Version {
 			c.fail("drive-source", "Drive source identity/version is invalid")
 		}
 		if o.Retention != RetentionInline || o.Encoding == nil || *o.Encoding != "base64" || o.Bytes == nil {

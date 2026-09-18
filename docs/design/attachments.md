@@ -634,3 +634,17 @@ nonempty decoded original must match `document.id`, `document.size`, and the sta
 byte bound. The extension does not change any prior inline-source record or receipt
 format. Existing consumers that know only inline sources must refuse use of this
 new source until upgraded. See [Drive connections](drive-connections.md).
+
+### Gmail text export source
+
+A gateway-owned Gmail adapter can produce a `provenance.source` variant with
+`kind: "gmail"`, `messageId`, `threadId` (each 1–64 lowercase hexadecimal
+characters), `version` (1–32 decimal digits, the Gmail history ID), and
+`format: "text-export-v1"`. The document is a UTF-8 `text/plain` export, processed
+by `adapter-document/text/1`, with matching document/source version. Its retained
+inline base64 bytes are the generated export, not the raw MIME message; document
+size and digest commit to those bytes. The text export includes decoded message
+headers and a selected plain-text body alternative, or text converted from HTML.
+Separate file attachments are excluded. Resource references in markup are not
+fetched or executed. Charset/MIME/output bounds and explicit selection are owned
+by the Gmail adapter. These semantics do not change a gateway receipt's format.

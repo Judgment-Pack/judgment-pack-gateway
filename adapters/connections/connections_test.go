@@ -76,7 +76,7 @@ func testBroker(t *testing.T) (*Broker, *atomic.Int32, *string) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	b.provider = provider{server.URL + "/auth", server.URL + "/token", server.URL + "/revoke", server.URL, server.Client()}
+	b.provider = provider{server.URL + "/auth", server.URL + "/token", server.URL + "/revoke", server.URL, server.Client(), false}
 	b.provider.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return b, count, accountID
 }

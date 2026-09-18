@@ -558,6 +558,10 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			obj(v, "content")["chars"] = num(1)
 			obj(v, "document")["size"] = num(3)
 		}},
+		{"invalid Gmail message identity", "complete-verbatim-text", "gmail-source", func(v map[string]any) {
+			obj(v, "provenance")["source"] = map[string]any{"kind": "gmail", "messageId": "bad/id", "threadId": "abc2", "version": "7", "format": "text-export-v1"}
+			obj(v, "document")["version"] = "7"
+		}},
 		{"a PDF read from one byte", "failed-malformed", "pdf-size", func(v map[string]any) { obj(v, "document")["size"] = num(1) }},
 	}
 	names := map[string]bool{}
