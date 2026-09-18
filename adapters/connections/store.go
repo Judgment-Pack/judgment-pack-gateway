@@ -81,6 +81,7 @@ type credential struct {
 	Expires int64   `json:"expires"`
 }
 type state struct {
+	Epoch      string      `json:"epoch"`
 	Client     Client      `json:"client"`
 	Connection *credential `json:"connection"`
 	Disabled   bool        `json:"disabled"`

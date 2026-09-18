@@ -416,9 +416,36 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "required": [
+                "kind",
+                "fileId",
+                "version",
+                "mediaType"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "google-drive"
+                },
+                "fileId": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9_-]{1,200}(?![\\s\\S])"
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "mediaType": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
             }
           ],
-          "description": "one variant per source kind; version 1 has one, and a later kind arrives with its members as the note's changelog records"
+          "description": "One variant per source kind: inline uploads and gateway-owned Google Drive retrieval."
         },
         "observedAt": {
           "type": "string",

@@ -23,6 +23,11 @@ and one-time consumption. Google native Picker combines consent and selected-fil
 access with `drive.file`; tokens never reach Desk or the Google Picker JavaScript
 in its page. Google scopes permitting writes do not expose write operations here.
 
+A persisted authorization epoch survives the disconnected state. Disconnect and
+configuration changes invalidate callbacks from every companion for that principal.
+Token refresh runs outside the private state lock, then commits only if its epoch
+and connection still match, so a slow provider cannot block local disconnect.
+
 A successful picker creates short-lived random read grants, scoped to a selected
 file and the connection generation. `adapter-drive` consumes a grant once, refuses
 expired/replayed/revoked grants, and checks the connection under the same private
@@ -31,7 +36,8 @@ checks the file version before and after retrieval, and produces an HTTP-shaped
 acquisition with an attachment record containing the retained original. All Google
 Docs, Sheets and Slides exports in this first slice are PDFs. Download size is
 bounded to 4 MiB; output is bounded to 16 MiB including retained base64 and extracted
-text. Extraction uses the existing bounded parser. No OCR executable is selected
+text. Extraction uses the existing bounded parser with an explicit 25-second processing
+deadline, separate from the outer retrieval deadline. No OCR executable is selected
 by a caller. No automatic retry mints an additional receipt.
 
 Disconnect removes local access immediately and attempts upstream revocation;

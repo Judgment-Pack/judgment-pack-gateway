@@ -101,30 +101,50 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 	}
 	return t, nil
 }
-func (p provider) access(ctx context.Context, s *Store, v *state) (string, error) {
-	c := v.Connection
-	if c == nil {
-		return "", ErrConnect
-	}
+
+// Refresh uses a snapshot outside the custody lock. A concurrent disconnect or
+// reconfiguration can revoke it while the provider is slow; commit rechecks that
+// generation and never restores credentials that were removed in the meantime.
+func (p provider) access(ctx context.Context, s *Store, client Client, c credential, epoch string) (string, error) {
 	if c.Expires > time.Now().Add(time.Minute).Unix() {
 		return c.Access, nil
 	}
 	if c.Refresh == "" {
 		return "", ErrRevoked
 	}
-	t, err := p.exchange(ctx, v.Client, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {c.Refresh}})
+	t, err := p.exchange(ctx, client, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {c.Refresh}})
 	if err != nil {
 		return "", ErrRevoked
 	}
-	c.Access = t.Access
-	c.Expires = time.Now().Add(time.Duration(t.Expires) * time.Second).Unix()
-	if t.Refresh != "" {
-		c.Refresh = t.Refresh
-	}
-	if err = s.write("state.json", v); err != nil {
-		return "", err
-	}
-	return c.Access, nil
+	var access string
+	err = s.locked(func(v *state) error {
+		if v.Disabled {
+			return ErrPolicy
+		}
+		if v.Epoch != epoch || v.Client != client || v.Connection == nil || v.Connection.ID != c.ID {
+			return ErrCanceled
+		}
+		current := v.Connection
+		// Do not overwrite a newer refresh or consent result for this connection.
+		if current.Access != c.Access || current.Refresh != c.Refresh || current.Expires != c.Expires {
+			if current.Expires <= time.Now().Add(time.Minute).Unix() {
+				return ErrRevoked
+			}
+			access = current.Access
+			return nil
+		}
+		current.Access = t.Access
+		current.Expires = time.Now().Add(time.Duration(t.Expires) * time.Second).Unix()
+		if t.Refresh != "" {
+			current.Refresh = t.Refresh
+		}
+		if err := s.write("state.json", v); err != nil {
+			return err
+		}
+		access = current.Access
+		return nil
+	})
+	return access, err
 }
 func (p provider) who(ctx context.Context, access string) (account, error) {
 	raw, _, err := p.request(ctx, "GET", p.api+"/about?fields=user(permissionId,emailAddress,displayName)", access, nil, 64<<10)

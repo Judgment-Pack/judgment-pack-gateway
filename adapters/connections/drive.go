@@ -56,7 +56,9 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	if decode(raw, &req) != nil || !opaque.MatchString(req.Grant) || !identifier.MatchString(req.FileID) {
 		return nil, ErrRequest
 	}
-	var token string
+	var client Client
+	var credentialSnapshot credential
+	var epoch string
 	err := s.locked(func(v *state) error {
 		if v.Disabled {
 			return ErrPolicy
@@ -72,9 +74,13 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 		if s.root.Remove("grant-"+req.Grant) != nil {
 			return ErrGrant
 		}
-		token, err = p.access(ctx, s, v)
-		return err
+		client, credentialSnapshot, epoch = v.Client, *v.Connection, v.Epoch
+		return nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	token, err := p.access(ctx, s, client, credentialSnapshot, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +139,7 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	cfg.MaxOutput = 8 << 20
 	started := time.Now()
 	request := document.Request{Name: name, MediaType: media, Bytes: data, SHA256: digest(data), OCR: "never", ReceivedAt: started}
-	encoded, err := document.Process(ctx, cfg, request, identity, started)
+	encoded, err := processDriveDocument(ctx, cfg, request, identity, started)
 	if err != nil {
 		return nil, Error("processing-failed")
 	}
@@ -175,4 +181,12 @@ func peer(r *http.Response) any {
 	}
 	h := sha256.Sum256(r.TLS.PeerCertificates[0].Raw)
 	return "tls:sha256:" + hex.EncodeToString(h[:])
+}
+
+// The processing bound recorded in the attachment must be the deadline actually
+// applied, independently of the outer retrieval deadline.
+func processDriveDocument(ctx context.Context, cfg document.Config, request document.Request, identity attachment.Identity, started time.Time) ([]byte, error) {
+	processing, cancel := context.WithDeadline(ctx, started.Add(cfg.Timeout))
+	defer cancel()
+	return document.Process(processing, cfg, request, identity, started)
 }

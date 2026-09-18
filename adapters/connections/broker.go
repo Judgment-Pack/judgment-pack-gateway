@@ -36,7 +36,7 @@ type flow struct {
 	FlowResult
 	state, verifier, redirect string
 	client                    Client
-	connection                string
+	connection, epoch         string
 	pick                      bool
 	until                     time.Time
 	cancel                    context.CancelFunc
@@ -72,6 +72,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if err := b.store.locked(func(v *state) error {
 		if v.Disabled != b.disabled {
 			v.Disabled = b.disabled
+			v.Epoch = randomID()
 			return b.store.write("state.json", v)
 		}
 		return nil
@@ -114,6 +115,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 				return Error("disconnect-first")
 			}
 			v.Client = c
+			v.Epoch = randomID()
 			return b.store.write("state.json", v)
 		})
 		return map[string]bool{"saved": err == nil}, err
@@ -155,6 +157,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 				}
 			}
 			v.Connection = nil
+			v.Epoch = randomID()
 			return b.store.write("state.json", v)
 		})
 		if err != nil {
@@ -176,9 +179,16 @@ func (b *Broker) start(pick bool) (FlowResult, error) {
 	}
 	b.cancel()
 	var client Client
-	var connection string
+	var connection, epoch string
 	var login string
 	err := b.store.locked(func(v *state) error {
+		if v.Epoch == "" {
+			v.Epoch = randomID()
+			if err := b.store.write("state.json", v); err != nil {
+				return err
+			}
+		}
+		epoch = v.Epoch
 		client = v.Client
 		if v.Connection != nil {
 			connection = v.Connection.ID
@@ -197,7 +207,7 @@ func (b *Broker) start(pick bool) (FlowResult, error) {
 		return FlowResult{}, ErrProvider
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	f := &flow{FlowResult: FlowResult{ID: randomID(), State: "pending"}, state: randomID(), verifier: randomID(), client: client, connection: connection, pick: pick, until: time.Now().Add(5 * time.Minute), cancel: cancel, listener: listener}
+	f := &flow{FlowResult: FlowResult{ID: randomID(), State: "pending"}, state: randomID(), verifier: randomID(), client: client, connection: connection, epoch: epoch, pick: pick, until: time.Now().Add(5 * time.Minute), cancel: cancel, listener: listener}
 	f.redirect = "http://" + listener.Addr().String() + "/oauth/callback"
 	q := url.Values{"client_id": {client.ID}, "redirect_uri": {f.redirect}, "response_type": {"code"}, "scope": {driveScope}, "access_type": {"offline"}, "prompt": {"consent"}, "state": {f.state}, "code_challenge": {challenge(f.verifier)}, "code_challenge_method": {"S256"}}
 	if login != "" {
@@ -278,7 +288,7 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 			if v.Disabled {
 				return ErrPolicy
 			}
-			if v.Client != f.client {
+			if v.Client != f.client || v.Epoch != f.epoch {
 				return ErrCanceled
 			}
 			previous := v.Connection

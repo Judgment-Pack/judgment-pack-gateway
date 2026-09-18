@@ -14,3 +14,17 @@
 
 This is author validation, not the independent material-decision review required
 by docs/adr/README.md. No review approval is implied by green tests.
+
+
+Clean-room Codex review was explicitly authorized as a one-time same-vendor
+exception while Claude is rate limited. Initial findings and dispositions:
+https://github.com/Judgment-Pack/judgment-pack-gateway/pull/139#issuecomment-5735414718
+
+All four findings are addressed in this correction: persisted callback epoch,
+refresh outside the state lock with guarded commit, the declared extraction
+deadline, and producer schema alignment. Independent G1/G2 reproduction tests
+were adapted in `adapters/connections/lifecycle_test.go`; no reviewer-authored
+implementation text was adopted. Deadline and actual-output schema regressions
+were authored separately. The schema check uses a pinned test-only Python
+validator; neither gateway module gains a runtime dependency. Corrected-head
+verification is still required before this review is treated as complete.
