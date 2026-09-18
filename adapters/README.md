@@ -585,3 +585,31 @@ refused, fetches the counterexamples again, reads the stream in the connector's 
 holds the fresh facts to the fixtures'; the CI job "both paths agree" runs it. The rule, what the first capture found,
 and what the check does not establish are in
 [docs/design/both-paths-agreement.md](../docs/design/both-paths-agreement.md).
+
+## Personal Google Drive connections
+
+`gateway-connections --state-dir /private/connections --principal desktop-owner`
+is a bounded JSON-lines control companion over private parent pipes. It implements
+`status`, `configure`, `connect`, `pick`, `poll`, `cancel`, and `disconnect`.
+`configure` takes a registered Google Desktop application's `clientId` and
+`clientSecret`. No reply contains provider access or refresh tokens. The parent
+must authenticate its UI before relaying controls. This pipe is not an HTTP API
+and must not be exposed to arbitrary remote callers. `--disabled` refuses provider
+operations. Organization identity and policy routing are not implemented by this
+personal companion.
+
+`adapter-drive --state-dir /private/connections --principal desktop-owner` is a
+separate source with `--source-shape drive=http`. It accepts
+`{"fileId":"selected-file","grant":"64-lowercase-hex"}`. The grant comes from the
+picker, is scoped to that file and connection, expires after five minutes, and is
+consumed once. `JPACK_CONNECTIONS_DIR` can supply the operator's state path when a
+source command cannot contain spaces; a request cannot override it. Give this
+source a 60-second timeout and 16 MiB output bound. Files are limited to 4 MiB;
+Docs, Sheets and Slides export as PDF. The record retains original bytes inline.
+
+See [the connection design](../docs/design/drive-connections.md) for the identity
+boundary, Google registration, cancellation and revocation semantics. Private
+credential custody currently supports Linux and macOS; other platforms refuse
+startup rather than use unchecked file permissions. Signing and provider processes
+are separate modules, but running them as the same OS user does not isolate what
+that user can read.

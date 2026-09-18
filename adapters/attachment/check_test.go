@@ -341,6 +341,21 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 		{"pdf-encrypted with no encryption declared", "failed-malformed", "encryption-undeclared", func(v map[string]any) {
 			setErrors(v, errorOf("pdf-encrypted", nil))
 		}},
+		// Drive records retain and bind originals.
+		{"Drive version mismatch", "complete-text-layer", "drive-source", func(v map[string]any) {
+			obj(v, "provenance")["source"] = map[string]any{"kind": "google-drive", "fileId": "file-A", "version": "7", "mediaType": "application/pdf"}
+		}},
+		{"Drive missing original", "complete-text-layer", "drive-original", func(v map[string]any) {
+			obj(v, "provenance")["source"] = map[string]any{"kind": "google-drive", "fileId": "file-A", "version": "7", "mediaType": "application/pdf"}
+			obj(v, "document")["version"] = "7"
+		}},
+		{"Drive altered original", "complete-text-layer", "drive-original", func(v map[string]any) {
+			obj(v, "provenance")["source"] = map[string]any{"kind": "google-drive", "fileId": "file-A", "version": "7", "mediaType": "application/pdf"}
+			obj(v, "document")["version"] = "7"
+			obj(v, "original")["retention"] = "inline"
+			obj(v, "original")["encoding"] = "base64"
+			obj(v, "original")["bytes"] = "YWJj"
+		}},
 		// the inline source
 		{"an inline document with a version", "complete-text-layer", "inline-version", func(v map[string]any) { obj(v, "document")["version"] = "7" }},
 		{"an inline document retained inline", "complete-text-layer", "inline-original", func(v map[string]any) {

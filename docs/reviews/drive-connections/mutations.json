@@ -1,0 +1,80 @@
+[
+  {
+    "mutation": "state",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestStateMismatchDoesNotConsumeAuthorization (0.01s)\n    connections_test.go:195: wrong state accepted\nFAIL\nFAIL\tadapters/connections\t0.209s\nFAIL\n"
+  },
+  {
+    "mutation": "pkce",
+    "caught": true,
+    "invalid": false,
+    "output": "meDocuments/revoked (0.00s)\n        connections_test.go:290: scope or PKCE\n    --- FAIL: TestDownloadRefusalsNeverBecomeDocuments/unsupported (0.00s)\n        connections_test.go:290: scope or PKCE\n--- FAIL: TestPublicStatusDoesNotExposeTokensOrClientSecret (0.00s)\n    connections_test.go:330: scope or PKCE\n--- FAIL: TestRestartUsesStoredConnectionAndRefreshesExpiredToken (0.00s)\n    connections_test.go:344: scope or PKCE\n--- FAIL: TestDisabledConnectionAndGenerationInvalidateGrants (0.00s)\n    --- FAIL: TestDisabledConnectionAndGenerationInvalidateGrants/disabled (0.00s)\n        connections_test.go:358: scope or PKCE\n    --- FAIL: TestDisabledConnectionAndGenerationInvalidateGrants/generation (0.00s)\n        connections_test.go:358: scope or PKCE\nFAIL\nFAIL\tadapters/connections\t0.063s\nFAIL\n"
+  },
+  {
+    "mutation": "account",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestCancelAndWrongAccountCannotReplaceConnection (0.01s)\n    connections_test.go:210: {a8175d5ec8270f9f2d441bda3188a28cd3926c9e7d5923bff10e540d4b153819 complete   [{file-A cd896367042447b3d05fca822dcdc94e5ace426db0826d2d0a4901611fc4636f}]}\nFAIL\nFAIL\tadapters/connections\t0.194s\nFAIL\n"
+  },
+  {
+    "mutation": "selection-file",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestPrincipalAndFileCannotBeSubstituted (0.01s)\n    connections_test.go:166: file substitution reached provider: provider-unavailable\nFAIL\nFAIL\tadapters/connections\t0.188s\nFAIL\n"
+  },
+  {
+    "mutation": "expiry",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestExpiredGrantRefusedBeforeNetwork (0.02s)\n    connections_test.go:279: <nil>\nFAIL\nFAIL\tadapters/connections\t0.230s\nFAIL\n"
+  },
+  {
+    "mutation": "generation",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestDisabledConnectionAndGenerationInvalidateGrants (0.03s)\n    --- FAIL: TestDisabledConnectionAndGenerationInvalidateGrants/generation (0.02s)\n        connections_test.go:366: invalidated grant accepted\nFAIL\nFAIL\tadapters/connections\t0.203s\nFAIL\n"
+  },
+  {
+    "mutation": "replay",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestPickerRetrievesSelectedFileAndRetainsOriginal (0.03s)\n    connections_test.go:158: replay accepted: <nil>\nFAIL\nFAIL\tadapters/connections\t0.196s\nFAIL\n"
+  },
+  {
+    "mutation": "policy",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestDisabledConnectionAndGenerationInvalidateGrants (0.03s)\n    --- FAIL: TestDisabledConnectionAndGenerationInvalidateGrants/disabled (0.02s)\n        connections_test.go:366: invalidated grant accepted\nFAIL\nFAIL\tadapters/connections\t0.223s\nFAIL\n"
+  },
+  {
+    "mutation": "version",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestDownloadRefusalsNeverBecomeDocuments (0.07s)\n    --- FAIL: TestDownloadRefusalsNeverBecomeDocuments/changed (0.02s)\n        connections_test.go:323: refused response became a document\nFAIL\nFAIL\tadapters/connections\t0.200s\nFAIL\n"
+  },
+  {
+    "mutation": "private-file",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestStorageRefusesSymlinksAndPublicPermissions (0.00s)\n    connections_test.go:269: public credentials accepted <nil>\nFAIL\nFAIL\tadapters/connections\t0.195s\nFAIL\n"
+  },
+  {
+    "mutation": "principal",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestPrincipalAndFileCannotBeSubstituted (0.02s)\n    connections_test.go:179: <nil>\nFAIL\nFAIL\tadapters/connections\t0.227s\nFAIL\n"
+  },
+  {
+    "mutation": "size-admission",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestDownloadRefusalsNeverBecomeDocuments (0.06s)\n    --- FAIL: TestDownloadRefusalsNeverBecomeDocuments/oversize (0.01s)\n        connections_test.go:323: refused response became a document\nFAIL\nFAIL\tadapters/connections\t0.192s\nFAIL\n"
+  },
+  {
+    "mutation": "scope",
+    "caught": true,
+    "invalid": false,
+    "output": "--- FAIL: TestTokenWithBroaderScopeIsRefused (0.00s)\n    connections_test.go:384: broader scope accepted: <nil>\nFAIL\nFAIL\tadapters/connections\t0.204s\nFAIL\n"
+  }
+]

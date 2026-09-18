@@ -109,7 +109,10 @@ type Identity struct {
 
 // Source is where the bytes came from.
 type Source struct {
-	Kind string `json:"kind"`
+	Kind      string `json:"kind"`
+	FileID    string `json:"fileId,omitempty"`
+	Version   string `json:"version,omitempty"`
+	MediaType string `json:"mediaType,omitempty"`
 }
 
 // OCR is the provenance of applied OCR answers.
@@ -139,7 +142,8 @@ const (
 	RetentionCaller = "caller"
 	RetentionInline = "inline"
 
-	SourceInline = "inline"
+	SourceInline      = "inline"
+	SourceGoogleDrive = "google-drive"
 
 	ProcessorPDF  = "adapter-document/pdf/1"
 	ProcessorText = "adapter-document/text/1"
