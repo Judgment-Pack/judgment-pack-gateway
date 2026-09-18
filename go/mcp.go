@@ -390,7 +390,7 @@ func members(raw json.RawMessage, what string, allowed map[string]bool) (map[str
 	if allowed != nil {
 		for name := range m {
 			if _, ok := allowed[name]; !ok {
-				return nil, &jsonrpcError{rpcInvalidRequest, what + " carries a member this server does not read: " + name}
+				return nil, &jsonrpcError{rpcInvalidRequest, what + " carries a member this server does not read: " + requestText(name)}
 			}
 		}
 	}
@@ -642,7 +642,7 @@ func noDuplicateMembers(data []byte, skip [][]string) error {
 		case string:
 			if top != nil && top.object && top.key {
 				if top.seen[v] {
-					return fmt.Errorf("member %q appears twice", v)
+					return fmt.Errorf("member %q appears twice", requestText(v))
 				}
 				top.seen[v] = true
 				top.last = v
@@ -755,7 +755,7 @@ func (s *mcpServer) admit(sess *mcpSession, token string, data []byte) mcpOutcom
 	case "tools/call":
 		return s.admitCall(sess, token, req)
 	default:
-		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcMethodNotFound, "method not supported: " + req.method})}
+		return mcpOutcome{response: rpcFailure(req.id, jsonrpcError{rpcMethodNotFound, "method not supported: " + requestText(req.method)})}
 	}
 }
 
@@ -812,8 +812,24 @@ func buildVersion() string {
 // start.
 func (s *mcpServer) toolList() []json.RawMessage { return s.listing }
 
+// answerSession is how an answer names a session: as the client gave it
+// while the signer's own rule admits it (requireSession, SPEC.md §3a), which
+// holds a name to 128 bytes; a name the signer would refuse is a caller's
+// text like any other, quoted bounded (requestText), since an answer is JSON
+// -- which spells some bytes six times over -- and a message may carry a
+// mebibyte. What is forwarded to the signer is the name as given: this is
+// what an answer says, not what a call is made under. An answer builds the
+// name from the session the call resolved to rather than from another
+// answer's, which would bound an already-bounded name twice.
+func answerSession(session string) string {
+	if requireSession(session) != nil {
+		return requestText(session)
+	}
+	return session
+}
+
 func overload(session, reason string) map[string]any {
-	return toolError(map[string]any{"session": session, "outcome": "overload", "error": reason})
+	return toolError(map[string]any{"session": answerSession(session), "outcome": "overload", "error": reason})
 }
 
 // admitCall does the arrival-order part of tools/call: the session it
@@ -849,7 +865,7 @@ func (s *mcpServer) admitCall(sess *mcpSession, token string, req mcpRequest) mc
 	}
 	tool, known := s.tools[name]
 	if invalid == nil && !known {
-		invalid = &jsonrpcError{rpcInvalidParams, "unknown tool: " + name}
+		invalid = &jsonrpcError{rpcInvalidParams, "unknown tool: " + requestText(name)}
 	}
 	if invalid == nil && tool.seal {
 		// the seal tool's arguments are this server's own: read exactly,
@@ -984,22 +1000,22 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 		// the category stays here, token-free and address-free; the
 		// client learns only that the answer did not arrive
 		s.diag("mcp: forward to %s did not answer: %s", path, transportErrorCategory(err))
-		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's answer did not arrive; the call may have run and minted a receipt"}))}
+		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": answerSession(session), "outcome": "unknown", "error": "the engine's answer did not arrive; the call may have run and minted a receipt"}))}
 	}
 	if status == http.StatusUnauthorized {
 		reason := signerReason(answer)
 		return mcpOutcome{
-			response:  rpcResult(id, toolError(map[string]any{"session": session, "status": status, "error": reason})),
+			response:  rpcResult(id, toolError(map[string]any{"session": answerSession(session), "status": status, "error": reason})),
 			transport: &mcpTransportRefusal{status: status, reason: reason},
 		}
 	}
 	if status < 200 || status >= 300 {
-		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "status": status, "error": signerReason(answer)}))}
+		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": answerSession(session), "status": status, "error": signerReason(answer)}))}
 	}
 	if tool.seal {
 		var record map[string]json.RawMessage
 		if json.Unmarshal(answer, &record) != nil || record == nil {
-			return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's seal answer was not an object; the seal may have been written"}))}
+			return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": answerSession(session), "outcome": "unknown", "error": "the engine's seal answer was not an object; the seal may have been written"}))}
 		}
 		return mcpOutcome{response: rpcResult(id, toolSuccess(record))}
 	}
@@ -1009,9 +1025,9 @@ func (s *mcpServer) runCall(ctx context.Context, token string, id json.RawMessag
 		Salts   json.RawMessage `json:"salts"`
 	}
 	if json.Unmarshal(answer, &acquired) != nil || len(acquired.Receipt) == 0 {
-		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": session, "outcome": "unknown", "error": "the engine's answer was not an acquisition; a receipt may have been minted"}))}
+		return mcpOutcome{response: rpcResult(id, toolError(map[string]any{"session": answerSession(session), "outcome": "unknown", "error": "the engine's answer was not an acquisition; a receipt may have been minted"}))}
 	}
-	return mcpOutcome{response: rpcResult(id, toolSuccess(map[string]any{"session": session, "result": acquired.Result, "receipt": acquired.Receipt, "salts": acquired.Salts}))}
+	return mcpOutcome{response: rpcResult(id, toolSuccess(map[string]any{"session": answerSession(session), "result": acquired.Result, "receipt": acquired.Receipt, "salts": acquired.Salts}))}
 }
 
 // transportErrorCategory names what went wrong with a forward, or a
@@ -1078,7 +1094,7 @@ func (s *mcpServer) countCall(sess *mcpSession, session string) map[string]any {
 	sess.windowCount++
 	if sess.windowCount > s.cfg.mcp.callsPerMinute {
 		wait := time.Minute - arrived.Sub(sess.windowStart)
-		return toolError(map[string]any{"session": session, "outcome": "overload", "error": fmt.Sprintf("%d calls in this window already; nothing was forwarded", s.cfg.mcp.callsPerMinute), "retryAfterSeconds": int(math.Ceil(wait.Seconds()))})
+		return toolError(map[string]any{"session": answerSession(session), "outcome": "overload", "error": fmt.Sprintf("%d calls in this window already; nothing was forwarded", s.cfg.mcp.callsPerMinute), "retryAfterSeconds": int(math.Ceil(wait.Seconds()))})
 	}
 	return nil
 }
@@ -1111,22 +1127,29 @@ func (s *mcpServer) forward(ctx context.Context, path, token string, body []byte
 	return res.StatusCode, answer, nil
 }
 
-// signerReason is the reason a signer's refusal carries.
+// maxSignerReason is how much of a signer's refusal an answer of this front
+// repeats. It is wider than requestText's bound because the text is the
+// signer's own rather than the caller's: what this gateway writes quotes a
+// caller under that narrower bound and measured a few hundred bytes, so a
+// refusal of its own comes back as it was written. The bound is for what a
+// signer may otherwise put in the member -- up to the answer bound, megabytes
+// -- since this front's answer is JSON around that text and carries it twice.
+const maxSignerReason = 512
+
+// signerReason is the reason a signer's refusal carries, quoted under that
+// bound whether the refusal is JSON with an error member or text.
 func signerReason(answer []byte) string {
 	var e struct {
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(answer, &e) == nil && e.Error != "" {
-		return e.Error
+		return boundedText(e.Error, maxSignerReason)
 	}
 	text := strings.TrimSpace(string(answer))
 	if text == "" {
 		return "no reason given"
 	}
-	if len(text) > 512 {
-		text = text[:512]
-	}
-	return text
+	return boundedText(text, maxSignerReason)
 }
 
 // --- identity ---------------------------------------------------------------

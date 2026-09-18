@@ -24,10 +24,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 type sessionState struct {
@@ -75,6 +77,9 @@ type sourceSpec struct {
 	// endpoint an action receipt names; /acquire reads neither.
 	tools    []string
 	endpoint string
+	// timeout is how long the source may run before its context is
+	// cancelled, from --source-timeout; zero is defaultSourceTimeout.
+	timeout time.Duration
 }
 
 // adapterShapes are the shapes --source-shape may declare: every shape of
@@ -89,6 +94,14 @@ var adapterShapes = map[string]bool{"airbyte": true, "mcp": true, "http": true}
 // memory without limit.
 const defaultMaxSourceOutput int64 = 1 << 20
 
+// defaultSourceTimeout is how long a source runs before its context is
+// cancelled, unless --source-timeout sets another for it; maxSourceTimeout
+// is the longest --source-timeout accepts.
+const (
+	defaultSourceTimeout = 30 * time.Second
+	maxSourceTimeout     = 10 * time.Minute
+)
+
 type gatewayService struct {
 	store           *store
 	registry        *registryWriter
@@ -99,12 +112,28 @@ type gatewayService struct {
 	keyID           string
 	sources         map[string]sourceSpec
 	maxSourceOutput int64
+	// maxRequest bounds an /acquire body, from --max-request; /seal and /act
+	// keep maxRequestBody.
+	maxRequest int64
 	// started counts the sources this service has started; a test reads it
 	// to prove that a refusal came before any source ran. startedWith is the
 	// command line the last one was started with, for a test that holds the
 	// executor to the tool it was narrowed to.
 	started     atomic.Int64
 	startedWith atomic.Pointer[[]string]
+	// sourceDeadline, when a test sets it, is handed a source's name and its
+	// context's deadline as soon as that context is made, for a test that
+	// holds the deadline to the source's timeout without waiting it out.
+	// afterSourceWait, when a test sets it, runs as soon as a source has been
+	// waited for: the window in which a source that ended on its own may be
+	// overtaken by its deadline, which must not be reported as a timeout.
+	sourceDeadline  func(source string, deadline time.Time)
+	afterSourceWait func()
+	// sourceContext, when a test sets it, makes a source's context in place
+	// of context.WithTimeout, so a test can end the deadline when it chooses
+	// -- after the source has started, or after it has been waited for --
+	// and os/exec's own cancellation runs as it does at a real deadline.
+	sourceContext func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc)
 	// beforeAdmit, when a test sets it, runs between an action's evidence
 	// checks and its admission: the window in which another request may
 	// have put the session on disk or sealed it, which admission's own
@@ -135,6 +164,10 @@ type gatewayService struct {
 	// stderr to reach end of file. A descendant that escaped the source's
 	// process group and holds a pipe would otherwise hold the acquisition.
 	waitDelay time.Duration
+	// defaultTimeout is how long a source that --source-timeout does not
+	// name may run: defaultSourceTimeout, which a test lowers to reach the
+	// timeout's message for such a source without waiting thirty seconds.
+	defaultTimeout time.Duration
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
@@ -196,9 +229,10 @@ func newGatewayService(storeRoot string, seed []byte, authority, registryPath st
 	g := &gatewayService{
 		store: st, registry: reg, storeRoot: storeRoot, regPath: registryPath,
 		authority: authority, publicKey: st.publicKey, keyID: st.keyID,
-		sources: sources, maxSourceOutput: defaultMaxSourceOutput,
+		sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody,
 		receiptVersion: receiptVersion3,
 		waitDelay:      sourceWaitDelay,
+		defaultTimeout: defaultSourceTimeout,
 		sessions:       map[string]*sessionState{},
 		gate:           newAdmissionGate(),
 	}
@@ -342,21 +376,81 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 // rather than 500.
 type badRequest struct{ error }
 
-// maxRequestBody bounds what /acquire and /seal will read before deciding
-// anything. /seal carries one session id; /acquire carries a session id, a
-// source name, and a caller-supplied `arguments` value, so /acquire is the one
-// with a real payload and sets the number. One mebibyte is far above any
-// argument object this gateway is meant to serve and far below a body worth
-// buffering from an unauthenticated caller -- and there IS no authentication
-// here, so the only thing standing between a request and this process's memory
-// is this limit. listenAndServe already bounds header delivery with
+// maxRequestText is how many bytes of quoted text a diagnostic carries
+// (requestText).
+const maxRequestText = 64
+
+// requestText is text a refusal or a diagnostic quotes: whole when it is at
+// most maxRequestText bytes; otherwise its first bytes up to that bound, cut
+// before a UTF-8 sequence the bound would split, followed by how many bytes
+// the whole was. What it is for is text a caller sent, which is otherwise
+// quoted whole: an answer is JSON, which spells some bytes six times over, so
+// a source name as long as a raised request bound made an answer several
+// times the body. It bounds the same quotation wherever a diagnostic makes
+// one -- exactlyMembers quotes a member of an engine configuration, or of an
+// adapter's snapshot, through it as well as a member of a request.
+func requestText(s string) string { return boundedText(s, maxRequestText) }
+
+// boundedText is s whole when it is at most bound bytes; otherwise its first
+// bytes up to that bound, cut before a UTF-8 sequence the bound would split,
+// followed by how many bytes the whole was. requestText quotes a caller's own
+// text by it; the engine's MCP server quotes a signer's refusal by it at a
+// bound of its own (maxSignerReason), since that text is not a caller's.
+func boundedText(s string, bound int) string {
+	if len(s) <= bound {
+		return s
+	}
+	cut := bound
+	for back := 0; back < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(s[cut]); back++ {
+		cut--
+	}
+	return s[:cut] + "…(" + strconv.Itoa(len(s)) + " bytes)"
+}
+
+// maxRequestBody bounds what /seal and /act will read before deciding
+// anything, and is /acquire's bound unless --max-request sets another, from
+// one byte to maxRequestCeiling. /seal carries one session id; /acquire carries a session
+// id, a source name, and a caller-supplied `arguments` value, so /acquire is
+// the one with a real payload and the number was set for it. One mebibyte is
+// far above any argument object this gateway is meant to serve and far below
+// a body worth buffering from a caller who need not authenticate where no
+// identity is configured. The body bound stands between such a request and
+// this process's memory, with the value budget (maxArgumentValues) beside it
+// for /acquire's arguments. listenAndServe already bounds header delivery with
 // ReadHeaderTimeout; this is the same concern for the body.
 const maxRequestBody = 1 << 20
 
-// limitBody caps r.Body in place. http.MaxBytesReader needs the ResponseWriter
-// to signal the client properly, so it can only be applied inside a handler.
+// maxRequestCeiling is the largest --max-request accepts. A body is read
+// whole before anything is decided, its arguments are parsed into values, and
+// they are held again, canonicalized, for the source's stdin: an operator
+// raising the bound raises what one request may make this process hold, by a
+// multiple of the body that depends on the arguments' shape (SECURITY.md
+// gives the figures measured).
+const maxRequestCeiling = 64 << 20
+
+// maxArgumentValues is the value budget of an /acquire body's arguments: the
+// parser counts each JSON value it makes of them and refuses the one past
+// this, which is answered 400 like any other malformed arguments. A
+// one-mebibyte body cannot hold more values than this (the shortest value
+// plus its separator is two bytes), so the default bound's behaviour is
+// unchanged, and raising --max-request admits longer strings and member
+// names, not more values than this -- a 64 MiB body of empty objects would
+// otherwise be parsed into over twenty million of them before anything is
+// decided. It bounds how many values are made, not the memory they take:
+// member names are not counted, and one kind of value costs more than
+// another.
+const maxArgumentValues = 1 << 19
+
+// limitBody caps r.Body in place at maxRequestBody. http.MaxBytesReader needs
+// the ResponseWriter to signal the client properly, so it can only be applied
+// inside a handler.
 func limitBody(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	limitBodyTo(w, r, maxRequestBody)
+}
+
+// limitBodyTo caps r.Body in place at limit bytes.
+func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 }
 
 func decodeSingleJSON(r io.Reader, dst any) error {
@@ -383,7 +477,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	if !known || strings.HasSuffix(source, "/write") {
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
-		return nil, badRequest{fmt.Errorf("unknown source: %s", source)}
+		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
 	}
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
 		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
@@ -557,8 +651,23 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 // through the same boundary as a read, and the receipt's claims about the
 // process are the same claims.
 func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
-	ctx, cancel := context.WithTimeout(g.ctx, 30*time.Second)
+	timeout := spec.timeout
+	if timeout <= 0 {
+		timeout = g.defaultTimeout
+	}
+	makeContext := context.WithTimeout
+	if g.sourceContext != nil {
+		makeContext = g.sourceContext
+	}
+	ctx, cancel := makeContext(g.ctx, timeout)
 	defer cancel()
+	if g.sourceDeadline != nil {
+		// Read from the context itself rather than worked out again from
+		// timeout, so the deadline a test is handed is the one the source
+		// runs under.
+		deadline, _ := ctx.Deadline()
+		g.sourceDeadline(source, deadline)
+	}
 	// The command is resolved once, here, to the file that will be started,
 	// and that file is what a version 3 receipt digests -- os/exec would
 	// otherwise give a relative Windows command its extension only at start,
@@ -590,6 +699,33 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("source %s: %w", source, err)
 	}
+	// cancelled records that os/exec cancelled the source and that the
+	// cancellation succeeded. os/exec watches the context until Wait has
+	// collected the source's exit, and calls Cancel when the context ends
+	// before then -- not while Wait is still waiting on the source's output
+	// pipes, nor once Wait has returned -- so a source that failed on its own
+	// and was only reaped, or reported, after its deadline had passed is not
+	// cancelled at all. The watcher can still call Cancel after the source
+	// has exited and before Wait has taken that exit from it. Elsewhere than
+	// Unix the kill of a process whose exit os/exec has collected returns an
+	// error, and the flag stays unset. On Unix the group's kill succeeds
+	// whether or not the source is still running, since the group's anchor
+	// is, and the exit status is what tells the two apart (sourceTimedOut): a
+	// source the kill ended reports the signal, one that exited on its own
+	// reports its status. Cases this does not separate include a source that
+	// exits with status zero as its deadline passes, before Wait has taken
+	// the exit: os/exec then returns the deadline's error in place of a
+	// status, and the source is reported as timed out; a source a signal of
+	// its own ended in that window -- a crash, an operator's kill, the
+	// kernel's -- which reports a signal as the gateway's kill does; and,
+	// elsewhere than Unix, a kill the platform reports as successful for a
+	// process that had exited and was not yet collected. Each of those is
+	// reported as the timeout, since what ended the source in its deadline's
+	// window is not something this can read. The Cancel wrapped is not nil:
+	// CommandContext sets one, and prepareSourceProcess replaces it with the
+	// group's kill on Unix and leaves it in place elsewhere.
+	var cancelled atomic.Bool
+	cmd.Cancel = recordCancellation(cmd.Cancel, &cancelled)
 	cmd.WaitDelay = g.waitDelay
 	// stdout is bounded and its overflow kills the source; stderr is bounded
 	// and simply truncated, because only its first line is ever reported and
@@ -609,6 +745,9 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		return nil, "", "", fmt.Errorf("source could not be started: %v", err)
 	}
 	waitErr := cmd.Wait()
+	if g.afterSourceWait != nil {
+		g.afterSourceWait()
+	}
 	// Whatever Wait returned, nothing of the source's process group survives
 	// the acquisition. os/exec stops watching the context once the direct
 	// child has exited, so an overflow written by a descendant after that
@@ -625,6 +764,11 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 		if errors.Is(waitErr, exec.ErrWaitDelay) {
 			return nil, "", "", errors.New("source exited but left its output open past the deadline; a descendant is holding the pipe")
 		}
+		if sourceTimedOut(cancelled.Load(), ctx.Err(), waitErr) {
+			// Said as such, since whatever the source wrote on stderr before
+			// it was killed is not why it failed.
+			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
+		}
 		trimmed := stderr.buf.String()
 		if len(trimmed) > 200 {
 			trimmed = trimmed[:200]
@@ -638,6 +782,27 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	}
 	return result, adapterDigest, observedAt, nil
 
+}
+
+// recordCancellation wraps a source's Cancel so that cancelled is set when
+// the cancellation it makes succeeds, and left as it was when it fails.
+func recordCancellation(cancel func() error, cancelled *atomic.Bool) func() error {
+	return func() error {
+		err := cancel()
+		if err == nil {
+			cancelled.Store(true)
+		}
+		return err
+	}
+}
+
+// sourceTimedOut is whether a source's failure is reported as its timeout:
+// its cancellation succeeded (recordCancellation); its context ended at its
+// deadline, not by the gateway's shutdown nor an overflow, both of which
+// cancel rather than expire it; and the source did not exit on its own
+// (exitedOnItsOwn), which on Unix a successful group kill does not show.
+func sourceTimedOut(cancelled bool, ctxErr, waitErr error) bool {
+	return cancelled && errors.Is(ctxErr, context.DeadlineExceeded) && !exitedOnItsOwn(waitErr)
 }
 
 func newSalt() ([]byte, error) {
@@ -713,7 +878,7 @@ func parseEnvelope(v value) (*envelope, error) {
 		switch name {
 		case "acquisition", "result", "page":
 		default:
-			return nil, fmt.Errorf("unknown member %q", name)
+			return nil, fmt.Errorf("unknown member %q", requestText(name))
 		}
 	}
 	result, ok := obj.get("result")
@@ -740,7 +905,7 @@ func parseEnvelope(v value) (*envelope, error) {
 	}
 	for _, name := range acquisition.names {
 		if !envelopeMembers[name] {
-			return nil, fmt.Errorf("acquisition member %q is not one an adapter reports", name)
+			return nil, fmt.Errorf("acquisition member %q is not one an adapter reports", requestText(name))
 		}
 	}
 	adapter, ok := acquisition.get("adapter")
@@ -756,7 +921,7 @@ func parseEnvelope(v value) (*envelope, error) {
 		switch name {
 		case "name", "version", "digest":
 		default:
-			return nil, fmt.Errorf("adapter member %q is not one an adapter reports", name)
+			return nil, fmt.Errorf("adapter member %q is not one an adapter reports", requestText(name))
 		}
 	}
 	for _, name := range []string{"endpoint", "snapshot", "peerIdentity", "upstreamToken", "statement"} {
@@ -1039,7 +1204,7 @@ func (g *gatewayService) handler() http.Handler {
 		if !ok {
 			return
 		}
-		limitBody(w, r)
+		limitBodyTo(w, r, g.maxRequest)
 		var body struct {
 			Session   string          `json:"session"`
 			Source    string          `json:"source"`
@@ -1051,7 +1216,7 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		arguments := value(newObject())
 		if len(body.Arguments) > 0 {
-			parsed, err := parseJSON(body.Arguments)
+			parsed, err := parseJSONWithin(body.Arguments, maxArgumentValues)
 			if err != nil {
 				fail(w, badRequest{err})
 				return

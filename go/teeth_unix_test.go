@@ -17,6 +17,12 @@ import (
 	"time"
 )
 
+// exitStatusTellsAKill is whether an exit status distinguishes a source
+// killed by the group's kill from one that exited on its own
+// (exitedOnItsOwn): here it does, since a killed source's status carries the
+// signal.
+const exitStatusTellsAKill = true
+
 // A descriptor the gateway's launcher left open -- `3<gateway.seed` -- reaches
 // a source unless it is marked close-on-exec. The test first shows the hazard
 // (the probe sees the descriptor open) and then that the startup marking

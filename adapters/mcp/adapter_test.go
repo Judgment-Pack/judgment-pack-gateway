@@ -372,10 +372,10 @@ func TestAcquireRefusals(t *testing.T) {
 	t.Run("neither or both servers", func(t *testing.T) {
 		cfg := fake(t)
 		cfg.Command = nil
-		mustFail(t, cfg, query("select 1"), "exactly one of --image and --command")
+		mustFail(t, cfg, query("select 1"), "exactly one of --image and a server command after --")
 		cfg = image(fake(t))
 		cfg.Command = []string{"x"}
-		mustFail(t, cfg, query("select 1"), "exactly one of --image and --command")
+		mustFail(t, cfg, query("select 1"), "exactly one of --image and a server command after --")
 		cfg = image(fake(t))
 		cfg.Runtime = ""
 		mustFail(t, cfg, query("select 1"), "a container runtime is required")

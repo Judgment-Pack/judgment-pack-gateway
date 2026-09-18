@@ -1718,6 +1718,11 @@ func TestShutdownCancelsAnInFlightSource(t *testing.T) {
 		if err == nil {
 			t.Fatal("a source cancelled by shutdown must fail the acquisition")
 		}
+		// Shutdown cancels the source's context rather than expiring it, so
+		// the failure is not said to be the source's timeout.
+		if strings.Contains(err.Error(), "did not finish within") {
+			t.Fatalf("a source cancelled by shutdown was reported as timed out: %v", err)
+		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("shutdown did not end the in-flight acquisition")
 	}
@@ -1798,8 +1803,8 @@ func TestShutdownAnswersInFlightRequestsBeforeReturning(t *testing.T) {
 		if a.err != nil {
 			t.Fatalf("the in-flight request must receive a whole response, got transport error: %v", a.err)
 		}
-		if a.code != http.StatusBadRequest || a.body["error"] == nil {
-			t.Fatalf("the in-flight request must be answered with the refusal, got %d %v", a.code, a.body)
+		if a.code != http.StatusBadRequest || a.body["error"] == nil || strings.Contains(fmt.Sprint(a.body["error"]), "did not finish within") {
+			t.Fatalf("the in-flight request must be answered with the refusal, not a timeout, got %d %v", a.code, a.body)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("serveOn returned without the in-flight request being answered")

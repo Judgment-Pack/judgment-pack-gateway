@@ -155,6 +155,12 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 	if !reflect.DeepEqual(sources, want) {
 		t.Fatalf("derived sources:\n got %+v\nwant %+v", sources, want)
 	}
+	// A configuration's service keeps the command line's defaults: the derived
+	// sources declare no timeout of their own (want, above), /acquire keeps
+	// one mebibyte and a source's stdout its default bound.
+	if opts := engineServeOptions(cfg, sources, nil); opts.maxRequest != maxRequestBody || opts.maxSourceOutput != defaultMaxSourceOutput {
+		t.Fatalf("a configuration's bounds: maxRequest %d, maxSourceOutput %d", opts.maxRequest, opts.maxSourceOutput)
+	}
 	// A platform that does not allow writes derives no write source and
 	// names no write credential, whatever its binding states; one that
 	// allows them against a binding stating none derives none either --

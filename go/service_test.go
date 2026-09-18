@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -19,6 +20,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -66,6 +69,14 @@ const (
 	// been reparented -- until its parent has really exited -- before it
 	// writes; a late overflow is only late once the direct child is gone.
 	envSourceParentPid = "GATEWAY_TEST_SOURCE_PARENT_PID"
+	// The helper writes an array of the stated number of zeros: a result of
+	// many values in few bytes.
+	envSourceValues = "GATEWAY_TEST_SOURCE_VALUES"
+	// The helper exits at once with the stated status, having written
+	// nothing; or it writes the canonical arguments it was given on stdout,
+	// so a request's own text comes back as the source's output.
+	envSourceExit      = "GATEWAY_TEST_SOURCE_EXIT"
+	envSourceEchoStdin = "GATEWAY_TEST_SOURCE_ECHO_STDIN"
 )
 
 // recordPid publishes a pid atomically: written whole to a sibling file and
@@ -83,7 +94,7 @@ func recordPid(path string, pid int) {
 // longer hands a source its own environment (ADR-0001), so every variable the
 // helper reads is declared here by name and copied at spawn time -- which is
 // what keeps t.Setenv working between acquisitions.
-var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceEnvelope, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid, envSourceQuiet, envSourceDelay, envSourceParentPid}
+var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceEnvelope, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid, envSourceQuiet, envSourceDelay, envSourceParentPid, envSourceValues, envSourceExit, envSourceEchoStdin}
 
 // A barrier named in the ARGUMENTS rather than the environment. Every helper
 // this process starts inherits the same environment, so an environment-named
@@ -142,6 +153,14 @@ func TestMain(m *testing.M) {
 			}
 		}
 		arguments, _ := io.ReadAll(os.Stdin)
+		if status := os.Getenv(envSourceExit); status != "" {
+			n, _ := strconv.Atoi(status)
+			os.Exit(n)
+		}
+		if os.Getenv(envSourceEchoStdin) == "1" {
+			os.Stdout.Write(arguments)
+			os.Exit(0)
+		}
 		if ready := os.Getenv(envSourceReady); ready != "" {
 			_ = os.WriteFile(ready, []byte("started\n"), 0o600)
 		}
@@ -155,6 +174,11 @@ func TestMain(m *testing.M) {
 		if os.Getenv(envSourceFail) == "1" {
 			fmt.Fprintln(os.Stderr, "source refused")
 			os.Exit(1)
+		}
+		if count := os.Getenv(envSourceValues); count != "" {
+			n, _ := strconv.Atoi(count)
+			os.Stdout.WriteString("[" + strings.TrimSuffix(strings.Repeat("0,", n), ",") + "]")
+			os.Exit(0)
 		}
 		if text := os.Getenv(envSourceEnvelope); text != "" {
 			os.Stdout.WriteString(text)
@@ -1563,6 +1587,532 @@ func TestOversizedRequestBodyIsRefusedWithoutBufferingIt(t *testing.T) {
 					body.read, 20*maxRequestBody, maxRequestBody)
 			}
 		})
+	}
+}
+
+// --max-request raises the /acquire bound and nothing else: a body past the
+// default is admitted to /acquire and still refused by /seal and /act, and a
+// body past the raised bound is refused without being buffered.
+func TestMaxRequestRaisesTheAcquireBoundAlone(t *testing.T) {
+	service, server := testService(t)
+	service.maxRequest = 2 * maxRequestBody
+	pad := strings.Repeat("x", maxRequestBody+maxRequestBody/2)
+	payload := fmt.Sprintf(`{"session":"raised","source":"screening","arguments":{"pad":%q}}`, pad)
+	resp, err := http.Post(server.URL+"/acquire", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("a body past the default under a raised bound: %d %s", resp.StatusCode, raw)
+	}
+	seal := fmt.Sprintf(`{"session":"raised","pad":%q}`, pad)
+	if code, answer := post(t, server, "/seal", seal); code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), "request body too large") {
+		t.Fatalf("/seal under a raised /acquire bound: %d %v", code, answer)
+	}
+	body := newCountingBody(20 * service.maxRequest)
+	rec := httptest.NewRecorder()
+	service.handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/acquire", body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("past the raised bound: %d", rec.Code)
+	}
+	if limit := service.maxRequest + 64*1024; body.read > limit {
+		t.Fatalf("server read %d bytes past a raised bound of %d", body.read, service.maxRequest)
+	}
+	// /act reads a body only for an authenticated requester, so the service
+	// is given an identity for this last request.
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	act := fmt.Sprintf(`{"session":"raised","platform":"tickets","tool":"update_ticket","arguments":{"pad":%q}}`, pad)
+	if code, answer := authed(t, server, "/act", act, token); code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), "request body too large") {
+		t.Fatalf("/act under a raised /acquire bound: %d %v", code, answer)
+	}
+}
+
+// An /acquire body of exactly the configured bound is admitted, and one byte
+// more is refused before any source runs.
+func TestAcquireBodyAtTheBoundIsAdmittedAndOneBytePastIsNot(t *testing.T) {
+	service, server := testService(t)
+	service.maxRequest = maxRequestBody + 4096
+	sized := func(size int64) string {
+		frame := `{"session":"exact","source":"screening","arguments":{"pad":""}}`
+		open, closing := frame[:len(frame)-3], frame[len(frame)-3:]
+		body := open + strings.Repeat("x", int(size)-len(frame)) + closing
+		if int64(len(body)) != size {
+			t.Fatalf("built a %d-byte body, want %d", len(body), size)
+		}
+		return body
+	}
+	code, answer := post(t, server, "/acquire", sized(service.maxRequest))
+	if code != http.StatusOK {
+		t.Fatalf("a body of exactly the bound: %d %v", code, answer)
+	}
+	started := service.started.Load()
+	code, answer = post(t, server, "/acquire", sized(service.maxRequest+1))
+	if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), "request body too large") {
+		t.Fatalf("a body one byte past the bound: %d %v", code, answer)
+	}
+	if service.started.Load() != started {
+		t.Fatal("a body past the bound started a source")
+	}
+}
+
+// The value budget: every value the parser makes counts once, member names
+// do not, and the value past the budget is refused. parseJSON itself has no
+// budget -- a source's output, a stored receipt and a registry line are
+// parsed as before.
+func TestValueBudget(t *testing.T) {
+	for _, tc := range []struct {
+		text   string
+		values int
+	}{
+		{`0`, 1},
+		{`[0,"a"]`, 3},
+		{`{"a":null,"b":[true,{}]}`, 5},
+		{`[[],{},[[]]]`, 5},
+		{`[false,-1]`, 3},
+	} {
+		if _, err := parseJSONWithin([]byte(tc.text), tc.values); err != nil {
+			t.Fatalf("%s holds %d values and a budget of %d refused it: %v", tc.text, tc.values, tc.values, err)
+		}
+		_, err := parseJSONWithin([]byte(tc.text), tc.values-1)
+		if tc.values == 1 {
+			// a budget of zero is no budget
+			if err != nil {
+				t.Fatalf("%s under no budget: %v", tc.text, err)
+			}
+			continue
+		}
+		want := fmt.Sprintf("more JSON values than the budget of %d", tc.values-1)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%s holds %d values under a budget of %d: %v", tc.text, tc.values, tc.values-1, err)
+		}
+	}
+	// A byte that cannot begin a value is refused as that, not counted: [0,]
+	// holds two values, and a budget of two says so.
+	if _, err := parseJSONWithin([]byte(`[0,]`), 2); err == nil || !strings.Contains(err.Error(), "unexpected byte ']'") {
+		t.Fatalf("[0,] under a budget of 2: %v", err)
+	}
+	past := []byte("[" + strings.Repeat("0,", maxArgumentValues) + "0]")
+	if _, err := parseJSON(past); err != nil {
+		t.Fatalf("parseJSON refused %d values: %v", maxArgumentValues+2, err)
+	}
+}
+
+// The value budget is 524,288, the number README.md and SECURITY.md state, and
+// a body of the default bound cannot reach it: a value takes a byte and all
+// but one of them a separator or a bracket besides, so a one-mebibyte body --
+// here the arguments member alone, an array of zeros and one space -- holds
+// at most 524,281 values. That body is refused for its missing session, after
+// its arguments were parsed, not for its values.
+func TestAOneMebibyteBodyCannotReachTheValueBudget(t *testing.T) {
+	if maxArgumentValues != 524288 {
+		t.Fatalf("the value budget is %d; README.md and SECURITY.md state 524,288", maxArgumentValues)
+	}
+	service, server := testService(t)
+	if service.maxRequest != maxRequestBody {
+		t.Fatalf("the service's /acquire bound is %d, want the default %d", service.maxRequest, maxRequestBody)
+	}
+	const open, closing = `{"arguments": [`, `]}`
+	elements := (maxRequestBody - len(open) - len(closing) + 1) / 2
+	body := open + strings.TrimSuffix(strings.Repeat("0,", elements), ",") + closing
+	if len(body) != maxRequestBody || elements+1 != 524281 {
+		t.Fatalf("built a %d-byte body of %d values, want %d bytes of 524281", len(body), elements+1, maxRequestBody)
+	}
+	code, answer := post(t, server, "/acquire", body)
+	if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), "session id must match") {
+		t.Fatalf("a one-mebibyte body of %d values: %d %v", elements+1, code, answer)
+	}
+}
+
+// /acquire holds its arguments to the value budget: exactly the budget is
+// admitted, one value more is refused before any source runs, and the
+// refusal names the budget.
+func TestAcquireArgumentsAreHeldToTheValueBudget(t *testing.T) {
+	service, server := testService(t)
+	service.maxRequest = 4 * maxRequestBody
+	body := func(elements int) string {
+		return `{"session":"values","source":"screening","arguments":[` +
+			strings.TrimSuffix(strings.Repeat("0,", elements), ",") + `]}`
+	}
+	// the array is one value, so it holds maxArgumentValues-1 elements
+	code, answer := post(t, server, "/acquire", body(maxArgumentValues-1))
+	if code != http.StatusOK {
+		t.Fatalf("arguments of exactly the budget: %d %v", code, answer)
+	}
+	started := service.started.Load()
+	code, answer = post(t, server, "/acquire", body(maxArgumentValues))
+	want := fmt.Sprintf("more JSON values than the budget of %d", maxArgumentValues)
+	if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), want) {
+		t.Fatalf("arguments one value past the budget: %d %v", code, answer)
+	}
+	if service.started.Load() != started {
+		t.Fatal("arguments past the budget started a source")
+	}
+}
+
+// The value budget is for the arguments: a source may return more values
+// than it, within its output bound.
+func TestSourceOutputIsNotHeldToTheValueBudget(t *testing.T) {
+	service, server := testService(t)
+	service.maxSourceOutput = 4 * maxRequestBody
+	t.Setenv(envSourceValues, strconv.Itoa(maxArgumentValues+1))
+	code, answer := post(t, server, "/acquire", `{"session":"many","source":"screening","arguments":{}}`)
+	if code != http.StatusOK {
+		t.Fatalf("a result of more values than the argument budget: %d %v", code, answer["error"])
+	}
+	if result, ok := answer["result"].([]any); !ok || len(result) != maxArgumentValues+1 {
+		t.Fatalf("the result did not come back whole")
+	}
+}
+
+// A source's context is made for the timeout declared for that source, and
+// for the default -- thirty seconds, the figure README.md and SECURITY.md
+// state -- for a source that declared none. The figure is read from the seam
+// that makes the context, exactly, rather than from a clock, so no scheduler
+// decides what this test says; what the run reads of the deadline is then
+// checked to be the context's own and not that figure worked out again.
+func TestSourceDeadlineIsItsOwnTimeout(t *testing.T) {
+	service, _ := testService(t)
+	spec := service.sources["screening"]
+	spec.timeout = 45 * time.Second
+	service.sources["screening"] = spec
+	other := spec
+	other.timeout = 0
+	service.sources["other"] = other
+	// The source each request is for: these are made one after another, so
+	// the seam below records the timeout it was handed against the source
+	// that asked for it.
+	var making string
+	made := map[string]time.Duration{}
+	// The context this makes carries a deadline further off than the timeout
+	// it was handed, by a margin no scheduler accounts for, so a deadline
+	// read from the context can be told from that figure worked out again.
+	const further = 5 * time.Minute
+	service.sourceContext = func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		made[making] = timeout
+		return context.WithDeadline(parent, time.Now().Add(timeout+further))
+	}
+	remaining := map[string]time.Duration{}
+	service.sourceDeadline = func(source string, deadline time.Time) {
+		remaining[source] = time.Until(deadline)
+	}
+	for _, source := range []string{"screening", "other"} {
+		making = source
+		if _, err := service.acquire("deadline-"+source, source, newObject(), nil); err != nil {
+			t.Fatalf("%s: %v", source, err)
+		}
+	}
+	// The default is written out rather than named, so a change to
+	// defaultSourceTimeout is a change this test sees.
+	for source, want := range map[string]time.Duration{"screening": 45 * time.Second, "other": 30 * time.Second} {
+		got, seen := made[source]
+		if !seen || got != want {
+			t.Fatalf("%s's context was made for %v, want %v", source, got, want)
+		}
+		// and what the run reads is that context's own deadline, not the
+		// timeout worked out again: the margin above tells the two apart.
+		left, read := remaining[source]
+		if !read || left <= want || left > want+further {
+			t.Fatalf("%s's run read %v of deadline, want the context's own, between %v and %v", source, left, want, want+further)
+		}
+	}
+}
+
+// deadlineOnDemand is a source's context whose deadline the test ends. Until
+// then it is a context whose deadline has not passed; ended, its Done closes
+// and its Err is context.DeadlineExceeded, as a real deadline's are, so
+// os/exec cancels the source as it does at a real one. The cancel runSource
+// defers, an overflow's stop and the service's shutdown end it as cancelled.
+type deadlineOnDemand struct {
+	parent   context.Context
+	deadline time.Time
+	done     chan struct{}
+	mu       sync.Mutex
+	err      error
+}
+
+func (c *deadlineOnDemand) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c *deadlineOnDemand) Done() <-chan struct{}       { return c.done }
+func (c *deadlineOnDemand) Value(key any) any           { return c.parent.Value(key) }
+
+func (c *deadlineOnDemand) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+// end ends the context with err, and reports whether it was this call that
+// ended it.
+func (c *deadlineOnDemand) end(err error) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil {
+		return false
+	}
+	c.err = err
+	close(c.done)
+	return true
+}
+
+// deadlinesOnDemand makes the service's source contexts deadlineOnDemand
+// ones, and returns what ends the deadline of the last one made: it reports
+// whether that ended a context still running, and so is false when no source
+// context was made through the seam.
+func deadlinesOnDemand(service *gatewayService) (expire func() bool) {
+	var mu sync.Mutex
+	var last *deadlineOnDemand
+	service.sourceContext = func(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+		c := &deadlineOnDemand{parent: parent, deadline: time.Now().Add(timeout), done: make(chan struct{})}
+		go func() {
+			select {
+			case <-parent.Done():
+				c.end(parent.Err())
+			case <-c.done:
+			}
+		}()
+		mu.Lock()
+		last = c
+		mu.Unlock()
+		return c, func() { c.end(context.Canceled) }
+	}
+	return func() bool {
+		mu.Lock()
+		c := last
+		mu.Unlock()
+		return c != nil && c.end(context.DeadlineExceeded)
+	}
+}
+
+// answered is what a request made in the background came to.
+type answered struct {
+	code  int
+	error string
+	err   error
+}
+
+// postInBackground posts body to path and delivers the answer on the channel
+// it returns.
+func postInBackground(server *httptest.Server, path, body string) <-chan answered {
+	done := make(chan answered, 1)
+	go func() {
+		resp, err := http.Post(server.URL+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			done <- answered{err: err}
+			return
+		}
+		defer resp.Body.Close()
+		var answer map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&answer)
+		done <- answered{code: resp.StatusCode, error: fmt.Sprint(answer["error"])}
+	}()
+	return done
+}
+
+// awaitAnswer is the background request's answer; the wait is a guard
+// against a hang, not a bound anything is held to.
+func awaitAnswer(t *testing.T, done <-chan answered, hang time.Duration) answered {
+	t.Helper()
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		return got
+	case <-time.After(hang):
+		t.Fatalf("the request was not answered within %v", hang)
+		return answered{}
+	}
+}
+
+// awaitStartedOrAnswered waits until the source announces at ready that it
+// started, or until the request is answered first, which fails the test with
+// that answer rather than waiting for an announcement that will not come.
+func awaitStartedOrAnswered(t *testing.T, ready string, done <-chan answered) {
+	t.Helper()
+	guard := time.After(60 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			return
+		}
+		select {
+		case got := <-done:
+			t.Fatalf("the request was answered before its source started: %d %s %v", got.code, got.error, got.err)
+		case <-guard:
+			t.Fatalf("the source never announced that it started: %s", ready)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+// A source still running when its deadline passes is ended there, and the
+// caller is told so, with the timeout's figure: for a source --source-timeout
+// names, and for one under the default, which the test sets to a figure of its
+// own. The test ends the deadline itself once the source has announced that it
+// started, so neither how long the source takes to start nor the scheduler
+// decides what is reported; TestSourceTimeoutAtARealDeadline is the same end at
+// a real deadline.
+func TestSourceTimeoutEndsTheSource(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		want string
+		set  func(*testing.T, *gatewayService)
+	}{
+		{"a source --source-timeout names", "did not finish within its 45-second timeout", func(_ *testing.T, service *gatewayService) {
+			spec := service.sources["screening"]
+			spec.timeout = 45 * time.Second
+			service.sources["screening"] = spec
+		}},
+		{"a source under the default", "did not finish within its 17-second timeout", func(t *testing.T, service *gatewayService) {
+			if spec := service.sources["screening"]; spec.timeout != 0 {
+				t.Fatalf("the test source declares a timeout of %v", spec.timeout)
+			}
+			service.defaultTimeout = 17 * time.Second
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service, server := testService(t)
+			// Run before the server's close: a source a failed run left
+			// waiting is killed rather than left holding the close.
+			t.Cleanup(service.cancel)
+			tt.set(t, service)
+			expire := deadlinesOnDemand(service)
+			dir := t.TempDir()
+			ready := filepath.Join(dir, "started")
+			t.Setenv(envSourceReady, ready)
+			t.Setenv(envSourceWait, filepath.Join(dir, "never"))
+			done := postInBackground(server, "/acquire", `{"session":"slow","source":"screening","arguments":{}}`)
+			awaitStartedOrAnswered(t, ready, done)
+			if !expire() {
+				t.Fatal("the source's context was not the one the test ends")
+			}
+			got := awaitAnswer(t, done, 60*time.Second)
+			if got.code != http.StatusBadRequest || !strings.Contains(got.error, tt.want) {
+				t.Fatalf("a source past its deadline: %d %s", got.code, got.error)
+			}
+		})
+	}
+}
+
+// The timeout at a real deadline: five seconds, long enough that a slow
+// start does not reach it, ends the source and is reported with its figure.
+// The wait for the answer guards against a hang only.
+func TestSourceTimeoutAtARealDeadline(t *testing.T) {
+	service, server := testService(t)
+	t.Cleanup(service.cancel)
+	spec := service.sources["screening"]
+	spec.timeout = 5 * time.Second
+	service.sources["screening"] = spec
+	dir := t.TempDir()
+	ready := filepath.Join(dir, "started")
+	t.Setenv(envSourceReady, ready)
+	t.Setenv(envSourceWait, filepath.Join(dir, "never"))
+	done := postInBackground(server, "/acquire", `{"session":"slow","source":"screening","arguments":{}}`)
+	got := awaitAnswer(t, done, 120*time.Second)
+	if got.code != http.StatusBadRequest || !strings.Contains(got.error, "did not finish within its 5-second timeout") {
+		t.Fatalf("a source past its timeout: %d %s", got.code, got.error)
+	}
+	if _, err := os.Stat(ready); err != nil {
+		t.Fatalf("the source had not started, so its refusal says nothing of a running source's timeout: %v", err)
+	}
+}
+
+// A source that ended on its own is reported as what it did, even when its
+// deadline passes before the gateway has finished with it: the test ends the
+// deadline once the source has been waited for, before its failure is
+// attributed, and the source, which was not cancelled, is not said to have
+// timed out.
+func TestASourceOvertakenByItsDeadlineIsNotATimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		fail     string
+		wantCode int
+		want     string
+	}{
+		{name: "failed", fail: "1", wantCode: http.StatusBadRequest, want: "source failed: source refused"},
+		{name: "succeeded", wantCode: http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service, server := testService(t)
+			t.Setenv(envSourceFail, tc.fail)
+			expire := deadlinesOnDemand(service)
+			var expired atomic.Bool
+			service.afterSourceWait = func() { expired.Store(expire()) }
+			code, answer := post(t, server, "/acquire", `{"session":"overtaken","source":"screening","arguments":{}}`)
+			if !expired.Load() {
+				t.Fatal("the deadline was not ended between the source's wait and its attribution")
+			}
+			if code != tc.wantCode || (tc.want != "" && strings.TrimSpace(fmt.Sprint(answer["error"])) != tc.want) {
+				t.Fatalf("a source that ended on its own, overtaken by its deadline: %d %v", code, answer)
+			}
+		})
+	}
+}
+
+// The timeout is said of a source only when its cancellation succeeded, its
+// context ended at its deadline, and it did not exit on its own -- judged on
+// the wait errors real processes give: the helper exiting with status 7, and
+// the helper killed. On Unix the status tells the exit from the kill; elsewhere
+// it does not, and a cancellation that returns an error, as the kill of a
+// process os/exec has collected does, is what leaves the flag unset.
+func TestSourceTimeoutAttribution(t *testing.T) {
+	helper := func(env ...string) *exec.Cmd {
+		cmd := exec.Command(os.Args[0])
+		cmd.Env = append([]string{envSourceHelper + "=1", "PATH=" + os.Getenv("PATH")}, env...)
+		return cmd
+	}
+	exited := helper(envSourceExit + "=7").Run()
+	var exit *exec.ExitError
+	if !errors.As(exited, &exit) || exit.ExitCode() != 7 {
+		t.Fatalf("the helper did not exit with status 7: %v", exited)
+	}
+	killedCmd := helper(envSourceWait + "=" + filepath.Join(t.TempDir(), "never"))
+	if err := killedCmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err := killedCmd.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	killed := killedCmd.Wait()
+	if !errors.As(killed, &exit) {
+		t.Fatalf("the killed helper's wait error is not an exit: %v", killed)
+	}
+
+	if got := exitedOnItsOwn(exited); got != exitStatusTellsAKill {
+		t.Fatalf("an exit with status 7 exited on its own: %v, want %v", got, exitStatusTellsAKill)
+	}
+	if exitedOnItsOwn(killed) || exitedOnItsOwn(nil) || exitedOnItsOwn(context.DeadlineExceeded) {
+		t.Fatal("a killed source, no error or a deadline's error was taken for an exit on its own")
+	}
+	if got := sourceTimedOut(true, context.DeadlineExceeded, exited); got == exitStatusTellsAKill {
+		t.Fatalf("a cancelled source that exited with status 7 at its deadline timed out: %v", got)
+	}
+	if !sourceTimedOut(true, context.DeadlineExceeded, killed) {
+		t.Fatal("a source cancelled and killed at its deadline did not time out")
+	}
+	for _, tc := range []struct {
+		name      string
+		cancelled bool
+		ctxErr    error
+	}{
+		{"not cancelled", false, context.DeadlineExceeded},
+		{"cancelled by shutdown or an overflow", true, context.Canceled},
+		{"a context that has not ended", true, nil},
+	} {
+		if sourceTimedOut(tc.cancelled, tc.ctxErr, killed) {
+			t.Fatalf("%s: a killed source timed out", tc.name)
+		}
+	}
+
+	var cancelled atomic.Bool
+	if err := recordCancellation(func() error { return os.ErrProcessDone }, &cancelled)(); !errors.Is(err, os.ErrProcessDone) || cancelled.Load() {
+		t.Fatalf("a cancellation that failed: returned %v, recorded %v", err, cancelled.Load())
+	}
+	if err := recordCancellation(func() error { return nil }, &cancelled)(); err != nil || !cancelled.Load() {
+		t.Fatalf("a cancellation that succeeded: returned %v, recorded %v", err, cancelled.Load())
 	}
 }
 

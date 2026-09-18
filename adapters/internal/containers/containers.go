@@ -18,14 +18,18 @@ import (
 	"time"
 )
 
-// The budget for stopping a container once the acquisition is over, on top
-// of the acquisition's own timeout: the kill, the inspect that follows a
-// refused kill and the drain of its pipes, and the wait for the client's
-// pipes after that, which a descendant holding stderr can stretch to the
-// wait delay. Seven seconds at most -- nine for a container with stdin,
-// which is first given the wait delay to end on end-of-input; the commands'
-// default timeouts leave that room, and some to report, under the
-// gateway's thirty.
+// The adapter's cleanup wait budget for stopping a container once the
+// acquisition is over, on top of the acquisition's own timeout: the kill,
+// the inspect that follows a refused kill and the drain of its pipes, and the
+// wait for the client's pipes after that, which a descendant holding stderr
+// can stretch to the wait delay. These waits sum to seven seconds -- nine for
+// a container with stdin, which is first given the wait delay to end on
+// end-of-input. The gateway's source timeout (thirty seconds by default, or
+// the --source-timeout given that source) starts before the adapter does, so
+// an operator keeps the command's --timeout plus this budget under it with
+// further margin for that start and for the adapter's report; at the
+// commands' default timeout of twenty seconds the margin under the default
+// thirty is three seconds, or one for a container with stdin.
 const (
 	KillWindow    = 3 * time.Second
 	InspectWindow = time.Second

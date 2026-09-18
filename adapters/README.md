@@ -103,10 +103,15 @@ refuses is followed by an inspect, and only an inspect the runtime answers with 
 object" or "no such container" followed by the container's own name counts as gone — a container it still knows, or a runtime
 that cannot say (a daemon that is down, a host that cannot be resolved), fails the
 acquisition and says so first, since the container holds the credentials mount.
-`--timeout` (twenty seconds) is the time for reading; stopping takes up to seven seconds
-more (a kill, an inspect and the drain of its output, and the wait for the client's
-pipes), and the sum stays under the gateway's thirty, so a slow connector is reported as
-a deadline rather than killed mid-report.
+`--timeout` (twenty seconds) is the time for reading; the adapter's cleanup wait budget for
+stopping the container is seven seconds on top of it (a kill, an inspect and the drain of its
+output, and the wait for the client's pipes). The gateway's source timeout — thirty seconds by
+default, or the `--source-timeout` given that source — starts before the adapter does: the
+gateway resolves the command and starts it, on Unix behind a process-group anchor, before the
+adapter's own clock begins. So keep `--timeout` plus that budget under the source's timeout with
+further margin for that start and for the adapter's report; the margin is what a connector
+reaching the adapter's deadline needs to be reported as a deadline rather than killed
+mid-report. At the defaults the twenty and the seven leave three seconds of it.
 
 **Diagnostics.** A connector's error — the first line of its stderr, or a `TRACE`
 message, or the runtime's answer about a container that would not stop — is reported to
@@ -344,8 +349,12 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl --receipt-versi
   body as it would be carried (a JSON string unescaped), or in a header the result or the
   receipt would carry — the `ETag` among them — fails the acquisition with nothing minted,
   because an artifact and a receipt are signed and in the clear, and an answer rewritten to
-  hide it would not be the endpoint's. `--timeout` (twenty seconds) bounds the request under
-  the gateway's thirty; `--max-output` bounds the answer and the envelope (at most 1 TiB, so
+  hide it would not be the endpoint's. `--timeout` (twenty seconds) bounds the request. The
+  gateway's source timeout — thirty seconds by default, or the `--source-timeout` given that
+  source — starts before the adapter does, since the gateway resolves the command and starts it
+  first, so keep `--timeout` under the source's timeout with margin for that start and for the
+  adapter's report; that margin is what a request reaching the adapter's deadline needs to be
+  reported rather than killed; `--max-output` bounds the answer and the envelope (at most 1 TiB, so
   the bounded read's sentinel byte cannot overflow), and an answer past it is refused, never
   cut — the read stops at the bound rather than draining what follows. Keep it at or below the
   gateway's `--source-max-output`: a reader service that renders a long PDF answers megabytes,

@@ -175,7 +175,22 @@ refused otherwise rather than run as the signer). `--source-max-output BYTES` bo
 what a source may write on stdout (one mebibyte by default); past it the source is
 killed — on Unix its whole process group, elsewhere the direct child — and the
 acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
-than the acquisition. On Unix, `serve` refuses a seed file that is not a regular file
+than the acquisition. `--source-timeout NAME=SECONDS` gives source `NAME` a timeout of its
+own, a whole number of seconds from 1 to 600 (thirty by default); past it the source is killed
+the same way and the caller is told it did not finish within its timeout. A source's timeout
+starts before its adapter does — the gateway resolves the command, digests it for a version 3
+receipt where the source is a bare command, and starts it, on Unix behind a process-group
+anchor — so keep an adapter's own `--timeout`, plus the cleanup waits it budgets for stopping,
+under its source's timeout, with further margin for that start and for the adapter's own report.
+That margin is what a read reaching the adapter's deadline needs to be reported by the adapter
+rather than killed with it ([adapters](adapters/README.md)). `--max-request
+BYTES` bounds an `/acquire` body, from 1 byte to 64 MiB (one mebibyte by default); `/seal` and
+`/act` keep one mebibyte, and every body must still arrive within the server's thirty-second
+read timeout. `--source-timeout` and `--max-request` are command-line options: under an engine
+configuration the derived sources keep the thirty-second timeout and `/acquire` keeps one
+mebibyte. An `/acquire` body's arguments are refused past 524,288 JSON values, a count a
+one-mebibyte body cannot reach, and raising the bound does not raise it.
+On Unix, `serve` refuses a seed file that is not a regular file
 owned by the gateway's own user and readable by it alone, says which `chmod` to run,
 and marks every descriptor its launcher left open close-on-exec so none reaches a
 source; on Windows it checks that the seed is a regular file and says the rest is the

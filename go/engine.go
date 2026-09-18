@@ -553,7 +553,7 @@ func cleanAbsolutePath(name, s string) (string, error) {
 func exactlyMembers(obj *vObject, members map[string]bool, what string) error {
 	for _, name := range obj.names {
 		if _, known := members[name]; !known {
-			return fmt.Errorf("%s: unknown member %q", what, name)
+			return fmt.Errorf("%s: unknown member %q", what, requestText(name))
 		}
 	}
 	for name, required := range members {
@@ -1306,7 +1306,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords}
+	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

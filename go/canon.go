@@ -176,6 +176,11 @@ type parser struct {
 	data  []byte
 	pos   int
 	depth int
+	// maxValues, when positive, is the value budget (parseJSONWithin): how
+	// many JSON values the parser may make before it refuses the document.
+	// values is how many it has made so far.
+	maxValues int
+	values    int
 }
 
 // descend enters a nested value, refusing the level past maxNesting before
@@ -189,7 +194,21 @@ func (p *parser) descend() error {
 }
 
 func parseJSON(data []byte) (value, error) {
-	p := &parser{data: data}
+	return (&parser{data: data}).document()
+}
+
+// parseJSONWithin is parseJSON under a value budget of maxValues: every value
+// the parser makes -- an object, an array, a string, a number, a boolean, a
+// null, each counted once, an object member's value among them -- counts
+// against it, and a value that begins past the budget is refused before it is
+// made. A byte that cannot begin a value is not counted; it is refused as
+// parseJSON refuses it.
+func parseJSONWithin(data []byte, maxValues int) (value, error) {
+	return (&parser{data: data, maxValues: maxValues}).document()
+}
+
+// document parses the whole of p.data as one JSON text.
+func (p *parser) document() (value, error) {
 	p.skipWhitespace()
 	v, err := p.parseValue()
 	if err != nil {
@@ -216,6 +235,12 @@ func (p *parser) skipWhitespace() {
 func (p *parser) parseValue() (value, error) {
 	if p.pos >= len(p.data) {
 		return nil, errors.New("unexpected end of input")
+	}
+	if p.maxValues > 0 && startsValue(p.data[p.pos]) {
+		if p.values >= p.maxValues {
+			return nil, fmt.Errorf("more JSON values than the budget of %d at byte %d", p.maxValues, p.pos)
+		}
+		p.values++
 	}
 	switch c := p.data[p.pos]; {
 	case c == '{':
@@ -251,6 +276,13 @@ func (p *parser) parseValue() (value, error) {
 	}
 }
 
+// startsValue is whether c can begin a JSON value: the bytes parseValue's
+// cases take. A byte that cannot is refused as unexpected rather than
+// counted against a value budget.
+func startsValue(c byte) bool {
+	return c == '{' || c == '[' || c == '"' || c == 't' || c == 'f' || c == 'n' || c == '-' || (c >= '0' && c <= '9')
+}
+
 func (p *parser) expectLiteral(lit string) error {
 	if p.pos+len(lit) > len(p.data) || string(p.data[p.pos:p.pos+len(lit)]) != lit {
 		return fmt.Errorf("expected %q at %d", lit, p.pos)
@@ -279,7 +311,7 @@ func (p *parser) parseObject() (value, error) {
 		if _, dup := obj.get(name); dup {
 			// SPEC.md does not say; see AMBIGUITIES.md. A signed format cannot
 			// afford two readers disagreeing about which value is meant.
-			return nil, fmt.Errorf("duplicate member name %q", name)
+			return nil, fmt.Errorf("duplicate member name %q", requestText(name))
 		}
 		p.skipWhitespace()
 		if p.pos >= len(p.data) || p.data[p.pos] != ':' {
@@ -480,10 +512,10 @@ func (p *parser) parseNumber() (value, error) {
 	lit := string(p.data[start:p.pos])
 	n, err := strconv.ParseInt(lit, 10, 64)
 	if err != nil {
-		return nil, fmt.Errorf("integer %s is outside the canonical domain", lit)
+		return nil, fmt.Errorf("integer %s is outside the canonical domain", requestText(lit))
 	}
 	if n > maxSafeInteger || n < minSafeInteger {
-		return nil, fmt.Errorf("integer %s is outside the safe-integer range", lit)
+		return nil, fmt.Errorf("integer %s is outside the safe-integer range", requestText(lit))
 	}
 	return vInt(n), nil
 }

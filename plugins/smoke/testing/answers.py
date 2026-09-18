@@ -375,6 +375,14 @@ def _go_quote(text):
     return '"' + "".join(out) + '"'
 
 
+def request_text(text):
+    """The engine's requestText: a UTF-8 prefix of at most 64 bytes."""
+    raw = text.encode("utf-8")
+    if len(raw) <= 64:
+        return text
+    return raw[:64].decode("utf-8", errors="ignore") + f"…({len(raw)} bytes)"
+
+
 def canonical_arguments(value):
     """arguments held to the canonical domain as the engine holds them
     (parseJSON), in document order and iteratively however deep: no byte
@@ -388,7 +396,7 @@ def canonical_arguments(value):
             if item.problem:
                 raise Refusal(item.problem)
             if str(item) in seen:
-                raise Refusal(f"duplicate member name {_go_quote(str(item))}")
+                raise Refusal(f"duplicate member name {_go_quote(request_text(str(item)))}")
             seen.add(str(item))
         elif isinstance(item, _Members):
             names = set()
@@ -405,9 +413,9 @@ def canonical_arguments(value):
             # refuse to convert a long enough one at all
             number = int(item) if len(item.lstrip("-")) <= 19 else None
             if number is None or not -(2**63) <= number < 2**63:
-                raise Refusal(f"integer {item} is outside the canonical domain")
+                raise Refusal(f"integer {request_text(item)} is outside the canonical domain")
             if abs(number) > MAX_SAFE_INTEGER:
-                raise Refusal(f"integer {item} is outside the safe-integer range")
+                raise Refusal(f"integer {request_text(item)} is outside the safe-integer range")
         elif isinstance(item, _Text) and item.problem:
             raise Refusal(item.problem)
     return _plain(value)

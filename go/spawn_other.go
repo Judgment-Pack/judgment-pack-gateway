@@ -32,6 +32,12 @@ func prepareSourceProcess(cmd *exec.Cmd, name string) (*sourceGroup, error) {
 	return &sourceGroup{}, nil
 }
 
+// exitedOnItsOwn reports false here: an exit status carries no signal to
+// tell a kill from an exit, and what tells a source that exited on its own
+// is instead the Cancel that kills the direct child, which returns an error
+// for a process whose exit os/exec has collected (runSource).
+func exitedOnItsOwn(error) bool { return false }
+
 func requireUserSwitching(sources map[string]sourceSpec) error {
 	for name, spec := range sources {
 		if spec.user != "" {
