@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-16
 deciders: maintainer
 ---
@@ -90,10 +90,12 @@ what the repository reviews.
 - Bad, because a command-shaped receipt records less than an envelope would: the adapter's
   own observation time and identity are in the record, not in the receipt's acquisition.
   Accepted: for a supplied document the difference is the adapter's testimony either way.
-- Bad, because an inline document rides in `/acquire`'s arguments, which the reference
-  implementation bounds at 1 MiB, and a source runs for thirty seconds. Accepted for the
-  contract; a separate core change proposes `--max-request` and a per-source timeout, and the
-  contract states the bounds that apply until then.
+- Bad, because an inline document rides in `/acquire`'s arguments, so the gateway's request
+  and source-time bounds also constrain it. The defaults are 1 MiB and thirty seconds;
+  `gateway serve --max-request` and `--source-timeout` let an operator set higher bounds for
+  explicitly declared sources. Engine-derived sources retain the defaults. The adapter's
+  limits and any desk or proxy limits must fit the gateway's configuration, including time
+  for startup, cleanup and reporting.
 - Bad, because a PDF reader in the module is code this repository must maintain. Accepted
   over a dependency whose bounds and failure modes the repository does not control.
 - Revisit when a receipt consumer needs the document's acquisition in the receipt itself —

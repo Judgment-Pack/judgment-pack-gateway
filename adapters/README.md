@@ -421,7 +421,8 @@ transport member is `null`. The record carries the rest, as the adapter's testim
 
 ```
 gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-version 3 \
-  --source documents='adapter-document --max-bytes 16777216 --max-output 8388608' \
+  --max-request 33554432 --source-timeout documents=40 \
+  --source documents='adapter-document --max-bytes 16777216 --max-output 8388608 --timeout 30s' \
   --source-user documents=engine-documents \
   --source-max-output 8388608
 ```
@@ -433,8 +434,11 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   included (`arguments-invalid`); a decoded document past `--max-bytes`
   (`document-over-bound`); a `sha256` that does not match (`digest-mismatch`) — by exiting 1
   with one ASCII line of at most 160 bytes, code first, which the gateway hands the caller as
-  `source failed: <line>`. `/acquire` itself reads at most 1 MiB, so an inline document is at
-  most about 760 KiB until the gateway grows a request bound of its own.
+  `source failed: <line>`. `/acquire` reads at most 1 MiB by default, allowing about 760 KiB
+  of inline document bytes. `gateway serve --max-request BYTES` sets that body bound up to
+  64 MiB; size it for base64 plus the surrounding request. The example allows a 32 MiB body
+  for a document of up to 16 MiB. A desk or proxy forwarding the request needs a compatible
+  body limit of its own. Engine-derived sources retain the default gateway bounds.
 - **The record** is built with the types of [attachment/](attachment/), and every record the
   adapter's tests produce — the fixtures' included — is held to `attachment.Check`, the note's
   reference check, before anything else is asserted of it.
@@ -466,7 +470,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | `--max-inflate` | 64 MiB in total, with 16 MiB for any one stream | 4 GiB |
   | `--ocr-max-output` | 32 MiB | 1 GiB |
   | `--max-output` | 1 MiB, at or below the gateway's `--source-max-output` | 1 TiB |
-  | `--timeout` | 25 s, whole milliseconds, under the gateway's thirty | 10 minutes |
+  | `--timeout` | 25 s, whole milliseconds; leave margin below the gateway's source timeout | 10 minutes |
 
   A value that is not positive, is past its ceiling, or for `--timeout` is not a whole number of
   milliseconds is a usage error: the adapter exits 2 without reading the request. At the
