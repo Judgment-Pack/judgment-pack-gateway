@@ -408,6 +408,167 @@ adapter's `--ca-file`, so no network is needed and none is used in CI; the gatew
 end-to-end test (`go/adapter_http_test.go`) spawns the built adapter as a declared source and
 verifies the store that results.
 
+## adapter-document
+
+A document a person attaches in a desk — a PDF, a scanned form, a text export — read for its
+text and attested as one versioned record. The contract is
+[docs/design/attachments.md](../docs/design/attachments.md) and
+[ADR-0004](../docs/adr/0004-documents-are-an-adapter-under-the-command-shape.md); this section
+says how the adapter meets it. It is wired as a **bare** source — no `--source-shape` — so the
+receipt carries the `command` shape: the gateway names the adapter by the command's first word
+and the digest of the file that word resolved to, read before the process started, and every
+transport member is `null`. The record carries the rest, as the adapter's testimony.
+
+```
+gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-version 3 \
+  --max-request 33554432 --source-timeout documents=40 \
+  --source documents='adapter-document --max-bytes 16777216 --max-output 8388608 --timeout 30s' \
+  --source-user documents=engine-documents \
+  --source-max-output 8388608
+```
+
+- **The request** is the canonical arguments on stdin: `{"document": {"name", "mediaType",
+  "bytes", "sha256"?}, "options"?: {"ocr": "auto" | "never"}}`. The adapter refuses at the first
+  of four checks that fails — past the read bound, 4 × ⌈`--max-bytes` / 3⌉ + 64 KiB
+  (`request-over-bound`); arguments outside the contract, `bytes` not its one base64 encoding
+  included (`arguments-invalid`); a decoded document past `--max-bytes`
+  (`document-over-bound`); a `sha256` that does not match (`digest-mismatch`) — by exiting 1
+  with one ASCII line of at most 160 bytes, code first, which the gateway hands the caller as
+  `source failed: <line>`. `/acquire` reads at most 1 MiB by default, allowing about 760 KiB
+  of inline document bytes. `gateway serve --max-request BYTES` sets that body bound up to
+  64 MiB; size it for base64 plus the surrounding request. The example allows a 32 MiB body
+  for a document of up to 16 MiB. A desk or proxy forwarding the request needs a compatible
+  body limit of its own. Engine-derived sources retain the default gateway bounds.
+- **The record** is built with the types of [attachment/](attachment/), and every record the
+  adapter's tests produce — the fixtures' included — is held to `attachment.Check`, the note's
+  reference check, before anything else is asserted of it.
+- **The PDF reader** ([document/pdf/](document/pdf/)) is written in this module against the
+  standard library: cross-reference tables and streams, object streams, Flate, LZW,
+  ASCII-hex, ASCII-85 and run-length filters with PNG and TIFF predictors, the standard security
+  handler opened with an empty user password (revisions 2 to 6, RC4 and AES), simple fonts
+  through the predefined encodings and `Differences`, composite fonts through `Identity-H`,
+  `Identity-V` and embedded CMaps, `ToUnicode` maps for both, and the text operators of each
+  page in stream order, with spaces and line breaks inferred from glyph positions. A damaged
+  cross-reference is rebuilt by scanning for objects. It decodes no image and renders nothing:
+  a page that draws an image and whose text is empty after normalisation is `needs-ocr`. Page
+  text is normalised as it is built, so the text budget is decided on the normalised bytes.
+- **Scanned pages** go to the program named with `--ocr` — one word, resolved on the adapter's
+  `PATH` and digested, the deadline checked immediately before it is started, and run in the
+  adapter's own process group with its stderr discarded — once per document, with the page
+  numbers as arguments and the bytes on stdin. Its answer is admitted only within the
+  canonicalizer's domain, with exact members and only the pages it was asked for; anything else
+  applies nothing (`ocr-failed`). With no program, or `options.ocr` `never`, the pages stay
+  `needs-ocr` under `ocr-not-run`. The adapter carries no OCR engine.
+- **Bounds** are flags, each but `--max-output` reported in the record. Each has a default and a
+  ceiling:
+
+  | Flag | Default | Ceiling |
+  |---|---|---|
+  | `--max-bytes` | 16 MiB | 1 GiB (1,073,741,824 bytes) |
+  | `--max-pages` | 500 | 1,000,000 |
+  | `--max-text` | 8 MiB | 1 GiB |
+  | `--max-inflate` | 64 MiB in total, with 16 MiB for any one stream | 4 GiB |
+  | `--ocr-max-output` | 32 MiB | 1 GiB |
+  | `--max-output` | 1 MiB, at or below the gateway's `--source-max-output` | 1 TiB |
+  | `--timeout` | 25 s, whole milliseconds; leave margin below the gateway's source timeout | 10 minutes |
+
+  A value that is not positive, is past its ceiling, or for `--timeout` is not a whole number of
+  milliseconds is a usage error: the adapter exits 2 without reading the request. At the
+  ceilings, the read bound derived from `--max-bytes` is 4 × ⌈2^30 / 3⌉ + 64 KiB, 1,431,721,304
+  bytes, and `timeoutMs` is 600,000, so every bound the record reports, and the read bound,
+  stays within 2^53 − 1. The deadline runs from the adapter's start, before it reads its own
+  executable for its identity; `durationMs` runs from the start of reading the request, so the
+  record's duration does not carry that reading. While the document is opened — its
+  cross-reference and trailer read, and a damaged cross-reference rebuilt by scanning — the
+  deadline is checked at the intervals in the structure bounds below, and one met there ends the
+  run the way one met while the page tree is walked does: `timeout`, `truncated` `true`, and no
+  page listed. In a page's content the deadline is checked
+  between operators, at the interval in the structure bounds below, and before each reading of a
+  form the page draws, and within one operator that shows a string at the interval below for
+  glyphs; work between two checks is not interrupted, so what one check admits runs to its end
+  within the structure bounds below. A deadline is read from the
+  clock as well as from the context, so one that has passed while nothing has cancelled the
+  context is still a deadline that has passed. An OCR program's outcome is taken once the program
+  has exited and its stdout has ended, or once the adapter has ended it; a deadline passed by
+  then is `ocr-timeout`, whatever the program wrote, and an outcome that is both past
+  `--ocr-max-output` and past the deadline is `ocr-timeout`.
+- **Structure bounds** are constants of the reader in [document/pdf/](document/pdf/). Where one is
+  met decides what it is. Met while the document is opened or its page tree walked, it is
+  `pdf-malformed` — but in the encryption dictionary, which is then a dictionary that cannot be
+  read and `pdf-encrypted`. Met in a page's content, its content streams and the forms it draws,
+  it fails the page as `pdf-page-failed`; a stream of it that inflates past `--max-inflate`, or
+  past the 16 MiB for one stream, is `stream-over-bound` instead. Met while another resource the
+  page names is read — a font, its CMap, an XObject — it is no error, as step 5 of the note says
+  of every resource: a font keeps fewer widths or mappings, a glyph it can no longer map is
+  counted in `unmapped`, and an XObject that is not read is not drawn. A page's `/Resources`
+  dictionary itself is not one of those: it is an inheritable attribute of the page tree, read
+  while the tree is walked, so a bound or an object stream met reading it is `pdf-malformed` (step
+  4), while the same defect in a font that dictionary names is not. A cross-reference the reader
+  could not finish reading — a `/Prev` chain past its bound, a section past a bound of its own —
+  is `pdf-malformed` with no `encryption` in the record, whatever a trailer it did read named: the
+  encryption dictionary is read from a document the reader has opened, and there is none.
+
+  | Bound | Value | Met |
+  |---|---|---|
+  | indirect objects read in one document | 262,144 | wherever objects are read |
+  | references resolving to references | 32 | wherever objects are read |
+  | indirect objects read inside another object's read, including stream lengths | 32 | wherever objects are read |
+  | the bytes searched for an `endstream` a stream's `/Length` does not locate | 4,096 bytes | wherever objects are read: the file's `endstream` offsets are indexed once, one per block of that size, and the index answers past the block |
+  | arrays and dictionaries nested in one another | 256 | wherever objects are read, content included |
+  | elements of one array, members of one dictionary | 1,048,576 | wherever objects are read, content included |
+  | a name token; a string token; a numeric token | 4,096 bytes; 16 MiB; 64 bytes | wherever objects are read, content included |
+  | objects one object stream declares | 65,536 | wherever objects are read |
+  | cross-reference sections in the `/Prev` and `/XRefStm` chain | 64 | opening |
+  | the object numbers one cross-reference section declares | 4,194,304 | opening |
+  | cross-reference entries, scanned objects or trailers read between two readings of the deadline | 4,096 | opening: the deadline is read at least this often |
+  | objects found while the cross-reference is rebuilt by scanning | 262,144 | wherever objects are read |
+  | page-tree depth; page-tree nodes visited | 64; 1,048,576 | the walk |
+  | operators interpreted on one page, the forms it draws included | 4,000,000 | content |
+  | operators interpreted between two readings of the deadline | 4,096 | content: the deadline is read at least this often |
+  | glyphs shown between two readings of the deadline | 4,096 | content: the deadline is read at least this often within one operator that shows a string |
+  | forms drawn within forms | 12 | content |
+  | the operand stack | 64 | content |
+  | graphics states saved and not restored | 256 | content |
+  | one inline image's dictionary; its data | 128 objects; 16 MiB | content |
+  | a page's content streams, concatenated | 64 MiB | content |
+  | characters the glyphs shown on one page map to, the forms it draws included | 4,000,000 | content: an unmapped glyph counts as one, and glyphs past the text budget count |
+  | fonts held by reference for a document; font resource names held while one page's content is read | 4,096; 4,096 | a font: past either the font is read again rather than held (no error) |
+  | width entries one font's `/W` declares | 262,144 | a font: past it the font keeps no widths |
+  | the CID a `/W` entry names; the CIDs one `/W` range spans | below 1,048,576; 65,536 | a font: past either the entry is left out |
+  | mappings one CMap holds | 1,048,576 | a CMap: past it the CMap is not used |
+  | codespace ranges one CMap declares | 256 | a CMap: past it the CMap is not used |
+  | width entries and CMap mappings of all of a document's fonts together | 4,194,304 | a font: the `/W` or CMap a charge would take past it is not used |
+  | the codes one `bfrange` or `cidrange` spans | 65,536 | a CMap: a longer range is cut to that span |
+  | a `bfchar` or `bfrange` destination string | 512 bytes | a CMap: a longer one maps nothing |
+
+  Widths serve the glyph positions from which spaces and line breaks are inferred; they do not
+  map a glyph to a character.
+
+  **What the bounds cost.** Two of them are stated in entries, and an operator sizing the
+  adapter's process reads them as memory rather than as bytes of the file, since a compressed
+  stream declares an entry in far fewer bytes than an entry costs. A cross-reference section may
+  declare 4,194,304 object numbers, and the reader holds each as an entry of about 160 bytes, so
+  a file of a few kilobytes whose cross-reference stream declares that many leaves it holding
+  several hundred megabytes. A document's fonts may hold 4,194,304 width entries and CMap
+  mappings together, and a `/W` range is held as a width for each CID it spans rather than as its
+  endpoints, so a file of a few kilobytes whose fonts share `/W` ranges that long leaves it
+  holding about 200 MB. Both are within the bounds above and within `--max-bytes`; neither is a
+  refusal, and the process wants room for them.
+
+  A `/Filter` name whose bytes are not valid UTF-8 is recorded as `null`, the way a `/R` outside
+  the canonical range is: the record carries the name the document declared or nothing, not a
+  reading of it with each byte the record cannot carry replaced. Which handler the reader opens
+  is decided on the name's bytes either way, and a name is at most the 4,096 bytes of a name
+  token above.
+- **Fixtures** under [document/testdata/](document/testdata/) — normal, scanned, mixed,
+  encrypted (RC4, AES, and one that needs a user password), truncated, a broken
+  cross-reference, not a PDF, sixty pages, an inflating stream, a text file — each with the
+  record it yields; `make_fixtures.go` regenerates them from the generator in
+  `internal/pdfgen`, whose output the tests cross-check against poppler's `pdftotext` on a
+  machine that has it. The gateway's end-to-end test (`go/adapter_document_test.go`) spawns the
+  built adapter as a bare source, acquires a fixture, has a refusal reach the caller, and
+  verifies the store.
+
 ## The both-paths agreement
 
 [ADR-0001](../docs/adr/0001-one-engine-four-processes.md) point 4 promises that a record reached

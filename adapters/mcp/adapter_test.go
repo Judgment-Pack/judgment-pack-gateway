@@ -295,7 +295,18 @@ func TestAcquireRefusals(t *testing.T) {
 		cfg := fake(t)
 		t.Setenv(fakemcp.EnvExitAtStart, "1")
 		t.Setenv(fakemcp.EnvStderr, "cannot bind: address in use\n")
-		mustFail(t, cfg, query("select 1"), "the server ended before answering initialize: cannot bind: address in use")
+		_, err := Acquire(context.Background(), cfg, query("select 1"))
+		if err == nil {
+			t.Fatal("a server that exits at start cannot answer the acquisition")
+		}
+		// The child can exit before the initialize write or before its reply
+		// is read. Both failures must retain the child's diagnostic.
+		message := err.Error()
+		ended := strings.HasPrefix(message, "the server ended before answering initialize:")
+		inputClosed := strings.HasPrefix(message, "the server's input closed:")
+		if (!ended && !inputClosed) || !strings.HasSuffix(message, ": cannot bind: address in use") {
+			t.Fatalf("a startup failure with the server's stderr: %v", err)
+		}
 	})
 	t.Run("result and error both", func(t *testing.T) {
 		cfg := fake(t)

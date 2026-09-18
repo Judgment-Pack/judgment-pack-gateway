@@ -1,0 +1,57 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 0,
+    "extraction": "none",
+    "kind": "text",
+    "pageCount": 0,
+    "pages": [],
+    "truncated": false
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": null,
+    "id": "sha256:2a3c0c2dc771151d8023ad0865aaa0ba0411509d9b7aacb320784f9391bd1fff",
+    "mediaType": "application/pdf",
+    "name": "malformed-truncated.pdf",
+    "size": 1635,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 0,
+    "errors": [
+      {
+        "code": "pdf-malformed",
+        "message": "the file has no usable cross-reference, trailer or catalog, and scanning found none",
+        "page": null
+      }
+    ],
+    "status": "failed"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "adapter-document",
+      "version": "fixture"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 29,
+    "extraction": "text-layer",
+    "kind": "text",
+    "pageCount": 1,
+    "pages": [
+      {
+        "chars": 29,
+        "extraction": "text-layer",
+        "number": 1,
+        "status": "ok",
+        "text": "Confidential policy\nSection 1",
+        "unmapped": 0
+      }
+    ],
+    "truncated": false
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": {
+      "handler": "Standard",
+      "opened": true,
+      "revision": 3
+    },
+    "id": "sha256:6443964b4c070ed8ec8e7468ed0eef3d845e8c10d10c5083f575d1a93dbf9858",
+    "mediaType": "application/pdf",
+    "name": "encrypted-rc4.pdf",
+    "size": 1009,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 0,
+    "errors": [],
+    "status": "complete"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "adapter-document",
+      "version": "fixture"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

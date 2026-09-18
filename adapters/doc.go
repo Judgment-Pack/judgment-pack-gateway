@@ -8,8 +8,10 @@
 // docs/adr/0001-one-engine-four-processes.md: an adapter is shipped in the same
 // release as the gateway and runs as its own process, spawned by the gateway
 // exactly as any `--source NAME=CMD` is, declared an adapter of its shape with
-// `--source-shape`, and answering with the envelope of SPEC.md §6
-// (docs/adr/0002-adapters-report-in-the-envelope.md). It holds a platform's
+// `--source-shape` and answering with the envelope of SPEC.md §6
+// (docs/adr/0002-adapters-report-in-the-envelope.md) -- or, for the document
+// adapter, left a bare source under the command shape
+// (docs/adr/0004-documents-are-an-adapter-under-the-command-shape.md). It holds a platform's
 // credentials; it never holds the signing seed; and it never imports the core
 // module, so nothing in it can be linked into the process that signs.
 // boundary_test.go makes `go test ./...` fail on the first import that crosses
@@ -25,10 +27,15 @@
 //	attachment/            the document attachment record, version 1
 //	                       (docs/design/attachments.md): its types, its text
 //	                       normalisation and Check, the reference check of its rules
+//	document/              the document adapter, a bare source: one attached
+//	                       document read for its text into a versioned record
+//	document/pdf/          its PDF reader, standard library only
 //	cmd/adapter-airbyte/   their commands
 //	cmd/adapter-mcp/
 //	cmd/adapter-http/
+//	cmd/adapter-document/
 //	internal/canon/        §1.1 canonical form, answering to corpus/canon.json
+//	internal/pdfgen/       a PDF writer for fixtures and tests
 //	internal/containers/   a container run and ended with its absence established
 //	internal/redact/       a connector's configuration kept out of diagnostics
 //	internal/fakeruntime/  stand-ins for the container runtime and for an MCP

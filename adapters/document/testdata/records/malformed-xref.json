@@ -1,0 +1,76 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 82,
+    "extraction": "text-layer",
+    "kind": "text",
+    "pageCount": 3,
+    "pages": [
+      {
+        "chars": 68,
+        "extraction": "text-layer",
+        "number": 1,
+        "status": "ok",
+        "text": "Federal Skilled Worker Program\nMinimum requirements\ncafé naïve\n\nﬁnal",
+        "unmapped": 0
+      },
+      {
+        "chars": 14,
+        "extraction": "text-layer",
+        "number": 2,
+        "status": "ok",
+        "text": "Composite text",
+        "unmapped": 0
+      },
+      {
+        "chars": 0,
+        "extraction": "text-layer",
+        "number": 3,
+        "status": "no-text",
+        "text": "",
+        "unmapped": 0
+      }
+    ],
+    "truncated": false
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": null,
+    "id": "sha256:ef160e6273999824b1d352e392d77f416e3e99ea600dfe9fae548f378c0f1f84",
+    "mediaType": "application/pdf",
+    "name": "malformed-xref.pdf",
+    "size": 2453,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 0,
+    "errors": [],
+    "status": "complete"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "adapter-document",
+      "version": "fixture"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

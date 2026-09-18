@@ -68,6 +68,7 @@ def good(**over):
     spec["usr/local/bin/adapter-airbyte"] = dict(kind="file", data=b"a", mode=0o755)
     spec["usr/local/bin/adapter-mcp"] = dict(kind="file", data=b"m", mode=0o755)
     spec["usr/local/bin/adapter-http"] = dict(kind="file", data=b"h", mode=0o755)
+    spec["usr/local/bin/adapter-document"] = dict(kind="file", data=b"d", mode=0o755)
     spec["usr/local/bin/jpack"] = dict(kind="file", data=RUNTIME, mode=0o755)
     for document in ("LICENSE", "NOTICE", "THIRD_PARTY_NOTICES", "CONFORMANCE.md"):
         spec["usr/share/engine/runtime/" + document] = dict(kind="file", data=b"n")
@@ -348,6 +349,11 @@ class Checks(unittest.TestCase):
 
     def test_the_http_adapter_with_capabilities(self):
         self.refused(good(**{"usr/local/bin/adapter-http": dict(caps=CAPS)}), "adapter-http carries a capability attribute")
+
+    def test_document_adapter_is_present_and_plain(self):
+        self.refused(good(**{"usr/local/bin/adapter-document": None}), "usr/local/bin/adapter-document is not in the image")
+        self.refused(good(**{"usr/local/bin/adapter-document": dict(mode=0o644)}), "executable by every user")
+        self.refused(good(**{"usr/local/bin/adapter-document": dict(caps=CAPS)}), "adapter-document carries a capability attribute")
 
     def test_a_file_in_the_catalog_the_checkout_lacks(self):
         self.refused(good(**{"usr/share/engine/catalog/extra.json": dict(data=b"{}", mode=0o666, uid=65601)}), "not in the checkout's catalog")
