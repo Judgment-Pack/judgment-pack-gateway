@@ -588,6 +588,20 @@ and what the check does not establish are in
 
 ## Personal Google Drive connections
 
+Distributions can include a publisher's Google Desktop OAuth registration in
+`adapters/cmd/gateway-connections/publisher-google.json` **in an isolated build
+tree**. The source file is deliberately `{}`; never commit a real registration.
+The companion embeds the file, validates it at startup, and installs its client
+only when a provider's private store has no registration. Regular users then
+authorize in Google's browser consent screen without creating a Cloud project or
+importing JSON. Registration metadata cannot change Google endpoints or scopes.
+Existing custom clients, account tokens and authorization epochs are not replaced
+by an upgrade. A client change still requires explicit configuration; disconnect
+an account before changing its client. Operator-disabled connections remain blocked.
+Missing publisher registration retains the existing explicit `configure` workflow;
+invalid embedded registration refuses startup. Publisher setup is described in
+[the release guide](../docs/design/publisher-google-oauth.md).
+
 `gateway-connections --state-dir /private/connections --principal desktop-owner`
 is a bounded JSON-lines control companion over private parent pipes. It implements
 `status`, `configure`, `connect`, `pick`, `poll`, `cancel`, and `disconnect`.
