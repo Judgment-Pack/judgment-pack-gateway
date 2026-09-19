@@ -588,19 +588,21 @@ and what the check does not establish are in
 
 ## Personal Google Drive connections
 
-Distributions can include a publisher's Google Desktop OAuth registration in
-`adapters/cmd/gateway-connections/publisher-google.json` **in an isolated build
-tree**. The source file is deliberately `{}`; never commit a real registration.
-The companion embeds the file, validates it at startup, and installs its client
-only when a provider's private store has no registration. Regular users then
-authorize in Google's browser consent screen without creating a Cloud project or
-importing JSON. Registration metadata cannot change Google endpoints or scopes.
-Existing custom clients, account tokens and authorization epochs are not replaced
-by an upgrade. A client change still requires explicit configuration; disconnect
-an account before changing its client. Operator-disabled connections remain blocked.
-Missing publisher registration retains the existing explicit `configure` workflow;
-invalid embedded registration refuses startup. Publisher setup is described in
-[the release guide](../docs/design/publisher-google-oauth.md).
+Public source and GitHub releases include **no publisher Google registration**.
+The checked-in `adapters/cmd/gateway-connections/publisher-google.json` remains
+`{}`. An installation operator configures their own Google Desktop app through
+the host's setup UI (Desk: **Admin → Connections**), then the account owner grants
+access through Google's consent screen. App registration is not account consent.
+Do not include personal or organization-owned publisher registrations in public
+release artifacts, and do not fetch a publisher default automatically.
+
+The companion retains support for an explicitly configured downstream build,
+but that capability is not the public distribution policy. The prior proposal to
+ship publisher-registered public bundles is superseded; the mechanism and its
+limits are recorded in [the registration design](../docs/design/publisher-google-oauth.md).
+Existing operator registrations, account tokens and authorization epochs are not
+replaced by an update. Changing a client remains explicit and requires disconnecting
+its account first. Operator-disabled connections remain blocked.
 
 `gateway-connections --state-dir /private/connections --principal desktop-owner`
 is a bounded JSON-lines control companion over private parent pipes. It implements

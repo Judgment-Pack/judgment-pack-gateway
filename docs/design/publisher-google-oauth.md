@@ -1,10 +1,22 @@
-# Publisher Google sign-in for local distributions
+# Optional publisher Google registration mechanism
 
-The app publisher registers its application once; ordinary users do not create
-Google Cloud projects, supply API credentials, or visit an enterprise admin page.
-Users choose Google Drive or Gmail, continue to Google, choose an account and
-grant access. Drive then opens Google's file picker; Gmail returns to the host's
-email selection interface. Account consent is still required for every user.
+Distribution policy updated 2026-09-19: **public source and GitHub releases ship
+without publisher Google registration**. Installation owners configure their own
+Desktop app through the host's Admin setup UI. In Desk this is **Admin → Connections**;
+account consent and selection remain in chat. No personal or organization-owned
+publisher registration belongs in public artifacts or an automatic bootstrap.
+
+The earlier proposal to ship a registered public Desktop bundle is superseded.
+The existing optional embedding mechanism described below is retained for explicit
+downstream use; its existence does not authorize a registered public release.
+Hosted deployments must choose their own appropriate OAuth application type,
+redirects and credential-custody model. This local Desktop mechanism does not
+implement a hosted multi-user OAuth service.
+
+In a downstream distribution that explicitly supplies its own app registration,
+users can grant access through Google consent without registering another app.
+Drive then opens Google's file picker; Gmail returns to the host's email selection
+interface. Account consent is still required for every user.
 
 The publisher enables Drive API, Google Picker API and Gmail API in a controlled
 Google Cloud project, sets Google Auth Platform branding/audience/data access,
@@ -15,7 +27,7 @@ requirements, including the restricted `gmail.readonly` scope. If selected email
 content is sent to an external AI provider, its data use must also be reviewed
 against Google's user-data requirements; local token custody does not settle that.
 
-Release tooling writes the Desktop registration JSON into the archived build
+For that optional downstream mechanism, build tooling writes the Desktop registration JSON into the archived build
 tree's `adapters/cmd/gateway-connections/publisher-google.json` before compiling.
 The file in source control remains `{}`. Its `installed.client_id` and optional
 `installed.client_secret` are the only operational fields. Web/service-account
@@ -38,10 +50,10 @@ stores remain separate; Google revocation can still affect other connections in
 the same Cloud project.
 
 No client registration is created by this code, and no synthetic client is used
-in production. Source-only builds retain `setup-required` until explicitly
-configured. Release tooling should fail a Google-enabled release if the publisher
-registration was not supplied. Missing registration is a publisher packaging
-problem, not onboarding work for a nontechnical user.
+in production. Public builds retain `setup-required` until the installation owner
+explicitly configures the provider. Their build checks must preserve the empty
+registration sentinel rather than requiring a publisher registration. Existing
+local registrations and accounts remain valid across public application updates.
 
 References checked 2026-09-19:
 - https://developers.google.com/identity/protocols/oauth2/native-app
