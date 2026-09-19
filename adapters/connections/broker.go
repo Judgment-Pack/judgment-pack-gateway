@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -109,7 +108,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		return out, err
 	case "configure":
 		var c Client
-		if decode(raw, &c) != nil || !regexp.MustCompile(`^[A-Za-z0-9_-]{1,220}\.apps\.googleusercontent\.com$`).MatchString(c.ID) || len(c.Secret) > 4096 || strings.ContainsAny(c.Secret, "\r\n\x00") {
+		if decode(raw, &c) != nil || !validClient(c) {
 			return nil, ErrRequest
 		}
 		b.cancel()

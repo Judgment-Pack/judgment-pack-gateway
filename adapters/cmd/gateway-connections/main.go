@@ -23,6 +23,10 @@ func run() int {
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || (*provider != "google-drive" && *provider != "gmail") {
 		return 2
 	}
+	client, err := publisherClient(publisherRegistration)
+	if err != nil {
+		return 2
+	}
 	open := connections.OpenStore
 	if *provider == "gmail" {
 		open = connections.OpenGmailStore
@@ -32,6 +36,11 @@ func run() int {
 		return 1
 	}
 	defer s.Close()
+	if !*disabled && client.ID != "" {
+		if err := s.EnsureClient(client); err != nil {
+			return 1
+		}
+	}
 	b := connections.New(s, *disabled)
 	if *provider == "gmail" {
 		b = connections.NewGmail(s, *disabled)
