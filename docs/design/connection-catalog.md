@@ -1,6 +1,6 @@
 # Connection capability catalog
 
-Status: proposed; companion discovery contract, version 1. This change is separate
+Status: proposed; companion discovery contract, version 2. This change is separate
 from Notion/Obsidian connection review in PR #143 and requires its own material-
 decision review. It does not change the normative gateway receipt contract.
 
@@ -16,7 +16,7 @@ positional arguments, reads no stdin, loads no publisher registration, opens no
 credential store, creates no account state, and contacts no provider. It works
 without `--state-dir` or `--principal`. Normal provider mode is unchanged.
 
-Example descriptor, within `{ "version": 1, "providers": [...] }`:
+Example descriptor, within `{ "version": 2, "providers": [...], "sources": [...] }`:
 
 ```json
 {
@@ -81,3 +81,10 @@ exercise the advertised protocols. Desk separately tests the process boundary,
 output/time bounds, authentication, external-gateway refusal, compatibility,
 revoked capabilities, stale asynchronous replies and menu stability. No live
 provider account or OAuth acceptance is implied by these fixture checks.
+
+## Public URL sources (version 2)
+
+Version 2 adds a separate `sources` list for explicit inputs without account
+connections. The web descriptor and its bounds are defined in
+[public web sources](public-web-sources.md). The provider dispatch allowlist is
+unchanged. Version 1 clients must refuse this version rather than guess support.
