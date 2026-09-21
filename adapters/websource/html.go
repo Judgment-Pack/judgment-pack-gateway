@@ -32,7 +32,16 @@ func staticText(ctx context.Context, raw []byte) ([]byte, string, error) {
 			if !errors.Is(z.Err(), io.EOF) {
 				return nil, "", ErrMedia
 			}
-			text := strings.TrimSpace(out.String())
+			lines := make([]string, 0)
+			for _, line := range strings.Split(out.String(), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			text := strings.Join(lines, "\n\n")
+			if len(text) > MaxBytes {
+				return nil, "", ErrLimit
+			}
 			if text == "" {
 				return nil, "", ErrMedia
 			}
@@ -41,14 +50,14 @@ func staticText(ctx context.Context, raw []byte) ([]byte, string, error) {
 			name, _ := z.TagName()
 			tag := string(name)
 			if suppressed != "" {
-				if tag == suppressed && kind == html.StartTagToken {
+				if tag == suppressed && (kind == html.StartTagToken || tag != "svg") {
 					depth++
 				}
 				continue
 			}
 			switch tag {
 			case "script", "style", "template", "noscript", "svg":
-				if kind == html.StartTagToken {
+				if kind == html.StartTagToken || tag != "svg" {
 					suppressed = tag
 					depth = 1
 				}
@@ -84,11 +93,14 @@ func staticText(ctx context.Context, raw []byte) ([]byte, string, error) {
 			}
 			text := strings.Join(strings.Fields(string(z.Text())), " ")
 			if text != "" {
-				out.WriteString(text)
-				out.WriteByte(' ')
-				if inTitle && title.Len() < 1024 {
-					title.WriteString(text)
-					title.WriteByte(' ')
+				if inTitle {
+					if title.Len() < 1024 {
+						title.WriteString(text)
+						title.WriteByte(' ')
+					}
+				} else {
+					out.WriteString(text)
+					out.WriteByte(' ')
 				}
 			}
 		}

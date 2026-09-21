@@ -233,3 +233,10 @@ func TestNestedTemplatesAreOmitted(t *testing.T) {
 		t.Fatal(string(data), err)
 	}
 }
+
+func TestTitleIsMetadataAndParagraphSpacingIsBounded(t *testing.T) {
+	data, title, err := staticText(context.Background(), []byte(`<title>Title</title><div><h1>Visible</h1><p>Body</p></div><script/>hidden()</script><p>After</p>`))
+	if err != nil || title != "Title" || string(data) != "Visible\n\nBody\n\nAfter" {
+		t.Fatal(string(data), title, err)
+	}
+}
