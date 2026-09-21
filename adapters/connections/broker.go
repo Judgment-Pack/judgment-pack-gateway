@@ -71,10 +71,6 @@ func (b *Broker) cancel() {
 func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	descriptor, ok := LookupProvider(b.provider.kind())
-	if !ok || !descriptor.supports(method) {
-		return nil, ErrRequest
-	}
 	if len(raw) == 0 {
 		raw = []byte("{}")
 	}
@@ -94,6 +90,12 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return Status{1, b.provider.kind(), "blocked", nil, MaxFileBytes, 4}, nil
 		}
 		return nil, ErrPolicy
+	}
+	// Preserve operator-policy persistence even for an unsupported request.
+	// Catalog validation must not delay disabling an existing connection.
+	descriptor, ok := LookupProvider(b.provider.kind())
+	if !ok || !descriptor.supports(method) {
+		return nil, ErrRequest
 	}
 	if b.provider.obsidian {
 		return b.vaultOperation(ctx, method, raw)

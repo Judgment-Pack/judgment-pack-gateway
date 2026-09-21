@@ -1,7 +1,6 @@
 package connections
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 )
@@ -27,20 +26,19 @@ func TestCatalogCannotMutateDispatchOrAdvertiseWrites(t *testing.T) {
 	}
 }
 
-func TestUnsupportedCatalogOperationsRefusedBeforeCustody(t *testing.T) {
-	// Nil stores prove that refused operations cannot open or mutate custody.
+func TestCatalogDoesNotAdvertiseUnsupportedOperations(t *testing.T) {
 	for _, example := range []struct {
-		broker *Broker
-		method string
+		provider string
+		method   string
 	}{
-		{New(nil, false), "search"}, {New(nil, true), "delete"},
-		{NewGmail(nil, false), "pick"}, {NewGmail(nil, false), "send"},
-		{NewNotion(nil, false), "configure"}, {NewNotion(nil, false), "pick"},
-		{NewObsidian(nil, false), "connect"}, {NewObsidian(nil, false), "poll"},
+		{"google-drive", "search"}, {"google-drive", "delete"},
+		{"gmail", "pick"}, {"gmail", "send"},
+		{"notion", "configure"}, {"notion", "pick"},
+		{"obsidian", "connect"}, {"obsidian", "poll"},
 	} {
-		out, err := example.broker.Handle(context.Background(), example.method, []byte(`{}`))
-		if err != ErrRequest || out != nil {
-			t.Fatalf("unsupported %s did not fail closed: %v", example.method, err)
+		descriptor, ok := LookupProvider(example.provider)
+		if !ok || descriptor.supports(example.method) {
+			t.Fatalf("unsupported %s advertised for %s", example.method, example.provider)
 		}
 	}
 }

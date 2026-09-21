@@ -39,7 +39,7 @@ Example descriptor, within `{ "version": 1, "providers": [...] }`:
 - `queryRequired`: search needs nonempty input. False permits initial bounded
   browsing; it does not imply unbounded account search.
 - `operations`: companion control methods, also used by the broker to refuse
-  unsupported methods before touching custody. These include connection lifecycle
+  unsupported methods after persisting operator policy. These include connection lifecycle
   operations, not permission to edit the provider's source content.
 
 Only the four implemented providers are advertised: Google Drive, Gmail, Notion,
@@ -76,7 +76,7 @@ is currently well below the stated budget.
 
 Gateway tests cover discovery with invalid publisher data and no state directory,
 refusal of mixed command modes, unchanged filesystem, fresh descriptor ownership,
-and unsupported-method refusal before custody. Existing provider fixture tests
+and operator-disable persistence even for unsupported requests. Existing provider fixture tests
 exercise the advertised protocols. Desk separately tests the process boundary,
 output/time bounds, authentication, external-gateway refusal, compatibility,
 revoked capabilities, stale asynchronous replies and menu stability. No live
