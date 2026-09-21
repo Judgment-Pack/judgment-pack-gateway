@@ -220,11 +220,17 @@ def _read_string(text, i):
 
 
 def _read_key(text, i):
+    # A body that ends where a token is wanted is the end of the stream to
+    # the engine's decoder, which says so in that one word.
     i = _skip(text, i)
+    if i >= len(text):
+        raise Refusal("EOF")
     if text[i:i + 1] != '"':
         raise Refusal("invalid character looking for beginning of object key string")
     key, i = _read_string(text, i)
     i = _skip(text, i)
+    if i >= len(text):
+        raise Refusal("EOF")
     if text[i:i + 1] != ":":
         raise Refusal("invalid character after object key")
     return key, i + 1
@@ -303,59 +309,146 @@ def _json_type(value):
     return "string"
 
 
-def _fold(name):
-    # the case folding Go's decoder matches member names by: ASCII letters,
-    # and the two runes that fold to one (the long s and the Kelvin sign)
-    return "".join({"\u017f": "s", "\u212a": "k"}.get(c, c.lower() if c.isascii() else c) for c in name)
+def _ended_mid_value(message):
+    """A body that ends inside a value, said as the engine's decoder says it:
+    a value it had begun to read and could not finish is an unexpected end,
+    where a body that ends between tokens is simply the end of the stream
+    (_read_key, and the walk's own check before a value begins)."""
+    return "unexpected EOF" if message == "unexpected end of JSON input" else message
 
 
 def request_fields(body, names):
-    """The members of a request body the engine reads, as it reads them:
-    at most 1 MiB, one JSON value, decoded into its struct -- names matched
-    without regard to case, the last of several taking the place, a null
-    leaving a string as it was, a string's lone surrogates and bytes that are
-    not UTF-8 each read as U+FFFD, every other member ignored -- then no
-    second value. arguments is any JSON value, kept as read for
-    canonical_arguments. Each stage refuses before the next, as the engine's
-    decoder does."""
+    """The members of a request body the endpoint reads, as the engine reads
+    them (requestMembers): at most 1 MiB, one JSON object, walked member by
+    member in the order written -- a name that is not exactly one of names
+    refuses the body, and so does a name given twice, each before that
+    member's value is read at all -- then nothing but whitespace after the
+    object, and only then the members themselves, in the order the endpoint's
+    handler reads them. A member the handler reads as a string that holds
+    something else refuses the body; one that holds null, like one that is
+    absent, leaves the endpoint an empty string. A string's lone surrogates
+    and bytes that are not UTF-8 arrive as U+FFFD, which is what the name
+    quoted in a refusal is made of too. arguments is any JSON value, kept as
+    read for canonical_arguments, and null there is kept as null. Each stage
+    refuses before the next, as the engine does: what the body is, then what
+    it names, then what follows it, then what its members hold.
+
+    names is the endpoint's own set, in its handler's order: the engine gives
+    /acquire session, source and arguments and /seal session alone, and an
+    action's body is never read here at all (an engine with no identity
+    refuses it at the requester)."""
     text = body[:MAX_BODY_BYTES].decode("utf-8", "surrogateescape")
-    start = _skip(text, 0)
-    if start == len(text):
-        raise Refusal("http: request body too large" if len(body) > MAX_BODY_BYTES else "EOF")
+    over = len(body) > MAX_BODY_BYTES
+
+    def ended():
+        # The body's bound is reached by reading, so where the truncated text
+        # runs out is where the engine's reader reports the bound. Below the
+        # bound, a body that ends where a token is wanted is the end of the
+        # stream, which the decoder says in that one word (_ended_mid_value
+        # has the other case).
+        raise Refusal("http: request body too large" if over else "EOF")
+
+    i = _skip(text, 0)
+    if i == len(text):
+        ended()
     try:
-        value, end = _read_value(text, start)
+        # The decoder reads the first token, and an object is what the
+        # endpoint takes. An array is refused by that first delimiter, with
+        # nothing inside it read; any other value is read whole first, so a
+        # literal it cannot read is refused in the decoder's own words.
+        if text[i] != "{":
+            if text[i] != "[":
+                _read_value(text, i)
+            raise Refusal("request body must be a JSON object")
+        fields, taken = {}, []
+        i = _skip(text, i + 1)
+        if i >= len(text):
+            ended()
+        if text[i] != "}":
+            while True:
+                key, i = _read_key(text, i)
+                name = str(key.go)
+                if name in taken:
+                    raise Refusal(f"member {_go_quote(request_text(name))} appears twice")
+                if name not in names:
+                    raise Refusal("request body carries a member this endpoint does not read: " + request_text(name))
+                taken.append(name)
+                i = _skip(text, i)
+                if i >= len(text):
+                    ended()  # the member's value never began
+                fields[name], i = _read_value(text, i)
+                i = _skip(text, i)
+                if i >= len(text):
+                    ended()
+                if text[i] == ",":
+                    i = _skip(text, i + 1)
+                    continue
+                if text[i] == "}":
+                    i += 1
+                    break
+                raise Refusal("invalid character %r after object key:value pair" % text[i])
+        else:
+            i += 1
     except Refusal as refusal:
-        if len(body) > MAX_BODY_BYTES and refusal.message == "unexpected end of JSON input":
+        if over and refusal.message in ("EOF", "unexpected end of JSON input"):
             raise Refusal("http: request body too large")
-        raise
-    fields, mistyped = {}, None
-    if value is not None:
-        if not isinstance(value, _Members):
-            raise Refusal(f"json: cannot unmarshal {_json_type(value)} into Go value of type struct")
-        for key, member in value:
-            name = next((n for n in names if _fold(key.go) == n), None)
-            if name is None:
-                continue
-            if name == "arguments":
-                fields[name] = member
-            elif member is None:
-                continue
-            elif isinstance(member, _Text):
-                fields[name] = member.go
-            elif mistyped is None:
-                mistyped = f"json: cannot unmarshal {_json_type(member)} into Go struct field .{name} of type string"
-    if mistyped:
-        raise Refusal(mistyped)
-    rest = text[end:]
-    if not rest.strip(_JSON_SPACE):
-        if len(body) > MAX_BODY_BYTES:
-            raise Refusal("request body contains trailing content: http: request body too large")
-        return fields
-    try:
-        _read_value(rest, 0)
-    except Refusal as refusal:
-        raise Refusal(f"request body contains trailing content: {refusal.message}")
-    raise Refusal("request body must contain exactly one JSON value")
+        raise Refusal(_ended_mid_value(refusal.message))
+    rest = text[i:]
+    j = _skip(rest, 0)
+    if j < len(rest):
+        # What follows is judged by one token, as the engine judges it: an
+        # object or an array is a second value at its opening delimiter,
+        # whatever it holds, and anything else is read whole to tell a
+        # second value from bytes that are no value at all.
+        if rest[j] not in "{[":
+            try:
+                _read_value(rest, j)
+            except Refusal as refusal:
+                raise Refusal("request body contains trailing content: " + _ended_mid_value(refusal.message))
+        raise Refusal("request body must contain exactly one JSON value")
+    if over:
+        raise Refusal("request body contains trailing content: http: request body too large")
+    read = {}
+    for name in names:
+        if name == "arguments":
+            if name in fields:
+                read[name] = fields[name]
+            continue
+        member = fields.get(name)
+        if member is None:  # absent, or null, which leaves the string empty
+            continue
+        if not isinstance(member, _Text):
+            raise Refusal(f"member {_go_quote(name)}: json: cannot unmarshal {_json_type(member)} into Go value of type string")
+        read[name] = member.go
+    return read
+
+
+def source_output_problem(arguments):
+    """What the engine makes of the synthetic source's own output when the
+    arguments it echoes nest as deep as the engine's parser descends: the
+    source writes the result with the arguments inside it, one level deeper
+    than they arrived, so arguments the request admitted at exactly that
+    depth are past it once the source has written them into a result, and
+    the acquisition fails on the source's output rather than on its request.
+    The position is the engine's parser's own: the byte of the bracket it
+    would have descended into. None when the output is one the engine
+    reads."""
+    raw = ('{"synthetic":true,"arguments":' + canonical(arguments) + "}").encode()
+    depth, i = 0, 0
+    while i < len(raw):
+        c = raw[i:i + 1]
+        if c == b'"':
+            i += 1
+            while i < len(raw) and raw[i:i + 1] != b'"':
+                i += 2 if raw[i:i + 1] == b"\\" else 1
+        elif c in b"{[":
+            if depth >= MAX_DEPTH:
+                return f"source did not return a canonical JSON value: nesting deeper than {MAX_DEPTH} levels at {i}"
+            depth += 1
+        elif c in b"}]":
+            depth -= 1
+        i += 1
+    return None
 
 
 def _go_quote(text):

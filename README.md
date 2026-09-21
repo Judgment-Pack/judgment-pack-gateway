@@ -172,9 +172,9 @@ the gateway's environment is in the signer's memory whatever is declared. On Win
 `SYSTEMROOT` is the one variable os/exec adds undeclared. `--source-user NAME=USER`
 runs a source as another OS user with that user's own groups (Unix; requires root,
 refused otherwise rather than run as the signer). `--source-max-output BYTES` bounds
-what a source may write on stdout (one mebibyte by default); past it the source is
-killed — on Unix its whole process group, elsewhere the direct child — and the
-acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
+what a source may write on stdout, from 1 byte to 64 MiB (one mebibyte by default);
+past it the source is killed — on Unix its whole process group, elsewhere the direct
+child — and the acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
 than the acquisition. `--source-timeout NAME=SECONDS` gives source `NAME` a timeout of its
 own, a whole number of seconds from 1 to 600 (thirty by default); past it the source is killed
 the same way and the caller is told it did not finish within its timeout. A source's timeout
@@ -186,9 +186,9 @@ That margin is what a read reaching the adapter's deadline needs to be reported 
 rather than killed with it ([adapters](adapters/README.md)). `--max-request
 BYTES` bounds an `/acquire` body, from 1 byte to 64 MiB (one mebibyte by default); `/seal` and
 `/act` keep one mebibyte, and every body must still arrive within the server's thirty-second
-read timeout. `--source-timeout` and `--max-request` are command-line options: under an engine
-configuration the derived sources keep the thirty-second timeout and `/acquire` keeps one
-mebibyte. An `/acquire` body's arguments are refused past 524,288 JSON values, a count a
+read timeout. `--source-timeout`, `--max-request` and `--source-max-output` are command-line
+options: under an engine configuration the derived sources keep the thirty-second timeout,
+`/acquire` keeps one mebibyte, and a source's stdout keeps its own mebibyte. An `/acquire` body's arguments are refused past 524,288 JSON values, a count a
 one-mebibyte body cannot reach, and raising the bound does not raise it.
 On Unix, `serve` refuses a seed file that is not a regular file
 owned by the gateway's own user and readable by it alone, says which `chmod` to run,

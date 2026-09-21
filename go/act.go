@@ -71,7 +71,14 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	spec = narrowTools(spec, tool)
 	arguments := value(newObject())
 	if len(argumentsRaw) > 0 {
-		parsed, err := parseJSON(argumentsRaw)
+		// The same value budget an /acquire body's arguments are held to
+		// (maxArgumentValues): an action's body is bounded at one mebibyte,
+		// which cannot hold that many values, so the budget changes nothing
+		// a request can reach today -- but the arithmetic of one bound is
+		// not the reason the other bound is there, and an action's arguments
+		// are parsed, canonicalized and committed to exactly as a read's
+		// are.
+		parsed, err := parseJSONWithin(argumentsRaw, maxArgumentValues)
 		if err != nil {
 			return nil, actRefusal{"arguments", "arguments: " + err.Error()}
 		}

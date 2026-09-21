@@ -141,7 +141,12 @@ above.
 **Arguments, byte for byte.** The call's `arguments` member is carried to `/acquire` as the
 bytes the client sent, inside the wrapping object, never decoded and re-encoded on the way:
 the signer's strict parser is the one that judges them (a fraction, a large integer, a
-duplicate member are its refusals, as for a direct `/acquire`). What the receipt commits to
+duplicate member are its refusals, as for a direct `/acquire`). The envelope around them is
+read as exactly, and by the signer rather than here: `/acquire`, `/act` and `/seal` read the
+members each of them names, spelled as they are named and given once, and refuse a body that
+carries any other member or names one twice — so the wrapper this server builds means to the
+signer what it means here, and no other reader of those bytes reads a different request.
+What the receipt commits to
 is not those bytes but what the signer commits to for any `/acquire`: the canonical form of
 the wrapper `{"tool": ..., "arguments": ...}` under the response's salt — whitespace, member
 order and escape spellings are not part of it. An absent `arguments` is `{}`, as `/acquire`

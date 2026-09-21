@@ -94,6 +94,19 @@ var adapterShapes = map[string]bool{"airbyte": true, "mcp": true, "http": true}
 // memory without limit.
 const defaultMaxSourceOutput int64 = 1 << 20
 
+// maxSourceOutputCeiling is the largest --source-max-output accepts, the
+// same ceiling --max-request has at the other end of an acquisition
+// (maxRequestCeiling). A source's output is the one parse this gateway makes
+// under no value budget -- a request body's arguments have maxArgumentValues,
+// a source's stdout has nothing but its bytes -- so the byte bound is the
+// whole of what keeps that parse finite, and it is also what the result is
+// held under twice more: canonicalized for the store, and escaped into an
+// answer that JSON spells some bytes six times over (SECURITY.md gives the
+// figures). An operator raising it towards the ceiling is raising all of
+// that, which is why there is a ceiling at all rather than any number the
+// command line carries.
+const maxSourceOutputCeiling int64 = 64 << 20
+
 // defaultSourceTimeout is how long a source runs before its context is
 // cancelled, unless --source-timeout sets another for it; maxSourceTimeout
 // is the longest --source-timeout accepts.
@@ -407,6 +420,35 @@ func boundedText(s string, bound int) string {
 	return s[:cut] + "…(" + strconv.Itoa(len(s)) + " bytes)"
 }
 
+// maxSourceFailureText is how much of a failed source's stderr the refusal
+// that reports it carries (sourceFailureText).
+const maxSourceFailureText = 200
+
+// sourceFailureText is a failed source's stderr as the refusal reporting it
+// carries the text: the surrounding whitespace dropped, since a program's
+// last line ends in a newline and that is not part of what it said; every
+// remaining byte outside printable ASCII replaced by '?'; and the whole
+// bounded like any other text this gateway did not write.
+//
+// A source's stderr is a program's, not this gateway's, and it reaches a
+// caller and an operator's terminal as it was written: an escape sequence in
+// it addresses whatever renders the refusal, and a cut at a byte offset can
+// leave half a character behind. Replacing byte for byte keeps the bound's
+// figure the count of the text quoted. The adapters write their own refusal
+// lines the same way (adapters/document, Refusal.Line).
+func sourceFailureText(stderr string) string {
+	said := strings.TrimSpace(stderr)
+	printable := make([]byte, len(said))
+	for i := 0; i < len(said); i++ {
+		c := said[i]
+		if c < 0x20 || c > 0x7e {
+			c = '?'
+		}
+		printable[i] = c
+	}
+	return boundedText(string(printable), maxSourceFailureText)
+}
+
 // maxRequestBody bounds what /seal and /act will read before deciding
 // anything, and is /acquire's bound unless --max-request sets another, from
 // one byte to maxRequestCeiling. /seal carries one session id; /acquire carries a session
@@ -453,20 +495,97 @@ func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 }
 
-func decodeSingleJSON(r io.Reader, dst any) error {
-	decoder := json.NewDecoder(r)
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
+// The members each endpoint reads, and no others. A name absent from the
+// set its endpoint names is refused rather than ignored: an envelope this
+// gateway half-reads is an envelope a caller and this gateway disagree
+// about, and what is signed or sealed is decided by the disagreement.
+var (
+	acquireRequestMembers = map[string]bool{"session": true, "source": true, "arguments": true}
+	actRequestMembers     = map[string]bool{"session": true, "platform": true, "tool": true, "arguments": true, "decision": true, "cites": true}
+	sealRequestMembers    = map[string]bool{"session": true}
+)
 
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("request body must contain exactly one JSON value")
-		}
-		return fmt.Errorf("request body contains trailing content: %w", err)
+// requestMembers reads a request body as one JSON object and returns its
+// members by their exact names: a name the endpoint does not read, and a
+// name given twice, are refused before anything is done with the body.
+//
+// Reading the envelope into a tagged struct does neither. encoding/json
+// matches a member name without regard to case and keeps the last of
+// several spellings, so `{"session":"a","SESSION":"b"}` is read here as "b"
+// while every other reader of the same bytes reads "a" -- the parser that
+// canonicalizes what is signed, which refuses a duplicate member outright
+// (canon.go), the MCP front, which reads its messages by exact name
+// (members(), mcp.go), and a verifier reading the receipt afterwards. A
+// gateway whose signature is over one reading of a body and whose answer is
+// another reading of it attests nothing; a seal taken from the second
+// spelling of "session" cannot be taken back.
+//
+// The body is walked as it arrives rather than read whole, so the bound the
+// handler put on it (limitBodyTo) is what stops a body past the endpoint's
+// limit, and a member the endpoint does not read is refused by its name
+// alone -- its value is never held. A body still carries a single JSON
+// value with nothing but whitespace after it.
+func requestMembers(r io.Reader, allowed map[string]bool) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(r)
+	opening, err := decoder.Token()
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if opening != json.Delim('{') {
+		return nil, errors.New("request body must be a JSON object")
+	}
+	members := map[string]json.RawMessage{}
+	for decoder.More() {
+		// Where a member's value has not been read yet, the decoder admits
+		// that member's name and nothing else, so the token is the name.
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, isName := token.(string)
+		if !isName {
+			return nil, errors.New("request body must be a JSON object")
+		}
+		if _, twice := members[name]; twice {
+			return nil, fmt.Errorf("member %q appears twice", requestText(name))
+		}
+		if !allowed[name] {
+			return nil, fmt.Errorf("request body carries a member this endpoint does not read: %s", requestText(name))
+		}
+		var held json.RawMessage
+		if err := decoder.Decode(&held); err != nil {
+			return nil, err
+		}
+		members[name] = held
+	}
+	if _, err := decoder.Token(); err != nil { // the object's own end
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("request body must contain exactly one JSON value")
+		}
+		return nil, fmt.Errorf("request body contains trailing content: %w", err)
+	}
+	return members, nil
+}
+
+// memberText reads a string-valued member of a request envelope, or "" when
+// the envelope does not carry it and when it carries it as null -- which is
+// what the endpoint's own refusal then speaks about, as it did when these
+// members were struct fields. A member of another type is the caller's
+// error and is named in the refusal, since the type alone no longer says
+// which member was meant.
+func memberText(members map[string]json.RawMessage, name string) (string, error) {
+	raw, present := members[name]
+	if !present {
+		return "", nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return "", fmt.Errorf("member %q: %w", name, err)
+	}
+	return text, nil
 }
 
 func (g *gatewayService) acquire(sessionID, source string, arguments value, who *caller) (map[string]any, error) {
@@ -748,12 +867,16 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if g.afterSourceWait != nil {
 		g.afterSourceWait()
 	}
-	// Whatever Wait returned, nothing of the source's process group survives
-	// the acquisition. os/exec stops watching the context once the direct
-	// child has exited, so an overflow written by a descendant after that
-	// cancels a context nobody acts on; the bounded wait then returns, and
-	// this is what kills the descendant. The group's anchor is reaped last,
-	// so the kill cannot reach a reused pid.
+	// Whatever Wait returned, nothing that is still in the source's process
+	// group survives the acquisition, where the platform has process groups.
+	// os/exec stops watching the context once the direct child has exited, so
+	// an overflow written by a descendant after that cancels a context nobody
+	// acts on; the bounded wait then returns, and on Unix this is what kills
+	// the descendant. The group's anchor is reaped last, so the kill cannot
+	// reach a reused pid. Elsewhere there is no group (spawn_other.go): the
+	// direct child is what os/exec can end, a descendant that outlives it
+	// gets the bounded wait and not the acquisition, and SECURITY.md says so
+	// rather than claiming the Unix guarantee everywhere.
 	group.reap()
 	if stdout.overflowed {
 		// Whether the kill landed first or the source exited on its own, the
@@ -769,11 +892,7 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 			// it was killed is not why it failed.
 			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
 		}
-		trimmed := stderr.buf.String()
-		if len(trimmed) > 200 {
-			trimmed = trimmed[:200]
-		}
-		return nil, "", "", fmt.Errorf("source failed: %s", trimmed)
+		return nil, "", "", fmt.Errorf("source failed: %s", sourceFailureText(stderr.buf.String()))
 	}
 	observedAt = nowStamp()
 	result, err = parseJSON(stdout.buf.Bytes())
@@ -1205,25 +1324,31 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		limitBodyTo(w, r, g.maxRequest)
-		var body struct {
-			Session   string          `json:"session"`
-			Source    string          `json:"source"`
-			Arguments json.RawMessage `json:"arguments"`
+		body, err := requestMembers(r.Body, acquireRequestMembers)
+		if err != nil {
+			fail(w, badRequest{err})
+			return
 		}
-		if err := decodeSingleJSON(r.Body, &body); err != nil {
+		session, err := memberText(body, "session")
+		if err != nil {
+			fail(w, badRequest{err})
+			return
+		}
+		source, err := memberText(body, "source")
+		if err != nil {
 			fail(w, badRequest{err})
 			return
 		}
 		arguments := value(newObject())
-		if len(body.Arguments) > 0 {
-			parsed, err := parseJSONWithin(body.Arguments, maxArgumentValues)
+		if len(body["arguments"]) > 0 {
+			parsed, err := parseJSONWithin(body["arguments"], maxArgumentValues)
 			if err != nil {
 				fail(w, badRequest{err})
 				return
 			}
 			arguments = parsed
 		}
-		out, err := g.acquire(body.Session, body.Source, arguments, who)
+		out, err := g.acquire(session, source, arguments, who)
 		if err != nil {
 			fail(w, err)
 			return
@@ -1255,19 +1380,15 @@ func (g *gatewayService) handler() http.Handler {
 		// Every member is read at its own step of the ladder (act), the
 		// string-valued ones included: a member of the wrong type is a
 		// refusal at that step, not a decoding error ahead of the session's.
-		var body struct {
-			Session   json.RawMessage `json:"session"`
-			Platform  json.RawMessage `json:"platform"`
-			Tool      json.RawMessage `json:"tool"`
-			Arguments json.RawMessage `json:"arguments"`
-			Decision  json.RawMessage `json:"decision"`
-			Cites     json.RawMessage `json:"cites"`
-		}
-		if err := decodeSingleJSON(r.Body, &body); err != nil {
+		// What the envelope may name at all is decided here, before the
+		// ladder: an action is a write, and a write taken from a member this
+		// engine does not read is one nobody asked for.
+		body, err := requestMembers(r.Body, actRequestMembers)
+		if err != nil {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.act(body.Session, body.Platform, body.Tool, body.Arguments, body.Decision, body.Cites, who)
+		out, err := g.act(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who)
 		if err != nil {
 			var refusal actRefusal
 			if errors.As(err, &refusal) {
@@ -1297,14 +1418,17 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		limitBody(w, r)
-		var body struct {
-			Session string `json:"session"`
-		}
-		if err := decodeSingleJSON(r.Body, &body); err != nil {
+		body, err := requestMembers(r.Body, sealRequestMembers)
+		if err != nil {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.sealSession(body.Session)
+		session, err := memberText(body, "session")
+		if err != nil {
+			fail(w, badRequest{err})
+			return
+		}
+		out, err := g.sealSession(session)
 		if err != nil {
 			fail(w, err)
 			return

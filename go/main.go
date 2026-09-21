@@ -515,8 +515,8 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 				return opts, "duplicate --source-max-output option", false
 			}
 			number, err := strconv.ParseInt(rest[i+1], 10, 64)
-			if err != nil || number < 1 {
-				return opts, fmt.Sprintf("--source-max-output %q is not a positive number of bytes", rest[i+1]), false
+			if err != nil || number < 1 || number > maxSourceOutputCeiling {
+				return opts, fmt.Sprintf("--source-max-output %q is not a number of bytes from 1 to %d", rest[i+1], maxSourceOutputCeiling), false
 			}
 			opts.maxSourceOutput = number
 			maxOutputSeen = true

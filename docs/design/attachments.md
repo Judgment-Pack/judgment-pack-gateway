@@ -82,7 +82,9 @@ defaults an inline document is at most about 760 KiB, and its processing, OCR in
 cancelled at thirty seconds. Both are what the operator sets: `--max-request BYTES` raises the
 `/acquire` body bound, and `--source-timeout NAME=SECONDS` gives the documents source a timeout
 of its own — a later change to the core, made after this note was written, so an operator who
-wants a larger document or a longer read has the options for it. What cancelling does and does
+wants a larger document or a longer read has the options for it, on the command line only: under
+an engine configuration `/acquire` keeps its one-mebibyte bound and the derived sources keep the
+thirty-second timeout (README.md, SECURITY.md). What cancelling does and does
 not guarantee is in [Bounds and cancellation](#bounds-and-cancellation). The adapter's own
 `--max-bytes` and `--timeout` sit under whatever the gateway allows; the record's
 `processing.bounds` says which bounds applied.
