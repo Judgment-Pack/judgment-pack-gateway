@@ -107,6 +107,9 @@ func TestContentStructureBoundsFailThePage(t *testing.T) {
 
 // An inline image whose data runs past the bound without its EI fails the
 // page: the content after it cannot be found. Data up to the bound is read.
+// The image is encoded by a filter the reader does not frame and carries no
+// length, so where its data ends is looked for in the data itself, which is
+// what the bound bounds.
 func TestInlineImagePastItsBoundFailsThePage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes two inline images of sixteen megabytes")
@@ -119,7 +122,7 @@ func TestInlineImagePastItsBoundFailsThePage(t *testing.T) {
 	}{{maxInlineImageBytes, false}, {maxInlineImageBytes + 1, true}} {
 		b := &pdfgen.Builder{}
 		helv := b.Font("Helvetica", "WinAnsiEncoding", "")
-		content := shown("before", 700) + "BI /W 1 /H 1 /BPC 8 /CS /G ID " + strings.Repeat("x", c.bytes) + " EI\n" + shown("after", 680)
+		content := shown("before", 700) + "BI /W 1 /H 1 /BPC 8 /CS /G /F /CCF ID " + strings.Repeat("x", c.bytes) + " EI\n" + shown("after", 680)
 		b.Catalog(b.Pages([]pdfgen.Page{{Content: content, Fonts: map[string]int{"F1": helv}}}))
 		r := Extract(context.Background(), b.Bytes(), opt)
 		if r.Fatal != nil || len(r.Pages) != 1 {

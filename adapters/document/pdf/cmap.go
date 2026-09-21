@@ -52,17 +52,18 @@ func fullCodespace(n int) codespace {
 	return cs
 }
 
-// holds reports whether a code of the range's own length falls in it.
-func (cs codespace) holds(code []byte) bool {
-	if cs.nbytes == 0 || len(code) != cs.nbytes {
-		return false
-	}
-	for i, b := range code {
-		if b < cs.lo[i] || b > cs.hi[i] {
-			return false
+// prefix is how many of the range's leading bytes hold the head of s at their
+// own positions: the range's own length when a whole code of it stands at the
+// head of s, and fewer when a byte does not hold or s is shorter than the
+// range is, which 9.7.6.3 calls a partial match.
+func (cs codespace) prefix(s []byte) int {
+	n := min(cs.nbytes, len(s))
+	for i := 0; i < n; i++ {
+		if s[i] < cs.lo[i] || s[i] > cs.hi[i] {
+			return i
 		}
 	}
-	return true
+	return n
 }
 
 // cmap is a parsed CMap. Codes are up to four bytes.
@@ -435,27 +436,38 @@ func utf16Runes(b []byte) []rune {
 // that holds the head winning; a CMap declares at most maxCodespaces of them,
 // so the scan is bounded whatever the CMap holds.
 //
-// A head in no range takes the length of the first range whose own first byte
-// holds its first byte, which is the partial match 9.7.6.3 prescribes: the
-// bytes of a code the CMap does not map are consumed as that code and not
-// read again as codes of their own. Where not even the first byte matches,
-// the shortest length declared is taken, one byte when none is.
+// A head in no range is a code the CMap does not declare, and how many bytes
+// of it to consume is the partial match of 9.7.6.3: the range that holds the
+// longest run of leading bytes decides, and among ranges that hold the same
+// run the shortest code length does. Where no range holds even the first
+// byte, the shortest length declared is taken, one byte when none is. Those
+// bytes are consumed as one code and not read again as codes of their own,
+// and the code is reported as holding in no range: what its number would mean
+// in a mapping is not what the page shows.
 func (c *cmap) nextCode(s []byte) (code uint32, n int, ok bool) {
 	if len(s) == 0 {
 		return 0, 0, false
 	}
-	for _, cs := range c.codespaces {
-		if cs.nbytes <= len(s) && cs.holds(s[:cs.nbytes]) {
+	longest, partial := -1, 0
+	for i, cs := range c.codespaces {
+		if cs.nbytes == 0 {
+			continue
+		}
+		p := cs.prefix(s)
+		if p == cs.nbytes {
+			// A whole code of this range stands at the head of s. The first
+			// range declared that holds it wins, whatever the ranges after it
+			// hold.
 			v, _ := bytesToCode(s[:cs.nbytes])
 			return v, cs.nbytes, true
 		}
+		if p > partial || (p == partial && longest >= 0 && cs.nbytes < c.codespaces[longest].nbytes) {
+			longest, partial = i, p
+		}
 	}
 	n = c.shortest
-	for _, cs := range c.codespaces {
-		if cs.nbytes > 0 && s[0] >= cs.lo[0] && s[0] <= cs.hi[0] {
-			n = cs.nbytes
-			break
-		}
+	if partial > 0 {
+		n = c.codespaces[longest].nbytes
 	}
 	if n > len(s) {
 		n = len(s)

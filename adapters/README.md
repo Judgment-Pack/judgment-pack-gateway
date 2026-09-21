@@ -449,20 +449,42 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   through the predefined encodings and `Differences`, composite fonts through `Identity-H`,
   `Identity-V` and embedded CMaps, `ToUnicode` maps for both, and the text operators of each
   page in stream order, with spaces and line breaks inferred from glyph positions. A CMap's
-  codespace ranges split a string into codes byte by byte, as 9.7.6.2 has it, and where a font
-  names a predefined CMap the reader does not carry, the codespace ranges of its `ToUnicode` map
-  say how many bytes its codes have. An object a cross-reference places in an object stream is
-  read by its number, which that stream's own header says where to find. An inline image's data
-  ends where the image says it ends — the length `/L` states, or the length its samples take for
-  an image no filter encodes — as long as the `EI` that must follow is there; failing that, at an
-  `EI` in the data that operators follow, and an image whose end is nowhere fails the page. A
-  predictor's last row, where the data ends inside it, is undone as far as the data goes. A
-  damaged cross-reference is rebuilt by scanning for objects; the objects read under the one it
-  replaces go with it, and so do the fonts and CMaps built from them, since an object number then
-  names other bytes. A cross-reference given up on while the document is opened takes with it the
-  bounds met while it was read, which are defects of a cross-reference the document no longer
-  has. A page-tree node named twice by a tree that holds no cycle is two nodes, and a page named
-  twice is two pages; a node under itself is walked once. It decodes no image and renders
+  codespace ranges split a string into codes byte by byte, as 9.7.6.2 has it; bytes that fall in
+  no range are consumed as the range holding the longest run of them says (9.7.6.3, the shortest
+  such range deciding between equals) and are unmapped whatever number they make, since that
+  number is no code the CMap gives. Where a font names a predefined CMap the reader does not
+  carry, the codespace ranges of its `ToUnicode` map say how many bytes its codes have, and a
+  glyph takes the font's default width, there being no CID for it. An object a cross-reference
+  places in an object stream is read by the number the stream's own header declares it at; where
+  that header declares one number twice, the entry's index decides, and only where the header
+  declares that number at it.
+
+  Where an inline image's data ends is decided in one order. The dictionary between `BI` and `ID`
+  comes first, its keys read under one spelling: a key bearing on the end, given twice with
+  values that disagree, fails the page, as does a dictionary that never reaches `ID`. Then, for
+  an image no filter encodes, its samples measure the data exactly — width, height, bits and the
+  components of its colour space, which may be one the page's or the form's resources name — and
+  `EI` must stand where they end. Then, for an image a filter encodes, that filter's own framing
+  ends the data: the `>` of ASCIIHexDecode, the `~>` of ASCII85Decode, the end of a deflate or
+  LZW stream, the end-of-data of RunLengthDecode, the end-of-image of DCTDecode; what such a
+  decode produces is charged to `--max-inflate` and dropped. Only for a filter the reader does
+  not frame — CCITTFaxDecode, JBIG2Decode, JPXDecode, `Crypt`, one it does not know — or samples
+  it cannot measure does `/L` decide, and failing that an `EI` in the data that operators can
+  follow, and only where the content offers one such end. An image whose end is nowhere, or in
+  more than one place, fails the page.
+
+  A predictor's last row, where the data ends inside it, is undone as far as the data goes. A
+  damaged cross-reference is rebuilt by scanning for objects; everything read under the one it
+  replaces goes with it — the objects, the object streams they came out of, and the fonts and
+  CMaps built from them — since an object number then names other bytes, and a reading of the
+  document's pages that began under the old one is begun again under the new, so that a record's
+  pages were all read under one cross-reference. A cross-reference given up on while the document
+  is opened takes with it the bounds met while it was read, which are defects of a
+  cross-reference the document no longer has. A page-tree node named twice by a tree that holds
+  no cycle is two nodes, and a page named twice is two pages; a node under itself is walked
+  once, the root included where the catalog names it (a root found by scanning is known by no
+  number, so one that names itself among its kids is walked as a kid would be, to the bounds on
+  the walk). It decodes no image and renders
   nothing: a page that draws an image and whose text is empty after normalisation is `needs-ocr`.
   Page text is normalised as it is built, so the text budget is decided on the normalised bytes.
 - **Scanned pages** go to the program named with `--ocr` — one word, resolved on the adapter's

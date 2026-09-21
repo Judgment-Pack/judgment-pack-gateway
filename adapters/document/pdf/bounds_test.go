@@ -864,18 +864,23 @@ func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 				}
 			}
 			if !wantOK {
-				// 9.7.6.3: a head in no range takes the length of the first
-				// range whose own first byte holds its first byte, and the
-				// shortest length declared where none does.
+				// 9.7.6.3: a head in no range takes the length of the range
+				// that holds the longest run of its leading bytes, the
+				// shortest of the ranges that hold the same run, and the
+				// shortest length declared where no range holds even the
+				// first byte.
+				longest := 0
 				wantN = shortest
 				for _, cs := range c.codespaces {
-					if head[0] >= cs.lo[0] && head[0] <= cs.hi[0] {
-						wantN = cs.nbytes
-						break
+					run := 0
+					for run < cs.nbytes && run < len(head) && head[run] >= cs.lo[run] && head[run] <= cs.hi[run] {
+						run++
+					}
+					if run > longest || (run == longest && longest > 0 && cs.nbytes < wantN) {
+						longest, wantN = run, cs.nbytes
 					}
 				}
-				wantN = min(wantN, len(head))
-				wantCode = codeOf(head[:wantN])
+				wantCode, wantN = codeOf(head[:min(wantN, len(head))]), min(wantN, len(head))
 			}
 			if code, n, ok := c.nextCode(head); code != wantCode || n != wantN || ok != wantOK {
 				t.Fatalf("trial %d, %x: code %d of %d bytes %v, want %d of %d %v (codespaces %+v)", trial, head, code, n, ok, wantCode, wantN, wantOK, c.codespaces)

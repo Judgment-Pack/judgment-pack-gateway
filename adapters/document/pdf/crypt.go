@@ -185,8 +185,6 @@ func (d *Document) openEncryption() (*Encryption, error) {
 	// cached so far, and anything built from it, is dropped so that strings
 	// and streams are read through the handler from here.
 	d.forgetObjects()
-	d.objStms = map[int]*objStm{}
-	d.objStmHeaders = map[int]*objStmParsed{}
 	return info, nil
 }
 

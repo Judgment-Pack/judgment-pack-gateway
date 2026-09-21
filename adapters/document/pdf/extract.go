@@ -76,25 +76,53 @@ const (
 // deadline. It never panics on input: a defect met while the document is
 // opened or its page tree walked is Fatal, and one met on a page fails
 // that page.
+//
+// A reading of a document's pages stands on the cross-reference the reader
+// had when it began. Reading an object may rebuild that cross-reference --
+// the file's own was damaged where it pointed -- and an object number then
+// names other bytes: the nodes walked, the resources they carry, the fonts
+// built from them and the text taken through those fonts were all read under
+// a cross-reference the document no longer has. Such a reading is begun again
+// under the rebuilt one rather than mended piece by piece, so that what the
+// record carries was read under one cross-reference throughout. A document is
+// rebuilt at most once -- reconstruct records that it ran and every caller of
+// it reads that record first -- so the second reading stands; the inflate
+// budget is not given back, since it is what reading this document has cost.
 func Extract(ctx context.Context, data []byte, opt Options) *Result {
 	result := &Result{}
-	d, stop := walk(ctx, data, opt, result)
+	doc, stop := openDocument(ctx, data, opt, result)
 	if stop != nil {
 		return result
 	}
-	extractPages(ctx, d, opt, result)
-	return result
+	encryption := result.Encryption
+	for again := 0; ; again++ {
+		w, generation, stop := walkPages(ctx, doc, opt, result)
+		if stop == nil {
+			extractPages(ctx, w, opt, result)
+		}
+		if doc.generation == generation {
+			return result
+		}
+		if again > 0 {
+			// A document rebuilt twice is one the reader cannot hold to one
+			// cross-reference, and pages read under two of them are not the
+			// document's pages.
+			*result = Result{Encryption: encryption, Fatal: &Problem{Code: "pdf-malformed", Message: "the file's cross-reference was rebuilt again while its pages were read, and the reader holds no reading of it under one cross-reference"}}
+			return result
+		}
+		*result = Result{Encryption: encryption}
+	}
 }
 
-// walk is step 4: open the document and count its pages. It returns the
-// document and the pages to extract, or a non-nil stop when the adapter
-// goes straight to step 7.
-func walk(ctx context.Context, data []byte, opt Options, result *Result) (d *walked, stop error) {
+// openDocument is the first part of step 4: open the document and read the
+// encryption dictionary the trailer names. It returns the document, or a
+// non-nil stop when the adapter goes straight to step 7.
+func openDocument(ctx context.Context, data []byte, opt Options, result *Result) (doc *Document, stop error) {
 	defer func() {
 		if r := recover(); r != nil {
 			result.Fatal = &Problem{Code: "pdf-malformed", Message: "the reader could not continue past a defect in the file before the page tree was walked"}
 			result.Pages, result.PageCount, result.Truncated = nil, 0, false
-			d, stop = nil, errStopped
+			doc, stop = nil, errStopped
 		}
 	}()
 	budget := &inflateBudget{total: opt.MaxInflateTotal, one: opt.MaxInflateOne}
@@ -139,28 +167,50 @@ func walk(ctx context.Context, data []byte, opt Options, result *Result) (d *wal
 		result.Fatal = &Problem{Code: "pdf-malformed", Message: unopened}
 		return nil, errStopped
 	}
+	return doc, nil
+}
+
+// walkPages is the rest of step 4: find the page tree and count its pages. It
+// returns the pages to extract and the generation of the cross-reference the
+// walk stood on, so that the caller can tell a reading that outlived it.
+func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) (d *walked, generation int, stop error) {
+	defer func() {
+		if r := recover(); r != nil {
+			result.Fatal = &Problem{Code: "pdf-malformed", Message: "the reader could not continue past a defect in the file before the page tree was walked"}
+			result.Pages, result.PageCount, result.Truncated = nil, 0, false
+			d, stop = nil, errStopped
+		}
+	}()
 	// A bound met finding the root ends the walk at the root's first check.
-	pagesRoot := doc.pagesRoot()
+	// Looking for it may rebuild the cross-reference, so the generation the
+	// walk stands on is read once the root is in hand.
+	pagesRoot, rootRef := doc.pagesRoot()
+	generation = doc.generation
 	if pagesRoot == nil {
 		if ctx.Err() != nil {
-			return nil, endedAtDeadline(result, openedPastDeadline)
+			return nil, generation, endedAtDeadline(result, openedPastDeadline)
 		}
 		message := "the file names no page tree, and scanning found none"
 		if doc.walkDefect() != "" {
 			message = doc.walkDefect()
 		}
 		result.Fatal = &Problem{Code: "pdf-malformed", Message: message}
-		return nil, errStopped
+		return nil, generation, errStopped
 	}
 	w := &walker{d: doc, ctx: ctx, path: map[ref]bool{}, limit: opt.MaxPages}
+	if rootRef != (ref{}) {
+		// The root stands under itself as any other node does: a tree whose
+		// root is among its own kids holds the pages below it once.
+		w.path[rootRef] = true
+	}
 	ending := w.node(pagesRoot, inherited{}, 0)
 	switch ending {
 	case walkDefect:
 		result.Fatal = &Problem{Code: "pdf-malformed", Message: w.defect}
-		return nil, errStopped
+		return nil, generation, errStopped
 	case walkDeadline:
 		result.PageCount = len(w.pages)
-		return nil, endedAtDeadline(result, fmt.Sprintf("the deadline passed while the page tree was walked, after %d pages were counted", result.PageCount))
+		return nil, generation, endedAtDeadline(result, fmt.Sprintf("the deadline passed while the page tree was walked, after %d pages were counted", result.PageCount))
 	case walkBound:
 		result.Truncated = true
 		result.Problems = append(result.Problems, Problem{Code: "pdf-pages-over-bound", Message: fmt.Sprintf("the document has more than %d pages; pages past the bound were not counted", opt.MaxPages)})
@@ -168,10 +218,10 @@ func walk(ctx context.Context, data []byte, opt Options, result *Result) (d *wal
 	if len(w.pages) == 0 {
 		result.Fatal = &Problem{Code: "pdf-malformed", Message: "the page tree holds no page"}
 		result.Truncated = false
-		return nil, errStopped
+		return nil, generation, errStopped
 	}
 	result.PageCount = len(w.pages)
-	return &walked{doc: doc, pages: w.pages}, nil
+	return &walked{doc: doc, pages: w.pages}, generation, nil
 }
 
 var errStopped = errors.New("stopped")
@@ -292,32 +342,45 @@ type pageNode struct {
 
 // pagesRoot is the page tree's root: the catalog's /Pages, or, for a file
 // whose catalog lost it, a /Type /Pages node with no /Parent found by
-// rebuilding the cross-reference.
-func (d *Document) pagesRoot() Dict {
-	if catalog := d.dictOf(d.trailer["Root"]); catalog != nil {
-		if root := d.dictOf(catalog["Pages"]); root != nil {
-			return root
+// rebuilding the cross-reference. It returns the reference the catalog named
+// it by, so that the walk can hold the root under itself as it holds every
+// other node; a root found by scanning is returned with no reference, since
+// the search hands back the node and not the number it was found under.
+func (d *Document) pagesRoot() (Dict, ref) {
+	named := func() (Dict, ref) {
+		catalog := d.dictOf(d.trailer["Root"])
+		if catalog == nil {
+			return nil, ref{}
 		}
+		root := d.dictOf(catalog["Pages"])
+		if root == nil {
+			return nil, ref{}
+		}
+		if r, ok := catalog["Pages"].(ref); ok {
+			return root, r
+		}
+		return root, ref{}
+	}
+	if root, r := named(); root != nil {
+		return root, r
 	}
 	if !d.reconstructed {
 		err := d.reconstruct()
 		if err == nil {
-			if catalog := d.dictOf(d.trailer["Root"]); catalog != nil {
-				if root := d.dictOf(catalog["Pages"]); root != nil {
-					return root
-				}
+			if root, r := named(); root != nil {
+				return root, r
 			}
 		}
 		if isDeadline(err) {
 			// The walk ends at the deadline; the caller reads it from the
 			// context.
-			return nil
+			return nil, ref{}
 		}
 		if d.noteBound(err); d.bound != nil {
-			return nil
+			return nil, ref{}
 		}
 	}
-	return d.findPagesRoot()
+	return d.findPagesRoot(), ref{}
 }
 
 // walkEnding is how a page-tree walk ended.
@@ -397,7 +460,13 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 		}
 		child := w.d.dictOf(kid)
 		if child == nil {
+			// Why it could not be read, where reading it met something the
+			// reader can name: a bound, or a stream of objects it could not
+			// take the node out of.
 			w.defect = "a page-tree node could not be read"
+			if defect := w.d.walkDefect(); defect != "" {
+				w.defect = defect
+			}
 			return walkDefect
 		}
 		ending := w.node(child, inh, depth+1)

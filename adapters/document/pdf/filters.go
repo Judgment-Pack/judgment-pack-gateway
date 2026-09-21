@@ -255,9 +255,18 @@ func (d *Document) inflate(data []byte) ([]byte, error) {
 // with early code-length change by default), which the standard library's
 // compress/lzw does not.
 func (d *Document) lzwDecode(data []byte, early bool) ([]byte, error) {
+	out, _, err := d.lzwDecodeConsumed(data, early)
+	return out, err
+}
+
+// lzwDecodeConsumed is lzwDecode, reporting as well how many bytes of data
+// the codes it read took: the end-of-data code lies inside the last of them,
+// and a caller looking for where the stream ends -- an inline image's, whose
+// length nothing else states -- needs the byte after it.
+func (d *Document) lzwDecodeConsumed(data []byte, early bool) ([]byte, int, error) {
 	out, err := d.budget.output(len(data) * 2)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	const (
 		clearCode = 256
@@ -283,7 +292,7 @@ func (d *Document) lzwDecode(data []byte, early bool) ([]byte, error) {
 	for {
 		for bitCount < codeLen {
 			if pos >= len(data) {
-				return out.buf, nil
+				return out.buf, pos, nil
 			}
 			bitBuf = bitBuf<<8 | uint32(data[pos])
 			pos++
@@ -298,7 +307,7 @@ func (d *Document) lzwDecode(data []byte, early bool) ([]byte, error) {
 			prev = nil
 			continue
 		case code == eodCode:
-			return out.buf, nil
+			return out.buf, pos, nil
 		}
 		var entry []byte
 		switch {
@@ -307,10 +316,10 @@ func (d *Document) lzwDecode(data []byte, early bool) ([]byte, error) {
 		case code == next && prev != nil:
 			entry = append(append([]byte{}, prev...), prev[0])
 		default:
-			return nil, malformed("LZWDecode: code %d outside the table", code)
+			return nil, 0, malformed("LZWDecode: code %d outside the table", code)
 		}
 		if _, err := out.Write(entry); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		if prev != nil && next < 4096 {
 			dict[next] = append(append([]byte{}, prev...), entry[0])
@@ -581,4 +590,174 @@ func abs(x int) int {
 		return -x
 	}
 	return x
+}
+
+// Where a filter's own data ends. An inline image states no length that must
+// be believed, so for an image a filter encodes the reader asks the filter:
+// every filter below frames its data, and where the framing ends the image's
+// data ends. Nothing of what such an image shows is kept -- the reader
+// decodes an inline image only to learn where the content after it resumes --
+// but what a decode produces is charged to the document's inflate budget as
+// any stream's output is, and the input is bounded by the caller, which hands
+// over at most the bytes one inline image may hold.
+
+// filterFraming is where the data of a stream encoded by the filter named
+// ends, as offsets into data at which its end may lie; it is empty for a
+// filter whose framing this reader does not read -- CCITTFaxDecode,
+// JBIG2Decode, JPXDecode, Crypt and any it does not know -- and for data
+// whose framing does not end within what it was given.
+func (d *Document) filterFraming(filter Name, parms object, data []byte) []int {
+	switch filter {
+	case "AHx", "ASCIIHexDecode":
+		// The end-of-data marker of 7.4.2.
+		if i := bytes.IndexByte(data, '>'); i >= 0 {
+			return []int{i + 1}
+		}
+	case "A85", "ASCII85Decode":
+		if i := bytes.Index(data, []byte("~>")); i >= 0 {
+			return []int{i + 2}
+		}
+	case "RL", "RunLengthDecode":
+		if n := runLengthFraming(data); n >= 0 {
+			return []int{n}
+		}
+	case "Fl", "FlateDecode":
+		return d.flateFraming(data)
+	case "LZW", "LZWDecode":
+		early := true
+		if p := d.dictOf(firstParms(parms)); p != nil {
+			if v, ok := d.intOf(p["EarlyChange"]); ok {
+				early = v != 0
+			}
+		}
+		if _, n, err := d.lzwDecodeConsumed(data, early); err == nil && n > 0 {
+			return []int{n}
+		}
+	case "DCT", "DCTDecode":
+		if n := jpegFraming(data); n > 0 {
+			return []int{n}
+		}
+	}
+	return nil
+}
+
+// firstParms is the decode parameters of the first filter, which a stream
+// with one filter may write as a dictionary and one with several as an array.
+func firstParms(parms object) object {
+	if a, ok := parms.(Array); ok {
+		if len(a) == 0 {
+			return nil
+		}
+		return a[0]
+	}
+	return parms
+}
+
+// runLengthFraming is where run-length encoded data ends: at the end-of-data
+// byte, 128. It reads the length of each run and not the run, so nothing of
+// the image is held.
+func runLengthFraming(data []byte) int {
+	for i := 0; i < len(data); {
+		l := int(data[i])
+		i++
+		switch {
+		case l == 128:
+			return i
+		case l < 128:
+			i += l + 1
+		default:
+			i++
+		}
+	}
+	return -1
+}
+
+// flateFraming is where a deflate stream at the head of data ends: after the
+// Adler-32 checksum that closes a zlib stream, and at the end of the deflate
+// data itself for data that carries no checksum -- a writer that left it out
+// is common damage, and either is an end the reader will take, the complete
+// stream first.
+func (d *Document) flateFraming(data []byte) []int {
+	head := 0
+	if zlibHeader(data) {
+		head = 2
+	}
+	n, ok := d.deflateConsumed(data[head:])
+	if !ok {
+		return nil
+	}
+	if head == 2 {
+		return []int{head + n + 4, head + n}
+	}
+	return []int{n}
+}
+
+// deflateConsumed reads the deflate data at the head of data to the end of its
+// final block, and reports how many bytes of data that took. The bytes it
+// decodes to are charged to the inflate budget and dropped.
+func (d *Document) deflateConsumed(data []byte) (int, bool) {
+	out, err := d.budget.output(0)
+	if err != nil {
+		return 0, false
+	}
+	// A bytes.Reader reads one byte at a time when the decompressor asks for
+	// one, so what it has left is what the deflate data did not take.
+	left := bytes.NewReader(data)
+	fr := flate.NewReader(left)
+	defer fr.Close()
+	if _, err := io.Copy(out, fr); err != nil {
+		return 0, false
+	}
+	return len(data) - left.Len(), true
+}
+
+// jpegFraming is where a JPEG ends: at its end-of-image marker, found by
+// walking the markers of the file. Nothing is decoded -- the reader needs
+// where the image ends, not what it shows. Entropy-coded data holds bytes
+// that read as markers and are not: FF 00 is a sample byte and FF D0 to FF D7
+// are restarts, so that data is walked to the next marker that is one.
+func jpegFraming(data []byte) int {
+	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
+		return -1
+	}
+	for i := 2; i+1 < len(data); {
+		if data[i] != 0xFF {
+			// Not where a marker begins: the file is not one this reader can
+			// walk, and it says so rather than guessing at an end.
+			return -1
+		}
+		marker := data[i+1]
+		switch {
+		case marker == 0xFF:
+			// Fill bytes stand before a marker.
+			i++
+			continue
+		case marker == 0xD9:
+			return i + 2
+		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7):
+			// Markers that carry no segment.
+			i += 2
+			continue
+		}
+		if i+3 >= len(data) {
+			return -1
+		}
+		length := int(data[i+2])<<8 | int(data[i+3])
+		if length < 2 {
+			return -1
+		}
+		i += 2 + length
+		if marker != 0xDA {
+			continue
+		}
+		// The start of a scan: entropy-coded data runs to the next marker
+		// that is one.
+		for i+1 < len(data) {
+			if data[i] == 0xFF && data[i+1] != 0x00 && !(data[i+1] >= 0xD0 && data[i+1] <= 0xD7) {
+				break
+			}
+			i++
+		}
+	}
+	return -1
 }

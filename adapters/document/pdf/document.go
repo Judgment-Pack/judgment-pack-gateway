@@ -93,6 +93,11 @@ type Document struct {
 	// number other bytes, and a font built from the bytes a number named
 	// before is not the font the page names now.
 	fontRefs map[ref]*font
+	// generation counts the cross-references the document's objects have been
+	// read under. It is advanced wherever the reader drops what it read under
+	// one, so that a reading of the document's pages that began under an
+	// earlier one can tell that what it gathered no longer stands.
+	generation int
 	// bound is the first structure or inflate bound met while reading an
 	// object, which leaves that object unread; the walk ends at it.
 	bound error
@@ -158,12 +163,20 @@ func (d *Document) walkDefect() string {
 }
 
 // forgetObjects drops everything the reader holds of the objects a
-// cross-reference named: the objects themselves, and the fonts and CMaps
-// built from them. It is called wherever that cross-reference is replaced,
-// since an object number then names other bytes, and a font or a CMap held
-// under a number is the bytes it named before.
+// cross-reference named: the objects themselves, the object streams they were
+// read out of, and the fonts and CMaps built from them. It is called wherever
+// that cross-reference is replaced, since an object number then names other
+// bytes, and an object, a stream of objects, a font or a CMap held under a
+// number is the bytes that number named before.
+//
+// It advances the generation, which is how a reading of the document knows
+// that the cross-reference under which it began is not the one the document
+// has now.
 func (d *Document) forgetObjects() {
+	d.generation++
 	d.cache = map[int]object{}
+	d.objStms = map[int]*objStm{}
+	d.objStmHeaders = nil
 	d.fontRefs = nil
 	d.cmaps = nil
 }
@@ -231,8 +244,6 @@ func open(ctx context.Context, data []byte, budget *inflateBudget) (*Document, e
 		d.xref = map[int]xrefEntry{}
 		d.trailer = Dict{}
 		d.forgetObjects()
-		d.objStms = map[int]*objStm{}
-		d.objStmHeaders = nil
 		d.bound = nil
 		d.undecoded = nil
 		// A rebuild may already have run, from an object read while the
@@ -965,7 +976,19 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	// names the position of another object would otherwise have this number's
 	// object read out of that one's bytes, and the record would carry, under
 	// the number the page asked for, whatever the stream holds there.
+	//
+	// A header that declares one number twice says two things about it, and
+	// the number alone no longer picks a body out. There the entry's position
+	// decides, and only where the header declares this number at it: the
+	// reader takes the body the file's own two statements agree on, and none
+	// where they do not.
 	off, ok := st.offsets[num]
+	if st.twice[num] {
+		if e.stmIndex < 0 || e.stmIndex >= len(st.order) || st.order[e.stmIndex] != num {
+			return nil, false
+		}
+		off, ok = st.offsetAt[e.stmIndex], true
+	}
 	if !ok {
 		// The stream does not declare this object: it is unread, as an object
 		// no cross-reference names is.
@@ -981,11 +1004,16 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	return v, true
 }
 
-// objStmParsed is an object stream's decoded data with its header read.
+// objStmParsed is an object stream's decoded data with its header read: the
+// numbers the header declares in the order it declares them, the offset each
+// pair gives, the offset by number for the numbers it declares once, and the
+// numbers it declares more than once, which no number alone can find.
 type objStmParsed struct {
-	data    []byte
-	offsets map[int]int
-	order   []int
+	data     []byte
+	offsets  map[int]int
+	order    []int
+	offsetAt []int
+	twice    map[int]bool
 }
 
 func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
@@ -1019,8 +1047,16 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		if t1.i < 0 || t1.i > maxXrefEntries || off < 0 || off > int64(len(data)) {
 			continue
 		}
-		st.offsets[int(t1.i)] = int(off)
-		st.order = append(st.order, int(t1.i))
+		inner := int(t1.i)
+		if _, declared := st.offsets[inner]; declared {
+			if st.twice == nil {
+				st.twice = map[int]bool{}
+			}
+			st.twice[inner] = true
+		}
+		st.offsets[inner] = int(off)
+		st.order = append(st.order, inner)
+		st.offsetAt = append(st.offsetAt, int(off))
 	}
 	d.objStms[num] = &objStm{data: data, offsets: st.offsets}
 	d.objStmOrder(num, st)

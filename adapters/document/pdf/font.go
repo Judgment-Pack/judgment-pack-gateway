@@ -383,11 +383,23 @@ func (f *font) glyphs(s []byte) iter.Seq[glyph] {
 			enc = identityCMap()
 		}
 		for len(s) > 0 {
-			code, n, _ := enc.nextCode(s)
+			code, n, declared := enc.nextCode(s)
 			if n <= 0 {
 				n = 1
 			}
 			s = s[n:]
+			if !declared {
+				// Bytes in no codespace range of the encoding are no code of
+				// this font: the number they make is not one the CMap gives,
+				// and reading a mapping at it would put on the page a
+				// character the page does not show. The glyph is unmapped and
+				// counted, and takes the width the font gives a CID it has no
+				// width for.
+				if !yield(glyph{unmapped: true, width: f.defaultWidth / 1000}) {
+					return
+				}
+				continue
+			}
 			g := glyph{isSpace: n == 1 && code == 32}
 			cid, hasCID := enc.toCID(code)
 			if f.toUnicode != nil {
