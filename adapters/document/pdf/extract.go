@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -70,6 +71,13 @@ const (
 	maxPageTreeDepth = 64
 	// maxPageTreeNodes bounds the nodes visited while walking it.
 	maxPageTreeNodes = 1 << 20
+	// maxContentRawBytes bounds the bytes of the file a page's content streams
+	// hold together, as they lie in it and before any filter is applied. A
+	// /Contents array may name the same stream any number of times, and a
+	// filter that yields little -- ASCIIHexDecode over whitespace yields
+	// nothing -- charges the inflation budget that little for each of them, so
+	// what reading the page costs is bounded here rather than there.
+	maxContentRawBytes = 64 << 20
 )
 
 // Extract reads the document within the options and the context's
@@ -414,7 +422,16 @@ func (d *Document) findPagesRoot() Dict {
 		if d.deadlineNow() {
 			return nil
 		}
-		dict, ok := d.resolve(ref{num, d.xref[num].gen}).(Dict)
+		e := d.xref[num]
+		// An object lying at an offset whose first bytes do not name a page
+		// tree is not parsed to find out that it is not one, as the catalog
+		// the rebuild looks for is not: without that, this search reads and
+		// holds every object the file declares. An object inside an object
+		// stream has no bytes of the file to look at, and is resolved.
+		if !e.inStream && !bytes.Contains(d.objectHead(e, 256), []byte("/Pages")) {
+			continue
+		}
+		dict, ok := d.resolve(ref{num, e.gen}).(Dict)
 		if !ok {
 			continue
 		}
@@ -441,12 +458,29 @@ func pageContent(d *Document, page Dict) (out []byte, err error) {
 			out, err = nil, errPageDefect
 		}
 	}()
+	// raw counts the bytes of the file the page's content streams hold, before
+	// any filter: the work of decoding them is bounded by it, and by the
+	// deadline read before each of them, rather than by their output alone.
+	raw := 0
 	appendStream := func(v object) error {
+		// One element of a /Contents array is a whole stream to decode, which
+		// may be as long as the file: the deadline is read before each of
+		// them, so that a page whose /Contents names one stream a thousand
+		// times ends at the deadline and not a thousand decodes after it.
+		if d.deadlineNow() {
+			return fmt.Errorf("the deadline passed while a page's content streams were read: %w", d.ctx.Err())
+		}
 		o, read := d.resolveRead(v)
 		s, ok := o.(*stream)
 		if !read || !ok {
 			return errContentUnread
 		}
+		if len(s.raw) > maxContentRawBytes-raw {
+			// No stream went past an inflate bound, and the bytes read are
+			// past what a page's content may hold of the file.
+			return structureBound("a page's content streams hold more than %d bytes of the file", maxContentRawBytes)
+		}
+		raw += len(s.raw)
 		data, err := d.decodeStream(s, false)
 		if err != nil {
 			return err

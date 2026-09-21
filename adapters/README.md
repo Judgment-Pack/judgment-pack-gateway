@@ -434,7 +434,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   included (`arguments-invalid`); a decoded document past `--max-bytes`
   (`document-over-bound`); a `sha256` that does not match (`digest-mismatch`) — by exiting 1
   with one ASCII line of at most 160 bytes, code first, which the gateway hands the caller as
-  `source failed: <line>`. `/acquire` reads at most 1 MiB by default, allowing about 760 KiB
+  `source failed: <line>`. The reading of the request is inside the adapter's deadline, and a
+  request still not read in full two seconds past it is refused the same way, under
+  `adapter-failed`.
+  `/acquire` reads at most 1 MiB by default, allowing about 760 KiB
   of inline document bytes. `gateway serve --max-request BYTES` sets that body bound up to
   64 MiB; size it for base64 plus the surrounding request. The example allows a 32 MiB body
   for a document of up to 16 MiB. A desk or proxy forwarding the request needs a compatible
@@ -477,14 +480,20 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   ceilings, the read bound derived from `--max-bytes` is 4 × ⌈2^30 / 3⌉ + 64 KiB, 1,431,721,304
   bytes, and `timeoutMs` is 600,000, so every bound the record reports, and the read bound,
   stays within 2^53 − 1. The deadline runs from the adapter's start, before it reads its own
-  executable for its identity; `durationMs` runs from the start of reading the request, so the
+  executable for its identity and before it reads the request: the request is bounded in time as
+  well as in bytes. A request that is there is read however late the deadline finds the adapter,
+  and the record then says `timeout`; one whose reading has not ended two seconds past the
+  deadline — a stdin its writer neither writes nor closes — is refused with `adapter-failed`,
+  since no document has been established and there is nothing to record. `durationMs` runs from
+  the start of reading the request, so the
   record's duration does not carry that reading. While the document is opened — its
   cross-reference and trailer read, and a damaged cross-reference rebuilt by scanning — the
   deadline is checked at the intervals in the structure bounds below, and one met there ends the
   run the way one met while the page tree is walked does: `timeout`, `truncated` `true`, and no
   page listed. In a page's content the deadline is checked
-  between operators, at the interval in the structure bounds below, and before each reading of a
-  form the page draws, and within one operator that shows a string at the interval below for
+  before each of the page's content streams is decoded, between operators, at the interval in the
+  structure bounds below, and before each reading of a form the page draws,
+  and within one operator that shows a string at the interval below for
   glyphs; work between two checks is not interrupted, so what one check admits runs to its end
   within the structure bounds below. A deadline is read from the
   clock as well as from the context, so one that has passed while nothing has cancelled the
@@ -511,6 +520,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | Bound | Value | Met |
   |---|---|---|
   | indirect objects read in one document | 262,144 | wherever objects are read |
+  | bytes of parsed objects held, for each byte of the file and of each byte its streams inflate to | 16 | wherever objects are read: a well-formed file, whose objects do not overlap, holds a small multiple of its own length; past the bound an object is left unread and the ones after it are not parsed |
   | references resolving to references | 32 | wherever objects are read |
   | indirect objects read inside another object's read, including stream lengths | 32 | wherever objects are read |
   | the bytes searched for an `endstream` a stream's `/Length` does not locate | 4,096 bytes | wherever objects are read: the file's `endstream` offsets are indexed once, one per block of that size, and the index answers past the block |
@@ -528,9 +538,11 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | glyphs shown between two readings of the deadline | 4,096 | content: the deadline is read at least this often within one operator that shows a string |
   | forms drawn within forms | 12 | content |
   | the operand stack | 64 | content |
+  | items the operand stack holds, the elements and members of its operands counted | 1,048,576 | content: the stacks of the forms a page draws counted with it, since a form is drawn while its caller's operands are held |
   | graphics states saved and not restored | 256 | content |
   | one inline image's dictionary; its data | 128 objects; 16 MiB | content |
   | a page's content streams, concatenated | 64 MiB | content |
+  | the bytes of the file a page's content streams hold, before any filter | 64 MiB | content: a `/Contents` array may name one stream any number of times, and a filter that yields little charges the inflate bounds that little for each of them |
   | characters the glyphs shown on one page map to, the forms it draws included | 4,000,000 | content: an unmapped glyph counts as one, and glyphs past the text budget count |
   | fonts held by reference for a document; font resource names held while one page's content is read | 4,096; 4,096 | a font: past either the font is read again rather than held (no error) |
   | width entries one font's `/W` declares | 262,144 | a font: past it the font keeps no widths |
@@ -539,6 +551,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | codespace ranges one CMap declares | 256 | a CMap: past it the CMap is not used |
   | width entries and CMap mappings of all of a document's fonts together | 4,194,304 | a font: the `/W` or CMap a charge would take past it is not used |
   | the codes one `bfrange` or `cidrange` spans | 65,536 | a CMap: a longer range is cut to that span |
+  | the entries one `bfrange` or `cidrange` is charged | 4 | a CMap: a range is held as its endpoints, so one range maps as many codes as its span while the two bounds above count it four times |
   | a `bfchar` or `bfrange` destination string | 512 bytes | a CMap: a longer one maps nothing |
 
   Widths serve the glyph positions from which spaces and line breaks are inferred; they do not
@@ -552,8 +565,19 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   several hundred megabytes. A document's fonts may hold 4,194,304 width entries and CMap
   mappings together, and a `/W` range is held as a width for each CID it spans rather than as its
   endpoints, so a file of a few kilobytes whose fonts share `/W` ranges that long leaves it
-  holding about 200 MB. Both are within the bounds above and within `--max-bytes`; neither is a
-  refusal, and the process wants room for them.
+  holding about 200 MB. What the same 4,194,304 entries cost as CMap mappings the shape of the
+  mappings decides: a code mapped on its own is held at about 96 bytes, so a file whose CMaps map
+  codes one at a time leaves the reader holding about 400 MB, the most any of these three costs;
+  a `bfrange` or `cidrange` is held at about 70 bytes and charged four entries, so ranges alone
+  leave it holding about 70 MB, whatever spans they declare. The objects a document holds are
+  bounded against the file rather than in entries — sixteen bytes held for each byte of the file
+  and for each byte its streams inflate to — which a file whose objects do not overlap does not
+  approach, since parsing one of its bytes into an object costs a handful of bytes and not
+  sixteen, and which a file whose objects all hold the same bytes meets: a file of 64 KiB whose
+  every object is an unterminated string running to its end holds about a megabyte of them, and
+  one at `--max-bytes` 16 MiB with the default 64 MiB of inflation at most about 1.3 GB. All of
+  these are within the bounds above and within `--max-bytes`; none is a refusal, and the process
+  wants room for them.
 
   A `/Filter` name whose bytes are not valid UTF-8 is recorded as `null`, the way a `/R` outside
   the canonical range is: the record carries the name the document declared or nothing, not a

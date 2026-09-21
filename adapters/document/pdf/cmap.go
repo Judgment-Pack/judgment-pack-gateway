@@ -21,6 +21,14 @@ const (
 	// maxCodespaces bounds the codespace ranges one CMap declares: a CMap
 	// that declares more is not used.
 	maxCodespaces = 256
+	// cmapRangeEntries is what one bfrange or cidrange is charged against the
+	// two bounds above. A range is held as its endpoints, its destination and
+	// an index of the endpoints -- about seventy bytes, whatever its span --
+	// rather than as a mapping for each code it spans, and a line of a stream
+	// declares one. Charged a single entry, the ranges of one document would
+	// come to close to three hundred megabytes held, which is the sort of
+	// thing these bounds are for; charged four, to about seventy.
+	cmapRangeEntries = 4
 )
 
 type codespace struct {
@@ -44,6 +52,9 @@ type cmap struct {
 	entries  int
 	budget   *fontBudget
 	unusable bool
+	// stop reports whether the deadline has passed, on the cadence the
+	// document reads it; it is nil for a CMap read with no deadline.
+	stop func() bool
 	// The indexes, built once the CMap is read, find the first codespace of
 	// each code length (1 to 4), cid range and unicode range that holds a
 	// code; shortest is the shortest code length declared, or 4.
@@ -72,13 +83,21 @@ func identityCMap() *cmap {
 // the document's font budget. Errors in the syntax end the parse with what
 // was read so far. A CMap that would hold more mappings than one CMap may,
 // or than the budget has left, or that declares more codespace ranges than
-// one CMap may, is not used: parseCMap returns nil.
-func parseCMap(data []byte, budget *fontBudget) *cmap {
-	c := &cmap{cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, budget: budget}
+// one CMap may, is not used: parseCMap returns nil. So is one the deadline
+// passed while reading, which stop reports: a CMap read in part maps some of
+// a font's codes and not others, and a reader that used it would carry text
+// the deadline decided rather than text the page shows.
+func parseCMap(data []byte, budget *fontBudget, stop func() bool) *cmap {
+	c := &cmap{cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, budget: budget, stop: stop}
 	lex := newLexer(data, 0)
 	p := &parser{lex: lex, contentMode: true}
 	var stack []object
 	for !c.unusable {
+		// Each step of this loop reads one object, and the sections it enters
+		// read the deadline as they charge what they hold.
+		if c.stopped() {
+			return nil
+		}
 		obj, err := p.parseObject(0)
 		if err != nil {
 			var kw errKeyword
@@ -180,13 +199,23 @@ func indexRanges(ranges []cmapRange) firstSpans {
 }
 
 // take charges one mapping, and reports whether the CMap may hold it.
-func (c *cmap) take() bool {
-	c.entries++
-	if c.entries > maxCMapEntries || !c.budget.take(1) {
+func (c *cmap) take() bool { return c.takeN(1) }
+
+// takeN charges n entries for one mapping, and reports whether the CMap may
+// hold it. It is where the deadline is read while a CMap is parsed: a section
+// of a million ranges never returns to the loop that reads each object, and
+// every mapping it holds is charged here.
+func (c *cmap) takeN(n int) bool {
+	c.entries += n
+	if c.entries > maxCMapEntries || !c.budget.take(n) || c.stopped() {
 		c.unusable = true
 	}
 	return !c.unusable
 }
+
+// stopped reports whether the deadline has passed, and never that it has for
+// a CMap read with none.
+func (c *cmap) stopped() bool { return c.stop != nil && c.stop() }
 
 func asKeyword(err error, kw *errKeyword) bool {
 	k, ok := err.(errKeyword)
@@ -263,7 +292,7 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 		}
 		switch d := dst.(type) {
 		case int64:
-			if d < 0 || d > 1<<31 || !c.take() {
+			if d < 0 || d > 1<<31 || !c.takeN(cmapRangeEntries) {
 				continue
 			}
 			if unicode {
@@ -276,7 +305,7 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				continue
 			}
 			runes := utf16Runes(d)
-			if len(runes) == 0 || !c.take() {
+			if len(runes) == 0 || !c.takeN(cmapRangeEntries) {
 				continue
 			}
 			r := cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(runes[0])}
@@ -383,7 +412,12 @@ func utf16Runes(b []byte) []rune {
 			return nil
 		}
 	}
-	return utf16.Decode(units)
+	// Decode hands back a slice with room for sixty-four runes, which a
+	// destination of one or two would hold for as long as the mapping is
+	// held: a document's fonts may hold millions of mappings, so each keeps
+	// a slice of exactly what it decoded and not the room Decode left.
+	decoded := utf16.Decode(units)
+	return append(make([]rune, 0, len(decoded)), decoded...)
 }
 
 // nextCode reads one code from the head of s by the codespace ranges,

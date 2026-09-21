@@ -168,14 +168,20 @@ func ReadBound(cfg Config) (bound int64, ok bool) {
 
 // ParseRequest reads the request and refuses it at the first of the note's
 // four checks that fails: the read bound, the arguments, the decoded size,
-// the digest.
-func ParseRequest(r io.Reader, cfg Config, now func() time.Time) (Request, error) {
+// the digest. The read is bounded in time as well as in bytes: the deadline
+// runs from the adapter's start, and a request that has not arrived in full
+// by requestPipeWait past it is refused, since nothing the adapter does makes
+// the writer of its stdin close it or write.
+func ParseRequest(ctx context.Context, r io.Reader, cfg Config, now func() time.Time) (Request, error) {
 	bound, ok := ReadBound(cfg)
 	if !ok {
 		return Request{}, refuse("adapter-failed", "--max-bytes %d has no read bound", cfg.MaxBytes)
 	}
-	raw, err := io.ReadAll(io.LimitReader(r, bound+1))
+	raw, err := readWithin(ctx, r, bound+1)
 	if err != nil {
+		if errors.Is(err, errRequestNotRead) {
+			return Request{}, refuse("adapter-failed", "the deadline passed and the request had not been read in full")
+		}
 		return Request{}, refuse("adapter-failed", "stdin could not be read")
 	}
 	if int64(len(raw)) > bound {
@@ -195,6 +201,57 @@ func ParseRequest(r io.Reader, cfg Config, now func() time.Time) (Request, error
 	}
 	req.Bytes = data
 	return req, nil
+}
+
+// requestPipeWait is how long past the deadline the adapter waits for the
+// reading of its request to end, as ocrPipeWait is for the OCR program's
+// stdout: a request that is there to be read is read, however late the
+// deadline finds the adapter, and only a stdin whose writer neither writes
+// nor closes it is given up on.
+const requestPipeWait = 2 * time.Second
+
+// errRequestNotRead is a request whose reading had not ended requestPipeWait
+// past the deadline.
+var errRequestNotRead = errors.New("the request was not read in full")
+
+// readWithin reads at most n bytes of r, waiting for the read no longer than
+// requestPipeWait past the deadline the context carries. A read of a pipe
+// ends when the writer closes it or writes, and neither is the adapter's to
+// make happen, so it runs in a goroutine of its own and the deadline is
+// waited on beside it: nothing here interrupts the read, and one still
+// waiting when the adapter exits ends with the process. The channel is
+// buffered, so such a read hands its bytes over and stops rather than holding
+// the goroutine.
+//
+// The deadline passing does not by itself refuse the request. A request that
+// has arrived is a document to establish and record, and the record then
+// says timeout, from the first check of the deadline after it: that is what
+// the note has the deadline do, and it holds when the deadline had passed
+// before the read began, where a read of bytes already there ends at once.
+// What the wait past the deadline bounds is a read that does not end.
+func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
+	type read struct {
+		data []byte
+		err  error
+	}
+	done := make(chan read, 1)
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(r, n))
+		done <- read{data: data, err: err}
+	}()
+	select {
+	case got := <-done:
+		return got.data, got.err
+	case <-ctx.Done():
+	}
+	wait := time.NewTimer(requestPipeWait)
+	defer wait.Stop()
+	select {
+	case got := <-done:
+		return got.data, got.err
+	case <-wait.C:
+		return nil, errRequestNotRead
+	}
 }
 
 // parseArguments is the second check: the arguments table. Once the members

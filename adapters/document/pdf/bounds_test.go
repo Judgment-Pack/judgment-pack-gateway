@@ -1300,7 +1300,7 @@ func TestAFontChargeThatDoesNotFitChargesNothing(t *testing.T) {
 func TestALongCMapRangeIsCutToItsSpan(t *testing.T) {
 	head := "begincmap\n1 begincodespacerange <00000000> <FFFFFFFF> endcodespacerange\n"
 	t.Run("a cidrange", func(t *testing.T) {
-		c := parseCMap([]byte(head+"1 begincidrange <00000000> <00FF0000> 0 endcidrange\nendcmap\n"), &fontBudget{})
+		c := parseCMap([]byte(head+"1 begincidrange <00000000> <00FF0000> 0 endcidrange\nendcmap\n"), &fontBudget{}, nil)
 		if c == nil {
 			t.Fatal("the CMap was not used")
 		}
@@ -1314,7 +1314,7 @@ func TestALongCMapRangeIsCutToItsSpan(t *testing.T) {
 		}
 	})
 	t.Run("a bfrange", func(t *testing.T) {
-		c := parseCMap([]byte(head+"1 beginbfrange <00000000> <00FF0000> <0041> endbfrange\nendcmap\n"), &fontBudget{})
+		c := parseCMap([]byte(head+"1 beginbfrange <00000000> <00FF0000> <0041> endbfrange\nendcmap\n"), &fontBudget{}, nil)
 		if c == nil {
 			t.Fatal("the CMap was not used")
 		}

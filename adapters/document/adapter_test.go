@@ -32,7 +32,7 @@ func quote(s string) string {
 
 func parse(t *testing.T, cfg Config, in string) (Request, error) {
 	t.Helper()
-	return ParseRequest(strings.NewReader(in), cfg, fixedNow)
+	return ParseRequest(context.Background(), strings.NewReader(in), cfg, fixedNow)
 }
 
 func refusalCode(err error) string {

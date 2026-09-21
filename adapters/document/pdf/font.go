@@ -83,7 +83,7 @@ func (d *Document) cmapOf(s *stream) *cmap {
 	}
 	var c *cmap
 	if data, err := d.decodeStream(s, false); err == nil {
-		c = parseCMap(data, &d.fontBudget)
+		c = parseCMap(data, &d.fontBudget, d.deadlinePassed)
 	}
 	if d.cmaps == nil {
 		d.cmaps = map[*stream]*cmap{}

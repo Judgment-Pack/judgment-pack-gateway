@@ -28,6 +28,15 @@ const (
 	// maxOperands bounds the operand stack, and twice it the keys and values
 	// of an inline image's dictionary.
 	maxOperands = 64
+	// maxOperandItems bounds what the operand stacks of a page hold at one
+	// time, the forms it draws included, counting the elements of nested
+	// arrays and the members of nested dictionaries. The stack is bounded by
+	// what it holds and not by the count of operands alone: one operand may
+	// be an array of a million names, which a content stream spells in two
+	// bytes each and the reader holds at about twenty times that. It admits
+	// one array of maxContainerItems elements, which is the most any one
+	// operand can hold.
+	maxOperandItems = 1 << 20
 	// maxGraphicsStates bounds the graphics states saved and not restored.
 	maxGraphicsStates = 256
 	// maxInlineImageBytes bounds one inline image's data.
@@ -164,6 +173,10 @@ type interp struct {
 	fontRefs map[ref]*font
 	images   int
 	textOps  int
+	// operandItems counts what the operand stacks hold at this moment: the
+	// stream being interpreted and, while it draws a form, the streams it was
+	// drawn from, since those hold their operands until the form returns.
+	operandItems int
 	// chars counts the characters the page's glyphs map to, and glyphs the
 	// glyphs shown, which paces the deadline within one operator.
 	chars  int
@@ -283,6 +296,12 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 	p := &parser{lex: lex, contentMode: true}
 	var stack []gstate
 	var operands []object
+	// held is what this stream's operands hold, charged to the page's count
+	// while they are held and given back when this stream is done with them:
+	// the operands of a stream that drew a form are still held while the form
+	// is interpreted, and are counted there too.
+	held := 0
+	defer func() { it.operandItems -= held }()
 	var tm, tlm matrix
 	inText := false
 	for {
@@ -304,6 +323,13 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 				it.noteStreamError(structureBound("operands past %d", maxOperands))
 				return
 			}
+			items := operandItems(obj)
+			if items > maxOperandItems-it.operandItems {
+				it.noteStreamError(structureBound("the operands held past %d items", maxOperandItems))
+				return
+			}
+			held += items
+			it.operandItems += items
 			operands = append(operands, obj)
 			continue
 		}
@@ -441,7 +467,31 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 			// Type3 glyph metrics; nothing for text.
 		}
 		operands = operands[:0]
+		it.operandItems -= held
+		held = 0
 	}
+}
+
+// operandItems is what an operand holds: itself, and what its elements or
+// members hold in turn, since an array or a dictionary is held whole while
+// it is an operand. A value holds no value twice and none holds itself, so
+// this walk ends within the nesting the parser admits.
+func operandItems(o object) int {
+	switch x := o.(type) {
+	case Array:
+		n := 1
+		for _, item := range x {
+			n += operandItems(item)
+		}
+		return n
+	case Dict:
+		n := 1
+		for _, v := range x {
+			n += 1 + operandItems(v)
+		}
+		return n
+	}
+	return 1
 }
 
 // show renders a string's glyphs into the text builder, advancing tm. Every
