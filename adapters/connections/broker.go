@@ -71,6 +71,10 @@ func (b *Broker) cancel() {
 func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	descriptor, ok := LookupProvider(b.provider.kind())
+	if !ok || !descriptor.supports(method) {
+		return nil, ErrRequest
+	}
 	if len(raw) == 0 {
 		raw = []byte("{}")
 	}

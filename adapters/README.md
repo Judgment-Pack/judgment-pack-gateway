@@ -669,3 +669,13 @@ single-use read grant. No write operation is exposed. Notion uses remote MCP;
 Obsidian reads local Markdown without a plugin. See
 [connected note sources](../docs/design/connected-note-sources.md) for protocol,
 custody, snapshot, account scope and limits.
+
+### Discover connection capabilities
+
+`gateway-connections --catalog` prints a versioned JSON catalog of implemented
+connection protocols and exits. It needs no account or state directory and makes
+no provider requests. Hosts use the advertised authentication, registration,
+selection and operation identifiers with their own supported handlers, then ask
+for live account status. The catalog does not authorize access or prove a service
+is currently available. See [the catalog contract](../docs/design/connection-catalog.md)
+for compatibility, limits and the distinction from tool listings and receipts.
