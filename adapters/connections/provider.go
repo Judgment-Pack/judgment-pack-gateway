@@ -25,6 +25,8 @@ type provider struct {
 	auth, token, revoke, api string
 	client                   *http.Client
 	gmail                    bool
+	notion                   bool
+	obsidian                 bool
 }
 
 func google() provider {
@@ -34,7 +36,7 @@ func google() provider {
 	t.ResponseHeaderTimeout = 15 * time.Second
 	t.TLSHandshakeTimeout = 10 * time.Second
 	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
-	return provider{"https://accounts.google.com/o/oauth2/v2/auth", "https://oauth2.googleapis.com/token", "https://oauth2.googleapis.com/revoke", "https://www.googleapis.com/drive/v3", &http.Client{Transport: t, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, false}
+	return provider{"https://accounts.google.com/o/oauth2/v2/auth", "https://oauth2.googleapis.com/token", "https://oauth2.googleapis.com/revoke", "https://www.googleapis.com/drive/v3", &http.Client{Transport: t, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, false, false, false}
 }
 func (p provider) request(ctx context.Context, method, endpoint, token string, form url.Values, max int64) ([]byte, *http.Response, error) {
 	var body io.Reader
@@ -79,15 +81,20 @@ func (p provider) request(ctx context.Context, method, endpoint, token string, f
 }
 
 type tokenReply struct {
-	Access  string `json:"access_token"`
-	Refresh string `json:"refresh_token"`
-	Expires int64  `json:"expires_in"`
-	Scope   string `json:"scope"`
-	Type    string `json:"token_type"`
+	Access    string `json:"access_token"`
+	Refresh   string `json:"refresh_token"`
+	Expires   int64  `json:"expires_in"`
+	Scope     string `json:"scope"`
+	Type      string `json:"token_type"`
+	User      string `json:"user_id"`
+	Workspace string `json:"workspace_id"`
 }
 
 func (p provider) exchange(ctx context.Context, client Client, values url.Values) (tokenReply, error) {
 	values.Set("client_id", client.ID)
+	if p.notion {
+		values.Set("resource", notionResource)
+	}
 	if client.Secret != "" {
 		values.Set("client_secret", client.Secret)
 	}
@@ -96,7 +103,7 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 		return tokenReply{}, err
 	}
 	var t tokenReply
-	if json.Unmarshal(raw, &t) != nil || len(t.Access) == 0 || len(t.Access) > 8192 || len(t.Refresh) > 8192 || t.Expires <= 0 || t.Expires > 86400 || !strings.EqualFold(t.Type, "Bearer") {
+	if json.Unmarshal(raw, &t) != nil || len(t.Access) == 0 || len(t.Access) > 8192 || len(t.Refresh) > 8192 || t.Expires <= 0 || t.Expires > 86400 || !strings.EqualFold(t.Type, "Bearer") || strings.ContainsAny(t.Access+t.Refresh, "\x00\r\n") {
 		return t, ErrProvider
 	}
 	if t.Scope != "" && t.Scope != p.scope() {
@@ -109,6 +116,9 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 // reconfiguration can revoke it while the provider is slow; commit rechecks that
 // generation and never restores credentials that were removed in the meantime.
 func (p provider) access(ctx context.Context, s *Store, client Client, c credential, epoch string) (string, error) {
+	if p.notion {
+		return p.notionAccess(ctx, s, client, c, epoch)
+	}
 	if c.Expires > time.Now().Add(time.Minute).Unix() {
 		return c.Access, nil
 	}
@@ -150,12 +160,21 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	return access, err
 }
 func (p provider) scope() string {
+	if p.notion {
+		return "default"
+	}
 	if p.gmail {
 		return gmailScope
 	}
 	return driveScope
 }
 func (p provider) kind() string {
+	if p.obsidian {
+		return "obsidian"
+	}
+	if p.notion {
+		return "notion"
+	}
 	if p.gmail {
 		return "gmail"
 	}

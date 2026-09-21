@@ -85,6 +85,8 @@ type state struct {
 	Client     Client      `json:"client"`
 	Connection *credential `json:"connection"`
 	Disabled   bool        `json:"disabled"`
+	Redirect   string      `json:"redirect,omitempty"`
+	Vault      string      `json:"vault,omitempty"`
 }
 type Store struct{ root *os.Root }
 

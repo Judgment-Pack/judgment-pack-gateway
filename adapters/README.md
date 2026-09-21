@@ -658,3 +658,14 @@ so disconnecting may require other connections using that Cloud project to sign 
 again. Separate provider stores do not change upstream revocation semantics.
 See [Gmail design and limits](../docs/design/gmail-connections.md). Live production
 consent/retrieval has not been tested without an operator's registration and consent.
+
+### Notion and Obsidian note sources
+
+`gateway-connections --provider notion` performs browser OAuth with automatic
+client registration. `--provider obsidian` connects an existing local vault via
+`configure {"path":"/absolute/vault"}`. Both expose bounded search and explicit
+selection; `adapter-sources --provider notion|obsidian` consumes the resulting
+single-use read grant. No write operation is exposed. Notion uses remote MCP;
+Obsidian reads local Markdown without a plugin. See
+[connected note sources](../docs/design/connected-note-sources.md) for protocol,
+custody, snapshot, account scope and limits.

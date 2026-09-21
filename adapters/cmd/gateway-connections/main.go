@@ -20,7 +20,7 @@ func run() int {
 	principal := fs.String("principal", "", "")
 	provider := fs.String("provider", "google-drive", "")
 	disabled := fs.Bool("disabled", false, "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || (*provider != "google-drive" && *provider != "gmail") {
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || (*provider != "google-drive" && *provider != "gmail" && *provider != "notion" && *provider != "obsidian") {
 		return 2
 	}
 	client, err := publisherClient(publisherRegistration)
@@ -31,12 +31,18 @@ func run() int {
 	if *provider == "gmail" {
 		open = connections.OpenGmailStore
 	}
+	if *provider == "notion" {
+		open = connections.OpenNotionStore
+	}
+	if *provider == "obsidian" {
+		open = connections.OpenObsidianStore
+	}
 	s, err := open(*dir, *principal)
 	if err != nil {
 		return 1
 	}
 	defer s.Close()
-	if !*disabled && client.ID != "" {
+	if !*disabled && client.ID != "" && (*provider == "google-drive" || *provider == "gmail") {
 		if err := s.EnsureClient(client); err != nil {
 			return 1
 		}
@@ -44,6 +50,12 @@ func run() int {
 	b := connections.New(s, *disabled)
 	if *provider == "gmail" {
 		b = connections.NewGmail(s, *disabled)
+	}
+	if *provider == "notion" {
+		b = connections.NewNotion(s, *disabled)
+	}
+	if *provider == "obsidian" {
+		b = connections.NewObsidian(s, *disabled)
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
