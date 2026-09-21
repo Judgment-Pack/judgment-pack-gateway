@@ -448,10 +448,23 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   handler opened with an empty user password (revisions 2 to 6, RC4 and AES), simple fonts
   through the predefined encodings and `Differences`, composite fonts through `Identity-H`,
   `Identity-V` and embedded CMaps, `ToUnicode` maps for both, and the text operators of each
-  page in stream order, with spaces and line breaks inferred from glyph positions. A damaged
-  cross-reference is rebuilt by scanning for objects. It decodes no image and renders nothing:
-  a page that draws an image and whose text is empty after normalisation is `needs-ocr`. Page
-  text is normalised as it is built, so the text budget is decided on the normalised bytes.
+  page in stream order, with spaces and line breaks inferred from glyph positions. A CMap's
+  codespace ranges split a string into codes byte by byte, as 9.7.6.2 has it, and where a font
+  names a predefined CMap the reader does not carry, the codespace ranges of its `ToUnicode` map
+  say how many bytes its codes have. An object a cross-reference places in an object stream is
+  read by its number, which that stream's own header says where to find. An inline image's data
+  ends where the image says it ends — the length `/L` states, or the length its samples take for
+  an image no filter encodes — as long as the `EI` that must follow is there; failing that, at an
+  `EI` in the data that operators follow, and an image whose end is nowhere fails the page. A
+  predictor's last row, where the data ends inside it, is undone as far as the data goes. A
+  damaged cross-reference is rebuilt by scanning for objects; the objects read under the one it
+  replaces go with it, and so do the fonts and CMaps built from them, since an object number then
+  names other bytes. A cross-reference given up on while the document is opened takes with it the
+  bounds met while it was read, which are defects of a cross-reference the document no longer
+  has. A page-tree node named twice by a tree that holds no cycle is two nodes, and a page named
+  twice is two pages; a node under itself is walked once. It decodes no image and renders
+  nothing: a page that draws an image and whose text is empty after normalisation is `needs-ocr`.
+  Page text is normalised as it is built, so the text budget is decided on the normalised bytes.
 - **Scanned pages** go to the program named with `--ocr` — one word, resolved on the adapter's
   `PATH` and digested, the deadline checked immediately before it is started, and run in the
   adapter's own process group with its stderr discarded — once per document, with the page

@@ -444,12 +444,13 @@ func pngRowsOf(data []byte, columns int) []byte {
 }
 
 // tiffRowsOf applies the TIFF predictor to rows of columns bytes, one byte
-// per pixel.
+// per pixel, a last row the data ends inside included: its bytes stand to
+// the bytes before them in that row as any other row's do.
 func tiffRowsOf(data []byte, columns int) []byte {
 	out := append([]byte{}, data...)
-	for r := 0; r+columns <= len(data); r += columns {
-		for i := columns - 1; i >= 1; i-- {
-			out[r+i] -= out[r+i-1]
+	for r := 0; r < len(data); r += columns {
+		for i := min(r+columns, len(data)) - 1; i > r; i-- {
+			out[i] -= out[i-1]
 		}
 	}
 	return out
@@ -764,9 +765,9 @@ func TestPredictorLeavesTheDocumentUnchanged(t *testing.T) {
 }
 
 // A CMap's lookups find what a scan of its declarations in order finds, however
-// they overlap: the first codespace range of any code length that holds the
-// head of a string, the first cid range and the first unicode range that hold
-// a code.
+// they overlap: the first codespace range, of any code length, each of whose
+// bytes holds the byte of the head of a string at its own position, the first
+// cid range and the first unicode range that hold a code.
 func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 	codeOf := func(b []byte) uint32 {
 		v, _ := bytesToCode(b)
@@ -794,7 +795,7 @@ func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 			lo, hi := heads[rng.Intn(len(heads))], heads[rng.Intn(len(heads))]
 			length := len(lo)
 			hi = append(append([]byte{}, hi...), 0, 0, 0)[:length]
-			c.codespaces = append(c.codespaces, codespace{nbytes: length, low: codeOf(lo), hi: codeOf(hi)})
+			c.codespaces = append(c.codespaces, codespaceOf(lo, hi))
 		}
 		for n := rng.Intn(14); n > 0; n-- {
 			lo := uint32(rng.Intn(70))
@@ -847,15 +848,33 @@ func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 				shortest = min(shortest, cs.nbytes)
 			}
 			for _, cs := range c.codespaces {
-				if cs.nbytes <= len(head) {
-					if v := codeOf(head[:cs.nbytes]); v >= cs.low && v <= cs.hi {
-						wantCode, wantN, wantOK = v, cs.nbytes, true
+				if cs.nbytes > len(head) {
+					continue
+				}
+				within := true
+				for i := 0; i < cs.nbytes; i++ {
+					if head[i] < cs.lo[i] || head[i] > cs.hi[i] {
+						within = false
 						break
 					}
 				}
+				if within {
+					wantCode, wantN, wantOK = codeOf(head[:cs.nbytes]), cs.nbytes, true
+					break
+				}
 			}
 			if !wantOK {
-				wantN = min(shortest, len(head))
+				// 9.7.6.3: a head in no range takes the length of the first
+				// range whose own first byte holds its first byte, and the
+				// shortest length declared where none does.
+				wantN = shortest
+				for _, cs := range c.codespaces {
+					if head[0] >= cs.lo[0] && head[0] <= cs.hi[0] {
+						wantN = cs.nbytes
+						break
+					}
+				}
+				wantN = min(wantN, len(head))
 				wantCode = codeOf(head[:wantN])
 			}
 			if code, n, ok := c.nextCode(head); code != wantCode || n != wantN || ok != wantOK {
@@ -1513,7 +1532,7 @@ func TestTheEndstreamIndexFindsWhatASearchWouldFind(t *testing.T) {
 // page's /Resources does not hold yields the same font whatever the name, and
 // past the cache's bound a name is not held at all.
 func TestFontsHeldWhileOnePageIsReadAreBounded(t *testing.T) {
-	it := &interp{ctx: context.Background(), fonts: map[string]*font{}, fontRefs: map[ref]*font{}}
+	it := &interp{d: &Document{}, ctx: context.Background(), fonts: map[string]*font{}}
 	first := it.fontFor(Dict{}, "one")
 	if second := it.fontFor(Dict{}, "two"); second != first {
 		t.Fatal("two names the resources do not hold yielded two fonts")

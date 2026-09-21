@@ -87,6 +87,12 @@ type Document struct {
 	// streams read, by stream, nil for one not used.
 	fontBudget fontBudget
 	cmaps      map[*stream]*cmap
+	// fontRefs holds the fonts built from an object by the reference that
+	// named it, so that a font shared by pages is built once. It is dropped
+	// wherever the object cache is: a rebuilt cross-reference gives an object
+	// number other bytes, and a font built from the bytes a number named
+	// before is not the font the page names now.
+	fontRefs map[ref]*font
 	// bound is the first structure or inflate bound met while reading an
 	// object, which leaves that object unread; the walk ends at it.
 	bound error
@@ -151,6 +157,17 @@ func (d *Document) walkDefect() string {
 	return ""
 }
 
+// forgetObjects drops everything the reader holds of the objects a
+// cross-reference named: the objects themselves, and the fonts and CMaps
+// built from them. It is called wherever that cross-reference is replaced,
+// since an object number then names other bytes, and a font or a CMap held
+// under a number is the bytes it named before.
+func (d *Document) forgetObjects() {
+	d.cache = map[int]object{}
+	d.fontRefs = nil
+	d.cmaps = nil
+}
+
 // deadlinePassed reports whether the deadline has passed, reading the clock
 // once every entriesPerCheck calls: a loop over a file's cross-reference
 // entries or scanned objects consults it without a read of its own per entry.
@@ -205,10 +222,23 @@ func open(ctx context.Context, data []byte, budget *inflateBudget) (*Document, e
 		if isBound(err) || isDeadline(err) {
 			return nil, err
 		}
+		// Everything read from the cross-reference now being thrown away goes
+		// with it, the objects it named and what was built from them, and so
+		// does what was met while it was read: a bound or an object stream
+		// that could not be decoded is a defect of a cross-reference this
+		// document no longer has, and it would otherwise end the walk of a
+		// page tree the rebuild below recovers whole.
 		d.xref = map[int]xrefEntry{}
 		d.trailer = Dict{}
-		d.cache = map[int]object{}
+		d.forgetObjects()
 		d.objStms = map[int]*objStm{}
+		d.objStmHeaders = nil
+		d.bound = nil
+		d.undecoded = nil
+		// A rebuild may already have run, from an object read while the
+		// cross-reference was: its work went with the reset above, and this
+		// one, over the file alone, is the rebuild this document keeps.
+		d.reconstructed = false
 		if err := d.reconstruct(); err != nil {
 			return nil, err
 		}
@@ -538,7 +568,7 @@ func (d *Document) reconstruct() error {
 		nums = append(nums, num)
 	}
 	sortInts(nums)
-	d.cache = map[int]object{}
+	d.forgetObjects()
 	for _, num := range nums {
 		// Each step of this loop may parse a whole object.
 		if d.deadlineNow() {
@@ -622,7 +652,7 @@ func (d *Document) reconstruct() error {
 		}
 	}
 	d.trailer = trailer
-	d.cache = map[int]object{}
+	d.forgetObjects()
 	return nil
 }
 
@@ -866,7 +896,7 @@ func (d *Document) objectRead(num int) (object, bool) {
 	var v object
 	if e.inStream {
 		var read bool
-		if v, read = d.objectFromStream(e); !read {
+		if v, read = d.objectFromStream(num, e); !read {
 			d.cache[num] = unread{}
 			return nil, false
 		}
@@ -902,9 +932,9 @@ func (d *Document) objectRead(num int) (object, bool) {
 	return v, true
 }
 
-// objectFromStream reads an object out of an object stream, and reports
-// whether it read one.
-func (d *Document) objectFromStream(e xrefEntry) (object, bool) {
+// objectFromStream reads the object with the number given out of an object
+// stream, and reports whether it read one.
+func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	st, ok := d.objStmHeaders[e.stmNum]
 	if !ok {
 		if _, tried := d.objStms[e.stmNum]; tried {
@@ -929,15 +959,16 @@ func (d *Document) objectFromStream(e xrefEntry) (object, bool) {
 	if st == nil {
 		return nil, false
 	}
-	// Find the object by its index in the header; the entry's stmIndex
-	// names the position, but writers disagree, so the number found at
-	// that index is checked against the number wanted via the offsets map.
-	if e.stmIndex < 0 || e.stmIndex >= len(st.order) {
-		return nil, false
-	}
-	num := st.order[e.stmIndex]
+	// The object is found by the number wanted, which the stream's own header
+	// says where to read: the cross-reference entry's stmIndex names a
+	// position in that header, and a position is not a name. An entry that
+	// names the position of another object would otherwise have this number's
+	// object read out of that one's bytes, and the record would carry, under
+	// the number the page asked for, whatever the stream holds there.
 	off, ok := st.offsets[num]
 	if !ok {
+		// The stream does not declare this object: it is unread, as an object
+		// no cross-reference names is.
 		return nil, false
 	}
 	lex := newLexer(st.data, off)

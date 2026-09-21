@@ -484,6 +484,13 @@ func (d *Document) applyPredictor(data []byte, parms Dict) ([]byte, error) {
 		bpp = 1
 	}
 	rowLen := int((colors*bpc*columns + 7) / 8)
+	// A row the data ends inside is undone as far as the data goes, which is
+	// what a reader of PDFs shows for the files that carry one: every byte of
+	// such a row is undone against bytes before it, all of them present, so
+	// what comes out is what the row holds and nothing is invented. Leaving
+	// it out instead would empty a stream whose one row the data does not
+	// hold to its end -- a page listed as holding no text where the file
+	// holds text the reader dropped without a word.
 	if predictor == 2 {
 		if bpc != 8 {
 			return nil, fmt.Errorf("%w: TIFF predictor with %d bits per component", errUnsupportedFilter, bpc)
@@ -497,8 +504,8 @@ func (d *Document) applyPredictor(data []byte, parms Dict) ([]byte, error) {
 		if _, err := out.Write(data); err != nil {
 			return nil, err
 		}
-		for r := 0; r+rowLen <= len(out.buf); r += rowLen {
-			row := out.buf[r : r+rowLen]
+		for r := 0; r < len(out.buf); r += rowLen {
+			row := out.buf[r:min(r+rowLen, len(out.buf))]
 			for i := bpp; i < len(row); i++ {
 				row[i] += row[i-bpp]
 			}
@@ -512,16 +519,18 @@ func (d *Document) applyPredictor(data []byte, parms Dict) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Each row is written as it lies in the data and then undone in place,
-	// against the row before it in the output: no row is allocated, and no
-	// row longer than the data is.
-	for r := 0; r+rowLen+1 <= len(data); r += rowLen + 1 {
+	// Each row is its filter type and then its bytes, written as they lie in
+	// the data and undone in place against the row before them in the output:
+	// no row is allocated, and no row longer than the data is. Only the last
+	// row can be one the data ends inside, and it is undone as far as it goes.
+	for r := 0; r < len(data); r += rowLen + 1 {
 		ft := data[r]
 		if ft > 4 {
 			return nil, malformed("PNG predictor: filter type %d", ft)
 		}
+		held := min(rowLen, len(data)-(r+1))
 		start := len(out.buf)
-		if _, err := out.Write(data[r+1 : r+1+rowLen]); err != nil {
+		if _, err := out.Write(data[r+1 : r+1+held]); err != nil {
 			return nil, err
 		}
 		row := out.buf[start:]
@@ -529,7 +538,7 @@ func (d *Document) applyPredictor(data []byte, parms Dict) ([]byte, error) {
 		if start >= rowLen {
 			prior = out.buf[start-rowLen : start]
 		}
-		for i := 0; i < rowLen; i++ {
+		for i := 0; i < held; i++ {
 			var left, up, upLeft byte
 			if i >= bpp {
 				left = row[i-bpp]

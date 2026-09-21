@@ -23,9 +23,46 @@ const (
 	maxCodespaces = 256
 )
 
+// codespace is one codespace range: the low and the high byte of each of the
+// positions a code of nbytes bytes has. A code falls in the range when each
+// of its bytes falls between the two bytes of its own position, which is what
+// 9.7.6.2 says a codespace range is -- not when the code read as one number
+// falls between the two endpoints, which would take <8130> for a code of
+// <8140> <9FFC> and read the bytes after it as codes the page never shows.
 type codespace struct {
-	nbytes  int
-	low, hi uint32
+	nbytes int
+	lo, hi [4]byte
+}
+
+// codespaceOf is the range from lo to hi, whose length is the length of both,
+// which the caller has checked is from one to four bytes.
+func codespaceOf(lo, hi []byte) codespace {
+	cs := codespace{nbytes: len(lo)}
+	copy(cs.lo[:], lo)
+	copy(cs.hi[:], hi)
+	return cs
+}
+
+// fullCodespace is the range of every code of n bytes.
+func fullCodespace(n int) codespace {
+	cs := codespace{nbytes: n}
+	for i := 0; i < n && i < len(cs.hi); i++ {
+		cs.hi[i] = 0xFF
+	}
+	return cs
+}
+
+// holds reports whether a code of the range's own length falls in it.
+func (cs codespace) holds(code []byte) bool {
+	if cs.nbytes == 0 || len(code) != cs.nbytes {
+		return false
+	}
+	for i, b := range code {
+		if b < cs.lo[i] || b > cs.hi[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // cmap is a parsed CMap. Codes are up to four bytes.
@@ -44,10 +81,11 @@ type cmap struct {
 	entries  int
 	budget   *fontBudget
 	unusable bool
-	// The indexes, built once the CMap is read, find the first codespace of
-	// each code length (1 to 4), cid range and unicode range that holds a
-	// code; shortest is the shortest code length declared, or 4.
-	codespaceIndex     [5]firstSpans
+	// The indexes, built once the CMap is read, find the first cid range and
+	// the first unicode range that holds a code; shortest is the shortest code
+	// length declared, or 4. The codespace ranges are matched in the order
+	// they were declared, at most maxCodespaces of them, since a range is a
+	// range of each byte and not of the code as one number.
 	cidIndex, uniIndex firstSpans
 	shortest           int
 }
@@ -64,7 +102,7 @@ type cmapRange struct {
 
 // identityCMap is Identity-H: two-byte codes, CID = code.
 func identityCMap() *cmap {
-	c := &cmap{codespaces: []codespace{{nbytes: 2, low: 0, hi: 0xFFFF}}, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, cidRanges: []cmapRange{{nbytes: 2, lo: 0, hi: 0xFFFF, dst: 0}}}
+	c := &cmap{codespaces: []codespace{fullCodespace(2)}, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, cidRanges: []cmapRange{{nbytes: 2, lo: 0, hi: 0xFFFF, dst: 0}}}
 	return c.finish()
 }
 
@@ -141,11 +179,7 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 				break
 			}
 		}
-		if n == 1 {
-			c.codespaces = []codespace{{nbytes: 1, low: 0, hi: 0xFF}}
-		} else {
-			c.codespaces = []codespace{{nbytes: n, low: 0, hi: 1<<(8*uint(n)) - 1}}
-		}
+		c.codespaces = []codespace{fullCodespace(n)}
 	}
 	return c.finish()
 }
@@ -157,17 +191,20 @@ func (c *cmap) finish() *cmap {
 		return nil
 	}
 	c.shortest = 4
-	var byLength [5][]span
-	for i, cs := range c.codespaces {
-		byLength[cs.nbytes] = append(byLength[cs.nbytes], span{lo: cs.low, hi: cs.hi, order: int32(i)})
+	for _, cs := range c.codespaces {
 		c.shortest = min(c.shortest, cs.nbytes)
-	}
-	for n := range byLength {
-		c.codespaceIndex[n] = indexSpans(byLength[n])
 	}
 	c.cidIndex = indexRanges(c.cidRanges)
 	c.uniIndex = indexRanges(c.uniRanges)
 	return c
+}
+
+// codespacesOnly is a CMap that splits a string into codes the way c does
+// and maps none of them: what one CMap declares of the lengths its codes
+// have, for a font whose own encoding CMap the reader does not carry.
+func (c *cmap) codespacesOnly() *cmap {
+	out := &cmap{codespaces: c.codespaces, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}}
+	return out.finish()
 }
 
 // indexRanges indexes cid or unicode ranges in the order they were read.
@@ -222,13 +259,19 @@ func (c *cmap) readCodespaces(p *parser) {
 		if !ok1 || !ok2 || len(ls) == 0 || len(ls) > 4 {
 			return
 		}
+		if len(hs) != len(ls) {
+			// The two ends of a range have the same number of bytes, which is
+			// how many bytes the codes in it have. A pair whose ends differ
+			// declares no range: read as one it would hold codes of a length
+			// neither end gives. The pairs after it are still read, since the
+			// two objects of this one were read whole.
+			continue
+		}
 		if len(c.codespaces) == maxCodespaces {
 			c.unusable = true
 			return
 		}
-		l, n := bytesToCode(ls)
-		h, _ := bytesToCode(hs)
-		c.codespaces = append(c.codespaces, codespace{nbytes: n, low: l, hi: h})
+		c.codespaces = append(c.codespaces, codespaceOf(ls, hs))
 	}
 }
 
@@ -387,32 +430,41 @@ func utf16Runes(b []byte) []rune {
 }
 
 // nextCode reads one code from the head of s by the codespace ranges,
-// returning the code, its byte length, and whether it fell in a range. A
-// byte sequence in no range consumes the shortest codespace length (one
-// byte when none is declared), as the specification prescribes.
+// returning the code, its byte length, and whether it fell in a range. The
+// ranges are matched byte by byte in the order they were declared, the first
+// that holds the head winning; a CMap declares at most maxCodespaces of them,
+// so the scan is bounded whatever the CMap holds.
+//
+// A head in no range takes the length of the first range whose own first byte
+// holds its first byte, which is the partial match 9.7.6.3 prescribes: the
+// bytes of a code the CMap does not map are consumed as that code and not
+// read again as codes of their own. Where not even the first byte matches,
+// the shortest length declared is taken, one byte when none is.
 func (c *cmap) nextCode(s []byte) (code uint32, n int, ok bool) {
-	// The first codespace declared that holds the head of s, of any length.
-	first := -1
-	for length := 1; length <= 4 && length <= len(s); length++ {
-		v, _ := bytesToCode(s[:length])
-		if i, found := c.codespaceIndex[length].find(v); found && (first < 0 || i < first) {
-			first, code, n = i, v, length
+	if len(s) == 0 {
+		return 0, 0, false
+	}
+	for _, cs := range c.codespaces {
+		if cs.nbytes <= len(s) && cs.holds(s[:cs.nbytes]) {
+			v, _ := bytesToCode(s[:cs.nbytes])
+			return v, cs.nbytes, true
 		}
 	}
-	if first >= 0 {
-		return code, n, true
+	n = c.shortest
+	for _, cs := range c.codespaces {
+		if cs.nbytes > 0 && s[0] >= cs.lo[0] && s[0] <= cs.hi[0] {
+			n = cs.nbytes
+			break
+		}
 	}
-	// Partial match on the first byte decides the length, per 9.7.6.3;
-	// this reader takes the shortest declared length.
-	shortest := c.shortest
-	if shortest > len(s) {
-		shortest = len(s)
+	if n > len(s) {
+		n = len(s)
 	}
-	if shortest == 0 {
-		shortest = 1
+	if n < 1 {
+		n = 1
 	}
-	v, _ := bytesToCode(s[:shortest])
-	return v, shortest, false
+	v, _ := bytesToCode(s[:n])
+	return v, n, false
 }
 
 // toCID maps a code to a CID through the cid mappings.

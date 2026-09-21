@@ -126,9 +126,17 @@ func (d *Document) loadType0(f *font, dict Dict) {
 			f.encoding = identityCMap()
 			f.vertical = enc == "Identity-V"
 		} else {
-			// A predefined CMap this reader does not carry: codes are read
-			// as two bytes and mapped through ToUnicode alone.
+			// A predefined CMap this reader does not carry: codes are mapped
+			// through ToUnicode alone, and where the font has a ToUnicode map
+			// its codespace ranges say how many bytes a code has. Reading
+			// every code as two bytes loses the text of an encoding whose
+			// codes are one byte or two, which the predefined CMaps of the CJK
+			// registries are; two bytes is what is left when the font declares
+			// no codespace range anywhere.
 			f.encoding = identityCMap()
+			if f.toUnicode != nil && len(f.toUnicode.codespaces) > 0 {
+				f.encoding = f.toUnicode.codespacesOnly()
+			}
 			f.vertical = strings.HasSuffix(string(enc), "-V")
 		}
 	case *stream:

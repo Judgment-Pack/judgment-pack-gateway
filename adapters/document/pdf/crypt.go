@@ -182,9 +182,9 @@ func (d *Document) openEncryption() (*Encryption, error) {
 	d.crypt = h
 	// Objects parsed before the handler was installed (the encryption
 	// dictionary's own referents) are not encrypted content; anything
-	// cached so far is dropped so that strings and streams are read
-	// through the handler from here.
-	d.cache = map[int]object{}
+	// cached so far, and anything built from it, is dropped so that strings
+	// and streams are read through the handler from here.
+	d.forgetObjects()
 	d.objStms = map[int]*objStm{}
 	d.objStmHeaders = map[int]*objStmParsed{}
 	return info, nil

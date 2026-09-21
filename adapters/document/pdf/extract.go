@@ -152,7 +152,7 @@ func walk(ctx context.Context, data []byte, opt Options, result *Result) (d *wal
 		result.Fatal = &Problem{Code: "pdf-malformed", Message: message}
 		return nil, errStopped
 	}
-	w := &walker{d: doc, ctx: ctx, visited: map[ref]bool{}, limit: opt.MaxPages}
+	w := &walker{d: doc, ctx: ctx, path: map[ref]bool{}, limit: opt.MaxPages}
 	ending := w.node(pagesRoot, inherited{}, 0)
 	switch ending {
 	case walkDefect:
@@ -201,7 +201,6 @@ type walked struct {
 
 // extractPages is step 5.
 func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
-	fontRefs := map[ref]*font{}
 	for i, pn := range w.pages {
 		number := i + 1
 		if ctx.Err() != nil {
@@ -217,7 +216,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 			if remaining < 0 {
 				remaining = 0
 			}
-			pr = w.doc.interpretPage(ctx, content, pn.resources, remaining, fontRefs)
+			pr = w.doc.interpretPage(ctx, content, pn.resources, remaining)
 			err = pr.err
 		}
 		if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
@@ -332,21 +331,25 @@ const (
 )
 
 type walker struct {
-	d       *Document
-	ctx     context.Context
-	visited map[ref]bool
-	nodes   int
-	limit   int // maxPages: a page found past it ends the walk
-	pages   []pageNode
-	defect  string
+	d   *Document
+	ctx context.Context
+	// path holds the nodes the walk stands under, so that a node that is its
+	// own ancestor is walked once. A node named twice by a tree that holds no
+	// cycle is two nodes, and a page named twice is two pages: that is what
+	// the tree says, and what a viewer shows.
+	path   map[ref]bool
+	nodes  int
+	limit  int // maxPages: a page found past it ends the walk
+	pages  []pageNode
+	defect string
 }
 
 // node walks one page-tree node depth-first, the deadline checked before
-// it. A node reached twice is walked once. A bound met reading the tree, an
-// object stream that could not be decoded, or a node's /Kids that is present
-// and cannot be read or is not an array, ends the walk at a defect: skipping
-// it would count the pages around it as though they were all the document
-// holds.
+// it. A node under itself is not walked again. A bound met reading the tree,
+// an object stream that could not be decoded, or a node's /Kids that is
+// present and cannot be read or is not an array, ends the walk at a defect:
+// skipping it would count the pages around it as though they were all the
+// document holds.
 func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	if w.ctx.Err() != nil {
 		return walkDeadline
@@ -383,18 +386,25 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 		return walkDefect
 	}
 	for _, kid := range kidArray {
-		if r, ok := kid.(ref); ok {
-			if w.visited[r] {
+		r, isRef := kid.(ref)
+		if isRef {
+			if w.path[r] {
+				// A node under itself: what lies below it is what is being
+				// walked, and walking it again would not end.
 				continue
 			}
-			w.visited[r] = true
+			w.path[r] = true
 		}
 		child := w.d.dictOf(kid)
 		if child == nil {
 			w.defect = "a page-tree node could not be read"
 			return walkDefect
 		}
-		if ending := w.node(child, inh, depth+1); ending != walkComplete {
+		ending := w.node(child, inh, depth+1)
+		if isRef {
+			delete(w.path, r)
+		}
+		if ending != walkComplete {
 			return ending
 		}
 	}
