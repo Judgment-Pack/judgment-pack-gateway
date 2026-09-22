@@ -156,7 +156,7 @@ func (b *Broker) vaultOperation(ctx context.Context, method string, raw []byte) 
 		if decode(raw, &q) != nil {
 			return nil, ErrRequest
 		}
-		out := Status{1, "obsidian", "not-connected", nil, MaxFileBytes, 4}
+		out := Status{Version: 1, Provider: "obsidian", State: "not-connected", MaxFileBytes: MaxFileBytes, MaxFiles: 4}
 		err := b.store.locked(func(v *state) error {
 			if v.Connection != nil {
 				out.State = "connected"

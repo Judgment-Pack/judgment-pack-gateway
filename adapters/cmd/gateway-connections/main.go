@@ -83,8 +83,7 @@ func run() int {
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
-	scan.Buffer(make([]byte, 4096), 64<<10)
-	enc := json.NewEncoder(os.Stdout)
+	scan.Buffer(make([]byte, 4096), connections.ControlLineBytes)
 	for scan.Scan() {
 		var r struct {
 			ID     string          `json:"id"`
@@ -98,7 +97,7 @@ func run() int {
 		result, err := b.Handle(ctx, r.Method, r.Params)
 		cancel()
 		out := response(r.ID, result, err)
-		if enc.Encode(out) != nil {
+		if writeResponse(os.Stdout, out, r.ID) != nil {
 			return 1
 		}
 	}
@@ -117,4 +116,17 @@ func response(id string, result any, err error) map[string]any {
 		out["result"] = result
 	}
 	return out
+}
+
+// Refuse a page that does not fit; never emit an incomplete JSON control line.
+func writeResponse(w io.Writer, out map[string]any, id string) error {
+	raw, err := json.Marshal(out)
+	if err != nil || len(raw)+1 > connections.ControlLineBytes {
+		raw, err = json.Marshal(response(id, nil, connections.Error("response-too-large")))
+		if err != nil {
+			return err
+		}
+	}
+	_, err = w.Write(append(raw, '\n'))
+	return err
 }

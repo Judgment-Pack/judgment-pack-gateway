@@ -34,6 +34,7 @@ type SourceContract struct {
 type ProviderDescriptor struct {
 	Descriptor
 	Protocol               string         `json:"protocol"`
+	QueryMode              string         `json:"queryMode"`
 	Presentation           Presentation   `json:"presentation"`
 	Setup                  []SetupField   `json:"setup"`
 	AuthorizationEndpoints []string       `json:"authorizationEndpoints"`
@@ -51,7 +52,7 @@ func ConnectionCatalogV3() CatalogV3 {
 	base := ConnectionCatalog()
 	out := CatalogV3{Version: 3, Sources: base.Sources, Providers: []ProviderDescriptor{}}
 	for _, provider := range base.Providers {
-		d := ProviderDescriptor{Descriptor: provider, Protocol: "connection-v1", Presentation: presentation[provider.ID], Setup: []SetupField{}, AuthorizationEndpoints: []string{}}
+		d := ProviderDescriptor{Descriptor: provider, Protocol: "connection-v1", QueryMode: "text", Presentation: presentation[provider.ID], Setup: []SetupField{}, AuthorizationEndpoints: []string{}}
 		switch provider.ID {
 		case "google-drive":
 			d.Source = SourceContract{"drive", "http", "drive-v1"}

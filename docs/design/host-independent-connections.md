@@ -14,6 +14,8 @@ Version 3 retains provider id, auth, registration, selection, queryRequired and
 operations. It adds:
 
 - `protocol`: `connection-v1`.
+- `queryMode`: `text` for a provider search, or `prefix` for listing names whose
+  path starts with the supplied query. Neither implies searching file contents.
 - `presentation`: brand name, optional PNG data URI as `icon` (empty means host
   fallback), description and instructions. The latter two are locale-to-text
   maps with an English fallback. Shipped descriptions/instructions cover Desk's
@@ -47,6 +49,39 @@ Additional provider names within an implemented protocol do not.
 connection-v1 retains status/configure/connect/poll/cancel/disconnect. Source
 search takes `{query,pageToken?}` and returns `{selectionContext,items,more,
 nextPageToken?}`. Each item carries id, title, URL and optional description.
+Resource-v1 uses a bounded flat listing, not a hierarchical object browser.
+The same `search` operation accepts an empty query for the first page when
+queryRequired is false. Its public `ResourcePage` contract has at most 50 items
+and 48 KiB of encoded JSON. More results require a nonempty nextPageToken;
+tokens and resource IDs are at most 4096 UTF-8 bytes. Providers must keep
+continuation state bound to the connection epoch, configured resource and
+submitted query. If a vendor cursor does not fit, the adapter must hold it in
+custody and return a bounded opaque handle; it must not truncate it.
+The entire companion response line, including the RPC envelope, remains
+64 KiB. An oversized response is an explicit refusal, never a partial page.
+
+Each item can include sizeBytes and an unavailableReason: archived,
+permission-required, not-downloadable, unsupported-file, file-too-large or
+source-unavailable. Unknown future reasons remain unselectable in Desk.
+These are presentation metadata, not authorization: adapters must recheck
+eligibility and version at selection and acquisition. No automatic restore,
+payment acceptance, decryption-key intake or privilege expansion is implied.
+
+Status may include resource `{id,name}` alongside account identity. The resource
+ID changes when the configured boundary changes; Desk clears pending work and
+selections on that change. Names are bounded plain display text, never secrets.
+The current resource-v1 contract preserves four files and 4 MiB per file; Desk
+also applies any lower local limit and displays the effective limits. A larger
+limit requires a reviewed protocol/consumer change. PDF/text extraction uses
+the existing processor with OCR disabled; original bytes are retained.
+
+Disconnect must explicitly return disconnected: true only after local access
+and outstanding grants are invalidated. revoked: true is permitted only after
+confirmed remote revocation; missing/false never means success at the provider.
+A provider without a revoke operation deletes local custody and returns false.
+Credentials-required recovery renders the setup form again instead of OAuth.
+This describes a future adapter obligation, not a new static-key store.
+
 Selecting `{resourceIds,selectionContext}` returns resourceId/grant pairs, with
 the current provider's existing grant bounds and lifecycle. A connection is not
 permission for account-wide agent search or provider writes.
