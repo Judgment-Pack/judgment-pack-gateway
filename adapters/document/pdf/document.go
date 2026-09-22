@@ -8,6 +8,7 @@ import (
 	"math"
 	"regexp"
 	"strconv"
+	"time"
 )
 
 const (
@@ -37,7 +38,87 @@ const (
 	// whose /Length does not locate one; the file's own "endstream" offsets,
 	// indexed one per block of that size, answer beyond it.
 	endstreamBlock = 4096
+	// parsedBytesPerFileByte is how many bytes of parsed objects a document
+	// may hold for each byte of the file, and for each byte the file's streams
+	// have inflated. What a file costs to hold is not its length: the smallest
+	// dictionary a file can spell, "<</A 1>>", is eight bytes of file and a Go
+	// map of about 370 bytes held, and a pair of coordinates, "[0 0]", is five
+	// bytes and about a hundred. This many bytes for each byte read admits the
+	// densest of those shapes several times over while it bounds a file whose
+	// objects hold the same bytes over and over: "k 0 obj (" with no closing
+	// parenthesis gives every object a copy of the rest of the file, and what
+	// the reader holds then grows with the square of the file.
+	parsedBytesPerFileByte = 160
+	// maxParsedBytesHeld is what a document's parsed objects may hold whatever
+	// its length: the multiple above bounds a small file, and this bounds
+	// every file, so that the reader's memory has a ceiling and not only a
+	// ratio. A file large enough to reach it is read as far as it and no
+	// further, as one past any other structure bound is. It is set above what
+	// an ordinary document of the densest shape costs -- five hundred pages of
+	// two thousand one-member dictionaries each, which an eight-megabyte file
+	// holds, are charged about 570 MB -- so that a document of that shape is
+	// read whole. It is not a bound on overlapping structure alone: a document
+	// that holds a great deal without overlapping anything meets it too, which
+	// is what the pages above are measured against, and a document is as
+	// likely to be stopped first by a bound on one of its structures.
+	maxParsedBytesHeld = 1 << 30
 )
+
+// What holding a parsed value costs, in the bytes this package charges for
+// it. Each is at or above what Go retains for that shape on the platform the
+// reader was measured on -- the retained-heap delta of a hundred thousand
+// values of each -- so that the charge bounds the memory and not the other
+// way about; TestBoundsChargeCoversWhatIsRetained holds them to that.
+const (
+	// parsedSlotBytes is one element of an array: the interface pair in the
+	// backing array, with the room append leaves beyond the length.
+	parsedSlotBytes = 24
+	// parsedArrayBytes is an array of no elements: the slice header the
+	// interface holding it points at.
+	parsedArrayBytes = 24
+	// parsedDictBytes is a dictionary of no members: Go's map, whose smallest
+	// form is a header and a whole group of slots.
+	parsedDictBytes = 384
+	// parsedMemberBytes is one member of a dictionary beyond its name: its
+	// slot in the map and its share of what the map grows by.
+	parsedMemberBytes = 96
+	// parsedStringBytes is the header of a name or a string, beyond the bytes
+	// it carries, which are charged rounded up to what Go allocates for them.
+	parsedStringBytes = 24
+	// parsedValueBytes is the allocation a number, a boolean or a reference
+	// makes when it is held in an interface.
+	parsedValueBytes = 16
+)
+
+// grownBytes is what a buffer a builder appended into holds: a slice grown
+// by appending takes more room than the bytes put in it, half as much again
+// past the doubling the small sizes get, and the allocator rounds that up
+// again. A value read from a file is built that way, so what it holds is
+// charged that way, wherever the charge is taken.
+func grownBytes(n int64) int64 { return goSizeClass(n + n/4) }
+
+// goSizeClass is at or above what Go's allocator gives a block of n bytes:
+// its size classes are finer than the powers of two up to the largest of
+// them, and a block past that is rounded up to whole pages. A slice grown by
+// appending reaches the same figures, since append doubles what it holds
+// while it is small.
+func goSizeClass(n int64) int64 {
+	if n <= 0 {
+		return 0
+	}
+	if n <= 8 {
+		return 8
+	}
+	if n <= 32<<10 {
+		size := int64(8)
+		for size < n {
+			size *= 2
+		}
+		return size
+	}
+	const page = 8 << 10
+	return (n + page - 1) / page * page
+}
 
 // xrefEntry says where an object is: at an offset in the file, or inside
 // an object stream at an index.
@@ -78,7 +159,23 @@ type Document struct {
 	// header declared.
 	objStmHeaders map[int]*objStmParsed
 	parsed        int
-	crypt         *cryptHandler
+	// parsedBytes is what everything the document holds costs to hold: its
+	// objects, its trailer, the headers of its object streams, and the work
+	// the rebuild does on its way to them. It is released only where the
+	// storage itself is given up, since a value dropped from the cache may
+	// still be held by the walk that asked for it.
+	parsedBytes int64
+	// headTypes keeps what reading an object's head settled about it, by the
+	// offset it lies at: a cross-reference may name one offset for many
+	// object numbers, and the head is read once for the offset.
+	headTypes map[int64]headType
+	// pageWork is what has been read and decoded for the page being
+	// extracted, and pageWorking says a page is being extracted at all: the
+	// same streams are read while the document is opened, where no page
+	// answers for them.
+	pageWork    int64
+	pageWorking bool
+	crypt       *cryptHandler
 	// budget is the inflation budget shared by every stream of the document.
 	budget *inflateBudget
 	// resolving guards against a reference cycle through object streams.
@@ -282,15 +379,37 @@ func (d *Document) deadlinePassed() bool {
 
 // deadlineNow reads the deadline, for a loop each of whose steps parses or
 // resolves a whole object: there the read is small beside the step.
-func (d *Document) deadlineNow() bool {
-	return d.ctx != nil && d.ctx.Err() != nil
+func (d *Document) deadlineNow() bool { return deadlineMet(d.ctx) != nil }
+
+// deadlineMet is the one reading of a deadline this package makes, and is
+// what every check of it goes through. A context's error is set by a timer
+// the runtime schedules, which may not have run: the clock is read as well,
+// so that a deadline the clock has reached stops the work whether or not the
+// context has caught up. The error is the context's own where it has one, and
+// the deadline's where the clock decided; nil is a deadline still to come, or
+// a context that declares none.
+func deadlineMet(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if at, ok := ctx.Deadline(); ok && !time.Now().Before(at) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // deadline is the error a loop ends at when the deadline has passed. It is
 // neither damage nor a bound: the run ends at the deadline, as it does when
 // the deadline passes while the page tree is walked.
 func (d *Document) deadline() error {
-	return fmt.Errorf("the deadline passed while the document was opened: %w", d.ctx.Err())
+	err := deadlineMet(d.ctx)
+	if err == nil {
+		err = context.DeadlineExceeded
+	}
+	return fmt.Errorf("the deadline passed while the document was opened: %w", err)
 }
 
 // isDeadline reports whether err is the deadline met while the document was
@@ -334,6 +453,11 @@ func open(ctx context.Context, data []byte, budget *inflateBudget) (*Document, e
 			d.xref = map[int]xrefEntry{}
 			d.trailer = Dict{}
 			d.forgetObjects()
+			d.headTypes = nil
+			// Opening's abandoned cross-reference is the only owner here:
+			// neither a walk nor a page can hold its objects yet. Only this
+			// opening reset releases the parsed storage charge.
+			d.parsedBytes = 0
 			if err := d.reconstruct(); err != nil {
 				return nil, err
 			}
@@ -463,7 +587,7 @@ func (d *Document) readXrefSection(offset int64) (Dict, error) {
 // from here on, its /Length among them, and a field that rebuilds leaves the
 // ones after it fields of a section this document no longer has.
 func (d *Document) readXrefSectionAt(offset int64, generation int) (Dict, error) {
-	lex := newLexer(d.data, int(offset))
+	lex := newLexer(d.data, int(offset)).within(d.budgeted())
 	lex.skipSpace()
 	if bytes.HasPrefix(d.data[lex.pos:], []byte("xref")) {
 		lex.pos += len("xref")
@@ -491,7 +615,9 @@ func (d *Document) readXrefSectionAt(offset int64, generation int) (Dict, error)
 }
 
 func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
-	p := &parser{lex: lex}
+	// The trailer this returns is kept for the life of the document, so it is
+	// built within the document's allowance as every other held value is.
+	p := &parser{lex: lex, allow: d.budgeted()}
 	for {
 		lex.skipSpace()
 		if bytes.HasPrefix(d.data[lex.pos:], []byte("trailer")) {
@@ -565,7 +691,7 @@ func (d *Document) readXrefStream(s *stream, generation int) (Dict, error) {
 	if s.dict["Type"] != Name("XRef") {
 		return nil, malformed("cross-reference stream is not /Type /XRef")
 	}
-	data, err := d.decodeStream(s, true)
+	data, err := d.decodeStream(s, true, heldByDocument)
 	if err != nil {
 		return nil, malformedBy(err, "cross-reference stream")
 	}
@@ -728,33 +854,61 @@ func (d *Document) reconstruct() error {
 		}
 	}
 	for at := 0; ; {
-		if d.deadlinePassed() {
+		// Each step of this loop may parse a value that runs to the end of the
+		// file -- a "trailer" followed by a string that is never closed is
+		// exactly that -- so the deadline is read before each of them and not
+		// once per so many of them.
+		if d.deadlineNow() {
 			return d.deadline()
 		}
 		i := bytes.Index(d.data[at:], []byte("trailer"))
 		if i < 0 {
 			break
 		}
-		lex := newLexer(d.data, at+i+len("trailer"))
-		p := &parser{lex: lex}
-		obj, err := p.parseObject(0)
-		if err != nil && isBound(err) {
-			// A candidate past a bound of the parser is a bound the scan met
-			// reading the file, as every other bound the scan meets is: the
-			// scan reads the file's bytes, and these are the file's. Damage
-			// short of a bound is what the scan is for, and a candidate that
-			// is no dictionary is passed over as before.
+		at = at + i + len("trailer")
+		lex := newLexer(d.data, at).within(d.budgeted())
+		// A trailer is a dictionary; a "trailer" followed by anything else is
+		// the word in some other place in the file, and is not parsed. Comments
+		// and whitespace may lie between the two, and a comment runs to the end
+		// of its line -- which may be the end of the file -- so what skipping
+		// them examined is charged, and the scan for the next candidate goes on
+		// from where they ended rather than reading them again for every
+		// "trailer" that shares the line.
+		// The lexer charges the whitespace and comments it skips here, and the
+		// bytes of the candidate it goes on to read: a file of candidates that
+		// each read the rest of it spends the allowance and ends this loop,
+		// rather than being read once for every one of them. What was skipped
+		// is also behind the scan now, so the next candidate is looked for
+		// past it and the same comment is not read again.
+		lex.skipSpace()
+		at = lex.pos
+		if d.parsedSpent() {
+			err := errParsedBudget()
 			d.noteFileBound(err)
 			return err
 		}
-		if err == nil {
-			if dict, ok := obj.(Dict); ok {
-				for k, v := range dict {
-					trailer[k] = v
-				}
+		isDict := bytes.HasPrefix(d.data[lex.pos:], []byte("<<"))
+		var obj object
+		var err error
+		if isDict {
+			p := &parser{lex: lex, allow: lex.room}
+			obj, err = p.parseObject(0)
+		}
+		if err != nil && isBound(err) {
+			// A candidate past a bound is not a candidate to pass over: the
+			// file has more structure than the reader holds, and the next
+			// candidate would meet the same bound after reading as far again.
+			d.noteFileBound(err)
+			return err
+		}
+		if !isDict || err != nil {
+			continue
+		}
+		if dict, ok := obj.(Dict); ok {
+			for k, v := range dict {
+				trailer[k] = v
 			}
 		}
-		at = at + i + len("trailer")
 	}
 	// Cross-reference streams found by scanning contribute their
 	// dictionaries and the objects in the object streams they name.
@@ -782,11 +936,7 @@ func (d *Document) reconstruct() error {
 		}
 		// Only look at objects that are streams of a type we care about
 		// without parsing everything: a cheap prefix check on the bytes.
-		end := int(e.offset) + 512
-		if end > len(d.data) {
-			end = len(d.data)
-		}
-		head := d.data[e.offset:end]
+		head := d.objectHead(e, 512)
 		if !bytes.Contains(head, []byte("/XRef")) && !bytes.Contains(head, []byte("/ObjStm")) {
 			continue
 		}
@@ -869,11 +1019,7 @@ func (d *Document) reconstruct() error {
 			if e.inStream || e.offset < 0 {
 				continue
 			}
-			end := int(e.offset) + 256
-			if end > len(d.data) {
-				end = len(d.data)
-			}
-			if !bytes.Contains(d.data[e.offset:end], []byte("/Catalog")) {
+			if d.notOfType(e, "Catalog") {
 				continue
 			}
 			if dict, ok := d.resolve(ref{num, e.gen}).(Dict); ok && dict["Type"] == Name("Catalog") {
@@ -886,6 +1032,8 @@ func (d *Document) reconstruct() error {
 	// the generation has already moved once for this cross-reference. The
 	// trailer itself was put in place above, before the object streams it
 	// names were decoded.
+	// The cumulative charge stays: a walk, the trailer, or an abandoned
+	// reading can still hold objects no cache names.
 	d.dropCachedObjects()
 	return nil
 }
@@ -900,7 +1048,13 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 	if offset < 0 || offset >= len(d.data) {
 		return 0, 0, nil, fmt.Errorf("offset %d outside the file", offset)
 	}
-	lex := newLexer(d.data, offset)
+	// The allowance is the lexer's from its first token, so the bytes this
+	// reads of the file are charged however the read ends: a candidate whose
+	// object cannot be parsed has still been read, and a file of candidates
+	// that each read the rest of it would otherwise be read once for every
+	// one of them at no cost.
+	allow := d.budgeted()
+	lex := newLexer(d.data, offset).within(allow)
 	t1, err := lex.next()
 	if err != nil || t1.kind != tokInteger {
 		return 0, 0, nil, errors.New("no object number")
@@ -914,7 +1068,7 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 		return 0, 0, nil, errors.New("no obj keyword")
 	}
 	num, gen := int(t1.i), int(t2.i)
-	p := &parser{lex: lex}
+	p := &parser{lex: lex, allow: allow}
 	body, err := p.parseObject(0)
 	if err != nil {
 		var kw errKeyword
@@ -1104,6 +1258,315 @@ func (d *Document) object(num int) object {
 	return v
 }
 
+// parsedLeft is what is left of the document's allowance.
+func (d *Document) parsedLeft() int64 { return d.parsedBudget() - d.parsedBytes }
+
+// parsedBudget is what the objects a document holds may cost to hold: the
+// file's own bytes and the bytes its streams have inflated so far,
+// parsedBytesPerFileByte times over, and never more than maxParsedBytesHeld.
+// The objects of an object stream are parsed out of inflated bytes rather
+// than out of the file, so the allowance grows with what was inflated --
+// which the inflation budget bounds -- and not without end.
+func (d *Document) parsedBudget() int64 {
+	inflated := int64(0)
+	if d.budget != nil {
+		inflated = d.budget.used
+	}
+	budget := parsedBytesPerFileByte * (int64(len(d.data)) + inflated)
+	if budget > maxParsedBytesHeld {
+		budget = maxParsedBytesHeld
+	}
+	return budget
+}
+
+// parsedSpent reports that the objects held cost all the document may hold,
+// so that the next one is not parsed to find out.
+func (d *Document) parsedSpent() bool { return d.parsedBytes >= d.parsedBudget() }
+
+// chargeParsed charges what a parsed value costs to hold, and reports
+// whether the document may hold it. A charge that does not fit leaves the
+// budget spent, as a stream stopped at the inflation budget's total leaves
+// that spent: everything read after it finds nothing left, so that a file
+// whose objects each hold the rest of it is parsed a few times over and not
+// once per object.
+func (d *Document) chargeParsed(n int64) bool {
+	limit := d.parsedBudget()
+	if n < 0 || n > limit-d.parsedBytes {
+		d.parsedBytes = limit
+		return false
+	}
+	d.parsedBytes += n
+	return true
+}
+
+// allowance is what one parse may spend of a document's budget. The parser
+// spends it as it builds a value, member by member and element by element,
+// so that a value past what the document may hold stops while it is being
+// built and not once it exists and the memory is taken.
+type allowance struct {
+	// doc is the document whose balance this spends. Every allowance on one
+	// document spends that one balance rather than a copy of it: two parses
+	// that each took what was left when they began -- a cross-reference table
+	// and the trailer it ends with are two -- would otherwise spend the same
+	// bytes twice over.
+	doc *Document
+	// left is the balance of an allowance of its own, used where doc is nil,
+	// as the operands of one page's content are.
+	left int64
+	// past names the bound a parse ends at when the allowance runs out; the
+	// document's own where it is nil.
+	past func() error
+}
+
+// exhausted is the error a parse ends with when this allowance runs out.
+func (a *allowance) exhausted() error {
+	if a != nil && a.past != nil {
+		return a.past()
+	}
+	return errParsedBudget()
+}
+
+// budgeted is an allowance that spends the document's balance itself.
+func (d *Document) budgeted() *allowance { return &allowance{doc: d} }
+
+// take spends n, and reports whether it fit. A charge that does not fit
+// leaves nothing, so every charge after it fails too and the value being
+// built is abandoned where it stands.
+func (a *allowance) take(n int64) bool {
+	switch {
+	case a == nil:
+		return true
+	case a.doc != nil:
+		// The document's own balance, read and spent in one step, so that
+		// what this parse takes is not offered to another.
+		return a.doc.chargeParsed(n)
+	case n < 0 || n > a.left:
+		a.left = 0
+		return false
+	default:
+		a.left -= n
+		return true
+	}
+}
+
+// remaining is what this allowance may still spend.
+func (a *allowance) remaining() int64 {
+	switch {
+	case a == nil:
+		return 1 << 62
+	case a.doc != nil:
+		return a.doc.parsedLeft()
+	default:
+		return a.left
+	}
+}
+
+// startPageWork opens the work allowance of one page: what decoding the
+// streams read on its behalf costs, the forms it draws and the filters
+// applied to them included. It is opened for each page and spent by it
+// alone, so one page's content cannot spend another's.
+func (d *Document) startPageWork() { d.pageWork = 0; d.pageWorking = true }
+
+// chargeWork charges work done for the page being extracted, and returns the
+// bound to fail the page with when it is past what one page may cost. Work
+// done while the document is opened or its page tree walked is charged to no
+// page and bounded by the budgets that cover it.
+func (d *Document) chargeWork(n int64) error {
+	if !d.pageWorking {
+		// No page answers for this: a stream decoded while the document is
+		// opened or rebuilt is read on the document's own account, and is
+		// charged against what the document may read and hold, which is the
+		// balance every other reading of the file spends.
+		if !d.chargeParsed(n) {
+			return errParsedBudget()
+		}
+		return nil
+	}
+	if n < 0 || n > maxPageWorkBytes-d.pageWork {
+		d.pageWork = maxPageWorkBytes
+		return structureBound("reading one page cost more than %d bytes of streams read and filters applied", maxPageWorkBytes)
+	}
+	d.pageWork += n
+	return nil
+}
+
+// errParsedBudget is the document past the bytes its parsed objects may
+// hold. It is a structure bound: the file has more structure than the reader
+// holds, and rebuilding the cross-reference would find the same bytes.
+func errParsedBudget() error {
+	return structureBound("the objects read hold more than %d bytes for each byte of the file and of what it inflates to, or more than %d bytes in all", parsedBytesPerFileByte, maxParsedBytesHeld)
+}
+
+// parsedBytesOf is what holding a value costs beyond the slot that refers to
+// it, by the same reckoning the parser spends as it builds one: a name's or a
+// string's own bytes rounded up to what Go allocates for them, a stream's
+// bytes as they lie in the file, and for an array or a dictionary what its
+// elements or members cost beyond theirs. A value holds no other value twice
+// and none holds itself, since a reference is held as a number, so this walk
+// ends within the nesting the parser admits.
+func parsedBytesOf(o object) int64 {
+	switch x := o.(type) {
+	case String:
+		return parsedStringBytes + grownBytes(int64(len(x)))
+	case Name:
+		return parsedStringBytes + grownBytes(int64(len(x)))
+	case Array:
+		n := int64(parsedArrayBytes)
+		for _, item := range x {
+			n += parsedSlotBytes + parsedBytesOf(item)
+		}
+		return n
+	case Dict:
+		n := int64(parsedDictBytes)
+		for name, v := range x {
+			n += parsedMemberBytes + grownBytes(int64(len(name))) + parsedBytesOf(v)
+		}
+		return n
+	case *stream:
+		// A stream's raw bytes are the file's own, which the reader holds
+		// once however many streams point into them; what a stream adds is
+		// its dictionary and the header that points at the bytes.
+		return parsedStringBytes + parsedBytesOf(x.dict)
+	}
+	return parsedValueBytes
+}
+
+// headWindow is how much of an object the rebuild reads to decide whether
+// parsing it could answer what it is looking for: enough for a dictionary's
+// first members, and little enough that reading it for every object the file
+// declares costs one pass over the file.
+const headWindow = 1 << 10
+
+// headType is what reading an object's head settled about it: the type it
+// declares, or that the window settled nothing.
+type headType struct {
+	typ     Name
+	settled bool
+}
+
+// notOfType reports that the object at an entry is certainly not of the type
+// wanted, so that the rebuild need not parse it. The window at the entry's
+// offset is lexed, not searched: a name is read with its #xx escapes
+// resolved, so /Pa#67es is /Pages, and a dictionary is read member by member,
+// so a /Type that lies past a long first member is still found.
+//
+// Only a positive answer excludes: a window that holds a whole dictionary
+// whose /Type is a name and is not the one wanted, or that shows the object
+// beginning as something other than a dictionary. Everything else is
+// inconclusive and leaves the object a candidate, to be parsed under the
+// document's allowance as it was before any of this was looked at: a
+// dictionary that runs past the window, a /Type that is a reference or is
+// absent, a header the window cuts in two, a run of whitespace or a comment
+// that fills the window before the dictionary begins, and a window that ends
+// on the first half of the "<<" that would have opened one.
+//
+// What it reads is charged, and what it settled is kept by offset: a
+// cross-reference may name one offset for thousands of object numbers, and
+// reading the same head for each of them is work the file did not pay for.
+func (d *Document) notOfType(e xrefEntry, want Name) bool {
+	if d.parsedSpent() {
+		// Nothing is left to read with, so nothing can be settled.
+		return false
+	}
+	if known, ok := d.headTypes[e.offset]; ok {
+		return known.settled && known.typ != want
+	}
+	known := d.readHeadType(e)
+	if d.headTypes == nil {
+		d.headTypes = map[int64]headType{}
+	}
+	d.headTypes[e.offset] = known
+	return known.settled && known.typ != want
+}
+
+// readHeadType reads the head of the object at an entry and reports what it
+// settled, charging the bytes it read to the document's allowance.
+func (d *Document) readHeadType(e xrefEntry) headType {
+	head := d.objectHead(e, headWindow)
+	if len(head) == 0 {
+		return headType{settled: true}
+	}
+	// The window is lexed on its own, so a string or a name that runs past it
+	// ends with it and cannot reach into the rest of the file.
+	cut := len(head) == headWindow
+	lex := newLexer(head, 0).within(d.budgeted())
+	// "N G obj" first, where the window holds it; an object at an offset the
+	// cross-reference names need not have a header at all.
+	for i := 0; i < 3; i++ {
+		save := lex.pos
+		t, err := lex.next()
+		if err != nil {
+			return headType{}
+		}
+		if cut && t.end >= len(head) {
+			// The window ends inside this token: the object's number, its
+			// generation or the "obj" that follows them is cut in two, and
+			// what it is cannot be read from here.
+			return headType{}
+		}
+		if t.kind == tokKeyword && t.keyword == "obj" {
+			break
+		}
+		if t.kind != tokInteger {
+			lex.pos = save
+			break
+		}
+	}
+	lex.skipSpace()
+	rest := head[lex.pos:]
+	if cut && len(rest) <= 1 {
+		// The header, or the space and comments after it, filled the window:
+		// what the object begins with is past what was read.
+		return headType{}
+	}
+	if !bytes.HasPrefix(rest, []byte("<<")) {
+		if cut && len(rest) == 1 && rest[0] == '<' {
+			// The window ends between the two angle brackets of a dictionary
+			// that may well open there.
+			return headType{}
+		}
+		// Not a dictionary where the window can see: a page tree and a
+		// catalog are dictionaries, so this is not one of them.
+		return headType{settled: true}
+	}
+	p := &parser{lex: lex, allow: lex.room}
+	obj, err := p.parseObject(0)
+	if err != nil {
+		return headType{}
+	}
+	dict, ok := obj.(Dict)
+	if !ok {
+		return headType{}
+	}
+	if lex.pos >= len(head) && cut {
+		// The dictionary filled the window: what it holds past the window is
+		// unread, so nothing here excludes it.
+		return headType{}
+	}
+	typ, ok := dict["Type"].(Name)
+	if !ok {
+		return headType{}
+	}
+	return headType{typ: typ, settled: true}
+}
+
+// objectHead is the first n bytes of the file at an entry's offset, for a
+// look at what an object holds that costs no parse. It is empty for an entry
+// whose offset lies outside the file, which a cross-reference row may name
+// however damaged the file is: the offset is read as a 64-bit number, and
+// the end of the window is computed as one, so that neither the slice nor the
+// addition can leave the file.
+func (d *Document) objectHead(e xrefEntry, n int) []byte {
+	if e.inStream || e.offset < 0 || e.offset >= int64(len(d.data)) {
+		return nil
+	}
+	end := e.offset + int64(n)
+	if end > int64(len(d.data)) {
+		end = int64(len(d.data))
+	}
+	return d.data[e.offset:end]
+}
+
 // objectRead fetches the object with the number given, and reports whether
 // the reader read it.
 func (d *Document) objectRead(num int) (object, bool) {
@@ -1137,6 +1600,16 @@ func (d *Document) objectRead(num int) (object, bool) {
 		// The objects read in one document, which a rebuild does not give
 		// back: the file has cost them however its cross-reference is read.
 		d.noteFileBound(structureBound("more than %d objects read", maxObjects))
+		return nil, false
+	}
+	if d.parsedSpent() {
+		// The objects already held cost everything the document may hold:
+		// this one is left unread rather than parsed and then refused, so
+		// that a file of objects that each hold the rest of it is not parsed
+		// once per object.
+		err := errParsedBudget()
+		d.noteBoundAt(generation, err)
+		d.publish(generation, num, unread{err: err})
 		return nil, false
 	}
 	d.parsed++
@@ -1264,8 +1737,13 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 		// no cross-reference names is.
 		return nil, false
 	}
-	lex := newLexer(st.data, off)
-	p := &parser{lex: lex}
+	// A lexer per object over the stream's data, as parseIndirectAt starts
+	// one per object over the file, and charged the same way: an object
+	// followed by a comment that runs to the end of the data is otherwise
+	// read to that end once for every object the stream holds.
+	allow := d.budgeted()
+	lex := newLexer(st.data, off).within(allow)
+	p := &parser{lex: lex, allow: allow}
 	v, err := p.parseObject(0)
 	if err != nil {
 		d.noteBoundAt(generation, err)
@@ -1292,7 +1770,7 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 	if s.dict["Type"] != Name("ObjStm") {
 		return nil, errors.New("not an object stream")
 	}
-	data, err := d.decodeStream(s, false)
+	data, err := d.decodeStream(s, false, heldByDocument)
 	if err != nil {
 		return nil, err
 	}
@@ -1311,12 +1789,31 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 	// its place whether or not the offset beside it is one the stream holds,
 	// which is what makes a number declared twice a number no place alone
 	// finds.
-	lex := newLexer(data[:first], 0)
+	// The header read from the stream is held for the life of the document,
+	// so each place is charged for its ordered number and offset and for the
+	// maps that find its number and count duplicates. The data itself is not
+	// charged here: it is
+	// either the file's own bytes, which the reader holds once, or bytes an
+	// inflation charged to the budget that bounds them.
+	// The header is read within the document's allowance, as every other
+	// reading of bytes is: a stream whose header region begins with something
+	// that runs to the end of it is read once and not once for every stream
+	// that shares those bytes.
+	lex := newLexer(data[:first], 0).within(d.budgeted())
 	st := &objStmParsed{data: data, offsets: map[int]int{}}
 	declared := map[int]int{}
 	body := int64(len(data)) - first
 	for i := int64(0); i < n; i++ {
+		// Each declared place keeps two ordered slots and may have entries
+		// in both the number-count and offset maps (or the duplicate map).
+		// Reserve before publishing either the number or its place.
+		if !d.chargeParsed(2*parsedMemberBytes + 2*parsedSlotBytes) {
+			return nil, errParsedBudget()
+		}
 		t1, err1 := lex.next()
+		if lex.spent {
+			return nil, errParsedBudget()
+		}
 		if err1 != nil || t1.kind == tokEOF {
 			// The header ends, or holds a token the lexer could not read:
 			// where the pairs after this one begin is not known, and the
@@ -1334,6 +1831,9 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 			declared[inner]++
 		}
 		t2, err2 := lex.next()
+		if lex.spent {
+			return nil, errParsedBudget()
+		}
 		if err2 != nil || t2.kind == tokEOF {
 			st.order = append(st.order, inner)
 			st.offsetAt = append(st.offsetAt, -1)
@@ -1348,6 +1848,9 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		st.offsetAt = append(st.offsetAt, at)
 	}
 	for int64(len(st.order)) < n {
+		if !d.chargeParsed(2 * parsedSlotBytes) {
+			return nil, errParsedBudget()
+		}
 		st.order = append(st.order, unreadableObject)
 		st.offsetAt = append(st.offsetAt, -1)
 	}
@@ -1365,6 +1868,9 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		default:
 			st.offsets[inner] = st.offsetAt[i]
 		}
+	}
+	if lex.spent {
+		return nil, errParsedBudget()
 	}
 	if d.generation == generation {
 		d.objStms[num] = &objStm{data: data, offsets: st.offsets}

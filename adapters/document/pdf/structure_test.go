@@ -342,7 +342,7 @@ func TestObjectStreamThatCannotBeReadEndsTheWalk(t *testing.T) {
 		b.Catalog(pages)
 		data := b.Bytes()
 		rows := bytes.LastIndex(data, []byte(">>\nstream\n")) + len(">>\nstream\n")
-		copy(data[rows+6*resources:], []byte{2, byte(objStm >> 24), byte(objStm >> 16), byte(objStm >> 8), byte(objStm), 0})
+		copy(data[rows+9*resources:], []byte{2, byte(objStm >> 24), byte(objStm >> 16), byte(objStm >> 8), byte(objStm), 0, 0, 0, 0})
 		return data
 	}
 	objStm := func(filter string, encode func([]byte) []byte) func([]byte, int) pdfgen.Object {
@@ -444,7 +444,7 @@ func TestOpeningBoundsArePDFMalformed(t *testing.T) {
 	farObjectStream := func() []byte {
 		data := append([]byte{}, stream...)
 		rows := bytes.LastIndex(data, []byte(">>\nstream\n")) + len(">>\nstream\n")
-		copy(data[rows+6:], []byte{2, 0x7f, 0xff, 0xff, 0xff, 0})
+		copy(data[rows+9:], []byte{2, 0x7f, 0xff, 0xff, 0xff, 0, 0, 0, 0})
 		return data
 	}
 	scanned := func(extra int) []byte {
@@ -452,18 +452,24 @@ func TestOpeningBoundsArePDFMalformed(t *testing.T) {
 		found := len(objHeader.FindAllIndex(cut, -1))
 		return append(append([]byte{}, cut...), strings.Repeat("900000 0 obj\n", extra-found)...)
 	}
+	// These fixtures isolate the object-count bound. The unread header places
+	// also consume the parsed-memory allowance, so give the file enough bytes
+	// for that independent allowance to admit maxObjStmObjects places.
+	emptyObjectStream := func(n int) pdfgen.Object {
+		return pdfgen.Object{Body: fmt.Sprintf("<< /Type /ObjStm /N %d /First 0 >>", n), Stream: bytes.Repeat([]byte(" "), 256<<10), Raw: true}
+	}
 	// Objects at offsets the cross-reference misstates send the first read
 	// to rebuilding it, where an object stream past its bound waits.
 	misstated := func(objStmN int) []byte {
 		b := &pdfgen.Builder{BrokenOffsets: 7}
-		b.Add(pdfgen.Object{Body: fmt.Sprintf("<< /Type /ObjStm /N %d /First 0 >>", objStmN), Stream: []byte{}, Raw: true})
+		b.Add(emptyObjectStream(objStmN))
 		return normalDocument(b)
 	}
 	// A catalog without /Pages sends the walk to rebuilding the
 	// cross-reference, where an object stream past its bound waits.
 	catalogWithout := func(objStmN int) []byte {
 		b := &pdfgen.Builder{}
-		b.Add(pdfgen.Object{Body: fmt.Sprintf("<< /Type /ObjStm /N %d /First 0 >>", objStmN), Stream: []byte{}, Raw: true})
+		b.Add(emptyObjectStream(objStmN))
 		helv := b.Font("Helvetica", "WinAnsiEncoding", "")
 		b.Pages([]pdfgen.Page{{Content: shown("text", 700), Fonts: map[string]int{"F1": helv}}})
 		b.Root = b.Add(pdfgen.Object{Body: "<< /Type /Catalog >>"})
@@ -518,7 +524,7 @@ func TestOpeningBoundsArePDFMalformed(t *testing.T) {
 		{"a cross-reference stream's nesting", stream, replaceOnce(t, stream, `<< /Type /XRef `, "<< /Junk "+nested+" /Type /XRef "), nil},
 		{"a cross-reference stream past the inflate bound", compressedStream, compressedStream, func(o *Options) { o.MaxInflateTotal = 32 }},
 		{"objects found by scanning", scanned(maxScanObjects), scanned(maxScanObjects + 1), nil},
-		{"an object stream found by scanning", truncatedWith(t, pdfgen.Object{Body: fmt.Sprintf("<< /Type /ObjStm /N %d /First 0 >>", maxObjStmObjects), Stream: []byte{}, Raw: true}), truncatedWith(t, pdfgen.Object{Body: fmt.Sprintf("<< /Type /ObjStm /N %d /First 0 >>", maxObjStmObjects+1), Stream: []byte{}, Raw: true}), nil},
+		{"an object stream found by scanning", truncatedWith(t, emptyObjectStream(maxObjStmObjects)), truncatedWith(t, emptyObjectStream(maxObjStmObjects+1)), nil},
 		{"an object's nesting found by scanning", truncatedWith(t, pdfgen.Object{Body: "<< /Type /ObjStm /Junk [] >>", Stream: []byte{}, Raw: true}), truncatedWith(t, pdfgen.Object{Body: "<< /Type /ObjStm /Junk " + nested + " >>", Stream: []byte{}, Raw: true}), nil},
 		{"an object stream met rebuilding for a misstated offset", misstated(maxObjStmObjects), misstated(maxObjStmObjects + 1), nil},
 		{"an object stream met rebuilding for the page tree", catalogWithout(maxObjStmObjects), catalogWithout(maxObjStmObjects + 1), nil},
@@ -558,9 +564,42 @@ func TestObjectsPastABoundAreUnreadAndKept(t *testing.T) {
 	// the file's and not one cross-reference's.
 	t.Run("the objects the reader reads", func(t *testing.T) {
 		d := openGenerated(t, normalDocument(&pdfgen.Builder{}))
-		d.parsed = maxObjects
-		if _, read := d.objectRead(1); read || !errors.Is(d.fileBound, errStructureBound) {
-			t.Fatalf("read %v, bound %v", read, d.fileBound)
+		// Two objects the opening did not read, so that what spends the last
+		// of the count is a reading of an object and not the test: the first
+		// is read and takes the last of it, and the second is the one refused.
+		// A reader that did not count what it read would read both.
+		var fresh []int
+		for num := 1; num <= len(d.xref)+1; num++ {
+			if _, ok := d.xref[num]; !ok {
+				continue
+			}
+			if _, cached := d.cache[num]; cached {
+				continue
+			}
+			fresh = append(fresh, num)
+		}
+		if len(fresh) < 2 {
+			t.Fatalf("the document has %d objects the opening left unread; this needs two", len(fresh))
+		}
+		first, next := fresh[0], fresh[1]
+		d.parsed = maxObjects - 1
+		if _, read := d.objectRead(first); !read || d.fileBound != nil {
+			t.Fatalf("the object of the last read the count allows was not read: read %v, bound %v", read, d.fileBound)
+		}
+		if d.parsed != maxObjects {
+			t.Errorf("reading an object left the count at %d, where the last read it allows takes it to %d", d.parsed, maxObjects)
+		}
+		if _, read := d.objectRead(next); read || !errors.Is(d.fileBound, errStructureBound) {
+			t.Fatalf("the object past the count was read: read %v, bound %v", read, d.fileBound)
+		}
+		// And a reading of what is already held is not another object read:
+		// the count is spent by parsing, not by asking.
+		spent := d.parsed
+		if _, read := d.objectRead(first); !read {
+			t.Fatal("the object already read was not read again from the cache")
+		}
+		if d.parsed != spent {
+			t.Errorf("rereading a cached object took the count from %d to %d", spent, d.parsed)
 		}
 	})
 	objectStreams := func(extra string) (*pdfgen.Builder, int) {

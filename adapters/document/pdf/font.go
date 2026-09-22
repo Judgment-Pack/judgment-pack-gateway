@@ -36,6 +36,12 @@ type font struct {
 	// can be counted, and every one of them is unmapped: which codes the page
 	// shows is not something the file says.
 	encodingUnusable bool
+	// deadline is set when the deadline passed while the font's own
+	// resources were read -- a CMap read in part is not used, and the codes
+	// it would have mapped are not mapped -- so that a page shown with this
+	// font ends at the deadline rather than as a page whose glyphs did not
+	// map. It is the deadline's error, which the caller reports as a timeout.
+	deadline error
 }
 
 // glyph is one shown glyph: its runes (empty when unmapped), its code,
@@ -93,8 +99,8 @@ func (d *Document) cmapOf(s *stream) *cmap {
 	defer d.beginRead()()
 	generation := d.readingGeneration()
 	var c *cmap
-	if data, err := d.decodeStream(s, false); err == nil {
-		c = parseCMap(data, &d.fontBudget)
+	if data, err := d.decodeStream(s, false, heldByPage); err == nil {
+		c = parseCMap(data, &d.fontBudget, d.deadlinePassed)
 	}
 	if d.generation != generation {
 		return c
@@ -115,6 +121,14 @@ func (d *Document) loadFont(dict Dict) *font {
 	// object, not a bound met resolving a chain the old font named.
 	defer d.beginRead()()
 	f := &font{defaultWidth: 1000, fontMatrix: [6]float64{0.001, 0, 0, 0.001, 0, 0}}
+	// A font whose resources were read past the deadline holds it: whatever
+	// of them was read, what the font maps is what the deadline decided, and
+	// the page is not a page whose text this reader may report.
+	defer func() {
+		if d.deadlineNow() {
+			f.deadline = d.deadline()
+		}
+	}()
 	subtype, _ := d.nameOf(dict["Subtype"])
 	if tu, ok := d.resolve(dict["ToUnicode"]).(*stream); ok {
 		f.toUnicode = d.cmapOf(tu)

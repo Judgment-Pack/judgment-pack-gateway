@@ -22,7 +22,31 @@ const (
 	// maxCodespaces bounds the codespace ranges one CMap declares: a CMap
 	// that declares more is not used.
 	maxCodespaces = 256
+	// cmapRangeEntries is what one bfrange or cidrange is charged against the
+	// two bounds above. A range is held as its endpoints, its destination and
+	// an index of the endpoints -- about seventy bytes, whatever its span --
+	// rather than as a mapping for each code it spans, and a line of a stream
+	// declares one. Charged a single entry, the ranges of one document would
+	// come to close to three hundred megabytes held, which is the sort of
+	// thing these bounds are for; charged four, to about seventy.
+	cmapRangeEntries = 4
+	// cmapEntryBytes is what one entry of the font budget stands for in the
+	// values a CMap is read through: about what a mapping costs to hold, so
+	// that the values built while it is read are bounded by the same budget
+	// the mappings themselves are.
+	cmapEntryBytes = 96
+	// cmapRunsPerEntry is how many characters of a mapping's destination one
+	// further entry covers. A destination is held as the characters it
+	// decoded to, up to the two hundred and fifty-six a destination string may
+	// carry, so a mapping is not one size: charging its characters as well
+	// keeps what a document's fonts may hold within the same figure whatever
+	// shape its mappings take.
+	cmapRunsPerEntry = 8
 )
+
+// destinationEntries is what a mapping's destination is charged beyond the
+// mapping itself: its characters, by the measure above.
+func destinationEntries(runes []rune) int { return len(runes) / cmapRunsPerEntry }
 
 // codespace is one codespace range: the low and the high byte of each of the
 // positions a code of nbytes bytes has. A code falls in the range when each
@@ -91,6 +115,9 @@ type cmap struct {
 	entries  int
 	budget   *fontBudget
 	unusable bool
+	// stop reports whether the deadline has passed, on the cadence the
+	// document reads it; it is nil for a CMap read with no deadline.
+	stop func() bool
 	// The indexes, built once the CMap is read, find the first cid range and
 	// the first unicode range of a code's own length that holds it; shortest
 	// is the shortest code length declared, or 4. The codespace ranges are
@@ -133,13 +160,40 @@ func identityCMap() *cmap {
 // the document's font budget. Errors in the syntax end the parse with what
 // was read so far. A CMap that would hold more mappings than one CMap may,
 // or than the budget has left, or that declares more codespace ranges than
-// one CMap may, is not used: parseCMap returns nil.
-func parseCMap(data []byte, budget *fontBudget) *cmap {
-	c := &cmap{cid: map[code]uint32{}, unicode: map[code][]rune{}, budget: budget}
+// one CMap may, is not used: parseCMap returns nil. So is one the deadline
+// passed while reading, which stop reports: a CMap read in part maps some of
+// a font's codes and not others, and a reader that used it would carry text
+// the deadline decided rather than text the page shows.
+func parseCMap(data []byte, budget *fontBudget, stop func() bool) *cmap {
+	c := &cmap{cid: map[code]uint32{}, unicode: map[code][]rune{}, budget: budget, stop: stop}
 	lex := newLexer(data, 0)
-	p := &parser{lex: lex, contentMode: true}
+	// The values a CMap is read through -- an operand, a destination, an
+	// array of them -- are built within what one CMap's mappings may hold,
+	// counted in the bytes a mapping costs: a destination array of hundreds
+	// of thousands of dictionaries is not built and then ignored.
+	// What one CMap's mappings may hold, and never more than what the
+	// document's fonts may still hold: the values a CMap is read through are
+	// bounded by both.
+	entries := maxCMapEntries
+	if left := maxFontEntries - budget.used; left < entries {
+		entries = left
+	}
+	room := &allowance{left: int64(entries) * cmapEntryBytes, past: errCMapBudget}
+	lex.reserving(room)
+	p := &parser{lex: lex, contentMode: true, allow: room}
 	var stack []object
+	// A value this CMap is read through that is past what it may hold ends
+	// the reading of it where that ran out, and the CMap is abandoned rather
+	// than kept with the mappings read so far: what it would map then is what
+	// the bound decided, and a font is better without it than with half of
+	// it. Every way out of this parse asks.
+	abandoned := func() bool { return room.left == 0 }
 	for !c.unusable {
+		// Each step of this loop reads one object, and the sections it enters
+		// read the deadline as they charge what they hold.
+		if c.stopped() || abandoned() {
+			return nil
+		}
 		obj, err := p.parseObject(0)
 		if err != nil {
 			var kw errKeyword
@@ -168,6 +222,9 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 				// A predefined parent this reader does not carry; an
 				// embedded one would need the resource. Nothing to do.
 			case "endcmap":
+				if abandoned() {
+					return nil
+				}
 				return c.parsed()
 			case "def":
 				if len(stack) >= 2 {
@@ -188,6 +245,9 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 		if len(stack) > 32 {
 			stack = stack[1:]
 		}
+	}
+	if c.unusable || abandoned() {
+		return nil
 	}
 	return c.parsed()
 }
@@ -481,12 +541,28 @@ func (c *cmap) boundIf(err error) bool {
 }
 
 // take charges one mapping, and reports whether the CMap may hold it.
-func (c *cmap) take() bool {
-	c.entries++
-	if c.entries > maxCMapEntries || !c.budget.take(1) {
+func (c *cmap) take() bool { return c.takeN(1) }
+
+// takeN charges n entries for one mapping, and reports whether the CMap may
+// hold it. It is where the deadline is read while a CMap is parsed: a section
+// of a million ranges never returns to the loop that reads each object, and
+// every mapping it holds is charged here.
+func (c *cmap) takeN(n int) bool {
+	c.entries += n
+	if c.entries > maxCMapEntries || !c.budget.take(n) || c.stopped() {
 		c.unusable = true
 	}
 	return !c.unusable
+}
+
+// stopped reports whether the deadline has passed, and never that it has for
+// a CMap read with none.
+func (c *cmap) stopped() bool { return c.stop != nil && c.stop() }
+
+// errCMapBudget is a CMap whose values are past what a document's fonts may
+// hold. The CMap is not used, as one past any other of its bounds is not.
+func errCMapBudget() error {
+	return structureBound("a CMap's values past what a document's fonts may hold")
 }
 
 func asKeyword(err error, kw *errKeyword) bool {
@@ -544,6 +620,13 @@ func (c *cmap) readCodespaces(p *parser) {
 
 func (c *cmap) readRanges(p *parser, unicode bool) {
 	for !c.unusable {
+		// The deadline is read on the cadence of the entries examined, and
+		// not of the entries kept: a section of a million entries the CMap
+		// keeps none of is a section it read.
+		if c.stopped() {
+			c.unusable = true
+			return
+		}
 		lo, err := p.parseObject(0)
 		if err != nil {
 			c.boundIf(err)
@@ -576,7 +659,7 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 		}
 		switch d := dst.(type) {
 		case int64:
-			if d < 0 || d > 1<<31 || !c.take() {
+			if d < 0 || d > 1<<31 || !c.takeN(cmapRangeEntries) {
 				continue
 			}
 			if unicode {
@@ -600,11 +683,11 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 			// The entry is charged before its destination is read, as a
 			// single mapping's is: the reader did the reading whether what it
 			// read is text or not.
-			if !c.take() {
+			if !c.takeN(cmapRangeEntries) {
 				continue
 			}
 			runes := utf16Runes(d)
-			if len(runes) == 0 {
+			if len(runes) == 0 || !c.takeN(destinationEntries(runes)) {
 				continue
 			}
 			r := cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(runes[0])}
@@ -624,10 +707,11 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				if !ok || len(s) > maxCMapDestinationBytes {
 					continue
 				}
-				if !c.take() {
+				runes := utf16Runes(s)
+				if !c.takeN(1 + destinationEntries(runes)) {
 					break
 				}
-				if runes := utf16Runes(s); len(runes) > 0 {
+				if len(runes) > 0 {
 					c.unicode[code{l + uint32(i), n}] = runes
 				}
 			}
@@ -639,6 +723,10 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 
 func (c *cmap) readChars(p *parser, unicode bool) {
 	for !c.unusable {
+		if c.stopped() {
+			c.unusable = true
+			return
+		}
 		src, err := p.parseObject(0)
 		if err != nil {
 			c.boundIf(err)
@@ -681,8 +769,9 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 			// stands for: the mapping is not held, so the glyph is U+FFFD and
 			// counted, and a map holding no mapping establishes nothing. The
 			// entry is charged for all the same.
-			if unicode && len(d) <= maxCMapDestinationBytes && c.take() {
-				if runes := utf16Runes(d); len(runes) > 0 {
+			if unicode && len(d) <= maxCMapDestinationBytes {
+				runes := utf16Runes(d)
+				if c.takeN(1+destinationEntries(runes)) && len(runes) > 0 {
 					c.unicode[key] = runes
 				}
 			}
@@ -721,7 +810,12 @@ func utf16Runes(b []byte) []rune {
 			return nil
 		}
 	}
-	return utf16.Decode(units)
+	// Decode hands back a slice with room for sixty-four runes, which a
+	// destination of one or two would hold for as long as the mapping is
+	// held: a document's fonts may hold millions of mappings, so each keeps
+	// a slice of exactly what it decoded and not the room Decode left.
+	decoded := utf16.Decode(units)
+	return append(make([]rune, 0, len(decoded)), decoded...)
 }
 
 // nextCode reads one code from the head of s by the codespace ranges,

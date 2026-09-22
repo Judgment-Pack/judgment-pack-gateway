@@ -112,8 +112,16 @@ twice, a fraction — are answered by the gateway in its own words, and the adap
 What follows is the contract for requests that reach the adapter.
 
 **Refusals.** A refused request is the adapter exiting 1 with one line on stderr and nothing on
-stdout; the gateway then mints nothing and retains nothing. The adapter checks in this order and
-refuses at the first check that fails:
+stdout; the gateway then mints nothing and retains nothing. The reading of the request is inside
+the adapter's deadline, which runs from its start: a request whose reading has not ended two
+seconds past the deadline — a writer that holds the adapter's stdin open, neither writing nor
+closing it, leaves one — is refused with `adapter-failed`, since no document has been
+established and there is nothing to record. A read that has ended by that cutoff is the
+request, whenever the adapter comes to look at it, and what the deadline then does is
+[recorded](#how-a-document-is-processed); a read that ends after it is not. The cutoff is an
+instant, not a promise about scheduling: a request whose bytes are there is read in the
+ordinary case, and one whose read the operating system has not finished by then is refused. The
+adapter then checks in this order and refuses at the first check that fails:
 
 1. stdin holds more than the **read bound**, 4 × ⌈`--max-bytes` / 3⌉ + 65,536 bytes — the base64
    length of a document at `--max-bytes`, plus room for the name, the media type, the digest and
@@ -360,7 +368,10 @@ status still says what the record is good for.
 
 The adapter works in this order, and the record is what these steps produced.
 
-**The deadline.** `--timeout` runs from when the adapter starts, before it reads the request.
+**The deadline.** `--timeout` runs from when the adapter starts, before it reads the request,
+and it bounds the wait for that reading: a request whose reading has not ended two seconds past
+the deadline is refused ([Refusals](#the-arguments)) rather than recorded, since there is no
+document to record. A request read after the deadline passed is read all the same.
 Steps 4 and 5 check it at the points they name; the first of those checks to find it passed
 records `timeout`, and the adapter goes to step 7. Step 6 checks it once, after the OCR program
 is resolved and digested and immediately before it is started: if the deadline has passed, the
@@ -400,8 +411,9 @@ record carries at most one of the two.
      bound, or a structure past a structure bound. That is `pdf-malformed`. Either way no page
      is listed, `pageCount` is 0, `truncated` is `false`, and the adapter goes to step 7.
 5. **Each counted page is extracted**, from page 1 to page `pageCount`. The deadline is checked
-   before each page and between the operators the adapter interprets on it; a page whose
-   extraction the deadline interrupts is not listed, nor is any later page. The page's outcome
+   before each page, before each of the page's content streams is decoded, and between the
+   operators the adapter interprets on it; a page whose extraction the deadline interrupts is
+   not listed, nor is any later page. The page's outcome
    is assigned from [Page outcomes](#page-outcomes). A page whose content cannot be
    interpreted is listed as `"failed"`, with one error naming it. The page's content is its
    content streams and the streams of the form XObjects it draws, and the operators in them:
@@ -468,24 +480,48 @@ that applied:
 | `--max-inflate` | 64 MiB | the total a document's streams may inflate to, with 16 MiB for any one stream. Every stream the reader decodes counts against the total, a font's or an image's included. Past either bound, a stream of a page's content is `stream-over-bound` and fails that page, a stream read before the walk completes is `pdf-malformed`, and a font or image stream is no error (step 5); a later stream that finds the total spent is past it too — a small file that inflates without end is not read further |
 | `--ocr-max-output` | 32 MiB | the OCR program's stdout; past it, `ocr-failed` |
 | `--max-output` | 1 MiB | the record on stdout; at or below the gateway's `--source-max-output`. A record that would exceed it is not cut: the adapter refuses with `record-over-bound`, and a document whose text or inline original cannot be carried is one the operator sizes the bounds for |
-| `--timeout` | 25 s | the adapter's deadline, a whole number of milliseconds, reported as `timeoutMs`; past it, `timeout` or `ocr-timeout` |
+| `--timeout` | 25 s | the adapter's deadline, a whole number of milliseconds, reported as `timeoutMs`; past it, `timeout` or `ocr-timeout`, or, for a request whose reading has not ended two seconds past it, a refusal |
 
 Each bound is a positive integer no larger than the ceiling the adapter states for it in its
 documentation, and `--timeout` a positive duration in whole milliseconds under its ceiling; any
 other value is a usage error, and the adapter exits 2 without reading the request. Every ceiling
 keeps the bound, and every figure derived from it, within the canonical domain's integers; for
 `--max-bytes`, whose read bound is derived from it, that holds up to 6,755,399,441,006,589, and
-`attachment.Check` refuses a record reporting a larger `maxBytes`. Object count,
-nesting depth, cross-reference chain length, page-tree depth and operators per page are bounded
-by constants the adapter states in its documentation: one met while the document is opened or
+`attachment.Check` refuses a record reporting a larger `maxBytes`. Object count, the bytes the
+objects read hold, nesting depth, cross-reference chain length, page-tree depth, operators per
+page, the bytes the operands of a page hold, and the work one page costs in streams read and
+filter-list entries read are
+bounded by constants the adapter states in its documentation: one met while the document is opened or
 its page tree walked is `pdf-malformed` (step 4), and one met in a page's content fails that
 page (step 5).
 
 **A deadline is when work stops being started, not a completion guarantee.** The adapter checks
 its deadline at the points [the steps](#how-a-document-is-processed) name, and an operation
-between two checks runs to its end. At the deadline, an OCR program that has not finished is
-ended: the adapter kills the process it started, not that process's own children, waits up to
-two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
+between two checks runs to its end. Each check reads the clock as well as the context it was
+given, so a deadline the clock has reached stops the work whether or not the timer that cancels
+that context has run. The reading of the request is waited on to an instant — two seconds past
+the deadline, and never nearer than fifty milliseconds from when the read began: that floor is a
+minimum cutoff horizon and not a minimum wait, and it is the cutoff only where the deadline and
+the two seconds after it together fall earlier than fifty milliseconds from the read's start,
+which is a deadline more than 1,950 milliseconds old when the read begins. Such a deadline would
+otherwise leave a read of bytes that are already there less than fifty milliseconds, possibly
+none at all, where a deadline a millisecond old leaves the rest of those two seconds and never
+reaches the floor. A read that ended at or before that instant is the request and is taken,
+whether or not its result had been handed over when the cutoff fired, since the instant it ended is
+recorded where the cutoff's arbitration reads it; a read that ended after it is not the request,
+and the request is refused. An arbitration that finds that no read has ended is committed only
+once the clock is strictly past the cutoff, so that a read stamped after it is necessarily a late
+read: the refusal says that no read had ended by the cutoff, not that none had ended by the
+moment the adapter looked. That has one exception, and it is a refusal rather than a longer wait:
+the looks such an arbitration makes are counted, and a clock that has stood still for 4,096 looks
+is treated as past the cutoff, so a read that then ends exactly at the cutoff is refused. Only a
+clock that does not advance reaches it — the adapter reads the system clock, and the cutoff's own
+timer has fired before it looks, so the first reading settles it — and without the exception a
+clock that never advanced, for a read that never ended, would be waited on for ever. Nothing
+there is an elapsed time: what ends the wait is a reading of the clock, not an interval. At the
+deadline, an OCR program that has not finished is ended: the adapter kills the process it
+started, not that process's own children, waits up to two seconds for that process to exit and
+its stdout to reach its end, and then closes the pipe
 itself, so a process left behind holding it does not delay the record past those two seconds.
 The record is therefore written some time after the deadline, which is why `--timeout` sits
 under the source's timeout — thirty seconds by default — with room to spare.

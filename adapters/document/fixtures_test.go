@@ -51,7 +51,7 @@ func TestFixturesYieldTheirRecords(t *testing.T) {
 			if c.cfg != nil {
 				c.cfg(&cfg)
 			}
-			req, err := ParseRequest(strings.NewReader(`{"document":{"name":"`+c.file+`","mediaType":"`+c.mediaType+`","bytes":"`+base64.StdEncoding.EncodeToString(data)+`"}}`), cfg, fixedNow)
+			req, err := ParseRequest(context.Background(), strings.NewReader(`{"document":{"name":"`+c.file+`","mediaType":"`+c.mediaType+`","bytes":"`+base64.StdEncoding.EncodeToString(data)+`"}}`), cfg, fixedNow)
 			if err != nil {
 				t.Fatal(err)
 			}

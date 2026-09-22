@@ -274,12 +274,16 @@ func (b *Builder) Bytes() []byte {
 		size++
 		xrefNum := size - 1
 		var rows bytes.Buffer
+		// The third field carries an object's index within its object stream,
+		// which is as large as the objects one stream may hold: four bytes,
+		// like the second, so that an index past 255 is the index and not the
+		// low byte of it.
 		write := func(t int, f2 int, f3 int) {
 			rows.WriteByte(byte(t))
 			rows.Write([]byte{byte(f2 >> 24), byte(f2 >> 16), byte(f2 >> 8), byte(f2)})
-			rows.WriteByte(byte(f3))
+			rows.Write([]byte{byte(f3 >> 24), byte(f3 >> 16), byte(f3 >> 8), byte(f3)})
 		}
-		write(0, 0, 255)
+		write(0, 0, 65535)
 		for num := 1; num < size; num++ {
 			switch {
 			case num == xrefNum:
@@ -300,7 +304,7 @@ func (b *Builder) Bytes() []byte {
 			data = z.Bytes()
 			filter = " /Filter /FlateDecode"
 		}
-		fmt.Fprintf(&out, "%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 1] /Root %d 0 R /ID [<%x> <%x>]%s /Length %d%s >>\nstream\n", xrefNum, size, b.Root, fileID, fileID, trailerExtra, len(data), filter)
+		fmt.Fprintf(&out, "%d 0 obj\n<< /Type /XRef /Size %d /W [1 4 4] /Root %d 0 R /ID [<%x> <%x>]%s /Length %d%s >>\nstream\n", xrefNum, size, b.Root, fileID, fileID, trailerExtra, len(data), filter)
 		out.Write(data)
 		out.WriteString("\nendstream\nendobj\n")
 	} else {

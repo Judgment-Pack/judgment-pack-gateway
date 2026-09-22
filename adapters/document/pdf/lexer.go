@@ -105,9 +105,107 @@ type lexer struct {
 	// may be the image's data rather than the dictionary, and a dictionary
 	// read past a byte it does not admit establishes nothing.
 	strict bool
+	// work is what the bytes this lexer advances over are charged to: a file
+	// whose objects each read the rest of it -- a comment with no line end
+	// after every object is one -- spends the allowance instead of being read
+	// once for every object. It is nil for a lexer whose reading is not
+	// charged: a page's content is read once from end to end, and what that
+	// costs is the page's own work allowance, charged where the stream is
+	// decoded.
+	work *allowance
+	// room is what the memory of the token being built is charged to, as the
+	// builder grows into it. Every lexer has one where its parser has one,
+	// content and CMaps included: what a token takes is memory wherever it is
+	// read, while what it advanced over is the reading of a file.
+	room *allowance
+	// charged is how far the bytes advanced over have been charged. It only
+	// rises, so a parser that goes back over what it has read does not pay for
+	// it twice, and each byte of the slice costs this lexer one charge.
+	charged int
+	// reserved is what the token being built has been charged for the room it
+	// holds, so that growing it charges what the growth costs and no more.
+	reserved int64
+	// spent is set when a charge did not fit. Every token after it is an
+	// error, so a parse whose reading has run out of allowance ends where it
+	// is rather than reading on and counting: a lookahead that threw its
+	// error away would otherwise go on reading at no cost.
+	spent bool
 }
 
-func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos} }
+func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos, charged: pos} }
+
+// within gives the lexer the allowance a document's reading spends: both what
+// its tokens take and what its reading of the file costs.
+func (l *lexer) within(a *allowance) *lexer {
+	l.work, l.room = a, a
+	return l
+}
+
+// reserving gives the lexer the allowance its tokens' memory is charged to,
+// and leaves its reading uncharged: a content stream and a CMap are each read
+// once from end to end, so what they cost to read is bounded where they are
+// decoded, while what their tokens hold is memory like any other.
+func (l *lexer) reserving(a *allowance) *lexer {
+	l.room = a
+	return l
+}
+
+// advanced charges the bytes read since the last charge. What a value costs
+// to hold is charged apart from this, by the parser that builds it: the two
+// are different costs of the same object -- the file it was read from and the
+// memory it takes -- and a file that is read without being held, as a comment
+// or a candidate given up on is, is charged only here.
+//
+// It is called on the way out of every reading of a token, and again where a
+// comment ends, where a string ends and where skipping whitespace ends: the
+// way out covers every reader and every error of one, and the others charge
+// before a parser can step back over what was read -- an unterminated string
+// read as the token after a value is stepped back over, and the rest of the
+// data would otherwise be read for every value in it and charged for none.
+// A byte is charged once however often it is offered, so the calls that
+// overlap cost nothing.
+func (l *lexer) advanced() {
+	if l.pos > l.charged {
+		if !l.work.take(int64(l.pos - l.charged)) {
+			l.spent = true
+		}
+		l.charged = l.pos
+	}
+}
+
+// reserve charges the room a token being built has grown to, and reports
+// whether the allowance had it. The bytes are charged as the room is taken,
+// so a token past what is left is never allocated whole and then refused.
+func (l *lexer) reserve(capacity int) bool {
+	want := goSizeClass(int64(capacity))
+	if want <= l.reserved {
+		return true
+	}
+	if !l.room.take(want - l.reserved) {
+		l.spent = true
+		l.reserved = 0
+		return false
+	}
+	l.reserved = want
+	return true
+}
+
+// errRead is the error every token is once an allowance this lexer spends is
+// spent: the memory its tokens take, or the reading of the file itself.
+func (l *lexer) errRead() error {
+	if l.room != nil {
+		return l.room.exhausted()
+	}
+	return l.work.exhausted()
+}
+
+// stringToken is a string token read from start to the lexer's position,
+// its bytes charged where it ends.
+func (l *lexer) stringToken(start int, out []byte) token {
+	l.advanced()
+	l.reserved = 0
+	return token{kind: tokString, pos: start, end: l.pos, str: out}
+}
 
 func isWhitespace(c byte) bool {
 	return c == 0 || c == '\t' || c == '\n' || c == '\f' || c == '\r' || c == ' '
@@ -123,8 +221,11 @@ func isDelimiter(c byte) bool {
 
 func isRegular(c byte) bool { return !isWhitespace(c) && !isDelimiter(c) }
 
-// skipSpace skips whitespace and comments.
+// skipSpace skips whitespace and comments. A comment runs to the end of its
+// line, which may be the end of the data: what it passes over is charged, as
+// every other advance is.
 func (l *lexer) skipSpace() {
+	l.advanced()
 	for l.pos < len(l.data) {
 		c := l.data[l.pos]
 		if isWhitespace(c) {
@@ -135,10 +236,15 @@ func (l *lexer) skipSpace() {
 			for l.pos < len(l.data) && l.data[l.pos] != '\n' && l.data[l.pos] != '\r' {
 				l.pos++
 			}
+			l.advanced()
 			continue
 		}
-		return
+		break
 	}
+	// What was skipped is charged here and not at the next reading of a
+	// token: whitespace at the end of the data may be all that is left, and
+	// nothing after it would charge it.
+	l.advanced()
 }
 
 // errStructureBound is the class of every error that says the document has a
@@ -162,7 +268,19 @@ var errLexer = fmt.Errorf("%w: lexical error", errStructureBound)
 // is skipped so a damaged file still yields its objects, unless the lexer is
 // strict: see the strict field. Skipping is this loop, never a call per byte
 // skipped, so a run of such bytes takes no more stack than one does.
+//
+// Every token reader is reached through here, and the charge on the way out
+// covers every way out of them: this call's error exits and the readers'
+// own -- a string past the bound on its kind is read before it is refused,
+// and a reader that refused one without charging would let a file be read
+// again for every object that asks. A token read once the allowance is spent
+// is an error rather than a token, so a parse that has run out of it ends
+// where it stands, a lookahead that would throw the error away included.
 func (l *lexer) next() (token, error) {
+	defer l.advanced()
+	if l.spent {
+		return token{}, l.errRead()
+	}
 	for {
 		l.skipSpace()
 		if l.pos >= len(l.data) {
@@ -319,6 +437,9 @@ func normalizeReal(s string) string {
 }
 
 func (l *lexer) name() (token, error) {
+	// A name's bytes are built into a buffer of their own where an escape
+	// makes them differ from the file's, and it is charged as it grows, as a
+	// string's is.
 	start := l.pos
 	l.pos++ // the slash
 	var out []byte
@@ -332,10 +453,14 @@ func (l *lexer) name() (token, error) {
 		}
 		out = append(out, c)
 		l.pos++
+		if !l.reserve(cap(out)) {
+			return token{}, l.errRead()
+		}
 		if len(out) > maxNameBytes {
 			return token{}, fmt.Errorf("%w: name past %d bytes", errLexer, maxNameBytes)
 		}
 	}
+	l.reserved = 0
 	return token{kind: tokName, pos: start, end: l.pos, name: Name(out)}, nil
 }
 
@@ -371,9 +496,12 @@ func (l *lexer) hexString() (token, error) {
 		l.pos++
 		if c == '>' {
 			if half {
-				out = append(out, pending<<4)
+				var err error
+				if out, err = l.padHex(out, pending); err != nil {
+					return token{}, err
+				}
 			}
-			return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+			return l.stringToken(start, out), nil
 		}
 		if isWhitespace(c) {
 			continue
@@ -397,15 +525,39 @@ func (l *lexer) hexString() (token, error) {
 		} else {
 			pending, half = v, true
 		}
+		if !l.reserve(cap(out)) {
+			return token{}, l.errRead()
+		}
 		if len(out) > maxStringBytes {
 			return token{}, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
 		}
 	}
-	// Unterminated: what was read is the string.
+	// Unterminated: what was read is the string, and its last nibble is padded
+	// as it would be at a '>'.
 	if half {
-		out = append(out, pending<<4)
+		var err error
+		if out, err = l.padHex(out, pending); err != nil {
+			return token{}, err
+		}
 	}
-	return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+	return l.stringToken(start, out), nil
+}
+
+// padHex appends the byte an odd last nibble is padded into. That byte is a
+// byte of the string like every other: it is reserved like every other -- a
+// token that grew into a larger buffer to hold it is a token that holds it,
+// and one the allowance cannot pay for is not returned -- and it counts
+// against the bound on a string like every other, so a string of the bound
+// exactly and one nibble more is a string past the bound, wherever it ended.
+func (l *lexer) padHex(out []byte, pending byte) ([]byte, error) {
+	out = append(out, pending<<4)
+	if !l.reserve(cap(out)) {
+		return nil, l.errRead()
+	}
+	if len(out) > maxStringBytes {
+		return nil, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
+	}
+	return out, nil
 }
 
 func (l *lexer) literalString() (token, error) {
@@ -460,7 +612,7 @@ func (l *lexer) literalString() (token, error) {
 		case ')':
 			depth--
 			if depth == 0 {
-				return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+				return l.stringToken(start, out), nil
 			}
 			out = append(out, c)
 		case '\r':
@@ -472,11 +624,14 @@ func (l *lexer) literalString() (token, error) {
 		default:
 			out = append(out, c)
 		}
+		if !l.reserve(cap(out)) {
+			return token{}, l.errRead()
+		}
 		if len(out) > maxStringBytes {
 			return token{}, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
 		}
 	}
-	return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+	return l.stringToken(start, out), nil
 }
 
 // peekKeyword reports whether the next token is the keyword given,
@@ -502,6 +657,23 @@ type parser struct {
 	// and nothing is repaired -- either the dictionary reads as pairs to an
 	// ID of its own, or where the image's data begins is not established.
 	inlineImage bool
+	// allow is what the values this parser builds may cost to hold. It is
+	// spent as they are built, element by element and member by member, so
+	// that a value past what the reader may hold ends the parse where it
+	// stands rather than being built whole and refused after: the memory a
+	// refused value would have taken is never taken. It is nil for a parse
+	// with no allowance -- the header of an object stream, a test's own --
+	// where the value's size is bounded by what it is parsed from.
+	allow *allowance
+}
+
+// hold charges what a value the parser has just built costs to hold, and
+// reports the error to end the parse with when the document may not hold it.
+func (p *parser) hold(n int64) error {
+	if p.allow.take(n) {
+		return nil
+	}
+	return p.allow.exhausted()
 }
 
 // errKeyword carries a keyword the parser met where an object was
@@ -541,6 +713,9 @@ func (p *parser) parseObject(depth int) (object, error) {
 	case tokEOF:
 		return nil, errUnexpectedEOF
 	case tokInteger:
+		if err := p.hold(parsedValueBytes); err != nil {
+			return nil, err
+		}
 		if !p.contentMode {
 			// Two integers followed by R are a reference.
 			save := p.lex.pos
@@ -558,12 +733,24 @@ func (p *parser) parseObject(depth int) (object, error) {
 		}
 		return t.i, nil
 	case tokReal:
+		if err := p.hold(parsedValueBytes); err != nil {
+			return nil, err
+		}
 		return t.f, nil
 	case tokName:
+		if err := p.hold(parsedStringBytes + grownBytes(int64(len(t.name)))); err != nil {
+			return nil, err
+		}
 		return t.name, nil
 	case tokString:
+		if err := p.hold(parsedStringBytes + grownBytes(int64(len(t.str)))); err != nil {
+			return nil, err
+		}
 		return String(t.str), nil
 	case tokArrayOpen:
+		if err := p.hold(parsedArrayBytes); err != nil {
+			return nil, err
+		}
 		arr := Array{}
 		for {
 			save := p.lex.pos
@@ -617,12 +804,18 @@ func (p *parser) parseObject(depth int) (object, error) {
 				}
 				return nil, err
 			}
+			if err := p.hold(parsedSlotBytes); err != nil {
+				return nil, err
+			}
 			arr = append(arr, item)
 			if len(arr) > maxContainerItems {
 				return nil, fmt.Errorf("%w: array past %d items", errStructureBound, maxContainerItems)
 			}
 		}
 	case tokDictOpen:
+		if err := p.hold(parsedDictBytes); err != nil {
+			return nil, err
+		}
 		dict := Dict{}
 		for {
 			tt, err := p.lex.next()
@@ -671,6 +864,9 @@ func (p *parser) parseObject(depth int) (object, error) {
 					p.lex.pos = vt.pos
 					return nil, errInlineImageUnended
 				}
+				if err := p.hold(parsedMemberBytes + grownBytes(int64(len(key)))); err != nil {
+					return nil, err
+				}
 				dict[key] = nil
 				return dict, nil
 			}
@@ -691,6 +887,11 @@ func (p *parser) parseObject(depth int) (object, error) {
 				}
 				return nil, err
 			}
+			if _, taken := dict[key]; !taken {
+				if err := p.hold(parsedMemberBytes + grownBytes(int64(len(key)))); err != nil {
+					return nil, err
+				}
+			}
 			dict[key] = val
 			if len(dict) > maxContainerItems {
 				return nil, fmt.Errorf("%w: dictionary past %d members", errStructureBound, maxContainerItems)
@@ -698,11 +899,17 @@ func (p *parser) parseObject(depth int) (object, error) {
 		}
 	case tokKeyword:
 		switch t.keyword {
-		case "true":
-			return true, nil
-		case "false":
-			return false, nil
+		case "true", "false":
+			if err := p.hold(parsedValueBytes); err != nil {
+				return nil, err
+			}
+			return t.keyword == "true", nil
 		case "null":
+			// The null object is charged as any other value is: what holds it
+			// holds a slot and an interface, whatever the interface says.
+			if err := p.hold(parsedValueBytes); err != nil {
+				return nil, err
+			}
 			return nil, nil
 		}
 		return nil, errKeyword{keyword: t.keyword, pos: t.pos}

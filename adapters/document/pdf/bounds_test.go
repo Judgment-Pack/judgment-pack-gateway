@@ -682,8 +682,8 @@ func TestDecodersRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, in := range inputs {
-				d := &Document{budget: &inflateBudget{total: 1 << 30, one: 1 << 30}}
-				got, err := d.decodeStream(&stream{dict: obj.(Dict), raw: fc.encode(in)}, true)
+				d := budgeted(1<<30, 1<<30)
+				got, err := d.decodeStream(&stream{dict: obj.(Dict), raw: fc.encode(in)}, true, heldByDocument)
 				want := in
 				if strings.HasPrefix(fc.name, "PNG") {
 					want = append([]byte{}, in...)
@@ -1253,9 +1253,12 @@ func TestContentStreamsPastTheirBoundFailThePage(t *testing.T) {
 }
 
 // budgeted is a document whose decoders write into a budget of the total
-// and per-stream bounds given.
+// and per-stream bounds given. It carries a megabyte of file, since the
+// reading the decoders do is charged against what the document may read and
+// a document of no bytes may read nothing; what these measure is the
+// inflation budget and not that one.
 func budgeted(total, one int64) *Document {
-	return &Document{budget: &inflateBudget{total: total, one: one}}
+	return &Document{data: make([]byte, 1<<20), budget: &inflateBudget{total: total, one: one}}
 }
 
 // The inflate bound is exact on both sides, for a decoder that writes whole
@@ -1350,7 +1353,7 @@ func TestAFontChargeThatDoesNotFitChargesNothing(t *testing.T) {
 func TestALongCMapRangeIsCutToItsSpan(t *testing.T) {
 	head := "begincmap\n1 begincodespacerange <00000000> <FFFFFFFF> endcodespacerange\n"
 	t.Run("a cidrange", func(t *testing.T) {
-		c := parseCMap([]byte(head+"1 begincidrange <00000000> <00FF0000> 0 endcidrange\nendcmap\n"), &fontBudget{})
+		c := parseCMap([]byte(head+"1 begincidrange <00000000> <00FF0000> 0 endcidrange\nendcmap\n"), &fontBudget{}, nil)
 		if c == nil {
 			t.Fatal("the CMap was not used")
 		}
@@ -1364,7 +1367,7 @@ func TestALongCMapRangeIsCutToItsSpan(t *testing.T) {
 		}
 	})
 	t.Run("a bfrange", func(t *testing.T) {
-		c := parseCMap([]byte(head+"1 beginbfrange <00000000> <00FF0000> <0041> endbfrange\nendcmap\n"), &fontBudget{})
+		c := parseCMap([]byte(head+"1 beginbfrange <00000000> <00FF0000> <0041> endbfrange\nendcmap\n"), &fontBudget{}, nil)
 		if c == nil {
 			t.Fatal("the CMap was not used")
 		}

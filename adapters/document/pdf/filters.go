@@ -153,10 +153,21 @@ func (d *Document) filtersOf(dict Dict) ([]filterSpec, error) {
 	case nil:
 		return nil, nil
 	case Name:
+		if err := d.chargeWork(filterStepBytes); err != nil {
+			return nil, err
+		}
 		specs = []filterSpec{{name: f, parms: d.dictOf(pv)}}
 	case Array:
 		parms := d.arrayOf(pv)
 		for i, item := range f {
+			// An entry of a filter list is read before it is known to be a
+			// filter at all, and the list is read again for every stream that
+			// names it: each entry is charged as it is read, whether or not
+			// it names a filter this reader has, so that a list rejected at
+			// its last entry costs what reading it cost.
+			if err := d.chargeWork(filterStepBytes); err != nil {
+				return nil, err
+			}
 			name, ok := d.nameOf(item)
 			if !ok {
 				return nil, malformed("/Filter array holds a non-name")
@@ -175,15 +186,51 @@ func (d *Document) filtersOf(dict Dict) ([]filterSpec, error) {
 	return specs, nil
 }
 
+// decodedHeld says who keeps the decrypted copy decodeStream makes, and so
+// which allowance answers for it. The stream's own dictionary does not decide
+// it: a /Type a file declares is a label the file chose, while who holds the
+// copy is settled by the caller that asked for the decoding, and the same
+// bytes are the document's cache to one caller and a page's working copy to
+// another.
+type decodedHeld int
+
+const (
+	// heldByPage is a copy dropped when the page that asked for it is done:
+	// its content, a form it draws, a font's or a CMap's bytes. It is charged
+	// to that page's work allowance and released with the page.
+	heldByPage decodedHeld = iota
+	// heldByDocument is a copy the document's caches keep for its life: the
+	// decoded data of an object stream, which every object read out of it
+	// points into. It is charged to the document's balance.
+	heldByDocument
+)
+
 // decodeStream decrypts (unless the stream is exempt) and applies every
 // standard filter, refusing an image filter and any it does not know.
-// noDecrypt is for cross-reference streams, which are never encrypted.
-func (d *Document) decodeStream(s *stream, noDecrypt bool) ([]byte, error) {
+// noDecrypt is for cross-reference streams, which are never encrypted, and
+// held says who keeps the decrypted copy this makes.
+func (d *Document) decodeStream(s *stream, noDecrypt bool, held decodedHeld) ([]byte, error) {
 	// Decoding a stream is one read: its filters, their parameters and its
 	// length are fields of one dictionary. See beginRead.
 	defer d.beginRead()()
 	data := s.raw
 	if d.crypt != nil && !noDecrypt && s.dict["Type"] != Name("XRef") {
+		// Decrypting copies the stream's bytes, and the copy is charged before
+		// it is made, so a document whose streams decrypt to more than it may
+		// hold leaves them unread rather than holding them. Who is charged is
+		// who owns the copy, and the caller says which that is: an object
+		// stream's decoded data is held by the caches for the life of the
+		// document, while a copy made for a page -- its content, a form it
+		// draws, a font's or a CMap's bytes -- is dropped when the page is
+		// done, and is charged to that page's work and released with it.
+		copied := goSizeClass(int64(len(data)))
+		if held == heldByDocument {
+			if !d.chargeParsed(copied) {
+				return nil, errParsedBudget()
+			}
+		} else if err := d.chargeWork(copied); err != nil {
+			return nil, err
+		}
 		var err error
 		data, err = d.crypt.decryptStream(s, data)
 		if err != nil {
@@ -194,7 +241,29 @@ func (d *Document) decodeStream(s *stream, noDecrypt bool) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(specs) > 0 && !d.pageWorking {
+		// The bytes a decoder is handed are read on somebody's account. A
+		// page's content and the forms it draws are charged to that page's work
+		// by the callers that ask for them, before they ask; a stream decoded
+		// while the document is opened or rebuilt has no page to answer for it,
+		// so the document's balance pays, as it pays for every other reading of
+		// the file. What is charged is what the decoders are handed -- the
+		// decrypted copy where there is one -- and it is charged before they
+		// run, since a filter that searches a megabyte and yields nothing has
+		// still read the megabyte, and a file of streams that share one long
+		// tail would otherwise have it read once for each of them at no cost. A
+		// stream with no filter hands nothing to a decoder: its bytes are the
+		// file's own, read where they are parsed and charged there. A
+		// cross-reference stream skips decryption, not this.
+		if !d.chargeParsed(int64(len(data))) {
+			return nil, errParsedBudget()
+		}
+	}
 	for _, f := range specs {
+		// Applying a filter is work the page that asked for the stream answers
+		// for, however little the filter yields; it was charged as its entry
+		// was read, above, and is not charged again here: an entry costs one
+		// step whether it is applied or rejected.
 		switch f.name {
 		case "FlateDecode", "Fl":
 			data, err = d.inflate(data)
