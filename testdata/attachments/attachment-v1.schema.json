@@ -517,6 +517,55 @@
                   "const": "text-snapshot-v1"
                 }
               }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "requestedUrl",
+                "url",
+                "version",
+                "responseDigest",
+                "mediaType",
+                "format"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "web"
+                },
+                "requestedUrl": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "version": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "responseDigest": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "mediaType": {
+                  "enum": [
+                    "text/html",
+                    "text/plain",
+                    "application/pdf"
+                  ]
+                },
+                "format": {
+                  "enum": [
+                    "static-text-v1",
+                    "original-v1"
+                  ]
+                }
+              }
             }
           ],
           "description": "One variant per source kind, including reviewed connected-source text snapshots."

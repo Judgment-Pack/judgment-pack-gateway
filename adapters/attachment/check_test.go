@@ -558,6 +558,9 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			obj(v, "content")["chars"] = num(1)
 			obj(v, "document")["size"] = num(3)
 		}},
+		{"invalid web source", "complete-verbatim-text", "web-source", func(v map[string]any) {
+			obj(v, "provenance")["source"] = map[string]any{"kind": "web", "requestedUrl": "http://localhost", "url": "https://example.com", "version": "bad", "responseDigest": "bad", "mediaType": "text/plain", "format": "original-v1"}
+		}},
 		{"invalid connected source", "complete-verbatim-text", "connected-source", func(v map[string]any) {
 			obj(v, "provenance")["source"] = map[string]any{"kind": "connected-source", "provider": "unknown", "resourceId": "x", "url": "https://example.invalid", "version": "bad", "format": "text-snapshot-v1"}
 		}},

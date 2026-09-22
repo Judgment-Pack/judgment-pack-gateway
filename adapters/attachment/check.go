@@ -205,6 +205,11 @@ func (c *checker) shape(v any) {
 				sourceMembers[key] = "string"
 			}
 		}
+		if source, ok := prov["source"].(map[string]any); ok && source["kind"] == SourceWeb {
+			for _, key := range []string{"requestedUrl", "url", "version", "format", "mediaType", "responseDigest"} {
+				sourceMembers[key] = "string"
+			}
+		}
 		c.object("provenance.source", prov["source"], sourceMembers)
 		if prov["ocr"] != nil {
 			if ocr := c.object("provenance.ocr", prov["ocr"], map[string]string{"program": "string", "digest": "string", "pages": "array"}); ocr != nil {
@@ -352,7 +357,7 @@ func (c *checker) values(rec *Record) {
 	if pv.Adapter.Name == "" || !ValidDigest(pv.Adapter.Digest) {
 		c.fail("adapter-identity", "provenance.adapter has an empty name or a digest that is not one")
 	}
-	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive && pv.Source.Kind != SourceGmail && pv.Source.Kind != SourceConnected {
+	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive && pv.Source.Kind != SourceGmail && pv.Source.Kind != SourceConnected && pv.Source.Kind != SourceWeb {
 		c.fail("source-kind", "provenance.source.kind is %q, which version 1 does not name", pv.Source.Kind)
 	}
 	if !stampForm.MatchString(pv.ObservedAt) {
@@ -823,9 +828,20 @@ func (c *checker) encryption(rec *Record) {
 }
 
 func (c *checker) source(rec *Record) {
-	if rec.Provenance.Source.Kind == SourceGoogleDrive || rec.Provenance.Source.Kind == SourceGmail || rec.Provenance.Source.Kind == SourceConnected {
+	if rec.Provenance.Source.Kind == SourceGoogleDrive || rec.Provenance.Source.Kind == SourceGmail || rec.Provenance.Source.Kind == SourceConnected || rec.Provenance.Source.Kind == SourceWeb {
 		src, o := rec.Provenance.Source, rec.Original
-		if src.Kind == SourceConnected {
+		if src.Kind == SourceWeb {
+			if !ValidWebSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version || rec.Provenance.OCR != nil {
+				c.fail("web-source", "Web source identity or snapshot is invalid")
+			}
+			if src.Format == "static-text-v1" {
+				if rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText {
+					c.fail("web-source", "Web static text snapshot is invalid")
+				}
+			} else if rec.Document.MediaType != src.MediaType || rec.Document.ID != src.ResponseDigest {
+				c.fail("web-source", "Web original snapshot is invalid")
+			}
+		} else if src.Kind == SourceConnected {
 			if !ValidConnectedSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version || rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText {
 				c.fail("connected-source", "Connected source identity or snapshot is invalid")
 			}

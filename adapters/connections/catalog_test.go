@@ -42,3 +42,21 @@ func TestCatalogDoesNotAdvertiseUnsupportedOperations(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicWebIsAnInputSourceNotAnAccountProvider(t *testing.T) {
+	first := ConnectionCatalog()
+	if first.Version != 2 || len(first.Sources) != 1 {
+		t.Fatal("wrong catalog version or sources")
+	}
+	source := first.Sources[0]
+	if source.ID != "web" || source.Input != "url" || source.MaxBytes != 4<<20 || len(source.MediaTypes) != 3 {
+		t.Fatal(source)
+	}
+	if _, exists := LookupProvider("web"); exists {
+		t.Fatal("public web became an account provider")
+	}
+	first.Sources[0].MediaTypes[0] = "script"
+	if ConnectionCatalog().Sources[0].MediaTypes[0] != "text/html" {
+		t.Fatal("catalog mutation leaked")
+	}
+}

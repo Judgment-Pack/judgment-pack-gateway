@@ -671,3 +671,15 @@ checks identify the source; they do not establish that the provider returned it.
 A snapshot is the returned/exported text, not a claim of complete upstream content.
 Old consumers that do not know this source kind must not reinterpret it as an
 inline upload. The original Google and inline variants keep their existing rules.
+
+## Selected public web source extension
+
+[Public web sources](public-web-sources.md) adds `kind: "web"` with required
+`requestedUrl`, `url`, `version`, `responseDigest`, `mediaType`, and `format`.
+Both URLs are bounded public-HTTPS source identities; network admission belongs
+to the adapter. `version` equals the retained byte digest and document identity.
+HTML uses `static-text-v1` and retains a plain-text snapshot, not original HTML;
+plain text and PDFs use `original-v1` with equal response and retained digests.
+Original bytes are inline base64; OCR is absent. Consumers must reject an unknown
+source kind and must not reinterpret it as a caller upload. No earlier variant
+or receipt format changes.

@@ -115,6 +115,8 @@ jobs:
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_gmail_schema.py "$RUNNER_TEMP/gmail-record.json"
           JPACK_TEST_NOTION_RECORD="$RUNNER_TEMP/notion-record.json" JPACK_TEST_OBSIDIAN_RECORD="$RUNNER_TEMP/obsidian-record.json" go test ./connections -run '^Test(NotionOAuthSearchSelectedSnapshot|ObsidianSelectedSnapshotAndBoundary)$' -count=1
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_connected_schema.py "$RUNNER_TEMP/notion-record.json" "$RUNNER_TEMP/obsidian-record.json"
+          JPACK_TEST_WEB_RECORD="$RUNNER_TEMP/web-record.json" go test ./websource -run '^TestWebSnapshotAndRedirect$' -count=1
+          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_web_schema.py "$RUNNER_TEMP/web-record.json"
       # The shared descriptor vectors are what make_vectors.py writes, and
       # every schema they and the library fixtures say schema grammar 1
       # accepts is a schema under both dialects' meta-schemas
