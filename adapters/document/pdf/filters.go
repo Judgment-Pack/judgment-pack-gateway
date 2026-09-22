@@ -179,6 +179,9 @@ func (d *Document) filtersOf(dict Dict) ([]filterSpec, error) {
 // standard filter, refusing an image filter and any it does not know.
 // noDecrypt is for cross-reference streams, which are never encrypted.
 func (d *Document) decodeStream(s *stream, noDecrypt bool) ([]byte, error) {
+	// Decoding a stream is one read: its filters, their parameters and its
+	// length are fields of one dictionary. See beginRead.
+	defer d.beginRead()()
 	data := s.raw
 	if d.crypt != nil && !noDecrypt && s.dict["Type"] != Name("XRef") {
 		var err error
@@ -879,17 +882,22 @@ func (d *Document) deflateConsumed(data []byte) (int, uint32, error) {
 	return len(data) - left.r.Len(), out.sum.Sum32(), nil
 }
 
-// deadlineBytes is the bytes a decoder reads, with the deadline read on the
-// cadence the package reads it at: a decoder that produces nothing charges
-// nothing, and would otherwise walk to the end of what it was given whatever
-// the clock says.
+// deadlineBytes is the bytes a decoder reads, with the deadline read as they
+// are read: a decoder that produces nothing charges nothing, and would
+// otherwise walk to the end of what it was given whatever the clock says. A
+// byte at a time is read on the package's cadence and a block at a time on
+// every call, since the cadence counts readings and a block is many.
 type deadlineBytes struct {
 	d *Document
 	r *bytes.Reader
 }
 
 func (b *deadlineBytes) Read(p []byte) (int, error) {
-	if b.d.deadlinePassed() {
+	// A read that hands over many bytes at once is the work of many readings
+	// of one byte, so the clock is read on each such call rather than on the
+	// cadence, which counts calls: a stream of whole blocks is handed over in
+	// a few hundred of them and would otherwise never reach one reading.
+	if b.d.deadlineNow() {
 		return 0, b.d.deadline()
 	}
 	return b.r.Read(p)
@@ -1072,6 +1080,12 @@ func (d *Document) jpegFraming(data []byte) (int, error) {
 			}
 			j := i + 1
 			for j < len(data) && data[j] == 0xFF {
+				// A run of fill bytes is as long as the writer made it, and
+				// walking it is the same work as walking any other bytes:
+				// the clock is read across it as it is across them.
+				if d.deadlinePassed() {
+					return 0, d.deadline()
+				}
 				j++
 			}
 			if j >= len(data) {

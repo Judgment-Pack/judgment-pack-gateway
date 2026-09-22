@@ -99,6 +99,12 @@ type token struct {
 type lexer struct {
 	data []byte
 	pos  int
+	// strict is set while an inline image's dictionary is read. A byte that
+	// begins no token is skipped everywhere else, so that a damaged file
+	// still yields its objects; there it is not, since what stands after it
+	// may be the image's data rather than the dictionary, and a dictionary
+	// read past a byte it does not admit establishes nothing.
+	strict bool
 }
 
 func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos} }
@@ -153,9 +159,9 @@ var errLexer = fmt.Errorf("%w: lexical error", errStructureBound)
 
 // next reads one token. A byte that begins no token -- a ')' outside a
 // string, a '>' that is not half of ">>" -- is an error in the syntax, and
-// is skipped so a damaged file still yields its objects. Skipping is this
-// loop, never a call per byte skipped, so a run of such bytes takes no more
-// stack than one does.
+// is skipped so a damaged file still yields its objects, unless the lexer is
+// strict: see the strict field. Skipping is this loop, never a call per byte
+// skipped, so a run of such bytes takes no more stack than one does.
 func (l *lexer) next() (token, error) {
 	for {
 		l.skipSpace()
@@ -188,9 +194,15 @@ func (l *lexer) next() (token, error) {
 				l.pos += 2
 				return token{kind: tokDictClose, pos: start, end: l.pos}, nil
 			}
+			if l.strict {
+				return token{}, errInlineImageUnended
+			}
 			l.pos++
 			continue
 		case c == ')':
+			if l.strict {
+				return token{}, errInlineImageUnended
+			}
 			l.pos++
 			continue
 		case c == '(':

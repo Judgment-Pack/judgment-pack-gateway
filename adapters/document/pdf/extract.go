@@ -169,6 +169,13 @@ func openDocument(ctx context.Context, data []byte, opt Options, result *Result)
 // read through a key its own cross-reference does not name. A document is
 // rebuilt once, so one reading after the rebuild stands.
 func establishEncryption(ctx context.Context, doc *Document, result *Result) error {
+	// The handler in force when this began. Installing one drops what was
+	// read before it, since those bytes were read unencrypted; where the
+	// trailer read now names none, the same is owed the other way -- what was
+	// read through the handler the old trailer named was read through a key
+	// this document does not have, and neither those objects nor the fonts
+	// and CMaps built from them are kept.
+	installed := doc.crypt != nil
 	for again := 0; ; again++ {
 		generation := doc.generation
 		doc.crypt = nil
@@ -178,6 +185,9 @@ func establishEncryption(ctx context.Context, doc *Document, result *Result) err
 		}
 		result.Encryption = enc
 		if err == nil {
+			if installed && doc.crypt == nil {
+				doc.dropCachedObjects()
+			}
 			return nil
 		}
 		if result.Encryption == nil {
@@ -288,8 +298,12 @@ type walked struct {
 	pages []pageNode
 }
 
-// extractPages is step 5.
+// extractPages is step 5. It ends the moment the cross-reference is rebuilt:
+// the pages after that one are of a document this one no longer is, and the
+// caller reads the document again from the top. What reading them would have
+// cost is not spent on them twice.
 func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
+	generation := w.doc.generation
 	for i, pn := range w.pages {
 		number := i + 1
 		if ctx.Err() != nil {
@@ -307,6 +321,12 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 			}
 			pr = w.doc.interpretPage(ctx, content, pn.resources, remaining)
 			err = pr.err
+		}
+		if w.doc.generation != generation {
+			// Reading this page rebuilt the cross-reference: what was read of
+			// it belongs to no reading this document keeps, and the pages
+			// listed after it are not this reading's pages at all.
+			return
 		}
 		if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 			result.TimedOut = true
@@ -387,6 +407,10 @@ type pageNode struct {
 // the search hands back the node and not the number it was found under.
 func (d *Document) pagesRoot() (Dict, ref) {
 	named := func() (Dict, ref) {
+		// Looking for the root is one read: the catalog and the tree it
+		// names are read under one cross-reference, and the look after a
+		// rebuild is a read of its own.
+		defer d.beginRead()()
 		catalog := d.dictOf(d.trailer["Root"])
 		if catalog == nil {
 			return nil, ref{}
@@ -455,6 +479,10 @@ type walker struct {
 // skipping it would count the pages around it as though they were all the
 // document holds.
 func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
+	// Walking a node is one read: its resources, its type and its kids are
+	// fields of one object, and a rebuild met reading one of them leaves the
+	// rest of a node this document no longer has. See beginRead.
+	defer w.d.beginRead()()
 	if w.ctx.Err() != nil {
 		return walkDeadline
 	}
@@ -556,6 +584,9 @@ var errContentUnread = errors.New("the page's content could not be read")
 // between, as the specification requires them to be read. A page whose
 // /Contents is absent or null has empty content.
 func pageContent(d *Document, page Dict) (out []byte, err error) {
+	// Reading a page's content is one read: /Contents, the streams it names
+	// and their lengths are read under one cross-reference. See beginRead.
+	defer d.beginRead()()
 	defer func() {
 		if r := recover(); r != nil {
 			out, err = nil, errPageDefect

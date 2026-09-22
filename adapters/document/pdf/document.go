@@ -933,6 +933,11 @@ func (d *Document) resolve(v object) object {
 // cross-reference does not name or names as free, to an object that cannot
 // be parsed, through a cycle, or past a bound.
 func (d *Document) resolveRead(v object) (object, bool) {
+	// A chain of references is one read: where following it rebuilds the
+	// cross-reference, the numbers after the rebuild are not the numbers the
+	// chain began in, and nothing of what they name is published. See
+	// beginRead.
+	defer d.beginRead()()
 	generation := d.readingGeneration()
 	for depth := 0; ; depth++ {
 		r, ok := v.(ref)
@@ -1157,8 +1162,7 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 	body := int64(len(data)) - first
 	for i := int64(0); i < n; i++ {
 		t1, err1 := lex.next()
-		t2, err2 := lex.next()
-		if err1 != nil || err2 != nil || t1.kind == tokEOF || t2.kind == tokEOF {
+		if err1 != nil || t1.kind == tokEOF {
 			// The header ends, or holds a token the lexer could not read:
 			// where the pairs after this one begin is not known, and the
 			// places they would have are unreadable.
@@ -1166,13 +1170,24 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		}
 		inner, at := unreadableObject, -1
 		if t1.kind == tokInteger && t1.i >= 0 && t1.i <= maxXrefEntries {
+			// The number is declared by its place before the offset beside
+			// it is read: a pair whose offset the header does not hold is a
+			// place that holds no object, and the number is declared there
+			// all the same -- which is what makes a number declared at two
+			// places one no place alone finds.
 			inner = int(t1.i)
 			declared[inner]++
-			// The offset is from the first object's, and lies within what the
-			// stream holds after it. A negative one would name the header.
-			if t2.kind == tokInteger && t2.i >= 0 && t2.i <= body {
-				at = int(first + t2.i)
-			}
+		}
+		t2, err2 := lex.next()
+		if err2 != nil || t2.kind == tokEOF {
+			st.order = append(st.order, inner)
+			st.offsetAt = append(st.offsetAt, -1)
+			break
+		}
+		// The offset is from the first object's, and lies within what the
+		// stream holds after it. A negative one would name the header.
+		if inner != unreadableObject && t2.kind == tokInteger && t2.i >= 0 && t2.i <= body {
+			at = int(first + t2.i)
 		}
 		st.order = append(st.order, inner)
 		st.offsetAt = append(st.offsetAt, at)

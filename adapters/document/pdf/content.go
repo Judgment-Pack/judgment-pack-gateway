@@ -244,6 +244,10 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 	if f, ok := it.fonts[string(name)]; ok {
 		return f
 	}
+	// Finding a font is one read: the resources, the font dictionary they
+	// name and everything the font is built from are read under one
+	// cross-reference. See beginRead.
+	defer it.d.beginRead()()
 	// The cross-reference this lookup stands on, read before the resources or
 	// the font are resolved: resolving either may rebuild it, and a font
 	// built from the objects the old one named is held by neither the old
@@ -540,6 +544,10 @@ func (it *interp) show(gs *gstate, tm *matrix, s String, inText bool) {
 // do draws an XObject: a form is interpreted with its own resources and
 // matrix; an image is counted.
 func (it *interp) do(resources Dict, name Name, gs gstate, depth int) {
+	// Drawing an XObject is one read: the resources, the stream they name
+	// and the stream's own matrix and resources are read under one
+	// cross-reference. See beginRead.
+	defer it.d.beginRead()()
 	xobjects := it.d.dictOf(resources["XObject"])
 	if xobjects == nil {
 		return
@@ -685,6 +693,10 @@ var (
 // dictionary is bounded in objects, not in what an object of it carries.
 func (it *interp) readInlineImage(lex *lexer) (inlineImage, error) {
 	p := &parser{lex: lex, contentMode: true, inlineImage: true}
+	// The bytes of the dictionary are read strictly, a byte that begins no
+	// token included; the content after the image is read as content again.
+	lex.strict = true
+	defer func() { lex.strict = false }()
 	img := inlineImage{declared: -1}
 	declared := map[Name]object{}
 	var key Name
@@ -875,6 +887,19 @@ func inlineColourValue(v object) object {
 				}
 			}
 		}
+		if len(out) == 1 {
+			if name, ok := out[0].(Name); ok {
+				if _, device := inlineDeviceComponents[name]; device {
+					// A device colour space takes no parameters (8.6.4), so
+					// an array holding its family alone is that space
+					// written another way -- and is measured as that space.
+					// A family that does take parameters is not unwrapped:
+					// an array of it alone is a space missing what it needs,
+					// and a resource's name is not a family at all.
+					return name
+				}
+			}
+		}
 		return out
 	}
 	return v
@@ -945,12 +970,22 @@ func sameValue(a, b object) bool {
 		return true
 	case Dict:
 		y, ok := b.(Dict)
-		if !ok || len(x) != len(y) {
+		if !ok {
 			return false
 		}
+		// An entry written null is an entry the dictionary does not have
+		// (7.3.9), at whatever depth it stands: two dictionaries that differ
+		// by one of them are the same dictionary, so the members are
+		// compared by name and a name only one of them has must be null
+		// there. The lengths are not compared, since they count what is
+		// written and not what is said.
 		for k, v := range x {
-			w, has := y[k]
-			if !has || !sameValue(v, w) {
+			if !sameValue(v, y[k]) {
+				return false
+			}
+		}
+		for k, w := range y {
+			if _, has := x[k]; !has && !sameValue(nil, w) {
 				return false
 			}
 		}
@@ -1092,6 +1127,10 @@ const (
 // colour space written in place is read from its family, ICCBased from the /N
 // of its stream and DeviceN from the names it separates.
 func (d *Document) inlineColorComponents(cs object, resources Dict, depth int) int64 {
+	// Sizing a colour space is one read: the space, the resources that name
+	// it and the stream or array it stands for are read under one
+	// cross-reference. See beginRead.
+	defer d.beginRead()()
 	if cs == nil || depth > maxColorSpaceDepth {
 		return 0
 	}

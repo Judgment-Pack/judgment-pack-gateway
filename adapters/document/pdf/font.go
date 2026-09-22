@@ -138,6 +138,16 @@ func (d *Document) loadFont(dict Dict) *font {
 	return f
 }
 
+// unusableEncoding is a composite font whose encoding the reader cannot use:
+// its bytes are split into two-byte codes so that the glyphs can be counted,
+// and every one of them is unmapped, at the width the font gives a CID it has
+// no width for. Identity would be a reading of the page, and the page does
+// not say it.
+func (d *Document) unusableEncoding(f *font) {
+	f.encoding = twoByteCodespaces()
+	f.encodingUnusable = true
+}
+
 func (d *Document) loadType0(f *font, dict Dict) {
 	switch enc := d.resolve(dict["Encoding"]).(type) {
 	case Name:
@@ -168,16 +178,14 @@ func (d *Document) loadType0(f *font, dict Dict) {
 			f.encoding = c
 			f.vertical = c.vertical
 		} else {
-			// An encoding the reader cannot use says nothing about how this
-			// font's bytes split into codes, and a code it does not give is
-			// no code to map: the glyphs are unmapped and counted, at the
-			// width the font gives a CID it has no width for. Identity would
-			// be a reading of the page, and the page does not say it.
-			f.encoding = twoByteCodespaces()
-			f.encodingUnusable = true
+			d.unusableEncoding(f)
 		}
 	default:
-		f.encoding = identityCMap()
+		// An /Encoding that is neither a name nor a CMap stream: absent,
+		// null, a number, a dictionary, or a reference to an object the
+		// reader could not read. None of them says how this font's bytes
+		// split into codes or what they stand for.
+		d.unusableEncoding(f)
 	}
 	descendants := d.arrayOf(dict["DescendantFonts"])
 	if len(descendants) == 0 {

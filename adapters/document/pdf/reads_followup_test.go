@@ -3,6 +3,7 @@ package pdf
 import (
 	"bytes"
 	"compress/flate"
+	"compress/zlib"
 	"context"
 	"crypto/md5"
 	"crypto/rc4"
@@ -985,7 +986,9 @@ func readsRawFile(objects []readsObject, broken int, inStream map[int][2]int) []
 	if broken > 0 {
 		offsets[broken] = 3
 	}
-	const numbers = 20
+	// Enough numbers for a chain of references longer than the reader
+	// follows, and for the objects the tests here name.
+	const numbers = 64
 	at := out.Len()
 	var entries []byte
 	put := func(kind, first, second int) {
@@ -1426,10 +1429,12 @@ func readsLZWCarrying(t *testing.T, carried []byte) []byte {
 	return nil
 }
 
-// The filters an inline image may declare are the seven Table 93 abbreviates.
-// JBIG2Decode and JPXDecode are not among them: an image declaring one is an
-// image no reading of the page establishes an end for, the page fails, and
-// the text after such an image is not read as the page's.
+// The filters this reader frames are the seven the specification's
+// inline-image abbreviation list holds (Table 93). JBIG2Decode and JPXDecode
+// are not in that list and this reader frames neither: an image declaring one
+// as its first filter fails its page, since where its data ends is not
+// something this reader establishes, and the text after such an image is not
+// read as the page's.
 func TestReadsInlineImageFiltersTheSpecificationDoesNotAbbreviate(t *testing.T) {
 	for _, filter := range []string{"JBIG2Decode", "JPXDecode"} {
 		t.Run(filter, func(t *testing.T) {
@@ -2156,15 +2161,34 @@ func TestReadsFramingReadsTheDeadline(t *testing.T) {
 	w.Write(nil)
 	w.Flush()
 	w.Close()
+	longFill := readsRestartJPEG(t, []byte(" EI "), entriesPerCheck+64)
+	// A zlib stream of whole stored blocks: a decoder is handed each block in
+	// one read, so the whole stream is read in a few calls.
+	var stored bytes.Buffer
+	zw, err := zlib.NewWriterLevel(&stored, zlib.NoCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := zw.Write(bytes.Repeat([]byte{'A'}, 256<<10)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		name string
-		read func(*Document) error
+		// checks is what the cadence stands at when the framing begins: the
+		// rows that read the clock at their first step set it so, and the
+		// two rows below them, of work the cadence does not count step by
+		// step, begin a whole cadence away from a reading.
+		checks int
+		read   func(*Document) error
 	}{
-		{"LZW codes that decode to nothing", func(d *Document) error {
+		{"LZW codes that decode to nothing", entriesPerCheck - 1, func(d *Document) error {
 			_, err := d.lzwFraming(clears.done(), false)
 			return err
 		}},
-		{"deflate blocks that decode to nothing", func(d *Document) error {
+		{"deflate blocks that decode to nothing", entriesPerCheck - 1, func(d *Document) error {
 			_, _, err := d.deflateConsumed(bytes.Repeat(empty.Bytes(), 64))
 			return err
 		}},
@@ -2172,24 +2196,36 @@ func TestReadsFramingReadsTheDeadline(t *testing.T) {
 		// caller bounds but the clock does not: each reads the deadline as
 		// it goes, so that data it would otherwise frame whole is left where
 		// the deadline was found.
-		{"hexadecimal digits", func(d *Document) error {
+		{"hexadecimal digits", entriesPerCheck - 1, func(d *Document) error {
 			_, err := d.asciiHexFraming([]byte("41>"))
 			return err
 		}},
-		{"base-85 groups", func(d *Document) error {
+		{"base-85 groups", entriesPerCheck - 1, func(d *Document) error {
 			_, err := d.ascii85Framing([]byte("!!!!!~>"))
 			return err
 		}},
-		{"run lengths", func(d *Document) error {
+		{"run lengths", entriesPerCheck - 1, func(d *Document) error {
 			_, err := d.runLengthFraming([]byte{128})
 			return err
 		}},
-		{"the markers of a JPEG", func(d *Document) error {
+		{"the markers of a JPEG", entriesPerCheck - 1, func(d *Document) error {
 			_, err := d.jpegFraming(readsJPEG())
 			return err
 		}},
-		{"the bits of fax data", func(d *Document) error {
+		{"the bits of fax data", entriesPerCheck - 1, func(d *Document) error {
 			_, err := d.ccittFraming(Dict{"K": int64(-1)}, []byte{0x80, 0x08, 0, 0x80})
+			return err
+		}},
+		// A run of fill bytes before a restart marker, and a block of deflate
+		// data handed over whole, are each the work of many bytes done in one
+		// step of the loop that counts steps: they read the clock as the
+		// bytes they hold would have read it, not as the steps do.
+		{"a JPEG's fill bytes", 0, func(d *Document) error {
+			_, err := d.jpegFraming(longFill)
+			return err
+		}},
+		{"deflate blocks handed over whole", 0, func(d *Document) error {
+			_, _, err := d.deflateConsumed(stored.Bytes()[2:])
 			return err
 		}},
 	} {
@@ -2198,9 +2234,7 @@ func TestReadsFramingReadsTheDeadline(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			cancel()
 			d.ctx = ctx
-			// The clock is read once every entriesPerCheck readings, so the
-			// next one falls at the first code or byte of the framing.
-			d.checks = entriesPerCheck - 1
+			d.checks = c.checks
 			if err := c.read(d); !isDeadline(err) {
 				t.Errorf("framing ended with %v; the deadline had passed before it began", err)
 			}
@@ -2371,7 +2405,7 @@ func TestReadsInlineImageDictionaryIsPairs(t *testing.T) {
 		{"a key with no value", "/W 40 /H 8 /BPC 8 /CS /G /Width", ""},
 		{"a keyword inside a dictionary value", "/W 40 /H 8 /BPC 8 /CS /G /DP << /A EI /B 2 >>", ""},
 		{"a keyword inside an array value", "/W 40 /H 8 /BPC 8 /CS /G /D [0 EI 1]", ""},
-		{"an image that begins again", "/W 40 /H 8 /BPC 8 /CS /G BI /W 1", ""},
+		{"an image that begins again", "/W 40 /H 8 /BPC 8 /CS /G BI /W 40", ""},
 		{"a value where a key stands", "/W 40 /H 8 /BPC 8 /CS /G 42 /IM false", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -2547,28 +2581,46 @@ func TestReadsABoundMetAfterARebuildInAFontIsNotPublished(t *testing.T) {
 	font := func(glyph, extra string) string {
 		return "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [65 /" + glyph + "] >> " + extra + " >>"
 	}
-	data := readsRawFile([]readsObject{
-		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
-		{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
-		{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"},
-		{6, readsStreamObject("", shown("A", 700))},
-		// The subtype is read first and is a damaged reference: reading it
-		// rebuilds. The map read after that is nested past what the parser
-		// admits, which is a bound -- of the document the rebuild replaced.
-		{7, font("B", "/Subtype 8 0 R /ToUnicode 10 0 R")},
-		{8, "/Type1"},
-		{10, "<< /Junk " + strings.Repeat("[", maxNesting+2) + strings.Repeat("]", maxNesting+2) + " >>"},
-		{7, font("Z", "")},
-	}, 8, nil)
-	r := extract(t, data)
-	if out, ok := readsPoppler(t, data); ok {
-		t.Logf("pdftotext reads %q", out)
+	// The subtype is read first and is a damaged reference: reading it
+	// rebuilds. What the load reads after that meets a bound -- of the
+	// document the rebuild replaced -- either in the object itself or in the
+	// chain of references it follows to reach one.
+	chain := []readsObject{{10, "<< /Junk " + strings.Repeat("[", maxNesting+2) + strings.Repeat("]", maxNesting+2) + " >>"}}
+	var references []readsObject
+	for i := 0; i <= maxRefDepth+4; i++ {
+		references = append(references, readsObject{20 + i, fmt.Sprintf("%d 0 R", 21+i)})
 	}
-	if r.Fatal != nil {
-		t.Fatalf("fatal %+v; the bound was met in a font of the document the rebuild replaced", r.Fatal)
-	}
-	if len(r.Pages) != 1 || r.Pages[0].Text != "Z" {
-		t.Errorf("the record reads %+v, want one page reading %q", r.Pages, "Z")
+	for _, c := range []struct {
+		name      string
+		trailing  []readsObject
+		toUnicode string
+	}{
+		{"an object nested past what the parser admits", chain, "10 0 R"},
+		{"a chain of references longer than the reader follows", references, "20 0 R"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			objects := []readsObject{
+				{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+				{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+				{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"},
+				{6, readsStreamObject("", shown("A", 700))},
+				{7, font("B", "/Subtype 8 0 R /ToUnicode "+c.toUnicode)},
+				{8, "/Type1"},
+			}
+			objects = append(objects, c.trailing...)
+			objects = append(objects, readsObject{7, font("Z", "")})
+			data := readsRawFile(objects, 8, nil)
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil {
+				t.Fatalf("fatal %+v; the bound was met in a font of the document the rebuild replaced", r.Fatal)
+			}
+			if len(r.Pages) != 1 || r.Pages[0].Text != "Z" || len(r.Problems) != 0 {
+				t.Errorf("the record reads %+v with problems %+v, want one page reading %q", r.Pages, r.Problems, "Z")
+			}
+		})
 	}
 }
 
@@ -2610,8 +2662,8 @@ func TestReadsAnEncodingTheReaderCannotUseIsNotIdentity(t *testing.T) {
 			t.Run(ranges.name+", "+tu.name, func(t *testing.T) {
 				data, num := readsEncodedFont("begincmap\n2 begincodespacerange\n"+ranges.spaces+"\nendcodespacerange\nendcmap\n", tu.body, "8141")
 				r := extract(t, data)
-				if out, ok := readsPoppler(t, data); ok {
-					t.Logf("pdftotext reads %q", out)
+				if out, diagnostics, ok := readsPopplerRead(t, data); ok {
+					t.Logf("pdftotext reads %q, with %q as diagnostics", out, diagnostics)
 				}
 				if r.Fatal != nil || len(r.Pages) != 1 {
 					t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
@@ -2859,6 +2911,18 @@ func TestReadsInlineImageAbbreviationsAreOneValue(t *testing.T) {
 		{"a mask depth written the other way about", "/W 32 /H 1 /IM true /BPC 1 /BitsPerComponent 1.0 /D [0 1]", "AAAA"},
 		{"a colour space written in place under both names", "/W 4 /H 1 /BPC 8 /CS [/I /DeviceGray 1 <FFEE>] /ColorSpace [/Indexed /DeviceGray 1 <FFEE>]", "AAAA"},
 		{"an entry written null and not written at all", "/W 4 /H 1 /BPC 8 /CS /G /L null", "AAAA"},
+		{"a device space and its array", "/W 4 /H 1 /BPC 8 /CS /G /ColorSpace [/DeviceGray]", "AAAA"},
+		{"the array and the device space", "/W 4 /H 1 /BPC 8 /CS [/DeviceGray] /ColorSpace /G", "AAAA"},
+		{"three components, the name first", "/W 4 /H 1 /BPC 8 /CS /RGB /ColorSpace [/DeviceRGB]", "AAAAAAAAAAAA"},
+		{"three components, the array first", "/W 4 /H 1 /BPC 8 /CS [/RGB] /ColorSpace /DeviceRGB", "AAAAAAAAAAAA"},
+		{"four components, the name first", "/W 4 /H 1 /BPC 8 /CS /CMYK /ColorSpace [/DeviceCMYK]", "AAAAAAAAAAAAAAAA"},
+		{"four components, the array first", "/W 4 /H 1 /BPC 8 /CS [/DeviceCMYK] /ColorSpace /CMYK", "AAAAAAAAAAAAAAAA"},
+		{"parameters differing by an absent entry", "/W 8 /H 1 /BPC 1 /CS /G /F /CCF /DP << /K -1 /Columns 8 /Rows 1 >> /DecodeParms << /K -1 /Columns 8 /Rows 1 /Unrelated null >>", "\x80\x08\x00\x80"},
+		{"the absent entry written first", "/W 8 /H 1 /BPC 1 /CS /G /F /CCF /DP << /K -1 /Columns 8 /Rows 1 /Unrelated null >> /DecodeParms << /K -1 /Columns 8 /Rows 1 >>", "\x80\x08\x00\x80"},
+		{"a colour space differing by an absent entry", "/W 4 /H 1 /BPC 8 /CS [/CalGray << /WhitePoint [1 1 1] /Gamma null >>] /ColorSpace [/CalGray << /WhitePoint [1 1 1] >>]", "AAAA"},
+		{"the absent entry in the second writing", "/W 4 /H 1 /BPC 8 /CS [/CalGray << /WhitePoint [1 1 1] >>] /ColorSpace [/CalGray << /WhitePoint [1 1 1] /Gamma null >>]", "AAAA"},
+		{"parameters that hold only an absent entry", "/W 4 /H 1 /BPC 8 /CS /G /DP << /Unused null >> /DecodeParms << >>", "AAAA"},
+		{"the empty parameters first", "/W 4 /H 1 /BPC 8 /CS /G /DP << >> /DecodeParms << /Unused null >>", "AAAA"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			data := readsInlineImagePage(c.dict, []byte(c.samples), shown("REAL", 700))
@@ -3090,6 +3154,19 @@ func TestReadsInlineImageDictionaryIsPairsAtEveryDepth(t *testing.T) {
 		// ID and measure an image whose dictionary it never read to an end.
 		{"an image that ends before its data begins", "/W 40 /H 8 /BPC 8 /CS /G EI"},
 		{"an image that begins again before its data", "/W 40 /H 8 /BPC 8 /CS /G BI"},
+		// A byte that begins no token -- a parenthesis that closes no
+		// string, an angle bracket that is not half of a dictionary's end --
+		// is skipped where a damaged file is read for what it still holds.
+		// Here it is not: the dictionary is read to the image's data or the
+		// page fails.
+		{"a closing parenthesis where a value stands", "/W ) 40 /H 8 /BPC 8 /CS /G"},
+		{"an angle bracket where a value stands", "/W > 40 /H 8 /BPC 8 /CS /G"},
+		{"a closing parenthesis between two pairs", "/W 40 ) /H 8 /BPC 8 /CS /G"},
+		{"an angle bracket between two pairs", "/W 40 > /H 8 /BPC 8 /CS /G"},
+		{"a closing parenthesis inside an array value", "/W 40 /H 8 /BPC 8 /CS /G /D [0 ) 1]"},
+		{"an angle bracket inside an array value", "/W 40 /H 8 /BPC 8 /CS /G /D [0 > 1]"},
+		{"a closing parenthesis inside a nested dictionary", "/W 40 /H 8 /BPC 8 /CS /G /DP << /A ) 1 >>"},
+		{"an angle bracket inside a nested dictionary", "/W 40 /H 8 /BPC 8 /CS /G /DP << /A > 1 >>"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			data := readsInlineImagePage(c.dict, readsHiddenSamples(), shown("REAL", 700))
@@ -3184,6 +3261,11 @@ func TestReadsAWideImageIsBoundedByItsBytes(t *testing.T) {
 		{"four bits a sample", fmt.Sprintf("/W %d /H 1 /BPC 4 /CS /G", width), (4*width + 7) / 8, "REAL"},
 		{"eight bits a sample", fmt.Sprintf("/W %d /H 1 /BPC 8 /CS /G", width), width, ""},
 		{"a width no arithmetic of the bound could hold", "/W 9223372036854775807 /H 1 /BPC 16 /CS /G", 16, ""},
+		// Two dimensions whose products wrap where an int64 ends: unguarded,
+		// the first measures 320 bytes and the second 256, which is what
+		// each of these fixtures holds.
+		{"a width whose packed bits wrap", "/W 1152921504606847016 /H 4 /BPC 16 /CS /G", 320, ""},
+		{"a height whose rows wrap", "/W 32 /H 576460752303423496 /BPC 8 /CS /G", 256, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			data := readsInlineImagePage(c.dict, bytes.Repeat([]byte{'A'}, c.bytes), shown("REAL", 700))
@@ -3236,9 +3318,9 @@ func TestReadsBase85FinalGroupsAndWhiteSpace(t *testing.T) {
 // tables and frame header are the ones Go's encoder writes; each block is
 // coded as a difference of nothing and an end-of-block, which under those
 // tables is six bits filled to a byte with ones, and a restart marker stands
-// between the blocks. Where fill is set a fill byte stands before the first
-// restart, which 4.10 of ITU T.81 allows a writer to put there.
-func readsRestartJPEG(t *testing.T, carried []byte, fill bool) []byte {
+// between the blocks. Before the first restart stand as many fill bytes as
+// fill says, which 4.10 of ITU T.81 allows a writer to put there.
+func readsRestartJPEG(t *testing.T, carried []byte, fill int) []byte {
 	t.Helper()
 	var base bytes.Buffer
 	if err := jpeg.Encode(&base, image.NewGray(image.Rect(0, 0, 16, 16)), nil); err != nil {
@@ -3262,8 +3344,8 @@ func readsRestartJPEG(t *testing.T, carried []byte, fill bool) []byte {
 	out = append(out, 0xFF, 0xDA, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3F, 0x00)
 	for block := 0; block < 4; block++ {
 		if block > 0 {
-			if fill && block == 1 {
-				out = append(out, 0xFF)
+			if block == 1 {
+				out = append(out, bytes.Repeat([]byte{0xFF}, fill)...)
 			}
 			out = append(out, 0xFF, byte(0xD0+block-1))
 		}
@@ -3279,10 +3361,11 @@ func readsRestartJPEG(t *testing.T, carried []byte, fill bool) []byte {
 func TestReadsJPEGRestartsWithFillBytes(t *testing.T) {
 	for _, c := range []struct {
 		name string
-		fill bool
+		fill int
 	}{
-		{"a restart marker", false},
-		{"a fill byte before a restart marker", true},
+		{"a restart marker", 0},
+		{"a fill byte before a restart marker", 1},
+		{"a run of fill bytes longer than the deadline's cadence", entriesPerCheck + 64},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			samples := readsRestartJPEG(t, []byte(" EI\n"+shown("HIDDEN", 650)), c.fill)
@@ -3315,6 +3398,7 @@ func TestReadsInlineImageInAnICCBasedSpace(t *testing.T) {
 	}{
 		{1, 64, "REAL"},
 		{3, 192, "REAL"},
+		{4, 256, "REAL"},
 		{3, 64, ""},
 	} {
 		t.Run(fmt.Sprintf("%d components, %d bytes", c.components, c.samples), func(t *testing.T) {
@@ -3339,5 +3423,326 @@ func TestReadsInlineImageInAnICCBasedSpace(t *testing.T) {
 					c.components, c.samples, r.Pages[0].Status, got, c.want, r.Problems)
 			}
 		})
+	}
+}
+
+// Where the samples end is where the image ends, at every depth: an image
+// whose samples end before the measurement or past it is an image whose end
+// the page does not establish, and a reader that looked forward from the
+// measured offset for an "EI" would find the one the image's own bytes carry.
+func TestReadsSamplesMustEndAtTheMeasurement(t *testing.T) {
+	for _, c := range []struct{ bits, bytes int }{{1, 3}, {2, 5}, {4, 9}, {8, 17}, {16, 34}} {
+		for _, where := range []struct {
+			name  string
+			delta int
+		}{
+			{"two bytes short of it", -2},
+			{"one byte past it", 1},
+		} {
+			t.Run(fmt.Sprintf("%d bits, %s", c.bits, where.name), func(t *testing.T) {
+				// The samples carry an "EI" of their own, which the
+				// measurement passes over and a search would stop at.
+				samples := bytes.Repeat([]byte{'A'}, 2*c.bytes+where.delta)
+				copy(samples, " EI ")
+				dict := fmt.Sprintf("/W 17 /H 2 /BPC %d /CS /G", c.bits)
+				data := readsInlineImagePage(dict, samples, shown("REAL", 700))
+				r := extract(t, data)
+				if out, ok := readsPoppler(t, data); ok {
+					t.Logf("pdftotext reads %q", out)
+				}
+				if r.Fatal != nil || len(r.Pages) != 1 {
+					t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+				}
+				if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+					t.Errorf("%d samples where the image says %d: the record reads %s %q with problems %+v",
+						len(samples), 2*c.bytes, r.Pages[0].Status, r.Pages[0].Text, r.Problems)
+				}
+			})
+		}
+	}
+}
+
+// readsOverNested is an object nested past what the parser admits: reading it
+// meets a structure bound, wherever the reference to it is resolved from.
+func readsOverNested() string {
+	return "<< /Junk " + strings.Repeat("[", maxNesting+2) + strings.Repeat("]", maxNesting+2) + " >>"
+}
+
+// An operation that resolves more than one of an object's fields is one read:
+// the fields after the first belong to the cross-reference the first was read
+// under, and where reading one of them rebuilds it, what the rest find -- a
+// bound included -- is of a document this one no longer is. Each file below
+// resolves a damaged reference, which rebuilds, and then a second field of
+// the same object, which is nested past what the parser admits; the rebuilt
+// document names neither, and the record carries its page.
+func TestReadsAnOperationIsOneReadFromItsFirstFieldToItsLast(t *testing.T) {
+	font := "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [65 /Z] >> >>"
+	page := "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"
+	for _, c := range []struct {
+		name    string
+		objects []readsObject
+		broken  int
+	}{
+		{"a page-tree node whose resources are damaged and whose kids are nested past the parser", []readsObject{
+			{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+			{2, "<< /Type /Pages /Resources 8 0 R /Kids 10 0 R /Count 1 >>"},
+			{3, page},
+			{6, readsStreamObject("", shown("A", 700))},
+			{7, font},
+			{8, "<< /Font << /F1 7 0 R >> >>"},
+			{10, readsOverNested()},
+			{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+		}, 8},
+		{"a form whose matrix is damaged and whose resources are nested past the parser", []readsObject{
+			{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+			{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+			{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> /XObject << /X 8 0 R >> >> /Contents 6 0 R >>"},
+			{6, readsStreamObject("", shown("A", 700)+"/X Do\n")},
+			{7, font},
+			{8, readsStreamObject("/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Matrix 12 0 R /Resources 10 0 R", " ")},
+			{10, readsOverNested()},
+			{12, "[1 0 0 1 0 0]"},
+			{8, readsStreamObject("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", " ")},
+		}, 12},
+		{"a chain of references through a damaged one to an object nested past the parser", []readsObject{
+			{1, "<< /Type /Catalog /Pages 8 0 R >>"},
+			{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+			{3, page},
+			{6, readsStreamObject("", shown("A", 700))},
+			{7, font},
+			{8, "9 0 R"},
+			{9, "10 0 R"},
+			{10, readsOverNested()},
+			{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		}, 9},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := readsRawFile(c.objects, c.broken, nil)
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil {
+				t.Fatalf("fatal %+v; the bound was met in a document the rebuild replaced", r.Fatal)
+			}
+			if len(r.Pages) != 1 || r.Pages[0].Text != "Z" || len(r.Problems) != 0 {
+				t.Errorf("the record reads %+v with problems %+v, want one page reading %q", r.Pages, r.Problems, "Z")
+			}
+		})
+	}
+}
+
+// Reading the encryption dictionary is one read as any other operation is:
+// its version is a damaged reference, which rebuilds, and the length beside
+// it is nested past what the parser admits. The dictionary the rebuilt
+// trailer names is read in its place, and the page is read under the key that
+// one derives.
+func TestReadsTheEncryptionDictionaryIsOneRead(t *testing.T) {
+	const permissions = -1
+	oldO, _, oldU := readsRC4Key("one", permissions)
+	newO, newKey, newU := readsRC4Key("two", permissions)
+	data := readsRawTrailer([]readsObject{
+		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+		{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"},
+		{6, readsStreamObject("", string(readsRC4Encrypt(newKey, 6, []byte(shown("NEW", 700)))))},
+		{7, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"},
+		{9, fmt.Sprintf("<< /Filter /Standard /V 12 0 R /R 2 /P %d /O <%x> /U <%x> /Length 10 0 R >>", permissions, oldO, oldU)},
+		{10, readsOverNested()},
+		{12, "1"},
+		{9, fmt.Sprintf("<< /Filter /Standard /V 1 /R 2 /P %d /O <%x> /U <%x> >>", permissions, newO, newU)},
+	}, 12, nil, fmt.Sprintf("/Encrypt 9 0 R /ID [<%x> <%x>]", readsFileID, readsFileID))
+	r := extract(t, data)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil {
+		t.Fatalf("fatal %+v; the bound was met in a dictionary the rebuilt trailer does not name", r.Fatal)
+	}
+	if len(r.Pages) != 1 || r.Pages[0].Text != "NEW" {
+		t.Errorf("the record reads %+v, want one page reading %q", r.Pages, "NEW")
+	}
+	if r.Encryption == nil || !r.Encryption.Opened {
+		t.Errorf("encryption %+v", r.Encryption)
+	}
+}
+
+// A rebuilt trailer may name no encryption at all. What was read through the
+// handler the old one named was read through a key this document does not
+// have: those objects, and the fonts and CMaps built from them, are dropped
+// before the document is read again, and the page below reads the text its
+// unencrypted map gives it.
+func TestReadsAHandlerARebuildRemovesDropsWhatItDecoded(t *testing.T) {
+	const permissions = -1
+	o, _, u := readsRC4Key("one", permissions)
+	for _, c := range []struct {
+		name   string
+		broken int
+	}{
+		{"the catalog", 1},
+		{"the page tree's root", 2},
+		{"the page", 3},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := readsRawTrailer([]readsObject{
+				{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+				{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+				{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"},
+				{6, readsStreamObject("", shown("A", 700))},
+				{7, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 8 0 R >>"},
+				{8, readsStreamObject("", "begincmap\n1 begincodespacerange\n<00> <FF>\nendcodespacerange\n1 beginbfchar\n<41> <005A>\nendbfchar\nendcmap\n")},
+				{9, fmt.Sprintf("<< /Filter /Standard /V 1 /R 2 /P %d /O <%x> /U <%x> >>", permissions, o, u)},
+				{9, "null"},
+			}, c.broken, nil, fmt.Sprintf("/Encrypt 9 0 R /ID [<%x> <%x>]", readsFileID, readsFileID))
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if got := r.Pages[0].Text; got != "Z" {
+				t.Errorf("the record reads %s %q; the rebuilt trailer names no encryption, and nothing read through the handler the old one named is kept", r.Pages[0].Status, got)
+			}
+			if r.Encryption != nil && r.Encryption.Opened {
+				t.Errorf("encryption %+v; the document the record carries is not encrypted", r.Encryption)
+			}
+		})
+	}
+}
+
+// Extraction ends the moment the cross-reference is rebuilt: the pages listed
+// after that one are of a document this one no longer is, and reading them
+// would spend on them what the reading that follows needs. The allowance
+// below is exactly the two readings of the first page.
+func TestReadsARebuiltCrossReferenceEndsTheExtraction(t *testing.T) {
+	content := shown("Z", 700)
+	data := readsRawFile([]readsObject{
+		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		{2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"},
+		{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"},
+		{4, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 10 0 R >>"},
+		{6, readsStreamObject("/Filter /FlateDecode", string(flateOf([]byte(content))))},
+		{7, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"},
+		{10, readsStreamObject("/Filter /FlateDecode", string(flateOf([]byte(shown("OTHER", 700)))))},
+		{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+	}, 6, nil)
+	// The page's content is inflated twice: once under the cross-reference
+	// the file holds -- reading it is what rebuilds -- and once under the
+	// rebuilt one. An allowance of exactly that leaves nothing for a page of
+	// the document the rebuild replaced.
+	opt := testOptions()
+	opt.MaxInflateTotal = int64(2 * len(content))
+	opt.MaxInflateOne = opt.MaxInflateTotal
+	r := Extract(context.Background(), data, opt)
+	if r.Fatal != nil {
+		t.Fatalf("fatal %+v", r.Fatal)
+	}
+	if len(r.Pages) != 1 || r.Pages[0].Text != "Z" || len(r.Problems) != 0 {
+		t.Errorf("the record reads %+v with problems %+v, want one page reading %q", r.Pages, r.Problems, "Z")
+	}
+}
+
+// An /Encoding a Type0 font gives that is not Identity and is not a CMap the
+// reader can use says nothing about how the font's bytes split into codes:
+// the glyphs are counted and unmapped at the font's default width, and the
+// ToUnicode map is not a second reading of codes the encoding never gave.
+func TestReadsEveryUnusableEncodingIsNotIdentity(t *testing.T) {
+	for _, c := range []struct{ name, encoding string }{
+		{"a reference to an object the file does not hold", "88 0 R"},
+		{"null", "null"},
+		{"a number", "42"},
+		{"an empty dictionary", "<< >>"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := &pdfgen.Builder{}
+			tu := b.Add(pdfgen.Object{Body: "<< >>", Stream: []byte(
+				"begincmap\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n1 beginbfchar\n<0041> <005A>\nendbfchar\nendcmap\n")})
+			cid := b.Add(pdfgen.Object{Body: "<< /Type /Font /Subtype /CIDFontType0 /BaseFont /Test /DW 700 /W [65 [123]] >>"})
+			num := b.Add(pdfgen.Object{Body: fmt.Sprintf("<< /Type /Font /Subtype /Type0 /BaseFont /Test /Encoding %s /DescendantFonts [%d 0 R] /ToUnicode %d 0 R >>", c.encoding, cid, tu)})
+			b.Catalog(b.Pages([]pdfgen.Page{{Content: "BT /F1 12 Tf 1 0 0 1 72 700 Tm <0041> Tj ET\n", Fonts: map[string]int{"F1": num}}}))
+			data := b.Bytes()
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Text != "�" || r.Pages[0].Unmapped != 1 {
+				t.Errorf("the record reads %q with %d glyphs unmapped; this font's encoding is none the reader can use", r.Pages[0].Text, r.Pages[0].Unmapped)
+			}
+			if g := firstGlyph(loadFontNumbered(openGenerated(t, data), num), []byte{0, 65}); !g.unmapped || g.width != 0.7 {
+				t.Errorf("the code is %q, unmapped %v, %g em wide; no CID stands behind it and its width is the default width", string(g.runes), g.unmapped, g.width)
+			}
+		})
+	}
+}
+
+// A number an object stream's header declares is declared by its place
+// whatever stands beside it: a pair whose offset the header does not hold, or
+// holds as a token the reader cannot read, is a place that holds no object,
+// and the number is declared there all the same. A number declared at two
+// places is found by neither alone, so the place the cross-reference names
+// decides -- and an unreadable place holds nothing.
+func TestReadsAnObjectStreamNumberIsDeclaredBeforeItsOffsetIsRead(t *testing.T) {
+	page := func(contents int) string {
+		return fmt.Sprintf("<< /Type /Page /Parent 2 0 R /Contents %d 0 R /Resources << /Font << /F1 7 0 R >> >> >>", contents)
+	}
+	first := page(6)
+	for _, c := range []struct{ name, header string }{
+		{"a pair whose offset the header does not hold", "3 0 3 "},
+		{"a pair whose offset is a number longer than one", "3 0 3 " + strings.Repeat("9", maxNameBytes+8)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := readsRawFile([]readsObject{
+				{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+				{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+				{5, readsStreamObject(fmt.Sprintf("/Type /ObjStm /N 2 /First %d", len(c.header)), c.header+first)},
+				{6, readsStreamObject("", shown("FIRST", 700))},
+				{7, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"},
+			}, 0, map[int][2]int{3: {5, 1}})
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			got := ""
+			if len(r.Pages) == 1 {
+				got = r.Pages[0].Text
+			}
+			if got != "" || r.Fatal == nil || r.Fatal.Code != "pdf-malformed" {
+				t.Errorf("the record reads %q with fatal %+v; the number is declared at two places and the place named holds no object", got, r.Fatal)
+			}
+		})
+	}
+}
+
+// What reading the file has cost is not given back by a rebuild: the objects
+// counted and the mappings a font charged stand, since a file that made the
+// reader read it twice has spent them twice.
+func TestReadsTheObjectsAndMappingsCountedAreNotGivenBack(t *testing.T) {
+	data := readsRawFile([]readsObject{
+		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+		{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"},
+		{6, readsStreamObject("", shown("A", 700))},
+		{7, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 8 0 R >>"},
+		{8, readsStreamObject("", "begincmap\n1 begincodespacerange\n<00> <FF>\nendcodespacerange\n1 beginbfchar\n<41> <005A>\nendbfchar\nendcmap\n")},
+		{10, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Subtype 11 0 R >>"},
+		{11, "/Type1"},
+	}, 11, nil)
+	d := openGenerated(t, data)
+	loadFontNumbered(d, 7)
+	objects, mappings, generation := d.parsed, d.fontBudget.used, d.generation
+	if objects == 0 || mappings == 0 {
+		t.Fatalf("the first font read %d objects and charged %d mappings", objects, mappings)
+	}
+	loadFontNumbered(d, 10)
+	if d.generation == generation {
+		t.Fatal("reading the second font did not rebuild the cross-reference")
+	}
+	if d.parsed <= objects || d.fontBudget.used < mappings {
+		t.Errorf("the rebuilt document counts %d objects and %d mappings, where %d and %d were read before it: what the file has cost is not given back",
+			d.parsed, d.fontBudget.used, objects, mappings)
 	}
 }

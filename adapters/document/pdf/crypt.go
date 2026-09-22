@@ -60,6 +60,12 @@ var errPassword = errors.New("a user password is required")
 // encryption dictionary; one that names an object the reader cannot read, or
 // that is not a dictionary, is a dictionary that cannot be read.
 func (d *Document) openEncryption() (*Encryption, error) {
+	// Reading the encryption dictionary is one read: its filter, version,
+	// revision, strings and length are its fields, and a rebuild met reading
+	// one of them leaves the rest of a dictionary the trailer no longer
+	// names. The caller reads the dictionary again under the rebuilt
+	// cross-reference. See beginRead.
+	defer d.beginRead()()
 	ev, ok := d.trailer["Encrypt"]
 	if !ok {
 		return nil, nil

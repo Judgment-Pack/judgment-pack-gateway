@@ -456,7 +456,9 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   mapping is found among the mappings for codes of that length: `<41>` and `<0041>` are two
   codes. A CMap whose ranges of two lengths hold the same leading bytes says two things about
   how long a code is and is not used at all, its glyphs unmapped and counted, as a CMap past a
-  bound is not used. A composite font whose own encoding CMap the reader cannot use is not read as
+  bound is not used. A composite font whose `/Encoding` is neither `Identity-H`, `Identity-V`, a predefined CMap's
+  name nor a CMap stream the reader can use — a stream it cannot use, a reference to an object
+  the file does not hold, `null`, a number, a dictionary — is not read as
   `Identity-H`: its bytes are split into two-byte codes so that the glyphs can be counted, every
   one of them is unmapped and takes the font's default width, and a `ToUnicode` map is not
   consulted — which codes the page shows is not something the file says. Where a font names a
@@ -468,24 +470,32 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   number would be some other glyph's. An object a cross-reference places in an object stream is
   read by the number the stream's own header declares it at. Every place that header gives is
   kept as it stands, a pair the reader cannot use included, so that the place a cross-reference
-  entry names is the place the header gave; an offset is from the first object's and lies within
-  what the stream holds after it. Where the header declares one number twice, the entry's place
+  entry names is the place the header gave; a number is declared by its place before the offset
+  beside it is read, so a pair whose offset the header does not hold, or holds as a token the
+  reader cannot read, is a place that holds no object and a number declared there all the same;
+  an offset is from the first object's and lies within what the stream holds after it. Where the header declares one number twice, the entry's place
   decides, and only where the header declares that number at it.
 
   Where an inline image's data ends is established from the way the image is encoded, and from
   nothing else. The dictionary between `BI` and `ID` is read first, as pairs, at every depth it
   holds: `ID` stands between two complete pairs of the dictionary itself, and any other keyword,
-  a key with no value, a value where a key stands, a stray delimiter, or a container that does
-  not close — in the dictionary or in a value of it — fails the page, since what follows an
-  unfinished value may be the image's data rather than the dictionary. A key bearing on the end
+  a key with no value, a value where a key stands, a stray delimiter, a byte that begins no token
+  (a `)` closing no string, a `>` that is not half of `>>`, which elsewhere are skipped so a
+  damaged file still yields its objects), or a container that does not close — in the dictionary
+  or in a value of it — fails the page, since what follows an unfinished value may be the
+  image's data rather than the dictionary. A key bearing on the end
   given twice with values that disagree fails it too — the abbreviations of 8.9.7 standing for
   the names they abbreviate, a filter written alone standing for the same filter in an array of
-  one, and numbers compared by value, so `1` and `1.0` are one value, of which the reader keeps
-  the integer whichever was written first. A bare name that is no device colour space is the
+  one, a device colour space standing for the array of its family alone (a device space takes no
+  parameters), and numbers compared by value, so `1` and `1.0` are one value, of which the reader
+  keeps the integer whichever was written first. A bare name that is no device colour space is the
   name of one of the resources in force and abbreviates nothing, so `/I` and `/Indexed` name two
   resources and an image giving both says two things; only at the head of an array does `/I`
   stand for `Indexed`. A value written `null` is an entry the dictionary does not have (7.3.9):
   it says nothing of its key, and nothing another writing of that key says can disagree with it.
+  That holds at every depth two writings are compared to: two dictionaries differing only by a
+  `null` member are the same dictionary, however deep the member lies. An array's `null` element
+  is not absent, since an array's elements are its positions.
   One white-space byte separates `ID` from the data, a carriage return and a line feed
   counting as the one end-of-line marker 7.2.3 makes them.
 
@@ -515,7 +525,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   reader may read of one image: a deflate stream corrupted in its first block is the one, a
   deflate stream that simply does not end within the window is the other. What a framing decodes
   is charged to `--max-inflate` and dropped, and every one of the seven framings reads the
-  deadline as it walks, so that an encoding decoding to nothing is still bounded by the clock.
+  deadline as it walks, so that an encoding decoding to nothing is still bounded by the clock. The
+  clock is read as the *bytes* go and not as the steps do: a run of JPEG fill bytes is walked one
+  at a time, and a decoder handed a whole deflate block in one read has the clock read on that
+  read rather than on the cadence, which counts calls.
 
   For the fax and JPEG framings the reader walks the encoding's own structure and decodes no
   rows and no blocks: an end-of-block is the end of fax data by definition and an end-of-image
@@ -547,16 +560,25 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   component, which is the only depth it implements. A
   damaged cross-reference is rebuilt by scanning for objects; everything read under the one it
   replaces goes with it — the objects, the object streams they came out of, and the fonts and
-  CMaps built from them — since an object number then names other bytes. A read publishes to a
+  CMaps built from them — since an object number then names other bytes. Every operation that resolves
+  more than one of an object's fields is one read: following a chain of references, walking a
+  page-tree node, reading the encryption dictionary, drawing a form, finding a font, sizing a
+  colour space, decoding a stream, looking for the page tree's root, reading a page's content and
+  building a font each begin one. A read publishes to a
   cache, and records a bound or an undecodable object stream, only under the cross-reference it
-  began on, at every depth it reaches — a font's load and the objects it resolves under it
-  included — so a read that was under way when the rebuild happened leaves nothing of itself
-  behind; the bounds that are the file's rather than one cross-reference's — the objects a scan
+  began on, at every depth it reaches, so a read that was under way when the rebuild happened
+  leaves nothing of itself behind — the fields it goes on to resolve are fields of an object this
+  document no longer has; the bounds that are the file's rather than one cross-reference's — the objects a scan
   of the file may find, the objects read in one document — stand whatever is rebuilt. The
   encryption dictionary the trailer names is read again under the rebuilt cross-reference, and
   its handler and key with it, before any page is read — a rebuild met while the page tree's root
   is looked for is a rebuild the reading begins again from the top, the root the catalog now
-  names being read under a handler this walk is not the one to establish; a document is rebuilt at most once,
+  names being read under a handler this walk is not the one to establish. Where the rebuilt
+  trailer names no encryption at all, what was read through the handler the old one named was
+  read through a key this document does not have, and those objects and the fonts and CMaps built
+  from them are dropped as they are when a handler is installed. Extracting the pages ends at the
+  page whose reading rebuilt the cross-reference: the pages listed after it belong to a document
+  this one no longer is, and what reading them would cost is not spent on them; a document is rebuilt at most once,
   however its opening goes. A reading
   of the document's pages that began under the old cross-reference is begun again under the new,
   so that a record's pages were all read under one. The bounds met under the cross-reference that
