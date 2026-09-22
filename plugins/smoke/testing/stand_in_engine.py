@@ -226,6 +226,15 @@ def make_handler(fault, require_length):
                 return self._send(400, {"error": answers.SESSION_REFUSAL})
             if source != answers.SOURCE:
                 return self._send(400, {"error": f"unknown source: {answers.request_text(source)}"})
+            # A sealed session is refused before the source exists, as the
+            # engine's admission refuses it: nothing the source writes is
+            # read for a session that is closed. A session not held is not
+            # made here either, since an acquisition that fails after this
+            # point must leave none behind.
+            with lock:
+                held = sessions.get(session)
+                if held is not None and held["sealed"]:
+                    return self._send(400, {"error": f"session is sealed: {session}"})
             # The source has run by now, and what it wrote is the engine's to
             # read: arguments admitted at the parser's own depth are one level
             # deeper inside the result the source writes around them.

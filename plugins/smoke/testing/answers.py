@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import time
+import unicodedata
 from typing import NamedTuple
 
 SOURCE = "screening"
@@ -219,15 +220,36 @@ def _read_string(text, i):
         i += 1
 
 
-def _read_key(text, i):
-    # A body that ends where a token is wanted is the end of the stream to
-    # the engine's decoder, which says so in that one word.
+def _read_name(text, i):
+    """The member name at text[i] and where it ends, the colon after it left
+    where it is: the engine's decoder hands a name over as soon as it has
+    read it, and what the reader of the envelope does with the name -- admit
+    it, or refuse the body for it -- is decided before the colon is looked
+    for. A body that ends where a token is wanted is the end of the stream
+    to that decoder, which says so in that one word."""
     i = _skip(text, i)
     if i >= len(text):
         raise Refusal("EOF")
     if text[i:i + 1] != '"':
         raise Refusal("invalid character looking for beginning of object key string")
-    key, i = _read_string(text, i)
+    return _read_string(text, i)
+
+
+def _read_colon(text, i):
+    """Past the colon that follows a member name in the envelope, where the
+    decoder is reading a token at a time and says what it expected. Inside a
+    member's value the scanner reads instead, and says what it found
+    (_read_key)."""
+    i = _skip(text, i)
+    if i >= len(text):
+        raise Refusal("EOF")
+    if text[i:i + 1] != ":":
+        raise Refusal("expected colon after object key")
+    return i + 1
+
+
+def _read_key(text, i):
+    key, i = _read_name(text, i)
     i = _skip(text, i)
     if i >= len(text):
         raise Refusal("EOF")
@@ -366,13 +388,17 @@ def request_fields(body, names):
             ended()
         if text[i] != "}":
             while True:
-                key, i = _read_key(text, i)
+                # The name is judged as soon as it has been read: what
+                # follows it -- the colon, the value, the rest of the body --
+                # is never reached for a name this endpoint will not admit.
+                key, i = _read_name(text, i)
                 name = str(key.go)
                 if name in taken:
                     raise Refusal(f"member {_go_quote(request_text(name))} appears twice")
                 if name not in names:
                     raise Refusal("request body carries a member this endpoint does not read: " + request_text(name))
                 taken.append(name)
+                i = _read_colon(text, i)
                 i = _skip(text, i)
                 if i >= len(text):
                     ended()  # the member's value never began
@@ -404,6 +430,11 @@ def request_fields(body, names):
             try:
                 _read_value(rest, j)
             except Refusal as refusal:
+                # What is after the object is read under the same bound as
+                # what is inside it: a trailing value the bound cuts short is
+                # the bound, not the end of the body.
+                if over and refusal.message in ("EOF", "unexpected end of JSON input"):
+                    raise Refusal("request body contains trailing content: http: request body too large")
                 raise Refusal("request body contains trailing content: " + _ended_mid_value(refusal.message))
         raise Refusal("request body must contain exactly one JSON value")
     if over:
@@ -468,8 +499,27 @@ def _go_quote(text):
     return '"' + "".join(out) + '"'
 
 
+def _printable(text):
+    """text as the engine makes it printable (printableText): every control
+    character -- C0, DEL and the C1 range -- and every byte that is not part
+    of a valid UTF-8 sequence replaced by '?', one '?' for one byte, so what
+    is quoted is as many bytes as what was sent. What prints is left as it
+    was, outside ASCII included."""
+    out = []
+    for c in text:
+        if 0xDC80 <= ord(c) <= 0xDCFF:  # one byte the body's reading kept
+            out.append("?")
+        elif unicodedata.category(c) == "Cc":
+            out.append("?" * len(c.encode("utf-8")))
+        else:
+            out.append(c)
+    return "".join(out)
+
+
 def request_text(text):
-    """The engine's requestText: a UTF-8 prefix of at most 64 bytes."""
+    """The engine's requestText: the text made printable, then a UTF-8 prefix
+    of at most 64 bytes of it, and how many bytes the whole was."""
+    text = _printable(text)
     raw = text.encode("utf-8")
     if len(raw) <= 64:
         return text

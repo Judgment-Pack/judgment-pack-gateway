@@ -29,6 +29,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -393,16 +394,53 @@ type badRequest struct{ error }
 // (requestText).
 const maxRequestText = 64
 
-// requestText is text a refusal or a diagnostic quotes: whole when it is at
-// most maxRequestText bytes; otherwise its first bytes up to that bound, cut
-// before a UTF-8 sequence the bound would split, followed by how many bytes
-// the whole was. What it is for is text a caller sent, which is otherwise
-// quoted whole: an answer is JSON, which spells some bytes six times over, so
-// a source name as long as a raised request bound made an answer several
-// times the body. It bounds the same quotation wherever a diagnostic makes
-// one -- exactlyMembers quotes a member of an engine configuration, or of an
-// adapter's snapshot, through it as well as a member of a request.
-func requestText(s string) string { return boundedText(s, maxRequestText) }
+// requestText is text a refusal or a diagnostic quotes: made printable,
+// then whole when what is left is at most maxRequestText bytes; otherwise
+// its first bytes up to that bound, cut before a UTF-8 sequence the bound
+// would split, followed by how many bytes the whole was. What it is for is
+// text a caller sent, which is otherwise quoted whole and as written: an
+// answer is JSON, which spells some bytes six times over, so a source name
+// as long as a raised request bound made an answer several times the body,
+// and a name carrying an escape sequence made the answer address whatever
+// renders it. It quotes the same way wherever a diagnostic quotes such text
+// -- a source name, a member of a request, a tool named to the MCP server, a
+// member of an engine configuration or of an adapter's snapshot
+// (exactlyMembers) -- so that no refusal repeats bytes a terminal acts on.
+// A message that quotes through %q composes with this: what reaches %q is
+// already printable, so %q adds its quotation marks and escapes its own
+// two characters and never spells an escape sequence back out.
+func requestText(s string) string { return boundedText(printableText(s), maxRequestText) }
+
+// printableText is s with every byte a terminal would act on replaced by
+// '?': every control character -- C0, DEL and the C1 range -- and every byte
+// that is not part of a valid UTF-8 sequence. One '?' takes the place of one
+// byte, so text quoted through the bound is as many bytes as what was sent
+// and the figure the bound reports stays that count. What prints is left as
+// it was, outside ASCII included: a source, a session or a tool may be named
+// in any script, and a refusal that spelled such a name as question marks
+// would name nothing the caller could recognize.
+func printableText(s string) string {
+	var made []byte
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && size == 1) || unicode.IsControl(r) {
+			if made == nil {
+				made = make([]byte, 0, len(s))
+				made = append(made, s[:i]...)
+			}
+			for byteOfRune := 0; byteOfRune < size; byteOfRune++ {
+				made = append(made, '?')
+			}
+		} else if made != nil {
+			made = append(made, s[i:i+size]...)
+		}
+		i += size
+	}
+	if made == nil {
+		return s
+	}
+	return string(made)
+}
 
 // boundedText is s whole when it is at most bound bytes; otherwise its first
 // bytes up to that bound, cut before a UTF-8 sequence the bound would split,
@@ -511,22 +549,31 @@ var (
 //
 // Reading the envelope into a tagged struct does neither. encoding/json
 // matches a member name without regard to case and keeps the last of
-// several spellings, so `{"session":"a","SESSION":"b"}` is read here as "b"
-// while every other reader of the same bytes reads "a" -- the parser that
-// canonicalizes what is signed, which refuses a duplicate member outright
-// (canon.go), the MCP front, which reads its messages by exact name
-// (members(), mcp.go), and a verifier reading the receipt afterwards. A
-// gateway whose signature is over one reading of a body and whose answer is
-// another reading of it attests nothing; a seal taken from the second
-// spelling of "session" cannot be taken back.
+// several spellings, so `{"session":"a","SESSION":"b"}` was read here as
+// "b" while a consumer that reads member names exactly -- the MCP front,
+// which reads its messages that way (members(), mcp.go); a client, a proxy
+// or an audit log reading the same bytes -- read the request as naming "a".
+// The receipt minted was consistent with what actually ran, so nothing in
+// it was wrong; what was wrong is that the request meant one thing to this
+// gateway and another to everyone else holding its bytes, and a seal taken
+// from the second spelling of "session" cannot be taken back.
 //
-// The body is walked as it arrives rather than read whole, so the bound the
-// handler put on it (limitBodyTo) is what stops a body past the endpoint's
-// limit, and a member the endpoint does not read is refused by its name
-// alone -- its value is never held. A body still carries a single JSON
-// value with nothing but whitespace after it.
+// The body is walked as it arrives: there is no whole-body read before
+// anything is decided, so the bound the handler put on it (limitBodyTo) is
+// what stops a body past the endpoint's limit, and a member the endpoint
+// does not read is refused by its name, its value never decoded. What the
+// decoder has read ahead of the walk it holds, and a member it does decode
+// is copied out of that buffer, so a body carrying one large value is held
+// about twice while that member is read (SECURITY.md gives the figures a
+// request costs). A body still carries a single JSON value with nothing but
+// whitespace after it.
 func requestMembers(r io.Reader, allowed map[string]bool) (map[string]json.RawMessage, error) {
 	decoder := json.NewDecoder(r)
+	// A number is kept as the literal the caller wrote rather than made a
+	// float64: a token the conversion cannot represent comes back as an
+	// error carrying the whole literal, and a body of ten thousand digits
+	// would then be quoted back whole in the refusal.
+	decoder.UseNumber()
 	opening, err := decoder.Token()
 	if err != nil {
 		return nil, err
@@ -847,8 +894,9 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	cmd.Cancel = recordCancellation(cmd.Cancel, &cancelled)
 	cmd.WaitDelay = g.waitDelay
 	// stdout is bounded and its overflow kills the source; stderr is bounded
-	// and simply truncated, because only its first line is ever reported and
-	// a chatty source is not a failed one.
+	// and simply truncated, because what a failure reports of it is a short
+	// printable prefix (sourceFailureText) and a chatty source is not a
+	// failed one.
 	stdout := &boundedBuffer{limit: g.maxSourceOutput, stop: cancel}
 	stderr := &boundedBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = stdout, stderr

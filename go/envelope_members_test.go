@@ -261,6 +261,19 @@ func TestActReadsItsEnvelopeByExactMemberNamesBeforeAnyExecutorRuns(t *testing.T
 	id := identityFor(t, issuer)
 	service.identity = &id
 	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	// The executor writes this file as its first act, so what proves an
+	// executor ran is its own child's mark on the filesystem rather than a
+	// count the gateway raises before the process is started.
+	ran := filepath.Join(t.TempDir(), "executor-ran")
+	t.Setenv(envSourceReady, ran)
+	executorRan := func(t *testing.T) bool {
+		t.Helper()
+		_, err := os.Stat(ran)
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		return err == nil
+	}
 
 	// A receipt to cite, and a decision record that cites it.
 	code, first := authed(t, server, "/acquire", `{"session":"act-env","source":"screening","arguments":{"q":"acme"}}`, token)
@@ -311,7 +324,9 @@ func TestActReadsItsEnvelopeByExactMemberNamesBeforeAnyExecutorRuns(t *testing.T
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			started := service.started.Load()
+			if err := os.Remove(ran); err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
 			code, answer := authed(t, server, "/act", tc.body, token)
 			if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), tc.refusal) {
 				t.Fatalf("want a refusal saying %q, got %d %v", tc.refusal, code, answer)
@@ -319,21 +334,23 @@ func TestActReadsItsEnvelopeByExactMemberNamesBeforeAnyExecutorRuns(t *testing.T
 			if answer["refusedAt"] != nil {
 				t.Fatalf("an envelope this engine cannot read is refused before the ladder: %v", answer)
 			}
-			if service.started.Load() != started {
+			if executorRan(t) {
 				t.Fatal("an executor ran for a body the engine refused to read")
 			}
 		})
 	}
 	// The control: every step of the ladder passes for the same body
-	// without a second spelling, and the executor runs. (It is no executor
-	// and answers no envelope, so the action itself fails after it ran.)
-	started := service.started.Load()
+	// without a second spelling, and the executor runs -- which its own mark
+	// is what says. (It is no executor and answers no envelope, so the
+	// action itself fails after it ran.)
+	if err := os.Remove(ran); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
 	if code, answer := authed(t, server, "/act", good, token); code == http.StatusOK || answer["refusedAt"] != nil {
 		t.Fatalf("the stand-in executor cannot mint an action: %d %v", code, answer)
 	}
-	if service.started.Load() != started+1 {
-		t.Fatalf("the executor did not run for the body the cases above vary: started %d, was %d",
-			service.started.Load(), started)
+	if !executorRan(t) {
+		t.Fatal("the executor did not run for the body the cases above vary")
 	}
 }
 
@@ -355,6 +372,197 @@ func TestAnActionsArgumentsAreHeldToTheValueBudget(t *testing.T) {
 	}
 	if service.started.Load() != 0 {
 		t.Fatal("an executor ran for arguments past the budget")
+	}
+}
+
+// Text a refusal quotes back to a caller is printable before it is bounded:
+// what a terminal would act on is gone, what prints is as it was sent, and
+// the figure the bound reports is still the count of the bytes quoted.
+func TestCallerTextIsQuotedPrintably(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{"a name as it was sent", "screening", "screening"},
+		{"a name outside ASCII", "café界", "café界"},
+		{"an escape sequence and a terminal title", "\x1b]0;changed\x07", "?]0;changed?"},
+		{"a newline and a tab", "one\ntwo\tthree", "one?two?three"},
+		{"delete", "a\x7fb", "a?b"},
+		{"a C1 control, one '?' for each of its bytes", "ab", "a??b"},
+		{"a byte that is not UTF-8", "bad \xff byte", "bad ? byte"},
+		{"a replacement character, which prints", "bad � byte", "bad � byte"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := printableText(tc.in); got != tc.want {
+				t.Fatalf("printableText: %q, want %q", got, tc.want)
+			}
+			if got := requestText(tc.in); got != tc.want {
+				t.Fatalf("requestText: %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// Past the bound the count is of the text as quoted, which the filter
+	// leaves as long as what was sent: one byte for each byte it replaces.
+	long := strings.Repeat("\x1b", maxRequestText+20)
+	want := strings.Repeat("?", maxRequestText) + fmt.Sprintf("…(%d bytes)", maxRequestText+20)
+	if got := requestText(long); got != want {
+		t.Fatalf("a long name of escape characters: %q, want %q", got, want)
+	}
+	// A message that quotes through %q composes with the filter rather than
+	// spelling the escape sequence back out.
+	if got := fmt.Sprintf("%q", requestText("\x1b[31m")); got != `"?[31m"` {
+		t.Fatalf("quoted: %s", got)
+	}
+}
+
+// The same over the paths a caller reaches: a member this endpoint does not
+// read, a source it does not have, and the platform an action names -- each
+// quoted back with nothing a terminal acts on.
+func TestARefusalNeverRepeatsWhatATerminalActsOn(t *testing.T) {
+	service, server := testService(t)
+	// The name carries an escape sequence and a terminal title, written as
+	// JSON escapes, so what is sent is printable and what the gateway
+	// reads from it is not.
+	control := "\\u001b]0;changed\\u0007"
+	noControlBytes := func(t *testing.T, message string) {
+		t.Helper()
+		for i := 0; i < len(message); i++ {
+			if message[i] < 0x20 || message[i] == 0x7f {
+				t.Fatalf("the refusal carries the byte %#x at offset %d: %q", message[i], i, message)
+			}
+		}
+		if !strings.Contains(message, "?]0;changed?") {
+			t.Fatalf("the refusal does not quote the name made printable: %q", message)
+		}
+	}
+	t.Run("a member the endpoint does not read", func(t *testing.T) {
+		code, answer := post(t, server, "/acquire", `{"session":"printable","`+control+`":0}`)
+		if code != http.StatusBadRequest {
+			t.Fatalf("%d %v", code, answer)
+		}
+		noControlBytes(t, fmt.Sprint(answer["error"]))
+	})
+	t.Run("a source the gateway does not have", func(t *testing.T) {
+		code, answer := post(t, server, "/acquire", `{"session":"printable","source":"`+control+`","arguments":{}}`)
+		if code != http.StatusBadRequest {
+			t.Fatalf("%d %v", code, answer)
+		}
+		noControlBytes(t, fmt.Sprint(answer["error"]))
+	})
+	t.Run("the platform an action names", func(t *testing.T) {
+		who := &caller{issuer: "https://login.example", subject: "u", tokenDigest: strings.Repeat("a", 64)}
+		_, err := service.act(json.RawMessage(`"printable"`), json.RawMessage(`"`+control+`"`),
+			json.RawMessage(`"update_ticket"`), json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`[]`), who)
+		if err == nil {
+			t.Fatal("an action naming a platform that allows no writes was not refused")
+		}
+		noControlBytes(t, err.Error())
+	})
+}
+
+// A number is a token like any other, and one no float64 can hold is not a
+// reason to quote the whole literal back: the refusals stay short wherever
+// in a body such a number stands.
+func TestAnOversizedNumberDoesNotEnlargeTheRefusal(t *testing.T) {
+	_, server := testService(t)
+	digits := strings.Repeat("9", 10000)
+	for _, tc := range []struct{ name, body, says string }{
+		{"as the body itself", digits, "must be a JSON object"},
+		{"as a second value after the object", `{"session":"n"} ` + digits, "exactly one JSON value"},
+		{"where a member name belongs", `{` + digits + `}`, "invalid character"},
+		{"as an exponent no float64 holds", "1e1000", "must be a JSON object"},
+		{"as an exponent after the object", `{"session":"n"} 1e1000`, "exactly one JSON value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			code, raw := postRawWith(t, server, "/acquire", tc.body, "")
+			if code != http.StatusBadRequest || !strings.Contains(string(raw), tc.says) {
+				t.Fatalf("%d %s", code, first(raw, 200))
+			}
+			if len(raw) > 256 {
+				t.Fatalf("the refusal is %d bytes for a %d-byte body: %s", len(raw), len(tc.body), first(raw, 200))
+			}
+		})
+	}
+}
+
+// Arguments nested as deep as the parser descends are an acquisition like
+// any other: the request is admitted, and what becomes of it depends on what
+// the source writes, not on how deep what it was given was.
+func TestArgumentsAtTheParsersDepthAreAcquired(t *testing.T) {
+	service, server := testService(t)
+	deep := strings.Repeat("[", maxNesting) + strings.Repeat("]", maxNesting)
+	code, answer := post(t, server, "/acquire", `{"session":"deep-ok","source":"screening","arguments":`+deep+`}`)
+	if code != http.StatusOK {
+		t.Fatalf("a source that writes a shallow result: %d %v", code, answer)
+	}
+	entries, err := os.ReadDir(filepath.Join(service.storeRoot, "receipts", "deep-ok"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("receipts for the session: %v %v", entries, err)
+	}
+	service.mu.Lock()
+	state := service.sessions["deep-ok"]
+	service.mu.Unlock()
+	if state == nil || state.index != 1 || state.sealed {
+		t.Fatalf("the session after one acquisition: %+v", state)
+	}
+}
+
+// A source that writes its arguments back inside something of its own is
+// what cannot be read at that depth -- and the acquisition then fails
+// leaving nothing behind: no receipt, no artifact, and no session a seal
+// could later find.
+func TestASourceThatWritesItsArgumentsDeeperFailsOnItsOwnOutput(t *testing.T) {
+	if _, err := os.Stat("/bin/sh"); err != nil {
+		t.Skip("no /bin/sh to write a source with")
+	}
+	service, server := testService(t)
+	t.Cleanup(service.cancel)
+	script := filepath.Join(t.TempDir(), "wrapper.sh")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf '{\"echo\":%s}' \"$(cat)\"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	service.sources["wrapper"] = sourceSpec{argv: []string{script}}
+	deep := strings.Repeat("[", maxNesting) + strings.Repeat("]", maxNesting)
+	code, answer := post(t, server, "/acquire", `{"session":"deep-wrapped","source":"wrapper","arguments":`+deep+`}`)
+	message := fmt.Sprint(answer["error"])
+	if code != http.StatusBadRequest || !strings.Contains(message, "source did not return a canonical JSON value") ||
+		!strings.Contains(message, fmt.Sprintf("nesting deeper than %d levels", maxNesting)) {
+		t.Fatalf("a source that writes its arguments one level deeper: %d %q", code, message)
+	}
+	if entries, err := os.ReadDir(filepath.Join(service.storeRoot, "receipts", "deep-wrapped")); err == nil {
+		t.Fatalf("the failed acquisition left receipts behind: %v", entries)
+	}
+	artifacts, err := os.ReadDir(filepath.Join(service.storeRoot, "artifacts"))
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if len(artifacts) != 0 {
+		t.Fatalf("the failed acquisition retained %d artifact(s)", len(artifacts))
+	}
+	service.mu.Lock()
+	_, held := service.sessions["deep-wrapped"]
+	service.mu.Unlock()
+	if held {
+		t.Fatal("the failed acquisition left a session a seal could find")
+	}
+}
+
+// One level deeper than the parser descends is refused where the body is
+// read, so no source is started at all -- which the source's own mark is
+// what says.
+func TestArgumentsPastTheParsersDepthAreRefusedBeforeASourceRuns(t *testing.T) {
+	service, server := testService(t)
+	ran := filepath.Join(t.TempDir(), "source-ran")
+	t.Setenv(envSourceReady, ran)
+	deep := strings.Repeat("[", maxNesting+1) + strings.Repeat("]", maxNesting+1)
+	code, answer := post(t, server, "/acquire", `{"session":"deep-past","source":"screening","arguments":`+deep+`}`)
+	if code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), "exceeded max depth") {
+		t.Fatalf("arguments past the parser's depth: %d %v", code, answer)
+	}
+	if _, err := os.Stat(ran); err == nil {
+		t.Fatal("a source ran for a body the gateway refused to read")
+	} else if !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if service.started.Load() != 0 {
+		t.Fatal("a source was constructed for a body the gateway refused to read")
 	}
 }
 

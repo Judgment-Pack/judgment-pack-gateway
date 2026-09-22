@@ -170,8 +170,10 @@ else of the gateway's. `--source-env NAME=KEY=VALUE` sets a variable for source 
 spawn time, which is for passing a path through by name, not a secret — a secret in
 the gateway's environment is in the signer's memory whatever is declared. On Windows,
 `SYSTEMROOT` is the one variable os/exec adds undeclared. `--source-user NAME=USER`
-runs a source as another OS user with that user's own groups (Unix; requires root,
-refused otherwise rather than run as the signer). `--source-max-output BYTES` bounds
+runs a source as another OS user with that user's own groups (Unix; root may switch, and
+so may a process that is not root but holds `CAP_SETUID`, `CAP_SETGID` and `CAP_KILL` on
+Linux; a start that cannot switch is refused rather than run as the signer).
+`--source-max-output BYTES` bounds
 what a source may write on stdout, from 1 byte to 64 MiB (one mebibyte by default);
 past it the source is killed — on Unix its whole process group, elsewhere the direct
 child — and the acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
