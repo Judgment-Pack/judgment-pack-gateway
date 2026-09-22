@@ -29,3 +29,13 @@ No live AWS account test or paid resource/API use has been performed. Real AWS
 acceptance remains pending, including actual IAM/KMS policy and vendor behavior.
 This work adds file sources only. It does not implement Spaces/Azure/Dropbox or
 change chat/pack storage, gateway SPEC.md, receipts or the frozen corpus.
+
+The committed browser harness was rerun successfully against implementation
+67b8f86f4eb4e1aff83a30cb28bd7bace50cb89b after policy-epoch binding. Seven
+focused safeguard-removal mutations were detected: six by explicit test failures
+and one by a runtime panic after removing the disconnect state guard. This is
+focused regression evidence, not a claim of exhaustive mutation coverage.
+
+The final independent review approves that implementation SHA; see
+`final-review.md`. Subsequent commit changes only review/validation records.
+A production (non-overlay) gateway bundle was also built successfully.
