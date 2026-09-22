@@ -5440,3 +5440,721 @@ func TestReadsFaxWithTheEndOfBlockOffIsNotFramed(t *testing.T) {
 		})
 	}
 }
+
+// A framing stopped at the inflate bound is charged the room it had: the
+// write the bound refused leaves the budget spent to its limit rather than at
+// what the writes before it held, so an image the bound stopped hands the
+// file back nothing. The two images below each decode seven bytes under a
+// ten-byte total, and what the second was charged is what is left for a third.
+func TestReadsAFramingStoppedAtTheBoundIsChargedTheRoomItHad(t *testing.T) {
+	samples := []byte("SAMPLES")
+	d := budgeted(10, 100)
+	if _, err := d.flateFraming(readsStoredFlate(samples)); err != nil {
+		t.Fatalf("framing the first image: %v", err)
+	}
+	if d.budget.used != int64(len(samples)) {
+		t.Fatalf("the first image charged %d of the budget, want %d", d.budget.used, len(samples))
+	}
+	if _, err := d.flateFraming(readsStoredFlate(samples)); !errors.Is(err, errInflateBound) {
+		t.Errorf("framing the second image ended with %v, want the bound", err)
+	}
+	if d.budget.used != 10 {
+		t.Errorf("the budget holds %d of 10 charged after the bound; the room the refused write had is charged with the writes before it", d.budget.used)
+	}
+	if _, err := d.flateFraming(readsStoredFlate([]byte("ABC"))); !errors.Is(err, errInflateBound) {
+		t.Errorf("framing a third image of three bytes ended with %v; the bound the second image met leaves nothing for it", err)
+	}
+}
+
+// Framing an image decodes it, which is a stream's work: the deadline is read
+// before that work begins, as it is before a form is read, and not only on the
+// cadence a framing's own loop reads it at. The image below is three bytes
+// complete -- its framing reaches no reading of its own -- and the deadline
+// that had passed before it began is what the page meets.
+func TestReadsAnInlineImageReadsTheDeadlineBeforeItIsFramed(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d := budgeted(1<<20, 1<<20)
+	d.ctx = ctx
+	// The cadence stands at nothing: the first reading of the clock within a
+	// framing lies a whole cadence away, and three bytes do not reach it.
+	d.checks = 0
+	it := &interp{d: d, ctx: ctx}
+	lex := newLexer([]byte("/W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 41>\nEI\n"), 0)
+	if err := it.skipInlineImage(lex, nil); !isDeadline(err) {
+		t.Errorf("the image was skipped with %v; the deadline had passed before it was framed", err)
+	}
+}
+
+// A framing begins by asking the budget for the output it charges what it
+// decodes to, and takes the answer: with nothing left of the allowance there
+// is no output to decode into, and the framing ends at the bound rather than
+// walking an encoding whose bytes it could not charge. Both encodings below
+// are complete and decode to nothing at all, so only the answer to that
+// question stands between them and an end.
+func TestReadsAFramingWithNothingLeftToInflateMeetsTheBound(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		frame func(*Document) error
+	}{
+		{"a Flate encoding that decodes to nothing", func(d *Document) error {
+			_, err := d.flateFraming(flateOf(nil))
+			return err
+		}},
+		{"an LZW encoding that decodes to nothing", func(d *Document) error {
+			_, err := d.lzwFraming(lzwOf(nil), false)
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// Nothing left of the total, under a per-stream bound that would
+			// hold the encoding: what a framing may inflate is what is left.
+			d := budgeted(7, 1<<20)
+			d.budget.used = 7
+			if err := c.frame(d); !errors.Is(err, errInflateBound) {
+				t.Errorf("the framing ended with %v, want the bound", err)
+			}
+			if err := c.frame(budgeted(1<<20, 1<<20)); err != nil {
+				t.Errorf("the framing of the same bytes with the allowance whole ended with %v", err)
+			}
+		})
+	}
+}
+
+// The bound an output meets is the answer both framings that decode give
+// their caller: a page whose first image spends what the document may inflate
+// leaves the second nothing to decode into, and the record says a stream of
+// the page went past the bound -- whatever the second image's encoding decodes
+// to, an encoding that decodes to nothing at all included.
+func TestReadsASecondImageWithNothingLeftToInflateFailsThePage(t *testing.T) {
+	for _, c := range []struct {
+		name, dict string
+		samples    []byte
+	}{
+		{"a Flate encoding that decodes to nothing", "/W 1 /H 1 /BPC 8 /CS /G /F /Fl", flateOf(nil)},
+		{"an LZW encoding that decodes to nothing", "/W 1 /H 1 /BPC 8 /CS /G /F /LZW /DP << /EarlyChange 0 >>", lzwOf(nil)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var content bytes.Buffer
+			content.WriteString(shown("before", 700))
+			content.WriteString("BI /W 7 /H 1 /BPC 8 /CS /G /F /Fl ID ")
+			content.Write(readsStoredFlate([]byte("SAMPLES")))
+			content.WriteString(" EI\n")
+			content.WriteString("BI " + c.dict + " ID ")
+			content.Write(c.samples)
+			content.WriteString(" EI\n")
+			content.WriteString(shown("after", 680))
+			data := readsContentPage(content.Bytes())
+			opt := testOptions()
+			opt.MaxInflateTotal, opt.MaxInflateOne = 7, 100
+			r := Extract(context.Background(), data, opt)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "stream-over-bound" {
+				t.Errorf("the record reads %s %q with problems %+v; the first image left the second nothing to inflate into",
+					r.Pages[0].Status, r.Pages[0].Text, r.Problems)
+			}
+		})
+	}
+}
+
+// What one stream may inflate to bounds a framing on its own, and not only
+// what the document may inflate in total: an image that decodes to eleven
+// bytes under a ten-byte per-stream bound stops at that bound with a hundred
+// bytes of the total unspent, and the page fails at the bound it met.
+func TestReadsAFramingIsBoundedByWhatOneStreamMayInflate(t *testing.T) {
+	eleven := []byte("ELEVENBYTES")
+	for _, c := range []struct {
+		name, dict string
+		samples    []byte
+		frame      func(*Document, []byte) error
+	}{
+		{"FlateDecode", "/W 11 /H 1 /BPC 8 /CS /G /F /Fl", readsStoredFlate(eleven), func(d *Document, data []byte) error {
+			_, err := d.flateFraming(data)
+			return err
+		}},
+		{"LZWDecode", "/W 11 /H 1 /BPC 8 /CS /G /F /LZW /DP << /EarlyChange 0 >>", lzwOf(eleven), func(d *Document, data []byte) error {
+			_, err := d.lzwFraming(data, false)
+			return err
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// The framing itself: ten bytes of the hundred the document may
+			// inflate are charged, and the eleventh is past what one stream may.
+			d := budgeted(100, 10)
+			if err := c.frame(d, c.samples); !errors.Is(err, errInflateBound) {
+				t.Errorf("framing an image of eleven bytes ended with %v, want the bound", err)
+			}
+			if d.budget.used != 10 {
+				t.Errorf("the framing charged %d bytes, want the ten one stream may inflate", d.budget.used)
+			}
+			opt := testOptions()
+			opt.MaxInflateTotal, opt.MaxInflateOne = 100, 10
+			data := readsInlineImagePage(c.dict, c.samples, shown("REAL", 700))
+			r := Extract(context.Background(), data, opt)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "stream-over-bound" {
+				t.Errorf("the record reads %s %q with problems %+v; the image inflates past what one stream may",
+					r.Pages[0].Status, r.Pages[0].Text, r.Problems)
+			}
+		})
+	}
+}
+
+// Base-85 data ends at the two bytes "~>" and nowhere else: a tilde with any
+// other byte after it ends nothing, and data walked to its end without that
+// pair holds no end at all. An image the file ends the first way fails its
+// page -- the tilde is where the encoding says the data ends, and the file
+// contradicts itself there.
+func TestReadsBase85EndsAtTheTildeAndItsPartner(t *testing.T) {
+	// The framing itself: five characters with no terminator are data whose
+	// end the reader has not been given.
+	d := budgeted(1<<20, 1<<20)
+	if n, err := d.ascii85Framing([]byte("!!!!!")); !errors.Is(err, errFilterUnended) || n != 0 {
+		t.Errorf("framing five characters with no terminator gave %d, %v, want data that holds no end", n, err)
+	}
+	if n, err := d.ascii85Framing([]byte("!!!!!~>")); err != nil || n != 7 {
+		t.Errorf("framing the same characters with their terminator gave %d, %v, want 7", n, err)
+	}
+	content := shown("before", 700) + "BI /W 4 /H 1 /BPC 8 /CS /G /F /A85 ID !!!!!~!\nEI\n" + shown("after", 680)
+	data := readsContentPage([]byte(content))
+	r := extract(t, data)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil || len(r.Pages) != 1 {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+		t.Errorf("the record reads %s %q with problems %+v; a tilde whose partner is not '>' ends nothing",
+			r.Pages[0].Status, r.Pages[0].Text, r.Problems)
+	}
+}
+
+// Base-85 data that fills the bytes the reader may read of one image without
+// ending has met that bound, and the bound is what the record says: the last
+// byte of the window is no end, whatever stands immediately past it. The "EI"
+// below stands at the first byte beyond the window, where a reader that took
+// the window's end for the encoding's would find it.
+func TestReadsBase85FillingTheInputWindowIsThatBound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes an inline image of sixteen megabytes")
+	}
+	samples := bytes.Repeat([]byte{'!'}, maxInlineImageBytes)
+	data := readsInlineImagePage("/W 1 /H 1 /BPC 8 /CS /G /F /A85", samples, shown("REAL", 700))
+	opt := testOptions()
+	opt.MaxInflateOne, opt.MaxInflateTotal = 64<<20, 64<<20
+	r := Extract(context.Background(), data, opt)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil || len(r.Pages) != 1 {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	want := "the content of page 1 is past a structure bound the reader holds"
+	if r.Pages[0].Status != PageFailed || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" || r.Problems[0].Message != want {
+		t.Errorf("pages %+v problems %+v; the encoding held no end within the bytes the reader may read of one image", r.Pages, r.Problems)
+	}
+}
+
+// A final group of fewer than five characters stands for its characters
+// completed with 'u', the largest the alphabet has, and a group the
+// completion carries past a four-byte word is a group no four bytes encode.
+// The three below each fit a word when completed with zeros and pass it when
+// completed as 7.4.3 completes them.
+func TestReadsBase85FinalGroupsAreCompletedWithTheLargestDigit(t *testing.T) {
+	for _, c := range []struct{ name, samples string }{
+		{"a final group of two characters", "!!!!!s8~>"},
+		{"a final group of three characters", "!!!!!s8W~>"},
+		{"a final group of four characters", "!!!!!s8W-~>"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			content := shown("before", 700) + "BI /W 4 /H 1 /BPC 8 /CS /G /F /A85 ID " + c.samples + " EI\n" + shown("after", 680)
+			data := readsContentPage([]byte(content))
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+				t.Errorf("the record reads %s %q with problems %+v; the group's completion carries it past the largest word",
+					r.Pages[0].Status, r.Pages[0].Text, r.Problems)
+			}
+		})
+	}
+}
+
+// Hexadecimal data admits the white space of 7.2.3 wherever it falls, all six
+// bytes of it: an image whose two digits are parted by every one of them is
+// one sample, and the page is read as the page shows it.
+func TestReadsHexadecimalDataAdmitsEveryWhiteSpaceByte(t *testing.T) {
+	samples := append([]byte{'4', 0x00, '\t', '\n', '\f', '\r', ' '}, "1>"...)
+	data := readsInlineImagePage("/W 1 /H 1 /BPC 8 /CS /G /F /AHx", samples, shown("REAL", 700))
+	r := extract(t, data)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil || len(r.Pages) != 1 {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	if r.Pages[0].Status != PageOK || r.Pages[0].Text != "REAL" || len(r.Problems) != 0 {
+		t.Errorf("the record reads %s %q with problems %+v, want %s %q; white space stands anywhere in hexadecimal data",
+			r.Pages[0].Status, r.Pages[0].Text, r.Problems, PageOK, "REAL")
+	}
+}
+
+// A zlib header is two bytes, and bytes that cannot hold two are no header:
+// the reader says so of them rather than reading bytes it was not given. The
+// whole wrapper ends with the four bytes of the checksum, and a wrapper whose
+// checksum is cut short is one whose end the reader has not been given --
+// whatever the bytes past what it was handed happen to hold.
+func TestReadsFlateFramingNeedsTheWholeWrapperWithinTheBytesItHas(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		data []byte
+	}{
+		{"no bytes at all", nil}, {"one byte", []byte{0x78}}, {"the two a header takes", []byte{0x78, 0x01}},
+	} {
+		if got, want := zlibHeader(c.data), len(c.data) == 2; got != want {
+			t.Errorf("%s: zlibHeader is %v, want %v", c.name, got, want)
+		}
+	}
+	// The bytes past the slice are the checksum the wrapper was written with:
+	// a reader that read them would take this for a wrapper that ends.
+	whole := readsStoredFlate([]byte("SAMPLES"))
+	short := whole[:len(whole)-2]
+	d := budgeted(1<<20, 1<<20)
+	if n, err := d.flateFraming(short); !errors.Is(err, errFilterUnended) || n != 0 {
+		t.Errorf("framing a wrapper whose checksum is two bytes short gave %d, %v, want data that holds no end", n, err)
+	}
+	if n, err := d.flateFraming(whole); err != nil || n != len(whole) {
+		t.Errorf("framing the whole wrapper gave %d, %v, want %d", n, err, len(whole))
+	}
+}
+
+// readsStoredFlateBlocks is a zlib stream of stored deflate blocks whose
+// whole wrapper -- two header bytes, the blocks, and the four bytes of the
+// checksum of what they decode to -- is exactly the number of bytes given. A
+// stored block holds at most 65,535 bytes and takes five of its own, so the
+// blocks are as many as that length needs.
+func readsStoredFlateBlocks(t *testing.T, whole int) []byte {
+	t.Helper()
+	const most = 65535
+	payload := 0
+	for blocks := 1; ; blocks++ {
+		payload = whole - 6 - 5*blocks
+		if payload < 1 {
+			t.Fatalf("no number of stored blocks makes a wrapper of %d bytes", whole)
+		}
+		if (payload+most-1)/most == blocks {
+			break
+		}
+	}
+	data := make([]byte, payload)
+	for i := range data {
+		data[i] = byte('A' + i%26)
+	}
+	out := make([]byte, 0, whole)
+	out = append(out, 0x78, 0x01)
+	for at := 0; at < payload; at += most {
+		n := min(most, payload-at)
+		final := byte(0)
+		if at+n == payload {
+			final = 1
+		}
+		out = append(out, final, byte(n), byte(n>>8), byte(^n), byte(^n>>8))
+		out = append(out, data[at:at+n]...)
+	}
+	a, b := uint32(1), uint32(0)
+	for _, x := range data {
+		a = (a + uint32(x)) % 65521
+		b = (b + a) % 65521
+	}
+	sum := b<<16 | a
+	out = append(out, byte(sum>>24), byte(sum>>16), byte(sum>>8), byte(sum))
+	if len(out) != whole {
+		t.Fatalf("the wrapper is %d bytes, want %d", len(out), whole)
+	}
+	return out
+}
+
+// A wrapper whose last two checksum bytes lie past the bytes the reader may
+// read of one image is a wrapper the reader was not given the end of, and the
+// record says which bound the page met. The image below is the window and two
+// bytes: the deflate data within it ends cleanly, and only the checksum the
+// reader would have to read to believe in that end lies beyond.
+func TestReadsAFlateChecksumPastTheInputWindowIsThatBound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes an inline image of sixteen megabytes")
+	}
+	samples := readsStoredFlateBlocks(t, maxInlineImageBytes+2)
+	data := readsInlineImagePage("/W 1 /H 1 /BPC 8 /CS /G /F /Fl", samples, shown("REAL", 700))
+	opt := testOptions()
+	opt.MaxInflateOne, opt.MaxInflateTotal = 64<<20, 64<<20
+	r := Extract(context.Background(), data, opt)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil || len(r.Pages) != 1 {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	want := "the content of page 1 is past a structure bound the reader holds"
+	if r.Pages[0].Status != PageFailed || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" || r.Problems[0].Message != want {
+		t.Errorf("pages %+v problems %+v; the checksum that would end the wrapper lies past the bytes the reader may read", r.Pages, r.Problems)
+	}
+}
+
+// readsLZWEarly is LZW data written the way a PDF writer writes it unless the
+// stream says otherwise: each byte given is one literal code, and the codes
+// grow one code before the table needs the width -- /EarlyChange 1, which a
+// stream that gives no parameters means. The table grows here as the reader
+// grows it, so the width each code is written at is the width it is read at.
+func readsLZWEarly(data []byte) []byte {
+	w := &readsBitWriter{}
+	width, next, first := 9, 258, true
+	put := func(code int) {
+		w.put(code, width)
+		if !first && next < 4096 {
+			next++
+		}
+		first = false
+		if next+1 >= 1<<uint(width) && width < 12 {
+			width++
+		}
+	}
+	for _, b := range data {
+		put(int(b))
+	}
+	// The end-of-data code stands at the width the codes before it left.
+	w.put(257, width)
+	return w.done()
+}
+
+// LZW's codes grow one code before the table is full where the stream does not
+// say otherwise: /EarlyChange is 1 by default, and a reader that grew them a
+// code late would read every code after the first change at a width the writer
+// did not write it at. The image below crosses both changes -- 254 codes nine
+// bits wide, 512 ten bits wide, and the rest eleven -- and the same samples
+// written the other way stand beside it.
+func TestReadsLZWCodesGrowAsTheEarlyChangeSays(t *testing.T) {
+	samples := make([]byte, 900)
+	for i := range samples {
+		samples[i] = byte('A' + i%26)
+	}
+	for _, c := range []struct {
+		name, parms string
+		encoded     []byte
+		early       bool
+	}{
+		{"the early change a stream that declares nothing means", "", readsLZWEarly(samples), true},
+		{"the early change declared", " /DP << /EarlyChange 1 >>", readsLZWEarly(samples), true},
+		{"the early change turned off", " /DP << /EarlyChange 0 >>", lzwOf(samples), false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// The framing itself: the codes end at the end-of-data code, and
+			// the bytes they took are the image's.
+			d := budgeted(1<<20, 1<<20)
+			if n, err := d.lzwFraming(c.encoded, c.early); err != nil || n != len(c.encoded) {
+				t.Errorf("framing gave %d, %v, want %d", n, err, len(c.encoded))
+			}
+			content := shown("before", 700) + "BI /W 900 /H 1 /BPC 8 /CS /G /F /LZW" + c.parms + " ID " +
+				string(c.encoded) + " EI\n" + shown("after", 680)
+			data := readsContentPage([]byte(content))
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Status != PageOK || r.Pages[0].Text != "before\nafter" || len(r.Problems) != 0 {
+				t.Errorf("the record reads %s %q with problems %+v, want %s %q", r.Pages[0].Status, r.Pages[0].Text, r.Problems, PageOK, "before\nafter")
+			}
+		})
+	}
+}
+
+// An inline image's decode parameters may be written as an array with nothing
+// in it, which says of the one filter what a dictionary the stream leaves out
+// says: nothing. The image below is framed under the defaults, and the page is
+// read as it shows.
+func TestReadsAnEmptyDecodeParameterArrayDeclaresNothing(t *testing.T) {
+	samples := readsLZWEarly([]byte("SAMPLES"))
+	content := shown("before", 700) + "BI /W 7 /H 1 /BPC 8 /CS /G /F /LZW /DP [] ID " +
+		string(samples) + " EI\n" + shown("after", 680)
+	data := readsContentPage([]byte(content))
+	r := extract(t, data)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil || len(r.Pages) != 1 {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	if r.Pages[0].Status != PageOK || r.Pages[0].Text != "before\nafter" || len(r.Problems) != 0 {
+		t.Errorf("the record reads %s %q with problems %+v, want %s %q", r.Pages[0].Status, r.Pages[0].Text, r.Problems, PageOK, "before\nafter")
+	}
+}
+
+// The "EI" that ends an image is a token of its own: two bytes another token
+// begins at are not it, and an image whose encoding ends where no EI stands
+// fails its page rather than the reader cutting a token in two to find one.
+func TestReadsAnEIThatBeginsAnotherTokenEndsNoImage(t *testing.T) {
+	content := shown("before", 700) + "BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 41> EI" + shown("after", 680)
+	data := readsContentPage([]byte(content))
+	r := extract(t, data)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil || len(r.Pages) != 1 {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+		t.Errorf("the record reads %s %q with problems %+v; the bytes where the encoding ends begin the token EIBT and not EI",
+			r.Pages[0].Status, r.Pages[0].Text, r.Problems)
+	}
+}
+
+// A fax image's /DecodeParms say what they say however they are written: a
+// writer that turns the end-of-block off with the number 0, or aligns the
+// rows with the number 1, has said what a writer that wrote false and true
+// said, and the reader does not frame either. The bytes below are a complete
+// white Group 4 row and the end-of-facsimile-block that ends it, which the
+// reader frames where the declaration is absent.
+func TestReadsFaxParametersWrittenAsNumbersSayWhatTheySay(t *testing.T) {
+	bits := readsBits("1" + strings.Repeat(readsEOL, 2))
+	for _, c := range []struct {
+		name, parms string
+		declared    Dict
+	}{
+		{"an end-of-block turned off with a number", "/EndOfBlock 0", Dict{"K": int64(-1), "EndOfBlock": int64(0)}},
+		{"rows aligned to bytes with a number", "/EncodedByteAlign 1", Dict{"K": int64(-1), "EncodedByteAlign": int64(1)}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// The framing itself: the declaration is refused before the bytes
+			// are walked, and the same bytes are framed without it.
+			d := budgeted(1<<20, 1<<20)
+			if n, err := d.ccittFraming(c.declared, bits); !errors.Is(err, errFilterNotFramed) || n != 0 {
+				t.Errorf("framing gave %d, %v, want a filter the reader does not frame", n, err)
+			}
+			if n, err := d.ccittFraming(Dict{"K": int64(-1)}, bits); err != nil || n != len(bits) {
+				t.Errorf("framing the same bytes without that declaration gave %d, %v, want %d", n, err, len(bits))
+			}
+			var content bytes.Buffer
+			content.WriteString(shown("before", 700))
+			content.WriteString("BI /W 8 /H 1 /BPC 1 /CS /G /F /CCF /DP << /K -1 /Columns 8 /Rows 1 " + c.parms + " >> ID ")
+			content.Write(bits)
+			content.WriteString(" EI\n")
+			content.WriteString(shown("after", 680))
+			data := readsContentPage(content.Bytes())
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+				t.Errorf("the record reads %s %q with problems %+v; where such an image ends is not something the reader can say",
+					r.Pages[0].Status, r.Pages[0].Text, r.Problems)
+			}
+		})
+	}
+}
+
+// An end-of-line is eleven zero bits and a one, and ten zeros and a one are
+// none: no end-of-facsimile-block stands in the data below, and the reader
+// says the data holds no end rather than ending it at a run the codes may
+// hold. The same data one zero longer in each run is the block's end.
+func TestReadsFaxEndOfLineIsElevenZeroBits(t *testing.T) {
+	d := budgeted(1<<20, 1<<20)
+	ten := readsBits(strings.Repeat("00000000001", 2))
+	if n, err := d.ccittFraming(Dict{"K": int64(-1)}, ten); !errors.Is(err, errFilterUnended) || n != 0 {
+		t.Errorf("framing two runs of ten zeros and a one gave %d, %v, want data that holds no end", n, err)
+	}
+	eleven := readsBits(strings.Repeat(readsEOL, 2))
+	if n, err := d.ccittFraming(Dict{"K": int64(-1)}, eleven); err != nil || n != len(eleven) {
+		t.Errorf("framing two runs of eleven zeros and a one gave %d, %v, want %d", n, err, len(eleven))
+	}
+}
+
+// Where a JPEG ends is what its markers say, and a JPEG is walked by the
+// rules T.81 gives for reading them: the start-of-image the file must begin
+// with, the FF every marker begins with, the fill bytes that may stand before
+// one, the markers that carry no segment at all, the two bytes of length a
+// segment must have, and the entropy-coded data a scan begins. Each structure
+// below is the shortest one that turns on a single rule.
+func TestReadsAJPEGFramingReadsTheStructureItIsGiven(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		data []byte
+		// end is where the framing ends, and want the error it ends with: a
+		// structure the reader refuses is malformed, and one whose end it was
+		// not given holds no end.
+		end  int
+		want error
+	}{
+		{"bytes where the start-of-image stands", []byte{0x00, 0x00, 0xFF, 0xD9}, 0, errMalformed},
+		{"a marker that does not begin with FF", []byte{0xFF, 0xD8, 0x42, 0xD9}, 0, errMalformed},
+		{"a fill byte before the end-of-image", []byte{0xFF, 0xD8, 0xFF, 0xFF, 0xD9}, 5, nil},
+		{"the temporary-use marker, which carries no segment", []byte{0xFF, 0xD8, 0xFF, 0x01, 0xFF, 0xD9}, 6, nil},
+		{"a restart marker outside a scan", []byte{0xFF, 0xD8, 0xFF, 0xD0, 0xFF, 0xD9}, 6, nil},
+		{"a segment shorter than the two bytes of its own length", []byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x01}, 0, errMalformed},
+		{"fill bytes the data ends inside", []byte{0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xFF}, 0, errFilterUnended},
+		{"a segment the data ends after, with no end-of-image", []byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x02}, 0, errFilterUnended},
+		{"a byte that is no marker where no scan has begun", []byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x02, 0x42, 0xFF, 0xD9}, 0, errMalformed},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := budgeted(1<<20, 1<<20)
+			n, err := d.jpegFraming(c.data)
+			ok := n == c.end && (c.want == nil) == (err == nil) && (c.want == nil || errors.Is(err, c.want))
+			if !ok {
+				t.Errorf("framing gave %d, %v, want %d, %v", n, err, c.end, c.want)
+			}
+		})
+	}
+}
+
+// A JPEG whose segments fill the bytes the reader may read of one image
+// without reaching an end-of-image has met that bound, and the bound is what
+// the record says. The image below is the window exactly: the "EI" stands at
+// the first byte past it, where a reader that ended the walk at the window
+// would find one.
+func TestReadsAJPEGFillingTheInputWindowIsThatBound(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes an inline image of sixteen megabytes")
+	}
+	// A start-of-image, a comment segment carrying two bytes, and comment
+	// segments carrying none to the end of the window.
+	samples := append([]byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x04, 0x41, 0x42},
+		bytes.Repeat([]byte{0xFF, 0xFE, 0x00, 0x02}, (maxInlineImageBytes-8)/4)...)
+	if len(samples) != maxInlineImageBytes {
+		t.Fatalf("the image is %d bytes, want the window of %d", len(samples), maxInlineImageBytes)
+	}
+	data := readsInlineImagePage("/W 1 /H 1 /BPC 8 /CS /G /F /DCT", samples, shown("REAL", 700))
+	opt := testOptions()
+	opt.MaxInflateOne, opt.MaxInflateTotal = 64<<20, 64<<20
+	r := Extract(context.Background(), data, opt)
+	if out, ok := readsPoppler(t, data); ok {
+		t.Logf("pdftotext reads %q", out)
+	}
+	if r.Fatal != nil || len(r.Pages) != 1 {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	want := "the content of page 1 is past a structure bound the reader holds"
+	if r.Pages[0].Status != PageFailed || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" || r.Problems[0].Message != want {
+		t.Errorf("pages %+v problems %+v; the markers held no end-of-image within the bytes the reader may read of one image", r.Pages, r.Problems)
+	}
+}
+
+// readsWalkAllowance is what the readings a walk that ends at the rebuild it
+// meets asks for cost the inflate budget: the rebuild itself, asked for
+// outside any walk by resolving the object whose offset the file damaged, and
+// then the whole reading of the rebuilt document -- its tree walked and its
+// pages extracted, with no rebuild left to meet. The allowance is measured
+// this way rather than through the walk that meets the rebuild, so that what
+// it measures is what those readings cost and not what a walk happens to
+// read. A reading that spends more has read something of the discarded tree.
+func readsWalkAllowance(t *testing.T, data []byte, damaged int) int64 {
+	t.Helper()
+	ctx := context.Background()
+	opt := testOptions()
+	result := &Result{}
+	doc, stop := openDocument(ctx, data, opt, result)
+	if stop != nil {
+		t.Fatal("the document was not opened")
+	}
+	generation := doc.generation
+	doc.resolve(ref{damaged, 0})
+	if doc.generation == generation {
+		t.Fatalf("reading object %d did not rebuild the cross-reference", damaged)
+	}
+	w, generation, stop := walkPages(ctx, doc, opt, result)
+	if stop != nil || doc.generation != generation {
+		t.Fatalf("the walk of the rebuilt document ended with %v", stop)
+	}
+	extractPages(ctx, w, opt, result)
+	if len(result.Pages) != 1 || result.Pages[0].Text != "Z" {
+		t.Fatalf("the rebuilt document reads %+v, want one page reading %q", result.Pages, "Z")
+	}
+	return doc.budget.used
+}
+
+// A walk reads the cross-reference it stands on at each of the two places it
+// may be replaced under it: after a node's own fields are read, and after
+// each kid is resolved. Neither reading stands for the other, and a walk
+// missing one reads the tree this document no longer has -- the second page
+// of the discarded tree in the first file below, the discarded node's own
+// compressed resources in the second. Either reading spends on that tree what
+// the reading of the rebuilt document needs, and the allowance below is what
+// that reading costs and no more.
+func TestReadsAWalkNoticesARebuildWhereverItMeetsOne(t *testing.T) {
+	content := shown("Z", 700)
+	font := "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
+	sibling := "<< /Type /Page /Parent 2 0 R /Contents 6 0 R >>"
+	resources := "<< /Font << /F1 7 0 R >> >>"
+	for _, c := range []struct {
+		name     string
+		objects  []readsObject
+		broken   int
+		inStream map[int][2]int
+	}{
+		// The rebuild is met reading a leaf's own resources, before that leaf's
+		// /Kids is read: a walk that read on would take the leaf for a page of
+		// this document and resolve the kid after it, which lies in a
+		// compressed stream of objects.
+		{"a rebuild met reading a leaf's resources", []readsObject{
+			{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+			{2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"},
+			{3, "<< /Type /Page /Parent 2 0 R /Resources 11 0 R /Contents 6 0 R >>"},
+			{5, readsStreamObject("/Type /ObjStm /N 1 /First 4 /Filter /FlateDecode", string(flateOf([]byte("4 0 "+sibling))))},
+			{6, readsStreamObject("", content)},
+			{7, font},
+			{11, resources},
+			// The rebuilt document: one page, whose content is compressed.
+			{2, "<< /Type /Pages /Kids [12 0 R] /Count 1 >>"},
+			{12, "<< /Type /Page /Parent 2 0 R /Resources " + resources + " /Contents 13 0 R >>"},
+			{13, readsStreamObject("/Filter /FlateDecode", string(flateOf([]byte(content))))},
+		}, 11, map[int][2]int{4: {5, 0}}},
+		// The rebuild is met resolving the kid itself: a walk that read on
+		// would walk that kid, whose resources lie in a compressed stream of
+		// objects, and spend on them what the reading after the rebuild needs.
+		{"a rebuild met resolving a kid", []readsObject{
+			{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+			{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+			{3, "<< /Type /Page /Parent 2 0 R /Resources 14 0 R /Contents 6 0 R >>"},
+			{5, readsStreamObject("/Type /ObjStm /N 1 /First 5 /Filter /FlateDecode", string(flateOf([]byte("14 0 "+resources))))},
+			{6, readsStreamObject("", content)},
+			{7, font},
+		}, 3, map[int][2]int{14: {5, 0}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := readsRawFile(c.objects, c.broken, c.inStream)
+			// What the readings this document asks for cost, measured from a
+			// reading that meets no bound rather than counted by hand.
+			allowance := readsWalkAllowance(t, data, c.broken)
+			opt := testOptions()
+			opt.MaxInflateTotal, opt.MaxInflateOne = allowance, allowance
+			r := Extract(context.Background(), data, opt)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil {
+				t.Fatalf("fatal %+v; the rebuilt document holds one page the reader reads whole", r.Fatal)
+			}
+			if len(r.Pages) != 1 || r.Pages[0].Text != "Z" || r.Pages[0].Status != PageOK || len(r.Problems) != 0 {
+				t.Errorf("the record reads %+v with problems %+v, want one page reading %q", r.Pages, r.Problems, "Z")
+			}
+		})
+	}
+}
