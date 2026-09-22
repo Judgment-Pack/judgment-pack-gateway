@@ -482,15 +482,22 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   stays within 2^53 − 1. The deadline runs from the adapter's start, before it reads its own
   executable for its identity and before it reads the request: the request is bounded in time as
   well as in bytes. The cutoff is an instant: two seconds past the deadline, and never nearer
-  than fifty milliseconds from when the read began, so that a deadline already past leaves room
-  for a read of bytes that are there. A read that **ended** at or before that instant is the
+  than fifty milliseconds from when the read began. That floor is the cutoff only where the
+  deadline and the two seconds after it together fall earlier than fifty milliseconds from the
+  read's start — a deadline already 1,950 milliseconds old when the adapter comes to read — and
+  it is there because such a deadline would otherwise leave no room at all for a read of bytes
+  that are there; a deadline a millisecond old leaves the rest of those two seconds and never
+  reaches the floor. A read that **ended** at or before the cutoff is the
   request, and the record then says `timeout`; one that ended after it is not, and is refused
   with `adapter-failed`, since no document has been established and there is nothing to record.
   The instant the read ended is stamped and recorded where the cutoff's arbitration can see it,
   under the same lock, so a read the runtime paused between stamping and handing its bytes over
   is waited for rather than refused: what decides is when the read ended, not when the adapter
-  came to look. What the cutoff does not promise is that a read the operating system has not
-  finished scheduling will be taken. `durationMs` runs from the instant the adapter turns to reading the
+  came to look. An arbitration that finds no read has ended is committed only once the clock is
+  strictly past the cutoff, so that a read stamped after it is necessarily a late read: the
+  refusal says that no read had ended by the cutoff, and not that none had ended by the moment
+  the adapter looked. What the cutoff does not promise is that a read the operating system has
+  not finished scheduling will be taken. `durationMs` runs from the instant the adapter turns to reading the
   request, so it carries that reading as well as the work after it. While the document is opened — its
   cross-reference and trailer read, and a damaged cross-reference rebuilt by scanning — the
   deadline is checked at the intervals in the structure bounds below, and one met there ends the
@@ -631,7 +638,12 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   balance as its objects: the bytes each decoder is handed, before it runs, cross-reference
   streams included, so that a file whose streams share one long tail is charged for reading it
   once for each of them rather than reading it over and over for what it yields; a stream with no
-  filter hands nothing to a decoder, and is charged where its bytes are parsed instead. Who answers for
+  filter hands nothing to a decoder, and is charged where its bytes are parsed instead — an
+  unfiltered object stream's header and objects are lexed and parsed against that same balance —
+  with one exception: the rows of an unfiltered cross-reference stream are read as the
+  fixed-width fields they are, without a lexer and without a charge, and what bounds them is the
+  cross-reference table's own limits above, on the sections chained, the object numbers one
+  section declares, and the bytes the file holds. Who answers for
   a decrypted copy is settled by the caller that asked for the decoding and not by the stream's
   own `/Type`: an object stream's decoded data is held by the document's caches for its life and
   is charged to the document, while a copy made for a page is dropped with the page and charged

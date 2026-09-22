@@ -499,12 +499,18 @@ between two checks runs to its end. Each check reads the clock as well as the co
 given, so a deadline the clock has reached stops the work whether or not the timer that cancels
 that context has run. The reading of the request is waited on to an instant — two seconds past
 the deadline, and never nearer than fifty milliseconds from when the read began: that floor is a
-minimum cutoff horizon and not a minimum wait, and it is there because a deadline already past
-when the adapter comes to read would otherwise leave no room at all for a read of bytes that are
-already there. A read that ended at or before that instant is the request and is taken, whether
+minimum cutoff horizon and not a minimum wait, and it is the cutoff only where the deadline and
+the two seconds after it together fall earlier than fifty milliseconds from the read's start,
+which is a deadline already 1,950 milliseconds old when the adapter comes to read. Such a
+deadline would otherwise leave no room at all for a read of bytes that are already there, where a
+deadline a millisecond old leaves the rest of those two seconds and never reaches the floor. A
+read that ended at or before that instant is the request and is taken, whether
 or not its result had been handed over when the cutoff fired, since the instant it ended is
 recorded where the cutoff's arbitration reads it; a read that ended after it is not the request,
-and the request is refused. At the deadline, an OCR program that has not finished is
+and the request is refused. An arbitration that finds that no read has ended is committed only
+once the clock is strictly past the cutoff, so that a read stamped after it is necessarily a late
+read: the refusal says that no read had ended by the cutoff, not that none had ended by the
+moment the adapter looked. At the deadline, an OCR program that has not finished is
 ended: the adapter kills the process it started, not that process's own children, waits up to
 two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
 itself, so a process left behind holding it does not delay the record past those two seconds.

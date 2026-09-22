@@ -367,25 +367,65 @@ func boundsNamePile(arrays, perArray int) []byte {
 	return []byte("[" + strings.Repeat(one, arrays) + "]")
 }
 
-// An operand is bounded while it is built and not once it exists: an array
-// of arrays of names is one operand, and a reader that checked it after
-// parsing would have allocated all of it first. The page fails at the bound
-// and the heap stays near what the bound allows.
+// An operand is bounded while it is built and not once it exists: one array
+// is one operand, and a reader that checked it after parsing would have
+// allocated all of it first. The page fails at the bound and the heap stays
+// near what the bound allows, and the text the page shows before the operand
+// is not what the page reads: a reader that built the operand whole would
+// read it.
+//
+// The two shapes are stopped by two different things, and each is here for
+// its own. An array of empty dictionaries carries no token for the lexer to
+// reserve room for and spells each member in four bytes, so nothing but the
+// parser's own allowance, spent member by member, can stop it. An array of
+// names is stopped before that allowance is reached at all, by the room the
+// lexer reserves for the buffer of every name it reads.
 func TestBoundsOperandsAreBoundedWhileTheyAreBuilt(t *testing.T) {
-	// Four million names, which cost far more than one page's operands may
-	// hold: the parse must stop part way through the first operand.
-	b := &pdfgen.Builder{}
-	content := boundsNamePile(40, 100_000)
-	b.Catalog(b.Pages([]pdfgen.Page{{Content: string(content)}}))
-	data := b.Bytes()
-	var r *Result
-	peak := boundsPeakHeap(func() { r = extract(t, data) })
-	t.Logf("one operand of %d names in a %d-byte file: peak heap %d MiB, pages %+v problems %+v", 40*100_000, len(data), peak>>20, r.Pages, r.Problems)
-	if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageFailed {
-		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
-	}
-	if peak > 160<<20 {
-		t.Errorf("building one operand past the bound peaked at %d MiB; the bound is %d MiB", peak>>20, maxOperandBytes>>20)
+	for _, c := range []struct {
+		name    string
+		of      string
+		content string
+	}{
+		{
+			"the parser's own allowance",
+			"200,000 empty dictionaries",
+			// Two hundred thousand empty dictionaries: a Go map's smallest
+			// form costs more than three hundred bytes to hold, and the
+			// element holding it more again, so they are past the page's
+			// operand allowance several times over.
+			"[" + strings.Repeat("<<>>", 200_000) + "]",
+		},
+		{
+			"the lexer's reservations",
+			"4,000,000 names",
+			string(boundsNamePile(40, 100_000)),
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			b := &pdfgen.Builder{}
+			helv := b.Font("Helvetica", "WinAnsiEncoding", "")
+			// The page's text stands before the operand, so a reader that
+			// built the operand and only then looked at what it cost reads
+			// the page rather than failing it.
+			content := pdfgen.Text("F1", 12, []string{"ordinary"}) + c.content
+			b.Catalog(b.Pages([]pdfgen.Page{{Content: content, Fonts: map[string]int{"F1": helv}}}))
+			data := b.Bytes()
+			var r *Result
+			peak := boundsPeakHeap(func() { r = extract(t, data) })
+			t.Logf("one operand of %s in a %d-byte file: peak heap %d MiB, pages %+v problems %+v", c.of, len(data), peak>>20, r.Pages, r.Problems)
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" {
+				t.Fatalf("an operand of %s past the bound left the page %q (%v)", c.of, r.Pages[0].Text, r.Pages[0].Status)
+			}
+			if len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" || r.Problems[0].Page != 1 {
+				t.Errorf("problems %+v", r.Problems)
+			}
+			if peak > 160<<20 {
+				t.Errorf("building one operand past the bound peaked at %d MiB; the bound is %d MiB", peak>>20, maxOperandBytes>>20)
+			}
+		})
 	}
 }
 
@@ -1550,18 +1590,64 @@ func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
 		data := boundsDensePages(500, per, false)
 		r := boundsDenseExtract(t, data)
 		pages, _, whole, charged, budget, bound := boundsDenseWalk(t, data, per)
-		failed := 0
-		for _, p := range r.Pages {
-			if p.Status == PageFailed {
-				failed++
-			}
+		// The pages that are read come first and the pages that fail follow
+		// them: the walk spends what the resources cost, and from wherever
+		// that leaves too little for a page's content, the pages are listed
+		// as failed. Where the two meet is a figure of the build; that each
+		// page is one or the other, and that a failed page is reported as a
+		// failed page rather than as one holding no text, is not.
+		read := 0
+		for read < len(r.Pages) && r.Pages[read].Status == PageOK {
+			read++
 		}
-		t.Logf("500 pages of %d one-member dictionaries: %d bytes, %d pages extracted (%d failed), %d walked whole, %d charged of %d", per, len(data), len(r.Pages), failed, whole, charged, budget)
+		done, failed := r.Pages[:read], r.Pages[read:]
+		t.Logf("500 pages of %d one-member dictionaries: %d bytes, %d pages extracted (%d read, %d failed), %d walked whole, %d charged of %d", per, len(data), len(r.Pages), len(done), len(failed), whole, charged, budget)
 		if r.Fatal != nil || len(r.Pages) != 500 {
 			t.Errorf("%d a page: fatal %+v pages %d", per, r.Fatal, len(r.Pages))
 		}
 		if pages != 500 || whole != 500 || bound != nil {
 			t.Errorf("%d a page: %d pages, %d whole, bound %v", per, pages, whole, bound)
+		}
+		if len(done) == 0 || len(failed) == 0 {
+			t.Errorf("%d a page: %d pages read and %d failed; this is the shape where the balance runs out part way", per, len(done), len(failed))
+		}
+		// One message for each way the pages could be wrong, naming the
+		// first page that is: five hundred of them would otherwise be five
+		// hundred lines.
+		reported := map[int]string{}
+		for _, pr := range r.Problems {
+			reported[pr.Page] = pr.Code
+		}
+		var unread, listed, unreported int
+		var firstUnread, firstListed, firstUnreported Page
+		count := func(wrong bool, n *int, first *Page, p Page) {
+			if !wrong {
+				return
+			}
+			if *n == 0 {
+				*first = p
+			}
+			*n++
+		}
+		for _, p := range done {
+			count(p.Text != "dense", &unread, &firstUnread, p)
+		}
+		for _, p := range failed {
+			count(p.Status != PageFailed || p.Text != "", &listed, &firstListed, p)
+			count(reported[p.Number] != "pdf-page-failed", &unreported, &firstUnreported, p)
+		}
+		if unread > 0 {
+			t.Errorf("%d a page: %d of the %d pages before the balance ran out did not read their text, the first being page %d as %q", per, unread, len(done), firstUnread.Number, firstUnread.Text)
+		}
+		if listed > 0 {
+			t.Errorf("%d a page: %d of the %d pages past where the balance ran out are listed as something other than failed, the first being page %d as %v (%q)", per, listed, len(failed), firstListed.Number, firstListed.Status, firstListed.Text)
+		}
+		if unreported > 0 {
+			t.Errorf("%d a page: %d of the %d failed pages are not reported as pdf-page-failed, the first being page %d as %q", per, unreported, len(failed), firstUnreported.Number, reported[firstUnreported.Number])
+		}
+		// And nothing else is reported: one problem for each failed page.
+		if len(r.Problems) != len(failed) {
+			t.Errorf("%d a page: %d pages failed and %d problems are reported: %+v", per, len(failed), len(r.Problems), r.Problems)
 		}
 		next := boundsDensePages(500, per+1, false)
 		rn := boundsDenseExtract(t, next)
@@ -2190,19 +2276,21 @@ func TestBoundsObjectStreamHeadersAreReadWithinTheAllowance(t *testing.T) {
 	}
 }
 
-// A header token the window cuts in two settles nothing: an object whose
-// number, generation, "obj" or "<<" ends at the window's edge stays a
-// candidate, and the document it belongs to is read. Both searches that read
-// heads are covered -- the catalog looked for because the trailer names none,
-// and the page tree looked for because the catalog names none -- and in each
-// the cut is made in the header of the object that search is looking for.
+// A header token the window cuts in two settles nothing, through the two
+// searches that read heads: an object whose generation, "obj" or "<<" ends at
+// the window's edge stays a candidate, and the document it belongs to is
+// read. Both searches are covered -- the catalog looked for because the
+// trailer names none, and the page tree looked for because the catalog names
+// none -- and in each the cut is made in the header of the object that search
+// is looking for.
 //
-// The padding is written in four places, so that the window's edge falls at
-// each of the four tokens in turn, and the gap is swept a byte either side of
-// the edge. Where the search reads a rebuilt cross-reference the offset is the
-// object's number, so padding before the number is read past rather than
-// looked at; the case is kept because a cross-reference the reader did read
-// may name an offset before the number, and it costs nothing here.
+// Each search here reaches its heads through a rebuilt cross-reference, whose
+// offset for an object is the offset of the object's number: padding written
+// before the number is therefore read past rather than looked at, and the
+// window for those cases begins at the number as it would with no padding at
+// all. They are kept as the ordinary heads they are, and the cases that put
+// the window's edge inside a number are made directly on the head reader
+// below, where the entry's offset is the test's to name.
 func TestBoundsAHeaderCutByTheWindowIsInconclusive(t *testing.T) {
 	pages := "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
 	catalog := "<< /Type /Catalog /Pages 2 0 R >>"
@@ -2230,7 +2318,10 @@ func TestBoundsAHeaderCutByTheWindowIsInconclusive(t *testing.T) {
 	}
 	// What stands before the padding, and how long the token after it is: the
 	// window ends headWindow bytes from the object's offset, so a gap of
-	// headWindow - before - k puts its edge k bytes into that token.
+	// headWindow - before - k puts its edge k bytes into that token. The
+	// number is the one token the rebuilt cross-reference's own offset stands
+	// at, so its case is an ordinary head read from the number, and the
+	// window's edge inside a number is settled directly below.
 	cuts := []struct {
 		token         string
 		before, width int
@@ -2280,6 +2371,102 @@ func TestBoundsAHeaderCutByTheWindowIsInconclusive(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// boundsDirectHead lays out one object at the offset a cross-reference entry
+// names, with the padding written where the case asks for it. The offset is
+// the start of the whole region, padding and all, which is what a
+// cross-reference the reader did read may name and what a rebuilt one never
+// does: the window's edge then falls where the case puts it rather than at
+// the head of a number. The object's number and its generation are several
+// digits long, so that an edge inside one of them is an edge inside a token
+// and not between two.
+func boundsDirectHead(where string, gap int, body string) []byte {
+	space := strings.Repeat(" ", gap)
+	var head string
+	switch where {
+	case "the number":
+		head = space + boundsHeadNumber + " " + boundsHeadGen + " obj" + body
+	case "the generation":
+		head = boundsHeadNumber + space + boundsHeadGen + " obj" + body
+	case "obj":
+		head = boundsHeadNumber + " " + boundsHeadGen + space + "obj" + body
+	default: // "<<"
+		head = boundsHeadNumber + " " + boundsHeadGen + " obj" + space + body
+	}
+	// The file runs on past the window, so that a head the window cuts is cut
+	// by the window and not by the end of the file.
+	return append([]byte(head+"endobj\n"), bytes.Repeat([]byte("%"), headWindow)...)
+}
+
+// The object's number and generation, long enough for the window's edge to
+// fall inside either of them.
+const (
+	boundsHeadNumber = "123456789012"
+	boundsHeadGen    = "345678"
+)
+
+// A header token the window cuts in two settles nothing, read directly: the
+// entry's offset stands before the padding, as an offset a cross-reference
+// the reader did read may name, so the window's edge falls inside the
+// object's number, inside its generation, inside the "obj" that follows them
+// and inside the "<<" that opens its dictionary. In each the object stays a
+// candidate -- to be parsed under the document's allowance, as it was before
+// any head was read -- and the searches that read heads exclude nothing on
+// the strength of a token they only half read.
+//
+// The same header with the window's edge well past it is settled, and
+// settled as what it is: the padding is not what makes a head inconclusive,
+// the cut is.
+func TestBoundsACutHeaderReadDirectlyIsInconclusive(t *testing.T) {
+	const pages = "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+	// The entry names the start of the region: a document of the bytes alone,
+	// read at offset zero, is the head reader's whole world here.
+	head := func(data []byte) (*Document, xrefEntry) {
+		return &Document{data: data, budget: &inflateBudget{}}, xrefEntry{offset: 0}
+	}
+	for _, cut := range []struct {
+		token         string
+		before, width int
+	}{
+		{"the number", 0, len(boundsHeadNumber)},
+		{"the generation", len(boundsHeadNumber), len(boundsHeadGen)},
+		{"obj", len(boundsHeadNumber) + 1 + len(boundsHeadGen), 3},
+		{"<<", len(boundsHeadNumber) + 1 + len(boundsHeadGen) + 4, 2},
+	} {
+		// A byte either side of the token as well as every byte inside it:
+		// the edge before it, at each of its bytes, at its end and a byte
+		// past its end.
+		for k := -1; k <= cut.width+1; k++ {
+			gap := headWindow - cut.before - k
+			t.Run(fmt.Sprintf("the window ends %d bytes into %s (%d spaces)", k, cut.token, gap), func(t *testing.T) {
+				d, e := head(boundsDirectHead(cut.token, gap, pages))
+				known := d.readHeadType(e)
+				if known.settled {
+					t.Errorf("a head with the window's edge %d bytes into %s was settled as %q", k, cut.token, known.typ)
+				}
+				if d.notOfType(e, "Pages") {
+					t.Errorf("a head with the window's edge %d bytes into %s excluded the page tree it belongs to", k, cut.token)
+				}
+			})
+		}
+		// And the same header, padded but whole within the window: what it
+		// declares is read, the page tree it is stays a candidate, and the
+		// catalog it is not is excluded.
+		gap := headWindow - cut.before - cut.width - 80
+		t.Run(fmt.Sprintf("the window ends well past %s (%d spaces)", cut.token, gap), func(t *testing.T) {
+			d, e := head(boundsDirectHead(cut.token, gap, pages))
+			if known := d.readHeadType(e); !known.settled || known.typ != "Pages" {
+				t.Errorf("a whole head padded before %s read as %+v", cut.token, known)
+			}
+			if d.notOfType(e, "Pages") {
+				t.Errorf("a whole head of a page tree excluded the page tree")
+			}
+			if !d.notOfType(e, "Catalog") {
+				t.Errorf("a whole head of a page tree was left a candidate for the catalog")
+			}
+		})
 	}
 }
 

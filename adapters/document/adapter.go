@@ -23,6 +23,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -218,6 +219,20 @@ const requestPipeWait = 2 * time.Second
 // waited on.
 const requestReadFloor = 50 * time.Millisecond
 
+// requestArbitrationYields, requestArbitrationSpin and
+// requestArbitrationSpins are how an arbitration that found no stamp waits
+// for the clock a stamp is taken from to pass the cutoff: it yields that many
+// times, then sleeps that long between looks, and gives up looking after that
+// many looks. The adapter's clock is time.Now, which is past the cutoff as
+// soon as the cutoff's timer has fired, so the first look ends the wait and
+// nothing here is waited on; a clock that stands still is a test's, and these
+// keep even that bounded.
+const (
+	requestArbitrationYields = 16
+	requestArbitrationSpin   = 50 * time.Microsecond
+	requestArbitrationSpins  = 4096
+)
+
 // errRequestNotRead is a request whose reading had not ended requestPipeWait
 // past the deadline.
 var errRequestNotRead = errors.New("the request was not read in full")
@@ -252,7 +267,12 @@ var errRequestNotRead = errors.New("the request was not read in full")
 // ended at or before the cutoff is the request whether or not its result had
 // reached the channel by then, so a goroutine the runtime paused between
 // stamping and publishing does not turn an on-time request into a refusal.
-// The send follows the unlock, so the wait for it ends.
+// The send follows the unlock, so the wait for it ends. An arbitration that
+// finds no stamp at all is committed only once the clock those stamps are
+// taken from is strictly past the cutoff, so that a stamp taken after it is
+// necessarily after the cutoff: a refusal then says that no read had ended by
+// the cutoff, rather than that none had ended by the time the arbitration
+// looked.
 func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	type read struct {
 		data []byte
@@ -317,9 +337,35 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	// its result rather than refusing a request that had arrived and had not
 	// yet been handed over. One that ended after the cutoff is not the
 	// request, and one that has not ended is left to the goroutine.
-	mu.Lock()
-	at, hasEnded := ended, stamped
-	mu.Unlock()
+	//
+	// An arbitration that finds no stamp at all is committed only once the
+	// clock a stamp is taken from is strictly past the cutoff. Until then a
+	// read about to stamp could still stamp the cutoff itself, which is an
+	// instant a request is read at, and refusing it would leave the outcome
+	// to which of two goroutines the runtime ran first rather than to the
+	// instant. Where the clock has not passed the cutoff, the lock is
+	// released and taken again until either a stamp is there to judge or the
+	// clock has passed it; in the adapter the clock is time.Now and the
+	// cutoff's own timer has already fired, so it is past the cutoff by the
+	// nanoseconds reading it takes and the first look ends this. What the
+	// spins bound is a clock that stands still, which is a test's and not the
+	// adapter's.
+	var at time.Time
+	var hasEnded bool
+	for spin := 0; ; spin++ {
+		mu.Lock()
+		at, hasEnded = ended, stamped
+		settled := hasEnded || readStamp().After(cutoff)
+		mu.Unlock()
+		if settled || spin >= requestArbitrationSpins {
+			break
+		}
+		if spin < requestArbitrationYields {
+			runtime.Gosched()
+		} else {
+			time.Sleep(requestArbitrationSpin)
+		}
+	}
 	taken := hasEnded && readTaken(at, cutoff)
 	if readArbitrated != nil {
 		readArbitrated(taken)
@@ -350,9 +396,10 @@ var readWaiting func()
 
 // readClock is when the wait for a request thinks it is, which is where the
 // floor under the cutoff is measured from; readStamp is the instant a read
-// that has ended is stamped with. Both are time.Now in the adapter, and a
-// test drives them where the cutoff and the read's own instant must be its
-// to choose.
+// that has ended is stamped with, and is read again by an arbitration that
+// found no stamp, to learn whether the clock those stamps come from is past
+// the cutoff. Both are time.Now in the adapter, and a test drives them where
+// the cutoff and the read's own instant must be its to choose.
 var readClock, readStamp = time.Now, time.Now
 
 // readStamping is called with the instant a read ended, once that instant has
