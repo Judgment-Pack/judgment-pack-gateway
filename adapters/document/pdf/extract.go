@@ -79,8 +79,9 @@ const (
 	// that yields little charges the inflation budget that little for each of
 	// them: what the page costs to read is bounded here rather than there.
 	maxPageWorkBytes = 64 << 20
-	// filterStepBytes is what applying one filter of a stream's filter list
-	// costs against the page's work: a list is built and walked for every
+	// filterStepBytes is what one entry of a stream's filter list costs
+	// against the page's work, charged as the entry is read and whether or
+	// not it names a filter the reader applies: a list is read for every
 	// stream it belongs to, and a list of a hundred thousand filters that
 	// yields nothing is work whatever it yields.
 	filterStepBytes = 256

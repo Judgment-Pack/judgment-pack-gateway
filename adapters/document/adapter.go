@@ -254,7 +254,11 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	done := make(chan read, 1)
 	go func() {
 		data, err := io.ReadAll(io.LimitReader(r, n))
-		done <- read{data: data, err: err, at: time.Now()}
+		at := readStamp()
+		done <- read{data: data, err: err, at: at}
+		if readStamped != nil {
+			readStamped(at)
+		}
 	}()
 	deadline, hasDeadline := ctx.Deadline()
 	if !hasDeadline {
@@ -267,7 +271,7 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	// end. The cutoff is never nearer than that moment: what it bounds is a
 	// read waiting on a writer, not the scheduling of a read that can end at
 	// once.
-	if floor := time.Now().Add(requestReadFloor); cutoff.Before(floor) {
+	if floor := readClock().Add(requestReadFloor); cutoff.Before(floor) {
 		cutoff = floor
 	}
 	wait := time.NewTimer(time.Until(cutoff))
@@ -305,6 +309,18 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 // it to hold the reader there until a read and the cutoff are both ready,
 // which is the moment the two are decided between.
 var readWaiting func()
+
+// readClock is when the wait for a request thinks it is, which is where the
+// floor under the cutoff is measured from; readStamp is the instant a read
+// that has ended is stamped with. Both are time.Now in the adapter, and a
+// test drives them where the cutoff and the read's own instant must be its
+// to choose.
+var readClock, readStamp = time.Now, time.Now
+
+// readStamped is called with the instant a read ended, once it has been
+// stamped and published. It is nil in the adapter, and a test sets it to
+// learn that the result is there to be taken.
+var readStamped func(time.Time)
 
 // readTaken reports whether a read that ended at an instant is the request:
 // one that ended at or before the cutoff is, and one that ended after it is

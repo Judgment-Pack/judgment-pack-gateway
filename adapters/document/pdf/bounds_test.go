@@ -681,7 +681,7 @@ func TestDecodersRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, in := range inputs {
-				d := &Document{budget: &inflateBudget{total: 1 << 30, one: 1 << 30}}
+				d := budgeted(1<<30, 1<<30)
 				got, err := d.decodeStream(&stream{dict: obj.(Dict), raw: fc.encode(in)}, true)
 				want := in
 				if strings.HasPrefix(fc.name, "PNG") {
@@ -1203,9 +1203,12 @@ func TestContentStreamsPastTheirBoundFailThePage(t *testing.T) {
 }
 
 // budgeted is a document whose decoders write into a budget of the total
-// and per-stream bounds given.
+// and per-stream bounds given. It carries a megabyte of file, since the
+// reading the decoders do is charged against what the document may read and
+// a document of no bytes may read nothing; what these measure is the
+// inflation budget and not that one.
 func budgeted(total, one int64) *Document {
-	return &Document{budget: &inflateBudget{total: total, one: one}}
+	return &Document{data: make([]byte, 1<<20), budget: &inflateBudget{total: total, one: one}}
 }
 
 // The inflate bound is exact on both sides, for a decoder that writes whole

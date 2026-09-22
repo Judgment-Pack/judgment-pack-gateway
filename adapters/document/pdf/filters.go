@@ -113,10 +113,21 @@ func (d *Document) filtersOf(dict Dict) ([]filterSpec, error) {
 	case nil:
 		return nil, nil
 	case Name:
+		if err := d.chargeWork(filterStepBytes); err != nil {
+			return nil, err
+		}
 		specs = []filterSpec{{name: f, parms: d.dictOf(pv)}}
 	case Array:
 		parms := d.arrayOf(pv)
 		for i, item := range f {
+			// An entry of a filter list is read before it is known to be a
+			// filter at all, and the list is read again for every stream that
+			// names it: each entry is charged as it is read, whether or not
+			// it names a filter this reader has, so that a list rejected at
+			// its last entry costs what reading it cost.
+			if err := d.chargeWork(filterStepBytes); err != nil {
+				return nil, err
+			}
 			name, ok := d.nameOf(item)
 			if !ok {
 				return nil, malformed("/Filter array holds a non-name")
@@ -141,12 +152,20 @@ func (d *Document) filtersOf(dict Dict) ([]filterSpec, error) {
 func (d *Document) decodeStream(s *stream, noDecrypt bool) ([]byte, error) {
 	data := s.raw
 	if d.crypt != nil && !noDecrypt && s.dict["Type"] != Name("XRef") {
-		// Decrypting copies the stream's bytes, and what is decrypted is held
-		// for as long as anything holds the copy -- an object stream's decoded
-		// data is one such holder. The copy is charged before it is made, so a
-		// document whose streams would decrypt to more than it may hold leaves
-		// them unread rather than holding them.
-		if !d.chargeParsed(goSizeClass(int64(len(data)))) {
+		// Decrypting copies the stream's bytes, and the copy is charged before
+		// it is made, so a document whose streams decrypt to more than it may
+		// hold leaves them unread rather than holding them. Who is charged is
+		// who owns the copy: an object stream's decoded data is held by the
+		// caches for the life of the document, while a copy made for a page --
+		// its content, a form it draws, a font's or a CMap's bytes -- is
+		// dropped when the page is done, and is charged to that page's work
+		// and released with it.
+		copied := goSizeClass(int64(len(data)))
+		if d.pageWorking && s.dict["Type"] != Name("ObjStm") {
+			if err := d.chargeWork(copied); err != nil {
+				return nil, err
+			}
+		} else if !d.chargeParsed(copied) {
 			return nil, errParsedBudget()
 		}
 		var err error
@@ -161,12 +180,9 @@ func (d *Document) decodeStream(s *stream, noDecrypt bool) ([]byte, error) {
 	}
 	for _, f := range specs {
 		// Applying a filter is work the page that asked for the stream answers
-		// for, however little the filter yields: a list of a hundred thousand
-		// filters over an empty stream charges the inflation budget nothing
-		// and is read for every stream it belongs to.
-		if err := d.chargeWork(filterStepBytes); err != nil {
-			return nil, err
-		}
+		// for, however little the filter yields; it was charged as its entry
+		// was read, above, and is not charged again here: an entry costs one
+		// step whether it is applied or rejected.
 		switch f.name {
 		case "FlateDecode", "Fl":
 			data, err = d.inflate(data)

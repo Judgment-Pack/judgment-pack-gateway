@@ -484,9 +484,13 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   well as in bytes. A request that is there is read however late the deadline finds the adapter,
   and the record then says `timeout`; one whose reading has not ended two seconds past the
   deadline — a stdin its writer neither writes nor closes — is refused with `adapter-failed`,
-  since no document has been established and there is nothing to record. `durationMs` runs from
-  the start of reading the request, so the
-  record's duration does not carry that reading. While the document is opened — its
+  since no document has been established and there is nothing to record. A request whose read has
+  not ended by the cutoff -- two seconds past the deadline, and never nearer than fifty
+  milliseconds from when the read began -- is refused, and one whose read ended at or before it
+  is the request, whenever the adapter comes to look: what the cutoff bounds is waiting on a
+  writer, and what it does not promise is that a read the operating system has not finished
+  scheduling will be taken. `durationMs` runs from the instant the adapter turns to reading the
+  request, so it carries that reading as well as the work after it. While the document is opened — its
   cross-reference and trailer read, and a damaged cross-reference rebuilt by scanning — the
   deadline is checked at the intervals in the structure bounds below, and one met there ends the
   run the way one met while the page tree is walked does: `timeout`, `truncated` `true`, and no
@@ -521,7 +525,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   |---|---|---|
   | indirect objects read in one document | 262,144 | wherever objects are read |
   | bytes read and held for each byte of the file and of each byte its streams inflate to | 160 | wherever objects are read: the bytes a value holds, charged as it is built, so one past the bound is never held whole, and the bytes of the file read to build it, charged as they are read, so a file read once for every object it declares spends the allowance; past it the object is left unread and the ones after it are not parsed |
-  | bytes read and held in all | 1 GiB | wherever objects are read: the ratio above bounds a small file, this bounds every file, and it is set above what the densest ordinary document costs |
+  | bytes read and held in all | 1 GiB | wherever objects are read: the ratio above bounds a small file, this bounds every file, and it is the one bound a document within `--max-bytes` and `--max-pages` can meet by holding a great deal rather than by overlapping — about 1.8 million one-member dictionaries or the equivalent: 500 pages of 3,600 each read, 4,000 each do not |
   | the bytes of an object read to decide whether it is the page tree or the catalog | 1,024 bytes | rebuilding: the window is read as objects, not searched for a word, and an object it cannot settle is parsed |
   | references resolving to references | 32 | wherever objects are read |
   | indirect objects read inside another object's read, including stream lengths | 32 | wherever objects are read |
@@ -544,7 +548,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | graphics states saved and not restored | 256 | content |
   | one inline image's dictionary; its data | 128 objects; 16 MiB | content |
   | a page's content streams, concatenated | 64 MiB | content |
-  | the work one page may cost: the bytes its content streams and the forms it draws hold, and each filter applied | 64 MiB; 256 bytes a filter | content: a count of the work, not of the time it takes -- a chain of filters that yields nothing may still be slow -- a `/Contents` array may name one stream any number of times, a page may draw one form any number of times, and a filter that yields little charges the inflate bounds that little for each of them |
+  | the work one page may cost: the bytes its content streams and the forms it draws hold, and each entry of a filter list read | 64 MiB; 256 bytes an entry | content: a count of the work, not of the time it takes -- a chain of filters that yields nothing may still be slow -- a `/Contents` array may name one stream any number of times, a page may draw one form any number of times, and a filter that yields little charges the inflate bounds that little for each of them; an entry is charged as it is read, whether it is then applied or rejected, and not again when it is applied |
   | characters the glyphs shown on one page map to, the forms it draws included | 4,000,000 | content: an unmapped glyph counts as one, and glyphs past the text budget count |
   | fonts held by reference for a document; font resource names held while one page's content is read | 4,096; 4,096 | a font: past either the font is read again rather than held (no error) |
   | width entries one font's `/W` declares | 262,144 | a font: past it the font keeps no widths |
@@ -553,7 +557,8 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | codespace ranges one CMap declares | 256 | a CMap: past it the CMap is not used |
   | width entries and CMap mappings of all of a document's fonts together | 4,194,304 | a font: the `/W` or CMap a charge would take past it is not used, and a page shown with a font that kept none of its mappings reports its glyphs as unmapped rather than as an error |
   | the codes one `bfrange` or `cidrange` spans | 65,536 | a CMap: a longer range is cut to that span |
-  | the entries one `bfrange` or `cidrange` is charged | 4; one more for each 8 characters of its destination | a CMap: a range is held as its endpoints and the characters it maps to, so one range maps as many codes as its span while the two bounds above count what holding it costs |
+  | the entries one `bfrange` or `cidrange` is charged | 4; one more for each 8 characters of its destination | a CMap: a range whose destination is a number or a string is held as its endpoints and those characters, so it maps as many codes as its span while the two bounds above count what holding it costs. A range whose destination is an array is not a range at all: each of its members maps one code and is charged as a mapped code |
+  | the bytes the values one CMap is read through may hold | 96 MiB | a CMap: never more than the entries its document's fonts have left, at the same reckoning; an operand, a destination or an array of them is built within it, and a CMap whose reading meets it is not used |
   | a `bfchar` or `bfrange` destination string | 512 bytes | a CMap: a longer one maps nothing |
 
   Widths serve the glyph positions from which spaces and line breaks are inferred; they do not
@@ -585,18 +590,31 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
 
   The objects a document holds are bounded against what the reader spends on them rather than
   against the file's length: 160 bytes for each byte of the file and for each byte its streams
-  inflate to, and 1 GiB in all, whichever is smaller. The ceiling is what binds an ordinary
-  document: at `--max-bytes` 16 MiB with the default 64 MiB of inflation the ratio would allow
-  12.5 GiB, and the ceiling is set above the densest ordinary shape — five hundred pages of two
-  thousand one-member dictionaries each, an eight-megabyte file, are charged about 540 MB and
-  read whole. Two costs are charged against it, which
+  inflate to, and 1 GiB in all, whichever is smaller. At `--max-bytes` 16 MiB with the default
+  64 MiB of inflation the ratio would allow 12.5 GiB, so the ceiling is what binds a document of
+  that size. It is the one bound a document can meet by holding a great deal rather than by
+  overlapping: about 1.8 million one-member dictionaries or the equivalent. Five hundred pages of
+  two thousand each, an eight-megabyte file, are charged about 570 MB and read whole; five
+  hundred pages of three thousand six hundred each, fourteen megabytes, are charged about
+  1,024 MB and read whole; five hundred pages of four thousand each are `pdf-malformed`, and a
+  reader that admitted them would be holding some 740 MB of Go maps and saying nothing about
+  it. A document adapter that
+  refuses at a stated bound is doing its work; what would make such a document cheap is a smaller
+  representation for a small dictionary, which is not a change this bound can make. Two costs are charged against it, which
   are not the same cost of the same bytes: what a value **holds**, charged as the value is
   built, and what was **read** to build it, charged as each of a document's lexers advances over
   the file — a comment with no line end, a string with no end read ahead of a value and stepped
   back over, a candidate given up on and a token all count. Each byte counts once for each lexer
   that reads it, and a document starts one lexer for each object it reads; within one lexer a
   byte is charged once however often the parser steps back over it, except that the one-token
-  lookahead after an integer reads a string again where the object after it is one. A file whose objects are each followed by a
+  lookahead after an integer reads a string again where the object after it is one. Which
+  allowance a reading spends depends on what is being read: the objects of a document, its
+  trailer, its cross-reference and the heads it inspects all spend the document's one balance,
+  while a page's operands and an inline image's dictionary spend that page's operand allowance
+  and a CMap's values spend one of its own — each bounded in its own right, and the memory of
+  every token charged wherever it is read. What a page's content streams cost to decode is the
+  page's work allowance, and what a document's streams cost to decode while it is opened or
+  rebuilt is charged against the same balance as its objects. A file whose objects are each followed by a
   comment that runs to its end is read once for every object it declares, holds almost nothing,
   and is bounded by the second of those. The ratio is what dense ordinary
   structure needs — the smallest dictionary a file can spell, `<</A 1>>`, is eight bytes of file

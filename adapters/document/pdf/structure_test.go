@@ -336,7 +336,7 @@ func TestObjectStreamThatCannotBeReadEndsTheWalk(t *testing.T) {
 		b.Catalog(pages)
 		data := b.Bytes()
 		rows := bytes.LastIndex(data, []byte(">>\nstream\n")) + len(">>\nstream\n")
-		copy(data[rows+6*resources:], []byte{2, byte(objStm >> 24), byte(objStm >> 16), byte(objStm >> 8), byte(objStm), 0})
+		copy(data[rows+9*resources:], []byte{2, byte(objStm >> 24), byte(objStm >> 16), byte(objStm >> 8), byte(objStm), 0, 0, 0, 0})
 		return data
 	}
 	objStm := func(filter string, encode func([]byte) []byte) func([]byte, int) pdfgen.Object {
@@ -438,7 +438,7 @@ func TestOpeningBoundsArePDFMalformed(t *testing.T) {
 	farObjectStream := func() []byte {
 		data := append([]byte{}, stream...)
 		rows := bytes.LastIndex(data, []byte(">>\nstream\n")) + len(">>\nstream\n")
-		copy(data[rows+6:], []byte{2, 0x7f, 0xff, 0xff, 0xff, 0})
+		copy(data[rows+9:], []byte{2, 0x7f, 0xff, 0xff, 0xff, 0, 0, 0, 0})
 		return data
 	}
 	scanned := func(extra int) []byte {

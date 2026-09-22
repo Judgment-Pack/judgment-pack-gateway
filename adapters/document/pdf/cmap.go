@@ -110,19 +110,27 @@ func parseCMap(data []byte, budget *fontBudget, stop func() bool) *cmap {
 	// array of them -- are built within what one CMap's mappings may hold,
 	// counted in the bytes a mapping costs: a destination array of hundreds
 	// of thousands of dictionaries is not built and then ignored.
-	room := &allowance{left: int64(maxCMapEntries) * cmapEntryBytes, past: errCMapBudget}
+	// What one CMap's mappings may hold, and never more than what the
+	// document's fonts may still hold: the values a CMap is read through are
+	// bounded by both.
+	entries := maxCMapEntries
+	if left := maxFontEntries - budget.used; left < entries {
+		entries = left
+	}
+	room := &allowance{left: int64(entries) * cmapEntryBytes, past: errCMapBudget}
+	lex.reserving(room)
 	p := &parser{lex: lex, contentMode: true, allow: room}
 	var stack []object
+	// A value this CMap is read through that is past what it may hold ends
+	// the reading of it where that ran out, and the CMap is abandoned rather
+	// than kept with the mappings read so far: what it would map then is what
+	// the bound decided, and a font is better without it than with half of
+	// it. Every way out of this parse asks.
+	abandoned := func() bool { return room.left == 0 }
 	for !c.unusable {
 		// Each step of this loop reads one object, and the sections it enters
 		// read the deadline as they charge what they hold.
-		if c.stopped() {
-			return nil
-		}
-		if room.left == 0 {
-			// A value this CMap was read through was past what it may hold,
-			// and the reading of it stopped where that ran out: the CMap is
-			// abandoned, as one past any other of its bounds is.
+		if c.stopped() || abandoned() {
 			return nil
 		}
 		obj, err := p.parseObject(0)
@@ -146,6 +154,9 @@ func parseCMap(data []byte, budget *fontBudget, stop func() bool) *cmap {
 				// A predefined parent this reader does not carry; an
 				// embedded one would need the resource. Nothing to do.
 			case "endcmap":
+				if abandoned() {
+					return nil
+				}
 				return c.finish()
 			case "def":
 				if len(stack) >= 2 {
@@ -167,7 +178,7 @@ func parseCMap(data []byte, budget *fontBudget, stop func() bool) *cmap {
 			stack = stack[1:]
 		}
 	}
-	if c.unusable {
+	if c.unusable || abandoned() {
 		return nil
 	}
 	if len(c.codespaces) == 0 {

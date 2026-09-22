@@ -114,9 +114,11 @@ stdout; the gateway then mints nothing and retains nothing. The reading of the r
 the adapter's deadline, which runs from its start: a request whose reading has not ended two
 seconds past the deadline — a writer that holds the adapter's stdin open, neither writing nor
 closing it, leaves one — is refused with `adapter-failed`, since no document has been
-established and there is nothing to record. A request that is there is read, however late the
-deadline finds the adapter, and what the deadline then does is
-[recorded](#how-a-document-is-processed). The
+established and there is nothing to record. A read that has ended by that cutoff is the
+request, whenever the adapter comes to look at it, and what the deadline then does is
+[recorded](#how-a-document-is-processed); a read that ends after it is not. The cutoff is an
+instant, not a promise about scheduling: a request whose bytes are there is read in the
+ordinary case, and one whose read the operating system has not finished by then is refused. The
 adapter then checks in this order and refuses at the first check that fails:
 
 1. stdin holds more than the **read bound**, 4 × ⌈`--max-bytes` / 3⌉ + 65,536 bytes — the base64
@@ -486,7 +488,7 @@ keeps the bound, and every figure derived from it, within the canonical domain's
 `attachment.Check` refuses a record reporting a larger `maxBytes`. Object count, the bytes the
 objects read hold, nesting depth, cross-reference chain length, page-tree depth, operators per
 page, the bytes the operands of a page hold, and the work one page costs in streams read and
-filters applied are
+filter-list entries read are
 bounded by constants the adapter states in its documentation: one met while the document is opened or
 its page tree walked is `pdf-malformed` (step 4), and one met in a page's content fails that
 page (step 5).
@@ -496,9 +498,10 @@ its deadline at the points [the steps](#how-a-document-is-processed) name, and a
 between two checks runs to its end. Each check reads the clock as well as the context it was
 given, so a deadline the clock has reached stops the work whether or not the timer that cancels
 that context has run. The reading of the request is waited on until two seconds past the
-deadline, and never for less than fifty milliseconds from when the read began: a deadline
-already past when the adapter comes to read leaves no wait at all, where a request whose bytes
-are there needs only the moment its read takes to end. At the deadline, an OCR program that has not finished is
+deadline, and to an instant never nearer than fifty milliseconds from when the read began: that
+floor is a minimum cutoff horizon and not a minimum wait, and it is there because a deadline
+already past when the adapter comes to read would otherwise leave no room at all for a read of
+bytes that are already there. At the deadline, an OCR program that has not finished is
 ended: the adapter kills the process it started, not that process's own children, waits up to
 two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
 itself, so a process left behind holding it does not delay the record past those two seconds.

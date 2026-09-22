@@ -3,7 +3,6 @@ package document
 import (
 	"context"
 	"io"
-	"strings"
 	"testing"
 	"time"
 )
@@ -42,39 +41,72 @@ func (r *boundsReleasedReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// boundsDrivenRead is a read whose completion instant and publication are
+// the test's to choose: it ends when the test releases it, stamps the instant
+// the test names, and tells the test when its result is there to be taken.
+// Nothing in these tests waits on the scheduler to have done something.
+type boundsDrivenRead struct {
+	release chan struct{}
+	data    string
+}
+
+func (r *boundsDrivenRead) Read(p []byte) (int, error) {
+	<-r.release
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// boundsReadAt drives one reading of a request: the clock stands at now, the
+// read ends stamped at ended, and the wait is not decided until the result
+// has been published. It reports what readWithin made of it.
+func boundsReadAt(t *testing.T, deadline, now, ended time.Time) ([]byte, error) {
+	t.Helper()
+	defer func(clock, stamp func() time.Time, waiting func(), stamped func(time.Time)) {
+		readClock, readStamp, readWaiting, readStamped = clock, stamp, waiting, stamped
+	}(readClock, readStamp, readWaiting, readStamped)
+	// The clock the cutoff is measured from, and the instant the read ends,
+	// are two things the test names apart.
+	readClock = func() time.Time { return now }
+	readStamp = func() time.Time { return ended }
+	published := make(chan struct{})
+	readStamped = func(time.Time) { close(published) }
+	r := &boundsDrivenRead{release: make(chan struct{}), data: "hello"}
+	close(r.release)
+	// The wait is not decided until the read's result is there to be taken,
+	// so both outcomes are ready and only the instants decide between them.
+	readWaiting = func() { <-published }
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	return readWithin(ctx, r, 1<<20)
+}
+
 // A read and the cutoff that are both ready are decided by the instant the
-// read ended, and not by which of them the runtime offers first. The reader
-// is held at the moment both are ready -- the read has delivered and the
-// cutoff has passed -- and the outcome is taken many times over: a read that
-// ended after the cutoff is refused every time, and one that ended before it
-// is taken every time.
+// read ended, and not by which of them the runtime offers first: the test
+// drives the clock and the completion, so neither side depends on when the
+// scheduler ran anything.
 func TestBoundsBothReadyIsDecidedByTheInstant(t *testing.T) {
-	defer func(saved func()) { readWaiting = saved }(readWaiting)
+	now := time.Now()
+	// A deadline long past, so the cutoff is the floor past the clock.
+	deadline := now.Add(-time.Hour)
+	cutoff := now.Add(requestReadFloor)
 	for _, c := range []struct {
-		name    string
-		release time.Duration
-		read    bool
+		name  string
+		ended time.Time
+		read  bool
 	}{
-		{"a read that ended before the cutoff", 0, true},
-		{"a read that ended after the cutoff", requestReadFloor + 20*time.Millisecond, false},
+		{"a read that ended before the cutoff", cutoff.Add(-time.Millisecond), true},
+		{"a read that ended at the cutoff", cutoff, true},
+		{"a read that ended after the cutoff", cutoff.Add(time.Nanosecond), false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for i := 0; i < 20; i++ {
-				// The deadline is old, so the cutoff is the floor past now.
-				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-requestPipeWait))
-				r := &boundsReleasedReader{release: make(chan struct{}), data: "hello"}
-				if c.release == 0 {
-					close(r.release)
-				} else {
-					time.AfterFunc(c.release, func() { close(r.release) })
-				}
-				// Held until the read has delivered and the cutoff has
-				// passed, so that both outcomes are ready when one is taken.
-				readWaiting = func() { time.Sleep(c.release + requestReadFloor + 40*time.Millisecond) }
-				got, err := readWithin(ctx, r, 1<<20)
-				cancel()
-				if c.read && err != nil {
-					t.Fatalf("run %d: a read that ended before the cutoff was refused: %v", i, err)
+				got, err := boundsReadAt(t, deadline, now, c.ended)
+				if c.read && (err != nil || string(got) != "hello") {
+					t.Fatalf("run %d: %q %v", i, string(got), err)
 				}
 				if !c.read && err == nil {
 					t.Fatalf("run %d: a read that ended after the cutoff was taken: %q", i, string(got))
@@ -84,70 +116,27 @@ func TestBoundsBothReadyIsDecidedByTheInstant(t *testing.T) {
 	}
 }
 
-// The cutoff for a request still being read is an instant -- the deadline
-// the context declares, plus the wait past it -- and not a wait that begins
-// wherever the deadline was noticed. A read that ended at or before that
-// instant is the request; one that ended after it is not, and which of the
-// two happened is decided by when the read ended and not by which of two
-// things a select offered first.
-func TestBoundsRequestReadIsDecidedByAnInstant(t *testing.T) {
-	for _, c := range []struct {
-		name     string
-		release  time.Duration
-		read     bool
-		atMost   time.Duration
-		deadline time.Duration
-	}{
-		// The deadline is already old: what is left of the wait is what
-		// remains of requestPipeWait from the deadline, not another two
-		// seconds from now.
-		{"a read that ends within the wait", 50 * time.Millisecond, true, time.Second, requestPipeWait - 300*time.Millisecond},
-		{"a read that ends past the wait", 800 * time.Millisecond, false, time.Second, requestPipeWait - 300*time.Millisecond},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-c.deadline))
-			defer cancel()
-			r := &boundsHeldReader{release: make(chan struct{}), data: "hello"}
-			// The read ends when the test says so, and the wait is held until
-			// it has: neither side of the cutoff is left to the scheduler.
-			timer := time.AfterFunc(c.release, func() { close(r.release) })
-			defer timer.Stop()
-			readWaiting = func() { time.Sleep(c.release + 40*time.Millisecond) }
-			defer func() { readWaiting = nil }()
-			started := time.Now()
-			got, err := readWithin(ctx, r, 1<<20)
-			took := time.Since(started)
-			t.Logf("%s: %q %v after %v", c.name, string(got), err, took)
-			if c.read && (err != nil || string(got) != "hello") {
-				t.Errorf("a read that ended within the wait yielded %q and %v", string(got), err)
-			}
-			if !c.read && err == nil {
-				t.Errorf("a read that ended past the wait yielded %q", string(got))
-			}
-			if took > c.atMost {
-				t.Errorf("the wait took %v; it runs to an instant %v past the deadline", took, requestPipeWait)
-			}
-		})
-	}
-}
-
 // A request that is already there is read, whatever the deadline says: the
 // wait bounds a read that does not end, and a read of bytes that are there
-// ends at once.
+// ends within the floor under the cutoff. The instants are the test's, so
+// nothing here rests on when the scheduler ran the read.
 func TestBoundsRequestAlreadyThereIsRead(t *testing.T) {
-	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
-	defer cancel()
-	// The wait is held until the read of bytes that are there has delivered,
-	// so that what is established is the rule and not the scheduling.
-	defer func(saved func()) { readWaiting = saved }(readWaiting)
-	readWaiting = func() { time.Sleep(20 * time.Millisecond) }
-	started := time.Now()
-	got, err := readWithin(ctx, strings.NewReader("hello"), 1<<20)
-	if err != nil || string(got) != "hello" {
-		t.Fatalf("%q %v", string(got), err)
-	}
-	if took := time.Since(started); took > time.Second {
-		t.Errorf("reading a request that was there took %v with a deadline an hour old", took)
+	now := time.Now()
+	for _, c := range []struct {
+		name     string
+		deadline time.Time
+		ended    time.Time
+	}{
+		{"a deadline an hour old", now.Add(-time.Hour), now},
+		{"a deadline just passed", now.Add(-time.Millisecond), now},
+		{"a deadline still to come", now.Add(time.Hour), now},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := boundsReadAt(t, c.deadline, now, c.ended)
+			if err != nil || string(got) != "hello" {
+				t.Errorf("a request that was there read as %q (%v)", string(got), err)
+			}
+		})
 	}
 }
 

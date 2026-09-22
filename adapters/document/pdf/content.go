@@ -345,6 +345,7 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 		// costs is bounded by the page's work allowance instead.
 		room := &allowance{left: maxOperandBytes - it.operandBytes, past: errOperandBudget}
 		p.allow = room
+		lex.reserving(room)
 		before := room.left
 		obj, err := p.parseObject(0)
 		spent := before - room.left
@@ -668,6 +669,7 @@ func (it *interp) skipInlineImage(lex *lexer) error {
 	// charged to an allowance of their own: what is dropped is not held, and
 	// what would be past the bound is never built.
 	room := &allowance{left: maxOperandBytes - it.operandBytes, past: errOperandBudget}
+	lex.reserving(room)
 	p := &parser{lex: lex, contentMode: true, allow: room}
 	for objects := 0; ; objects++ {
 		if objects > 2*maxOperands {

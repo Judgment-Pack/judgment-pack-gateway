@@ -87,6 +87,13 @@ const (
 	parsedValueBytes = 16
 )
 
+// grownBytes is what a buffer a builder appended into holds: a slice grown
+// by appending takes more room than the bytes put in it, half as much again
+// past the doubling the small sizes get, and the allocator rounds that up
+// again. A value read from a file is built that way, so what it holds is
+// charged that way, wherever the charge is taken.
+func grownBytes(n int64) int64 { return goSizeClass(n + n/4) }
+
 // goSizeClass is at or above what Go's allocator gives a block of n bytes:
 // its size classes are finer than the powers of two up to the largest of
 // them, and a block past that is rounded up to whole pages. A slice grown by
@@ -666,7 +673,7 @@ func (d *Document) reconstruct() error {
 		var obj object
 		var err error
 		if isDict {
-			p := &parser{lex: lex, allow: lex.allow}
+			p := &parser{lex: lex, allow: lex.room}
 			obj, err = p.parseObject(0)
 		}
 		if err != nil && isBound(err) {
@@ -1105,6 +1112,13 @@ func (d *Document) startPageWork() { d.pageWork = 0; d.pageWorking = true }
 // page and bounded by the budgets that cover it.
 func (d *Document) chargeWork(n int64) error {
 	if !d.pageWorking {
+		// No page answers for this: a stream decoded while the document is
+		// opened or rebuilt is read on the document's own account, and is
+		// charged against what the document may read and hold, which is the
+		// balance every other reading of the file spends.
+		if !d.chargeParsed(n) {
+			return errParsedBudget()
+		}
 		return nil
 	}
 	if n < 0 || n > maxPageWorkBytes-d.pageWork {
@@ -1132,9 +1146,9 @@ func errParsedBudget() error {
 func parsedBytesOf(o object) int64 {
 	switch x := o.(type) {
 	case String:
-		return parsedStringBytes + goSizeClass(int64(len(x)))
+		return parsedStringBytes + grownBytes(int64(len(x)))
 	case Name:
-		return parsedStringBytes + goSizeClass(int64(len(x)))
+		return parsedStringBytes + grownBytes(int64(len(x)))
 	case Array:
 		n := int64(parsedArrayBytes)
 		for _, item := range x {
@@ -1144,7 +1158,7 @@ func parsedBytesOf(o object) int64 {
 	case Dict:
 		n := int64(parsedDictBytes)
 		for name, v := range x {
-			n += parsedMemberBytes + goSizeClass(int64(len(name))) + parsedBytesOf(v)
+			n += parsedMemberBytes + grownBytes(int64(len(name))) + parsedBytesOf(v)
 		}
 		return n
 	case *stream:
@@ -1223,6 +1237,12 @@ func (d *Document) readHeadType(e xrefEntry) headType {
 		if err != nil {
 			return headType{}
 		}
+		if cut && t.end >= len(head) {
+			// The window ends inside this token: the object's number, its
+			// generation or the "obj" that follows them is cut in two, and
+			// what it is cannot be read from here.
+			return headType{}
+		}
 		if t.kind == tokKeyword && t.keyword == "obj" {
 			break
 		}
@@ -1248,7 +1268,7 @@ func (d *Document) readHeadType(e xrefEntry) headType {
 		// catalog are dictionaries, so this is not one of them.
 		return headType{settled: true}
 	}
-	p := &parser{lex: lex, allow: lex.allow}
+	p := &parser{lex: lex, allow: lex.room}
 	obj, err := p.parseObject(0)
 	if err != nil {
 		return headType{}
@@ -1445,10 +1465,20 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 	// order it declares. The decoded data itself is not charged here: it is
 	// either the file's own bytes, which the reader holds once, or bytes an
 	// inflation charged to the budget that bounds them.
-	lex := newLexer(data[:first], 0)
+	// The header is read within the document's allowance, as every other
+	// reading of bytes is: a stream whose header region begins with something
+	// that runs to the end of it is read once and not once for every stream
+	// that shares those bytes.
+	lex := newLexer(data[:first], 0).within(d.budgeted())
 	st := &objStmParsed{data: data, offsets: map[int]int{}}
 	for i := int64(0); i < n; i++ {
 		t1, err := lex.next()
+		if lex.spent {
+			// The reading of this header is past what the document may read:
+			// what it declares past that point is unread, and a header read
+			// in part is not a header.
+			return nil, errParsedBudget()
+		}
 		if err != nil || t1.kind != tokInteger {
 			break
 		}

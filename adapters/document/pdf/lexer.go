@@ -99,13 +99,19 @@ type token struct {
 type lexer struct {
 	data []byte
 	pos  int
-	// allow is what the parse this lexer serves may spend, where it serves
-	// one: the bytes it advances over are charged to it, so that a file whose
-	// objects each read the rest of it -- a comment with no line end after
-	// every object is one -- spends the allowance instead of being read once
-	// for every object. It is nil for a lexer with none, where the slice it
-	// reads bounds what it can advance over.
-	allow *allowance
+	// work is what the bytes this lexer advances over are charged to: a file
+	// whose objects each read the rest of it -- a comment with no line end
+	// after every object is one -- spends the allowance instead of being read
+	// once for every object. It is nil for a lexer whose reading is not
+	// charged: a page's content is read once from end to end, and what that
+	// costs is the page's own work allowance, charged where the stream is
+	// decoded.
+	work *allowance
+	// room is what the memory of the token being built is charged to, as the
+	// builder grows into it. Every lexer has one where its parser has one,
+	// content and CMaps included: what a token takes is memory wherever it is
+	// read, while what it advanced over is the reading of a file.
+	room *allowance
 	// charged is how far the bytes advanced over have been charged. It only
 	// rises, so a parser that goes back over what it has read does not pay for
 	// it twice, and each byte of the slice costs this lexer one charge.
@@ -122,9 +128,19 @@ type lexer struct {
 
 func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos, charged: pos} }
 
-// within gives the lexer the allowance the parse spends, and returns it.
+// within gives the lexer the allowance a document's reading spends: both what
+// its tokens take and what its reading of the file costs.
 func (l *lexer) within(a *allowance) *lexer {
-	l.allow = a
+	l.work, l.room = a, a
+	return l
+}
+
+// reserving gives the lexer the allowance its tokens' memory is charged to,
+// and leaves its reading uncharged: a content stream and a CMap are each read
+// once from end to end, so what they cost to read is bounded where they are
+// decoded, while what their tokens hold is memory like any other.
+func (l *lexer) reserving(a *allowance) *lexer {
+	l.room = a
 	return l
 }
 
@@ -134,19 +150,17 @@ func (l *lexer) within(a *allowance) *lexer {
 // memory it takes -- and a file that is read without being held, as a comment
 // or a candidate given up on is, is charged only here.
 //
-// It is called where a token begins, where a comment ends and where a string
-// ends, rather than on the way out of every call: a short token is bounded
-// by the bound on its kind, so charging it at the next token costs nothing
-// that matters, while a comment runs to the end of a line that may be the
-// end of the file, and a string with no end runs to the end of the data, and
-// each is charged where it ends. A string is charged there rather than at
-// the next token because the parser reads one ahead and steps back: an
-// unterminated string read as the token after a value would otherwise be
-// stepped back over before any call saw how far it went, and the rest of
-// the data would be read once for every value in it and charged for none.
+// It is called on the way out of every reading of a token, and again where a
+// comment ends, where a string ends and where skipping whitespace ends: the
+// way out covers every reader and every error of one, and the others charge
+// before a parser can step back over what was read -- an unterminated string
+// read as the token after a value is stepped back over, and the rest of the
+// data would otherwise be read for every value in it and charged for none.
+// A byte is charged once however often it is offered, so the calls that
+// overlap cost nothing.
 func (l *lexer) advanced() {
 	if l.pos > l.charged {
-		if !l.allow.take(int64(l.pos - l.charged)) {
+		if !l.work.take(int64(l.pos - l.charged)) {
 			l.spent = true
 		}
 		l.charged = l.pos
@@ -161,7 +175,7 @@ func (l *lexer) reserve(capacity int) bool {
 	if want <= l.reserved {
 		return true
 	}
-	if !l.allow.take(want - l.reserved) {
+	if !l.room.take(want - l.reserved) {
 		l.spent = true
 		l.reserved = 0
 		return false
@@ -170,9 +184,14 @@ func (l *lexer) reserve(capacity int) bool {
 	return true
 }
 
-// errRead is the error every token is once the allowance for reading is
-// spent.
-func (l *lexer) errRead() error { return l.allow.exhausted() }
+// errRead is the error every token is once an allowance this lexer spends is
+// spent: the memory its tokens take, or the reading of the file itself.
+func (l *lexer) errRead() error {
+	if l.room != nil {
+		return l.room.exhausted()
+	}
+	return l.work.exhausted()
+}
 
 // stringToken is a string token read from start to the lexer's position,
 // its bytes charged where it ends.
@@ -406,6 +425,9 @@ func normalizeReal(s string) string {
 }
 
 func (l *lexer) name() (token, error) {
+	// A name's bytes are built into a buffer of their own where an escape
+	// makes them differ from the file's, and it is charged as it grows, as a
+	// string's is.
 	start := l.pos
 	l.pos++ // the slash
 	var out []byte
@@ -419,10 +441,14 @@ func (l *lexer) name() (token, error) {
 		}
 		out = append(out, c)
 		l.pos++
+		if !l.reserve(cap(out)) {
+			return token{}, l.errRead()
+		}
 		if len(out) > maxNameBytes {
 			return token{}, fmt.Errorf("%w: name past %d bytes", errLexer, maxNameBytes)
 		}
 	}
+	l.reserved = 0
 	return token{kind: tokName, pos: start, end: l.pos, name: Name(out)}, nil
 }
 
@@ -654,12 +680,12 @@ func (p *parser) parseObject(depth int) (object, error) {
 		}
 		return t.f, nil
 	case tokName:
-		if err := p.hold(parsedStringBytes + goSizeClass(int64(len(t.name)))); err != nil {
+		if err := p.hold(parsedStringBytes + grownBytes(int64(len(t.name)))); err != nil {
 			return nil, err
 		}
 		return t.name, nil
 	case tokString:
-		if err := p.hold(parsedStringBytes + goSizeClass(int64(len(t.str)))); err != nil {
+		if err := p.hold(parsedStringBytes + grownBytes(int64(len(t.str)))); err != nil {
 			return nil, err
 		}
 		return String(t.str), nil
@@ -749,7 +775,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return nil, err
 			}
 			if vt.kind == tokDictClose {
-				if err := p.hold(parsedMemberBytes + goSizeClass(int64(len(key)))); err != nil {
+				if err := p.hold(parsedMemberBytes + grownBytes(int64(len(key)))); err != nil {
 					return nil, err
 				}
 				dict[key] = nil
@@ -769,7 +795,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return nil, err
 			}
 			if _, taken := dict[key]; !taken {
-				if err := p.hold(parsedMemberBytes + goSizeClass(int64(len(key)))); err != nil {
+				if err := p.hold(parsedMemberBytes + grownBytes(int64(len(key)))); err != nil {
 					return nil, err
 				}
 			}
