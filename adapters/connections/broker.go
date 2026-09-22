@@ -91,6 +91,12 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		}
 		return nil, ErrPolicy
 	}
+	// Preserve operator-policy persistence even for an unsupported request.
+	// Catalog validation must not delay disabling an existing connection.
+	descriptor, ok := LookupProvider(b.provider.kind())
+	if !ok || !descriptor.supports(method) {
+		return nil, ErrRequest
+	}
 	if b.provider.obsidian {
 		return b.vaultOperation(ctx, method, raw)
 	}

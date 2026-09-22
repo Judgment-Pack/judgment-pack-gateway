@@ -19,8 +19,23 @@ func run() int {
 	dir := fs.String("state-dir", "", "")
 	principal := fs.String("principal", "", "")
 	provider := fs.String("provider", "google-drive", "")
+	catalog := fs.Bool("catalog", false, "")
 	disabled := fs.Bool("disabled", false, "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || (*provider != "google-drive" && *provider != "gmail" && *provider != "notion" && *provider != "obsidian") {
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
+		return 2
+	}
+	if *catalog {
+		// Discovery must never open custody, configure a publisher, or consume
+		// stdin. Refuse mixed modes rather than silently ignoring their flags.
+		if fs.NFlag() != 1 {
+			return 2
+		}
+		if json.NewEncoder(os.Stdout).Encode(connections.ConnectionCatalog()) != nil {
+			return 1
+		}
+		return 0
+	}
+	if _, ok := connections.LookupProvider(*provider); !ok {
 		return 2
 	}
 	client, err := publisherClient(publisherRegistration)
