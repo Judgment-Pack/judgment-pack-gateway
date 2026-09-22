@@ -682,7 +682,7 @@ func TestDecodersRoundTrip(t *testing.T) {
 			}
 			for _, in := range inputs {
 				d := budgeted(1<<30, 1<<30)
-				got, err := d.decodeStream(&stream{dict: obj.(Dict), raw: fc.encode(in)}, true)
+				got, err := d.decodeStream(&stream{dict: obj.(Dict), raw: fc.encode(in)}, true, heldByDocument)
 				want := in
 				if strings.HasPrefix(fc.name, "PNG") {
 					want = append([]byte{}, in...)

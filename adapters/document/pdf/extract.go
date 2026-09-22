@@ -485,7 +485,7 @@ func pageContent(d *Document, page Dict) (out []byte, err error) {
 			// past what reading one page may cost.
 			return err
 		}
-		data, err := d.decodeStream(s, false)
+		data, err := d.decodeStream(s, false, heldByPage)
 		if err != nil {
 			return err
 		}

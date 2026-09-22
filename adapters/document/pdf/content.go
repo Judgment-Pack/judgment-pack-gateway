@@ -606,7 +606,7 @@ func (it *interp) do(resources Dict, name Name, gs gstate, depth int) {
 			it.noteStreamError(err)
 			return
 		}
-		data, err := it.d.decodeStream(s, false)
+		data, err := it.d.decodeStream(s, false, heldByPage)
 		if err != nil {
 			it.noteStreamError(err)
 			return

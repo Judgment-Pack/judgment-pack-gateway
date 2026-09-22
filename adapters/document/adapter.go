@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -244,6 +245,14 @@ var errRequestNotRead = errors.New("the request was not read in full")
 // the note has the deadline do, and it holds when the deadline had passed
 // before the read began, where a read of bytes already there ends at once.
 // What the wait past the deadline bounds is a read that does not end.
+//
+// Stamping and arbitration are one step against each other. The read takes
+// its instant under a mutex and records it where the arbitration can see it,
+// and the arbitration takes that mutex when the cutoff fires: a read that
+// ended at or before the cutoff is the request whether or not its result had
+// reached the channel by then, so a goroutine the runtime paused between
+// stamping and publishing does not turn an on-time request into a refusal.
+// The send follows the unlock, so the wait for it ends.
 func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	type read struct {
 		data []byte
@@ -252,9 +261,21 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 		at time.Time
 	}
 	done := make(chan read, 1)
+	// ended is the instant the read ended, and stamped that it ended at all,
+	// both written under mu by the read and read under mu by the arbitration
+	// below.
+	var mu sync.Mutex
+	var ended time.Time
+	stamped := false
 	go func() {
 		data, err := io.ReadAll(io.LimitReader(r, n))
+		mu.Lock()
 		at := readStamp()
+		ended, stamped = at, true
+		mu.Unlock()
+		if readStamping != nil {
+			readStamping(at)
+		}
 		done <- read{data: data, err: err, at: at}
 		if readStamped != nil {
 			readStamped(at)
@@ -292,7 +313,24 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	case <-wait.C:
 	}
 	// The cutoff has passed. A read that ended at or before it is still the
-	// request; one that ends after it is not, and is left to the goroutine.
+	// request: the stamp it took under the mutex says so, and this waits for
+	// its result rather than refusing a request that had arrived and had not
+	// yet been handed over. One that ended after the cutoff is not the
+	// request, and one that has not ended is left to the goroutine.
+	mu.Lock()
+	at, hasEnded := ended, stamped
+	mu.Unlock()
+	taken := hasEnded && readTaken(at, cutoff)
+	if readArbitrated != nil {
+		readArbitrated(taken)
+	}
+	if taken {
+		got := <-done
+		if !readTaken(got.at, cutoff) {
+			return nil, errRequestNotRead
+		}
+		return got.data, got.err
+	}
 	select {
 	case got := <-done:
 		if !readTaken(got.at, cutoff) {
@@ -317,10 +355,23 @@ var readWaiting func()
 // to choose.
 var readClock, readStamp = time.Now, time.Now
 
+// readStamping is called with the instant a read ended, once that instant has
+// been stamped and recorded where the arbitration can see it and before the
+// result is published. It is nil in the adapter, and a test sets it to hold a
+// read there, which is the ordering an on-time request must survive.
+var readStamping func(time.Time)
+
 // readStamped is called with the instant a read ended, once it has been
 // stamped and published. It is nil in the adapter, and a test sets it to
 // learn that the result is there to be taken.
 var readStamped func(time.Time)
+
+// readArbitrated is called once the cutoff has fired and the stamp has been
+// read, with what the stamp settled: true where a read ended at or before the
+// cutoff and its result is waited for, false where the request is refused. It
+// is nil in the adapter, and a test sets it to release a read it held, so
+// that what admits the request is the wait and not a race with the send.
+var readArbitrated func(bool)
 
 // readTaken reports whether a read that ended at an instant is the request:
 // one that ended at or before the cutoff is, and one that ended after it is

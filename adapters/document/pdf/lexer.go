@@ -484,7 +484,14 @@ func (l *lexer) hexString() (token, error) {
 		l.pos++
 		if c == '>' {
 			if half {
+				// The byte an odd last nibble is padded into is appended like
+				// every other, and reserved like every other: a token that grew
+				// into a larger buffer to hold it is a token that holds it, and
+				// one the allowance cannot pay for is not returned.
 				out = append(out, pending<<4)
+				if !l.reserve(cap(out)) {
+					return token{}, l.errRead()
+				}
 			}
 			return l.stringToken(start, out), nil
 		}
@@ -509,9 +516,13 @@ func (l *lexer) hexString() (token, error) {
 			return token{}, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
 		}
 	}
-	// Unterminated: what was read is the string.
+	// Unterminated: what was read is the string, and its last nibble is padded
+	// and reserved as it would be at a '>'.
 	if half {
 		out = append(out, pending<<4)
+		if !l.reserve(cap(out)) {
+			return token{}, l.errRead()
+		}
 	}
 	return l.stringToken(start, out), nil
 }

@@ -2,9 +2,14 @@ package document
 
 import (
 	"context"
+	"errors"
 	"io"
+	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"adapters/internal/pdfgen"
 )
 
 // boundsHeldReader ends its read when the test releases it, and not before:
@@ -60,18 +65,29 @@ func (r *boundsDrivenRead) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// boundsRestoreReadSeams puts the seams of readWithin back as they were.
+func boundsRestoreReadSeams(t *testing.T) {
+	t.Helper()
+	clock, stamp, waiting := readClock, readStamp, readWaiting
+	stamping, stamped, arbitrated := readStamping, readStamped, readArbitrated
+	t.Cleanup(func() {
+		readClock, readStamp, readWaiting = clock, stamp, waiting
+		readStamping, readStamped, readArbitrated = stamping, stamped, arbitrated
+	})
+}
+
 // boundsReadAt drives one reading of a request: the clock stands at now, the
 // read ends stamped at ended, and the wait is not decided until the result
 // has been published. It reports what readWithin made of it.
 func boundsReadAt(t *testing.T, deadline, now, ended time.Time) ([]byte, error) {
 	t.Helper()
-	defer func(clock, stamp func() time.Time, waiting func(), stamped func(time.Time)) {
-		readClock, readStamp, readWaiting, readStamped = clock, stamp, waiting, stamped
-	}(readClock, readStamp, readWaiting, readStamped)
+	boundsRestoreReadSeams(t)
 	// The clock the cutoff is measured from, and the instant the read ends,
 	// are two things the test names apart.
 	readClock = func() time.Time { return now }
 	readStamp = func() time.Time { return ended }
+	readStamping = nil
+	readArbitrated = nil
 	published := make(chan struct{})
 	readStamped = func(time.Time) { close(published) }
 	r := &boundsDrivenRead{release: make(chan struct{}), data: "hello"}
@@ -84,36 +100,220 @@ func boundsReadAt(t *testing.T, deadline, now, ended time.Time) ([]byte, error) 
 	return readWithin(ctx, r, 1<<20)
 }
 
+// boundsCutoffSources are the two instants a request's cutoff can come from,
+// each arranged so that the cutoff has already passed by the clock the timer
+// runs on: the wait is ready before the arbitration begins, so which of the
+// two outcomes the runtime offers first is not what decides.
+func boundsCutoffSources() []struct {
+	name          string
+	deadline, now time.Time
+	cutoff        time.Time
+} {
+	started := time.Now()
+	// The deadline and the grace past it: the clock stands at the deadline, so
+	// the floor under the cutoff is well inside it.
+	deadline := started.Add(-time.Hour)
+	// The floor: a deadline so old that the grace past it is behind the clock.
+	floorNow := started.Add(-time.Hour)
+	return []struct {
+		name          string
+		deadline, now time.Time
+		cutoff        time.Time
+	}{
+		{"the deadline and the grace past it", deadline, deadline, deadline.Add(requestPipeWait)},
+		{"the floor under the cutoff", floorNow.Add(-time.Hour), floorNow, floorNow.Add(requestReadFloor)},
+	}
+}
+
 // A read and the cutoff that are both ready are decided by the instant the
 // read ended, and not by which of them the runtime offers first: the test
-// drives the clock and the completion, so neither side depends on when the
-// scheduler ran anything.
+// drives the clock, the completion and the cutoff, so neither side depends on
+// when the scheduler ran anything, and both instants a cutoff can come from
+// are driven.
 func TestBoundsBothReadyIsDecidedByTheInstant(t *testing.T) {
-	now := time.Now()
-	// A deadline long past, so the cutoff is the floor past the clock.
-	deadline := now.Add(-time.Hour)
-	cutoff := now.Add(requestReadFloor)
-	for _, c := range []struct {
-		name  string
-		ended time.Time
-		read  bool
-	}{
-		{"a read that ended before the cutoff", cutoff.Add(-time.Millisecond), true},
-		{"a read that ended at the cutoff", cutoff, true},
-		{"a read that ended after the cutoff", cutoff.Add(time.Nanosecond), false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			for i := 0; i < 20; i++ {
-				got, err := boundsReadAt(t, deadline, now, c.ended)
+	for _, src := range boundsCutoffSources() {
+		for _, c := range []struct {
+			name  string
+			ended time.Time
+			read  bool
+		}{
+			{"a read that ended before the cutoff", src.cutoff.Add(-time.Millisecond), true},
+			{"a read that ended at the cutoff", src.cutoff, true},
+			{"a read that ended after the cutoff", src.cutoff.Add(time.Nanosecond), false},
+		} {
+			t.Run(src.name+", "+c.name, func(t *testing.T) {
+				for i := 0; i < 20; i++ {
+					got, err := boundsReadAt(t, src.deadline, src.now, c.ended)
+					if c.read && (err != nil || string(got) != "hello") {
+						t.Fatalf("run %d: %q %v", i, string(got), err)
+					}
+					if !c.read && err == nil {
+						t.Fatalf("run %d: a read that ended after the cutoff was taken: %q", i, string(got))
+					}
+				}
+			})
+		}
+	}
+}
+
+// The cutoff is an instant, and which instant it is decides the request: a
+// read is taken where it ended at or before that instant and refused where it
+// ended after it, at each of the two instants a cutoff comes from -- the
+// deadline with the grace past it, and the floor under that -- and a moment
+// either side of each.
+func TestBoundsRequestReadIsDecidedByAnInstant(t *testing.T) {
+	for _, src := range boundsCutoffSources() {
+		for _, c := range []struct {
+			name  string
+			ended time.Time
+			read  bool
+		}{
+			{"a moment before the cutoff", src.cutoff.Add(-time.Nanosecond), true},
+			{"at the cutoff", src.cutoff, true},
+			{"a moment after the cutoff", src.cutoff.Add(time.Nanosecond), false},
+			{"long after the cutoff", src.cutoff.Add(time.Hour), false},
+		} {
+			t.Run(src.name+", a read that ended "+c.name, func(t *testing.T) {
+				got, err := boundsReadAt(t, src.deadline, src.now, c.ended)
 				if c.read && (err != nil || string(got) != "hello") {
-					t.Fatalf("run %d: %q %v", i, string(got), err)
+					t.Fatalf("a read that ended %s was not taken: %q %v", c.name, string(got), err)
 				}
 				if !c.read && err == nil {
-					t.Fatalf("run %d: a read that ended after the cutoff was taken: %q", i, string(got))
+					t.Fatalf("a read that ended %s was taken: %q", c.name, string(got))
 				}
-			}
-		})
+			})
+		}
 	}
+}
+
+// boundsReadHeldPastTheCutoff drives a reading whose result is stamped and
+// then held back, with a cutoff that has already passed: the arbitration
+// meets a request that has arrived and has not been handed over, which is the
+// ordering an on-time request must survive. The result is released from
+// inside the arbitration, once what the stamp settled is known, so that what
+// admits or refuses the request is the arbitration and not a race with the
+// send. past is where the read's instant falls against the cutoff.
+func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration) ([]byte, error) {
+	t.Helper()
+	boundsRestoreReadSeams(t)
+	// A deadline old enough that the floor is the cutoff, and a clock far
+	// enough behind the real one that the cutoff has already passed when the
+	// wait is armed: the arbitration is reached, and reached with nothing
+	// published.
+	now := time.Now().Add(-time.Hour)
+	deadline := now.Add(-time.Hour)
+	ended := now.Add(requestReadFloor).Add(past)
+	readClock = func() time.Time { return now }
+	readStamp = func() time.Time { return ended }
+	reached := make(chan struct{})
+	published := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	// The read stamps, records its instant, and is held there: nothing is
+	// published, so the wait below has only the cutoff to offer.
+	readStamping = func(time.Time) { close(reached); <-release }
+	readStamped = func(time.Time) { close(published) }
+	readWaiting = func() { <-reached }
+	readArbitrated = func(taken bool) {
+		free()
+		if !taken {
+			// A refusal looks at the channel once: the result is there by
+			// then, so what refuses it is the instant it carries and not an
+			// empty channel.
+			<-published
+		}
+	}
+	r := &boundsDrivenRead{release: make(chan struct{}), data: "hello"}
+	close(r.release)
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	got, err := readWithin(ctx, r, 1<<20)
+	// Whatever the arbitration did, the read is let go and waited for before
+	// the seams it reads are put back.
+	free()
+	<-published
+	return got, err
+}
+
+// A request that had arrived by the cutoff is read although its result had
+// not been handed over when the cutoff fired: the instant is stamped under
+// the same lock the arbitration takes, so a read the runtime paused between
+// stamping and publishing is waited for rather than refused.
+func TestBoundsARequestStampedByTheCutoffIsRead(t *testing.T) {
+	// Exactly at the cutoff: the last instant a request is the request.
+	got, err := boundsReadHeldPastTheCutoff(t, 0)
+	if err != nil || string(got) != "hello" {
+		t.Fatalf("a request stamped at the cutoff and published after it was refused: %q %v", string(got), err)
+	}
+}
+
+// And one that ended after the cutoff is not the request, however promptly
+// its result arrives: the instant decides, not the arrival.
+func TestBoundsARequestStampedAfterTheCutoffIsRefused(t *testing.T) {
+	got, err := boundsReadHeldPastTheCutoff(t, time.Nanosecond)
+	if !errors.Is(err, errRequestNotRead) {
+		t.Fatalf("a request stamped after the cutoff was taken: %q %v", string(got), err)
+	}
+}
+
+// The whole of it, through the adapter's own reading of its request: a
+// request that arrived by the cutoff and was published after it is parsed,
+// and the record the deadline it arrived past yields says timeout.
+func TestBoundsAnOnTimeRequestHeldBackIsStillRecorded(t *testing.T) {
+	boundsRestoreReadSeams(t)
+	now := time.Now().Add(-time.Hour)
+	deadline := now.Add(-time.Hour)
+	readClock = func() time.Time { return now }
+	readStamp = func() time.Time { return now.Add(requestReadFloor) }
+	reached := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	free := func() { once.Do(func() { close(release) }) }
+	t.Cleanup(free)
+	published := make(chan struct{})
+	readStamping = func(time.Time) { close(reached); <-release }
+	readStamped = func(time.Time) { close(published) }
+	readWaiting = func() { <-reached }
+	readArbitrated = func(taken bool) {
+		if taken {
+			free()
+		}
+	}
+	cfg := DefaultConfig()
+	in := requestJSON("held.pdf", "application/pdf", boundsOnePagePDF(), "")
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	req, err := ParseRequest(ctx, &boundsDrivenRead{release: closedChan(), data: in}, cfg, fixedNow)
+	// The read is let go and waited for before the seams it reads are put
+	// back, whatever the arbitration made of it.
+	free()
+	<-published
+	if err != nil {
+		t.Fatalf("a request that arrived by the cutoff was refused: %v", err)
+	}
+	out, err := Process(ctx, cfg, req, testIdentity, fixedNow())
+	if err != nil {
+		t.Fatalf("process: %v", err)
+	}
+	if !strings.Contains(string(out), `"timeout"`) {
+		t.Errorf("the record of a request read past its deadline does not say timeout: %s", string(out))
+	}
+}
+
+// closedChan is a release that has already happened.
+func closedChan() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}
+
+// boundsOnePagePDF is a document of one page of text.
+func boundsOnePagePDF() []byte {
+	b := &pdfgen.Builder{}
+	helv := b.Font("Helvetica", "WinAnsiEncoding", "")
+	b.Catalog(b.Pages([]pdfgen.Page{{Content: pdfgen.Text("F1", 12, []string{"held"}), Fonts: map[string]int{"F1": helv}}}))
+	return b.Bytes()
 }
 
 // A request that is already there is read, whatever the deadline says: the

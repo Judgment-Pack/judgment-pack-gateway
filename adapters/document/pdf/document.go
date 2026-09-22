@@ -56,8 +56,11 @@ const (
 	// further, as one past any other structure bound is. It is set above what
 	// an ordinary document of the densest shape costs -- five hundred pages of
 	// two thousand one-member dictionaries each, which an eight-megabyte file
-	// holds, are charged about 540 MB -- so that the ceiling refuses files
-	// whose structure overlaps and not files that merely hold a great deal.
+	// holds, are charged about 570 MB -- so that a document of that shape is
+	// read whole. It is not a bound on overlapping structure alone: a document
+	// that holds a great deal without overlapping anything meets it too, which
+	// is what the pages above are measured against, and a document is as
+	// likely to be stopped first by a bound on one of its structures.
 	maxParsedBytesHeld = 1 << 30
 )
 
@@ -506,7 +509,7 @@ func (d *Document) readXrefStream(s *stream) (Dict, error) {
 	if s.dict["Type"] != Name("XRef") {
 		return nil, malformed("cross-reference stream is not /Type /XRef")
 	}
-	data, err := d.decodeStream(s, true)
+	data, err := d.decodeStream(s, true, heldByDocument)
 	if err != nil {
 		return nil, malformedBy(err, "cross-reference stream")
 	}
@@ -1448,7 +1451,7 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 	if s.dict["Type"] != Name("ObjStm") {
 		return nil, errors.New("not an object stream")
 	}
-	data, err := d.decodeStream(s, false)
+	data, err := d.decodeStream(s, false, heldByDocument)
 	if err != nil {
 		return nil, err
 	}
@@ -1483,6 +1486,13 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 			break
 		}
 		t2, err := lex.next()
+		if lex.spent {
+			// The offset is read like the number before it, and reading it may
+			// be what spends the balance -- a pair whose second token runs to
+			// the end of the header region is the shape that does it. A header
+			// read in part is not a header, wherever the reading stopped.
+			return nil, errParsedBudget()
+		}
 		if err != nil || t2.kind != tokInteger {
 			break
 		}
@@ -1495,6 +1505,12 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		}
 		st.offsets[int(t1.i)] = int(off)
 		st.order = append(st.order, int(t1.i))
+	}
+	if lex.spent {
+		// Nothing is cached from a reading that ran out of allowance, whichever
+		// step of it did: the whitespace after the last pair is read like the
+		// pair itself, and a header the balance cut short is not a header.
+		return nil, errParsedBudget()
 	}
 	d.objStms[num] = &objStm{data: data, offsets: st.offsets}
 	d.objStmOrder(num, st)
