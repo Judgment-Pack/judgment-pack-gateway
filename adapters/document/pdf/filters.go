@@ -1063,6 +1063,18 @@ func (d *Document) jpegFraming(data []byte) (int, error) {
 			i += 2
 			continue
 		}
+		// Every marker left carries a segment whose first two bytes are its
+		// length -- but only where the byte after the FF is a marker at all.
+		// Outside entropy-coded data FF 00 is no marker (it is the stuffing
+		// of a sample byte), the codes below C0 that are neither TEM nor a
+		// restart are reserved (T.81 Table B.1), and a start-of-image begins
+		// no segment. Two bytes of none of these are no length, and a walk
+		// that took them for one would carry over the end-of-image the image
+		// really has -- and over the EI and the operators after it -- to
+		// whatever end-of-image lies beyond.
+		if marker < 0xC0 || marker == 0xD8 {
+			return 0, malformed("DCTDecode: a marker was expected")
+		}
 		if i+3 >= len(data) {
 			return 0, errFilterUnended
 		}

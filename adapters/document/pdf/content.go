@@ -868,16 +868,24 @@ func inlineDeclared(key Name, v object) object {
 // else the name of a resource, which abbreviates nothing. Two images naming
 // two resources name two colour spaces however alike the names look.
 //
-// Those are the positions a colour space stands in, and the only ones
-// rewritten here: what an array holds after its family is that family's
-// parameters, and a name among them is no family of this image's. An array of
-// one element is that device space written another way where the element the
+// A colour space stands at the name written alone, at the family at the head
+// of an array, and at the positions such an array gives a colour space of its
+// own -- the base of an Indexed space and the alternate of a Separation or a
+// DeviceN one -- and those are the only ones rewritten here. An array of one
+// element is that device space written another way where the element the
 // image wrote is a device family's name -- a device space takes no parameters
 // (8.6.4) -- and is not unwrapped otherwise: an array whose element is itself
 // an array has no name at its family position at all, and is no writing of
 // the space that array would be; a family that does take parameters, written
 // alone, is a space missing what it needs; and a resource's name is not a
-// family.
+// family. Everything else an array holds after its family is that family's
+// parameters and is compared as the image wrote it: a colourant's name, a
+// tint transformation, a hival, a lookup table, and a name at a nested
+// family's position that is no family of one.
+//
+// Nothing bounds the recursion here but the nesting the parser admits,
+// maxNesting, as in sameValue: a value the parser read is a value this can
+// rewrite.
 func inlineColourValue(v object) object {
 	switch x := v.(type) {
 	case Name:
@@ -900,13 +908,27 @@ func inlineColourValue(v object) object {
 		if len(out) > 0 {
 			if name, ok := x[0].(Name); ok {
 				if full, ok := inlineColourNames[name]; ok {
-					out[0] = full
+					name = full
+				}
+				out[0] = name
+				if at, nested := inlineNestedColourSpaces[name]; nested && at < len(out) {
+					out[at] = inlineColourValue(out[at])
 				}
 			}
 		}
 		return out
 	}
 	return v
+}
+
+// inlineNestedColourSpaces are the families that hold a colour space among
+// their parameters, and the position it stands at: the base space of an
+// Indexed space (8.6.6.3), and the alternate space of a Separation (8.6.6.4)
+// or a DeviceN one (8.6.6.5). A space standing there is a colour space in its
+// own right and is read as one, under the same rule as at the top. The other
+// positions of those arrays are not colour spaces and are left as written.
+var inlineNestedColourSpaces = map[Name]int{
+	"Indexed": 1, "Separation": 2, "DeviceN": 2,
 }
 
 // inlineNamesOf is v with every name it holds written as the table writes it.

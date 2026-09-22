@@ -431,6 +431,24 @@ func (d *Document) readXrefSection(offset int64) (Dict, error) {
 	// read whichever chain reaches it: a /Prev, a hybrid file's /XRefStm, or
 	// the startxref the file ends with.
 	defer d.beginRead()()
+	generation := d.generation
+	trailer, err := d.readXrefSectionAt(offset)
+	if d.generation != generation {
+		// The read found the cross-reference rebuilt: this section is a
+		// section of a document this one no longer is, and neither what it
+		// read nor what it met is the rebuilt document's. Its entries, its
+		// trailer -- and with them the /Prev and /XRefStm that would carry
+		// the chain on from it -- and its failure are all discarded, a bound
+		// of its own fields among them. What the scan that rebuilt met is
+		// the file's and is kept: see noteFileBound.
+		return nil, nil
+	}
+	return trailer, err
+}
+
+// readXrefSectionAt is the read of one section, within the scope
+// readXrefSection begins for it.
+func (d *Document) readXrefSectionAt(offset int64) (Dict, error) {
 	lex := newLexer(d.data, int(offset))
 	lex.skipSpace()
 	if bytes.HasPrefix(d.data[lex.pos:], []byte("xref")) {
@@ -518,6 +536,7 @@ func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
 }
 
 func (d *Document) readXrefStream(s *stream) (Dict, error) {
+	generation := d.generation
 	if s.dict["Type"] != Name("XRef") {
 		return nil, malformed("cross-reference stream is not /Type /XRef")
 	}
@@ -557,6 +576,16 @@ func (d *Document) readXrefStream(s *stream) (Dict, error) {
 	}
 	if len(index)%2 != 0 {
 		return nil, malformed("cross-reference stream /Index has an odd length")
+	}
+	// The fields are all resolved by here, and the entries below are read
+	// from the bytes alone. Where resolving one of them rebuilt the
+	// cross-reference, this section names the objects of a document the
+	// reader no longer has: it declares none of them, and what its own
+	// remaining fields are past -- the bound its /Index holds below -- is a
+	// bound of that document and not of this one. See readXrefSection, which
+	// discards what this returns.
+	if d.generation != generation {
+		return nil, nil
 	}
 	pos := 0
 	readField := func(width int) int64 {
@@ -631,9 +660,17 @@ func (d *Document) reconstruct() error {
 	// marked unread, and a bound it met is the file's own, since the scan
 	// reads the file and not the objects of one cross-reference. The caller's
 	// read is put back afterwards, and still publishes nothing.
-	reading, readGeneration, scanning := d.reading, d.readGeneration, d.scanning
-	d.reading, d.scanning = 0, true
-	defer func() { d.reading, d.readGeneration, d.scanning = reading, readGeneration, scanning }()
+	//
+	// The references the abandoned caller was resolving through are put aside
+	// with its read: how deep the scan's own reads go is how many references
+	// the scan followed, and the chain a caller was half way down when the
+	// rebuild began is no part of it. A depth the scan reports is the file's,
+	// so it must be the scan's own depth that reaches it.
+	reading, readGeneration, scanning, resolving := d.reading, d.readGeneration, d.scanning, d.resolving
+	d.reading, d.scanning, d.resolving = 0, true, map[int]bool{}
+	defer func() {
+		d.reading, d.readGeneration, d.scanning, d.resolving = reading, readGeneration, scanning, resolving
+	}()
 	found := 0
 	matches := objHeader.FindAllSubmatchIndex(d.data, maxScanObjects+1)
 	if len(matches) > maxScanObjects {
@@ -675,7 +712,17 @@ func (d *Document) reconstruct() error {
 		}
 		lex := newLexer(d.data, at+i+len("trailer"))
 		p := &parser{lex: lex}
-		if obj, err := p.parseObject(0); err == nil {
+		obj, err := p.parseObject(0)
+		if err != nil && isBound(err) {
+			// A candidate past a bound of the parser is a bound the scan met
+			// reading the file, as every other bound the scan meets is: the
+			// scan reads the file's bytes, and these are the file's. Damage
+			// short of a bound is what the scan is for, and a candidate that
+			// is no dictionary is passed over as before.
+			d.noteFileBound(err)
+			return err
+		}
+		if err == nil {
 			if dict, ok := obj.(Dict); ok {
 				for k, v := range dict {
 					trailer[k] = v
@@ -692,6 +739,13 @@ func (d *Document) reconstruct() error {
 	}
 	sortInts(nums)
 	d.forgetObjects()
+	// objStmFound is an object stream the scan found, kept until the trailer
+	// it is registered under has been gathered.
+	type objStmFound struct {
+		num int
+		s   *stream
+	}
+	var deferred []objStmFound
 	for _, num := range nums {
 		// Each step of this loop may parse a whole object.
 		if d.deadlineNow() {
@@ -733,21 +787,43 @@ func (d *Document) reconstruct() error {
 			// Objects inside a stream are registered where the file has
 			// no object of that number at an offset: an object at an
 			// offset is the newer form in an incrementally updated file
-			// more often than not, and the scan cannot tell.
-			st, err := d.loadObjStm(num, s)
-			if err != nil {
-				if isBound(err) {
-					return err
-				}
-				continue
+			// more often than not, and the scan cannot tell. The stream is
+			// decoded below rather than here: it is decoded like any other,
+			// and which key it is decrypted with is what the trailer this
+			// scan is still gathering says, not what the trailer being
+			// replaced said. The file is not scanned again for it.
+			deferred = append(deferred, objStmFound{num: num, s: s})
+		}
+	}
+	// The rebuilt trailer stands before the object streams it names are
+	// decoded, and the handler it names is established before them: an object
+	// stream read through the key the old trailer named is read through a key
+	// this document does not have, and an object it holds would go
+	// unregistered -- a number no later reading could recover, since the scan
+	// runs once. A handler that does not open leaves the objects it would
+	// have decoded unregistered, and the caller reads the encryption
+	// dictionary again and reports it: see establishEncryption.
+	d.trailer = trailer
+	d.crypt = nil
+	_, _ = d.openEncryption()
+	for _, found := range deferred {
+		// Each step of this loop may decode a whole object stream.
+		if d.deadlineNow() {
+			return d.deadline()
+		}
+		st, err := d.loadObjStm(found.num, found.s)
+		if err != nil {
+			if isBound(err) {
+				return err
 			}
-			idx := 0
-			for _, inner := range st.order {
-				if _, taken := d.xref[inner]; inner != unreadableObject && !taken {
-					d.xref[inner] = xrefEntry{inStream: true, stmNum: num, stmIndex: idx}
-				}
-				idx++
+			continue
+		}
+		idx := 0
+		for _, inner := range st.order {
+			if _, taken := d.xref[inner]; inner != unreadableObject && !taken {
+				d.xref[inner] = xrefEntry{inStream: true, stmNum: found.num, stmIndex: idx}
 			}
+			idx++
 		}
 	}
 	if _, ok := trailer["Root"]; !ok {
@@ -774,9 +850,10 @@ func (d *Document) reconstruct() error {
 			}
 		}
 	}
-	d.trailer = trailer
 	// The same rebuild, still: what the search above cached is dropped, and
-	// the generation has already moved once for this cross-reference.
+	// the generation has already moved once for this cross-reference. The
+	// trailer itself was put in place above, before the object streams it
+	// names were decoded.
 	d.dropCachedObjects()
 	return nil
 }

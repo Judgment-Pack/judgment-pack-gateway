@@ -143,6 +143,13 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 		if err != nil {
 			var kw errKeyword
 			if !asKeyword(err, &kw) {
+				// A CMap the parser could not read to the end of is read as
+				// far as it goes, and that is what it says -- except at a
+				// bound, which is not damage to read past: a CMap past a
+				// bound is not used at all, and the glyphs it would have
+				// mapped are unmapped and counted. What was charged for it
+				// stays charged.
+				c.boundIf(err)
 				break
 			}
 			switch kw.keyword {
@@ -190,29 +197,92 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 // end the same way -- a CMap declaring no codespace range says nothing about
 // how long its codes are, and four bytes is no reading of it.
 func (c *cmap) parsed() *cmap {
-	established := c.declaredCodespaces || c.entries > 0
+	// What the CMap established is what it holds that a code can be looked up
+	// in -- a codespace range it declared, a range of codes it maps, a single
+	// code it maps -- and not what it was given to read: an entry the parser
+	// read and the reader could not use maps nothing, and a map of nothing
+	// establishes no encoding, however many entries were charged for.
+	established := c.declaredCodespaces || len(c.cidRanges) > 0 || len(c.uniRanges) > 0 || len(c.cid) > 0 || len(c.unicode) > 0
 	if len(c.codespaces) == 0 {
-		// Infer the code length from the mappings: most embedded
-		// ToUnicode maps declare <0000> <FFFF>; a map with none is read
-		// with the widest source seen, and two bytes by default.
-		n := 2
-		for _, r := range c.uniRanges {
-			if r.nbytes > 0 {
-				n = r.nbytes
-				break
-			}
-		}
-		for _, r := range c.cidRanges {
-			if r.nbytes > 0 {
-				n = r.nbytes
-				break
-			}
-		}
-		c.codespaces = []codespace{fullCodespace(n)}
+		c.codespaces = inferredCodespaces(c)
 	}
 	out := c.finish()
 	if out != nil {
 		out.established = established
+	}
+	return out
+}
+
+// inferredCodespaces is how a CMap that declares no codespace range of its
+// own splits a string into codes: by the sources it maps, every one of them --
+// the ranges and the single codes alike, since a code is its bytes and how
+// many of them it has and a mapping is for codes of one length.
+//
+// A map whose sources are all of one length is read at that length whatever
+// the bytes are, which is the reading the specification's own embedded maps
+// make of themselves, and a map holding no mapping at all is read at two
+// bytes, which is what those maps declare where they declare anything. Where
+// the sources are of several lengths, no one length is the map's reading of a
+// string: each length is given the codes it actually maps, so that the
+// lengths stand beside one another where the bytes let them -- and where they
+// do not, the ranges are ambiguous and finish does not use the map, since
+// which length a code beginning with those bytes has is then not something
+// the map says.
+func inferredCodespaces(c *cmap) []codespace {
+	var seen [5]*codespace
+	lengths := 0
+	add := func(nbytes int, lo, hi uint32) {
+		if nbytes < 1 || nbytes > 4 {
+			return
+		}
+		low, high := codeBytes(lo, nbytes), codeBytes(hi, nbytes)
+		if seen[nbytes] == nil {
+			cs := codespaceOf(low, high)
+			seen[nbytes], lengths = &cs, lengths+1
+			return
+		}
+		for i := 0; i < nbytes; i++ {
+			seen[nbytes].lo[i] = min(seen[nbytes].lo[i], low[i])
+			seen[nbytes].hi[i] = max(seen[nbytes].hi[i], high[i])
+		}
+	}
+	for _, ranges := range [][]cmapRange{c.uniRanges, c.cidRanges} {
+		for _, r := range ranges {
+			add(r.nbytes, r.lo, r.hi)
+		}
+	}
+	for key := range c.cid {
+		add(key.nbytes, key.value, key.value)
+	}
+	for key := range c.unicode {
+		add(key.nbytes, key.value, key.value)
+	}
+	switch lengths {
+	case 0:
+		return []codespace{fullCodespace(2)}
+	case 1:
+		for n := 1; n <= 4; n++ {
+			if seen[n] != nil {
+				return []codespace{fullCodespace(n)}
+			}
+		}
+	}
+	var out []codespace
+	for n := 1; n <= 4; n++ {
+		if seen[n] != nil {
+			out = append(out, *seen[n])
+		}
+	}
+	return out
+}
+
+// codeBytes is a code of nbytes bytes written as its bytes, most significant
+// first.
+func codeBytes(v uint32, nbytes int) []byte {
+	out := make([]byte, nbytes)
+	for i := nbytes - 1; i >= 0; i-- {
+		out[i] = byte(v)
+		v >>= 8
 	}
 	return out
 }
@@ -307,6 +377,19 @@ func indexRanges(ranges []cmapRange, n int) firstSpans {
 	return indexSpans(spans)
 }
 
+// boundIf marks the CMap unusable where the error given is a bound of the
+// parser: a CMap read no further than a bound is not used, wherever the
+// bound was met -- in a section of it or at the outer parse -- as a CMap
+// whose codespaces are ambiguous is not used. What it charged the font
+// budget for is not given back: the reader did the reading.
+func (c *cmap) boundIf(err error) bool {
+	if err != nil && isBound(err) {
+		c.unusable = true
+		return true
+	}
+	return false
+}
+
 // take charges one mapping, and reports whether the CMap may hold it.
 func (c *cmap) take() bool {
 	c.entries++
@@ -339,10 +422,12 @@ func (c *cmap) readCodespaces(p *parser) {
 	for {
 		lo, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		hi, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		ls, ok1 := lo.(String)
@@ -371,14 +456,17 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 	for !c.unusable {
 		lo, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		hi, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		dst, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		ls, ok1 := lo.(String)
@@ -434,7 +522,9 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				if !c.take() {
 					break
 				}
-				c.unicode[code{l + uint32(i), n}] = utf16Runes(s)
+				if runes := utf16Runes(s); len(runes) > 0 {
+					c.unicode[code{l + uint32(i), n}] = runes
+				}
 			}
 		default:
 			return
@@ -446,10 +536,12 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 	for !c.unusable {
 		src, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		dst, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		ss, ok := src.(String)
@@ -479,8 +571,15 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 				c.cid[key] = uint32(d)
 			}
 		case String:
+			// A destination of no characters -- an empty string, an odd
+			// number of bytes, an unpaired surrogate -- is no text the code
+			// stands for: the mapping is not held, so the glyph is U+FFFD and
+			// counted, and a map holding no mapping establishes nothing. The
+			// entry is charged for all the same.
 			if unicode && len(d) <= maxCMapDestinationBytes && c.take() {
-				c.unicode[key] = utf16Runes(d)
+				if runes := utf16Runes(d); len(runes) > 0 {
+					c.unicode[key] = runes
+				}
 			}
 		case Name:
 			if unicode {

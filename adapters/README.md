@@ -456,11 +456,24 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   mapping is found among the mappings for codes of that length: `<41>` and `<0041>` are two
   codes. A CMap whose ranges of two lengths hold the same leading bytes says two things about
   how long a code is and is not used at all, as a CMap past a
-  bound is not used. What follows from that depends on which CMap it was: a composite font whose
+  bound is not used — a bound met anywhere in it, in a section of it or at the outer parse, since
+  a map read no further than a bound is no reading of the map; what reading it cost is charged
+  all the same. A CMap that declares no codespace range of its own is read at the lengths of the
+  sources it maps, every one of them, the single codes of a `cidchar` or `bfchar` section as much
+  as the ends of a range: one length throughout is that length, several are given the codes each
+  actually maps, and where those cannot stand beside one another the map says two things about
+  how long a code is and is not used either. A map holding no mapping at all is read at two
+  bytes. What a CMap establishes is what it holds that a code can be looked up in — a codespace
+  range it declared, a range it maps, a single code it maps — and not what the parser was given
+  to read: an entry whose destination is no text (an empty string, an odd number of bytes, an
+  unpaired surrogate) maps nothing, and a map of nothing establishes nothing. What follows from that depends on which CMap it was: a composite font whose
   own **encoding** CMap is unusable has its glyphs unmapped and counted, by the rule below, while
   a font whose **`ToUnicode`** map is unusable keeps the encoding it has — a simple font's bytes
   are codes of one byte whatever a `ToUnicode` map says, so its glyphs are the ones its own
-  encoding gives, mapped and not counted. A composite font whose `/Encoding` is neither `Identity-H`, `Identity-V`, a predefined CMap's
+  encoding gives. Dropping the map is no defect of the document and adds no problem of its own;
+  what that encoding maps is mapped and not counted, and a code it does not map — a
+  `/Differences` naming a glyph no name of the standard sets gives, say — is unmapped and counted
+  there as it is anywhere. A composite font whose `/Encoding` is neither `Identity-H`, `Identity-V`, a predefined CMap's
   name nor a CMap stream the reader can use — a stream it cannot use, a stream whose parse
   establishes no encoding at all (no bytes, bytes holding no operator of the syntax, a `begincmap`
   and an `endcmap` with nothing between them, or a stream naming a parent CMap with `/UseCMap`,
@@ -496,11 +509,18 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   the names they abbreviate, a filter written alone standing for the same filter in an array of
   one, a device colour space standing for the array of its family alone (a device space takes no
   parameters), and numbers compared by value, so `1` and `1.0` are one value, of which the reader
-  keeps the integer whichever was written first. The two positions a colour space stands in are
-  the name written alone and the family at the head of an array, and those are the only ones read
-  as colour spaces: an array of one element is the device space written another way only where
-  that element is a device family's own name, so `[[/DeviceGray]]` is not `/DeviceGray` — it has
-  no name at its family position — and beside it says a second thing about the image. A bare name that is no device colour space is the
+  keeps the integer whichever was written first. A colour space stands at the name written alone,
+  at the family at the head of an array, and at the positions such an array gives a colour space
+  of its own — the base of an `Indexed` space, the alternate of a `Separation` or a `DeviceN` one —
+  each of which is read as a colour space under the same rule as the outermost, however deep it
+  lies, so `[/Indexed [/DeviceRGB] 1 <000000FFFFFF>]` and `[/Indexed /DeviceRGB 1 <000000FFFFFF>]`
+  are one value. Those are the only positions read as colour spaces: what an array holds besides
+  them is that family's parameters — a colourant's name, a tint transformation, a hival, a lookup
+  table — and is compared as the image wrote it. An array of one element is the device space
+  written another way only where that element is a device family's own name, so `[[/DeviceGray]]`
+  is not `/DeviceGray` — it has no name at its family position — and beside it says a second thing
+  about the image; a name at a nested family's position that is no family of one is left as
+  written too. A bare name that is no device colour space is the
   name of one of the resources in force and abbreviates nothing, so `/I` and `/Indexed` name two
   resources and an image giving both says two things; only at the head of an array does `/I`
   stand for `Indexed`. The device names are the other way about: `/DeviceGray`, `/DeviceRGB` and
@@ -550,7 +570,13 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   marker the end of a JPEG's, so the image ends there and what follows is the page's content —
   a JPEG whose scan holds no block still ends at its marker. In entropy-coded data `FF 00` is a
   sample byte and a restart marker resumes the data, the fill bytes ITU T.81 allows before one
-  belonging to it: only a marker that is neither ends the scan. Where such a structural end is
+  belonging to it: only a marker that is neither ends the scan. Outside that data the walk steps
+  from marker to marker of the marker set alone, and two bytes of anything else are no segment
+  length: `FF 00` is the stuffing of a sample byte there as it is inside the scan, the codes
+  below `C0` that are neither the temporary marker nor a restart are reserved, and a second
+  start-of-image begins no segment. A walk that read those two bytes as a length would step over
+  the end-of-image the image really has, and over the `EI` and the operators after it, to
+  whatever end-of-image lay beyond; the reader fails the page instead. Where such a structural end is
   reached and no `EI` stands there, the page fails; the `EI` check refuses that, and establishes
   nothing by itself.
 
@@ -591,7 +617,17 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   again under the cross-reference it is building, so that an object it could not read is marked as
   such and a bound it met is kept — as the file's, since a scan reads the file and not the objects
   of one cross-reference — and the read it was called from is put back afterwards and still
-  publishes nothing. The
+  publishes nothing. The references that read was following are put aside with it, so that the
+  depth the scan reports is the depth the scan itself reached. A candidate the scan parses that
+  is nested past what the parser admits is such a bound, a trailer dictionary among them; damage
+  short of a bound is what the scan is for. A cross-reference section whose own read met the
+  rebuild is abandoned where it stands: it declares none of its entries, its trailer carries the
+  chain no further, and its failure — a bound of its own fields included — is published no more
+  than its entries are, since it is a section of a document this one no longer is. What the scan
+  registers, it registers under the trailer it rebuilt: the objects an object stream holds are
+  registered once that trailer has said which handler the document is read through, since a
+  stream decoded with the key the old trailer named holds no object to register and the file is
+  scanned once. The
   encryption dictionary the trailer names is read again under the rebuilt cross-reference, and
   its handler and key with it, before the restarted pages are read — a rebuild met while the page tree's root
   is looked for is a rebuild the reading begins again from the top, the root the catalog now
@@ -603,7 +639,9 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   page's content comes back, before any of it is interpreted — and a walk that met a rebuild ends
   where it stands and is not extracted at all: the pages after it belong to a document
   this one no longer is, and what reading them would cost is not spent on them; a document is rebuilt at most once,
-  however its opening goes. A reading
+  however its opening goes, so a reading that would need a second rebuild reads the object as one
+  that is unavailable — which refuses the document where the object is needed, and falls back to
+  the `endstream` after it where what was wanted was a stream's length. A reading
   of the document's pages that began under the old cross-reference is begun again under the new,
   so that a record's pages were all read under one. The bounds met under the cross-reference that
   was replaced, and the object streams it could not decode, go with it: they are defects of a
