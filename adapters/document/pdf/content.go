@@ -1053,13 +1053,13 @@ func sameValue(a, b object) bool {
 		case int64:
 			return x == y
 		case float64:
-			return float64(x) == y
+			return sameIntegerAndReal(x, y)
 		}
 		return false
 	case float64:
 		switch y := b.(type) {
 		case int64:
-			return x == float64(y)
+			return sameIntegerAndReal(y, x)
 		case float64:
 			return x == y
 		}
@@ -1105,6 +1105,21 @@ func sameValue(a, b object) bool {
 		return true
 	}
 	return false
+}
+
+// sameIntegerAndReal reports whether an integer and a real are one value. A
+// real is that integer where it is a whole number within the integers and
+// stands at it: the two are compared as integers and not as float64, since a
+// float64 holds whole numbers only to 2^53 and reading the integer as one
+// would make 9,007,199,254,740,993 the same value as 9,007,199,254,740,992.0
+// -- two declarations the dictionary really did write differently. A real
+// past the integers, or with a fraction, or no number at all, is no writing
+// of any integer.
+func sameIntegerAndReal(i int64, f float64) bool {
+	if f != math.Trunc(f) || f < math.MinInt64 || f >= -math.MinInt64 {
+		return false
+	}
+	return int64(f) == i
 }
 
 // inlineImage is what an inline image's dictionary says about how long its

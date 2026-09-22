@@ -349,7 +349,12 @@ const maxInferredCodespaces = maxCodespaces / 4
 // Where the runs of one length need more ranges than the reader holds for it,
 // they are taken together, from the lowest code to the highest: the ranges
 // then hold codes the map does not map, which is the one widening a reader
-// that cannot hold them all can make.
+// that cannot hold them all can make. The ranges are counted as they are
+// drawn and not reserved before them, so that a length whose runs the reader
+// does hold ranges for is drawn about its codes exactly, however many bytes
+// a run of it might have carried across. Where the widening does take in the
+// leading bytes another length's codes begin with, the map says two things
+// about how long a code is, and finish does not use it.
 func codespacesCovering(nbytes int, runs []codeRun) []codespace {
 	if len(runs) == 0 {
 		return nil
@@ -647,6 +652,20 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 		if !ok1 || !ok2 || len(ls) == 0 || len(ls) > 4 {
 			return
 		}
+		if len(hs) != len(ls) {
+			// The two ends of a range are codes of one length, which is how
+			// many bytes the codes in it have, as the two ends of a codespace
+			// range are (9.7.6.2). A pair whose ends differ gives no range of
+			// one length: read at either end's length it would hold codes of a
+			// length neither end gives, and the length it was read at would be
+			// the reader's choice of an end and not the map's own reading. It
+			// establishes nothing -- no mapping, and no length a code of this
+			// map has -- and what reading it cost is charged all the same, as
+			// a range is. The pairs after it are still read, the three objects
+			// of this one having been read whole.
+			c.takeN(cmapRangeEntries)
+			continue
+		}
 		l, n := bytesToCode(ls)
 		h, _ := bytesToCode(hs)
 		if h < l {
@@ -748,14 +767,17 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 			if d < 0 || d > 1<<31 {
 				continue
 			}
+			// The entry is charged before its destination is read, as a
+			// range's numeric destination is: the reader did the reading
+			// whether the value it read is a character or not.
+			if !c.take() {
+				continue
+			}
 			// A destination that is not a scalar value is no character a
 			// text can carry: the code is left unmapped, so that the glyph
 			// is U+FFFD and counted in unmapped, as a range whose advance
 			// leaves the scalar values leaves it.
 			if unicode && !validScalar(rune(d)) {
-				continue
-			}
-			if !c.take() {
 				continue
 			}
 			if unicode {

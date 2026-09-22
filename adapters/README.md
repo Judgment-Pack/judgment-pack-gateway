@@ -465,12 +465,20 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   sources it maps, every one of them, the single codes of a `cidchar` or `bfchar` section as much
   as the ends of a range: one length throughout is that length, several are given the codes each
   actually maps, and where those cannot stand beside one another the map says two things about
-  how long a code is and is not used either. The ranges given a length are drawn about the runs
-  of codes it maps and no wider, so that a length takes in no leading byte another length's codes
-  begin with, and are split where a byte carries — `<00FF>` to `<0100>` is two ranges, a range
-  holding a byte at a time, and the one range from `00` to `01` beside `FF` to `00` holds neither
-  of those codes; where a length maps more runs than the reader holds ranges for, they are taken
-  together, from its lowest code to its highest. A map holding no mapping at all is read at two
+  how long a code is and is not used either. The two ends of a range are codes of one length, as
+  the two ends of a codespace range are, and a pair whose ends are of two lengths gives no range
+  at all: read at either end's length it would hold codes of a length neither end gives, and
+  which end to read it at is the reader's choice and not the map's. Such a pair maps nothing and
+  says nothing of how long a code is; what reading it cost is charged all the same. The ranges
+  given a length are drawn about the runs of codes it maps and no wider, so that a length takes
+  in no leading byte another length's codes begin with, and are split where a byte carries —
+  `<00FF>` to `<0100>` is two ranges, a range holding a byte at a time, and the one range from
+  `00` to `01` beside `FF` to `00` holds neither of those codes; where a length maps more runs
+  than the reader holds ranges for — the ranges counted as they are drawn, and not set aside
+  before a run that may need fewer — they are taken together, from its lowest code to its
+  highest, and where the range that takes them together does hold the leading bytes another
+  length's codes begin with, the map says two things about how long a code is and is not used at
+  all. A map holding no mapping at all is read at two
   bytes. What a CMap establishes is what it holds that a code can be looked up in — a codespace
   range it declared, a range it maps, a single code it maps — and not what the parser was given
   to read: an entry whose destination is no text (an empty string, an odd number of bytes, an
@@ -503,7 +511,11 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   entry names is the place the header gave; a number is declared by its place before the offset
   beside it is read, so a pair whose offset the header does not hold, or holds as a token the
   reader cannot read, is a place that holds no object and a number declared there all the same;
-  an offset is from the first object's and lies within what the stream holds after it. Where the header declares one number twice, the entry's place
+  an offset is from the first object's and lies within what the stream holds after it. A token of
+  the header past a bound of the parser is no such damage: a bound is not read past, so the
+  header is no reading at all — not the places before the bound either — and the bound goes back
+  to the reading that asked for the stream, the file's own where a scan of the file was the one
+  reading it. Where the header declares one number twice, the entry's place
   decides, and only where the header declares that number at it.
 
   Where an inline image's data ends is established from the way the image is encoded, and from

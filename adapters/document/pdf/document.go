@@ -996,6 +996,11 @@ func (d *Document) reconstruct() error {
 		st, err := d.loadObjStm(found.num, found.s)
 		if err != nil {
 			if isBound(err) {
+				// A bound met decoding an object stream the scan found, or
+				// reading its header, ends the scan as every other bound it
+				// meets does: the caller keeps it as the file's own, since
+				// the scan reads the file and not the objects of one
+				// cross-reference.
 				return err
 			}
 			continue
@@ -1814,6 +1819,16 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		if lex.spent {
 			return nil, errParsedBudget()
 		}
+		if isBound(err1) {
+			// A token of the header past a bound of the lexer is a bound and
+			// not damage, and a bound is not read past: the header is no
+			// reading at all, and what the places before it declared is
+			// published no more than what the places after it would have. The
+			// bound goes back to the caller, which keeps it as the file's
+			// where the scan was the one reading, and as the
+			// cross-reference's where an object of it was.
+			return nil, err1
+		}
 		if err1 != nil || t1.kind == tokEOF {
 			// The header ends, or holds a token the lexer could not read:
 			// where the pairs after this one begin is not known, and the
@@ -1833,6 +1848,12 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		t2, err2 := lex.next()
 		if lex.spent {
 			return nil, errParsedBudget()
+		}
+		if isBound(err2) {
+			// The offset beside the number is past a bound of the lexer: the
+			// header is read no further than a bound either, whichever of its
+			// two tokens met one.
+			return nil, err2
 		}
 		if err2 != nil || t2.kind == tokEOF {
 			st.order = append(st.order, inner)
