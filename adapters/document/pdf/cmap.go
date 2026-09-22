@@ -29,9 +29,14 @@ const (
 	// come to close to three hundred megabytes held, which is the sort of
 	// thing these bounds are for; charged four, to about seventy.
 	cmapRangeEntries = 4
+	// cmapEntryBytes is what one entry of the font budget stands for in the
+	// values a CMap is read through: about what a mapping costs to hold, so
+	// that the values built while it is read are bounded by the same budget
+	// the mappings themselves are.
+	cmapEntryBytes = 96
 	// cmapRunsPerEntry is how many characters of a mapping's destination one
 	// further entry covers. A destination is held as the characters it
-	// decoded to, up to the hundred and twenty-eight a destination string may
+	// decoded to, up to the two hundred and fifty-six a destination string may
 	// carry, so a mapping is not one size: charging its characters as well
 	// keeps what a document's fonts may hold within the same figure whatever
 	// shape its mappings take.
@@ -101,12 +106,23 @@ func identityCMap() *cmap {
 func parseCMap(data []byte, budget *fontBudget, stop func() bool) *cmap {
 	c := &cmap{cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, budget: budget, stop: stop}
 	lex := newLexer(data, 0)
-	p := &parser{lex: lex, contentMode: true}
+	// The values a CMap is read through -- an operand, a destination, an
+	// array of them -- are built within what one CMap's mappings may hold,
+	// counted in the bytes a mapping costs: a destination array of hundreds
+	// of thousands of dictionaries is not built and then ignored.
+	room := &allowance{left: int64(maxCMapEntries) * cmapEntryBytes, past: errCMapBudget}
+	p := &parser{lex: lex, contentMode: true, allow: room}
 	var stack []object
 	for !c.unusable {
 		// Each step of this loop reads one object, and the sections it enters
 		// read the deadline as they charge what they hold.
 		if c.stopped() {
+			return nil
+		}
+		if room.left == 0 {
+			// A value this CMap was read through was past what it may hold,
+			// and the reading of it stopped where that ran out: the CMap is
+			// abandoned, as one past any other of its bounds is.
 			return nil
 		}
 		obj, err := p.parseObject(0)
@@ -227,6 +243,12 @@ func (c *cmap) takeN(n int) bool {
 // stopped reports whether the deadline has passed, and never that it has for
 // a CMap read with none.
 func (c *cmap) stopped() bool { return c.stop != nil && c.stop() }
+
+// errCMapBudget is a CMap whose values are past what a document's fonts may
+// hold. The CMap is not used, as one past any other of its bounds is not.
+func errCMapBudget() error {
+	return structureBound("a CMap's values past what a document's fonts may hold")
+}
 
 func asKeyword(err error, kw *errKeyword) bool {
 	k, ok := err.(errKeyword)

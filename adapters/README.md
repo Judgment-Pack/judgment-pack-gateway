@@ -521,7 +521,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   |---|---|---|
   | indirect objects read in one document | 262,144 | wherever objects are read |
   | bytes read and held for each byte of the file and of each byte its streams inflate to | 160 | wherever objects are read: the bytes a value holds, charged as it is built, so one past the bound is never held whole, and the bytes of the file read to build it, charged as they are read, so a file read once for every object it declares spends the allowance; past it the object is left unread and the ones after it are not parsed |
-  | bytes of parsed objects held in all | 512 MiB | wherever objects are read: the ratio above bounds a small file, this bounds every file |
+  | bytes read and held in all | 1 GiB | wherever objects are read: the ratio above bounds a small file, this bounds every file, and it is set above what the densest ordinary document costs |
   | the bytes of an object read to decide whether it is the page tree or the catalog | 1,024 bytes | rebuilding: the window is read as objects, not searched for a word, and an object it cannot settle is parsed |
   | references resolving to references | 32 | wherever objects are read |
   | indirect objects read inside another object's read, including stream lengths | 32 | wherever objects are read |
@@ -544,7 +544,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | graphics states saved and not restored | 256 | content |
   | one inline image's dictionary; its data | 128 objects; 16 MiB | content |
   | a page's content streams, concatenated | 64 MiB | content |
-  | the work one page may cost: the bytes its content streams and the forms it draws hold, and each filter applied | 64 MiB; 256 bytes a filter | content: a `/Contents` array may name one stream any number of times, a page may draw one form any number of times, and a filter that yields little charges the inflate bounds that little for each of them |
+  | the work one page may cost: the bytes its content streams and the forms it draws hold, and each filter applied | 64 MiB; 256 bytes a filter | content: a count of the work, not of the time it takes -- a chain of filters that yields nothing may still be slow -- a `/Contents` array may name one stream any number of times, a page may draw one form any number of times, and a filter that yields little charges the inflate bounds that little for each of them |
   | characters the glyphs shown on one page map to, the forms it draws included | 4,000,000 | content: an unmapped glyph counts as one, and glyphs past the text budget count |
   | fonts held by reference for a document; font resource names held while one page's content is read | 4,096; 4,096 | a font: past either the font is read again rather than held (no error) |
   | width entries one font's `/W` declares | 262,144 | a font: past it the font keeps no widths |
@@ -567,25 +567,36 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   about 470 MB. A document's fonts may hold 4,194,304 width entries and CMap
   mappings together, and a `/W` range is held as a width for each CID it spans rather than as its
   endpoints, so a file of a few kilobytes whose fonts share `/W` ranges that long leaves it
-  holding about 200 MB; the cross-reference above is the most any of these entry bounds costs.
-  What the same
+  holding about 200 MB — the figure a `/W` of that many entries extrapolates to is about 151 MB,
+  and 200 MB is the round number an operator sizes with; the cross-reference above is the most
+  any of these entry bounds costs. What the same
   4,194,304 font entries cost as CMap mappings the shape of the mappings decides, and each shape
-  is charged what it costs so that no shape costs much more than another: a code mapped on its
-  own is held at about 96 bytes and charged one entry, about 400 MB at the bound; a `bfrange` or
+  is charged what it costs so that no shape costs much more than another: a code mapped to one
+  character on its own is held at about 96 bytes and charged one entry, about 400 MB at the
+  bound, and one mapped to seven characters at about 112 bytes, about 470 MB; a `bfrange` or
   `cidrange` with a short destination is held at about 70 bytes and charged four, about 70 MB;
   and a mapping of either kind whose destination is 256 characters is held at about 1.1 KB and
   charged a further entry for each eight of them, about 130 MB. A document whose fonts spend the
-  bound on ranges keeps no mappings past it: the CMap that would cross it is not used at all, the
-  glyphs it would have mapped are counted in `unmapped`, and no error is recorded, since a font
-  past its bound is not a failure of the page (step 5).
+  bound keeps no mappings past it: the CMap that would cross it is not used at all, the codes it
+  would have mapped are left to whatever mapping the font has without it — a simple font still
+  maps through its encoding, and a font with none leaves its glyphs unmapped and counted in
+  `unmapped` — and no error is recorded, since a font past its bound is not a failure of the page
+  (step 5).
 
   The objects a document holds are bounded against what the reader spends on them rather than
   against the file's length: 160 bytes for each byte of the file and for each byte its streams
-  inflate to, and 512 MiB in all, whichever is smaller. Two costs are charged against it, which
+  inflate to, and 1 GiB in all, whichever is smaller. The ceiling is what binds an ordinary
+  document: at `--max-bytes` 16 MiB with the default 64 MiB of inflation the ratio would allow
+  12.5 GiB, and the ceiling is set above the densest ordinary shape — five hundred pages of two
+  thousand one-member dictionaries each, an eight-megabyte file, are charged about 540 MB and
+  read whole. Two costs are charged against it, which
   are not the same cost of the same bytes: what a value **holds**, charged as the value is
   built, and what was **read** to build it, charged as each of a document's lexers advances over
-  the file — a comment with no line end, a string with no end read ahead of a value and stepped back over, a candidate given up on and a token all count, and each
-  byte counts once for each lexer that reads it. A file whose objects are each followed by a
+  the file — a comment with no line end, a string with no end read ahead of a value and stepped
+  back over, a candidate given up on and a token all count. Each byte counts once for each lexer
+  that reads it, and a document starts one lexer for each object it reads; within one lexer a
+  byte is charged once however often the parser steps back over it, except that the one-token
+  lookahead after an integer reads a string again where the object after it is one. A file whose objects are each followed by a
   comment that runs to its end is read once for every object it declares, holds almost nothing,
   and is bounded by the second of those. The ratio is what dense ordinary
   structure needs — the smallest dictionary a file can spell, `<</A 1>>`, is eight bytes of file
@@ -596,8 +607,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   whose every object ends in a comment with no line end reads about 10 MB of it. The charge is taken as each
   value is built, so a value past the bound is never held whole, and it is measured against what
   Go retains for each shape (`TestBoundsChargeCoversWhatIsRetained`), so the bound is a bound on
-  memory and not on an estimate of it. All of these are within the bounds above and within
-  `--max-bytes`; none is a refusal, and the process wants room for them.
+  memory and not on an estimate of it. The entry figures above are within the bounds and within
+  `--max-bytes`, and none of them is a refusal: the process wants room for them. The overlapping
+  shapes are not — a file whose objects hold or read the same bytes over and over meets this
+  bound, and the document is `pdf-malformed` with no page listed.
 
   A `/Filter` name whose bytes are not valid UTF-8 is recorded as `null`, the way a `/R` outside
   the canonical range is: the record carries the name the document declared or nothing, not a

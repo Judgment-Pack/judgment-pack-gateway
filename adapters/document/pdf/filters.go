@@ -141,6 +141,14 @@ func (d *Document) filtersOf(dict Dict) ([]filterSpec, error) {
 func (d *Document) decodeStream(s *stream, noDecrypt bool) ([]byte, error) {
 	data := s.raw
 	if d.crypt != nil && !noDecrypt && s.dict["Type"] != Name("XRef") {
+		// Decrypting copies the stream's bytes, and what is decrypted is held
+		// for as long as anything holds the copy -- an object stream's decoded
+		// data is one such holder. The copy is charged before it is made, so a
+		// document whose streams would decrypt to more than it may hold leaves
+		// them unread rather than holding them.
+		if !d.chargeParsed(goSizeClass(int64(len(data)))) {
+			return nil, errParsedBudget()
+		}
 		var err error
 		data, err = d.crypt.decryptStream(s, data)
 		if err != nil {

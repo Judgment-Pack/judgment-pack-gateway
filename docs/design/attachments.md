@@ -495,7 +495,10 @@ page (step 5).
 its deadline at the points [the steps](#how-a-document-is-processed) name, and an operation
 between two checks runs to its end. Each check reads the clock as well as the context it was
 given, so a deadline the clock has reached stops the work whether or not the timer that cancels
-that context has run. At the deadline, an OCR program that has not finished is
+that context has run. The reading of the request is waited on until two seconds past the
+deadline, and never for less than fifty milliseconds from when the read began: a deadline
+already past when the adapter comes to read leaves no wait at all, where a request whose bytes
+are there needs only the moment its read takes to end. At the deadline, an OCR program that has not finished is
 ended: the adapter kills the process it started, not that process's own children, waits up to
 two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
 itself, so a process left behind holding it does not delay the record past those two seconds.

@@ -141,6 +141,9 @@ func boundsLiveHeap() uint64 {
 // is a bound on memory only while this holds; every shape the parser builds
 // is measured here, and the constants are set from these measurements.
 func TestBoundsChargeCoversWhatIsRetained(t *testing.T) {
+	if boundsInstrumented {
+		t.Skip("the race detector's own allocations are not the reader's, and what it retains is not what this measures")
+	}
 	const n = 20000
 	text := func(l int) string {
 		b := make([]byte, l)
@@ -565,6 +568,7 @@ func TestBoundsCMapRangeIsChargedWhatItCosts(t *testing.T) {
 		{"a string destination", "1 beginbfrange\n<0000><00FF><0041>\nendbfrange\n", cmapRangeEntries},
 		{"a destination of two hundred and fifty-six characters", "1 beginbfrange\n<0000><00FF><" + strings.Repeat("0041", 256) + ">\nendbfrange\n", cmapRangeEntries + 256/cmapRunsPerEntry},
 		{"a code mapped on its own", "1 beginbfchar\n<0000><0041>\nendbfchar\n", 1},
+		{"a code mapped to two hundred and fifty-six characters", "1 beginbfchar\n<0000><" + strings.Repeat("0041", 256) + ">\nendbfchar\n", 1 + 256/cmapRunsPerEntry},
 	} {
 		budget := &fontBudget{}
 		if parseCMap([]byte(head+c.body+"endcmap\n"), budget, nil) == nil {
@@ -837,8 +841,11 @@ func TestBoundsCrossReferenceStreamOffsetOutsideTheFile(t *testing.T) {
 
 // boundsLostCatalog writes a one-page document whose catalog names no page
 // tree, so that the page tree is looked for among the objects, with the page
-// tree's and the catalog's own dictionaries written as given.
-func boundsLostCatalog(t *testing.T, tree, catalog string) []byte {
+// tree's and the catalog's own dictionaries written as given. When root is
+// empty the trailer names no catalog either, so the catalog is looked for
+// among the objects as well and a catalog the search passes over is a
+// document with no page.
+func boundsLostCatalog(t *testing.T, tree, catalog, root string) []byte {
 	t.Helper()
 	objects := []string{
 		"1 0 obj" + catalog + "endobj\n",
@@ -847,7 +854,13 @@ func boundsLostCatalog(t *testing.T, tree, catalog string) []byte {
 		"4 0 obj<< /Length 44 >>stream\nBT /F1 12 Tf 10 700 Td (Hello world) Tj ET\nendstream\nendobj\n",
 		"5 0 obj<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>endobj\n",
 	}
-	return boundsTabledWith(objects, nil, "1 0 R")
+	data := boundsTabledWith(objects, nil, "1 0 R")
+	if root == "" {
+		// The trailer names no catalog: /Root is written as a member the
+		// reader does not read, so that the file is the same length.
+		data = bytes.Replace(data, []byte("/Root 1 0 R"), []byte("/Rxxt 1 0 R"), 1)
+	}
+	return data
 }
 
 // The page tree and the catalog are looked for by reading the head of each
@@ -856,16 +869,32 @@ func boundsLostCatalog(t *testing.T, tree, catalog string) []byte {
 // the head cannot settle is parsed rather than passed over.
 func TestBoundsPageTreeAndCatalogAreFoundByReadingTheirHeads(t *testing.T) {
 	filler := strings.Repeat("/Pad"+strings.Repeat("x", 60)+" 1 ", 6)
+	pages := "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"
+	catalog := "<< /Type /Catalog >>"
+	// A window's worth of space, and a comment as long, before the dictionary
+	// the object holds: what the object is begins past what the head reads.
+	spaces := strings.Repeat(" ", headWindow+76)
+	comment := "%" + strings.Repeat("c", headWindow+76) + "\n"
+	// A head that ends between the two angle brackets of the dictionary: the
+	// object's number and generation, then space enough that "<<" straddles
+	// the end of the window.
+	split := strings.Repeat(" ", headWindow-len("1 0 obj")-1)
 	for _, c := range []struct {
-		name, tree, catalog string
+		name, tree, catalog, root string
 	}{
-		{"an escape in the page tree's type", "<< /Type /Pa#67es /Kids [3 0 R] /Count 1 >>", "<< /Type /Catalog >>"},
-		{"a page tree whose type comes late", "<< " + filler + " /Kids [3 0 R] /Count 1 /Type /Pages >>", "<< /Type /Catalog >>"},
-		{"an escape in the catalog's type", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Cat#61log >>"},
-		{"a catalog whose type comes late", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< " + filler + " /Type /Catalog >>"},
+		{"an escape in the page tree's type", "<< /Type /Pa#67es /Kids [3 0 R] /Count 1 >>", catalog, "1 0 R"},
+		{"a page tree whose type comes late", "<< " + filler + " /Kids [3 0 R] /Count 1 /Type /Pages >>", catalog, "1 0 R"},
+		{"a page tree behind a window of space", spaces + pages, catalog, "1 0 R"},
+		{"a page tree behind a comment as long as the window", comment + pages, catalog, "1 0 R"},
+		{"a page tree whose opening straddles the window", split + pages, catalog, "1 0 R"},
+		{"an escape in the catalog's type", pages, "<< /Type /Cat#61log >>", ""},
+		{"a catalog whose type comes late", pages, "<< " + filler + " /Type /Catalog >>", ""},
+		{"a catalog behind a window of space", pages, spaces + catalog, ""},
+		{"a catalog behind a comment as long as the window", pages, comment + catalog, ""},
+		{"a catalog whose opening straddles the window", pages, split + catalog, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			data := boundsLostCatalog(t, c.tree, c.catalog)
+			data := boundsLostCatalog(t, c.tree, c.catalog, c.root)
 			r := extract(t, data)
 			if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Text != "Hello world" {
 				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
@@ -945,14 +974,17 @@ func TestBoundsREADMEStatesTheBoundsOnWhatIsHeld(t *testing.T) {
 		"bytes the operands of a page hold at one time, the forms it draws included":                                     mib(maxOperandBytes),
 		"the entries one `bfrange` or `cidrange` is charged":                                                             grouped(cmapRangeEntries) + "; one more for each " + grouped(cmapRunsPerEntry) + " characters of its destination",
 		"bytes read and held for each byte of the file and of each byte its streams inflate to":                          grouped(parsedBytesPerFileByte),
-		"bytes of parsed objects held in all":                                                                            mib(maxParsedBytesHeld),
-		"the bytes of an object read to decide whether it is the page tree or the catalog":                               grouped(headWindow) + " bytes",
+		"bytes read and held in all": gib(maxParsedBytesHeld),
+		"the bytes of an object read to decide whether it is the page tree or the catalog": grouped(headWindow) + " bytes",
 	} {
 		if row := readmeRow(t, readme, label); row[1] != value {
 			t.Errorf("%s: adapters/README.md says %q, the reader holds %q", label, row[1], value)
 		}
 	}
 }
+
+// gib writes n, a whole number of gibibytes, as adapters/README.md does.
+func gib(n int64) string { return fmt.Sprintf("%d GiB", n>>30) }
 
 // boundsCommentedObjects is a file whose every object is followed by a
 // comment with no line end: the comment runs to the end of the file, so
@@ -1114,5 +1146,656 @@ func TestBoundsCommentsWhereTheFileIsRead(t *testing.T) {
 				t.Errorf("a comment %s took %v to read past", c.name, took)
 			}
 		})
+	}
+}
+
+// boundsOverlongStrings is a file of trailer candidates each followed by a
+// string longer than the bound on a string token: the token is read to that
+// bound and refused, so the bytes are read for every candidate and held for
+// none of them. The string is written in the form given, a literal or a hex.
+func boundsOverlongStrings(candidates int, hex bool) []byte {
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.7\n1 0 obj<< /Type /Catalog >>endobj\n")
+	for i := 0; i < candidates; i++ {
+		if hex {
+			out.WriteString("trailer<< /A <")
+		} else {
+			out.WriteString("trailer<< /A (")
+		}
+	}
+	// More bytes than one string token may hold, so every candidate reads its
+	// way to the bound before refusing.
+	if hex {
+		out.Write(bytes.Repeat([]byte("41"), maxStringBytes+64))
+	} else {
+		out.Write(bytes.Repeat([]byte("a"), maxStringBytes+64))
+	}
+	return out.Bytes()
+}
+
+// A token reader that refuses what it read still charges it: a string past
+// the bound on a string token is read to that bound, and a file of trailer
+// candidates each followed by such a string would otherwise be read once for
+// every candidate at no cost. The bound is met, and it is met as a bound
+// rather than as a candidate the scan passes over.
+func TestBoundsOverlongTokensAreCharged(t *testing.T) {
+	for _, hex := range []bool{false, true} {
+		kind := "a literal string"
+		if hex {
+			kind = "a hex string"
+		}
+		t.Run(kind, func(t *testing.T) {
+			data := boundsOverlongStrings(4, hex)
+			started := time.Now()
+			d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+			took := time.Since(started)
+			charged := int64(0)
+			if d != nil {
+				charged = d.parsedBytes
+			}
+			t.Logf("%d candidates before %s of %d bytes: %v, %d charged (%v)", 4, kind, len(data), took, charged, err)
+			if !errors.Is(err, errStructureBound) {
+				t.Errorf("reading %d bytes of candidates ended with %v", len(data), err)
+			}
+			// The bound above is what this establishes: the scan ends at the
+			// first candidate, where a reader that charged nothing for a token
+			// it refused would read the file again for each of them. The time
+			// is logged rather than held to a figure: this file is tens of
+			// megabytes, which is slow to read once under the race detector,
+			// and the shapes whose time says something are the smaller ones
+			// above.
+		})
+	}
+}
+
+// boundsAliasedOffsets is a file whose cross-reference stream gives many
+// object numbers the same offset, where the object of that offset holds the
+// dictionary given: the reader reads what is at that offset once for the
+// offset, not once for every number that names it.
+func boundsAliasedOffsets(aliases, members int) []byte {
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.7\n")
+	catalog := out.Len()
+	out.WriteString("1 0 obj<< /Type /Catalog >>endobj\n")
+	pages := out.Len()
+	out.WriteString("2 0 obj<< /Type /Nothing >>endobj\n")
+	other := out.Len()
+	out.WriteString("3 0 obj<< /Type /Other " + strings.Repeat("/A <</B 1>> ", members) + ">>endobj\n")
+	at := out.Len()
+	var entries []byte
+	put := func(typ byte, f2, f3 int) {
+		entries = append(entries, typ, byte(f2>>16), byte(f2>>8), byte(f2), byte(f3))
+	}
+	put(0, 0, 255)
+	put(1, catalog, 0)
+	put(1, pages, 0)
+	for i := 0; i < aliases; i++ {
+		put(1, other, 0)
+	}
+	fmt.Fprintf(&out, "4 0 obj<< /Type /XRef /Size %d /W [1 3 1] /Root 1 0 R /Length %d >>stream\n", 3+aliases, len(entries))
+	out.Write(entries)
+	out.WriteString("\nendstream endobj\n")
+	fmt.Fprintf(&out, "startxref\n%d\n%%%%EOF\n", at)
+	return out.Bytes()
+}
+
+// Reading an object's head is charged, and what it settled is kept by the
+// offset it was read at: a cross-reference that gives thousands of object
+// numbers one offset costs one reading of that head where the head settles
+// what the object is, and where it cannot, the reading of the object itself
+// spends the allowance and meets the bound instead of running on.
+func TestBoundsHeadInspectionIsChargedAndKept(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		members int
+		settled bool
+	}{
+		{"a head the window settles", 40, true},
+		{"a head the window cannot settle", 100, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, aliases := range []int{8000, 32000} {
+				data := boundsAliasedOffsets(aliases, c.members)
+				d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+				if d == nil {
+					t.Fatalf("not opened: %v", err)
+				}
+				started := time.Now()
+				// The page tree is looked for among the objects the
+				// cross-reference names, which is where each entry's head is
+				// inspected. It is asked for directly, since rebuilding by
+				// scanning would replace the cross-reference whose aliases
+				// are the point.
+				root := d.findPagesRoot()
+				took := time.Since(started)
+				t.Logf("%d bytes, %d aliases of one offset: %v, %d charged of %d allowed (bound %v)", len(data), aliases, took, d.parsedBytes, d.parsedBudget(), d.bound != nil || d.parsedSpent())
+				if root != nil {
+					t.Error("a file that holds no page tree yielded one")
+				}
+				if took > 3*time.Second {
+					t.Errorf("%d aliases of one offset took %v", aliases, took)
+				}
+				// The head at that offset is read, and charged: a search that
+				// read it for nothing would charge nothing at all.
+				if d.parsedBytes < int64(headWindow) {
+					t.Errorf("%d aliases of one offset charged %d bytes; reading one head costs more than that", aliases, d.parsedBytes)
+				}
+				if c.settled {
+					// Read once for the offset, not once for every number.
+					if d.parsedBytes > int64(headWindow)*64 {
+						t.Errorf("%d aliases of one offset charged %d bytes; the head at that offset is read once", aliases, d.parsedBytes)
+					}
+				} else if !d.parsedSpent() {
+					// Nothing the window settles, so every alias is a whole
+					// object to read: the allowance is what ends that.
+					t.Errorf("%d aliases of an object the window cannot settle charged %d of %d without meeting the bound", aliases, d.parsedBytes, d.parsedBudget())
+				}
+			}
+		})
+	}
+}
+
+// The allowance is one balance, and every reading of it is a reading of what
+// is left: two parses of one document that each took what was there when
+// they began would spend the same bytes twice.
+func TestBoundsOneBalanceIsAuthoritative(t *testing.T) {
+	d := &Document{data: make([]byte, 1<<10), budget: &inflateBudget{}}
+	d.parsedBytes = d.parsedBudget() - 3000
+	first, second := d.budgeted(), d.budgeted()
+	if !first.take(2000) {
+		t.Fatal("the first take of 2,000 did not fit in 3,000")
+	}
+	if second.take(2000) {
+		t.Error("a second allowance spent the same bytes over again")
+	}
+	if d.parsedBytes > d.parsedBudget() {
+		t.Errorf("the document has spent %d of %d", d.parsedBytes, d.parsedBudget())
+	}
+}
+
+// What a document may hold is the smaller of the ratio and the ceiling: the
+// ratio binds a small file, and the ceiling every file past a few megabytes.
+func TestBoundsCeilingBindsPastTheRatio(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		size int
+		want int64
+	}{
+		{"a small file", 1 << 20, parsedBytesPerFileByte << 20},
+		{"a file past the ceiling's crossing", 8 << 20, maxParsedBytesHeld},
+	} {
+		d := &Document{data: make([]byte, c.size), budget: &inflateBudget{}}
+		if got := d.parsedBudget(); got != c.want {
+			t.Errorf("%s of %d bytes: %d allowed, want %d", c.name, c.size, got, c.want)
+		}
+	}
+}
+
+// Every way out of a lexer charges what it read, including the ways out at
+// the end of the data, where nothing after them would charge it: a token
+// that ends there, whitespace that ends there, and a token refused there.
+func TestBoundsTerminalLexerPathsAreCharged(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		data string
+		read func(*lexer)
+	}{
+		{"a token at the end of the data", "  /Name", func(l *lexer) { l.next() }},
+		{"whitespace at the end of the data", strings.Repeat(" ", 4096), func(l *lexer) { l.skipSpace() }},
+		{"a token refused at the end of the data", "(" + strings.Repeat("a", maxStringBytes+8), func(l *lexer) { l.next() }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := &Document{data: make([]byte, 1<<20), budget: &inflateBudget{}}
+			lex := newLexer([]byte(c.data), 0).within(d.budgeted())
+			c.read(lex)
+			if d.parsedBytes < int64(lex.pos) {
+				t.Errorf("%d bytes were read and %d charged", lex.pos, d.parsedBytes)
+			}
+		})
+	}
+}
+
+// boundsDensePages is a document of pages each naming a resource of count
+// one-member dictionaries: the shape an ordinary document of many pages
+// takes, which the ceiling must leave readable.
+func boundsDensePages(pages, perPage int, inObjectStream bool) []byte {
+	b := &pdfgen.Builder{}
+	if inObjectStream {
+		b.XrefStream, b.ObjectStreams, b.Compress = true, true, true
+	}
+	helv := b.Font("Helvetica", "WinAnsiEncoding", "")
+	var dense strings.Builder
+	dense.WriteString("[")
+	for i := 0; i < perPage; i++ {
+		dense.WriteString("<</A 1>>")
+	}
+	dense.WriteString("]")
+	body := "<< /Dense " + dense.String() + " >>"
+	root := b.Next()
+	b.Add(pdfgen.Object{Body: "placeholder"})
+	kids := make([]string, 0, pages)
+	for i := 0; i < pages; i++ {
+		props := b.Add(pdfgen.Object{Body: body})
+		cs := b.Add(pdfgen.Object{Body: "<< >>", Stream: []byte(pdfgen.Text("F1", 12, []string{"dense"}))})
+		page := b.Add(pdfgen.Object{Body: fmt.Sprintf("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> /Properties %d 0 R >> /Contents %d 0 R >>", root, helv, props, cs)})
+		kids = append(kids, fmt.Sprintf("%d 0 R", page))
+	}
+	b.Set(root, pdfgen.Object{Body: fmt.Sprintf("<< /Type /Pages /Kids [%s] /Count %d >>", strings.Join(kids, " "), pages)})
+	b.Catalog(root)
+	return b.Bytes()
+}
+
+// An ordinary document of many pages, each holding as much structure as the
+// densest shape the reader admits, is read whole: the ceiling is set above
+// what such a document costs, where the ratio would allow far more, and a
+// document of twice that structure meets it.
+func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
+	for _, inStream := range []bool{false, true} {
+		where := "at an offset"
+		if inStream {
+			where = "in an object stream"
+		}
+		t.Run(where, func(t *testing.T) {
+			data := boundsDensePages(500, 2000, inStream)
+			d := openGenerated(t, data)
+			w := &walker{d: d, ctx: context.Background(), visited: map[ref]bool{}, limit: 1000}
+			if ending := w.node(d.pagesRoot(), inherited{}, 0); ending != walkComplete {
+				t.Fatalf("%d bytes: the walk ended at %v (%q)", len(data), ending, w.defect)
+			}
+			for i, pn := range w.pages {
+				dense := d.arrayOf(d.dictOf(d.dictOf(pn.dict["Resources"])["Properties"])["Dense"])
+				if len(dense) != 2000 {
+					t.Fatalf("%d bytes: page %d holds %d of its 2,000 dictionaries, with %d charged of %d", len(data), i+1, len(dense), d.parsedBytes, d.parsedBudget())
+				}
+			}
+			t.Logf("%d pages of 2,000 one-member dictionaries %s: %d bytes, %d charged of %d allowed", len(w.pages), where, len(data), d.parsedBytes, d.parsedBudget())
+			if d.bound != nil {
+				t.Errorf("an ordinary document met %v", d.bound)
+			}
+		})
+	}
+	// The same shape at an offset, in the page count and per-page structure
+	// the ceiling was set from, costs more than the ceiling this bound held
+	// before it was measured against a document like this.
+	data := boundsDensePages(500, 2000, false)
+	d := openGenerated(t, data)
+	w := &walker{d: d, ctx: context.Background(), visited: map[ref]bool{}, limit: 1000}
+	w.node(d.pagesRoot(), inherited{}, 0)
+	for _, pn := range w.pages {
+		d.resolve(d.dictOf(pn.dict["Resources"])["Properties"])
+	}
+	if d.parsedBytes <= 512<<20 {
+		t.Errorf("the document the ceiling was set from costs %d bytes, which the ceiling before it did not have to admit", d.parsedBytes)
+	}
+	// Twice that structure is past the ceiling: what the reader cannot hold
+	// it does not hold, and the bound says so.
+	big := boundsDensePages(500, 4200, false)
+	d = openGenerated(t, big)
+	w = &walker{d: d, ctx: context.Background(), visited: map[ref]bool{}, limit: 1000}
+	w.node(d.pagesRoot(), inherited{}, 0)
+	whole := 0
+	for _, pn := range w.pages {
+		if len(d.arrayOf(d.dictOf(d.dictOf(pn.dict["Resources"])["Properties"])["Dense"])) == 4200 {
+			whole++
+		}
+	}
+	t.Logf("500 pages of 4,200 one-member dictionaries: %d bytes, %d pages whole, %d charged of %d, bound %v", len(big), whole, d.parsedBytes, d.parsedBudget(), d.bound != nil)
+	if d.bound == nil || whole == len(w.pages) {
+		t.Errorf("a document past the ceiling read %d of %d pages whole with bound %v", whole, len(w.pages), d.bound)
+	}
+}
+
+// What a parse actually spends of the allowance covers what Go retains for
+// the values it built: the hand-built shapes above are one half of that
+// claim, and this is the other, through the reader's own parser, where a
+// string or a name holds the room the builder grew into and a null is a
+// value the slot holding it pays for.
+func TestBoundsParsedValuesCostWhatIsCharged(t *testing.T) {
+	if boundsInstrumented {
+		t.Skip("the race detector's own allocations are not the reader's, and what it retains is not what this measures")
+	}
+	text := func(l int) string { return strings.Repeat("a", l) }
+	for _, c := range []struct {
+		name   string
+		source string
+		count  int
+	}{
+		{"literal strings of 4,097 bytes", "(" + text(4097) + ")", 10000},
+		{"hex strings of 4,097 bytes", "<" + strings.Repeat("41", 4097) + ">", 10000},
+		{"names of 3,073 bytes", "/" + text(3073), 10000},
+		{"arrays of seventeen nulls", "[null null null null null null null null null null null null null null null null null]", 20000},
+		{"dictionaries of one member", "<</A 1>>", 50000},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			source := []byte(strings.Repeat(c.source+" ", c.count))
+			// A document large enough that the allowance is not what stops
+			// this: what is measured is what a parse spends.
+			d := &Document{data: make([]byte, 64<<20), budget: &inflateBudget{}}
+			held := make([]object, 0, c.count)
+			boundsLiveHeap()
+			spent := d.parsedBytes
+			lex := newLexer(source, 0)
+			p := &parser{lex: lex, allow: d.budgeted()}
+			for i := 0; i < c.count; i++ {
+				v, err := p.parseObject(0)
+				if err != nil {
+					t.Fatalf("value %d of %d: %v", i+1, c.count, err)
+				}
+				held = append(held, v)
+			}
+			with := boundsLiveHeap()
+			runtime.KeepAlive(held)
+			held = nil
+			after := boundsLiveHeap()
+			// Everything but the values stays alive across both readings, so
+			// what the difference holds is the values and nothing else.
+			charged := d.parsedBytes - spent
+			runtime.KeepAlive(source)
+			runtime.KeepAlive(p)
+			retained := with - after
+			t.Logf("%-32s %6d retained, %6d charged, each", c.name, int(retained)/c.count, int(charged)/c.count)
+			if int64(retained) > charged {
+				t.Errorf("%s: %d bytes retained for each, %d charged", c.name, int(retained)/c.count, int(charged)/c.count)
+			}
+		})
+	}
+}
+
+// A string is charged the room it takes as it takes it: a string past what
+// is left is stopped where the room runs out, not read and allocated whole
+// and refused after.
+func TestBoundsAStringIsChargedAsItGrows(t *testing.T) {
+	for _, c := range []struct{ name, source string }{
+		{"a literal string", "(" + strings.Repeat("a", 8<<20) + ")"},
+		{"a hex string", "<" + strings.Repeat("41", 8<<20) + ">"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := &Document{data: make([]byte, 1<<10), budget: &inflateBudget{}}
+			// A thousand bytes of allowance against a string of eight
+			// mebibytes.
+			d.parsedBytes = d.parsedBudget() - 1024
+			lex := newLexer([]byte(c.source), 0).within(d.budgeted())
+			p := &parser{lex: lex, allow: d.budgeted()}
+			grew := allocated(func() {
+				if _, err := p.parseObject(0); err == nil {
+					t.Errorf("a string of %d bytes was read with 1,024 bytes of allowance", len(c.source))
+				}
+			})
+			t.Logf("%s of %d bytes with 1,024 allowed: %d KiB allocated while it was refused", c.name, len(c.source), grew>>10)
+			// Reading it whole and refusing it after would allocate the whole
+			// of it; stopping where the room runs out allocates a little.
+			if grew > 1<<20 {
+				t.Errorf("%s allocated %d KiB while being refused", c.name, grew>>10)
+			}
+		})
+	}
+}
+
+// An operand that holds more than one page's operands may hold stops the
+// page, whatever shape it takes: fifteen thousand strings of four kilobytes
+// each are past the bound although each string and the stream that carries
+// them are within theirs.
+func TestBoundsAnOperandOfStringsStopsThePage(t *testing.T) {
+	// Four streams, so that no stream inflates past its own bound and the
+	// page's content stays within what a page's content may hold: what is
+	// past a bound here is the operand the four of them spell together.
+	const streams, each = 4, 3750
+	b := &pdfgen.Builder{}
+	refs := make([]string, streams)
+	for i := range refs {
+		var content strings.Builder
+		if i == 0 {
+			content.WriteString("[")
+		}
+		for k := 0; k < each; k++ {
+			content.WriteString("(" + strings.Repeat("a", 4097) + ")")
+		}
+		if i == streams-1 {
+			content.WriteString("]")
+		}
+		refs[i] = fmt.Sprintf("%d 0 R", b.Add(pdfgen.Object{Body: "<< /Filter /FlateDecode >>", Stream: flateOf([]byte(content.String())), Raw: true}))
+	}
+	pages := b.Next()
+	b.Add(pdfgen.Object{Body: "placeholder"})
+	page := b.Add(pdfgen.Object{Body: fmt.Sprintf("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents [%s] >>", pages, strings.Join(refs, " "))})
+	b.Set(pages, pdfgen.Object{Body: fmt.Sprintf("<< /Type /Pages /Kids [%d 0 R] /Count 1 >>", page)})
+	b.Catalog(pages)
+	data := b.Bytes()
+	var r *Result
+	peak := boundsPeakLiveHeap(func() { r = extract(t, data) })
+	t.Logf("one operand of 15,000 strings of 4,097 bytes (%d bytes): most held at once %d MiB, pages %+v problems %+v", len(data), peak>>20, r.Pages, r.Problems)
+	if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageFailed {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	if len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+		t.Errorf("the page failed with %+v; what it met is the bound on what its operands hold", r.Problems)
+	}
+	// The content itself is sixty megabytes, and the operands the bound
+	// admits another sixty-four: what this catches is a page that holds the
+	// whole of an operand past the bound as well.
+	if peak > 256<<20 {
+		t.Errorf("the page held %d MiB at once; the bound on what its operands hold is %d MiB", peak>>20, maxOperandBytes>>20)
+	}
+}
+
+// A decrypted stream is a copy the reader holds, and it is charged before it
+// is made: an encrypted document whose object streams decrypt to more than
+// the document may hold is left unread rather than held.
+func TestBoundsDecryptedStreamsAreCharged(t *testing.T) {
+	b := &pdfgen.Builder{Encrypt: &pdfgen.Encryption{Revision: 4, Owner: "owner", Permissions: -1}}
+	helv := b.Font("Helvetica", "WinAnsiEncoding", "")
+	// A stream of half a mebibyte, decrypted into a copy of its own.
+	body := b.Add(pdfgen.Object{Body: "<< >>", Stream: bytes.Repeat([]byte("x"), 512<<10)})
+	b.Catalog(b.Pages([]pdfgen.Page{{Content: pdfgen.Text("F1", 12, []string{"encrypted"}), Fonts: map[string]int{"F1": helv}}}))
+	data := b.Bytes()
+	d := openGenerated(t, data)
+	if _, err := d.openEncryption(); err != nil {
+		t.Fatalf("encryption: %v", err)
+	}
+	before := d.parsedBytes
+	s, ok := d.resolve(ref{body, 0}).(*stream)
+	if !ok {
+		t.Fatalf("object %d is not a stream", body)
+	}
+	if _, err := d.decodeStream(s, false); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	charged := d.parsedBytes - before
+	t.Logf("a decrypted stream of %d bytes: %d charged", len(s.raw), charged)
+	if charged < int64(len(s.raw)) {
+		t.Errorf("a decrypted copy of %d bytes was charged %d", len(s.raw), charged)
+	}
+}
+
+// An inline image's dictionary is read and dropped, and what it holds while
+// it is read is bounded: a dictionary value of hundreds of thousands of
+// small dictionaries fails the page rather than being built whole.
+func TestBoundsInlineImageDictionaryIsBounded(t *testing.T) {
+	var content strings.Builder
+	content.WriteString("BI /W 4 /H 4 /BPC 8 /CS /G /Junk [")
+	for i := 0; i < 220_000; i++ {
+		content.WriteString("<</A 1>>")
+	}
+	content.WriteString("] ID \x41\x41\x41\x41 EI\n")
+	b := &pdfgen.Builder{Compress: true}
+	b.Catalog(b.Pages([]pdfgen.Page{{Content: content.String()}}))
+	data := b.Bytes()
+	var r *Result
+	peak := boundsPeakLiveHeap(func() { r = extract(t, data) })
+	t.Logf("an inline image's dictionary of 220,000 dictionaries (%d bytes): most held at once %d MiB, pages %+v problems %+v", len(data), peak>>20, r.Pages, r.Problems)
+	if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageFailed {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	if peak > 192<<20 {
+		t.Errorf("the page held %d MiB at once while reading an inline image's dictionary", peak>>20)
+	}
+}
+
+// A CMap's own values are bounded by what the document's fonts may hold: a
+// destination array of hundreds of thousands of dictionaries is not built
+// and then ignored.
+func TestBoundsCMapValuesAreBounded(t *testing.T) {
+	var src strings.Builder
+	src.WriteString("begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n1 beginbfrange\n<0000><0001>[")
+	for i := 0; i < 800_000; i++ {
+		src.WriteString("<</A 1>>")
+	}
+	src.WriteString("]\nendbfrange\nendcmap\n")
+	budget := &fontBudget{}
+	var c *cmap
+	grew := allocated(func() { c = parseCMap([]byte(src.String()), budget, nil) })
+	t.Logf("a CMap whose destination holds 800,000 dictionaries (%d bytes): %d MiB allocated, used %v", src.Len(), grew>>20, c != nil)
+	// Eight hundred thousand one-member dictionaries hold more than one
+	// CMap's mappings may: the CMap is abandoned while the value is built,
+	// rather than built whole and then ignored.
+	if c != nil {
+		t.Errorf("a CMap whose destination holds more than its mappings may was used")
+	}
+	if grew > 384<<20 {
+		t.Errorf("reading the CMap allocated %d MiB", grew>>20)
+	}
+}
+
+// What a document holds outside its object cache is charged and kept: the
+// headers of its object streams are cleared where the charge for them is,
+// and neither outlives the other.
+func TestBoundsObjectStreamHeadersAreChargedAndCleared(t *testing.T) {
+	b := &pdfgen.Builder{XrefStream: true, ObjectStreams: true, Compress: true}
+	helv := b.Font("Helvetica", "WinAnsiEncoding", "")
+	b.Catalog(b.Pages([]pdfgen.Page{{Content: pdfgen.Text("F1", 12, []string{"held"}), Fonts: map[string]int{"F1": helv}}}))
+	d := openGenerated(t, b.Bytes())
+	boundsFirstPage(t, d)
+	if len(d.objStmHeaders) == 0 {
+		t.Fatal("the document holds no object-stream header")
+	}
+	before := d.parsedBytes
+	// An object stream's header is charged as it is read: reading one again
+	// costs again.
+	d.objStms, d.objStmHeaders = map[int]*objStm{}, nil
+	d.cache = map[int]object{}
+	boundsFirstPage(t, d)
+	if d.parsedBytes <= before {
+		t.Errorf("reading the object-stream headers again charged %d bytes", d.parsedBytes-before)
+	}
+}
+
+// Whitespace is read like anything else: a file whose objects are each
+// followed by a stretch of it that reaches the next object, or the end of
+// the file, is read once for every object and charged for it.
+func TestBoundsWhitespaceBetweenObjectsIsCharged(t *testing.T) {
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.7\n")
+	// Every object is one integer, and the whitespace after the last of them
+	// runs to the end of the file, where nothing follows to charge it.
+	for i := 1; i <= 2000; i++ {
+		fmt.Fprintf(&out, "%d 0 obj 0 ", i)
+	}
+	out.Write(bytes.Repeat([]byte(" "), 64<<10))
+	data := out.Bytes()
+	d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+	if d == nil {
+		t.Fatalf("not opened: %v", err)
+	}
+	started := time.Now()
+	for num := range d.xref {
+		d.objectRead(num)
+	}
+	took := time.Since(started)
+	t.Logf("%d bytes, 2,000 objects before %d bytes of whitespace: %v, %d charged of %d allowed", len(data), 64<<10, took, d.parsedBytes, d.parsedBudget())
+	// Each object reads the whitespace after it, so what is charged is far
+	// more than the objects themselves hold; without that it is a few
+	// thousand bytes and the file is read again for every object.
+	if d.parsedBytes < 64<<10 {
+		t.Errorf("reading 2,000 objects across %d bytes of whitespace charged %d bytes", 64<<10, d.parsedBytes)
+	}
+	if took > 3*time.Second {
+		t.Errorf("reading them took %v", took)
+	}
+}
+
+// Reading an object's head is charged to the document, and not only bounded
+// by the window: the bytes the head reader lexes are the document's to pay
+// for, as every other reading of the file is.
+func TestBoundsReadingAHeadIsCharged(t *testing.T) {
+	data := boundsAliasedOffsets(1, 40)
+	d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+	if d == nil {
+		t.Fatalf("not opened: %v", err)
+	}
+	before := d.parsedBytes
+	e := xrefEntry{offset: int64(bytes.Index(data, []byte("3 0 obj")))}
+	if known := d.readHeadType(e); !known.settled || known.typ != "Other" {
+		t.Fatalf("the head read %+v", known)
+	}
+	charged := d.parsedBytes - before
+	t.Logf("reading one head: %d charged", charged)
+	if charged < 64 {
+		t.Errorf("reading a head charged %d bytes", charged)
+	}
+}
+
+// A parse whose reading has run out of allowance ends where it stands: the
+// token after it is an error, and a lookahead that would throw that error
+// away does not read on at no cost.
+func TestBoundsExhaustionEndsTheParse(t *testing.T) {
+	// An integer, then a string longer than what is left to read with.
+	source := []byte("1 (" + strings.Repeat("a", 1<<20) + ")")
+	d := &Document{data: make([]byte, 1<<10), budget: &inflateBudget{}}
+	d.parsedBytes = d.parsedBudget() - 512
+	lex := newLexer(source, 0).within(d.budgeted())
+	p := &parser{lex: lex, allow: d.budgeted()}
+	v, err := p.parseObject(0)
+	// The integer itself is within what is left; the string the lookahead
+	// reads after it is not, and is stopped where the room runs out.
+	t.Logf("with 512 bytes to read with: %v %v (charged to byte %d of %d)", v, err, lex.charged, len(source))
+	if lex.charged > 8192 {
+		t.Errorf("a lookahead past what it may read went on to byte %d of %d", lex.charged, len(source))
+	}
+	// And the parse after it ends rather than reading on for nothing.
+	if _, err := p.parseObject(0); err == nil {
+		t.Error("a parse whose reading is spent returned a value")
+	}
+}
+
+// An object read out of an object stream is built within the allowance too:
+// a value past what the document may hold is stopped while it is built, not
+// allocated whole out of the decoded stream and refused after.
+func TestBoundsObjectStreamValuesAreBuiltWithinTheAllowance(t *testing.T) {
+	// One object of an array of a quarter of a million one-member
+	// dictionaries, in an object stream of two megabytes.
+	var body strings.Builder
+	body.WriteString("[")
+	for i := 0; i < 250_000; i++ {
+		body.WriteString("<</A 1>>")
+	}
+	body.WriteString("]")
+	header := "9 0 "
+	payload := header + body.String()
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.7\n")
+	out.WriteString("1 0 obj<< /Type /Catalog >>endobj\n")
+	at := out.Len()
+	fmt.Fprintf(&out, "2 0 obj<< /Type /ObjStm /N 1 /First %d /Length %d >>stream\n%s\nendstream endobj\n", len(header), len(payload), payload)
+	fmt.Fprintf(&out, "trailer<< /Root 1 0 R /Size 3 >>\nstartxref\n%d\n%%%%EOF\n", at)
+	data := out.Bytes()
+	d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+	if d == nil {
+		t.Fatalf("not opened: %v", err)
+	}
+	st, lerr := d.loadObjStm(2, d.resolve(ref{2, 0}).(*stream))
+	if lerr != nil {
+		t.Fatalf("loadObjStm: %v", lerr)
+	}
+	// What is left to hold with, against a value that holds far more.
+	d.parsedBytes = d.parsedBudget() - 1<<20
+	grew := allocated(func() {
+		if v, read := d.objectFromStream(xrefEntry{inStream: true, stmNum: 2, stmIndex: 0}); read {
+			t.Errorf("a value past what the document may hold was read: %T", v)
+		}
+	})
+	t.Logf("an object-stream value of 250,000 dictionaries with a mebibyte to hold with: %d MiB allocated", grew>>20)
+	_ = st
+	if grew > 16<<20 {
+		t.Errorf("reading it allocated %d MiB", grew>>20)
 	}
 }

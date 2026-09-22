@@ -110,6 +110,14 @@ type lexer struct {
 	// rises, so a parser that goes back over what it has read does not pay for
 	// it twice, and each byte of the slice costs this lexer one charge.
 	charged int
+	// reserved is what the token being built has been charged for the room it
+	// holds, so that growing it charges what the growth costs and no more.
+	reserved int64
+	// spent is set when a charge did not fit. Every token after it is an
+	// error, so a parse whose reading has run out of allowance ends where it
+	// is rather than reading on and counting: a lookahead that threw its
+	// error away would otherwise go on reading at no cost.
+	spent bool
 }
 
 func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos, charged: pos} }
@@ -138,15 +146,39 @@ func (l *lexer) within(a *allowance) *lexer {
 // the data would be read once for every value in it and charged for none.
 func (l *lexer) advanced() {
 	if l.pos > l.charged {
-		l.allow.take(int64(l.pos - l.charged))
+		if !l.allow.take(int64(l.pos - l.charged)) {
+			l.spent = true
+		}
 		l.charged = l.pos
 	}
 }
+
+// reserve charges the room a token being built has grown to, and reports
+// whether the allowance had it. The bytes are charged as the room is taken,
+// so a token past what is left is never allocated whole and then refused.
+func (l *lexer) reserve(capacity int) bool {
+	want := goSizeClass(int64(capacity))
+	if want <= l.reserved {
+		return true
+	}
+	if !l.allow.take(want - l.reserved) {
+		l.spent = true
+		l.reserved = 0
+		return false
+	}
+	l.reserved = want
+	return true
+}
+
+// errRead is the error every token is once the allowance for reading is
+// spent.
+func (l *lexer) errRead() error { return l.allow.exhausted() }
 
 // stringToken is a string token read from start to the lexer's position,
 // its bytes charged where it ends.
 func (l *lexer) stringToken(start int, out []byte) token {
 	l.advanced()
+	l.reserved = 0
 	return token{kind: tokString, pos: start, end: l.pos, str: out}
 }
 
@@ -182,8 +214,12 @@ func (l *lexer) skipSpace() {
 			l.advanced()
 			continue
 		}
-		return
+		break
 	}
+	// What was skipped is charged here and not at the next reading of a
+	// token: whitespace at the end of the data may be all that is left, and
+	// nothing after it would charge it.
+	l.advanced()
 }
 
 // errStructureBound is the class of every error that says the document has a
@@ -207,8 +243,19 @@ var errLexer = fmt.Errorf("%w: lexical error", errStructureBound)
 // is skipped so a damaged file still yields its objects. Skipping is this
 // loop, never a call per byte skipped, so a run of such bytes takes no more
 // stack than one does.
+//
+// Every token reader is reached through here, and the charge on the way out
+// covers every way out of them: this call's error exits and the readers'
+// own -- a string past the bound on its kind is read before it is refused,
+// and a reader that refused one without charging would let a file be read
+// again for every object that asks. A token read once the allowance is spent
+// is an error rather than a token, so a parse that has run out of it ends
+// where it stands, a lookahead that would throw the error away included.
 func (l *lexer) next() (token, error) {
-	l.advanced()
+	defer l.advanced()
+	if l.spent {
+		return token{}, l.errRead()
+	}
 	for {
 		l.skipSpace()
 		if l.pos >= len(l.data) {
@@ -429,6 +476,9 @@ func (l *lexer) hexString() (token, error) {
 		} else {
 			pending, half = v, true
 		}
+		if !l.reserve(cap(out)) {
+			return token{}, l.errRead()
+		}
 		if len(out) > maxStringBytes {
 			return token{}, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
 		}
@@ -503,6 +553,9 @@ func (l *lexer) literalString() (token, error) {
 			out = append(out, '\n')
 		default:
 			out = append(out, c)
+		}
+		if !l.reserve(cap(out)) {
+			return token{}, l.errRead()
 		}
 		if len(out) > maxStringBytes {
 			return token{}, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
@@ -601,12 +654,12 @@ func (p *parser) parseObject(depth int) (object, error) {
 		}
 		return t.f, nil
 	case tokName:
-		if err := p.hold(parsedStringBytes + roundUp16(int64(len(t.name)))); err != nil {
+		if err := p.hold(parsedStringBytes + goSizeClass(int64(len(t.name)))); err != nil {
 			return nil, err
 		}
 		return t.name, nil
 	case tokString:
-		if err := p.hold(parsedStringBytes + roundUp16(int64(len(t.str)))); err != nil {
+		if err := p.hold(parsedStringBytes + goSizeClass(int64(len(t.str)))); err != nil {
 			return nil, err
 		}
 		return String(t.str), nil
@@ -696,7 +749,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return nil, err
 			}
 			if vt.kind == tokDictClose {
-				if err := p.hold(parsedMemberBytes + roundUp16(int64(len(key)))); err != nil {
+				if err := p.hold(parsedMemberBytes + goSizeClass(int64(len(key)))); err != nil {
 					return nil, err
 				}
 				dict[key] = nil
@@ -716,7 +769,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return nil, err
 			}
 			if _, taken := dict[key]; !taken {
-				if err := p.hold(parsedMemberBytes + roundUp16(int64(len(key)))); err != nil {
+				if err := p.hold(parsedMemberBytes + goSizeClass(int64(len(key)))); err != nil {
 					return nil, err
 				}
 			}
@@ -733,6 +786,11 @@ func (p *parser) parseObject(depth int) (object, error) {
 			}
 			return t.keyword == "true", nil
 		case "null":
+			// The null object is charged as any other value is: what holds it
+			// holds a slot and an interface, whatever the interface says.
+			if err := p.hold(parsedValueBytes); err != nil {
+				return nil, err
+			}
 			return nil, nil
 		}
 		return nil, errKeyword{keyword: t.keyword, pos: t.pos}

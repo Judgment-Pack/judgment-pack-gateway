@@ -25,6 +25,65 @@ func (r *boundsHeldReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// boundsReleasedReader ends its read when the test releases it, and reports
+// when it did.
+type boundsReleasedReader struct {
+	release chan struct{}
+	data    string
+}
+
+func (r *boundsReleasedReader) Read(p []byte) (int, error) {
+	<-r.release
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// A read and the cutoff that are both ready are decided by the instant the
+// read ended, and not by which of them the runtime offers first. The reader
+// is held at the moment both are ready -- the read has delivered and the
+// cutoff has passed -- and the outcome is taken many times over: a read that
+// ended after the cutoff is refused every time, and one that ended before it
+// is taken every time.
+func TestBoundsBothReadyIsDecidedByTheInstant(t *testing.T) {
+	defer func(saved func()) { readWaiting = saved }(readWaiting)
+	for _, c := range []struct {
+		name    string
+		release time.Duration
+		read    bool
+	}{
+		{"a read that ended before the cutoff", 0, true},
+		{"a read that ended after the cutoff", requestReadFloor + 20*time.Millisecond, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for i := 0; i < 20; i++ {
+				// The deadline is old, so the cutoff is the floor past now.
+				ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-requestPipeWait))
+				r := &boundsReleasedReader{release: make(chan struct{}), data: "hello"}
+				if c.release == 0 {
+					close(r.release)
+				} else {
+					time.AfterFunc(c.release, func() { close(r.release) })
+				}
+				// Held until the read has delivered and the cutoff has
+				// passed, so that both outcomes are ready when one is taken.
+				readWaiting = func() { time.Sleep(c.release + requestReadFloor + 40*time.Millisecond) }
+				got, err := readWithin(ctx, r, 1<<20)
+				cancel()
+				if c.read && err != nil {
+					t.Fatalf("run %d: a read that ended before the cutoff was refused: %v", i, err)
+				}
+				if !c.read && err == nil {
+					t.Fatalf("run %d: a read that ended after the cutoff was taken: %q", i, string(got))
+				}
+			}
+		})
+	}
+}
+
 // The cutoff for a request still being read is an instant -- the deadline
 // the context declares, plus the wait past it -- and not a wait that begins
 // wherever the deadline was noticed. A read that ended at or before that
@@ -49,10 +108,12 @@ func TestBoundsRequestReadIsDecidedByAnInstant(t *testing.T) {
 			ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-c.deadline))
 			defer cancel()
 			r := &boundsHeldReader{release: make(chan struct{}), data: "hello"}
-			go func() {
-				time.Sleep(c.release)
-				close(r.release)
-			}()
+			// The read ends when the test says so, and the wait is held until
+			// it has: neither side of the cutoff is left to the scheduler.
+			timer := time.AfterFunc(c.release, func() { close(r.release) })
+			defer timer.Stop()
+			readWaiting = func() { time.Sleep(c.release + 40*time.Millisecond) }
+			defer func() { readWaiting = nil }()
 			started := time.Now()
 			got, err := readWithin(ctx, r, 1<<20)
 			took := time.Since(started)
@@ -76,6 +137,10 @@ func TestBoundsRequestReadIsDecidedByAnInstant(t *testing.T) {
 func TestBoundsRequestAlreadyThereIsRead(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
 	defer cancel()
+	// The wait is held until the read of bytes that are there has delivered,
+	// so that what is established is the rule and not the scheduling.
+	defer func(saved func()) { readWaiting = saved }(readWaiting)
+	readWaiting = func() { time.Sleep(20 * time.Millisecond) }
 	started := time.Now()
 	got, err := readWithin(ctx, strings.NewReader("hello"), 1<<20)
 	if err != nil || string(got) != "hello" {

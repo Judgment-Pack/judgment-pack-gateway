@@ -663,8 +663,12 @@ func (it *interp) noteStreamError(err error) {
 // is an error: the content after it cannot be found.
 func (it *interp) skipInlineImage(lex *lexer) error {
 	data := lex.data
-	// Find "ID" as a token.
-	p := &parser{lex: lex, contentMode: true}
+	// Find "ID" as a token. The dictionary's values are read and dropped, so
+	// they are built within what the page's operands may still hold and
+	// charged to an allowance of their own: what is dropped is not held, and
+	// what would be past the bound is never built.
+	room := &allowance{left: maxOperandBytes - it.operandBytes, past: errOperandBudget}
+	p := &parser{lex: lex, contentMode: true, allow: room}
 	for objects := 0; ; objects++ {
 		if objects > 2*maxOperands {
 			return structureBound("an inline image's dictionary past %d objects", 2*maxOperands)

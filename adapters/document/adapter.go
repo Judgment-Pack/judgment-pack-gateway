@@ -272,8 +272,18 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	}
 	wait := time.NewTimer(time.Until(cutoff))
 	defer wait.Stop()
+	if readWaiting != nil {
+		readWaiting()
+	}
+	// Every result is judged by the instant it ended, wherever it is
+	// received: a read and the cutoff may both be ready here, and which of
+	// them this select offers first must not decide whether the request was
+	// read.
 	select {
 	case got := <-done:
+		if !readTaken(got.at, cutoff) {
+			return nil, errRequestNotRead
+		}
 		return got.data, got.err
 	case <-wait.C:
 	}
@@ -289,6 +299,12 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 		return nil, errRequestNotRead
 	}
 }
+
+// readWaiting is called once the wait for the request has been armed and
+// before either outcome is taken. It is nil in the adapter, and a test sets
+// it to hold the reader there until a read and the cutoff are both ready,
+// which is the moment the two are decided between.
+var readWaiting func()
 
 // readTaken reports whether a read that ended at an instant is the request:
 // one that ended at or before the cutoff is, and one that ended after it is
