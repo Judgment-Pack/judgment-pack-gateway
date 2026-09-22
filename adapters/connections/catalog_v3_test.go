@@ -10,7 +10,7 @@ import (
 
 func TestV3CatalogIsCompleteLocalizedAndMatchesLocalPlan(t *testing.T) {
 	catalog := ConnectionCatalogV3()
-	if catalog.Version != 3 || len(catalog.Providers) != 4 {
+	if catalog.Version != 3 || len(catalog.Providers) != 5 {
 		t.Fatal("wrong catalog")
 	}
 	plan := ConnectionLocalPlan()

@@ -38,6 +38,9 @@ func ConnectionCatalog() Catalog {
 }
 
 func LookupProvider(id string) (Descriptor, bool) {
+	if id == "aws-s3" {
+		return s3Descriptor(), true
+	}
 	for _, provider := range ConnectionCatalog().Providers {
 		if provider.ID == id {
 			return provider, true

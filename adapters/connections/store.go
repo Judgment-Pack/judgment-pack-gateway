@@ -87,6 +87,7 @@ type state struct {
 	Disabled   bool        `json:"disabled"`
 	Redirect   string      `json:"redirect,omitempty"`
 	Vault      string      `json:"vault,omitempty"`
+	S3         *s3Config   `json:"s3,omitempty"`
 }
 type Store struct{ root *os.Root }
 
@@ -211,9 +212,10 @@ func (s *Store) locked(fn func(*state) error) error {
 }
 
 type grant struct {
-	Connection string `json:"connection"`
-	File       string `json:"file"`
-	Expires    int64  `json:"expires"`
+	Connection string    `json:"connection"`
+	File       string    `json:"file"`
+	Expires    int64     `json:"expires"`
+	S3         *s3Object `json:"s3,omitempty"`
 }
 
 func (s *Store) makeGrants(c string, ids []string) ([]Selection, error) {
@@ -252,7 +254,7 @@ func (s *Store) makeGrants(c string, ids []string) ([]Selection, error) {
 	out := make([]Selection, 0, len(ids))
 	for _, id := range ids {
 		token := randomID()
-		if err := s.write("grant-"+token, grant{c, id, time.Now().Add(5 * time.Minute).Unix()}); err != nil {
+		if err := s.write("grant-"+token, grant{Connection: c, File: id, Expires: time.Now().Add(5 * time.Minute).Unix()}); err != nil {
 			return nil, err
 		}
 		out = append(out, Selection{FileID: id, Grant: token})

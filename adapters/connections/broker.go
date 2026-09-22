@@ -101,6 +101,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if b.provider.obsidian {
 		return b.vaultOperation(ctx, method, raw)
 	}
+	if b.provider.s3 {
+		return b.s3Operation(ctx, method, raw)
+	}
 	switch method {
 	case "status":
 		var empty struct{}

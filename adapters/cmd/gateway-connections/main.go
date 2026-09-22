@@ -61,6 +61,9 @@ func run() int {
 	if *provider == "obsidian" {
 		open = connections.OpenObsidianStore
 	}
+	if *provider == "aws-s3" {
+		open = connections.OpenS3Store
+	}
 	s, err := open(*dir, *principal)
 	if err != nil {
 		return 1
@@ -80,6 +83,9 @@ func run() int {
 	}
 	if *provider == "obsidian" {
 		b = connections.NewObsidian(s, *disabled)
+	}
+	if *provider == "aws-s3" {
+		b = connections.NewS3(s, *disabled)
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)

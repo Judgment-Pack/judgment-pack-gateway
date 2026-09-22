@@ -1,0 +1,31 @@
+[
+  {
+    "guard": "grant-epoch",
+    "caught": true
+  },
+  {
+    "guard": "grant-expiry",
+    "caught": true
+  },
+  {
+    "guard": "cursor-query",
+    "caught": true
+  },
+  {
+    "guard": "conditional-header",
+    "caught": true
+  },
+  {
+    "guard": "single-use",
+    "caught": true
+  },
+  {
+    "guard": "null-version",
+    "caught": true
+  },
+  {
+    "guard": "after-fetch-disconnect",
+    "caught": true,
+    "failureKind": "runtime panic after removing the disconnect state guard"
+  }
+]

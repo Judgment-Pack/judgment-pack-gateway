@@ -70,6 +70,7 @@ func ConnectionCatalogV3() CatalogV3 {
 		}
 		out.Providers = append(out.Providers, d)
 	}
+	out.Providers = append(out.Providers, s3Catalog(presentation))
 	return out
 }
 
@@ -96,5 +97,6 @@ func ConnectionLocalPlan() LocalPlan {
 		{"notion", "adapter-sources", []string{"--provider", "notion", "--principal", "desk-local"}, "mcp", 60, true},
 		{"obsidian", "adapter-sources", []string{"--provider", "obsidian", "--principal", "desk-local"}, "command", 60, true},
 		{"web", "adapter-web", []string{}, "http", 60, false},
+		{"aws-s3", "adapter-sources", []string{"--provider", "aws-s3", "--principal", "desk-local"}, "command", 60, true},
 	}}
 }
