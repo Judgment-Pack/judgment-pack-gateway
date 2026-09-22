@@ -6,6 +6,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash"
+	"hash/adler32"
 	"io"
 )
 
@@ -84,6 +86,44 @@ var (
 	errInflateBound      = errors.New("stream inflates past the bound")
 	errUnsupportedFilter = errors.New("unsupported filter")
 )
+
+// charged is a decoder's output that is charged to the budget and kept
+// nowhere: what an inline image decodes to is not the page's text, and the
+// reader decodes it only to learn how many of its bytes the encoding took.
+// The checksum of what passed through is kept, since a zlib stream ends with
+// the checksum of what it decodes to and the reader has decoded it.
+type charged struct {
+	budget *inflateBudget
+	limit  int64
+	held   int64
+	sum    hash.Hash32
+}
+
+// discard begins an output that is charged and dropped, with the bound the
+// budget gives any other output.
+func (b *inflateBudget) discard() (*charged, error) {
+	limit := b.one
+	if remaining := b.total - b.used; remaining < limit {
+		limit = remaining
+	}
+	if limit <= 0 {
+		return nil, errInflateBound
+	}
+	return &charged{budget: b, limit: limit, sum: adler32.New()}, nil
+}
+
+func (c *charged) Write(p []byte) (int, error) {
+	room := c.limit - c.held
+	if int64(len(p)) > room {
+		c.budget.used += room
+		c.held = c.limit
+		return 0, errInflateBound
+	}
+	c.budget.used += int64(len(p))
+	c.held += int64(len(p))
+	c.sum.Write(p)
+	return len(p), nil
+}
 
 // filterSpec is one filter and its parameters.
 type filterSpec struct {
@@ -255,31 +295,37 @@ func (d *Document) inflate(data []byte) ([]byte, error) {
 // with early code-length change by default), which the standard library's
 // compress/lzw does not.
 func (d *Document) lzwDecode(data []byte, early bool) ([]byte, error) {
-	out, _, err := d.lzwDecodeConsumed(data, early)
-	return out, err
-}
-
-// lzwDecodeConsumed is lzwDecode, reporting as well how many bytes of data
-// the codes it read took: the end-of-data code lies inside the last of them,
-// and a caller looking for where the stream ends -- an inline image's, whose
-// length nothing else states -- needs the byte after it.
-func (d *Document) lzwDecodeConsumed(data []byte, early bool) ([]byte, int, error) {
 	out, err := d.budget.output(len(data) * 2)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
+	if _, _, err := d.lzwDecodeTo(data, early, out); err != nil {
+		return nil, err
+	}
+	return out.buf, nil
+}
+
+// lzwDecodeTo decodes the codes of data into out, and reports how many bytes
+// of data they took and whether the end-of-data code ended them. Data that
+// runs out before that code ends where it ends, which a stream may do and the
+// end of an inline image may not: the caller is told which happened. The
+// deadline is read as the codes are, on the cadence the package reads it at,
+// since a stream of clear codes produces nothing to charge and would
+// otherwise run to the end of what it was given.
+func (d *Document) lzwDecodeTo(data []byte, early bool, out io.Writer) (consumed int, ended bool, err error) {
 	const (
 		clearCode = 256
 		eodCode   = 257
 	)
+	// The literals stand for themselves whatever the table holds: a clear
+	// code resets what was learnt after them, and does not build them again.
 	dict := make([][]byte, 4096)
-	reset := func() int {
-		for i := 0; i < 256; i++ {
-			dict[i] = []byte{byte(i)}
-		}
-		return 258
+	literals := make([]byte, 256)
+	for i := range literals {
+		literals[i] = byte(i)
+		dict[i] = literals[i : i+1 : i+1]
 	}
-	next := reset()
+	next := 258
 	codeLen := 9
 	var prev []byte
 	var bitBuf uint32
@@ -290,9 +336,12 @@ func (d *Document) lzwDecodeConsumed(data []byte, early bool) ([]byte, int, erro
 		earlyDelta = 1
 	}
 	for {
+		if d.deadlinePassed() {
+			return pos, false, d.deadline()
+		}
 		for bitCount < codeLen {
 			if pos >= len(data) {
-				return out.buf, pos, nil
+				return pos, false, nil
 			}
 			bitBuf = bitBuf<<8 | uint32(data[pos])
 			pos++
@@ -302,12 +351,12 @@ func (d *Document) lzwDecodeConsumed(data []byte, early bool) ([]byte, int, erro
 		bitCount -= codeLen
 		switch {
 		case code == clearCode:
-			next = reset()
+			next = 258
 			codeLen = 9
 			prev = nil
 			continue
 		case code == eodCode:
-			return out.buf, pos, nil
+			return pos, true, nil
 		}
 		var entry []byte
 		switch {
@@ -316,10 +365,10 @@ func (d *Document) lzwDecodeConsumed(data []byte, early bool) ([]byte, int, erro
 		case code == next && prev != nil:
 			entry = append(append([]byte{}, prev...), prev[0])
 		default:
-			return nil, 0, malformed("LZWDecode: code %d outside the table", code)
+			return pos, false, malformed("LZWDecode: code %d outside the table", code)
 		}
 		if _, err := out.Write(entry); err != nil {
-			return nil, 0, err
+			return pos, false, err
 		}
 		if prev != nil && next < 4096 {
 			dict[next] = append(append([]byte{}, prev...), entry[0])
@@ -597,42 +646,41 @@ func abs(x int) int {
 // declaration is one reading of the page rather than the page -- so for an
 // image a filter encodes the reader asks the filter: every filter framed
 // below ends its data where every decoder of it stops, and that is where the
-// image ends. Nothing of what such an image shows is kept -- the reader
-// decodes an inline image only to learn where the content after it resumes --
-// but what a decode produces is charged to the document's inflate budget as
-// any stream's output is, and the input is bounded by the caller, which hands
-// over at most the bytes one inline image may hold.
+// image ends. What a framing decodes is charged to the document's inflate
+// budget and dropped, the reader wanting the offset and not the picture; the
+// input is bounded by the caller, which hands over at most the bytes one
+// inline image may hold; and the deadline is read as the work goes, since a
+// stream that decodes to nothing is still a stream to walk.
+//
+// The filters an inline image may declare are the seven Table 93 abbreviates
+// -- ASCIIHexDecode, ASCII85Decode, LZWDecode, FlateDecode, RunLengthDecode,
+// CCITTFaxDecode and DCTDecode. JBIG2Decode and JPXDecode are not among them
+// and are not framed here: an inline image encoded by one is an image no
+// conforming reading of the page establishes an end for.
 
-// errFilterNotFramed is a filter whose framing this reader does not read. It
-// is told from a framing that met a bound or found no end: those are the
-// image's defect, reported on the page, and this one is the reader's reach.
+// errFilterNotFramed is a filter whose data this reader does not frame. It is
+// told from a framing that met a bound or found no end: those are the image's
+// defect, reported on the page, and this one is the reader's reach.
 var errFilterNotFramed = errors.New("the reader does not frame this filter's data")
 
 // errFilterUnended is encoded data that does not end within what the reader
-// may read of one inline image.
+// was given.
 var errFilterUnended = errors.New("the encoded data of an inline image does not end")
 
-// filterFraming is where the data of a stream encoded by the filter named
-// ends, as offsets into data at which its end may lie. errFilterNotFramed
-// says the reader does not frame this filter, errFilterUnended that the data
-// holds no end of its own, and any other error is a bound met while framing,
-// which is the page's problem and not a reason to read the image some other
+// filterFraming is the offset at which the data of a stream encoded by the
+// filter named ends. errFilterNotFramed says the reader does not frame this
+// filter, errFilterUnended that the data holds no end within what it was
+// given, and any other error is the encoding's own defect or a bound met
+// framing it -- the page's problem, and no reason to read the image another
 // way.
-func (d *Document) filterFraming(filter Name, parms object, data []byte) ([]int, error) {
+func (d *Document) filterFraming(filter Name, parms object, data []byte) (int, error) {
 	switch filter {
 	case "AHx", "ASCIIHexDecode":
-		// The end-of-data marker of 7.4.2.
-		if i := bytes.IndexByte(data, '>'); i >= 0 {
-			return []int{i + 1}, nil
-		}
+		return asciiHexFraming(data)
 	case "A85", "ASCII85Decode":
-		if i := bytes.Index(data, []byte("~>")); i >= 0 {
-			return []int{i + 2}, nil
-		}
+		return ascii85Framing(data)
 	case "RL", "RunLengthDecode":
-		if n := runLengthFraming(data); n >= 0 {
-			return []int{n}, nil
-		}
+		return runLengthFraming(data)
 	case "Fl", "FlateDecode":
 		return d.flateFraming(data)
 	case "LZW", "LZWDecode":
@@ -642,274 +690,13 @@ func (d *Document) filterFraming(filter Name, parms object, data []byte) ([]int,
 				early = v != 0
 			}
 		}
-		_, n, err := d.lzwDecodeConsumed(data, early)
-		if err != nil {
-			return nil, err
-		}
-		if n > 0 {
-			return []int{n}, nil
-		}
+		return d.lzwFraming(data, early)
 	case "DCT", "DCTDecode":
-		if n := jpegFraming(data); n > 0 {
-			return []int{n}, nil
-		}
+		return jpegFraming(data)
 	case "CCF", "CCITTFaxDecode":
 		return ccittFraming(d, firstParms(parms), data)
-	case "JBIG2Decode":
-		if n := jbig2Framing(data); n > 0 {
-			return []int{n}, nil
-		}
-	case "JPXDecode":
-		if n := jpxFraming(data); n > 0 {
-			return []int{n}, nil
-		}
-	default:
-		return nil, errFilterNotFramed
 	}
-	return nil, errFilterUnended
-}
-
-// ccittFraming is where Group 3 or Group 4 fax data ends: at the
-// end-of-facsimile-block of T.6 -- two end-of-line codes -- or the
-// return-to-control of T.4, six of them. An end-of-line is eleven zero bits
-// and a one, which no sequence of the codes either standard defines can hold,
-// so the run of zeros finds it wherever it begins; fill bits before one are
-// zeros and are counted with it, and a stream written with /EncodedByteAlign
-// puts its end-of-lines on byte boundaries, which the run finds as readily.
-// Data whose /DecodeParms turns the end-of-block off carries no end of its
-// own: the reader does not frame it.
-func ccittFraming(d *Document, parms object, data []byte) ([]int, error) {
-	k := int64(0)
-	if p := d.dictOf(parms); p != nil {
-		if v, ok := d.intOf(p["EndOfBlock"]); ok && v == 0 {
-			return nil, errFilterNotFramed
-		}
-		if v, ok := p["EndOfBlock"].(bool); ok && !v {
-			return nil, errFilterNotFramed
-		}
-		if v, ok := d.intOf(p["K"]); ok {
-			k = v
-		}
-	}
-	// T.6 ends a block with two end-of-lines; T.4 with six.
-	need := 2
-	if k >= 0 {
-		need = 6
-	}
-	zeros, seen := 0, 0
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-		if b == 0 {
-			zeros += 8
-			continue
-		}
-		for bit := 7; bit >= 0; bit-- {
-			if b&(1<<uint(bit)) == 0 {
-				zeros++
-				continue
-			}
-			if zeros >= 11 {
-				seen++
-				// The bits through this one, and the tag bit that follows an
-				// end-of-line where the data mixes one- and two-dimensional
-				// rows.
-				through := i*8 + (8 - bit)
-				if k > 0 {
-					through++
-				}
-				if seen >= need {
-					end := (through + 7) / 8
-					if end > len(data) {
-						end = len(data)
-					}
-					return []int{end}, nil
-				}
-			} else {
-				seen = 0
-			}
-			zeros = 0
-		}
-	}
-	return nil, errFilterUnended
-}
-
-// maxJBIG2Segments bounds the segments the reader walks to the end of an
-// embedded JBIG2 image.
-const maxJBIG2Segments = 1 << 16
-
-// jbig2Framing is where an embedded JBIG2 image ends: the segment headers of
-// 7.2 of ISO 14492 each state their data length, and the image ends after the
-// last segment whose header the data holds whole. A segment whose length is
-// unknown -- the four bytes all ones -- states no end, and nothing after it is
-// walked.
-func jbig2Framing(data []byte) int {
-	at, segments := 0, 0
-	for at < len(data) {
-		next, ok := jbig2Segment(data, at)
-		if !ok {
-			break
-		}
-		at = next
-		segments++
-		if segments > maxJBIG2Segments {
-			return -1
-		}
-	}
-	if segments == 0 {
-		return -1
-	}
-	return at
-}
-
-// jbig2Segment is the offset after the segment whose header begins at at, or
-// ok false where the data does not hold that segment whole.
-func jbig2Segment(data []byte, at int) (int, bool) {
-	read32 := func(i int) (uint32, bool) {
-		if i < 0 || i+4 > len(data) {
-			return 0, false
-		}
-		return uint32(data[i])<<24 | uint32(data[i+1])<<16 | uint32(data[i+2])<<8 | uint32(data[i+3]), true
-	}
-	number, ok := read32(at)
-	if !ok || at+5 > len(data) {
-		return 0, false
-	}
-	flags := data[at+4]
-	i := at + 5
-	// The referred-to segments: a count in the top three bits of the next
-	// byte, or, where those are all ones, a four-byte count and a bit for
-	// each segment referred to.
-	if i >= len(data) {
-		return 0, false
-	}
-	count := int(data[i] >> 5)
-	if count == 7 {
-		long, ok := read32(i)
-		if !ok {
-			return 0, false
-		}
-		count = int(long & 0x1FFFFFFF)
-		if count < 0 || count > maxJBIG2Segments {
-			return 0, false
-		}
-		i += 4 + (count+8)/8
-	} else {
-		i++
-	}
-	// Each referred-to segment is named in as many bytes as this segment's
-	// own number needs.
-	width := 1
-	switch {
-	case number > 65536:
-		width = 4
-	case number > 256:
-		width = 2
-	}
-	i += count * width
-	// The page this segment belongs to, in one byte or four.
-	if flags&0x40 != 0 {
-		i += 4
-	} else {
-		i++
-	}
-	length, ok := read32(i)
-	if !ok {
-		return 0, false
-	}
-	i += 4
-	if length == 0xFFFFFFFF {
-		return 0, false
-	}
-	end := int64(i) + int64(length)
-	if end > int64(len(data)) {
-		return 0, false
-	}
-	return int(end), true
-}
-
-// jpxFraming is where a JPEG 2000 image ends: a JP2 file is boxes that state
-// their own lengths, and a raw codestream runs from its start-of-codestream
-// marker to its end-of-codestream, its marker segments and tile-parts stating
-// theirs. Either is walked to its end; a box or a tile-part that states no
-// length states no end.
-func jpxFraming(data []byte) int {
-	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0x4F {
-		return jpxCodestream(data)
-	}
-	at, boxes := 0, 0
-	for at+8 <= len(data) {
-		length := int64(data[at])<<24 | int64(data[at+1])<<16 | int64(data[at+2])<<8 | int64(data[at+3])
-		header := int64(8)
-		if length == 1 {
-			// An extended length, in the eight bytes after the type.
-			if at+16 > len(data) {
-				return -1
-			}
-			length = 0
-			for i := at + 8; i < at+16; i++ {
-				length = length<<8 | int64(data[i])
-			}
-			header = 16
-		}
-		if length < header {
-			// A box that runs to the end of the file states no end of its own.
-			return -1
-		}
-		end := int64(at) + length
-		if end > int64(len(data)) {
-			return -1
-		}
-		at, boxes = int(end), boxes+1
-	}
-	if boxes == 0 {
-		return -1
-	}
-	return at
-}
-
-// jpxCodestream walks the markers of a raw JPEG 2000 codestream to its
-// end-of-codestream marker.
-func jpxCodestream(data []byte) int {
-	at := 2
-	for at+2 <= len(data) {
-		if data[at] != 0xFF {
-			return -1
-		}
-		marker := data[at+1]
-		switch {
-		case marker == 0xD9:
-			return at + 2
-		case marker == 0x4F || (marker >= 0x30 && marker <= 0x3F):
-			at += 2
-			continue
-		}
-		if at+4 > len(data) {
-			return -1
-		}
-		length := int(data[at+2])<<8 | int(data[at+3])
-		if length < 2 {
-			return -1
-		}
-		if marker == 0x90 {
-			// A tile-part: its header states the bytes the whole of it takes,
-			// from this marker to the next.
-			if at+10 > len(data) {
-				return -1
-			}
-			psot := int64(data[at+6])<<24 | int64(data[at+7])<<16 | int64(data[at+8])<<8 | int64(data[at+9])
-			if psot < int64(length)+2 {
-				return -1
-			}
-			end := int64(at) + psot
-			if end > int64(len(data)) {
-				return -1
-			}
-			at = int(end)
-			continue
-		}
-		at += 2 + length
-	}
-	return -1
+	return 0, errFilterNotFramed
 }
 
 // firstParms is the decode parameters of the first filter, which a stream
@@ -924,84 +711,284 @@ func firstParms(parms object) object {
 	return parms
 }
 
-// runLengthFraming is where run-length encoded data ends: at the end-of-data
-// byte, 128. It reads the length of each run and not the run, so nothing of
-// the image is held.
-func runLengthFraming(data []byte) int {
+// asciiHexFraming is where hexadecimal data ends: at the '>' of 7.4.2. The
+// bytes before it are hexadecimal digits and white space and nothing else --
+// a byte outside the encoding is no ASCIIHexDecode data, and where such an
+// image ends is not something the file establishes.
+func asciiHexFraming(data []byte) (int, error) {
+	for i, c := range data {
+		switch {
+		case c == '>':
+			return i + 1, nil
+		case isWhitespace(c):
+		default:
+			if _, ok := hexValue(c); !ok {
+				return 0, malformed("ASCIIHexDecode: a byte outside the encoding")
+			}
+		}
+	}
+	return 0, errFilterUnended
+}
+
+// ascii85Framing is where base-85 data ends: at the "~>" of 7.4.3. What
+// stands before it is the encoding's own alphabet, in groups of five: 'z'
+// stands for a whole group of zeros and only between groups, white space
+// falls anywhere, a group of five encodes a number no larger than a
+// four-byte word, and a final group of one character encodes nothing.
+func ascii85Framing(data []byte) (int, error) {
+	at := 0
+	if bytes.HasPrefix(data, []byte("<~")) {
+		at = 2
+	}
+	group, value := 0, uint64(0)
+	for i := at; i < len(data); i++ {
+		c := data[i]
+		switch {
+		case c == '~':
+			if i+1 >= len(data) || data[i+1] != '>' {
+				return 0, malformed("ASCII85Decode: a tilde that ends nothing")
+			}
+			if group == 1 {
+				return 0, malformed("ASCII85Decode: a final group of one character")
+			}
+			return i + 2, nil
+		case c <= ' ':
+		case c == 'z':
+			if group != 0 {
+				return 0, malformed("ASCII85Decode: a z inside a group")
+			}
+		case '!' <= c && c <= 'u':
+			value = value*85 + uint64(c-'!')
+			group++
+			if group == 5 {
+				if value > 0xFFFFFFFF {
+					return 0, malformed("ASCII85Decode: a group past the largest word")
+				}
+				group, value = 0, 0
+			}
+		default:
+			return 0, malformed("ASCII85Decode: a byte outside the encoding")
+		}
+	}
+	return 0, errFilterUnended
+}
+
+// runLengthFraming is where run-length encoded data ends: at the
+// end-of-data byte, 128. It reads the length of each run and not the run, so
+// nothing of the image is held.
+func runLengthFraming(data []byte) (int, error) {
 	for i := 0; i < len(data); {
 		l := int(data[i])
 		i++
 		switch {
 		case l == 128:
-			return i
+			return i, nil
 		case l < 128:
 			i += l + 1
 		default:
 			i++
 		}
 	}
-	return -1
+	return 0, errFilterUnended
 }
 
-// flateFraming is where a deflate stream at the head of data ends: after the
-// Adler-32 checksum that closes a zlib stream, and at the end of the deflate
-// data itself for data that carries no checksum -- a writer that left it out
-// is common damage, and either is an end the reader will take, the complete
-// stream first.
-func (d *Document) flateFraming(data []byte) ([]int, error) {
-	head := 0
-	if zlibHeader(data) {
-		head = 2
+// flateFraming is where a zlib stream ends: its two header bytes, the deflate
+// data through its final block, and the four bytes of the Adler-32 checksum
+// of what it decodes to, which the reader has decoded and so can check. PDF's
+// FlateDecode is that whole wrapper (Table 6): data with no header, with no
+// checksum, or with one that is not the checksum of the data is not a stream
+// this reader can say the end of.
+func (d *Document) flateFraming(data []byte) (int, error) {
+	if !zlibHeader(data) {
+		return 0, malformed("FlateDecode: no zlib header")
 	}
-	n, err := d.deflateConsumed(data[head:])
-	if err != nil {
-		return nil, err
-	}
-	if head == 2 {
-		return []int{head + n + 4, head + n}, nil
-	}
-	return []int{n}, nil
-}
-
-// deflateConsumed reads the deflate data at the head of data to the end of its
-// final block, and reports how many bytes of data that took. The bytes it
-// decodes to are charged to the inflate budget and dropped. A budget met
-// while it reads is returned as it is -- it is the page's problem, and the
-// image's end stays unknown -- and data that is not deflate data, or ends
-// inside its final block, holds no end of its own.
-func (d *Document) deflateConsumed(data []byte) (int, error) {
-	out, err := d.budget.output(0)
+	n, sum, err := d.deflateConsumed(data[2:])
 	if err != nil {
 		return 0, err
 	}
-	// A bytes.Reader reads one byte at a time when the decompressor asks for
-	// one, so what it has left is what the deflate data did not take.
-	left := bytes.NewReader(data)
+	end := 2 + n + 4
+	if end > len(data) {
+		return 0, errFilterUnended
+	}
+	if declared := binary.BigEndian.Uint32(data[2+n : end]); declared != sum {
+		return 0, malformed("FlateDecode: the checksum is not the checksum of the data")
+	}
+	return end, nil
+}
+
+// deflateConsumed reads the deflate data at the head of data to the end of its
+// final block, and reports how many bytes of data that took and the Adler-32
+// checksum of what it decoded to. What it decodes is charged to the inflate
+// budget and dropped. A budget met while it reads is returned as it is -- it
+// is the page's problem, and the image's end stays unknown -- and data that
+// is not deflate data, or ends inside its final block, holds no end of its
+// own. The deadline is read as the input is, so that blocks decoding to
+// nothing do not run past it.
+func (d *Document) deflateConsumed(data []byte) (int, uint32, error) {
+	out, err := d.budget.discard()
+	if err != nil {
+		return 0, 0, err
+	}
+	left := &deadlineBytes{d: d, r: bytes.NewReader(data)}
 	fr := flate.NewReader(left)
 	defer fr.Close()
 	if _, err := io.Copy(out, fr); err != nil {
-		if errors.Is(err, errInflateBound) {
-			return 0, err
+		switch {
+		case errors.Is(err, errInflateBound), isDeadline(err):
+			return 0, 0, err
 		}
+		return 0, 0, errFilterUnended
+	}
+	return len(data) - left.r.Len(), out.sum.Sum32(), nil
+}
+
+// deadlineBytes is the bytes a decoder reads, with the deadline read on the
+// cadence the package reads it at: a decoder that produces nothing charges
+// nothing, and would otherwise walk to the end of what it was given whatever
+// the clock says.
+type deadlineBytes struct {
+	d *Document
+	r *bytes.Reader
+}
+
+func (b *deadlineBytes) Read(p []byte) (int, error) {
+	if b.d.deadlinePassed() {
+		return 0, b.d.deadline()
+	}
+	return b.r.Read(p)
+}
+
+func (b *deadlineBytes) ReadByte() (byte, error) {
+	if b.d.deadlinePassed() {
+		return 0, b.d.deadline()
+	}
+	return b.r.ReadByte()
+}
+
+// lzwFraming is where LZW data ends: after the end-of-data code, 257. Data
+// that runs out before that code is data whose end the reader has not seen --
+// the bytes it was given are all it may read of the image, and the code that
+// ends the stream may lie past them.
+func (d *Document) lzwFraming(data []byte, early bool) (int, error) {
+	out, err := d.budget.discard()
+	if err != nil {
+		return 0, err
+	}
+	consumed, ended, err := d.lzwDecodeTo(data, early, out)
+	switch {
+	case err != nil:
+		return 0, err
+	case !ended:
 		return 0, errFilterUnended
 	}
-	return len(data) - left.Len(), nil
+	return consumed, nil
+}
+
+// ccittFraming is where Group 3 or Group 4 fax data ends: at the
+// end-of-facsimile-block of T.6 -- two end-of-line codes -- or the
+// return-to-control of T.4, six of them. An end-of-line is eleven zero bits
+// and a one, which no concatenation of the codes either standard defines can
+// hold, so a run of eleven zeros in valid coded data is an end-of-line
+// wherever it begins, and the fill bits a writer may put before one are zeros
+// counted with it. Where rows may be one- or two-dimensional a tag bit
+// follows each end-of-line and belongs to it.
+//
+// Two shapes are not framed. Data whose /DecodeParms turns the end-of-block
+// off carries no end of its own. And data written with /EncodedByteAlign
+// begins each row on a byte boundary, so the fill zeros before a row and the
+// leading zeros of the codeword after them make eleven zeros and a one at a
+// row boundary: a run there is a row and not an end-of-line, and telling them
+// apart means decoding the rows, which this reader does not do.
+func ccittFraming(d *Document, parms object, data []byte) (int, error) {
+	k := int64(0)
+	if p := d.dictOf(parms); p != nil {
+		if v, ok := p["EndOfBlock"].(bool); ok && !v {
+			return 0, errFilterNotFramed
+		}
+		if v, ok := d.intOf(p["EndOfBlock"]); ok && v == 0 {
+			return 0, errFilterNotFramed
+		}
+		if v, ok := p["EncodedByteAlign"].(bool); ok && v {
+			return 0, errFilterNotFramed
+		}
+		if v, ok := d.intOf(p["EncodedByteAlign"]); ok && v != 0 {
+			return 0, errFilterNotFramed
+		}
+		if v, ok := d.intOf(p["K"]); ok {
+			k = v
+		}
+	}
+	// T.6 ends a block with two end-of-lines; T.4 with six.
+	need := 2
+	if k >= 0 {
+		need = 6
+	}
+	zeros, seen, tagged := 0, 0, false
+	for at := 0; at < len(data)*8; at++ {
+		if !tagged && at%8 == 0 && data[at/8] == 0 {
+			zeros += 8
+			at += 7
+			continue
+		}
+		one := data[at/8]&(1<<uint(7-at%8)) != 0
+		if tagged {
+			// The bit after an end-of-line where rows may be one- or
+			// two-dimensional: it says which this row is, and is consumed
+			// with the end-of-line rather than breaking the run of them.
+			tagged, zeros = false, 0
+			if seen >= need {
+				return byteOf(at, len(data)), nil
+			}
+			continue
+		}
+		if !one {
+			zeros++
+			continue
+		}
+		if zeros >= 11 {
+			seen++
+			zeros = 0
+			if k > 0 {
+				tagged = true
+				continue
+			}
+			if seen >= need {
+				return byteOf(at, len(data)), nil
+			}
+			continue
+		}
+		seen, zeros = 0, 0
+	}
+	return 0, errFilterUnended
+}
+
+// byteOf is the offset after the byte the bit at lies in, bounded by what the
+// reader was given: fax data ends on a byte boundary whatever bit its last
+// end-of-line ends on.
+func byteOf(at, length int) int {
+	end := (at + 1 + 7) / 8
+	if end > length {
+		end = length
+	}
+	return end
 }
 
 // jpegFraming is where a JPEG ends: at its end-of-image marker, found by
 // walking the markers of the file. Nothing is decoded -- the reader needs
-// where the image ends, not what it shows. Entropy-coded data holds bytes
-// that read as markers and are not: FF 00 is a sample byte and FF D0 to FF D7
-// are restarts, so that data is walked to the next marker that is one.
-func jpegFraming(data []byte) int {
+// where the image ends, not what it shows, and an image whose entropy-coded
+// data holds no block still ends at its end-of-image. Entropy-coded data
+// holds bytes that read as markers and are not: FF 00 is a sample byte and
+// FF D0 to FF D7 are restarts, so that data is walked to the next marker that
+// is one.
+func jpegFraming(data []byte) (int, error) {
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
-		return -1
+		return 0, malformed("DCTDecode: no start-of-image marker")
 	}
 	for i := 2; i+1 < len(data); {
 		if data[i] != 0xFF {
 			// Not where a marker begins: the file is not one this reader can
 			// walk, and it says so rather than guessing at an end.
-			return -1
+			return 0, malformed("DCTDecode: a marker was expected")
 		}
 		marker := data[i+1]
 		switch {
@@ -1010,18 +997,18 @@ func jpegFraming(data []byte) int {
 			i++
 			continue
 		case marker == 0xD9:
-			return i + 2
+			return i + 2, nil
 		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD7):
 			// Markers that carry no segment.
 			i += 2
 			continue
 		}
 		if i+3 >= len(data) {
-			return -1
+			return 0, errFilterUnended
 		}
 		length := int(data[i+2])<<8 | int(data[i+3])
 		if length < 2 {
-			return -1
+			return 0, malformed("DCTDecode: a segment shorter than its own length")
 		}
 		i += 2 + length
 		if marker != 0xDA {
@@ -1036,5 +1023,5 @@ func jpegFraming(data []byte) int {
 			i++
 		}
 	}
-	return -1
+	return 0, errFilterUnended
 }

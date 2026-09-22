@@ -244,6 +244,11 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 	if f, ok := it.fonts[string(name)]; ok {
 		return f
 	}
+	// The cross-reference this lookup stands on, read before the resources or
+	// the font are resolved: resolving either may rebuild it, and a font
+	// built from the objects the old one named is held by neither the old
+	// document nor the new.
+	generation := it.d.generation
 	fonts := it.d.dictOf(resources["Font"])
 	var f *font
 	if fonts != nil {
@@ -251,11 +256,7 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 			if cached, ok := it.d.fontRefs[r]; ok {
 				f = cached
 			} else if dict := it.d.dictOf(r); dict != nil {
-				// Building a font reads the objects it names, one of which
-				// may rebuild the cross-reference: a font built partly under
-				// each is held by neither, and the reading is begun again.
-				generation := it.d.generation
-				f = it.d.loadFont(dict)
+				f = it.d.loadFont(dict, generation)
 				if it.d.generation == generation && len(it.d.fontRefs) < maxFontCacheEntries {
 					if it.d.fontRefs == nil {
 						it.d.fontRefs = map[ref]*font{}
@@ -264,7 +265,7 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 				}
 			}
 		} else if dict := it.d.dictOf(fonts[name]); dict != nil {
-			f = it.d.loadFont(dict)
+			f = it.d.loadFont(dict, generation)
 		}
 	}
 	if f == nil {
@@ -635,7 +636,13 @@ func (it *interp) skipInlineImage(lex *lexer, resources Dict) error {
 	}
 	data := lex.data
 	start := lex.pos
+	// One white-space byte stands between ID and the data, and a carriage
+	// return and a line feed are one end-of-line marker (7.2.3), not one
+	// separator and a sample.
 	if start < len(data) && isWhitespace(data[start]) {
+		if data[start] == '\r' && start+1 < len(data) && data[start+1] == '\n' {
+			start++
+		}
 		start++
 	}
 	// Framing an encoded image decodes it, which is a stream's work: the
@@ -645,15 +652,19 @@ func (it *interp) skipInlineImage(lex *lexer, resources Dict) error {
 	}
 	// What the reader may read of one image bounds the work of finding its
 	// end as well as the data it admits.
-	ends, err := it.inlineDataEnds(img, resources, data[start:min(start+maxInlineImageBytes, len(data))])
+	window := min(start+maxInlineImageBytes, len(data))
+	end, err := it.inlineDataEnds(img, resources, data[start:window])
+	if errors.Is(err, errFilterUnended) && window < len(data) {
+		// The encoding did not end within the bytes the reader may read of
+		// one image: the bound is what it met, and the record says so.
+		return structureBound("an inline image's data past %d bytes", maxInlineImageBytes)
+	}
 	if err != nil {
 		return err
 	}
-	for _, n := range ends {
-		if at, ok := inlineImageEnds(data, start+n); ok {
-			lex.pos = at
-			return nil
-		}
+	if at, ok := inlineImageEnds(data, start+end); ok {
+		lex.pos = at
+		return nil
 	}
 	return errInlineImageEnd
 }
@@ -673,7 +684,7 @@ var (
 // Nothing of a value the reader has no use for is held: one image's
 // dictionary is bounded in objects, not in what an object of it carries.
 func (it *interp) readInlineImage(lex *lexer) (inlineImage, error) {
-	p := &parser{lex: lex, contentMode: true}
+	p := &parser{lex: lex, contentMode: true, inlineImage: true}
 	img := inlineImage{declared: -1}
 	declared := map[Name]object{}
 	var key Name
@@ -684,19 +695,25 @@ func (it *interp) readInlineImage(lex *lexer) (inlineImage, error) {
 		}
 		obj, err := p.parseObject(0)
 		if err == nil {
-			if haveKey {
-				haveKey = false
-				name, bearsOnEnd := inlineImageKey(key)
-				if bearsOnEnd {
-					if before, again := declared[name]; again && !sameDeclaration(name, before, obj) {
-						return img, errInlineImageDisagrees
-					}
-					declared[name] = obj
+			if !haveKey {
+				name, ok := obj.(Name)
+				if !ok {
+					// A value where a key stands: what the pairs after it
+					// are is not something this dictionary says.
+					return img, errInlineImageUnended
 				}
-				img.set(name, obj)
-			} else if name, ok := obj.(Name); ok {
 				key, haveKey = name, true
+				continue
 			}
+			haveKey = false
+			name, bearsOnEnd := inlineImageKey(key)
+			if bearsOnEnd {
+				if before, again := declared[name]; again && !sameDeclaration(name, before, obj) {
+					return img, errInlineImageDisagrees
+				}
+				declared[name] = obj
+			}
+			img.set(name, obj)
 			continue
 		}
 		kw, ok := err.(errKeyword)
@@ -711,11 +728,17 @@ func (it *interp) readInlineImage(lex *lexer) (inlineImage, error) {
 		}
 		switch kw.keyword {
 		case "ID":
+			if haveKey {
+				// A key with no value: what the image says of that key is
+				// not in the file, and the pair before ID is not one.
+				return img, errInlineImageUnended
+			}
 			return img, nil
-		case "EI":
-			// An image ended before its data began. Where ID is missing the
-			// bytes between are not the image's data, and what the reader has
-			// read of them as a dictionary is not the page's content either.
+		case "EI", "BI":
+			// An image that ended, or began again, before its data began.
+			// Where ID is missing the bytes between are not the image's data,
+			// and what the reader has read of them as a dictionary is not the
+			// page's content either.
 			return img, errInlineImageUnended
 		}
 	}
@@ -771,7 +794,7 @@ var inlineFilterNames = map[Name]Name{
 // written alone or in an array of one, and the parameters of one filter are
 // its parameters written either way.
 func sameDeclaration(key Name, a, b object) bool {
-	return sameValue(inlineDeclared(key, a), inlineDeclared(key, b), 0)
+	return sameValue(inlineDeclared(key, a), inlineDeclared(key, b))
 }
 
 // inlineDeclared is one of an inline image's values under the one form the
@@ -779,9 +802,9 @@ func sameDeclaration(key Name, a, b object) bool {
 func inlineDeclared(key Name, v object) object {
 	switch key {
 	case "CS":
-		return inlineNamesOf(v, inlineColourNames, 0)
+		return inlineNamesOf(v, inlineColourNames)
 	case "F":
-		v = inlineNamesOf(v, inlineFilterNames, 0)
+		v = inlineNamesOf(v, inlineFilterNames)
 		if name, ok := v.(Name); ok {
 			return Array{name}
 		}
@@ -794,10 +817,7 @@ func inlineDeclared(key Name, v object) object {
 }
 
 // inlineNamesOf is v with every name it holds written as the table writes it.
-func inlineNamesOf(v object, table map[Name]Name, depth int) object {
-	if depth > maxInlineValueDepth {
-		return v
-	}
+func inlineNamesOf(v object, table map[Name]Name) object {
 	switch x := v.(type) {
 	case Name:
 		if full, ok := table[x]; ok {
@@ -806,25 +826,19 @@ func inlineNamesOf(v object, table map[Name]Name, depth int) object {
 	case Array:
 		out := make(Array, len(x))
 		for i, item := range x {
-			out[i] = inlineNamesOf(item, table, depth+1)
+			out[i] = inlineNamesOf(item, table)
 		}
 		return out
 	}
 	return v
 }
 
-// maxInlineValueDepth bounds how deep the reader compares two values of an
-// inline image's dictionary.
-const maxInlineValueDepth = 8
-
-// sameValue reports whether two values are the same value. A value nested
-// deeper than the reader compares is taken to disagree: the question is
-// whether the image says one thing about where it ends, and a value the
-// reader cannot read to its end is not an answer to it.
-func sameValue(a, b object, depth int) bool {
-	if depth > maxInlineValueDepth {
-		return false
-	}
+// sameValue reports whether two values are the same value, to the bottom of
+// whatever they hold. Nothing bounds the recursion here but the nesting the
+// parser admits, maxNesting, which is what an inline image's dictionary can
+// carry at all: two values the parser read are two values this can compare,
+// and identical values are equal however deep they go.
+func sameValue(a, b object) bool {
 	switch x := a.(type) {
 	case nil:
 		return b == nil
@@ -832,11 +846,22 @@ func sameValue(a, b object, depth int) bool {
 		y, ok := b.(bool)
 		return ok && x == y
 	case int64:
-		y, ok := b.(int64)
-		return ok && x == y
+		// A number is a number: 1 and 1.0 are one value written two ways.
+		switch y := b.(type) {
+		case int64:
+			return x == y
+		case float64:
+			return float64(x) == y
+		}
+		return false
 	case float64:
-		y, ok := b.(float64)
-		return ok && x == y
+		switch y := b.(type) {
+		case int64:
+			return x == float64(y)
+		case float64:
+			return x == y
+		}
+		return false
 	case Name:
 		y, ok := b.(Name)
 		return ok && x == y
@@ -849,7 +874,7 @@ func sameValue(a, b object, depth int) bool {
 			return false
 		}
 		for i := range x {
-			if !sameValue(x[i], y[i], depth+1) {
+			if !sameValue(x[i], y[i]) {
 				return false
 			}
 		}
@@ -861,7 +886,7 @@ func sameValue(a, b object, depth int) bool {
 		}
 		for k, v := range x {
 			w, has := y[k]
-			if !has || !sameValue(v, w, depth+1) {
+			if !has || !sameValue(v, w) {
 				return false
 			}
 		}
@@ -909,6 +934,9 @@ func (img *inlineImage) set(key Name, v object) {
 			img.height = n
 		}
 	case "BPC":
+		// A depth the image gives as anything but an integer is no depth:
+		// -1 stands for one the reader cannot use, which 0 (absent) is not.
+		img.bpc = -1
 		if n, ok := v.(int64); ok {
 			img.bpc = n
 		}
@@ -941,37 +969,40 @@ func (img *inlineImage) set(key Name, v object) {
 // by its first filter. An image that is neither, and one whose framing met a
 // bound or found no end of its own, is an error: the reader cannot say where
 // it ends, and a page whose image ends nowhere is a page it cannot read.
-func (it *interp) inlineDataEnds(img inlineImage, resources Dict, data []byte) ([]int, error) {
+func (it *interp) inlineDataEnds(img inlineImage, resources Dict, data []byte) (int, error) {
 	if !img.filtered {
 		n := img.sampleBytes(it.d.inlineColorComponents(img.colorSpace, resources, 0))
 		switch {
 		case n < 0:
-			return nil, errInlineImageUnframed
+			return 0, errInlineImageUnframed
 		case n > maxInlineImageBytes:
-			return nil, structureBound("an inline image's data past %d bytes", maxInlineImageBytes)
+			return 0, structureBound("an inline image's data past %d bytes", maxInlineImageBytes)
 		}
-		return []int{int(n)}, nil
+		return int(n), nil
 	}
-	ends, err := it.d.filterFraming(img.filter, img.parms, data)
+	end, err := it.d.filterFraming(img.filter, img.parms, data)
 	switch {
 	case errors.Is(err, errFilterNotFramed):
-		return nil, errInlineImageUnframed
-	case errors.Is(err, errFilterUnended):
-		return nil, errInlineImageEnd
+		return 0, errInlineImageUnframed
 	case err != nil:
-		// A bound met while framing: the page's problem, and not a reason to
-		// read the image's end some other way.
-		return nil, err
+		// The encoding's own defect, a bound met framing it, or data that
+		// ends nowhere: the page's problem, and no reason to read the
+		// image's end some other way. The caller tells a bound on what it
+		// handed over from data that simply ends.
+		return 0, err
 	}
-	return ends, nil
+	return end, nil
 }
 
-// inlineComponents is how many colour components one sample has in the colour
-// spaces an inline image may name in place, abbreviated as 8.9.7 abbreviates
-// them.
-var inlineComponents = map[Name]int64{
-	"G": 1, "DeviceGray": 1, "CalGray": 1, "I": 1, "Indexed": 1,
-	"RGB": 3, "DeviceRGB": 3, "CalRGB": 3, "Lab": 3,
+// inlineDeviceComponents is how many colour components one sample has in the
+// colour spaces an inline image may name on its own, abbreviated as 8.9.7
+// abbreviates them. Every other colour space is written as an array -- its
+// family and what the family needs -- or is the name of one of the resources
+// in force: a bare /CalGray is the name of a resource, and what that resource
+// holds is what says how many components its samples have.
+var inlineDeviceComponents = map[Name]int64{
+	"G": 1, "DeviceGray": 1,
+	"RGB": 3, "DeviceRGB": 3,
 	"CMYK": 4, "DeviceCMYK": 4,
 }
 
@@ -996,7 +1027,7 @@ func (d *Document) inlineColorComponents(cs object, resources Dict, depth int) i
 	}
 	switch v := d.resolve(cs).(type) {
 	case Name:
-		if n, ok := inlineComponents[v]; ok {
+		if n, ok := inlineDeviceComponents[v]; ok {
 			return n
 		}
 		spaces := d.dictOf(resources["ColorSpace"])
@@ -1042,7 +1073,7 @@ func (d *Document) inlineColorComponents(cs object, resources Dict, depth int) i
 				return int64(len(names))
 			}
 		default:
-			if n, ok := inlineComponents[family]; ok && len(v) == 1 {
+			if n, ok := inlineDeviceComponents[family]; ok && len(v) == 1 {
 				return n
 			}
 		}
@@ -1061,11 +1092,15 @@ func (img inlineImage) sampleBytes(components int64) int64 {
 	}
 	bits := img.bpc
 	if img.mask {
+		// A mask's samples are one bit of one component (Table 89). A mask
+		// that says its depth says one, or says nothing.
+		if bits != 0 && bits != 1 {
+			return -1
+		}
 		components, bits = 1, 1
 	}
-	if bits == 0 {
-		bits = 8
-	}
+	// Every other image says its depth, and says one of the depths 8.9.5
+	// gives: nothing here is assumed of an image that does not.
 	if components < 1 || components > maxColorComponents || (bits != 1 && bits != 2 && bits != 4 && bits != 8 && bits != 16) {
 		return -1
 	}
@@ -1083,12 +1118,15 @@ func (img inlineImage) sampleBytes(components int64) int64 {
 }
 
 // inlineImageEnds reports whether an inline image's data ends at the offset
-// given -- whitespace, then "EI" as a token of its own -- and where the
-// content after it resumes.
+// given -- white space or a comment, which 7.2.3 counts as white space, then
+// "EI" as a token of its own -- and where the content after it resumes.
 func inlineImageEnds(data []byte, at int) (int, bool) {
-	for at < len(data) && isWhitespace(data[at]) {
-		at++
+	if at < 0 || at > len(data) {
+		return 0, false
 	}
+	lex := newLexer(data, at)
+	lex.skipSpace()
+	at = lex.pos
 	if at+2 > len(data) || data[at] != 'E' || data[at+1] != 'I' {
 		return 0, false
 	}

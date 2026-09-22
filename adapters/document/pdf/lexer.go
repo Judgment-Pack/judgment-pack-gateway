@@ -474,6 +474,11 @@ type parser struct {
 	// contentMode is set for content streams, where "R" is not a reference
 	// and operators are keywords the caller reads.
 	contentMode bool
+	// inlineImage is set while an inline image's dictionary is read. There a
+	// keyword inside a value is not something to read past: what follows it
+	// may be the image's data rather than the dictionary, and the caller must
+	// see the keyword to say so.
+	inlineImage bool
 }
 
 // errKeyword carries a keyword the parser met where an object was
@@ -587,6 +592,10 @@ func (p *parser) parseObject(depth int) (object, error) {
 			}
 			if tt.kind != tokName {
 				// A value where a key should be: skip to resynchronise.
+				if tt.kind == tokKeyword && p.inlineImage {
+					p.lex.pos = tt.pos
+					return nil, errKeyword{keyword: tt.keyword, pos: tt.pos}
+				}
 				if tt.kind == tokKeyword && (tt.keyword == "endobj" || tt.keyword == "stream" || tt.keyword == "endstream") {
 					p.lex.pos = tt.pos
 					return dict, nil
@@ -614,6 +623,10 @@ func (p *parser) parseObject(depth int) (object, error) {
 			if err != nil {
 				var kw errKeyword
 				if errors.As(err, &kw) {
+					if p.inlineImage {
+						p.lex.pos = kw.pos
+						return nil, err
+					}
 					if kw.keyword == "endobj" || kw.keyword == "stream" || kw.keyword == "endstream" {
 						p.lex.pos = kw.pos
 						return dict, nil

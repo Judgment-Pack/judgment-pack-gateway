@@ -183,8 +183,10 @@ func (d *Document) openEncryption() (*Encryption, error) {
 	// Objects parsed before the handler was installed (the encryption
 	// dictionary's own referents) are not encrypted content; anything
 	// cached so far, and anything built from it, is dropped so that strings
-	// and streams are read through the handler from here.
-	d.forgetObjects()
+	// and streams are read through the handler from here. The
+	// cross-reference is the one it was: what was met reading the file, or an
+	// object this same cross-reference names, stands.
+	d.dropCachedObjects()
 	return info, nil
 }
 

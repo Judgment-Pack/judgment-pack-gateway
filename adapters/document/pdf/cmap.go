@@ -66,13 +66,21 @@ func (cs codespace) prefix(s []byte) int {
 	return n
 }
 
+// code is one code of a CMap: its bytes, as a number, and how many bytes it
+// has. 9.7.6.2 gives a mapping for codes of one length, so <41> and <0041>
+// are two codes and not one, and the length is part of what names a mapping.
+type code struct {
+	value  uint32
+	nbytes int
+}
+
 // cmap is a parsed CMap. Codes are up to four bytes.
 type cmap struct {
 	codespaces []codespace
 	// single maps a code to a CID (cid maps) or to a string of runes
 	// (unicode maps).
-	cid     map[uint32]uint32
-	unicode map[uint32][]rune
+	cid     map[code]uint32
+	unicode map[code][]rune
 	// ranges map [lo, hi] to a starting CID or rune.
 	cidRanges []cmapRange
 	uniRanges []cmapRange
@@ -83,11 +91,12 @@ type cmap struct {
 	budget   *fontBudget
 	unusable bool
 	// The indexes, built once the CMap is read, find the first cid range and
-	// the first unicode range that holds a code; shortest is the shortest code
-	// length declared, or 4. The codespace ranges are matched in the order
-	// they were declared, at most maxCodespaces of them, since a range is a
-	// range of each byte and not of the code as one number.
-	cidIndex, uniIndex firstSpans
+	// the first unicode range of a code's own length that holds it; shortest
+	// is the shortest code length declared, or 4. The codespace ranges are
+	// matched in the order they were declared, at most maxCodespaces of them,
+	// since a range is a range of each byte and not of the code as one
+	// number.
+	cidIndex, uniIndex [5]firstSpans
 	shortest           int
 }
 
@@ -103,7 +112,7 @@ type cmapRange struct {
 
 // identityCMap is Identity-H: two-byte codes, CID = code.
 func identityCMap() *cmap {
-	c := &cmap{codespaces: []codespace{fullCodespace(2)}, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, cidRanges: []cmapRange{{nbytes: 2, lo: 0, hi: 0xFFFF, dst: 0}}}
+	c := &cmap{codespaces: []codespace{fullCodespace(2)}, cid: map[code]uint32{}, unicode: map[code][]rune{}, cidRanges: []cmapRange{{nbytes: 2, lo: 0, hi: 0xFFFF, dst: 0}}}
 	return c.finish()
 }
 
@@ -113,7 +122,7 @@ func identityCMap() *cmap {
 // or than the budget has left, or that declares more codespace ranges than
 // one CMap may, is not used: parseCMap returns nil.
 func parseCMap(data []byte, budget *fontBudget) *cmap {
-	c := &cmap{cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, budget: budget}
+	c := &cmap{cid: map[code]uint32{}, unicode: map[code][]rune{}, budget: budget}
 	lex := newLexer(data, 0)
 	p := &parser{lex: lex, contentMode: true}
 	var stack []object
@@ -191,13 +200,48 @@ func (c *cmap) finish() *cmap {
 	if c.unusable {
 		return nil
 	}
+	if ambiguousCodespaces(c.codespaces) {
+		// Two ranges of different lengths whose leading bytes hold the same
+		// codes: what length a code beginning there has is not something this
+		// CMap says, and the reader would be choosing by declaration order.
+		// The CMap is not used, as one past a bound is not: the glyphs it
+		// would have mapped are unmapped, and the record counts them.
+		return nil
+	}
 	c.shortest = 4
 	for _, cs := range c.codespaces {
 		c.shortest = min(c.shortest, cs.nbytes)
 	}
-	c.cidIndex = indexRanges(c.cidRanges)
-	c.uniIndex = indexRanges(c.uniRanges)
+	for n := 1; n <= 4; n++ {
+		c.cidIndex[n] = indexRanges(c.cidRanges, n)
+		c.uniIndex[n] = indexRanges(c.uniRanges, n)
+	}
 	return c
+}
+
+// ambiguousCodespaces reports whether two ranges of different code lengths
+// hold the same leading bytes, which 9.7.6.2 does not admit: a code beginning
+// with those bytes would be as long as one range says and as long as the
+// other says. Ranges of one length may overlap without ambiguity -- a code in
+// both is the same code either way -- and a range declared twice says one
+// thing twice.
+func ambiguousCodespaces(spaces []codespace) bool {
+	for i, a := range spaces {
+		for _, b := range spaces[i+1:] {
+			if a.nbytes == b.nbytes || a.nbytes == 0 || b.nbytes == 0 {
+				continue
+			}
+			shared := min(a.nbytes, b.nbytes)
+			overlap := true
+			for k := 0; k < shared && overlap; k++ {
+				overlap = a.lo[k] <= b.hi[k] && b.lo[k] <= a.hi[k]
+			}
+			if overlap {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // codespacesOnly is a CMap that splits a string into codes the way c does
@@ -219,15 +263,19 @@ func twoByteCodespaces() *cmap {
 
 // codespacesCMap is a CMap of the codespace ranges given and no mappings.
 func codespacesCMap(spaces []codespace) *cmap {
-	out := &cmap{codespaces: spaces, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}}
+	out := &cmap{codespaces: spaces, cid: map[code]uint32{}, unicode: map[code][]rune{}}
 	return out.finish()
 }
 
-// indexRanges indexes cid or unicode ranges in the order they were read.
-func indexRanges(ranges []cmapRange) firstSpans {
-	spans := make([]span, len(ranges))
+// indexRanges indexes the cid or unicode ranges whose codes have n bytes, in
+// the order they were read. A range of another length holds none of these
+// codes: a code is the bytes it has, and a mapping is for codes of one length.
+func indexRanges(ranges []cmapRange, n int) firstSpans {
+	var spans []span
 	for i, r := range ranges {
-		spans[i] = span{lo: r.lo, hi: r.hi, order: int32(i)}
+		if r.nbytes == n {
+			spans = append(spans, span{lo: r.lo, hi: r.hi, order: int32(i)})
+		}
 	}
 	return indexSpans(spans)
 }
@@ -358,7 +406,7 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				if !c.take() {
 					break
 				}
-				c.unicode[l+uint32(i)] = utf16Runes(s)
+				c.unicode[code{l + uint32(i), n}] = utf16Runes(s)
 			}
 		default:
 			return
@@ -380,7 +428,8 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 		if !ok || len(ss) == 0 || len(ss) > 4 {
 			return
 		}
-		code, _ := bytesToCode(ss)
+		v, n := bytesToCode(ss)
+		key := code{v, n}
 		switch d := dst.(type) {
 		case int64:
 			if d < 0 || d > 1<<31 {
@@ -397,18 +446,18 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 				continue
 			}
 			if unicode {
-				c.unicode[code] = []rune{rune(d)}
+				c.unicode[key] = []rune{rune(d)}
 			} else {
-				c.cid[code] = uint32(d)
+				c.cid[key] = uint32(d)
 			}
 		case String:
 			if unicode && len(d) <= maxCMapDestinationBytes && c.take() {
-				c.unicode[code] = utf16Runes(d)
+				c.unicode[key] = utf16Runes(d)
 			}
 		case Name:
 			if unicode {
 				if r, ok := glyphToRune(string(d)); ok && c.take() {
-					c.unicode[code] = []rune{r}
+					c.unicode[key] = []rune{r}
 				}
 			}
 		}
@@ -494,30 +543,38 @@ func (c *cmap) nextCode(s []byte) (code uint32, n int, ok bool) {
 	return v, n, false
 }
 
-// toCID maps a code to a CID through the cid mappings.
-func (c *cmap) toCID(code uint32) (uint32, bool) {
-	if v, ok := c.cid[code]; ok {
-		return v, true
+// toCID maps a code of n bytes to a CID through the cid mappings of that
+// length.
+func (c *cmap) toCID(v uint32, n int) (uint32, bool) {
+	if cid, ok := c.cid[code{v, n}]; ok {
+		return cid, true
 	}
-	if i, ok := c.cidIndex.find(code); ok {
+	if n < 1 || n > 4 {
+		return 0, false
+	}
+	if i, ok := c.cidIndex[n].find(v); ok {
 		r := c.cidRanges[i]
-		return r.dst + (code - r.lo), true
+		return r.dst + (v - r.lo), true
 	}
 	return 0, false
 }
 
-// toUnicode maps a code to runes through the unicode mappings.
-func (c *cmap) toUnicode(code uint32) ([]rune, bool) {
-	if v, ok := c.unicode[code]; ok {
-		return v, len(v) > 0
+// toUnicode maps a code of n bytes to runes through the unicode mappings of
+// that length.
+func (c *cmap) toUnicode(v uint32, n int) ([]rune, bool) {
+	if rs, ok := c.unicode[code{v, n}]; ok {
+		return rs, len(rs) > 0
 	}
-	if i, ok := c.uniIndex.find(code); ok {
+	if n < 1 || n > 4 {
+		return nil, false
+	}
+	if i, ok := c.uniIndex[n].find(v); ok {
 		r := c.uniRanges[i]
 		if r.runes != nil {
 			// The last character advanced by the code's distance from lo,
 			// as the specification says. Past the scalar values it is no
 			// character a text can carry, and the code maps nothing.
-			last := r.runes[len(r.runes)-1] + rune(code-r.lo)
+			last := r.runes[len(r.runes)-1] + rune(v-r.lo)
 			if !validScalar(last) {
 				return nil, false
 			}
@@ -526,7 +583,7 @@ func (c *cmap) toUnicode(code uint32) ([]rune, bool) {
 			rs[len(rs)-1] = last
 			return rs, true
 		}
-		ru := rune(r.dst + (code - r.lo))
+		ru := rune(r.dst + (v - r.lo))
 		if !validScalar(ru) {
 			return nil, false
 		}

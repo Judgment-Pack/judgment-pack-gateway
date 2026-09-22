@@ -77,14 +77,14 @@ func (b *fontBudget) take(n int) bool {
 // cmapOf reads a CMap stream once for the document: the fonts that share
 // the stream share what was read of it, and its mappings are charged once.
 // It is nil when the stream cannot be decoded or the CMap is not used.
-func (d *Document) cmapOf(s *stream) *cmap {
+func (d *Document) cmapOf(s *stream, generation int) *cmap {
 	if c, ok := d.cmaps[s]; ok {
 		return c
 	}
-	// The cross-reference this reading stands on: a CMap read under one that
-	// has since been replaced is not held, since the stream it was read from
-	// is not the stream that number names now.
-	generation := d.generation
+	// generation is the cross-reference the read that resolved this stream
+	// began under, not the one it ended under: a CMap read from a stream a
+	// replaced cross-reference named is not held, since the number that named
+	// it names other bytes now.
 	var c *cmap
 	if data, err := d.decodeStream(s, false); err == nil {
 		c = parseCMap(data, &d.fontBudget)
@@ -101,15 +101,15 @@ func (d *Document) cmapOf(s *stream) *cmap {
 
 // loadFont builds a font from its dictionary. Nothing here fails: a font
 // this reader cannot interpret still yields glyphs, unmapped.
-func (d *Document) loadFont(dict Dict) *font {
+func (d *Document) loadFont(dict Dict, generation int) *font {
 	f := &font{defaultWidth: 1000, fontMatrix: [6]float64{0.001, 0, 0, 0.001, 0, 0}}
 	subtype, _ := d.nameOf(dict["Subtype"])
 	if tu, ok := d.resolve(dict["ToUnicode"]).(*stream); ok {
-		f.toUnicode = d.cmapOf(tu)
+		f.toUnicode = d.cmapOf(tu, generation)
 	}
 	if subtype == "Type0" {
 		f.composite = true
-		d.loadType0(f, dict)
+		d.loadType0(f, dict, generation)
 		return f
 	}
 	if subtype == "Type3" {
@@ -126,7 +126,7 @@ func (d *Document) loadFont(dict Dict) *font {
 	return f
 }
 
-func (d *Document) loadType0(f *font, dict Dict) {
+func (d *Document) loadType0(f *font, dict Dict, generation int) {
 	switch enc := d.resolve(dict["Encoding"]).(type) {
 	case Name:
 		if enc == "Identity-H" || enc == "Identity-V" {
@@ -148,7 +148,7 @@ func (d *Document) loadType0(f *font, dict Dict) {
 			f.vertical = strings.HasSuffix(string(enc), "-V")
 		}
 	case *stream:
-		if c := d.cmapOf(enc); c != nil {
+		if c := d.cmapOf(enc, generation); c != nil {
 			f.encoding = c
 			f.vertical = c.vertical
 		} else {
@@ -363,7 +363,7 @@ func (f *font) glyphs(s []byte) iter.Seq[glyph] {
 				g := glyph{isSpace: b == 32}
 				code := uint32(b)
 				if f.toUnicode != nil {
-					if rs, ok := f.toUnicode.toUnicode(code); ok {
+					if rs, ok := f.toUnicode.toUnicode(code, 1); ok {
 						g.runes = rs
 					}
 				}
@@ -409,9 +409,9 @@ func (f *font) glyphs(s []byte) iter.Seq[glyph] {
 				continue
 			}
 			g := glyph{isSpace: n == 1 && code == 32}
-			cid, hasCID := enc.toCID(code)
+			cid, hasCID := enc.toCID(code, n)
 			if f.toUnicode != nil {
-				if rs, ok := f.toUnicode.toUnicode(code); ok {
+				if rs, ok := f.toUnicode.toUnicode(code, n); ok {
 					g.runes = rs
 				}
 			}

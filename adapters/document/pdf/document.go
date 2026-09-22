@@ -99,8 +99,17 @@ type Document struct {
 	// earlier one can tell that what it gathered no longer stands.
 	generation int
 	// bound is the first structure or inflate bound met while reading an
-	// object, which leaves that object unread; the walk ends at it.
+	// object the cross-reference named, which leaves that object unread; the
+	// walk ends at it. It belongs to that cross-reference: a rebuild drops it,
+	// and an object still past a bound under the new one meets it again.
 	bound error
+	// fileBound is the first bound met reading the file itself rather than an
+	// object of one cross-reference: the objects a scan of the whole file
+	// finds, the objects read in one document, a bound met while the
+	// cross-reference was being rebuilt. A rebuild does not drop it -- it is
+	// no defect of the cross-reference being replaced -- and the walk ends at
+	// it as it ends at the other.
+	fileBound error
 	// undecoded is the first error met loading a stream the cross-reference
 	// names as an object stream -- a stream that cannot be decoded, or that is
 	// not an object stream -- which leaves the objects it holds unread; the
@@ -146,6 +155,24 @@ func (d *Document) noteBound(err error) {
 	}
 }
 
+// noteBoundAt is noteBound for a read that began under the generation given.
+// A read whose cross-reference was replaced while it ran says nothing about
+// the document that replaced it: its bound goes with the objects it read.
+func (d *Document) noteBoundAt(generation int, err error) {
+	if d.generation == generation {
+		d.noteBound(err)
+	}
+}
+
+// noteFileBound keeps the first bound met reading the file rather than an
+// object of one cross-reference. Rebuilding the cross-reference does not drop
+// it: the file is the same file.
+func (d *Document) noteFileBound(err error) {
+	if d.fileBound == nil && isBound(err) {
+		d.fileBound = err
+	}
+}
+
 // undecodedMessage is the defect of a document with an object stream that
 // could not be decoded, met while it was opened or its page tree walked.
 const undecodedMessage = "the file has an object stream the reader could not decode, met while it was opened or its page tree walked"
@@ -154,7 +181,7 @@ const undecodedMessage = "the file has an object stream the reader could not dec
 // "" when reading objects has met none.
 func (d *Document) walkDefect() string {
 	switch {
-	case d.bound != nil:
+	case d.bound != nil, d.fileBound != nil:
 		return boundMessage
 	case d.undecoded != nil:
 		return undecodedMessage
@@ -174,11 +201,7 @@ func (d *Document) walkDefect() string {
 // has now.
 func (d *Document) forgetObjects() {
 	d.generation++
-	d.cache = map[int]object{}
-	d.objStms = map[int]*objStm{}
-	d.objStmHeaders = nil
-	d.fontRefs = nil
-	d.cmaps = nil
+	d.dropCachedObjects()
 	// The failures of the objects being dropped go with them: a bound met in
 	// an object the old cross-reference named, or a stream of objects it
 	// could not decode, is a defect of a document this one no longer is, and
@@ -188,6 +211,20 @@ func (d *Document) forgetObjects() {
 	// since a file that made the reader read it twice has spent it twice.
 	d.bound = nil
 	d.undecoded = nil
+}
+
+// dropCachedObjects drops what the reader holds of the objects it has read,
+// without saying that they were read under a cross-reference the document no
+// longer has: the same cross-reference names the same objects, and reading
+// one again finds what it found before. Installing the security handler drops
+// them this way -- what was read before it was read undecrypted -- and so
+// does the end of a rebuild, which is one replacement and not two.
+func (d *Document) dropCachedObjects() {
+	d.cache = map[int]object{}
+	d.objStms = map[int]*objStm{}
+	d.objStmHeaders = nil
+	d.fontRefs = nil
+	d.cmaps = nil
 }
 
 // deadlinePassed reports whether the deadline has passed, reading the clock
@@ -244,22 +281,26 @@ func open(ctx context.Context, data []byte, budget *inflateBudget) (*Document, e
 		if isBound(err) || isDeadline(err) {
 			return nil, err
 		}
-		// Everything read from the cross-reference now being thrown away goes
-		// with it, the objects it named and what was built from them, and so
-		// does what was met while it was read: a bound or an object stream
-		// that could not be decoded is a defect of a cross-reference this
-		// document no longer has, and it would otherwise end the walk of a
-		// page tree the rebuild below recovers whole.
-		d.xref = map[int]xrefEntry{}
-		d.trailer = Dict{}
-		d.forgetObjects()
-		// A rebuild may already have run, from an object read while the
-		// cross-reference was: its work went with the reset above, and this
-		// one, over the file alone, is the rebuild this document keeps.
-		d.reconstructed = false
-		if err := d.reconstruct(); err != nil {
-			return nil, err
+		if !d.reconstructed {
+			// Everything read from the cross-reference now being thrown away
+			// goes with it, the objects it named and what was built from
+			// them, and so does what was met while it was read: a bound or an
+			// object stream that could not be decoded is a defect of a
+			// cross-reference this document no longer has, and it would
+			// otherwise end the walk of a page tree the rebuild recovers
+			// whole.
+			d.xref = map[int]xrefEntry{}
+			d.trailer = Dict{}
+			d.forgetObjects()
+			if err := d.reconstruct(); err != nil {
+				return nil, err
+			}
 		}
+		// A rebuild that already ran -- from an object read while the
+		// cross-reference was being read -- scanned the whole file, and what
+		// it found is this document's cross-reference. Scanning the same
+		// bytes again would find the same objects and charge the file for
+		// them twice, so a document is rebuilt once however its opening goes.
 	}
 	if _, ok := d.trailer["Root"]; !ok {
 		// A trailer without a catalog: rebuild and look for one.
@@ -629,7 +670,7 @@ func (d *Document) reconstruct() error {
 			// no object of that number at an offset: an object at an
 			// offset is the newer form in an incrementally updated file
 			// more often than not, and the scan cannot tell.
-			st, err := d.loadObjStm(num, s)
+			st, err := d.loadObjStm(num, s, d.generation)
 			if err != nil {
 				if isBound(err) {
 					return err
@@ -670,7 +711,9 @@ func (d *Document) reconstruct() error {
 		}
 	}
 	d.trailer = trailer
-	d.forgetObjects()
+	// The same rebuild, still: what the search above cached is dropped, and
+	// the generation has already moved once for this cross-reference.
+	d.dropCachedObjects()
 	return nil
 }
 
@@ -861,13 +904,14 @@ func (d *Document) resolve(v object) object {
 // cross-reference does not name or names as free, to an object that cannot
 // be parsed, through a cycle, or past a bound.
 func (d *Document) resolveRead(v object) (object, bool) {
+	generation := d.generation
 	for depth := 0; ; depth++ {
 		r, ok := v.(ref)
 		if !ok {
 			return v, true
 		}
 		if depth == maxRefDepth {
-			d.noteBound(structureBound("references to references past %d", maxRefDepth))
+			d.noteBoundAt(generation, structureBound("references to references past %d", maxRefDepth))
 			return nil, false
 		}
 		if v, ok = d.objectRead(r.num); !ok {
@@ -906,12 +950,14 @@ func (d *Document) objectRead(num int) (object, bool) {
 	generation := d.generation
 	if len(d.resolving) >= maxRefDepth {
 		err := structureBound("indirect object reads nested past %d", maxRefDepth)
-		d.noteBound(err)
+		d.noteBoundAt(generation, err)
 		d.publish(generation, num, unread{err: err})
 		return nil, false
 	}
 	if d.parsed >= maxObjects {
-		d.noteBound(structureBound("more than %d objects read", maxObjects))
+		// The objects read in one document, which a rebuild does not give
+		// back: the file has cost them however its cross-reference is read.
+		d.noteFileBound(structureBound("more than %d objects read", maxObjects))
 		return nil, false
 	}
 	d.parsed++
@@ -929,7 +975,7 @@ func (d *Document) objectRead(num int) (object, bool) {
 		if n == num && isBound(err) {
 			// The object is where the cross-reference says, and past a
 			// bound: rebuilding the cross-reference finds the same bytes.
-			d.noteBound(err)
+			d.noteBoundAt(generation, err)
 			d.publish(generation, num, unread{err: err})
 			return nil, false
 		}
@@ -942,7 +988,9 @@ func (d *Document) objectRead(num int) (object, bool) {
 					delete(d.resolving, num)
 					return d.objectRead(num)
 				}
-				d.noteBound(err)
+				// A bound met rebuilding is the file's: it scanned the file
+				// itself, not an object one cross-reference named.
+				d.noteFileBound(err)
 			}
 			d.publish(generation, num, unread{})
 			return nil, false
@@ -970,24 +1018,27 @@ func (d *Document) publish(generation, num int, v object) {
 // objectFromStream reads the object with the number given out of an object
 // stream, and reports whether it read one.
 func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
+	// The cross-reference this read stands on, as objectRead holds one, read
+	// before anything is resolved: what a stream of objects held under the
+	// old one is not what this number names now.
+	generation := d.generation
 	st, ok := d.objStmHeaders[e.stmNum]
 	if !ok {
 		if _, tried := d.objStms[e.stmNum]; tried {
 			return nil, false
 		}
-		// The cross-reference this read stands on, as objectRead holds one:
-		// what a stream of objects held under the old one is not what this
-		// number names now.
-		generation := d.generation
 		s, isStream := d.resolve(ref{e.stmNum, 0}).(*stream)
 		if !isStream {
 			d.markObjStm(generation, e.stmNum)
 			return nil, false
 		}
-		loaded, err := d.loadObjStm(e.stmNum, s)
+		loaded, err := d.loadObjStm(e.stmNum, s, generation)
 		if err != nil {
-			d.noteBound(err)
-			if d.undecoded == nil && !isBound(err) {
+			// The failure of a read that straddled a rebuild is the old
+			// cross-reference's, as its objects are: the stream this number
+			// names now has not been read at all.
+			d.noteBoundAt(generation, err)
+			if d.generation == generation && d.undecoded == nil && !isBound(err) {
 				d.undecoded = err
 			}
 			d.markObjStm(generation, e.stmNum)
@@ -1012,7 +1063,7 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	// where they do not.
 	off, ok := st.offsets[num]
 	if st.twice[num] {
-		if e.stmIndex < 0 || e.stmIndex >= len(st.order) || st.order[e.stmIndex] != num {
+		if e.stmIndex < 0 || e.stmIndex >= len(st.order) || st.order[e.stmIndex] != num || st.offsetAt[e.stmIndex] < 0 {
 			return nil, false
 		}
 		off, ok = st.offsetAt[e.stmIndex], true
@@ -1026,7 +1077,7 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	p := &parser{lex: lex}
 	v, err := p.parseObject(0)
 	if err != nil {
-		d.noteBound(err)
+		d.noteBoundAt(generation, err)
 		return nil, false
 	}
 	return v, true
@@ -1044,8 +1095,7 @@ type objStmParsed struct {
 	twice    map[int]bool
 }
 
-func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
-	generation := d.generation
+func (d *Document) loadObjStm(num int, s *stream, generation int) (*objStmParsed, error) {
 	if s.dict["Type"] != Name("ObjStm") {
 		return nil, errors.New("not an object stream")
 	}
@@ -1061,36 +1111,57 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 	if n < 0 || first < 0 || first > int64(len(data)) {
 		return nil, errors.New("object stream header out of range")
 	}
+	// The header declares a number and an offset for each of the /N places it
+	// has. Every place is kept, whether or not the reader can use it: the
+	// cross-reference names an object by the place the header gives it, so a
+	// place dropped would move every place after it. A number is declared by
+	// its place whether or not the offset beside it is one the stream holds,
+	// which is what makes a number declared twice a number no place alone
+	// finds.
 	lex := newLexer(data[:first], 0)
 	st := &objStmParsed{data: data, offsets: map[int]int{}}
+	declared := map[int]int{}
+	body := int64(len(data)) - first
 	for i := int64(0); i < n; i++ {
-		t1, err := lex.next()
-		if err != nil || t1.kind != tokInteger {
+		t1, err1 := lex.next()
+		t2, err2 := lex.next()
+		if err1 != nil || err2 != nil || t1.kind == tokEOF || t2.kind == tokEOF {
+			// The header ends, or holds a token the lexer could not read:
+			// where the pairs after this one begin is not known, and the
+			// places they would have are unreadable.
 			break
 		}
-		t2, err := lex.next()
-		if err != nil || t2.kind != tokInteger {
-			break
+		inner, at := unreadableObject, -1
+		if t1.kind == tokInteger && t1.i >= 0 && t1.i <= maxXrefEntries {
+			inner = int(t1.i)
+			declared[inner]++
+			// The offset is from the first object's, and lies within what the
+			// stream holds after it. A negative one would name the header.
+			if t2.kind == tokInteger && t2.i >= 0 && t2.i <= body {
+				at = int(first + t2.i)
+			}
 		}
-		off := first + t2.i
-		if t1.i < 0 || t1.i > maxXrefEntries || off < 0 || off > int64(len(data)) {
-			// A pair the reader cannot use still holds its position: the
-			// cross-reference names an object by the place its header has,
-			// and dropping the pair would move every place after it.
-			st.order = append(st.order, unreadableObject)
-			st.offsetAt = append(st.offsetAt, 0)
-			continue
-		}
-		inner := int(t1.i)
-		if _, declared := st.offsets[inner]; declared {
+		st.order = append(st.order, inner)
+		st.offsetAt = append(st.offsetAt, at)
+	}
+	for int64(len(st.order)) < n {
+		st.order = append(st.order, unreadableObject)
+		st.offsetAt = append(st.offsetAt, -1)
+	}
+	for i, inner := range st.order {
+		switch {
+		case inner == unreadableObject || st.offsetAt[i] < 0:
+		case declared[inner] > 1:
+			// Declared at more than one place: no place alone names it, and
+			// the cross-reference entry's own place decides.
 			if st.twice == nil {
 				st.twice = map[int]bool{}
 			}
 			st.twice[inner] = true
+			delete(st.offsets, inner)
+		default:
+			st.offsets[inner] = st.offsetAt[i]
 		}
-		st.offsets[inner] = int(off)
-		st.order = append(st.order, inner)
-		st.offsetAt = append(st.offsetAt, int(off))
 	}
 	if d.generation == generation {
 		d.objStms[num] = &objStm{data: data, offsets: st.offsets}

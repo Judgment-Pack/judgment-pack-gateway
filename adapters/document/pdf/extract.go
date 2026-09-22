@@ -110,7 +110,16 @@ func Extract(ctx context.Context, data []byte, opt Options) *Result {
 			*result = Result{Encryption: encryption, Fatal: &Problem{Code: "pdf-malformed", Message: "the file's cross-reference was rebuilt again while its pages were read, and the reader holds no reading of it under one cross-reference"}}
 			return result
 		}
-		*result = Result{Encryption: encryption}
+		// The cross-reference was rebuilt: the encryption dictionary its
+		// trailer names may be another dictionary, deriving another key, and
+		// the content the pages hold is encrypted under the one the rebuilt
+		// document names. Nothing of the pages is read under the handler the
+		// old one gave.
+		*result = Result{}
+		if stop := establishEncryption(ctx, doc, result); stop != nil {
+			return result
+		}
+		encryption = result.Encryption
 	}
 }
 
@@ -141,9 +150,36 @@ func openDocument(ctx context.Context, data []byte, opt Options, result *Result)
 	}
 	// The trailer was read: the encryption dictionary it names is read before
 	// the catalog is looked for, a trailer that names none included.
-	enc, err := doc.openEncryption()
-	result.Encryption = enc
-	if err != nil {
+	if stop := establishEncryption(ctx, doc, result); stop != nil {
+		return nil, stop
+	}
+	if openErr != nil {
+		result.Fatal = &Problem{Code: "pdf-malformed", Message: unopened}
+		return nil, errStopped
+	}
+	return doc, nil
+}
+
+// establishEncryption reads the encryption dictionary the trailer names and
+// installs the handler the document is read through, under the
+// cross-reference the document has now. Reading that dictionary may rebuild
+// the cross-reference, and the dictionary the rebuilt trailer names may be
+// another one deriving another key: it is read again under the new one, and
+// without the handler the old one gave, so that nothing of the document is
+// read through a key its own cross-reference does not name. A document is
+// rebuilt once, so one reading after the rebuild stands.
+func establishEncryption(ctx context.Context, doc *Document, result *Result) error {
+	for again := 0; ; again++ {
+		generation := doc.generation
+		doc.crypt = nil
+		enc, err := doc.openEncryption()
+		if doc.generation != generation && again == 0 {
+			continue
+		}
+		result.Encryption = enc
+		if err == nil {
+			return nil
+		}
 		if result.Encryption == nil {
 			result.Encryption = &Encryption{}
 		}
@@ -151,7 +187,7 @@ func openDocument(ctx context.Context, data []byte, opt Options, result *Result)
 		if ctx.Err() != nil {
 			// The deadline passed while the trailer's own objects were read:
 			// that is the deadline, not a dictionary that cannot be read.
-			return nil, endedAtDeadline(result, openedPastDeadline)
+			return endedAtDeadline(result, openedPastDeadline)
 		}
 		message := "the encryption dictionary could not be read, so the document was not opened"
 		switch {
@@ -161,13 +197,8 @@ func openDocument(ctx context.Context, data []byte, opt Options, result *Result)
 			message = "the document is encrypted with a security handler or revision version 1 does not open"
 		}
 		result.Fatal = &Problem{Code: "pdf-encrypted", Message: message}
-		return nil, errStopped
+		return errStopped
 	}
-	if openErr != nil {
-		result.Fatal = &Problem{Code: "pdf-malformed", Message: unopened}
-		return nil, errStopped
-	}
-	return doc, nil
 }
 
 // walkPages is the rest of step 4: find the page tree and count its pages. It
@@ -382,7 +413,9 @@ func (d *Document) pagesRoot() (Dict, ref) {
 			// context.
 			return nil, ref{}
 		}
-		if d.noteBound(err); d.bound != nil {
+		// A bound met rebuilding is the file's, as it is wherever an object
+		// read sends the reader scanning.
+		if d.noteFileBound(err); d.fileBound != nil {
 			return nil, ref{}
 		}
 	}

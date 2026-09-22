@@ -452,30 +452,54 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   codespace ranges split a string into codes byte by byte, as 9.7.6.2 has it; bytes that fall in
   no range are consumed as the range holding the longest run of them says (9.7.6.3, the shortest
   such range deciding between equals) and are unmapped whatever number they make, since that
-  number is no code the CMap gives. Where a font names a predefined CMap the reader does not
+  number is no code the CMap gives. A code is its bytes and how many of them it has, so a
+  mapping is found among the mappings for codes of that length: `<41>` and `<0041>` are two
+  codes. A CMap whose ranges of two lengths hold the same leading bytes says two things about
+  how long a code is and is not used at all, its glyphs unmapped and counted, as a CMap past a
+  bound is not used. Where a font names a predefined CMap the reader does not
   carry, the codespace ranges of its `ToUnicode` map say how many bytes its codes have, or two
   bytes where the font declares none, and every glyph takes the font's default width: the CID a
   code stands for is in the CMap the reader does not have, and a width read at the code's own
   number would be some other glyph's. An object a cross-reference places in an object stream is
-  read by the number the stream's own header declares it at, every place that header gives kept
-  as it stands; where it declares one number twice, the cross-reference entry's index decides,
-  and only where the header declares that number at it.
+  read by the number the stream's own header declares it at. Every place that header gives is
+  kept as it stands, a pair the reader cannot use included, so that the place a cross-reference
+  entry names is the place the header gave; an offset is from the first object's and lies within
+  what the stream holds after it. Where the header declares one number twice, the entry's place
+  decides, and only where the header declares that number at it.
 
   Where an inline image's data ends is established from the way the image is encoded, and from
-  nothing else: the boundary the reader takes is the one every conforming viewer stops reading
-  the image at. The dictionary between `BI` and `ID` is read first, its keys under one spelling
-  and its abbreviations under the names they stand for: a key bearing on the end, given twice
-  with values that disagree, fails the page, as does a dictionary that never reaches `ID`. An
-  image no filter encodes is then measured — every viewer consumes the bytes its width, height,
-  bits per component and colour components take, the colour space resolved through the page's or
-  the form's resources, a `DeviceN` space of up to 32 colourants included — and `EI` must stand
-  where the samples end. An image a filter encodes is framed by that filter, every decoder of it
-  stopping where its encoding ends: the `>` of ASCIIHexDecode, the `~>` of ASCII85Decode, the
-  end-of-data of RunLengthDecode, the end of a deflate or LZW stream, the end-of-image of
-  DCTDecode, the end-of-block of CCITTFaxDecode, the last segment of JBIG2Decode, the
-  end-of-codestream or last box of JPXDecode; again `EI` must stand there. What such a framing
-  decodes is charged to `--max-inflate` and dropped, and a bound met framing an image fails the
-  page at that bound.
+  nothing else. The dictionary between `BI` and `ID` is read first, as pairs: a key with no
+  value, a keyword inside a value, a second `BI`, or a dictionary that never reaches `ID` fails
+  the page, and so does a key bearing on the end given twice with values that disagree — the
+  abbreviations of 8.9.7 standing for the names they abbreviate, a filter written alone standing
+  for the same filter in an array of one, and numbers compared by value, so `1` and `1.0` are one
+  value. One white-space byte separates `ID` from the data, a carriage return and a line feed
+  counting as the one end-of-line marker 7.2.3 makes them.
+
+  An image no filter encodes is then measured: every viewer consumes the bytes its width,
+  height, bit depth and colour components take, a row at a time and each row whole bytes. The
+  depth is one of 1, 2, 4, 8 or 16 written as an integer (an image mask's is 1, written or not);
+  the colour space is a device space, a space written as an array — `CalGray`, `CalRGB`, `Lab`,
+  `ICCBased` by its stream's `/N`, `Indexed`, `Separation`, `DeviceN` by its up to 32 colourants
+  — or the name of one of the resources in force, the page's or the form's, which is looked up
+  there and read the same way. An image whose dictionary says none of this is not measured.
+
+  An image a filter encodes is framed by its **first** filter — the filters after it act on what
+  the first decodes to, not on the bytes in the file — and only by one of the filters 8.9.7's
+  Table 93 gives an inline image an abbreviation for: ASCIIHexDecode's `>`, ASCII85Decode's `~>`,
+  RunLengthDecode's end-of-data, the end of a deflate or LZW stream, DCTDecode's end-of-image,
+  CCITTFaxDecode's end-of-block. The encoding must be the encoding it claims: hexadecimal digits
+  and white space, base-85 in groups of five within a four-byte word, a zlib header with the
+  deflate data and the Adler-32 checksum of what it decodes to, LZW ending at its end-of-data
+  code. What a framing decodes is charged to `--max-inflate` and dropped, and the deadline is
+  read as it goes.
+
+  For the fax and JPEG framings the reader walks the encoding's own structure and decodes no
+  rows and no blocks: an end-of-block is the end of fax data by definition and an end-of-image
+  marker the end of a JPEG's, so the image ends there and what follows is the page's content —
+  a JPEG whose scan holds no block still ends at its marker. Where such a structural end is
+  reached and no `EI` stands there, the page fails; the `EI` check refuses that, and establishes
+  nothing by itself.
 
   The length `/L` states is not a boundary: viewers disagree over it — one honours it where an
   `EI` follows, another decodes the filter and never reads it — so a record that took it would
@@ -483,15 +507,28 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   bytes are as common in an image's samples as any other two, and a comment, a string or a later
   image after a whole image holds them as readily. An image the reader can neither measure nor
   frame therefore fails the page, and the record says so: that is CCITTFaxDecode with
-  `/EndOfBlock false`, JBIG2Decode whose segments state no length, JPXDecode whose boxes or
-  tile-parts state none, `Crypt`, a filter this reader does not know, and an unfiltered image
-  whose width, height, bit depth or colour space the file does not give.
+  `/EndOfBlock false` or with `/EncodedByteAlign true` (where the fill bits before a row make the
+  bits of an end-of-line, and telling the two apart means decoding the rows), JBIG2Decode and
+  JPXDecode (which Table 93 gives no abbreviation and this reader does not frame), `Crypt`, a
+  filter this reader does not know **as the first filter**, an encoding that is not the encoding
+  it claims, and an unfiltered image whose width, height, bit depth or colour space the file does
+  not give. An encoding whose end lies past the 16 MiB the reader may read of one image has met
+  that bound and the page fails at it; a decode that meets `--max-inflate` fails with
+  `stream-over-bound`, which is the only bound that records one.
 
-  A predictor's last row, where the data ends inside it, is undone as far as the data goes. A
+  A predictor's last row, where the data ends inside it, is undone as far as the data goes, for
+  the PNG predictors at every depth the reader supports and for the TIFF predictor at 8 bits a
+  component, which is the only depth it implements. A
   damaged cross-reference is rebuilt by scanning for objects; everything read under the one it
   replaces goes with it — the objects, the object streams they came out of, and the fonts and
-  CMaps built from them — since an object number then names other bytes. A read that was under
-  way when the rebuild happened publishes nothing to the caches it returns through, and a reading
+  CMaps built from them — since an object number then names other bytes. A read publishes to a
+  cache, and records a bound or an undecodable object stream, only under the cross-reference it
+  began on, so a read that was under way when the rebuild happened leaves nothing of itself
+  behind; the bounds that are the file's rather than one cross-reference's — the objects a scan
+  of the file may find, the objects read in one document — stand whatever is rebuilt. The
+  encryption dictionary the trailer names is read again under the rebuilt cross-reference, and
+  its handler and key with it, before any page is read; a document is rebuilt at most once,
+  however its opening goes. A reading
   of the document's pages that began under the old cross-reference is begun again under the new,
   so that a record's pages were all read under one. The bounds met under the cross-reference that
   was replaced, and the object streams it could not decode, go with it: they are defects of a

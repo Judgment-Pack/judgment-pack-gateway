@@ -553,11 +553,14 @@ func TestOpeningBoundsArePDFMalformed(t *testing.T) {
 // object stream past the inflate bound, an object in a stream nested past
 // the bound -- is unread, and the bound is kept for the walk to end at.
 func TestObjectsPastABoundAreUnreadAndKept(t *testing.T) {
+	// The objects read in one document are what the file has cost the reader,
+	// which rebuilding its cross-reference does not give back: that bound is
+	// the file's and not one cross-reference's.
 	t.Run("the objects the reader reads", func(t *testing.T) {
 		d := openGenerated(t, normalDocument(&pdfgen.Builder{}))
 		d.parsed = maxObjects
-		if _, read := d.objectRead(1); read || !errors.Is(d.bound, errStructureBound) {
-			t.Fatalf("read %v, bound %v", read, d.bound)
+		if _, read := d.objectRead(1); read || !errors.Is(d.fileBound, errStructureBound) {
+			t.Fatalf("read %v, bound %v", read, d.fileBound)
 		}
 	})
 	objectStreams := func(extra string) (*pdfgen.Builder, int) {
