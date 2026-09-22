@@ -658,3 +658,35 @@ so disconnecting may require other connections using that Cloud project to sign 
 again. Separate provider stores do not change upstream revocation semantics.
 See [Gmail design and limits](../docs/design/gmail-connections.md). Live production
 consent/retrieval has not been tested without an operator's registration and consent.
+
+### Notion and Obsidian note sources
+
+`gateway-connections --provider notion` performs browser OAuth with automatic
+client registration. `--provider obsidian` connects an existing local vault via
+`configure {"path":"/absolute/vault"}`. Both expose bounded search and explicit
+selection; `adapter-sources --provider notion|obsidian` consumes the resulting
+single-use read grant. No write operation is exposed. Notion uses remote MCP;
+Obsidian reads local Markdown without a plugin. See
+[connected note sources](../docs/design/connected-note-sources.md) for protocol,
+custody, snapshot, account scope and limits.
+
+### Discover connection capabilities
+
+`gateway-connections --catalog` prints a versioned JSON catalog of implemented
+connection protocols and exits. It needs no account or state directory and makes
+no provider requests. Hosts use the advertised authentication, registration,
+selection and operation identifiers with their own supported handlers, then ask
+for live account status. The catalog does not authorize access or prove a service
+is currently available. See [the catalog contract](../docs/design/connection-catalog.md)
+for compatibility, limits and the distinction from tool listings and receipts.
+
+### Selected public web pages
+
+`adapter-web` accepts `{"url":"https://example.com/policy"}` and returns an HTTP
+acquisition envelope with a verified attachment record. Configure it as an HTTP
+source (`--source web=adapter-web --source-shape web=http --source-timeout web=60`)
+and allow 16 MiB source output. It admits public HTTPS only, validates DNS and
+redirect destinations before dialing, and fetches at most 4 MiB without cookies,
+credentials, proxies, JavaScript, or OCR. HTML becomes a static text snapshot;
+plain text/PDF retain original bytes. See [the source contract and limits](../docs/design/public-web-sources.md).
+Catalog v2 advertises it under `sources`, separately from account providers.

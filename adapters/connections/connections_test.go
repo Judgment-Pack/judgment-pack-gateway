@@ -29,6 +29,24 @@ func testStore(t *testing.T, principal string) *Store {
 	t.Cleanup(func() { s.Close() })
 	return s
 }
+
+func TestCatalogDispatchPreservesDisabledPolicyForUnsupportedRequests(t *testing.T) {
+	s := testStore(t, "catalog-policy")
+	b := New(s, true)
+	defer b.Close()
+	_, err := b.Handle(context.Background(), "send", []byte(`{}`))
+	if err != ErrPolicy {
+		t.Fatalf("unsupported method bypassed operator policy: %v", err)
+	}
+	if err := s.locked(func(v *state) error {
+		if !v.Disabled {
+			t.Fatal("unsupported request left other processes able to use the connection")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
 func testBroker(t *testing.T) (*Broker, *atomic.Int32, *string) {
 	t.Helper()
 	s := testStore(t, "alice")
@@ -76,7 +94,7 @@ func testBroker(t *testing.T) (*Broker, *atomic.Int32, *string) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	b.provider = provider{server.URL + "/auth", server.URL + "/token", server.URL + "/revoke", server.URL, server.Client(), false}
+	b.provider = provider{server.URL + "/auth", server.URL + "/token", server.URL + "/revoke", server.URL, server.Client(), false, false, false}
 	b.provider.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return b, count, accountID
 }

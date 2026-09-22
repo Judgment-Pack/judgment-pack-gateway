@@ -200,6 +200,16 @@ func (c *checker) shape(v any) {
 			sourceMembers["version"] = "string"
 			sourceMembers["mediaType"] = "string"
 		}
+		if source, ok := prov["source"].(map[string]any); ok && (source["kind"] == SourceConnected || source["kind"] == SourceResource) {
+			for _, key := range []string{"provider", "resourceId", "url", "version", "format"} {
+				sourceMembers[key] = "string"
+			}
+		}
+		if source, ok := prov["source"].(map[string]any); ok && source["kind"] == SourceWeb {
+			for _, key := range []string{"requestedUrl", "url", "version", "format", "mediaType", "responseDigest"} {
+				sourceMembers[key] = "string"
+			}
+		}
 		c.object("provenance.source", prov["source"], sourceMembers)
 		if prov["ocr"] != nil {
 			if ocr := c.object("provenance.ocr", prov["ocr"], map[string]string{"program": "string", "digest": "string", "pages": "array"}); ocr != nil {
@@ -347,7 +357,7 @@ func (c *checker) values(rec *Record) {
 	if pv.Adapter.Name == "" || !ValidDigest(pv.Adapter.Digest) {
 		c.fail("adapter-identity", "provenance.adapter has an empty name or a digest that is not one")
 	}
-	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive && pv.Source.Kind != SourceGmail {
+	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive && pv.Source.Kind != SourceGmail && pv.Source.Kind != SourceConnected && pv.Source.Kind != SourceWeb && pv.Source.Kind != SourceResource {
 		c.fail("source-kind", "provenance.source.kind is %q, which version 1 does not name", pv.Source.Kind)
 	}
 	if !stampForm.MatchString(pv.ObservedAt) {
@@ -818,9 +828,28 @@ func (c *checker) encryption(rec *Record) {
 }
 
 func (c *checker) source(rec *Record) {
-	if rec.Provenance.Source.Kind == SourceGoogleDrive || rec.Provenance.Source.Kind == SourceGmail {
+	if rec.Provenance.Source.Kind == SourceGoogleDrive || rec.Provenance.Source.Kind == SourceGmail || rec.Provenance.Source.Kind == SourceConnected || rec.Provenance.Source.Kind == SourceWeb || rec.Provenance.Source.Kind == SourceResource {
 		src, o := rec.Provenance.Source, rec.Original
-		if src.Kind == SourceGmail {
+		if src.Kind == SourceResource {
+			if !ValidResourceSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version {
+				c.fail("connection-resource", "Connection resource identity or snapshot is invalid")
+			}
+		} else if src.Kind == SourceWeb {
+			if !ValidWebSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version || rec.Provenance.OCR != nil {
+				c.fail("web-source", "Web source identity or snapshot is invalid")
+			}
+			if src.Format == "static-text-v1" {
+				if rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText {
+					c.fail("web-source", "Web static text snapshot is invalid")
+				}
+			} else if rec.Document.MediaType != src.MediaType || rec.Document.ID != src.ResponseDigest {
+				c.fail("web-source", "Web original snapshot is invalid")
+			}
+		} else if src.Kind == SourceConnected {
+			if !ValidConnectedSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version || rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText {
+				c.fail("connected-source", "Connected source identity or snapshot is invalid")
+			}
+		} else if src.Kind == SourceGmail {
 			if !regexp.MustCompile(`^[a-f0-9]{1,64}$`).MatchString(src.MessageID) || !regexp.MustCompile(`^[a-f0-9]{1,64}$`).MatchString(src.ThreadID) || !regexp.MustCompile(`^[0-9]{1,32}$`).MatchString(src.Version) || src.Format != "text-export-v1" || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText {
 				c.fail("gmail-source", "Gmail message export identity/version/format is invalid")
 			}
