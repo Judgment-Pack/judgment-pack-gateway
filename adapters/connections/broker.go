@@ -56,6 +56,9 @@ func New(s *Store, disabled bool) *Broker {
 func NewGmail(s *Store, disabled bool) *Broker {
 	return &Broker{store: s, provider: googleMail(), disabled: disabled}
 }
+func NewNotion(s *Store, disabled bool) *Broker {
+	return &Broker{store: s, provider: notion(), disabled: disabled}
+}
 func (b *Broker) Close() { b.mu.Lock(); defer b.mu.Unlock(); b.cancel() }
 func (b *Broker) cancel() {
 	if b.active != nil {
@@ -88,6 +91,15 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		}
 		return nil, ErrPolicy
 	}
+	// Preserve operator-policy persistence even for an unsupported request.
+	// Catalog validation must not delay disabling an existing connection.
+	descriptor, ok := LookupProvider(b.provider.kind())
+	if !ok || !descriptor.supports(method) {
+		return nil, ErrRequest
+	}
+	if b.provider.obsidian {
+		return b.vaultOperation(ctx, method, raw)
+	}
 	switch method {
 	case "status":
 		var empty struct{}
@@ -96,7 +108,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		}
 		out := Status{1, b.provider.kind(), "setup-required", nil, MaxFileBytes, 4}
 		err := b.store.locked(func(v *state) error {
-			if v.Client.ID != "" {
+			if v.Client.ID != "" || b.provider.notion {
 				out.State = "not-connected"
 			}
 			if v.Connection != nil {
@@ -107,6 +119,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		})
 		return out, err
 	case "configure":
+		if b.provider.notion {
+			return nil, ErrRequest
+		}
 		var c Client
 		if decode(raw, &c) != nil || !validClient(c) {
 			return nil, ErrRequest
@@ -122,17 +137,23 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		})
 		return map[string]bool{"saved": err == nil}, err
 	case "search", "select":
+		if b.provider.notion {
+			return b.notionOperation(ctx, method, raw)
+		}
 		if !b.provider.gmail {
 			return nil, ErrRequest
 		}
 		return b.mailOperation(ctx, method, raw)
 	case "connect", "pick":
-		if method == "pick" && b.provider.gmail {
+		if method == "pick" && (b.provider.gmail || b.provider.notion) {
 			return nil, ErrRequest
 		}
 		var empty struct{}
 		if decode(raw, &empty) != nil {
 			return nil, ErrRequest
+		}
+		if b.provider.notion {
+			return b.startNotion(ctx)
 		}
 		return b.start(method == "pick")
 	case "poll", "cancel":
@@ -174,8 +195,12 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return nil, err
 		}
 		revoked := true
-		if token != "" {
-			_, _, err = b.provider.request(ctx, "POST", b.provider.revoke, "", url.Values{"token": {token}}, 64<<10)
+		if b.provider.notion {
+			revoked = false
+		}
+		if token != "" && !b.provider.notion {
+			values := url.Values{"token": {token}}
+			_, _, err = b.provider.request(ctx, "POST", b.provider.revoke, "", values, 64<<10)
 			revoked = err == nil
 		}
 		return map[string]bool{"disconnected": true, "revoked": revoked}, nil
@@ -285,13 +310,34 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 		t, resultErr = b.provider.exchange(ctx, f.client, url.Values{"grant_type": {"authorization_code"}, "code": {q.Get("code")}, "code_verifier": {f.verifier}, "redirect_uri": {f.redirect}})
 	}
 	if resultErr == nil {
-		a, resultErr = b.provider.who(ctx, t.Access)
+		if b.provider.notion {
+			if !identifier.MatchString(t.User) || !identifier.MatchString(t.Workspace) {
+				resultErr = ErrProvider
+			} else {
+				a = account{ID: t.Workspace + ":" + t.User, Name: "Notion"}
+			}
+		} else {
+			a, resultErr = b.provider.who(ctx, t.Access)
+		}
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.active != f || f.State != "pending" || ctx.Err() != nil {
 		http.Error(w, "Authorization canceled.", 400)
 		return
+	}
+	if b.provider.notion && resultErr == Error("registration-expired") {
+		// Only invalidate the registration used by this still-current flow.
+		// A concurrent disconnect or reconfiguration must never be undone.
+		if err := b.store.locked(func(v *state) error {
+			if v.Disabled || v.Epoch != f.epoch || v.Client != f.client {
+				return ErrCanceled
+			}
+			v.Client, v.Redirect, v.Connection, v.Epoch = Client{}, "", nil, randomID()
+			return b.store.write("state.json", v)
+		}); err != nil {
+			resultErr = err
+		}
 	}
 	if resultErr == nil {
 		resultErr = b.store.locked(func(v *state) error {

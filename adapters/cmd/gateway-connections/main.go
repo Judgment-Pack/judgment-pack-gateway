@@ -19,8 +19,23 @@ func run() int {
 	dir := fs.String("state-dir", "", "")
 	principal := fs.String("principal", "", "")
 	provider := fs.String("provider", "google-drive", "")
+	catalog := fs.Bool("catalog", false, "")
 	disabled := fs.Bool("disabled", false, "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || (*provider != "google-drive" && *provider != "gmail") {
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
+		return 2
+	}
+	if *catalog {
+		// Discovery must never open custody, configure a publisher, or consume
+		// stdin. Refuse mixed modes rather than silently ignoring their flags.
+		if fs.NFlag() != 1 {
+			return 2
+		}
+		if json.NewEncoder(os.Stdout).Encode(connections.ConnectionCatalog()) != nil {
+			return 1
+		}
+		return 0
+	}
+	if _, ok := connections.LookupProvider(*provider); !ok {
 		return 2
 	}
 	client, err := publisherClient(publisherRegistration)
@@ -31,12 +46,18 @@ func run() int {
 	if *provider == "gmail" {
 		open = connections.OpenGmailStore
 	}
+	if *provider == "notion" {
+		open = connections.OpenNotionStore
+	}
+	if *provider == "obsidian" {
+		open = connections.OpenObsidianStore
+	}
 	s, err := open(*dir, *principal)
 	if err != nil {
 		return 1
 	}
 	defer s.Close()
-	if !*disabled && client.ID != "" {
+	if !*disabled && client.ID != "" && (*provider == "google-drive" || *provider == "gmail") {
 		if err := s.EnsureClient(client); err != nil {
 			return 1
 		}
@@ -44,6 +65,12 @@ func run() int {
 	b := connections.New(s, *disabled)
 	if *provider == "gmail" {
 		b = connections.NewGmail(s, *disabled)
+	}
+	if *provider == "notion" {
+		b = connections.NewNotion(s, *disabled)
+	}
+	if *provider == "obsidian" {
+		b = connections.NewObsidian(s, *disabled)
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
