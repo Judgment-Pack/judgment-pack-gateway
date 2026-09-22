@@ -462,11 +462,18 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   sources it maps, every one of them, the single codes of a `cidchar` or `bfchar` section as much
   as the ends of a range: one length throughout is that length, several are given the codes each
   actually maps, and where those cannot stand beside one another the map says two things about
-  how long a code is and is not used either. A map holding no mapping at all is read at two
+  how long a code is and is not used either. The ranges given a length are drawn about the runs
+  of codes it maps and no wider, so that a length takes in no leading byte another length's codes
+  begin with, and are split where a byte carries — `<00FF>` to `<0100>` is two ranges, a range
+  holding a byte at a time, and the one range from `00` to `01` beside `FF` to `00` holds neither
+  of those codes; where a length maps more runs than the reader holds ranges for, they are taken
+  together, from its lowest code to its highest. A map holding no mapping at all is read at two
   bytes. What a CMap establishes is what it holds that a code can be looked up in — a codespace
   range it declared, a range it maps, a single code it maps — and not what the parser was given
   to read: an entry whose destination is no text (an empty string, an odd number of bytes, an
-  unpaired surrogate) maps nothing, and a map of nothing establishes nothing. What follows from that depends on which CMap it was: a composite font whose
+  unpaired surrogate) maps nothing, and neither does a range of codes whose destinations are
+  every one of them a surrogate half or past the last scalar value Unicode has; a map of nothing
+  establishes nothing. What follows from that depends on which CMap it was: a composite font whose
   own **encoding** CMap is unusable has its glyphs unmapped and counted, by the rule below, while
   a font whose **`ToUnicode`** map is unusable keeps the encoding it has — a simple font's bytes
   are codes of one byte whatever a `ToUnicode` map says, so its glyphs are the ones its own
@@ -542,7 +549,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   the colour space is a device space, a space written as an array — `CalGray`, `CalRGB`, `Lab`,
   `ICCBased` by its stream's `/N`, `Indexed`, `Separation`, `DeviceN` by its up to 32 colourants
   — or the name of one of the resources in force, the page's or the form's, which is looked up
-  there and read the same way. An image whose dictionary says none of this is not measured. The
+  there and read the same way. An `ICCBased` space's `/N` is 1, 3 or 4 written as an integer and
+  is no other count (8.6.5.5): a stream declaring 2, 5, 32, `3.0` or no number at all has
+  declared a packing no such space has, and an image in it is not measured from it.
+  An image whose dictionary says none of this is not measured. The
   16 MiB bound below is a bound on the bytes the samples take, reached through the packing: a row
   one bit a sample wide holds eight times the pixels of a row of the same length at eight bits,
   and an image is past the bound when its bytes are past it and not when its pixels are.
@@ -571,10 +581,15 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   a JPEG whose scan holds no block still ends at its marker. In entropy-coded data `FF 00` is a
   sample byte and a restart marker resumes the data, the fill bytes ITU T.81 allows before one
   belonging to it: only a marker that is neither ends the scan. Outside that data the walk steps
-  from marker to marker of the marker set alone, and two bytes of anything else are no segment
+  from marker to marker of the marker set alone — the markers that carry a segment whose first
+  two bytes are its length, `C0`–`C7`, `C9`–`CF`, `DA`–`DF`, `E0`–`EF` and `FE`; the markers that
+  carry none, `01` and `D0`–`D7`; `D9`, where the image ends; and `FF`, fill before a marker —
+  and every other code fails the page, two bytes of anything else being no segment
   length: `FF 00` is the stuffing of a sample byte there as it is inside the scan, the codes
-  below `C0` that are neither the temporary marker nor a restart are reserved, and a second
-  start-of-image begins no segment. A walk that read those two bytes as a length would step over
+  below `C0` that are neither the temporary marker nor a restart are reserved, a second
+  start-of-image begins no segment, and `C8` and `F0`–`FD` are reserved for extensions of the
+  format whose segments are whatever an extension made of them, which this reader does not
+  establish. A walk that read those two bytes as a length would step over
   the end-of-image the image really has, and over the `EI` and the operators after it, to
   whatever end-of-image lay beyond; the reader fails the page instead. Where such a structural end is
   reached and no `EI` stands there, the page fails; the `EI` check refuses that, and establishes
@@ -623,18 +638,30 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   short of a bound is what the scan is for. A cross-reference section whose own read met the
   rebuild is abandoned where it stands: it declares none of its entries, its trailer carries the
   chain no further, and its failure — a bound of its own fields included — is published no more
-  than its entries are, since it is a section of a document this one no longer is. What the scan
+  than its entries are, since it is a section of a document this one no longer is. That holds
+  from the section's first field: a stream section whose `/Length` is the reference that rebuilt
+  declares no entry either. The sections the chain had already queued are dropped with it — a
+  `/Prev` or an `/XRefStm` named by the trailer of a section this document no longer has leads
+  nowhere it says — while what the scan itself met stands, being the file's. What the scan
   registers, it registers under the trailer it rebuilt: the objects an object stream holds are
   registered once that trailer has said which handler the document is read through, since a
   stream decoded with the key the old trailer named holds no object to register and the file is
   scanned once. The
   encryption dictionary the trailer names is read again under the rebuilt cross-reference, and
-  its handler and key with it, before the restarted pages are read — a rebuild met while the page tree's root
+  its handler and key with it, before the restarted pages are read. It is read as it stands: that
+  dictionary's own strings are never encrypted (7.6.1), whichever read reaches it — the opening
+  of a handler, or an ordinary reference from another object's field, resolved while the handler
+  being replaced was still installed — and what the reader holds of the objects it has read is
+  dropped before a handler is opened, so that the dictionary a handler is opened from is the
+  dictionary the file holds and not one deciphered with a key this document does not name — a rebuild met while the page tree's root
   is looked for is a rebuild the reading begins again from the top, the root the catalog now
   names being read under a handler this walk is not the one to establish. Where the rebuilt
   trailer names no encryption at all, what was read through the handler the old one named was
   read through a key this document does not have, and those objects and the fonts and CMaps built
-  from them are dropped as they are when a handler is installed. Extracting the pages ends at the
+  from them are dropped as they are when a handler is installed. A bound that is the file's own, met while a page was read — a scan of the whole file that ended
+  at one — refuses the document as it refuses one met opening it: what the reader has of the
+  pages was read while the file was being scanned, and a bound is not read past wherever it is
+  met. Extracting the pages ends at the
   page whose reading rebuilt the cross-reference — the generation is read again the moment that
   page's content comes back, before any of it is interpreted — and a walk that met a rebuild ends
   where it stands and is not extracted at all: the pages after it belong to a document

@@ -705,7 +705,9 @@ func TestCMapPastItsMappingsIsNotUsed(t *testing.T) {
 	cmapOf := func(extra string) []byte {
 		var sb strings.Builder
 		sb.WriteString("begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n")
-		item := strings.Repeat("<41> ", 65536)
+		// Two bytes to a destination: a destination of one byte is half a
+		// code unit and maps nothing (9.10.3).
+		item := strings.Repeat("<0041> ", 65536)
 		for i := 0; i < maxCMapEntries/65536; i++ {
 			sb.WriteString("1 beginbfrange <0000> <FFFF> [" + item + "] endbfrange\n")
 		}
@@ -1065,8 +1067,8 @@ func TestCMapDestinationsPastTheirBoundsMapNothing(t *testing.T) {
 		"a bfrange array element at the bound":     {"1 beginbfrange <0005> <0005> [<" + atBound + ">] endbfrange", 5, whole},
 		"a bfrange array element one byte past it": {"1 beginbfrange <0005> <0005> [<" + odd + ">] endbfrange", 5, ""},
 		"a bfrange array element past the bound":   {"1 beginbfrange <0005> <0005> [<" + long + ">] endbfrange", 5, ""},
-		"the last element a bfrange spans":         {"1 beginbfrange <0000> <0001> [<41> <42> <43>] endbfrange", 1, "B"},
-		"an element past the codes it spans":       {"1 beginbfrange <0000> <0001> [<41> <42> <43>] endbfrange", 2, ""},
+		"the last element a bfrange spans":         {"1 beginbfrange <0000> <0001> [<0041> <0042> <0043>] endbfrange", 1, "B"},
+		"an element past the codes it spans":       {"1 beginbfrange <0000> <0001> [<0041> <0042> <0043>] endbfrange", 2, ""},
 	} {
 		b := &pdfgen.Builder{}
 		num := cidFont(b, "", b.Add(pdfgen.Object{Body: "<< >>", Stream: []byte("begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n" + c.mapping + "\nendcmap\n")}))

@@ -1075,6 +1075,16 @@ func (d *Document) jpegFraming(data []byte) (int, error) {
 		if marker < 0xC0 || marker == 0xD8 {
 			return 0, malformed("DCTDecode: a marker was expected")
 		}
+		// The JPG and JPGn codes -- C8, and F0 to FD -- are reserved for
+		// extensions of the format (T.81 Table B.1), whose segments are
+		// whatever an extension made of them: that two bytes stand there for
+		// a length is not established, and a walk that took them for one
+		// would step over the end-of-image the image really has as readily
+		// as a walk over any other two bytes. The reader frames what it
+		// knows the shape of and fails the page otherwise.
+		if marker == 0xC8 || (marker >= 0xF0 && marker <= 0xFD) {
+			return 0, malformed("DCTDecode: a marker reserved for an extension the reader does not frame")
+		}
 		if i+3 >= len(data) {
 			return 0, errFilterUnended
 		}

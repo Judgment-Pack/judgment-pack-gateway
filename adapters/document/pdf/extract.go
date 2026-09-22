@@ -104,7 +104,18 @@ func Extract(ctx context.Context, data []byte, opt Options) *Result {
 		// its encryption included -- rather than a discarded page list being
 		// interpreted first and its reading thrown away after.
 		if stop == nil && doc.generation == generation {
-			extractPages(ctx, w, opt, result)
+			if refused := extractPages(ctx, w, opt, result); refused {
+				// A bound met reading the file itself while the pages were
+				// interpreted -- a scan of the whole file that ended at one,
+				// the objects one document may hold -- is no defect of a page
+				// and no defect of one cross-reference: the reader met it
+				// reading this file, and what it read of the file after it is
+				// not a reading of the document. The walk ends at such a
+				// bound wherever it meets one, and so does what follows the
+				// walk.
+				*result = Result{Encryption: encryption, Fatal: &Problem{Code: "pdf-malformed", Message: boundMessage}}
+				return result
+			}
 		}
 		if doc.generation == generation {
 			return result
@@ -185,6 +196,12 @@ func establishEncryption(ctx context.Context, doc *Document, result *Result) err
 	for again := 0; ; again++ {
 		generation := doc.generation
 		doc.crypt = nil
+		// What the reader holds of the objects it has read goes with the
+		// handler being put down: an object resolved through that handler was
+		// read through a key this reading no longer uses, the encryption
+		// dictionary the trailer names among them, and the handler is opened
+		// from the dictionary the file holds.
+		doc.dropCachedObjects()
 		enc, err := doc.openEncryption()
 		if doc.generation != generation && again == 0 {
 			continue
@@ -315,8 +332,10 @@ type walked struct {
 // extractPages is step 5. It ends the moment the cross-reference is rebuilt:
 // the pages after that one are of a document this one no longer is, and the
 // caller reads the document again from the top. What reading them would have
-// cost is not spent on them twice.
-func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
+// cost is not spent on them twice. It reports whether the document is refused
+// rather than listed: a bound met reading the file itself while a page was
+// read ends the reading as it ends the walk.
+func extractPages(ctx context.Context, w *walked, opt Options, result *Result) bool {
 	generation := w.doc.generation
 	for i, pn := range w.pages {
 		number := i + 1
@@ -324,7 +343,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline had passed before page %d was extracted", number, len(w.pages))})
-			return
+			return false
 		}
 		content, err := pageContent(w.doc, pn.dict)
 		if w.doc.generation != generation {
@@ -332,7 +351,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 			// bytes it gave back are the content of a page this document no
 			// longer has, and the resources the walk gathered beside them name
 			// objects it no longer has either. Nothing of it is interpreted.
-			return
+			return false
 		}
 		var pr pageResult
 		if err == nil {
@@ -347,13 +366,18 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 			// Reading this page rebuilt the cross-reference: what was read of
 			// it belongs to no reading this document keeps, and the pages
 			// listed after it are not this reading's pages at all.
-			return
+			return false
+		}
+		if w.doc.fileBound != nil {
+			// A bound met reading the file itself, while this page was read:
+			// the reading ends here, whatever the page came to.
+			return true
 		}
 		if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline passed while page %d was extracted", number, len(w.pages))})
-			return
+			return false
 		}
 		if err != nil {
 			code, message := pageFailure(err, number)
@@ -364,7 +388,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 		if pr.cut {
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "text-over-bound", Message: notListed(fmt.Sprintf("listing page %%d would take the text past %d bytes", opt.MaxTextBytes), number, len(w.pages)), Page: number})
-			return
+			return false
 		}
 		page := Page{Number: number}
 		switch {
@@ -378,6 +402,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 		result.TextBytes += len(page.Text)
 		result.Pages = append(result.Pages, page)
 	}
+	return w.doc.fileBound != nil
 }
 
 // notListed completes a message with the pages it leaves unlisted.

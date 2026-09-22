@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"sort"
 	"unicode/utf16"
 )
 
@@ -229,22 +230,16 @@ func (c *cmap) parsed() *cmap {
 // which length a code beginning with those bytes has is then not something
 // the map says.
 func inferredCodespaces(c *cmap) []codespace {
-	var seen [5]*codespace
+	var mapped [5][]codeRun
 	lengths := 0
 	add := func(nbytes int, lo, hi uint32) {
-		if nbytes < 1 || nbytes > 4 {
+		if nbytes < 1 || nbytes > 4 || hi < lo {
 			return
 		}
-		low, high := codeBytes(lo, nbytes), codeBytes(hi, nbytes)
-		if seen[nbytes] == nil {
-			cs := codespaceOf(low, high)
-			seen[nbytes], lengths = &cs, lengths+1
-			return
+		if len(mapped[nbytes]) == 0 {
+			lengths++
 		}
-		for i := 0; i < nbytes; i++ {
-			seen[nbytes].lo[i] = min(seen[nbytes].lo[i], low[i])
-			seen[nbytes].hi[i] = max(seen[nbytes].hi[i], high[i])
-		}
+		mapped[nbytes] = append(mapped[nbytes], codeRun{lo, hi})
 	}
 	for _, ranges := range [][]cmapRange{c.uniRanges, c.cidRanges} {
 		for _, r := range ranges {
@@ -262,18 +257,110 @@ func inferredCodespaces(c *cmap) []codespace {
 		return []codespace{fullCodespace(2)}
 	case 1:
 		for n := 1; n <= 4; n++ {
-			if seen[n] != nil {
+			if len(mapped[n]) > 0 {
 				return []codespace{fullCodespace(n)}
 			}
 		}
 	}
 	var out []codespace
 	for n := 1; n <= 4; n++ {
-		if seen[n] != nil {
-			out = append(out, *seen[n])
-		}
+		out = append(out, codespacesCovering(n, mapped[n])...)
 	}
 	return out
+}
+
+// codeRun is a run of codes of one length, read as numbers: what one mapping
+// of the CMap covers.
+type codeRun struct{ lo, hi uint32 }
+
+// maxInferredCodespaces bounds the ranges inferred for one code length, so
+// that the four lengths together declare no more than one CMap may.
+const maxInferredCodespaces = maxCodespaces / 4
+
+// codespacesCovering is the codespace ranges of nbytes bytes that hold the
+// codes given: the runs are put in order and joined where they meet, and each
+// run is split where a byte carries, since a codespace range is a range of
+// each byte and not of the code read as one number -- the codes from 00FF to
+// 0100 are two ranges, where the one range 00 to 01 of a first byte beside FF
+// to 00 of a second holds neither of them. The ranges hold what the map maps
+// and no more, so that a length stands beside another without taking in the
+// leading bytes the other's codes begin with.
+//
+// Where the runs of one length need more ranges than the reader holds for it,
+// they are taken together, from the lowest code to the highest: the ranges
+// then hold codes the map does not map, which is the one widening a reader
+// that cannot hold them all can make.
+func codespacesCovering(nbytes int, runs []codeRun) []codespace {
+	if len(runs) == 0 {
+		return nil
+	}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].lo < runs[j].lo })
+	joined := runs[:1]
+	for _, r := range runs[1:] {
+		last := &joined[len(joined)-1]
+		if uint64(r.lo) <= uint64(last.hi)+1 {
+			last.hi = max(last.hi, r.hi)
+			continue
+		}
+		joined = append(joined, r)
+	}
+	var out []codespace
+	for _, r := range joined {
+		// One run takes at most two ranges for each byte it may carry across.
+		if len(out)+2*nbytes > maxInferredCodespaces {
+			low, high := joined[0].lo, joined[len(joined)-1].hi
+			return appendCarrySplit(nil, codeBytes(low, nbytes), codeBytes(high, nbytes), 0)
+		}
+		out = appendCarrySplit(out, codeBytes(r.lo, nbytes), codeBytes(r.hi, nbytes), 0)
+	}
+	return out
+}
+
+// appendCarrySplit adds to out the codespace ranges holding every code from
+// lo to hi and no other, the bytes of the two before at being equal, which
+// the caller has made so. A byte position where the two differ is split into
+// the low end's own run to the top of its byte, the bytes between the two
+// taken whole, and the high end's run from the bottom of its byte: each of
+// those is a range of each byte, which a run across a carry is not.
+func appendCarrySplit(out []codespace, lo, hi []byte, at int) []codespace {
+	n := len(lo)
+	if at >= n-1 || lo[at] == hi[at] {
+		if at < n-1 {
+			return appendCarrySplit(out, lo, hi, at+1)
+		}
+		return append(out, codespaceOf(lo, hi))
+	}
+	ends := func(b []byte, from int, fill byte) []byte {
+		out := append([]byte{}, b...)
+		for i := from; i < n; i++ {
+			out[i] = fill
+		}
+		return out
+	}
+	out = appendCarrySplit(out, lo, ends(lo, at+1, 0xFF), at+1)
+	if hi[at]-lo[at] > 1 {
+		between := ends(lo, at+1, 0x00)
+		between[at] = lo[at] + 1
+		top := ends(hi, at+1, 0xFF)
+		top[at] = hi[at] - 1
+		out = append(out, codespaceOf(between, top))
+	}
+	return appendCarrySplit(out, ends(hi, at+1, 0x00), hi, at+1)
+}
+
+// rangeMapsScalar reports whether a range of codes standing at the scalar
+// values from dst upwards stands at any value a text can carry: the values a
+// surrogate half has and those past the last of Unicode are no characters,
+// and a range lying wholly among them maps nothing at all.
+func rangeMapsScalar(dst, span uint32) bool {
+	first, last := uint64(dst), uint64(dst)+uint64(span)
+	if last > 0x10FFFF {
+		last = 0x10FFFF
+	}
+	if first > last {
+		return false
+	}
+	return first < 0xD800 || last > 0xDFFF
 }
 
 // codeBytes is a code of nbytes bytes written as its bytes, most significant
@@ -490,6 +577,15 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				continue
 			}
 			if unicode {
+				// A range whose destinations are no text a page can carry --
+				// every code in it standing at a surrogate half or past the
+				// last scalar value -- maps nothing, as a destination that is
+				// no character maps nothing: it is not held, so its codes are
+				// U+FFFD and counted, and a map holding only such ranges
+				// establishes no encoding. What reading it cost is charged.
+				if !rangeMapsScalar(uint32(d), h-l) {
+					continue
+				}
 				c.uniRanges = append(c.uniRanges, cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(d)})
 			} else {
 				c.cidRanges = append(c.cidRanges, cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(d)})
@@ -498,8 +594,14 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 			if !unicode || len(d) > maxCMapDestinationBytes {
 				continue
 			}
+			// The entry is charged before its destination is read, as a
+			// single mapping's is: the reader did the reading whether what it
+			// read is text or not.
+			if !c.take() {
+				continue
+			}
 			runes := utf16Runes(d)
-			if len(runes) == 0 || !c.take() {
+			if len(runes) == 0 {
 				continue
 			}
 			r := cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(runes[0])}
@@ -591,12 +693,10 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 	}
 }
 
-// utf16Runes decodes a ToUnicode destination: UTF-16BE, with a lone byte
-// read as a single code unit's low half.
+// utf16Runes decodes a ToUnicode destination, which 9.10.3 writes as
+// UTF-16BE: an odd number of bytes is half a code unit, and half a code unit
+// is no character, whether the odd byte stands alone or after whole ones.
 func utf16Runes(b []byte) []rune {
-	if len(b) == 1 {
-		return []rune{rune(b[0])}
-	}
 	if len(b)%2 != 0 {
 		return nil
 	}

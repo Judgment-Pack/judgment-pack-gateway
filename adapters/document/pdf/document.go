@@ -391,7 +391,18 @@ func (d *Document) readXref() error {
 		}
 		sections++
 		seen[offset] = true
+		generation := d.generation
 		trailer, err := d.readXrefSection(offset)
+		if d.generation != generation {
+			// The section's own read rebuilt the cross-reference. The
+			// sections still queued were named by the trailers of sections
+			// this document no longer has -- a /Prev, a hybrid file's
+			// /XRefStm -- and where those offsets lead is nothing this
+			// document says: the traversal ends here and the queue is
+			// dropped. The cross-reference is the rebuilt one, which the scan
+			// filled, and what the scan itself met is the file's and stands.
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -432,7 +443,7 @@ func (d *Document) readXrefSection(offset int64) (Dict, error) {
 	// the startxref the file ends with.
 	defer d.beginRead()()
 	generation := d.generation
-	trailer, err := d.readXrefSectionAt(offset)
+	trailer, err := d.readXrefSectionAt(offset, generation)
 	if d.generation != generation {
 		// The read found the cross-reference rebuilt: this section is a
 		// section of a document this one no longer is, and neither what it
@@ -447,8 +458,11 @@ func (d *Document) readXrefSection(offset int64) (Dict, error) {
 }
 
 // readXrefSectionAt is the read of one section, within the scope
-// readXrefSection begins for it.
-func (d *Document) readXrefSectionAt(offset int64) (Dict, error) {
+// readXrefSection begins for it. generation is the cross-reference the
+// section began under: the fields of a cross-reference stream are resolved
+// from here on, its /Length among them, and a field that rebuilds leaves the
+// ones after it fields of a section this document no longer has.
+func (d *Document) readXrefSectionAt(offset int64, generation int) (Dict, error) {
 	lex := newLexer(d.data, int(offset))
 	lex.skipSpace()
 	if bytes.HasPrefix(d.data[lex.pos:], []byte("xref")) {
@@ -457,6 +471,14 @@ func (d *Document) readXrefSectionAt(offset int64) (Dict, error) {
 	}
 	// "N G obj" with a stream of /Type /XRef.
 	num, _, body, err := d.parseIndirectAt(int(offset))
+	if d.generation != generation {
+		// Locating the stream's data resolved its /Length, and that read
+		// rebuilt the cross-reference: the stream it reached is a stream of a
+		// document this one no longer is. Nothing of it is read -- not one
+		// entry -- and what it met is discarded with it, as readXrefSection
+		// discards what this returns.
+		return nil, nil
+	}
 	if err != nil {
 		return nil, malformedBy(err, "cross-reference at offset %d", offset)
 	}
@@ -465,7 +487,7 @@ func (d *Document) readXrefSectionAt(offset int64) (Dict, error) {
 		return nil, malformed("cross-reference at offset %d is neither a table nor a stream", offset)
 	}
 	_ = num
-	return d.readXrefStream(s)
+	return d.readXrefStream(s, generation)
 }
 
 func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
@@ -535,8 +557,11 @@ func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
 	}
 }
 
-func (d *Document) readXrefStream(s *stream) (Dict, error) {
-	generation := d.generation
+// readXrefStream reads the entries of a cross-reference stream. generation is
+// the cross-reference the section began under, and not the one this read
+// finds: the stream's own /Length was resolved before this, and a section
+// abandoned there declares no entry either.
+func (d *Document) readXrefStream(s *stream, generation int) (Dict, error) {
 	if s.dict["Type"] != Name("XRef") {
 		return nil, malformed("cross-reference stream is not /Type /XRef")
 	}
@@ -805,6 +830,13 @@ func (d *Document) reconstruct() error {
 	// dictionary again and reports it: see establishEncryption.
 	d.trailer = trailer
 	d.crypt = nil
+	// What was read through the handler being replaced goes with it, the
+	// encryption dictionary the rebuilt trailer names among them: an object
+	// resolved while the scan ran -- an object stream's /Length naming that
+	// dictionary, say -- was read through the old key, and a dictionary whose
+	// strings were deciphered with it is no reading of the dictionary this
+	// document names.
+	d.dropCachedObjects()
 	_, _ = d.openEncryption()
 	for _, found := range deferred {
 		// Each step of this loop may decode a whole object stream.
@@ -1142,13 +1174,24 @@ func (d *Document) objectRead(num int) (object, bool) {
 			d.publish(generation, num, unread{})
 			return nil, false
 		}
-		if d.crypt != nil {
+		if d.crypt != nil && !d.isEncryptionDictionary(num) {
 			body = d.crypt.decryptObject(body, num, gen)
 		}
 		v = body
 	}
 	d.publish(generation, num, v)
 	return v, true
+}
+
+// isEncryptionDictionary reports whether the number is the one the trailer's
+// /Encrypt names. That dictionary's own strings are not encrypted (7.6.1):
+// they are read as they stand whichever read reaches it -- the opening of the
+// handler, which reads it with no handler installed, or an ordinary reference
+// from another object's field, which may be read while one is -- so that the
+// dictionary a handler is opened from is the same dictionary either way.
+func (d *Document) isEncryptionDictionary(num int) bool {
+	r, ok := d.trailer["Encrypt"].(ref)
+	return ok && r.num == num
 }
 
 // publish records in the object cache what a read that began under the

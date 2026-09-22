@@ -1197,7 +1197,16 @@ func (d *Document) inlineColorComponents(cs object, resources Dict, depth int) i
 			if !ok {
 				return 0
 			}
-			if n, ok := d.intOf(s.dict["N"]); ok && n >= 1 && n <= maxColorComponents {
+			// 8.6.5.5 gives /N three values and no others: 1, 3 or 4, the
+			// components of the space the profile is of. A stream declaring
+			// any other count -- 2, 5, 32, no number, or a real such as 3.0,
+			// since a count of components is written as an integer -- has
+			// declared a packing no ICCBased space has, and how long the
+			// samples of an image in it are is not something the file says.
+			// Such an image is not measured, and the page fails rather than
+			// the record carrying a reading recovered from a count the
+			// specification does not give.
+			if n, ok := d.resolve(s.dict["N"]).(int64); ok && (n == 1 || n == 3 || n == 4) {
 				return n
 			}
 		case "DeviceN":
