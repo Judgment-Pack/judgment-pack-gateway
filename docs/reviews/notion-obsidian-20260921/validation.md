@@ -30,6 +30,22 @@ independently discriminating test or weaken other checks to make a mutation fail
 
 ## Checks
 
-Results and exact candidate SHA are added after completion. The optional full
-adapter race run encountered timing assertions in unchanged Airbyte/PDF packages;
+Gateway implementation candidate: `ff291e9` (the subsequent validation-only commit
+does not alter its code).
+
+- Required gateway core tests and vet passed; frozen corpus: 30 canonicalization
+  vectors and 41 store vectors, zero disagreements.
+- Required adapter tests and vet passed; Windows cross-vet passed.
+- Desk backend tests and vet passed, including the 2.3-second synthetic companion
+  commit that the former 2-second cancellation kill would interrupt.
+- Desk focused suite: 226 tests passed. Full suite: 3,783 passed, one skipped,
+  with two bundle assertions failing because the fresh clone had no dist yet;
+  all three bundle assertions passed after the production build. Additional
+  source-version tests passed. Typecheck and production build passed.
+- All 926 mutation needles match; needle-script tests (7) and bundle-script tests
+  (3) passed. All 12 locales have complete copy; no placeholder errors.
+- Browser evidence is recorded in Desk's `docs/reviews/notion-review-recovery/`.
+
+ The optional full
+adapter race run encountered timing assertions in unchanged Airbyte/PDF/MCP process packages;
 changed connection, attachment and source-command packages passed under `-race`.
