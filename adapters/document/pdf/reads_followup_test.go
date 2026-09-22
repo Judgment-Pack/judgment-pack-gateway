@@ -4959,7 +4959,13 @@ func TestReadsABoundMetWhileAPageIsReadRefusesTheDocument(t *testing.T) {
 					t.Errorf("opening the document scanned it: the generation is %d and the file was rebuilt %v; what sends the reader scanning is the page's reading",
 						d.generation, d.reconstructed)
 				}
-				r := extract(t, data)
+				// The files of megabytes are scanned in seconds on a bare build,
+				// and in ten times that under the race detector, past the ten
+				// seconds the shared helper allows: the reading is given the time
+				// it needs, since what is asserted is the bound and not the clock.
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				r := Extract(ctx, data, testOptions())
+				cancel()
 				if !c.large {
 					// The other reader recovers the page; its recovery is not
 					// this reader's bound. It is not asked about the files of
