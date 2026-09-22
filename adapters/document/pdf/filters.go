@@ -592,34 +592,46 @@ func abs(x int) int {
 	return x
 }
 
-// Where a filter's own data ends. An inline image states no length that must
-// be believed, so for an image a filter encodes the reader asks the filter:
-// every filter below frames its data, and where the framing ends the image's
-// data ends. Nothing of what such an image shows is kept -- the reader
+// Where a filter's own data ends. An inline image carries no length the
+// reader can believe -- viewers disagree over /L, and a boundary taken from a
+// declaration is one reading of the page rather than the page -- so for an
+// image a filter encodes the reader asks the filter: every filter framed
+// below ends its data where every decoder of it stops, and that is where the
+// image ends. Nothing of what such an image shows is kept -- the reader
 // decodes an inline image only to learn where the content after it resumes --
 // but what a decode produces is charged to the document's inflate budget as
 // any stream's output is, and the input is bounded by the caller, which hands
 // over at most the bytes one inline image may hold.
 
+// errFilterNotFramed is a filter whose framing this reader does not read. It
+// is told from a framing that met a bound or found no end: those are the
+// image's defect, reported on the page, and this one is the reader's reach.
+var errFilterNotFramed = errors.New("the reader does not frame this filter's data")
+
+// errFilterUnended is encoded data that does not end within what the reader
+// may read of one inline image.
+var errFilterUnended = errors.New("the encoded data of an inline image does not end")
+
 // filterFraming is where the data of a stream encoded by the filter named
-// ends, as offsets into data at which its end may lie; it is empty for a
-// filter whose framing this reader does not read -- CCITTFaxDecode,
-// JBIG2Decode, JPXDecode, Crypt and any it does not know -- and for data
-// whose framing does not end within what it was given.
-func (d *Document) filterFraming(filter Name, parms object, data []byte) []int {
+// ends, as offsets into data at which its end may lie. errFilterNotFramed
+// says the reader does not frame this filter, errFilterUnended that the data
+// holds no end of its own, and any other error is a bound met while framing,
+// which is the page's problem and not a reason to read the image some other
+// way.
+func (d *Document) filterFraming(filter Name, parms object, data []byte) ([]int, error) {
 	switch filter {
 	case "AHx", "ASCIIHexDecode":
 		// The end-of-data marker of 7.4.2.
 		if i := bytes.IndexByte(data, '>'); i >= 0 {
-			return []int{i + 1}
+			return []int{i + 1}, nil
 		}
 	case "A85", "ASCII85Decode":
 		if i := bytes.Index(data, []byte("~>")); i >= 0 {
-			return []int{i + 2}
+			return []int{i + 2}, nil
 		}
 	case "RL", "RunLengthDecode":
 		if n := runLengthFraming(data); n >= 0 {
-			return []int{n}
+			return []int{n}, nil
 		}
 	case "Fl", "FlateDecode":
 		return d.flateFraming(data)
@@ -630,15 +642,274 @@ func (d *Document) filterFraming(filter Name, parms object, data []byte) []int {
 				early = v != 0
 			}
 		}
-		if _, n, err := d.lzwDecodeConsumed(data, early); err == nil && n > 0 {
-			return []int{n}
+		_, n, err := d.lzwDecodeConsumed(data, early)
+		if err != nil {
+			return nil, err
+		}
+		if n > 0 {
+			return []int{n}, nil
 		}
 	case "DCT", "DCTDecode":
 		if n := jpegFraming(data); n > 0 {
-			return []int{n}
+			return []int{n}, nil
+		}
+	case "CCF", "CCITTFaxDecode":
+		return ccittFraming(d, firstParms(parms), data)
+	case "JBIG2Decode":
+		if n := jbig2Framing(data); n > 0 {
+			return []int{n}, nil
+		}
+	case "JPXDecode":
+		if n := jpxFraming(data); n > 0 {
+			return []int{n}, nil
+		}
+	default:
+		return nil, errFilterNotFramed
+	}
+	return nil, errFilterUnended
+}
+
+// ccittFraming is where Group 3 or Group 4 fax data ends: at the
+// end-of-facsimile-block of T.6 -- two end-of-line codes -- or the
+// return-to-control of T.4, six of them. An end-of-line is eleven zero bits
+// and a one, which no sequence of the codes either standard defines can hold,
+// so the run of zeros finds it wherever it begins; fill bits before one are
+// zeros and are counted with it, and a stream written with /EncodedByteAlign
+// puts its end-of-lines on byte boundaries, which the run finds as readily.
+// Data whose /DecodeParms turns the end-of-block off carries no end of its
+// own: the reader does not frame it.
+func ccittFraming(d *Document, parms object, data []byte) ([]int, error) {
+	k := int64(0)
+	if p := d.dictOf(parms); p != nil {
+		if v, ok := d.intOf(p["EndOfBlock"]); ok && v == 0 {
+			return nil, errFilterNotFramed
+		}
+		if v, ok := p["EndOfBlock"].(bool); ok && !v {
+			return nil, errFilterNotFramed
+		}
+		if v, ok := d.intOf(p["K"]); ok {
+			k = v
 		}
 	}
-	return nil
+	// T.6 ends a block with two end-of-lines; T.4 with six.
+	need := 2
+	if k >= 0 {
+		need = 6
+	}
+	zeros, seen := 0, 0
+	for i := 0; i < len(data); i++ {
+		b := data[i]
+		if b == 0 {
+			zeros += 8
+			continue
+		}
+		for bit := 7; bit >= 0; bit-- {
+			if b&(1<<uint(bit)) == 0 {
+				zeros++
+				continue
+			}
+			if zeros >= 11 {
+				seen++
+				// The bits through this one, and the tag bit that follows an
+				// end-of-line where the data mixes one- and two-dimensional
+				// rows.
+				through := i*8 + (8 - bit)
+				if k > 0 {
+					through++
+				}
+				if seen >= need {
+					end := (through + 7) / 8
+					if end > len(data) {
+						end = len(data)
+					}
+					return []int{end}, nil
+				}
+			} else {
+				seen = 0
+			}
+			zeros = 0
+		}
+	}
+	return nil, errFilterUnended
+}
+
+// maxJBIG2Segments bounds the segments the reader walks to the end of an
+// embedded JBIG2 image.
+const maxJBIG2Segments = 1 << 16
+
+// jbig2Framing is where an embedded JBIG2 image ends: the segment headers of
+// 7.2 of ISO 14492 each state their data length, and the image ends after the
+// last segment whose header the data holds whole. A segment whose length is
+// unknown -- the four bytes all ones -- states no end, and nothing after it is
+// walked.
+func jbig2Framing(data []byte) int {
+	at, segments := 0, 0
+	for at < len(data) {
+		next, ok := jbig2Segment(data, at)
+		if !ok {
+			break
+		}
+		at = next
+		segments++
+		if segments > maxJBIG2Segments {
+			return -1
+		}
+	}
+	if segments == 0 {
+		return -1
+	}
+	return at
+}
+
+// jbig2Segment is the offset after the segment whose header begins at at, or
+// ok false where the data does not hold that segment whole.
+func jbig2Segment(data []byte, at int) (int, bool) {
+	read32 := func(i int) (uint32, bool) {
+		if i < 0 || i+4 > len(data) {
+			return 0, false
+		}
+		return uint32(data[i])<<24 | uint32(data[i+1])<<16 | uint32(data[i+2])<<8 | uint32(data[i+3]), true
+	}
+	number, ok := read32(at)
+	if !ok || at+5 > len(data) {
+		return 0, false
+	}
+	flags := data[at+4]
+	i := at + 5
+	// The referred-to segments: a count in the top three bits of the next
+	// byte, or, where those are all ones, a four-byte count and a bit for
+	// each segment referred to.
+	if i >= len(data) {
+		return 0, false
+	}
+	count := int(data[i] >> 5)
+	if count == 7 {
+		long, ok := read32(i)
+		if !ok {
+			return 0, false
+		}
+		count = int(long & 0x1FFFFFFF)
+		if count < 0 || count > maxJBIG2Segments {
+			return 0, false
+		}
+		i += 4 + (count+8)/8
+	} else {
+		i++
+	}
+	// Each referred-to segment is named in as many bytes as this segment's
+	// own number needs.
+	width := 1
+	switch {
+	case number > 65536:
+		width = 4
+	case number > 256:
+		width = 2
+	}
+	i += count * width
+	// The page this segment belongs to, in one byte or four.
+	if flags&0x40 != 0 {
+		i += 4
+	} else {
+		i++
+	}
+	length, ok := read32(i)
+	if !ok {
+		return 0, false
+	}
+	i += 4
+	if length == 0xFFFFFFFF {
+		return 0, false
+	}
+	end := int64(i) + int64(length)
+	if end > int64(len(data)) {
+		return 0, false
+	}
+	return int(end), true
+}
+
+// jpxFraming is where a JPEG 2000 image ends: a JP2 file is boxes that state
+// their own lengths, and a raw codestream runs from its start-of-codestream
+// marker to its end-of-codestream, its marker segments and tile-parts stating
+// theirs. Either is walked to its end; a box or a tile-part that states no
+// length states no end.
+func jpxFraming(data []byte) int {
+	if len(data) >= 2 && data[0] == 0xFF && data[1] == 0x4F {
+		return jpxCodestream(data)
+	}
+	at, boxes := 0, 0
+	for at+8 <= len(data) {
+		length := int64(data[at])<<24 | int64(data[at+1])<<16 | int64(data[at+2])<<8 | int64(data[at+3])
+		header := int64(8)
+		if length == 1 {
+			// An extended length, in the eight bytes after the type.
+			if at+16 > len(data) {
+				return -1
+			}
+			length = 0
+			for i := at + 8; i < at+16; i++ {
+				length = length<<8 | int64(data[i])
+			}
+			header = 16
+		}
+		if length < header {
+			// A box that runs to the end of the file states no end of its own.
+			return -1
+		}
+		end := int64(at) + length
+		if end > int64(len(data)) {
+			return -1
+		}
+		at, boxes = int(end), boxes+1
+	}
+	if boxes == 0 {
+		return -1
+	}
+	return at
+}
+
+// jpxCodestream walks the markers of a raw JPEG 2000 codestream to its
+// end-of-codestream marker.
+func jpxCodestream(data []byte) int {
+	at := 2
+	for at+2 <= len(data) {
+		if data[at] != 0xFF {
+			return -1
+		}
+		marker := data[at+1]
+		switch {
+		case marker == 0xD9:
+			return at + 2
+		case marker == 0x4F || (marker >= 0x30 && marker <= 0x3F):
+			at += 2
+			continue
+		}
+		if at+4 > len(data) {
+			return -1
+		}
+		length := int(data[at+2])<<8 | int(data[at+3])
+		if length < 2 {
+			return -1
+		}
+		if marker == 0x90 {
+			// A tile-part: its header states the bytes the whole of it takes,
+			// from this marker to the next.
+			if at+10 > len(data) {
+				return -1
+			}
+			psot := int64(data[at+6])<<24 | int64(data[at+7])<<16 | int64(data[at+8])<<8 | int64(data[at+9])
+			if psot < int64(length)+2 {
+				return -1
+			}
+			end := int64(at) + psot
+			if end > int64(len(data)) {
+				return -1
+			}
+			at = int(end)
+			continue
+		}
+		at += 2 + length
+	}
+	return -1
 }
 
 // firstParms is the decode parameters of the first filter, which a stream
@@ -677,28 +948,31 @@ func runLengthFraming(data []byte) int {
 // data itself for data that carries no checksum -- a writer that left it out
 // is common damage, and either is an end the reader will take, the complete
 // stream first.
-func (d *Document) flateFraming(data []byte) []int {
+func (d *Document) flateFraming(data []byte) ([]int, error) {
 	head := 0
 	if zlibHeader(data) {
 		head = 2
 	}
-	n, ok := d.deflateConsumed(data[head:])
-	if !ok {
-		return nil
+	n, err := d.deflateConsumed(data[head:])
+	if err != nil {
+		return nil, err
 	}
 	if head == 2 {
-		return []int{head + n + 4, head + n}
+		return []int{head + n + 4, head + n}, nil
 	}
-	return []int{n}
+	return []int{n}, nil
 }
 
 // deflateConsumed reads the deflate data at the head of data to the end of its
 // final block, and reports how many bytes of data that took. The bytes it
-// decodes to are charged to the inflate budget and dropped.
-func (d *Document) deflateConsumed(data []byte) (int, bool) {
+// decodes to are charged to the inflate budget and dropped. A budget met
+// while it reads is returned as it is -- it is the page's problem, and the
+// image's end stays unknown -- and data that is not deflate data, or ends
+// inside its final block, holds no end of its own.
+func (d *Document) deflateConsumed(data []byte) (int, error) {
 	out, err := d.budget.output(0)
 	if err != nil {
-		return 0, false
+		return 0, err
 	}
 	// A bytes.Reader reads one byte at a time when the decompressor asks for
 	// one, so what it has left is what the deflate data did not take.
@@ -706,9 +980,12 @@ func (d *Document) deflateConsumed(data []byte) (int, bool) {
 	fr := flate.NewReader(left)
 	defer fr.Close()
 	if _, err := io.Copy(out, fr); err != nil {
-		return 0, false
+		if errors.Is(err, errInflateBound) {
+			return 0, err
+		}
+		return 0, errFilterUnended
 	}
-	return len(data) - left.Len(), true
+	return len(data) - left.Len(), nil
 }
 
 // jpegFraming is where a JPEG ends: at its end-of-image marker, found by

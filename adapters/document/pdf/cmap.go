@@ -204,7 +204,22 @@ func (c *cmap) finish() *cmap {
 // and maps none of them: what one CMap declares of the lengths its codes
 // have, for a font whose own encoding CMap the reader does not carry.
 func (c *cmap) codespacesOnly() *cmap {
-	out := &cmap{codespaces: c.codespaces, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}}
+	return codespacesCMap(c.codespaces)
+}
+
+// twoByteCodespaces splits a string into codes of two bytes and maps none of
+// them: what is left of an encoding CMap the reader does not carry when the
+// font declares no codespace range anywhere either. It maps none, where
+// Identity-H maps a code to the CID of the same number, because a code of a
+// CMap the reader does not carry stands for a CID only that CMap knows: a
+// width taken at the code's own number would be some other glyph's.
+func twoByteCodespaces() *cmap {
+	return codespacesCMap([]codespace{fullCodespace(2)})
+}
+
+// codespacesCMap is a CMap of the codespace ranges given and no mappings.
+func codespacesCMap(spaces []codespace) *cmap {
+	out := &cmap{codespaces: spaces, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}}
 	return out.finish()
 }
 

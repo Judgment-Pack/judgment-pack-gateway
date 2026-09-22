@@ -81,9 +81,16 @@ func (d *Document) cmapOf(s *stream) *cmap {
 	if c, ok := d.cmaps[s]; ok {
 		return c
 	}
+	// The cross-reference this reading stands on: a CMap read under one that
+	// has since been replaced is not held, since the stream it was read from
+	// is not the stream that number names now.
+	generation := d.generation
 	var c *cmap
 	if data, err := d.decodeStream(s, false); err == nil {
 		c = parseCMap(data, &d.fontBudget)
+	}
+	if d.generation != generation {
+		return c
 	}
 	if d.cmaps == nil {
 		d.cmaps = map[*stream]*cmap{}
@@ -132,8 +139,9 @@ func (d *Document) loadType0(f *font, dict Dict) {
 			// every code as two bytes loses the text of an encoding whose
 			// codes are one byte or two, which the predefined CMaps of the CJK
 			// registries are; two bytes is what is left when the font declares
-			// no codespace range anywhere.
-			f.encoding = identityCMap()
+			// no codespace range anywhere. Neither carries a CID: this font's
+			// codes stand for the CIDs of a CMap the reader does not have.
+			f.encoding = twoByteCodespaces()
 			if f.toUnicode != nil && len(f.toUnicode.codespaces) > 0 {
 				f.encoding = f.toUnicode.codespacesOnly()
 			}

@@ -179,6 +179,15 @@ func (d *Document) forgetObjects() {
 	d.objStmHeaders = nil
 	d.fontRefs = nil
 	d.cmaps = nil
+	// The failures of the objects being dropped go with them: a bound met in
+	// an object the old cross-reference named, or a stream of objects it
+	// could not decode, is a defect of a document this one no longer is, and
+	// the same object read again under the new one will meet it again if it
+	// is still there. What is not given back is what reading the file has
+	// cost -- the inflate budget, the objects counted, the font budget --
+	// since a file that made the reader read it twice has spent it twice.
+	d.bound = nil
+	d.undecoded = nil
 }
 
 // deadlinePassed reports whether the deadline has passed, reading the clock
@@ -244,8 +253,6 @@ func open(ctx context.Context, data []byte, budget *inflateBudget) (*Document, e
 		d.xref = map[int]xrefEntry{}
 		d.trailer = Dict{}
 		d.forgetObjects()
-		d.bound = nil
-		d.undecoded = nil
 		// A rebuild may already have run, from an object read while the
 		// cross-reference was: its work went with the reset above, and this
 		// one, over the file alone, is the rebuild this document keeps.
@@ -631,7 +638,7 @@ func (d *Document) reconstruct() error {
 			}
 			idx := 0
 			for _, inner := range st.order {
-				if _, taken := d.xref[inner]; !taken {
+				if _, taken := d.xref[inner]; inner != unreadableObject && !taken {
 					d.xref[inner] = xrefEntry{inStream: true, stmNum: num, stmIndex: idx}
 				}
 				idx++
@@ -891,10 +898,16 @@ func (d *Document) objectRead(num int) (object, bool) {
 	if !ok || (!e.inStream && e.offset < 0) {
 		return nil, false
 	}
+	// The cross-reference this read stands on. Reading an object may rebuild
+	// it -- an offset that holds no object sends the reader scanning the file
+	// -- and what was read before that is of a document this one no longer
+	// is: it goes back to the caller, whose own reading is discarded, and is
+	// published to nothing.
+	generation := d.generation
 	if len(d.resolving) >= maxRefDepth {
 		err := structureBound("indirect object reads nested past %d", maxRefDepth)
 		d.noteBound(err)
-		d.cache[num] = unread{err: err}
+		d.publish(generation, num, unread{err: err})
 		return nil, false
 	}
 	if d.parsed >= maxObjects {
@@ -908,7 +921,7 @@ func (d *Document) objectRead(num int) (object, bool) {
 	if e.inStream {
 		var read bool
 		if v, read = d.objectFromStream(num, e); !read {
-			d.cache[num] = unread{}
+			d.publish(generation, num, unread{})
 			return nil, false
 		}
 	} else {
@@ -917,7 +930,7 @@ func (d *Document) objectRead(num int) (object, bool) {
 			// The object is where the cross-reference says, and past a
 			// bound: rebuilding the cross-reference finds the same bytes.
 			d.noteBound(err)
-			d.cache[num] = unread{err: err}
+			d.publish(generation, num, unread{err: err})
 			return nil, false
 		}
 		if err != nil || n != num {
@@ -931,7 +944,7 @@ func (d *Document) objectRead(num int) (object, bool) {
 				}
 				d.noteBound(err)
 			}
-			d.cache[num] = unread{}
+			d.publish(generation, num, unread{})
 			return nil, false
 		}
 		if d.crypt != nil {
@@ -939,8 +952,19 @@ func (d *Document) objectRead(num int) (object, bool) {
 		}
 		v = body
 	}
-	d.cache[num] = v
+	d.publish(generation, num, v)
 	return v, true
+}
+
+// publish records in the object cache what a read that began under the
+// generation given found, and drops it where the cross-reference has been
+// replaced since: an object read under the old one is not this document's
+// object, and a read that straddled the rebuild must leave nothing of itself
+// behind for the reading that follows.
+func (d *Document) publish(generation, num int, v object) {
+	if d.generation == generation {
+		d.cache[num] = v
+	}
 }
 
 // objectFromStream reads the object with the number given out of an object
@@ -951,9 +975,13 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 		if _, tried := d.objStms[e.stmNum]; tried {
 			return nil, false
 		}
+		// The cross-reference this read stands on, as objectRead holds one:
+		// what a stream of objects held under the old one is not what this
+		// number names now.
+		generation := d.generation
 		s, isStream := d.resolve(ref{e.stmNum, 0}).(*stream)
 		if !isStream {
-			d.objStms[e.stmNum] = nil
+			d.markObjStm(generation, e.stmNum)
 			return nil, false
 		}
 		loaded, err := d.loadObjStm(e.stmNum, s)
@@ -962,7 +990,7 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 			if d.undecoded == nil && !isBound(err) {
 				d.undecoded = err
 			}
-			d.objStms[e.stmNum] = nil
+			d.markObjStm(generation, e.stmNum)
 			return nil, false
 		}
 		st = loaded
@@ -1017,6 +1045,7 @@ type objStmParsed struct {
 }
 
 func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
+	generation := d.generation
 	if s.dict["Type"] != Name("ObjStm") {
 		return nil, errors.New("not an object stream")
 	}
@@ -1045,6 +1074,11 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		}
 		off := first + t2.i
 		if t1.i < 0 || t1.i > maxXrefEntries || off < 0 || off > int64(len(data)) {
+			// A pair the reader cannot use still holds its position: the
+			// cross-reference names an object by the place its header has,
+			// and dropping the pair would move every place after it.
+			st.order = append(st.order, unreadableObject)
+			st.offsetAt = append(st.offsetAt, 0)
 			continue
 		}
 		inner := int(t1.i)
@@ -1058,9 +1092,24 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		st.order = append(st.order, inner)
 		st.offsetAt = append(st.offsetAt, int(off))
 	}
-	d.objStms[num] = &objStm{data: data, offsets: st.offsets}
-	d.objStmOrder(num, st)
+	if d.generation == generation {
+		d.objStms[num] = &objStm{data: data, offsets: st.offsets}
+		d.objStmOrder(num, st)
+	}
 	return st, nil
+}
+
+// unreadableObject stands in the order of an object stream's header for a
+// pair the reader could not read: no object number, and no cross-reference
+// entry naming that place finds an object at it.
+const unreadableObject = -1
+
+// markObjStm records that an object stream was tried and could not be read,
+// unless the cross-reference that named it has since been replaced.
+func (d *Document) markObjStm(generation, num int) {
+	if d.generation == generation {
+		d.objStms[num] = nil
+	}
 }
 
 // objStmOrder keeps the parsed header beside the cached stream so that

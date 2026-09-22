@@ -182,10 +182,16 @@ func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) 
 		}
 	}()
 	// A bound met finding the root ends the walk at the root's first check.
-	// Looking for it may rebuild the cross-reference, so the generation the
-	// walk stands on is read once the root is in hand.
-	pagesRoot, rootRef := doc.pagesRoot()
+	// Looking for the root may rebuild the cross-reference, and the catalog
+	// that named it is then not the document's catalog: the root is looked
+	// for again under the one the rebuild produced, which is the
+	// cross-reference the walk below stands on.
 	generation = doc.generation
+	pagesRoot, rootRef := doc.pagesRoot()
+	if doc.generation != generation {
+		generation = doc.generation
+		pagesRoot, rootRef = doc.pagesRoot()
+	}
 	if pagesRoot == nil {
 		if ctx.Err() != nil {
 			return nil, generation, endedAtDeadline(result, openedPastDeadline)

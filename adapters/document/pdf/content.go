@@ -167,7 +167,13 @@ type interp struct {
 	// glyphs shown, which paces the deadline within one operator.
 	chars  int
 	glyphs int
-	err    error
+	// generation is the cross-reference this page is being read under. A
+	// rebuild while it is read ends the page: what was read before the
+	// rebuild and what is read after it are two documents' pages, and the
+	// caller reads the page again under the cross-reference the rebuild
+	// produced.
+	generation int
+	err        error
 }
 
 // pageResult is what interpreting a page yields: its normalised text,
@@ -193,7 +199,7 @@ var errTooManyCharacters = fmt.Errorf("%w: the page's glyphs map to more than %d
 
 func (d *Document) interpretPage(ctx context.Context, content []byte, resources Dict, textLimit int) (result pageResult) {
 	tb := &textBuilder{norm: streamNormalizer{limit: textLimit}}
-	it := &interp{d: d, ctx: ctx, tb: tb, fonts: map[string]*font{}}
+	it := &interp{d: d, ctx: ctx, tb: tb, fonts: map[string]*font{}, generation: d.generation}
 	defer func() {
 		// A defect the interpreter did not anticipate fails this page, not
 		// the document.
@@ -207,6 +213,11 @@ func (d *Document) interpretPage(ctx context.Context, content []byte, resources 
 
 // errPageDefect is a page the interpreter could not continue through.
 var errPageDefect = errors.New("the page's content could not be interpreted")
+
+// errCrossReferenceRebuilt is a page whose reading straddled a rebuilt
+// cross-reference. It ends the page where it stands, and the reading of the
+// document begins again: the record never carries it.
+var errCrossReferenceRebuilt = errors.New("the cross-reference was rebuilt while the page was read")
 
 // unknownFont is the font of a resource name the page's /Resources does not
 // name: it holds no mapping, so a glyph it yields is unmapped, and it measures
@@ -240,8 +251,12 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 			if cached, ok := it.d.fontRefs[r]; ok {
 				f = cached
 			} else if dict := it.d.dictOf(r); dict != nil {
+				// Building a font reads the objects it names, one of which
+				// may rebuild the cross-reference: a font built partly under
+				// each is held by neither, and the reading is begun again.
+				generation := it.d.generation
 				f = it.d.loadFont(dict)
-				if len(it.d.fontRefs) < maxFontCacheEntries {
+				if it.d.generation == generation && len(it.d.fontRefs) < maxFontCacheEntries {
 					if it.d.fontRefs == nil {
 						it.d.fontRefs = map[ref]*font{}
 					}
@@ -289,11 +304,6 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 	var operands []object
 	var tm, tlm matrix
 	inText := false
-	// compat counts the compatibility sections this stream has begun and not
-	// ended. Within one, a writer may use operators a reader of an older
-	// version does not know, and meeting one is no defect: what the reader
-	// makes of an inline image's end takes that into account.
-	compat := 0
 	for {
 		// A page whose content has failed is failed, whatever follows; text
 		// past the budget does not stop interpretation.
@@ -301,6 +311,10 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 			return
 		}
 		if it.ops%operatorsPerCheck == 0 && it.deadlinePassed() {
+			return
+		}
+		if it.d.generation != it.generation {
+			it.noteStreamError(errCrossReferenceRebuilt)
 			return
 		}
 		if it.ops > maxOperators {
@@ -442,18 +456,11 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 			// Inline image: skip to EI. The lexer position is after BI;
 			// the dictionary tokens follow, then ID, one whitespace, data.
 			// The page's resources go with it, since a colour space the image
-			// names may be one of them, and so does whether this is a
-			// compatibility section.
+			// names may be one of them.
 			it.images++
-			if err := it.skipInlineImage(lex, resources, compat > 0); err != nil {
+			if err := it.skipInlineImage(lex, resources); err != nil {
 				it.noteStreamError(err)
 				return
-			}
-		case "BX":
-			compat++
-		case "EX":
-			if compat > 0 {
-				compat--
 			}
 		case "d0", "d1":
 			// Type3 glyph metrics; nothing for text.
@@ -598,30 +605,30 @@ func (it *interp) noteStreamError(err error) {
 	}
 }
 
-// Where an inline image's data ends is decided in one order, and nothing
-// below answers while something above it does:
+// Where an inline image's data ends is established from the way the image is
+// encoded, and from nothing else: the boundary the reader takes is the one
+// every conforming viewer stops reading the image at.
 //
-//  1. the dictionary between BI and ID, whose keys 8.9.7 abbreviates. A key
-//     that bears on the end, given twice in either spelling with values that
-//     disagree, says two things about the image, and the page fails rather
-//     than the reader preferring one of them;
-//  2. the samples of an image no filter encodes: its width, height, bits per
-//     component and colour components give their length exactly, the colour
-//     space resolved through the resources in force where it names one;
-//  3. the framing of the first filter of an image a filter encodes: the '>'
-//     of ASCIIHexDecode, the '~>' of ASCII85Decode, the end of a deflate or
-//     LZW stream, the end-of-data byte of RunLengthDecode, the end-of-image
-//     marker of DCTDecode;
-//  4. failing those two, for a filter this reader does not frame or samples
-//     it cannot measure: the length /L states, and failing that an "EI" in
-//     the data, taken only when it is the one end the content offers.
+//  1. The dictionary between BI and ID, whose keys 8.9.7 abbreviates, is read
+//     first. A key bearing on the end, given twice in either spelling with
+//     values that disagree once the spellings are set aside, says two things
+//     about the image, and the page fails rather than the reader preferring
+//     one of them; so does a dictionary that never reaches ID.
+//  2. An image no filter encodes is measured: every viewer consumes the bytes
+//     its width, height, bits per component and colour components take, and
+//     "EI" stands there or the page fails.
+//  3. An image a filter encodes is framed by that filter: every decoder of it
+//     stops where its encoding ends, and "EI" stands there or the page fails.
 //
-// An end from 2 or 3 is the image's own: "EI" stands there or the page fails,
-// since a length the content does not bear out is no length. A page whose
-// image ends nowhere, or in more than one place the reader cannot choose
-// between, fails too: what the page shows after the image is not known, and
-// listing the text before it would be a page the record says is whole.
-func (it *interp) skipInlineImage(lex *lexer, resources Dict, compat bool) error {
+// The length /L states is no boundary: viewers disagree over it -- one honours
+// it where an "EI" follows, another decodes the filter and never reads it --
+// so a record that took it would carry one viewer's reading rather than the
+// page. Nor is a delimited "EI" in the data: those two bytes are as common in
+// an image's samples as any other two, and a comment, a string or a later
+// image after a whole image holds them as readily, so neither their presence
+// nor their number establishes anything. An image the reader can neither
+// measure nor frame therefore fails the page, and says so.
+func (it *interp) skipInlineImage(lex *lexer, resources Dict) error {
 	img, err := it.readInlineImage(lex)
 	if err != nil {
 		return err
@@ -631,59 +638,22 @@ func (it *interp) skipInlineImage(lex *lexer, resources Dict, compat bool) error
 	if start < len(data) && isWhitespace(data[start]) {
 		start++
 	}
-	// What the reader may read of one image, which bounds the work of finding
-	// its end as well as the data it admits.
-	limit := start + maxInlineImageBytes + 3
-	if limit > len(data) {
-		limit = len(data)
-	}
 	// Framing an encoded image decodes it, which is a stream's work: the
 	// deadline is read before it, as it is before the reading of a form.
 	if it.deadlinePassed() {
 		return it.ctx.Err()
 	}
-	ends, said, err := it.inlineDataEnds(img, resources, data[start:min(start+maxInlineImageBytes, len(data))])
+	// What the reader may read of one image bounds the work of finding its
+	// end as well as the data it admits.
+	ends, err := it.inlineDataEnds(img, resources, data[start:min(start+maxInlineImageBytes, len(data))])
 	if err != nil {
 		return err
 	}
-	if said {
-		for _, n := range ends {
-			if at, ok := inlineImageEnds(data, start+n); ok {
-				lex.pos = at
-				return nil
-			}
-		}
-		return errInlineImageEnd
-	}
-	if n := img.declared; n >= 0 && n <= maxInlineImageBytes && int64(start)+n <= int64(len(data)) {
-		if at, ok := inlineImageEnds(data, start+int(n)); ok {
+	for _, n := range ends {
+		if at, ok := inlineImageEnds(data, start+n); ok {
 			lex.pos = at
 			return nil
 		}
-	}
-	found := -1
-	for end := start; end < limit; {
-		i := bytes.Index(data[end:limit], []byte("EI"))
-		if i < 0 {
-			break
-		}
-		at := end + i
-		before := at == 0 || isWhitespace(data[at-1])
-		after := at+2 >= len(data) || isWhitespace(data[at+2]) || isDelimiter(data[at+2])
-		if before && after && operatorsFollow(data, at+2, compat) {
-			if found >= 0 {
-				return errInlineImageAmbiguous
-			}
-			found = at
-		}
-		end = at + 2
-	}
-	if found >= 0 {
-		lex.pos = found + 2
-		return nil
-	}
-	if limit < len(data) {
-		return structureBound("an inline image's data past %d bytes", maxInlineImageBytes)
 	}
 	return errInlineImageEnd
 }
@@ -693,8 +663,8 @@ func (it *interp) skipInlineImage(lex *lexer, resources Dict, compat bool) error
 // shows after it is not known.
 var (
 	errInlineImageUnended   = errors.New("an inline image's dictionary does not reach the data it describes")
-	errInlineImageEnd       = errors.New("an inline image's data has no end the reader could find")
-	errInlineImageAmbiguous = errors.New("an inline image's data has more than one end the content offers")
+	errInlineImageEnd       = errors.New("an inline image's data does not end where the image says it does")
+	errInlineImageUnframed  = errors.New("an inline image is encoded by a filter whose data the reader cannot measure or frame")
 	errInlineImageDisagrees = errors.New("an inline image's dictionary declares a key twice with values that disagree")
 )
 
@@ -718,7 +688,7 @@ func (it *interp) readInlineImage(lex *lexer) (inlineImage, error) {
 				haveKey = false
 				name, bearsOnEnd := inlineImageKey(key)
 				if bearsOnEnd {
-					if before, again := declared[name]; again && !sameValue(before, obj, 0) {
+					if before, again := declared[name]; again && !sameDeclaration(name, before, obj) {
 						return img, errInlineImageDisagrees
 					}
 					declared[name] = obj
@@ -781,15 +751,76 @@ func inlineImageKey(key Name) (Name, bool) {
 	return key, false
 }
 
+// inlineColourNames and inlineFilterNames are the abbreviations 8.9.7 allows
+// an inline image, each under the name it stands for. A value written one way
+// and then the other is one value written twice, not two values.
+var inlineColourNames = map[Name]Name{
+	"G": "DeviceGray", "RGB": "DeviceRGB", "CMYK": "DeviceCMYK", "I": "Indexed",
+}
+
+var inlineFilterNames = map[Name]Name{
+	"AHx": "ASCIIHexDecode", "A85": "ASCII85Decode", "LZW": "LZWDecode",
+	"Fl": "FlateDecode", "RL": "RunLengthDecode", "CCF": "CCITTFaxDecode",
+	"DCT": "DCTDecode",
+}
+
+// sameDeclaration reports whether two values an inline image's dictionary
+// declared for one key say the same thing. What a key means is compared and
+// not how it was written: the abbreviations of a colour space or a filter
+// stand for the names they abbreviate, one filter is one filter whether it is
+// written alone or in an array of one, and the parameters of one filter are
+// its parameters written either way.
+func sameDeclaration(key Name, a, b object) bool {
+	return sameValue(inlineDeclared(key, a), inlineDeclared(key, b), 0)
+}
+
+// inlineDeclared is one of an inline image's values under the one form the
+// reader compares it in.
+func inlineDeclared(key Name, v object) object {
+	switch key {
+	case "CS":
+		return inlineNamesOf(v, inlineColourNames, 0)
+	case "F":
+		v = inlineNamesOf(v, inlineFilterNames, 0)
+		if name, ok := v.(Name); ok {
+			return Array{name}
+		}
+	case "DP":
+		if dict, ok := v.(Dict); ok {
+			return Array{dict}
+		}
+	}
+	return v
+}
+
+// inlineNamesOf is v with every name it holds written as the table writes it.
+func inlineNamesOf(v object, table map[Name]Name, depth int) object {
+	if depth > maxInlineValueDepth {
+		return v
+	}
+	switch x := v.(type) {
+	case Name:
+		if full, ok := table[x]; ok {
+			return full
+		}
+	case Array:
+		out := make(Array, len(x))
+		for i, item := range x {
+			out[i] = inlineNamesOf(item, table, depth+1)
+		}
+		return out
+	}
+	return v
+}
+
 // maxInlineValueDepth bounds how deep the reader compares two values of an
 // inline image's dictionary.
 const maxInlineValueDepth = 8
 
-// sameValue reports whether two values an inline image's dictionary declared
-// for one key say the same thing. A value nested deeper than the reader
-// compares is taken to disagree: the question is whether the image says one
-// thing about where it ends, and a value the reader cannot read to its end is
-// not an answer to it.
+// sameValue reports whether two values are the same value. A value nested
+// deeper than the reader compares is taken to disagree: the question is
+// whether the image says one thing about where it ends, and a value the
+// reader cannot read to its end is not an answer to it.
 func sameValue(a, b object, depth int) bool {
 	if depth > maxInlineValueDepth {
 		return false
@@ -842,7 +873,9 @@ func sameValue(a, b object, depth int) bool {
 // inlineImage is what an inline image's dictionary says about how long its
 // data is, under the one name the reader keeps for each key.
 type inlineImage struct {
-	// declared is /L, -1 where the image states none.
+	// declared is /L. It is no boundary -- nothing below reads it to find the
+	// end -- but an image that states two different lengths states two things
+	// about itself, which readInlineImage refuses.
 	declared      int64
 	width, height int64
 	bpc           int64
@@ -902,26 +935,35 @@ func (img *inlineImage) set(key Name, v object) {
 	}
 }
 
-// inlineDataEnds is where the image's own dictionary says its data ends: the
-// offsets from the start of the data at which "EI" may stand, and whether the
-// dictionary says at all. Samples are measured for an image no filter
-// encodes, and an encoded image is framed by its first filter. A measurement
-// past the bound on an image's data is that bound, met.
-func (it *interp) inlineDataEnds(img inlineImage, resources Dict, data []byte) ([]int, bool, error) {
+// inlineDataEnds is where the image's own encoding puts the end of its data:
+// the offsets from the start of the data at which "EI" may stand. An image no
+// filter encodes is measured from its samples, and an encoded one is framed
+// by its first filter. An image that is neither, and one whose framing met a
+// bound or found no end of its own, is an error: the reader cannot say where
+// it ends, and a page whose image ends nowhere is a page it cannot read.
+func (it *interp) inlineDataEnds(img inlineImage, resources Dict, data []byte) ([]int, error) {
 	if !img.filtered {
 		n := img.sampleBytes(it.d.inlineColorComponents(img.colorSpace, resources, 0))
-		if n < 0 {
-			return nil, false, nil
+		switch {
+		case n < 0:
+			return nil, errInlineImageUnframed
+		case n > maxInlineImageBytes:
+			return nil, structureBound("an inline image's data past %d bytes", maxInlineImageBytes)
 		}
-		if n > maxInlineImageBytes {
-			return nil, false, structureBound("an inline image's data past %d bytes", maxInlineImageBytes)
-		}
-		return []int{int(n)}, true, nil
+		return []int{int(n)}, nil
 	}
-	if ends := it.d.filterFraming(img.filter, img.parms, data); len(ends) > 0 {
-		return ends, true, nil
+	ends, err := it.d.filterFraming(img.filter, img.parms, data)
+	switch {
+	case errors.Is(err, errFilterNotFramed):
+		return nil, errInlineImageUnframed
+	case errors.Is(err, errFilterUnended):
+		return nil, errInlineImageEnd
+	case err != nil:
+		// A bound met while framing: the page's problem, and not a reason to
+		// read the image's end some other way.
+		return nil, err
 	}
-	return nil, false, nil
+	return ends, nil
 }
 
 // inlineComponents is how many colour components one sample has in the colour
@@ -934,8 +976,13 @@ var inlineComponents = map[Name]int64{
 }
 
 // maxColorSpaceDepth bounds how far the reader follows a colour space through
-// the resources that name it.
-const maxColorSpaceDepth = 4
+// the resources that name it, and maxColorComponents the components one
+// sample may have: 8.6.6.5 gives a DeviceN space up to 32 colourants, and no
+// other space of the specification has more.
+const (
+	maxColorSpaceDepth = 4
+	maxColorComponents = 32
+)
 
 // inlineColorComponents is how many colour components one sample of the image
 // has, or 0 where the document does not say. A name is a colour space in its
@@ -984,14 +1031,14 @@ func (d *Document) inlineColorComponents(cs object, resources Dict, depth int) i
 			if !ok {
 				return 0
 			}
-			if n, ok := d.intOf(s.dict["N"]); ok && n >= 1 && n <= 4 {
+			if n, ok := d.intOf(s.dict["N"]); ok && n >= 1 && n <= maxColorComponents {
 				return n
 			}
 		case "DeviceN":
 			if len(v) < 2 {
 				return 0
 			}
-			if names := d.arrayOf(v[1]); len(names) >= 1 {
+			if names := d.arrayOf(v[1]); len(names) >= 1 && len(names) <= maxColorComponents {
 				return int64(len(names))
 			}
 		default:
@@ -1019,11 +1066,12 @@ func (img inlineImage) sampleBytes(components int64) int64 {
 	if bits == 0 {
 		bits = 8
 	}
-	if components < 1 || components > 4 || (bits != 1 && bits != 2 && bits != 4 && bits != 8 && bits != 16) {
+	if components < 1 || components > maxColorComponents || (bits != 1 && bits != 2 && bits != 4 && bits != 8 && bits != 16) {
 		return -1
 	}
 	// Past the bound on an image's data either way, and the arithmetic below
-	// stays far from where an int64 ends.
+	// stays far from where an int64 ends: the width bounded here, times the
+	// components and bits bounded above, is smaller than a petabyte.
 	if img.width > maxInlineImageBytes || img.height > maxInlineImageBytes {
 		return maxInlineImageBytes + 1
 	}
@@ -1048,64 +1096,4 @@ func inlineImageEnds(data []byte, at int) (int, bool) {
 		return 0, false
 	}
 	return at + 2, true
-}
-
-// inlineImageLookahead is how far past an "EI" the reader reads to decide
-// whether operators follow it. It is the head of what follows and not the
-// rest of the content: the question is only whether these bytes could begin
-// any, and an image's data is not where a page's operators lie.
-const inlineImageLookahead = 128
-
-// operatorsFollow reports whether the bytes at the offset given can begin a
-// content stream's operands and operator. It establishes nothing about the
-// image -- samples may hold operators as readily as anything else -- and it
-// is asked only where the image itself says nothing about where its data
-// ends: there it tells the "EI" the content offers from the two bytes lying
-// in samples the reader could not measure, and the end it finds must be the
-// only one. Within a compatibility section a keyword the reader does not know
-// is one the writer was entitled to use, and is admitted; outside one it is
-// not an operator and the bytes are not content. Operands with no operator
-// among them are admitted to the end of the head read, since an operator may
-// lie past it.
-func operatorsFollow(data []byte, at int, compat bool) bool {
-	head := data[:min(at+inlineImageLookahead, len(data))]
-	p := &parser{lex: newLexer(head, at), contentMode: true}
-	for objects := 0; objects < maxOperands; objects++ {
-		_, err := p.parseObject(0)
-		if err == nil {
-			continue
-		}
-		kw, ok := err.(errKeyword)
-		if !ok {
-			return errors.Is(err, errUnexpectedEOF)
-		}
-		if len(head) < len(data) && kw.pos+len(kw.keyword) >= len(head) {
-			// The head ends inside this keyword, or where it does: the bytes
-			// of it the head holds are not the keyword, and the first two of
-			// "BDC" are no operator though the three are. It says as little as
-			// operands the head ends inside do, and is admitted as they are.
-			return true
-		}
-		return compat || contentOperators[kw.keyword]
-	}
-	return true
-}
-
-// contentOperators are the operators of a content stream, Annex A of
-// ISO 32000-1. The reader interprets a few of them; it knows them all so
-// that it can tell content from the bytes of an image.
-var contentOperators = map[string]bool{
-	"b": true, "B": true, "b*": true, "B*": true, "BDC": true, "BI": true,
-	"BMC": true, "BT": true, "BX": true, "c": true, "cm": true, "CS": true,
-	"cs": true, "d": true, "d0": true, "d1": true, "Do": true, "DP": true,
-	"EI": true, "EMC": true, "ET": true, "EX": true, "f": true, "F": true,
-	"f*": true, "G": true, "g": true, "gs": true, "h": true, "i": true,
-	"ID": true, "j": true, "J": true, "K": true, "k": true, "l": true,
-	"m": true, "M": true, "MP": true, "n": true, "q": true, "Q": true,
-	"re": true, "RG": true, "rg": true, "ri": true, "s": true, "S": true,
-	"SC": true, "sc": true, "SCN": true, "scn": true, "sh": true, "T*": true,
-	"Tc": true, "Td": true, "TD": true, "Tf": true, "Tj": true, "TJ": true,
-	"TL": true, "Tm": true, "Tr": true, "Ts": true, "Tw": true, "Tz": true,
-	"v": true, "w": true, "W": true, "W*": true, "y": true, "'": true,
-	"\"": true,
 }
