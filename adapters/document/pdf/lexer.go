@@ -474,10 +474,13 @@ type parser struct {
 	// contentMode is set for content streams, where "R" is not a reference
 	// and operators are keywords the caller reads.
 	contentMode bool
-	// inlineImage is set while an inline image's dictionary is read. There a
-	// keyword inside a value is not something to read past: what follows it
-	// may be the image's data rather than the dictionary, and the caller must
-	// see the keyword to say so.
+	// inlineImage is set while an inline image's dictionary is read. There
+	// the pairs are read strictly, at every depth: a keyword, a value where a
+	// key stands, a stray delimiter or a container that does not close is the
+	// dictionary failing to reach the data it describes, since what follows
+	// may be the image's data rather than the dictionary. Nothing is skipped
+	// and nothing is repaired -- either the dictionary reads as pairs to an
+	// ID of its own, or where the image's data begins is not established.
 	inlineImage bool
 }
 
@@ -501,8 +504,14 @@ func (p *parser) parseObject(depth int) (object, error) {
 	}
 	t, err := p.lex.next()
 	// Closing delimiters and braces where an object should begin are stray,
-	// and skipped in this loop: they do not deepen the nesting.
+	// and skipped in this loop: they do not deepen the nesting. Inside an
+	// inline image's dictionary nothing is skipped: see the parser's
+	// inlineImage field.
 	for err == nil && (t.kind == tokArrayClose || t.kind == tokDictClose || t.kind == tokBraceOpen || t.kind == tokBraceClose) {
+		if p.inlineImage {
+			p.lex.pos = t.pos
+			return nil, errInlineImageUnended
+		}
 		t, err = p.lex.next()
 	}
 	if err != nil {
@@ -546,9 +555,16 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return arr, nil
 			}
 			if tt.kind == tokEOF {
+				if p.inlineImage {
+					return nil, errInlineImageUnended
+				}
 				return arr, nil // unterminated: what was read
 			}
 			if tt.kind == tokDictClose {
+				if p.inlineImage {
+					p.lex.pos = tt.pos
+					return nil, errInlineImageUnended
+				}
 				continue // stray
 			}
 			p.lex.pos = save
@@ -556,6 +572,15 @@ func (p *parser) parseObject(depth int) (object, error) {
 			if err != nil {
 				var kw errKeyword
 				if errors.As(err, &kw) {
+					if p.inlineImage {
+						// A keyword inside an array of an inline image's
+						// dictionary: the array is unfinished, and an
+						// unfinished value is no value. Ending the array
+						// here would let a keyword inside one stand for the
+						// end of the dictionary, which the page does not say.
+						p.lex.pos = kw.pos
+						return nil, errInlineImageUnended
+					}
 					if p.contentMode {
 						// An operator inside an array in a content
 						// stream: malformed; end the array here.
@@ -588,13 +613,18 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return dict, nil
 			}
 			if tt.kind == tokEOF {
+				if p.inlineImage {
+					return nil, errInlineImageUnended
+				}
 				return dict, nil
 			}
 			if tt.kind != tokName {
-				// A value where a key should be: skip to resynchronise.
-				if tt.kind == tokKeyword && p.inlineImage {
+				// A value where a key should be: skip to resynchronise --
+				// except inside an inline image's dictionary, where the
+				// pairs are read strictly at every depth.
+				if p.inlineImage {
 					p.lex.pos = tt.pos
-					return nil, errKeyword{keyword: tt.keyword, pos: tt.pos}
+					return nil, errInlineImageUnended
 				}
 				if tt.kind == tokKeyword && (tt.keyword == "endobj" || tt.keyword == "stream" || tt.keyword == "endstream") {
 					p.lex.pos = tt.pos
@@ -615,6 +645,12 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return nil, err
 			}
 			if vt.kind == tokDictClose {
+				if p.inlineImage {
+					// A key with no value: what the dictionary says of that
+					// key is not in the file.
+					p.lex.pos = vt.pos
+					return nil, errInlineImageUnended
+				}
 				dict[key] = nil
 				return dict, nil
 			}
@@ -625,7 +661,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 				if errors.As(err, &kw) {
 					if p.inlineImage {
 						p.lex.pos = kw.pos
-						return nil, err
+						return nil, errInlineImageUnended
 					}
 					if kw.keyword == "endobj" || kw.keyword == "stream" || kw.keyword == "endstream" {
 						p.lex.pos = kw.pos

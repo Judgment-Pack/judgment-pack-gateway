@@ -256,7 +256,7 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 			if cached, ok := it.d.fontRefs[r]; ok {
 				f = cached
 			} else if dict := it.d.dictOf(r); dict != nil {
-				f = it.d.loadFont(dict, generation)
+				f = it.d.loadFont(dict)
 				if it.d.generation == generation && len(it.d.fontRefs) < maxFontCacheEntries {
 					if it.d.fontRefs == nil {
 						it.d.fontRefs = map[ref]*font{}
@@ -265,7 +265,7 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 				}
 			}
 		} else if dict := it.d.dictOf(fonts[name]); dict != nil {
-			f = it.d.loadFont(dict, generation)
+			f = it.d.loadFont(dict)
 		}
 	}
 	if f == nil {
@@ -706,10 +706,20 @@ func (it *interp) readInlineImage(lex *lexer) (inlineImage, error) {
 				continue
 			}
 			haveKey = false
+			if obj == nil {
+				// A value written null is an entry the dictionary does not
+				// have (7.3.9). It says nothing of its key -- so nothing of
+				// where the data ends -- and nothing another writing of the
+				// same key says can disagree with it.
+				continue
+			}
 			name, bearsOnEnd := inlineImageKey(key)
 			if bearsOnEnd {
-				if before, again := declared[name]; again && !sameDeclaration(name, before, obj) {
-					return img, errInlineImageDisagrees
+				if before, again := declared[name]; again {
+					if !sameDeclaration(name, before, obj) {
+						return img, errInlineImageDisagrees
+					}
+					obj = inlineUsable(before, obj)
 				}
 				declared[name] = obj
 			}
@@ -734,14 +744,29 @@ func (it *interp) readInlineImage(lex *lexer) (inlineImage, error) {
 				return img, errInlineImageUnended
 			}
 			return img, nil
-		case "EI", "BI":
-			// An image that ended, or began again, before its data began.
+		default:
+			// Any other keyword: an image that ended or began again before
+			// its data began, or an operator where a key or a value stands.
 			// Where ID is missing the bytes between are not the image's data,
 			// and what the reader has read of them as a dictionary is not the
 			// page's content either.
 			return img, errInlineImageUnended
 		}
 	}
+}
+
+// inlineUsable is the writing of one value the reader can use, given two
+// writings of it that say the same thing: the integer where either is one,
+// since a dimension or a depth written as a real is no dimension or depth --
+// and which of the two a dictionary wrote first says nothing about the image.
+func inlineUsable(before, again object) object {
+	if _, ok := again.(int64); ok {
+		return again
+	}
+	if _, ok := before.(int64); ok {
+		return before
+	}
+	return again
 }
 
 // inlineImageKey is the one name the reader keeps for a key of an inline
@@ -781,6 +806,14 @@ var inlineColourNames = map[Name]Name{
 	"G": "DeviceGray", "RGB": "DeviceRGB", "CMYK": "DeviceCMYK", "I": "Indexed",
 }
 
+// inlineDeviceColourNames are the three of those a colour space may be
+// written as on its own. /I is not among them: Indexed is a family written as
+// an array, so a bare /I or a bare /Indexed is the name of one of the
+// resources in force, and a resource's name is the name it was given.
+var inlineDeviceColourNames = map[Name]Name{
+	"G": "DeviceGray", "RGB": "DeviceRGB", "CMYK": "DeviceCMYK",
+}
+
 var inlineFilterNames = map[Name]Name{
 	"AHx": "ASCIIHexDecode", "A85": "ASCII85Decode", "LZW": "LZWDecode",
 	"Fl": "FlateDecode", "RL": "RunLengthDecode", "CCF": "CCITTFaxDecode",
@@ -802,7 +835,7 @@ func sameDeclaration(key Name, a, b object) bool {
 func inlineDeclared(key Name, v object) object {
 	switch key {
 	case "CS":
-		return inlineNamesOf(v, inlineColourNames)
+		return inlineColourValue(v)
 	case "F":
 		v = inlineNamesOf(v, inlineFilterNames)
 		if name, ok := v.(Name); ok {
@@ -812,6 +845,37 @@ func inlineDeclared(key Name, v object) object {
 		if dict, ok := v.(Dict); ok {
 			return Array{dict}
 		}
+	}
+	return v
+}
+
+// inlineColourValue is a colour space under the one form the reader compares
+// it in. A name is normalised by where it stands, as the measurement reads
+// it: at the head of an array it names a family, and 8.9.7 abbreviates four
+// of those; standing alone it is a device space under either spelling, or
+// else the name of a resource, which abbreviates nothing. Two images naming
+// two resources name two colour spaces however alike the names look.
+func inlineColourValue(v object) object {
+	switch x := v.(type) {
+	case Name:
+		if full, ok := inlineDeviceColourNames[x]; ok {
+			return full
+		}
+	case Array:
+		out := make(Array, len(x))
+		for i, item := range x {
+			out[i] = inlineColourValue(item)
+		}
+		if len(out) > 0 {
+			if name, ok := x[0].(Name); ok {
+				if full, ok := inlineColourNames[name]; ok {
+					out[0] = full
+				} else {
+					out[0] = name
+				}
+			}
+		}
+		return out
 	}
 	return v
 }
@@ -915,6 +979,10 @@ type inlineImage struct {
 	filter   Name
 	filtered bool
 	mask     bool
+	// bpcGiven says the dictionary declared a depth, whatever it declared:
+	// an image mask may leave the depth out, and one that writes 0 has
+	// written a depth no sample has rather than left it out.
+	bpcGiven bool
 }
 
 // set records what one member of an inline image's dictionary says, under the
@@ -935,8 +1003,10 @@ func (img *inlineImage) set(key Name, v object) {
 		}
 	case "BPC":
 		// A depth the image gives as anything but an integer is no depth:
-		// -1 stands for one the reader cannot use, which 0 (absent) is not.
-		img.bpc = -1
+		// -1 stands for one the reader cannot use. Whether the image gave a
+		// depth at all is kept apart from what it gave, since 0 is a depth a
+		// dictionary can write and no depth a sample has.
+		img.bpc, img.bpcGiven = -1, true
 		if n, ok := v.(int64); ok {
 			img.bpc = n
 		}
@@ -1094,7 +1164,7 @@ func (img inlineImage) sampleBytes(components int64) int64 {
 	if img.mask {
 		// A mask's samples are one bit of one component (Table 89). A mask
 		// that says its depth says one, or says nothing.
-		if bits != 0 && bits != 1 {
+		if img.bpcGiven && bits != 1 {
 			return -1
 		}
 		components, bits = 1, 1
@@ -1104,14 +1174,17 @@ func (img inlineImage) sampleBytes(components int64) int64 {
 	if components < 1 || components > maxColorComponents || (bits != 1 && bits != 2 && bits != 4 && bits != 8 && bits != 16) {
 		return -1
 	}
-	// Past the bound on an image's data either way, and the arithmetic below
-	// stays far from where an int64 ends: the width bounded here, times the
-	// components and bits bounded above, is smaller than a petabyte.
-	if img.width > maxInlineImageBytes || img.height > maxInlineImageBytes {
+	// The bound is on the bytes the image's samples take, which is what the
+	// packing above gives: a row of samples one bit wide is an eighth of the
+	// bytes a row of the same width eight bits wide is, and an image is past
+	// the bound when its bytes are and not when its pixels are. Each step is
+	// bounded before it is taken, the components and the depth being bounded
+	// above, so nothing here approaches where an int64 ends.
+	if img.width > maxInlineImageBytes*8/(components*bits) {
 		return maxInlineImageBytes + 1
 	}
 	row := (img.width*components*bits + 7) / 8
-	if row > maxInlineImageBytes || img.height > maxInlineImageBytes/row {
+	if row < 1 || img.height > maxInlineImageBytes/row {
 		return maxInlineImageBytes + 1
 	}
 	return row * img.height

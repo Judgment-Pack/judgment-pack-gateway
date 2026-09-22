@@ -114,7 +114,7 @@ func firstGlyph(f *font, s []byte) glyph {
 }
 
 func loadFontNumbered(d *Document, num int) *font {
-	return d.loadFont(d.dictOf(ref{num, 0}), d.generation)
+	return d.loadFont(d.dictOf(ref{num, 0}))
 }
 
 // A /W range names its codes by integers within the CIDs the reader holds;

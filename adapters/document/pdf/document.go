@@ -98,6 +98,15 @@ type Document struct {
 	// one, so that a reading of the document's pages that began under an
 	// earlier one can tell that what it gathered no longer stands.
 	generation int
+	// reading is how many reads are under way, and readGeneration the
+	// cross-reference the outermost of them began on. What a read publishes
+	// -- an object, a font, a CMap, a header, a bound -- belongs to the
+	// cross-reference its own operation began on, however many objects it
+	// resolves on the way: a read that met a rebuild half way through is
+	// abandoned whole, and the objects it goes on to touch are not the
+	// rebuilt document's reading of them.
+	reading        int
+	readGeneration int
 	// bound is the first structure or inflate bound met while reading an
 	// object the cross-reference named, which leaves that object unread; the
 	// walk ends at it. It belongs to that cross-reference: a rebuild drops it,
@@ -187,6 +196,26 @@ func (d *Document) walkDefect() string {
 		return undecodedMessage
 	}
 	return ""
+}
+
+// beginRead marks an operation that reads objects: the cross-reference it
+// begins on is the one everything it publishes belongs to, and an operation
+// nested inside another keeps the outer one's. The returned function ends it.
+func (d *Document) beginRead() func() {
+	if d.reading == 0 {
+		d.readGeneration = d.generation
+	}
+	d.reading++
+	return func() { d.reading-- }
+}
+
+// readingGeneration is the cross-reference the read under way began on, and
+// the document's own where none is.
+func (d *Document) readingGeneration() int {
+	if d.reading == 0 {
+		return d.generation
+	}
+	return d.readGeneration
 }
 
 // forgetObjects drops everything the reader holds of the objects a
@@ -670,7 +699,7 @@ func (d *Document) reconstruct() error {
 			// no object of that number at an offset: an object at an
 			// offset is the newer form in an incrementally updated file
 			// more often than not, and the scan cannot tell.
-			st, err := d.loadObjStm(num, s, d.generation)
+			st, err := d.loadObjStm(num, s)
 			if err != nil {
 				if isBound(err) {
 					return err
@@ -904,7 +933,7 @@ func (d *Document) resolve(v object) object {
 // cross-reference does not name or names as free, to an object that cannot
 // be parsed, through a cycle, or past a bound.
 func (d *Document) resolveRead(v object) (object, bool) {
-	generation := d.generation
+	generation := d.readingGeneration()
 	for depth := 0; ; depth++ {
 		r, ok := v.(ref)
 		if !ok {
@@ -947,7 +976,8 @@ func (d *Document) objectRead(num int) (object, bool) {
 	// -- and what was read before that is of a document this one no longer
 	// is: it goes back to the caller, whose own reading is discarded, and is
 	// published to nothing.
-	generation := d.generation
+	defer d.beginRead()()
+	generation := d.readingGeneration()
 	if len(d.resolving) >= maxRefDepth {
 		err := structureBound("indirect object reads nested past %d", maxRefDepth)
 		d.noteBoundAt(generation, err)
@@ -1021,7 +1051,8 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	// The cross-reference this read stands on, as objectRead holds one, read
 	// before anything is resolved: what a stream of objects held under the
 	// old one is not what this number names now.
-	generation := d.generation
+	defer d.beginRead()()
+	generation := d.readingGeneration()
 	st, ok := d.objStmHeaders[e.stmNum]
 	if !ok {
 		if _, tried := d.objStms[e.stmNum]; tried {
@@ -1032,7 +1063,7 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 			d.markObjStm(generation, e.stmNum)
 			return nil, false
 		}
-		loaded, err := d.loadObjStm(e.stmNum, s, generation)
+		loaded, err := d.loadObjStm(e.stmNum, s)
 		if err != nil {
 			// The failure of a read that straddled a rebuild is the old
 			// cross-reference's, as its objects are: the stream this number
@@ -1095,7 +1126,9 @@ type objStmParsed struct {
 	twice    map[int]bool
 }
 
-func (d *Document) loadObjStm(num int, s *stream, generation int) (*objStmParsed, error) {
+func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
+	defer d.beginRead()()
+	generation := d.readingGeneration()
 	if s.dict["Type"] != Name("ObjStm") {
 		return nil, errors.New("not an object stream")
 	}

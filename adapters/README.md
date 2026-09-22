@@ -456,9 +456,14 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   mapping is found among the mappings for codes of that length: `<41>` and `<0041>` are two
   codes. A CMap whose ranges of two lengths hold the same leading bytes says two things about
   how long a code is and is not used at all, its glyphs unmapped and counted, as a CMap past a
-  bound is not used. Where a font names a predefined CMap the reader does not
-  carry, the codespace ranges of its `ToUnicode` map say how many bytes its codes have, or two
-  bytes where the font declares none, and every glyph takes the font's default width: the CID a
+  bound is not used. A composite font whose own encoding CMap the reader cannot use is not read as
+  `Identity-H`: its bytes are split into two-byte codes so that the glyphs can be counted, every
+  one of them is unmapped and takes the font's default width, and a `ToUnicode` map is not
+  consulted — which codes the page shows is not something the file says. Where a font names a
+  predefined CMap the reader does not carry, the codespace ranges its `ToUnicode` map
+  **declares** say how many bytes its codes have, or two bytes where the map declares none — a
+  range the reader inferred from the mappings a map holds is the reader's reading of it and is
+  not borrowed — and every glyph takes the font's default width: the CID a
   code stands for is in the CMap the reader does not have, and a width read at the code's own
   number would be some other glyph's. An object a cross-reference places in an object stream is
   read by the number the stream's own header declares it at. Every place that header gives is
@@ -468,36 +473,56 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   decides, and only where the header declares that number at it.
 
   Where an inline image's data ends is established from the way the image is encoded, and from
-  nothing else. The dictionary between `BI` and `ID` is read first, as pairs: a key with no
-  value, a keyword inside a value, a second `BI`, or a dictionary that never reaches `ID` fails
-  the page, and so does a key bearing on the end given twice with values that disagree — the
-  abbreviations of 8.9.7 standing for the names they abbreviate, a filter written alone standing
-  for the same filter in an array of one, and numbers compared by value, so `1` and `1.0` are one
-  value. One white-space byte separates `ID` from the data, a carriage return and a line feed
+  nothing else. The dictionary between `BI` and `ID` is read first, as pairs, at every depth it
+  holds: `ID` stands between two complete pairs of the dictionary itself, and any other keyword,
+  a key with no value, a value where a key stands, a stray delimiter, or a container that does
+  not close — in the dictionary or in a value of it — fails the page, since what follows an
+  unfinished value may be the image's data rather than the dictionary. A key bearing on the end
+  given twice with values that disagree fails it too — the abbreviations of 8.9.7 standing for
+  the names they abbreviate, a filter written alone standing for the same filter in an array of
+  one, and numbers compared by value, so `1` and `1.0` are one value, of which the reader keeps
+  the integer whichever was written first. A bare name that is no device colour space is the
+  name of one of the resources in force and abbreviates nothing, so `/I` and `/Indexed` name two
+  resources and an image giving both says two things; only at the head of an array does `/I`
+  stand for `Indexed`. A value written `null` is an entry the dictionary does not have (7.3.9):
+  it says nothing of its key, and nothing another writing of that key says can disagree with it.
+  One white-space byte separates `ID` from the data, a carriage return and a line feed
   counting as the one end-of-line marker 7.2.3 makes them.
 
   An image no filter encodes is then measured: every viewer consumes the bytes its width,
   height, bit depth and colour components take, a row at a time and each row whole bytes. The
-  depth is one of 1, 2, 4, 8 or 16 written as an integer (an image mask's is 1, written or not);
+  depth is one of 1, 2, 4, 8 or 16 written as an integer (an image mask's is 1, or is not written
+  at all — a mask that writes `0` has written a depth no sample has, which is not the same as
+  leaving it out);
   the colour space is a device space, a space written as an array — `CalGray`, `CalRGB`, `Lab`,
   `ICCBased` by its stream's `/N`, `Indexed`, `Separation`, `DeviceN` by its up to 32 colourants
   — or the name of one of the resources in force, the page's or the form's, which is looked up
-  there and read the same way. An image whose dictionary says none of this is not measured.
+  there and read the same way. An image whose dictionary says none of this is not measured. The
+  16 MiB bound below is a bound on the bytes the samples take, reached through the packing: a row
+  one bit a sample wide holds eight times the pixels of a row of the same length at eight bits,
+  and an image is past the bound when its bytes are past it and not when its pixels are.
 
   An image a filter encodes is framed by its **first** filter — the filters after it act on what
   the first decodes to, not on the bytes in the file — and only by one of the filters 8.9.7's
   Table 93 gives an inline image an abbreviation for: ASCIIHexDecode's `>`, ASCII85Decode's `~>`,
   RunLengthDecode's end-of-data, the end of a deflate or LZW stream, DCTDecode's end-of-image,
   CCITTFaxDecode's end-of-block. The encoding must be the encoding it claims: hexadecimal digits
-  and white space, base-85 in groups of five within a four-byte word, a zlib header with the
-  deflate data and the Adler-32 checksum of what it decodes to, LZW ending at its end-of-data
-  code. What a framing decodes is charged to `--max-inflate` and dropped, and the deadline is
-  read as it goes.
+  and white space — the white space of 7.2.3 and not every byte below a space — base-85 in groups
+  of five within a four-byte word, a final group of two to four standing for as many bytes less
+  one and completed as 7.4.3 completes it, a zlib header with the deflate data and the Adler-32
+  checksum of what it decodes to, LZW ending at its end-of-data code. Data that is not the
+  encoding at all is the image's own defect and is told from data whose end lies past what the
+  reader may read of one image: a deflate stream corrupted in its first block is the one, a
+  deflate stream that simply does not end within the window is the other. What a framing decodes
+  is charged to `--max-inflate` and dropped, and every one of the seven framings reads the
+  deadline as it walks, so that an encoding decoding to nothing is still bounded by the clock.
 
   For the fax and JPEG framings the reader walks the encoding's own structure and decodes no
   rows and no blocks: an end-of-block is the end of fax data by definition and an end-of-image
   marker the end of a JPEG's, so the image ends there and what follows is the page's content —
-  a JPEG whose scan holds no block still ends at its marker. Where such a structural end is
+  a JPEG whose scan holds no block still ends at its marker. In entropy-coded data `FF 00` is a
+  sample byte and a restart marker resumes the data, the fill bytes ITU T.81 allows before one
+  belonging to it: only a marker that is neither ends the scan. Where such a structural end is
   reached and no `EI` stands there, the page fails; the `EI` check refuses that, and establishes
   nothing by itself.
 
@@ -509,7 +534,8 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   frame therefore fails the page, and the record says so: that is CCITTFaxDecode with
   `/EndOfBlock false` or with `/EncodedByteAlign true` (where the fill bits before a row make the
   bits of an end-of-line, and telling the two apart means decoding the rows), JBIG2Decode and
-  JPXDecode (which Table 93 gives no abbreviation and this reader does not frame), `Crypt`, a
+  JPXDecode (the specification's inline-image abbreviation list, Table 93, does not include them,
+  and this reader does not frame them), `Crypt`, a
   filter this reader does not know **as the first filter**, an encoding that is not the encoding
   it claims, and an unfiltered image whose width, height, bit depth or colour space the file does
   not give. An encoding whose end lies past the 16 MiB the reader may read of one image has met
@@ -523,11 +549,14 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   replaces goes with it — the objects, the object streams they came out of, and the fonts and
   CMaps built from them — since an object number then names other bytes. A read publishes to a
   cache, and records a bound or an undecodable object stream, only under the cross-reference it
-  began on, so a read that was under way when the rebuild happened leaves nothing of itself
+  began on, at every depth it reaches — a font's load and the objects it resolves under it
+  included — so a read that was under way when the rebuild happened leaves nothing of itself
   behind; the bounds that are the file's rather than one cross-reference's — the objects a scan
   of the file may find, the objects read in one document — stand whatever is rebuilt. The
   encryption dictionary the trailer names is read again under the rebuilt cross-reference, and
-  its handler and key with it, before any page is read; a document is rebuilt at most once,
+  its handler and key with it, before any page is read — a rebuild met while the page tree's root
+  is looked for is a rebuild the reading begins again from the top, the root the catalog now
+  names being read under a handler this walk is not the one to establish; a document is rebuilt at most once,
   however its opening goes. A reading
   of the document's pages that began under the old cross-reference is begun again under the new,
   so that a record's pages were all read under one. The bounds met under the cross-reference that

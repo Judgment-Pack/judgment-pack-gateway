@@ -652,11 +652,12 @@ func abs(x int) int {
 // inline image may hold; and the deadline is read as the work goes, since a
 // stream that decodes to nothing is still a stream to walk.
 //
-// The filters an inline image may declare are the seven Table 93 abbreviates
-// -- ASCIIHexDecode, ASCII85Decode, LZWDecode, FlateDecode, RunLengthDecode,
-// CCITTFaxDecode and DCTDecode. JBIG2Decode and JPXDecode are not among them
-// and are not framed here: an inline image encoded by one is an image no
-// conforming reading of the page establishes an end for.
+// The filters framed here are the seven the specification's inline-image
+// abbreviation list holds -- ASCIIHexDecode, ASCII85Decode, LZWDecode,
+// FlateDecode, RunLengthDecode, CCITTFaxDecode and DCTDecode (Table 93).
+// JBIG2Decode and JPXDecode are not in that list and are not framed here:
+// where an inline image encoded by one ends is not something this reader
+// establishes.
 
 // errFilterNotFramed is a filter whose data this reader does not frame. It is
 // told from a framing that met a bound or found no end: those are the image's
@@ -676,11 +677,11 @@ var errFilterUnended = errors.New("the encoded data of an inline image does not 
 func (d *Document) filterFraming(filter Name, parms object, data []byte) (int, error) {
 	switch filter {
 	case "AHx", "ASCIIHexDecode":
-		return asciiHexFraming(data)
+		return d.asciiHexFraming(data)
 	case "A85", "ASCII85Decode":
-		return ascii85Framing(data)
+		return d.ascii85Framing(data)
 	case "RL", "RunLengthDecode":
-		return runLengthFraming(data)
+		return d.runLengthFraming(data)
 	case "Fl", "FlateDecode":
 		return d.flateFraming(data)
 	case "LZW", "LZWDecode":
@@ -692,9 +693,9 @@ func (d *Document) filterFraming(filter Name, parms object, data []byte) (int, e
 		}
 		return d.lzwFraming(data, early)
 	case "DCT", "DCTDecode":
-		return jpegFraming(data)
+		return d.jpegFraming(data)
 	case "CCF", "CCITTFaxDecode":
-		return ccittFraming(d, firstParms(parms), data)
+		return d.ccittFraming(firstParms(parms), data)
 	}
 	return 0, errFilterNotFramed
 }
@@ -715,8 +716,11 @@ func firstParms(parms object) object {
 // bytes before it are hexadecimal digits and white space and nothing else --
 // a byte outside the encoding is no ASCIIHexDecode data, and where such an
 // image ends is not something the file establishes.
-func asciiHexFraming(data []byte) (int, error) {
+func (d *Document) asciiHexFraming(data []byte) (int, error) {
 	for i, c := range data {
+		if d.deadlinePassed() {
+			return 0, d.deadline()
+		}
 		switch {
 		case c == '>':
 			return i + 1, nil
@@ -733,26 +737,40 @@ func asciiHexFraming(data []byte) (int, error) {
 // ascii85Framing is where base-85 data ends: at the "~>" of 7.4.3. What
 // stands before it is the encoding's own alphabet, in groups of five: 'z'
 // stands for a whole group of zeros and only between groups, white space
-// falls anywhere, a group of five encodes a number no larger than a
-// four-byte word, and a final group of one character encodes nothing.
-func ascii85Framing(data []byte) (int, error) {
+// falls anywhere -- white space being the six bytes of 7.2.3 and not every
+// byte below a space -- a group of five encodes a number no larger than a
+// four-byte word, and so does a final group of fewer, which stands for as
+// many bytes as it has characters less one. A final group of one character
+// encodes nothing.
+func (d *Document) ascii85Framing(data []byte) (int, error) {
 	at := 0
 	if bytes.HasPrefix(data, []byte("<~")) {
 		at = 2
 	}
 	group, value := 0, uint64(0)
 	for i := at; i < len(data); i++ {
+		if d.deadlinePassed() {
+			return 0, d.deadline()
+		}
 		c := data[i]
 		switch {
 		case c == '~':
-			if i+1 >= len(data) || data[i+1] != '>' {
+			if i+1 >= len(data) {
+				// The byte that would end the data is not among the bytes
+				// the reader was given: what it was given holds no end.
+				return 0, errFilterUnended
+			}
+			if data[i+1] != '>' {
 				return 0, malformed("ASCII85Decode: a tilde that ends nothing")
 			}
 			if group == 1 {
 				return 0, malformed("ASCII85Decode: a final group of one character")
 			}
+			if group > 1 && !ascii85Representable(value, group) {
+				return 0, malformed("ASCII85Decode: a final group past the largest word")
+			}
 			return i + 2, nil
-		case c <= ' ':
+		case isWhitespace(c):
 		case c == 'z':
 			if group != 0 {
 				return 0, malformed("ASCII85Decode: a z inside a group")
@@ -773,11 +791,25 @@ func ascii85Framing(data []byte) (int, error) {
 	return 0, errFilterUnended
 }
 
+// ascii85Representable reports whether a final group of fewer than five
+// characters stands for a number a four-byte word holds. 7.4.3 has such a
+// group completed with the character 'u', the largest the alphabet has, so a
+// group the completion carries past the word is a group no four bytes encode.
+func ascii85Representable(value uint64, group int) bool {
+	for ; group < 5; group++ {
+		value = value*85 + uint64('u'-'!')
+	}
+	return value <= 0xFFFFFFFF
+}
+
 // runLengthFraming is where run-length encoded data ends: at the
 // end-of-data byte, 128. It reads the length of each run and not the run, so
 // nothing of the image is held.
-func runLengthFraming(data []byte) (int, error) {
+func (d *Document) runLengthFraming(data []byte) (int, error) {
 	for i := 0; i < len(data); {
+		if d.deadlinePassed() {
+			return 0, d.deadline()
+		}
 		l := int(data[i])
 		i++
 		switch {
@@ -821,8 +853,8 @@ func (d *Document) flateFraming(data []byte) (int, error) {
 // checksum of what it decoded to. What it decodes is charged to the inflate
 // budget and dropped. A budget met while it reads is returned as it is -- it
 // is the page's problem, and the image's end stays unknown -- and data that
-// is not deflate data, or ends inside its final block, holds no end of its
-// own. The deadline is read as the input is, so that blocks decoding to
+// ends inside its final block holds no end of its own, and data that is not
+// deflate data at all is the encoding's own defect and told apart from it. The deadline is read as the input is, so that blocks decoding to
 // nothing do not run past it.
 func (d *Document) deflateConsumed(data []byte) (int, uint32, error) {
 	out, err := d.budget.discard()
@@ -836,8 +868,13 @@ func (d *Document) deflateConsumed(data []byte) (int, uint32, error) {
 		switch {
 		case errors.Is(err, errInflateBound), isDeadline(err):
 			return 0, 0, err
+		case errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, io.EOF):
+			// The data ends inside the deflate stream: the bytes the reader
+			// was given do not hold its end, which is not the same as their
+			// not being deflate data at all.
+			return 0, 0, errFilterUnended
 		}
-		return 0, 0, errFilterUnended
+		return 0, 0, malformed("FlateDecode: the deflate data is not deflate data")
 	}
 	return len(data) - left.r.Len(), out.sum.Sum32(), nil
 }
@@ -899,7 +936,7 @@ func (d *Document) lzwFraming(data []byte, early bool) (int, error) {
 // leading zeros of the codeword after them make eleven zeros and a one at a
 // row boundary: a run there is a row and not an end-of-line, and telling them
 // apart means decoding the rows, which this reader does not do.
-func ccittFraming(d *Document, parms object, data []byte) (int, error) {
+func (d *Document) ccittFraming(parms object, data []byte) (int, error) {
 	k := int64(0)
 	if p := d.dictOf(parms); p != nil {
 		if v, ok := p["EndOfBlock"].(bool); ok && !v {
@@ -925,6 +962,9 @@ func ccittFraming(d *Document, parms object, data []byte) (int, error) {
 	}
 	zeros, seen, tagged := 0, 0, false
 	for at := 0; at < len(data)*8; at++ {
+		if at%8 == 0 && d.deadlinePassed() {
+			return 0, d.deadline()
+		}
 		if !tagged && at%8 == 0 && data[at/8] == 0 {
 			zeros += 8
 			at += 7
@@ -980,11 +1020,14 @@ func byteOf(at, length int) int {
 // holds bytes that read as markers and are not: FF 00 is a sample byte and
 // FF D0 to FF D7 are restarts, so that data is walked to the next marker that
 // is one.
-func jpegFraming(data []byte) (int, error) {
+func (d *Document) jpegFraming(data []byte) (int, error) {
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 		return 0, malformed("DCTDecode: no start-of-image marker")
 	}
 	for i := 2; i+1 < len(data); {
+		if d.deadlinePassed() {
+			return 0, d.deadline()
+		}
 		if data[i] != 0xFF {
 			// Not where a marker begins: the file is not one this reader can
 			// walk, and it says so rather than guessing at an end.
@@ -1015,12 +1058,34 @@ func jpegFraming(data []byte) (int, error) {
 			continue
 		}
 		// The start of a scan: entropy-coded data runs to the next marker
-		// that is one.
+		// that is one. FF 00 is a sample byte, and a restart -- which the
+		// fill bytes 4.10 of ITU T.81 allows may stand before, so that FF FF
+		// D0 is one restart and not a marker the data ends at -- resumes the
+		// data rather than ending it.
 		for i+1 < len(data) {
-			if data[i] == 0xFF && data[i+1] != 0x00 && !(data[i+1] >= 0xD0 && data[i+1] <= 0xD7) {
+			if d.deadlinePassed() {
+				return 0, d.deadline()
+			}
+			if data[i] != 0xFF {
+				i++
+				continue
+			}
+			j := i + 1
+			for j < len(data) && data[j] == 0xFF {
+				j++
+			}
+			if j >= len(data) {
+				i = j - 1
 				break
 			}
-			i++
+			if data[j] == 0x00 || (data[j] >= 0xD0 && data[j] <= 0xD7) {
+				i = j + 1
+				continue
+			}
+			// A marker of its own: the scan ends at the fill byte before it,
+			// which the walk above reads as the marker's first byte.
+			i = j - 1
+			break
 		}
 	}
 	return 0, errFilterUnended

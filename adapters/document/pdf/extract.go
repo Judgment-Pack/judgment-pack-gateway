@@ -215,12 +215,14 @@ func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) 
 	// A bound met finding the root ends the walk at the root's first check.
 	// Looking for the root may rebuild the cross-reference, and the catalog
 	// that named it is then not the document's catalog: the root is looked
-	// for again under the one the rebuild produced, which is the
-	// cross-reference the walk below stands on.
+	// for again under the one the rebuild produced, so that this walk is of
+	// the tree the rebuilt catalog names. The generation returned is still
+	// the one the walk began on, so that the caller reads the document again
+	// from the top -- the encryption dictionary the rebuilt trailer names
+	// included, which is not this walk's to establish.
 	generation = doc.generation
 	pagesRoot, rootRef := doc.pagesRoot()
 	if doc.generation != generation {
-		generation = doc.generation
 		pagesRoot, rootRef = doc.pagesRoot()
 	}
 	if pagesRoot == nil {

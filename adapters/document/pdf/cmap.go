@@ -98,6 +98,11 @@ type cmap struct {
 	// number.
 	cidIndex, uniIndex [5]firstSpans
 	shortest           int
+	// declaredCodespaces says the CMap declared codespace ranges of its own,
+	// as against the one this reader infers for a map that declares none: an
+	// inferred range is the reader's reading of what the map holds, and a
+	// font borrowing ranges borrows only what was declared.
+	declaredCodespaces bool
 }
 
 type cmapRange struct {
@@ -248,7 +253,11 @@ func ambiguousCodespaces(spaces []codespace) bool {
 // and maps none of them: what one CMap declares of the lengths its codes
 // have, for a font whose own encoding CMap the reader does not carry.
 func (c *cmap) codespacesOnly() *cmap {
-	return codespacesCMap(c.codespaces)
+	out := codespacesCMap(c.codespaces)
+	if out != nil {
+		out.declaredCodespaces = c.declaredCodespaces
+	}
+	return out
 }
 
 // twoByteCodespaces splits a string into codes of two bytes and maps none of
@@ -336,6 +345,7 @@ func (c *cmap) readCodespaces(p *parser) {
 			return
 		}
 		c.codespaces = append(c.codespaces, codespaceOf(ls, hs))
+		c.declaredCodespaces = true
 	}
 }
 
