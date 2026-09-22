@@ -164,38 +164,60 @@ def _skip(text, i):
     return i
 
 
-def _hex4(text, i):
+def _ended(over):
+    """What a reader that wanted more of the body found: past the body's
+    bound it found the bound, which is what the engine's reader reports
+    wherever it stood; below the bound it found the end of the body itself.
+    Every scalar read goes through this, because a value the bound cut short
+    is not a value the engine read -- a number, a string, an escape inside
+    one or a literal all end at the bound rather than where they were
+    written to end."""
+    raise Refusal("http: request body too large" if over else "unexpected end of JSON input")
+
+
+def _cut_word(text, i):
+    """Whether what is left of the text is the beginning of a literal and no
+    more of it: `tru` where `true` was written."""
+    return any(word.startswith(text[i:]) for word in ("true", "false", "null"))
+
+
+def _hex4(text, i, over=False):
     digits = text[i:i + 4]
-    if len(digits) != 4 or any(c not in "0123456789abcdefABCDEF" for c in digits):
+    if len(digits) != 4:
+        _ended(over)
+    if any(c not in "0123456789abcdefABCDEF" for c in digits):
         raise Refusal("invalid character in \\u hexadecimal character escape")
     return int(digits, 16)
 
 
-def _read_string(text, i):
+def _read_string(text, i, over=False):
     """The JSON string at text[i], a quotation mark, and where it ends. A
     byte that is not UTF-8 arrives as the body's reading kept it, U+DC80 to
-    U+DCFF."""
+    U+DCFF. over is whether the body was past its bound, which is what the
+    reader finds where the text stops."""
     i += 1
     value, go, problem = [], [], None
     while True:
         if i >= len(text):
-            raise Refusal("unexpected end of JSON input")
+            _ended(over)
         c = text[i]
         if c == '"':
             return _Text("".join(value), "".join(go), problem), i + 1
         if c == "\\":
             e = text[i + 1:i + 2]
-            if e in _ESCAPES and e:
+            if not e:
+                _ended(over)
+            if e in _ESCAPES:
                 value.append(_ESCAPES[e])
                 go.append(_ESCAPES[e])
                 i += 2
                 continue
             if e != "u":
                 raise Refusal(f"invalid character {e!r} in string escape code")
-            high = _hex4(text, i + 2)
+            high = _hex4(text, i + 2, over)
             i += 6
             if 0xD800 <= high <= 0xDBFF and text.startswith("\\u", i):
-                low = _hex4(text, i + 2)
+                low = _hex4(text, i + 2, over)
                 if 0xDC00 <= low <= 0xDFFF:
                     pair = chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
                     value.append(pair)
@@ -220,7 +242,7 @@ def _read_string(text, i):
         i += 1
 
 
-def _read_name(text, i):
+def _read_name(text, i, over=False):
     """The member name at text[i] and where it ends, the colon after it left
     where it is: the engine's decoder hands a name over as soon as it has
     read it, and what the reader of the envelope does with the name -- admit
@@ -232,10 +254,10 @@ def _read_name(text, i):
         raise Refusal("EOF")
     if text[i:i + 1] != '"':
         raise Refusal("invalid character looking for beginning of object key string")
-    return _read_string(text, i)
+    return _read_string(text, i, over)
 
 
-def _read_colon(text, i):
+def _read_colon(text, i, over=False):
     """Past the colon that follows a member name in the envelope, where the
     decoder is reading a token at a time and says what it expected. Inside a
     member's value the scanner reads instead, and says what it found
@@ -248,8 +270,8 @@ def _read_colon(text, i):
     return i + 1
 
 
-def _read_key(text, i):
-    key, i = _read_name(text, i)
+def _read_key(text, i, over=False):
+    key, i = _read_name(text, i, over)
     i = _skip(text, i)
     if i >= len(text):
         raise Refusal("EOF")
@@ -258,16 +280,18 @@ def _read_key(text, i):
     return key, i + 1
 
 
-def _read_value(text, i):
+def _read_value(text, i, over=False):
     """One JSON value from text at i, read iteratively however deep, and
     where it ends -- to Go's decoder's depth and no further. An object keeps
     its members in order, duplicates included. A refusal here is in words of
-    this reader's own, as Go's decoder's are its own."""
+    this reader's own, as Go's decoder's are its own, except where the body's
+    bound is what the reader found (_ended). over is whether the body was
+    past that bound."""
     stack = []
     while True:
         i = _skip(text, i)
         if i >= len(text):
-            raise Refusal("unexpected end of JSON input")
+            _ended(over)
         c = text[i]
         if c in "{[":
             if len(stack) >= MAX_DEPTH:
@@ -279,12 +303,17 @@ def _read_value(text, i):
             else:
                 stack.append([container, closer, None])
                 if closer == "}":
-                    stack[-1][2], i = _read_key(text, i)
+                    stack[-1][2], i = _read_key(text, i, over)
                 continue
         elif c == '"':
-            value, i = _read_string(text, i)
+            value, i = _read_string(text, i, over)
         elif c == "-" or c in "0123456789":
             match = _NUMBER.match(text, i)
+            # A number is where a cut is invisible: digits the bound stopped
+            # read as a whole number here, while the engine's reader was
+            # still waiting for the byte that would end it.
+            if over and (match.end() if match else i + 1) >= len(text):
+                _ended(over)
             if not match:
                 raise Refusal("invalid character in numeric literal")
             value, i = _Number(match.group(0), bool(match.group(1) or match.group(2))), match.end()
@@ -295,6 +324,8 @@ def _read_value(text, i):
         elif text.startswith("null", i):
             value, i = None, i + 4
         else:
+            if over and _cut_word(text, i):
+                _ended(over)
             raise Refusal(f"invalid character {c!r} looking for beginning of value")
         while True:
             if not stack:
@@ -306,11 +337,11 @@ def _read_value(text, i):
                 frame[0].append(value)
             i = _skip(text, i)
             if i >= len(text):
-                raise Refusal("unexpected end of JSON input")
+                _ended(over)
             if text[i] == ",":
                 i += 1
                 if frame[1] == "}":
-                    frame[2], i = _read_key(text, i)
+                    frame[2], i = _read_key(text, i, over)
                 break
             if text[i] == frame[1]:
                 stack.pop()
@@ -363,11 +394,10 @@ def request_fields(body, names):
     over = len(body) > MAX_BODY_BYTES
 
     def ended():
-        # The body's bound is reached by reading, so where the truncated text
-        # runs out is where the engine's reader reports the bound. Below the
-        # bound, a body that ends where a token is wanted is the end of the
-        # stream, which the decoder says in that one word (_ended_mid_value
-        # has the other case).
+        # Where a token is wanted and the text stops: past the bound that is
+        # the bound (_ended says it for every scalar read too), and below it
+        # the end of the stream, which the decoder says in that one word
+        # (_ended_mid_value has the case of a value that had begun).
         raise Refusal("http: request body too large" if over else "EOF")
 
     i = _skip(text, 0)
@@ -380,7 +410,7 @@ def request_fields(body, names):
         # literal it cannot read is refused in the decoder's own words.
         if text[i] != "{":
             if text[i] != "[":
-                _read_value(text, i)
+                _read_value(text, i, over)
             raise Refusal("request body must be a JSON object")
         fields, taken = {}, []
         i = _skip(text, i + 1)
@@ -391,18 +421,18 @@ def request_fields(body, names):
                 # The name is judged as soon as it has been read: what
                 # follows it -- the colon, the value, the rest of the body --
                 # is never reached for a name this endpoint will not admit.
-                key, i = _read_name(text, i)
+                key, i = _read_name(text, i, over)
                 name = str(key.go)
                 if name in taken:
                     raise Refusal(f"member {_go_quote(request_text(name))} appears twice")
                 if name not in names:
                     raise Refusal("request body carries a member this endpoint does not read: " + request_text(name))
                 taken.append(name)
-                i = _read_colon(text, i)
+                i = _read_colon(text, i, over)
                 i = _skip(text, i)
                 if i >= len(text):
                     ended()  # the member's value never began
-                fields[name], i = _read_value(text, i)
+                fields[name], i = _read_value(text, i, over)
                 i = _skip(text, i)
                 if i >= len(text):
                     ended()
@@ -428,7 +458,7 @@ def request_fields(body, names):
         # second value from bytes that are no value at all.
         if rest[j] not in "{[":
             try:
-                _read_value(rest, j)
+                _read_value(rest, j, over)
             except Refusal as refusal:
                 # What is after the object is read under the same bound as
                 # what is inside it: a trailing value the bound cuts short is

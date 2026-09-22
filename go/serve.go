@@ -405,20 +405,30 @@ const maxRequestText = 64
 // renders it. It quotes the same way wherever a diagnostic quotes such text
 // -- a source name, a member of a request, a tool named to the MCP server, a
 // member of an engine configuration or of an adapter's snapshot
-// (exactlyMembers) -- so that no refusal repeats bytes a terminal acts on.
-// A message that quotes through %q composes with this: what reaches %q is
-// already printable, so %q adds its quotation marks and escapes its own
-// two characters and never spells an escape sequence back out.
+// (exactlyMembers) -- so that a refusal repeats none of the bytes a terminal
+// acts on. A message that quotes through %q composes with this: %q escapes
+// what it escapes, and what reaches it has had the control characters taken
+// out already, so neither step has to undo the other's work.
 func requestText(s string) string { return boundedText(printableText(s), maxRequestText) }
 
-// printableText is s with every byte a terminal would act on replaced by
-// '?': every control character -- C0, DEL and the C1 range -- and every byte
-// that is not part of a valid UTF-8 sequence. One '?' takes the place of one
-// byte, so text quoted through the bound is as many bytes as what was sent
-// and the figure the bound reports stays that count. What prints is left as
-// it was, outside ASCII included: a source, a session or a tool may be named
-// in any script, and a refusal that spelled such a name as question marks
-// would name nothing the caller could recognize.
+// printableText is s with each of these bytes replaced by '?': every control
+// character -- C0, DEL and the C1 range, which is unicode.IsControl's Cc --
+// and every byte that is not part of a valid UTF-8 sequence. One '?' takes
+// the place of one byte, so text quoted through the bound is as many bytes
+// as what was sent and the figure the bound reports stays that count.
+//
+// That is the whole of it. A formatting character (Unicode's Cf, among them
+// the bidi overrides U+202E and U+200E) prints as nothing and passes
+// through, so a name carrying one reaches a caller as it was written and a
+// renderer honouring bidi shows it reordered. That is a display concern of
+// whatever renders a refusal rather than a byte a terminal acts on, and
+// nothing here tries to settle it.
+//
+// What prints is left as it was, outside ASCII included: a source or a tool
+// may be named in any script, and a refusal that spelled such a name as
+// question marks would name nothing the caller could recognize. (A session
+// id is not such a name: it is a flat token, [A-Za-z0-9._-], before any
+// refusal can quote it.)
 func printableText(s string) string {
 	var made []byte
 	for i := 0; i < len(s); {
@@ -555,8 +565,9 @@ var (
 // or an audit log reading the same bytes -- read the request as naming "a".
 // The receipt minted was consistent with what actually ran, so nothing in
 // it was wrong; what was wrong is that the request meant one thing to this
-// gateway and another to everyone else holding its bytes, and a seal taken
-// from the second spelling of "session" cannot be taken back.
+// gateway and another to any consumer of the same bytes that reads member
+// names exactly, and a seal taken from the second spelling of "session"
+// cannot be taken back.
 //
 // The body is walked as it arrives: there is no whole-body read before
 // anything is decided, so the bound the handler put on it (limitBodyTo) is

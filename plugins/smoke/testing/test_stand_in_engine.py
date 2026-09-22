@@ -128,6 +128,12 @@ REQUESTS = (
     ("arguments nested past the engine's depth", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 10001 + b"]" * 10001 + b"}")),
     ("a body past 1 MiB", acquire(raw=b'{"session":"diff-big","source":"screening","arguments":"' + b"a" * (1 << 20) + b'"}')),
     ("a trailing value that crosses the bound", acquire(raw=b'{"session":"diff-1"} "' + b"a" * (1 << 20))),
+    # A scalar the bound cuts short is the bound, wherever it stands: the
+    # digits of a number, or a string stopped inside an escape, end where
+    # the reading was stopped and not where they were written to end.
+    ("a number longer than the bound, as the body", acquire(raw=b"9" * ((1 << 20) + 1))),
+    ("a number longer than the bound, after the object", acquire(raw=b'{"session":"diff-1"} ' + b"9" * ((1 << 20) + 1))),
+    ("a trailing string the bound cuts inside an escape", acquire(raw=b'{"session":"diff-1"} "' + b"a" * ((1 << 20) - 23) + b'\\u0041"')),
     ("a body past 1 MiB whose rest never arrives", lambda p: unfinished_upload(p, "/acquire", 2 << 20, b'{"session":"diff-big","source":"screening","arguments":"' + b"a" * ((1 << 20) + 10))),
     ("an integer 5000 digits long", arguments(b"9" * 5000)),
     ("a duplicate name at its quotation bound", arguments(b'{"' + b'a' * 64 + b'":1,"' + b'a' * 64 + b'":2}')),

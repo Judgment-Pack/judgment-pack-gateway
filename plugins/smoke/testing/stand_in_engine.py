@@ -20,9 +20,10 @@ As the engine does, it answers, routing by path whatever the query:
                    decoder takes -- then holds
                    the arguments to the canonical domain, then refuses a
                    session that is not a flat token, then a source other
-                   than screening, then arguments the source's own echo
-                   writes deeper than the engine's parser reads, then a
-                   sealed session: each a 400 in the
+                   than screening, then a sealed session -- before the source
+                   exists, as admission refuses it -- then arguments the
+                   source's own echo writes deeper than the engine's parser
+                   reads: each a 400 in the
                    engine's words (a malformed body's words are Go's
                    decoder's, and differ here). Otherwise the source's echo
                    of the arguments -- {} when the member is absent, as given
