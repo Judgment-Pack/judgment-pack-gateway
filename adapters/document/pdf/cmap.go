@@ -306,12 +306,15 @@ func codespacesCovering(nbytes int, runs []codeRun) []codespace {
 	}
 	var out []codespace
 	for _, r := range joined {
-		// One run takes at most two ranges for each byte it may carry across.
-		if len(out)+2*nbytes > maxInferredCodespaces {
+		// Count the actual fragments: a run may cross several byte carries,
+		// while a singleton still needs only one range. With at most four
+		// bytes, this temporary split contains at most fifteen ranges.
+		parts := appendCarrySplit(nil, codeBytes(r.lo, nbytes), codeBytes(r.hi, nbytes), 0)
+		if len(out)+len(parts) > maxInferredCodespaces {
 			low, high := joined[0].lo, joined[len(joined)-1].hi
 			return appendCarrySplit(nil, codeBytes(low, nbytes), codeBytes(high, nbytes), 0)
 		}
-		out = appendCarrySplit(out, codeBytes(r.lo, nbytes), codeBytes(r.hi, nbytes), 0)
+		out = append(out, parts...)
 	}
 	return out
 }
