@@ -200,7 +200,7 @@ func (c *checker) shape(v any) {
 			sourceMembers["version"] = "string"
 			sourceMembers["mediaType"] = "string"
 		}
-		if source, ok := prov["source"].(map[string]any); ok && source["kind"] == SourceConnected {
+		if source, ok := prov["source"].(map[string]any); ok && (source["kind"] == SourceConnected || source["kind"] == SourceResource) {
 			for _, key := range []string{"provider", "resourceId", "url", "version", "format"} {
 				sourceMembers[key] = "string"
 			}
@@ -357,7 +357,7 @@ func (c *checker) values(rec *Record) {
 	if pv.Adapter.Name == "" || !ValidDigest(pv.Adapter.Digest) {
 		c.fail("adapter-identity", "provenance.adapter has an empty name or a digest that is not one")
 	}
-	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive && pv.Source.Kind != SourceGmail && pv.Source.Kind != SourceConnected && pv.Source.Kind != SourceWeb {
+	if pv.Source.Kind != SourceInline && pv.Source.Kind != SourceGoogleDrive && pv.Source.Kind != SourceGmail && pv.Source.Kind != SourceConnected && pv.Source.Kind != SourceWeb && pv.Source.Kind != SourceResource {
 		c.fail("source-kind", "provenance.source.kind is %q, which version 1 does not name", pv.Source.Kind)
 	}
 	if !stampForm.MatchString(pv.ObservedAt) {
@@ -828,9 +828,13 @@ func (c *checker) encryption(rec *Record) {
 }
 
 func (c *checker) source(rec *Record) {
-	if rec.Provenance.Source.Kind == SourceGoogleDrive || rec.Provenance.Source.Kind == SourceGmail || rec.Provenance.Source.Kind == SourceConnected || rec.Provenance.Source.Kind == SourceWeb {
+	if rec.Provenance.Source.Kind == SourceGoogleDrive || rec.Provenance.Source.Kind == SourceGmail || rec.Provenance.Source.Kind == SourceConnected || rec.Provenance.Source.Kind == SourceWeb || rec.Provenance.Source.Kind == SourceResource {
 		src, o := rec.Provenance.Source, rec.Original
-		if src.Kind == SourceWeb {
+		if src.Kind == SourceResource {
+			if !ValidResourceSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version {
+				c.fail("connection-resource", "Connection resource identity or snapshot is invalid")
+			}
+		} else if src.Kind == SourceWeb {
 			if !ValidWebSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version || rec.Provenance.OCR != nil {
 				c.fail("web-source", "Web source identity or snapshot is invalid")
 			}

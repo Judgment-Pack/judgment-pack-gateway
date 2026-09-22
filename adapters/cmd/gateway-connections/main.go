@@ -20,17 +20,26 @@ func run() int {
 	principal := fs.String("principal", "", "")
 	provider := fs.String("provider", "google-drive", "")
 	catalog := fs.Bool("catalog", false, "")
+	catalogV3 := fs.Bool("catalog-v3", false, "")
+	localPlan := fs.Bool("local-plan", false, "")
 	disabled := fs.Bool("disabled", false, "")
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
 		return 2
 	}
-	if *catalog {
+	if *catalog || *catalogV3 || *localPlan {
 		// Discovery must never open custody, configure a publisher, or consume
 		// stdin. Refuse mixed modes rather than silently ignoring their flags.
 		if fs.NFlag() != 1 {
 			return 2
 		}
-		if json.NewEncoder(os.Stdout).Encode(connections.ConnectionCatalog()) != nil {
+		var output any = connections.ConnectionCatalog()
+		if *catalogV3 {
+			output = connections.ConnectionCatalogV3()
+		}
+		if *localPlan {
+			output = connections.ConnectionLocalPlan()
+		}
+		if json.NewEncoder(os.Stdout).Encode(output) != nil {
 			return 1
 		}
 		return 0

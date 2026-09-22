@@ -155,6 +155,7 @@ const (
 	SourceGmail       = "gmail"
 	SourceConnected   = "connected-source"
 	SourceWeb         = "web"
+	SourceResource    = "connection-resource"
 
 	ProcessorPDF  = "adapter-document/pdf/1"
 	ProcessorText = "adapter-document/text/1"
