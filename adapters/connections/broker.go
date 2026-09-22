@@ -326,6 +326,19 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 		http.Error(w, "Authorization canceled.", 400)
 		return
 	}
+	if b.provider.notion && resultErr == Error("registration-expired") {
+		// Only invalidate the registration used by this still-current flow.
+		// A concurrent disconnect or reconfiguration must never be undone.
+		if err := b.store.locked(func(v *state) error {
+			if v.Disabled || v.Epoch != f.epoch || v.Client != f.client {
+				return ErrCanceled
+			}
+			v.Client, v.Redirect, v.Connection, v.Epoch = Client{}, "", nil, randomID()
+			return b.store.write("state.json", v)
+		}); err != nil {
+			resultErr = err
+		}
+	}
 	if resultErr == nil {
 		resultErr = b.store.locked(func(v *state) error {
 			if v.Disabled {

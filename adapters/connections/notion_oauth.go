@@ -137,6 +137,25 @@ func (b *Broker) startNotion(ctx context.Context) (FlowResult, error) {
 		address = u.Host
 	}
 	listener, err := net.Listen("tcp4", address)
+	// A disconnected registration may be replaced if its callback port is no
+	// longer available. Never orphan a live grant just to obtain another port.
+	if err != nil && client.ID != "" && connection == "" {
+		err = b.store.locked(func(v *state) error {
+			if v.Disabled || v.Epoch != epoch || v.Client != client || v.Connection != nil {
+				return ErrCanceled
+			}
+			v.Client, v.Redirect, v.Epoch = Client{}, "", randomID()
+			if err := b.store.write("state.json", v); err != nil {
+				return err
+			}
+			client, redirect, epoch = v.Client, v.Redirect, v.Epoch
+			return nil
+		})
+		if err != nil {
+			return FlowResult{}, err
+		}
+		listener, err = net.Listen("tcp4", "127.0.0.1:0")
+	}
 	if err != nil {
 		return FlowResult{}, Error("callback-unavailable")
 	}
@@ -217,13 +236,24 @@ func (p provider) notionAccess(ctx context.Context, s *Store, client Client, c c
 	if c.Refresh == "" {
 		return "", ErrRevoked
 	}
+	// Once a rotating exchange begins, ordinary caller cancellation must not
+	// discard its replacement token. Reserve enough of the outer operation's
+	// deadline for the bounded exchange and the 3-second custody lock.
+	if ctx.Err() != nil {
+		return "", ErrCanceled
+	}
+	if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) < 20*time.Second {
+		return "", ErrCanceled
+	}
+	refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+	defer cancel()
 	// Unlike the Google helper, distinguish a terminal invalid_grant from network
 	// failures. Neither errors nor token endpoint response bodies reach the caller.
 	values := url.Values{"grant_type": {"refresh_token"}, "client_id": {client.ID}, "refresh_token": {c.Refresh}, "resource": {notionResource}}
 	if client.Secret != "" {
 		values.Set("client_secret", client.Secret)
 	}
-	req, err := http.NewRequestWithContext(ctx, "POST", p.token, strings.NewReader(values.Encode()))
+	req, err := http.NewRequestWithContext(refreshCtx, "POST", p.token, strings.NewReader(values.Encode()))
 	if err != nil {
 		return "", ErrProvider
 	}
@@ -241,8 +271,8 @@ func (p provider) notionAccess(ctx context.Context, s *Store, client Client, c c
 	var failure struct {
 		Error string `json:"error"`
 	}
-	terminal := resp.StatusCode == 400 && json.Unmarshal(raw, &failure) == nil && (failure.Error == "invalid_grant" || failure.Error == "invalid_client")
-	if !terminal && (resp.StatusCode != 200 || json.Unmarshal(raw, &t) != nil || len(t.Access) == 0 || len(t.Access) > 8192 || len(t.Refresh) == 0 || len(t.Refresh) > 8192 || t.Expires <= 0 || t.Expires > 86400 || !strings.EqualFold(t.Type, "Bearer") || (t.Scope != "" && t.Scope != "default") || strings.ContainsAny(t.Access+t.Refresh, "\x00\r\n")) {
+	terminal := (resp.StatusCode == 400 || resp.StatusCode == 401) && json.Unmarshal(raw, &failure) == nil && (failure.Error == "invalid_grant" || failure.Error == "invalid_client")
+	if !terminal && (resp.StatusCode != 200 || json.Unmarshal(raw, &t) != nil || len(t.Access) == 0 || len(t.Access) > 8192 || len(t.Refresh) == 0 || len(t.Refresh) > 8192 || t.Expires <= 0 || !strings.EqualFold(t.Type, "Bearer") || (t.Scope != "" && t.Scope != "default") || strings.ContainsAny(t.Access+t.Refresh, "\x00\r\n")) {
 		return "", ErrProvider
 	}
 	err = s.locked(func(v *state) error {
@@ -255,10 +285,13 @@ func (p provider) notionAccess(ctx context.Context, s *Store, client Client, c c
 		if terminal {
 			v.Connection = nil
 			v.Epoch = randomID()
+			if failure.Error == "invalid_client" {
+				v.Client, v.Redirect = Client{}, ""
+			}
 		} else {
 			v.Connection.Access = t.Access
 			v.Connection.Refresh = t.Refresh
-			v.Connection.Expires = time.Now().Add(time.Duration(t.Expires) * time.Second).Unix()
+			v.Connection.Expires = time.Now().Add(time.Duration(min(t.Expires, 86400)) * time.Second).Unix()
 		}
 		return s.write("state.json", v)
 	})
