@@ -389,7 +389,15 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 			// the reading ends here, whatever the page came to.
 			return true
 		}
-		if err != nil && deadlineMet(ctx) != nil && isDeadline(err) {
+		if deadlineMet(ctx) != nil {
+			// The deadline passed while this page was read, whatever the page
+			// came to. A reading past the deadline is not this reader's: an
+			// object a resolve did not find after it -- the scan that resolve
+			// began, ended by the deadline; the font the page was then shown
+			// with as unknown; the content stream then unread -- is not known
+			// to be absent, so the page is not listed as it stands, nor as
+			// failed. It is not listed at all, and the run ends as it ends
+			// when the interpreter met the deadline itself.
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline passed while page %d was extracted", number, len(w.pages))})

@@ -756,7 +756,12 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   structure bounds below, and before each reading of a form the page draws,
   and within one operator that shows a string at the interval below for
   glyphs; work between two checks is not interrupted, so what one check admits runs to its end
-  within the structure bounds below. A deadline is read from the
+  within the structure bounds below. The deadline is read once more when the page's reading
+  ends, whatever the page came to: a deadline that has passed by then passed while the page was
+  read, and an object a resolve did not find after it — the scan that resolve began, ended by the
+  deadline; the font the page was then shown with as unknown; the content stream then unread — is
+  not known to be absent, so the page is not listed as it stands, nor as failed, and the run ends
+  as one met in the page's content ends it. A deadline is read from the
   clock as well as from the context, so one that has passed while nothing has cancelled the
   context is still a deadline that has passed. An OCR program's outcome is taken once the program
   has exited and its stdout has ended, or once the adapter has ended it; a deadline passed by

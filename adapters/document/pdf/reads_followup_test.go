@@ -7472,3 +7472,66 @@ func TestReadsAnInlineColourSpaceHoldsNoReference(t *testing.T) {
 		})
 	}
 }
+
+// A deadline that passes while a page is read ends the reading at the
+// deadline, whatever the page came to. The file below is opened from a
+// cross-reference of its own, and the scan begins only when the page's font,
+// or its content, is resolved: the offset the table gives it holds no object.
+// The scan then reads a trailer of more members than one dictionary holds --
+// megabytes of them, read for longer than the deadline allows -- and the
+// deadline passes inside it. The scan returns the deadline; the resolve finds
+// nothing; and what the page then comes to -- shown with an unknown font, or
+// with no content to read -- is not a page this reader may list, since
+// nothing it did not find after the deadline is known to be absent. The
+// record says the deadline passed while the page was extracted, and lists
+// no page.
+func TestReadsADeadlineThatPassesWhileAPageIsReadEndsTheReading(t *testing.T) {
+	var members strings.Builder
+	members.WriteString("<< ")
+	for i := 0; i <= maxContainerItems; i++ {
+		fmt.Fprintf(&members, "/K%d 1 ", i)
+	}
+	members.WriteString(">>")
+	for _, where := range []struct {
+		name   string
+		broken int
+	}{
+		{"a font the page names", 7},
+		{"the page's content", 6},
+	} {
+		t.Run("the scan begun resolving "+where.name, func(t *testing.T) {
+			objects := []readsObject{
+				{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+				{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+				{3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>"},
+				{6, readsStreamObject("", shown("A", 700))},
+				{7, readsHelvetica("Z")},
+			}
+			data := readsBeforeTheStartxref(readsTableFile(objects, where.broken, ""),
+				[]byte("\ntrailer\n"+members.String()+"\n"))
+			// Opening and walking the file takes milliseconds; reading the
+			// trailer of a million members takes far longer than the deadline
+			// below on any build, so the deadline passes inside the scan the
+			// page's reading began. The other reader is not asked about a
+			// file of megabytes: what it makes of it says no more than the
+			// small files of the bound test do.
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			r := Extract(ctx, data, testOptions())
+			cancel()
+			if r.Fatal != nil || !r.TimedOut || !r.Truncated || len(r.Pages) != 0 {
+				t.Errorf("fatal %+v timedOut %v truncated %v pages %+v problems %+v; the deadline passed while the page was read, and the reading ends there",
+					r.Fatal, r.TimedOut, r.Truncated, r.Pages, r.Problems)
+			}
+			if len(r.Problems) != 1 || r.Problems[0].Code != "timeout" {
+				t.Fatalf("problems %+v, want one timeout", r.Problems)
+			}
+			t.Logf("the record says %q", r.Problems[0].Message)
+			// On a bare build the deadline passes inside the page's reading;
+			// under the race detector opening the file may itself outlast a
+			// deadline this short, which the check before the page reports.
+			if want := "the deadline passed while page 1 was extracted; page 1 is not listed"; !boundsInstrumented && r.Problems[0].Message != want {
+				t.Errorf("the record says %q, want %q", r.Problems[0].Message, want)
+			}
+		})
+	}
+}
