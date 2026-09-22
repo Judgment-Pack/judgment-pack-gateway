@@ -648,3 +648,26 @@ headers and a selected plain-text body alternative, or text converted from HTML.
 Separate file attachments are excluded. Resource references in markup are not
 fetched or executed. Charset/MIME/output bounds and explicit selection are owned
 by the Gmail adapter. These semantics do not change a gateway receipt's format.
+
+## Connected note source extension
+
+[Connected note sources](connected-note-sources.md) adds the source kind
+`connected-source` for the reviewed providers `notion` and `obsidian`. Its exact
+members are `kind`, `provider`, `resourceId`, `url`, `version`, and `format`.
+`format` is `text-snapshot-v1`; `version` is the SHA-256 document ID of the retained
+UTF-8 text snapshot and equals `document.version`. The original is retained inline
+as canonical base64 and the processor is `adapter-document/text/1`.
+
+For Notion, `resourceId` is a lowercase UUID with or without hyphens. `url` is HTTPS
+on `notion.so`, `www.notion.so`, `notion.com`, or `www.notion.com`, without userinfo,
+fragment or explicit nondefault port; its path ends in the matching ID, ignoring
+hyphens. For Obsidian, `resourceId` is a relative Markdown note path of at most
+1,024 UTF-8 bytes with no dot-prefixed component, backslash, control character,
+colon or traversal component. The URL is only `obsidian://open`, with exactly one
+nonempty `vault` query value and one `file` value equal to that relative path
+without its final extension. Source URLs have a 4,096-byte bound. These lexical
+checks identify the source; they do not establish that the provider returned it.
+
+A snapshot is the returned/exported text, not a claim of complete upstream content.
+Old consumers that do not know this source kind must not reinterpret it as an
+inline upload. The original Google and inline variants keep their existing rules.

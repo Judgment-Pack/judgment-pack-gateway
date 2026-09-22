@@ -477,9 +477,49 @@
                 }
               },
               "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "provider",
+                "resourceId",
+                "url",
+                "version",
+                "format"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "connected-source"
+                },
+                "provider": {
+                  "enum": [
+                    "notion",
+                    "obsidian"
+                  ]
+                },
+                "resourceId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 1024
+                },
+                "url": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 4096
+                },
+                "version": {
+                  "type": "string",
+                  "pattern": "^sha256:[a-f0-9]{64}$"
+                },
+                "format": {
+                  "const": "text-snapshot-v1"
+                }
+              }
             }
           ],
-          "description": "One variant per source kind: inline uploads, Google Drive retrieval, and Gmail text exports."
+          "description": "One variant per source kind, including reviewed connected-source text snapshots."
         },
         "observedAt": {
           "type": "string",

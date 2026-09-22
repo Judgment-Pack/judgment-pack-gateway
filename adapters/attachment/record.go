@@ -109,13 +109,16 @@ type Identity struct {
 
 // Source is where the bytes came from.
 type Source struct {
-	Kind      string `json:"kind"`
-	MessageID string `json:"messageId,omitempty"`
-	ThreadID  string `json:"threadId,omitempty"`
-	Format    string `json:"format,omitempty"`
-	FileID    string `json:"fileId,omitempty"`
-	Version   string `json:"version,omitempty"`
-	MediaType string `json:"mediaType,omitempty"`
+	Kind       string `json:"kind"`
+	Provider   string `json:"provider,omitempty"`
+	ResourceID string `json:"resourceId,omitempty"`
+	URL        string `json:"url,omitempty"`
+	MessageID  string `json:"messageId,omitempty"`
+	ThreadID   string `json:"threadId,omitempty"`
+	Format     string `json:"format,omitempty"`
+	FileID     string `json:"fileId,omitempty"`
+	Version    string `json:"version,omitempty"`
+	MediaType  string `json:"mediaType,omitempty"`
 }
 
 // OCR is the provenance of applied OCR answers.
@@ -148,6 +151,7 @@ const (
 	SourceInline      = "inline"
 	SourceGoogleDrive = "google-drive"
 	SourceGmail       = "gmail"
+	SourceConnected   = "connected-source"
 
 	ProcessorPDF  = "adapter-document/pdf/1"
 	ProcessorText = "adapter-document/text/1"
