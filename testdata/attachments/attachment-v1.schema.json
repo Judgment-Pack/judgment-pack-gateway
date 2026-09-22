@@ -601,7 +601,8 @@
                 "format": {
                   "const": "retained-file-v1"
                 }
-              }
+              },
+              "additionalProperties": false
             }
           ],
           "description": "One variant per source kind, including reviewed connected-source text snapshots."
