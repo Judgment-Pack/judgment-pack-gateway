@@ -26,6 +26,8 @@ func run() int {
 	case "notion":
 	case "obsidian":
 		open, read = connections.OpenObsidianStore, connections.ReadObsidian
+	case "aws-s3":
+		open, read = connections.OpenS3Store, connections.ReadS3
 	default:
 		return 2
 	}
@@ -35,8 +37,12 @@ func run() int {
 		return 1
 	}
 	defer s.Close()
-	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
-	if err != nil || len(raw) > 4096 {
+	limit := 4096
+	if *provider == "aws-s3" {
+		limit = 16 << 10
+	} // a 1024-byte key may be JSON-escaped up to sixfold
+	raw, err := io.ReadAll(io.LimitReader(os.Stdin, int64(limit+1)))
+	if err != nil || len(raw) > limit {
 		fmt.Fprintln(os.Stderr, "invalid-request")
 		return 1
 	}

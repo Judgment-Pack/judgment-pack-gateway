@@ -1,0 +1,12 @@
+{
+  "scope": true,
+  "pagination": true,
+  "draftPreserved": true,
+  "focus": true,
+  "textVerified": true,
+  "pdfVerified": true,
+  "disconnectTruthful": true,
+  "deskUnchanged": true,
+  "unsentChats": 0,
+  "errors": []
+}

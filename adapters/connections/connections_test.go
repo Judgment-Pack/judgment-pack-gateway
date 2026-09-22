@@ -94,7 +94,7 @@ func testBroker(t *testing.T) (*Broker, *atomic.Int32, *string) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	b.provider = provider{server.URL + "/auth", server.URL + "/token", server.URL + "/revoke", server.URL, server.Client(), false, false, false}
+	b.provider = provider{server.URL + "/auth", server.URL + "/token", server.URL + "/revoke", server.URL, server.Client(), false, false, false, false}
 	b.provider.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return b, count, accountID
 }
@@ -292,7 +292,7 @@ func TestExpiredGrantRefusedBeforeNetwork(t *testing.T) {
 	r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
 	var id string
 	b.store.locked(func(v *state) error { id = v.Connection.ID; return nil })
-	b.store.write("grant-"+r.Selections[0].Grant, grant{id, "file-A", time.Now().Add(-time.Second).Unix()})
+	b.store.write("grant-"+r.Selections[0].Grant, grant{Connection: id, File: "file-A", Expires: time.Now().Add(-time.Second).Unix()})
 	if _, e := b.provider.read(context.Background(), b.store, mustJSON(ReadRequest{r.Selections[0].Grant, "file-A"})); e != ErrGrant {
 		t.Fatal(e)
 	}

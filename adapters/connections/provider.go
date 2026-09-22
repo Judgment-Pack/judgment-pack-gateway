@@ -27,6 +27,7 @@ type provider struct {
 	gmail                    bool
 	notion                   bool
 	obsidian                 bool
+	s3                       bool
 }
 
 func google() provider {
@@ -36,7 +37,7 @@ func google() provider {
 	t.ResponseHeaderTimeout = 15 * time.Second
 	t.TLSHandshakeTimeout = 10 * time.Second
 	t.DialContext = (&net.Dialer{Timeout: 10 * time.Second}).DialContext
-	return provider{"https://accounts.google.com/o/oauth2/v2/auth", "https://oauth2.googleapis.com/token", "https://oauth2.googleapis.com/revoke", "https://www.googleapis.com/drive/v3", &http.Client{Transport: t, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}, false, false, false}
+	return provider{auth: "https://accounts.google.com/o/oauth2/v2/auth", token: "https://oauth2.googleapis.com/token", revoke: "https://oauth2.googleapis.com/revoke", api: "https://www.googleapis.com/drive/v3", client: &http.Client{Transport: t, Timeout: 45 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 }
 func (p provider) request(ctx context.Context, method, endpoint, token string, form url.Values, max int64) ([]byte, *http.Response, error) {
 	var body io.Reader
@@ -182,6 +183,9 @@ func (p provider) scope() string {
 	return driveScope
 }
 func (p provider) kind() string {
+	if p.s3 {
+		return "aws-s3"
+	}
 	if p.obsidian {
 		return "obsidian"
 	}

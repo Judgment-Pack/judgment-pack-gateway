@@ -153,5 +153,149 @@
       "zh-Hans": "",
       "de": ""
     }
+  },
+  "aws-s3": {
+    "name": "Amazon S3",
+    "icon": "",
+    "description": {
+      "en": "PDFs and text files in an S3 bucket",
+      "fr": "PDF et fichiers texte dans un compartiment S3",
+      "es": "PDF y archivos de texto en un bucket de S3",
+      "de": "PDFs und Textdateien in einem S3-Bucket",
+      "it": "PDF e file di testo in un bucket S3",
+      "pt-PT": "PDFs e ficheiros de texto num bucket S3",
+      "pt-BR": "PDFs e arquivos de texto em um bucket S3",
+      "ko": "S3 버킷의 PDF 및 텍스트 파일",
+      "ja": "S3 バケット内の PDF とテキストファイル",
+      "zh-Hans": "S3 存储桶中的 PDF 和文本文件",
+      "zh-Hant": "S3 儲存貯體中的 PDF 和文字檔案",
+      "yue-Hant": "S3 儲存桶入面嘅 PDF 同文字檔案"
+    },
+    "instructions": {
+      "en": "Use credentials with read access to one bucket and prefix. Searches append to that prefix. For temporary credentials, include the session token and expiration in RFC 3339 format (2026-10-01T12:00:00Z). Credentials stay on this computer. Disconnecting does not revoke the key at AWS.",
+      "fr": "Utilisez des identifiants ayant un accès en lecture à un compartiment et un préfixe. Les recherches s’ajoutent à ce préfixe. Pour des identifiants temporaires, indiquez le jeton de session et l’expiration au format RFC 3339 (2026-10-01T12:00:00Z). Les identifiants restent sur cet ordinateur. La déconnexion ne révoque pas la clé chez AWS.",
+      "es": "Usa credenciales con acceso de lectura a un bucket y prefijo. Las búsquedas se añaden a ese prefijo. Para credenciales temporales, incluye el token de sesión y la fecha de caducidad en formato RFC 3339 (2026-10-01T12:00:00Z). Las credenciales permanecen en este equipo. Desconectar no revoca la clave en AWS.",
+      "de": "Verwende Zugangsdaten mit Lesezugriff auf einen Bucket und ein Präfix. Suchanfragen werden an dieses Präfix angehängt. Gib für temporäre Zugangsdaten das Sitzungstoken und die Ablaufzeit im RFC-3339-Format an (2026-10-01T12:00:00Z). Die Zugangsdaten bleiben auf diesem Computer. Das Trennen widerruft den Schlüssel bei AWS nicht.",
+      "it": "Usa credenziali con accesso in lettura a un bucket e a un prefisso. Le ricerche vengono aggiunte a quel prefisso. Per le credenziali temporanee, includi il token di sessione e la scadenza in formato RFC 3339 (2026-10-01T12:00:00Z). Le credenziali restano su questo computer. La disconnessione non revoca la chiave su AWS.",
+      "pt-PT": "Utilize credenciais com acesso de leitura a um bucket e a um prefixo. As pesquisas são acrescentadas a esse prefixo. Para credenciais temporárias, inclua o token de sessão e a validade no formato RFC 3339 (2026-10-01T12:00:00Z). As credenciais ficam neste computador. Desligar não revoga a chave na AWS.",
+      "pt-BR": "Use credenciais com acesso de leitura a um bucket e prefixo. As pesquisas são acrescentadas a esse prefixo. Para credenciais temporárias, inclua o token de sessão e a validade no formato RFC 3339 (2026-10-01T12:00:00Z). As credenciais ficam neste computador. Desconectar não revoga a chave na AWS.",
+      "ko": "버킷과 접두사에 대한 읽기 권한이 있는 자격 증명을 사용하세요. 검색어는 해당 접두사 뒤에 추가됩니다. 임시 자격 증명에는 세션 토큰과 RFC 3339 형식의 만료 시간(2026-10-01T12:00:00Z)이 필요합니다. 자격 증명은 이 컴퓨터에 저장됩니다. 연결을 해제해도 AWS의 키는 폐기되지 않습니다.",
+      "ja": "バケットとプレフィックスへの読み取り権限を持つ認証情報を使用してください。検索語はそのプレフィックスに追加されます。一時的な認証情報には、セッショントークンと RFC 3339 形式の有効期限（2026-10-01T12:00:00Z）が必要です。認証情報はこのコンピューターに保存されます。接続を解除しても AWS のキーは無効になりません。",
+      "zh-Hans": "使用对指定存储桶和前缀具有读取权限的凭证。搜索词会附加到该前缀之后。临时凭证需提供会话令牌及 RFC 3339 格式的到期时间（2026-10-01T12:00:00Z）。凭证保存在此计算机上。断开连接不会撤销 AWS 上的密钥。",
+      "zh-Hant": "使用對指定儲存貯體和前綴具有讀取權限的憑證。搜尋詞會附加至該前綴之後。臨時憑證需提供工作階段權杖及 RFC 3339 格式的到期時間（2026-10-01T12:00:00Z）。憑證儲存在此電腦上。中斷連線不會撤銷 AWS 上的金鑰。",
+      "yue-Hant": "使用有權讀取指定儲存桶同前綴嘅憑證。搜尋字詞會加喺該前綴後面。臨時憑證需要提供工作階段權杖，同 RFC 3339 格式嘅到期時間（2026-10-01T12:00:00Z）。憑證會儲存喺呢部電腦。中斷連接唔會撤銷 AWS 上面嘅金鑰。"
+    }
+  },
+  "s3-region": {
+    "description": {
+      "en": "AWS region",
+      "fr": "Région AWS",
+      "es": "Región de AWS",
+      "de": "AWS-Region",
+      "it": "Regione AWS",
+      "pt-PT": "Região AWS",
+      "pt-BR": "Região da AWS",
+      "ko": "AWS 리전",
+      "ja": "AWS リージョン",
+      "zh-Hans": "AWS 区域",
+      "zh-Hant": "AWS 區域",
+      "yue-Hant": "AWS 區域"
+    }
+  },
+  "s3-bucket": {
+    "description": {
+      "en": "Bucket",
+      "fr": "Compartiment",
+      "es": "Bucket",
+      "de": "Bucket",
+      "it": "Bucket",
+      "pt-PT": "Bucket",
+      "pt-BR": "Bucket",
+      "ko": "버킷",
+      "ja": "バケット",
+      "zh-Hans": "存储桶",
+      "zh-Hant": "儲存貯體",
+      "yue-Hant": "儲存桶"
+    }
+  },
+  "s3-prefix": {
+    "description": {
+      "en": "Prefix (optional)",
+      "fr": "Préfixe (facultatif)",
+      "es": "Prefijo (opcional)",
+      "de": "Präfix (optional)",
+      "it": "Prefisso (facoltativo)",
+      "pt-PT": "Prefixo (opcional)",
+      "pt-BR": "Prefixo (opcional)",
+      "ko": "접두사(선택 사항)",
+      "ja": "プレフィックス（任意）",
+      "zh-Hans": "前缀（可选）",
+      "zh-Hant": "前綴（選填）",
+      "yue-Hant": "前綴（可選）"
+    }
+  },
+  "s3-access-key-id": {
+    "description": {
+      "en": "Access key ID",
+      "fr": "ID de clé d’accès",
+      "es": "ID de clave de acceso",
+      "de": "Zugriffsschlüssel-ID",
+      "it": "ID chiave di accesso",
+      "pt-PT": "ID da chave de acesso",
+      "pt-BR": "ID da chave de acesso",
+      "ko": "액세스 키 ID",
+      "ja": "アクセスキー ID",
+      "zh-Hans": "访问密钥 ID",
+      "zh-Hant": "存取金鑰 ID",
+      "yue-Hant": "存取金鑰 ID"
+    }
+  },
+  "s3-secret-access-key": {
+    "description": {
+      "en": "Secret access key",
+      "fr": "Clé d’accès secrète",
+      "es": "Clave de acceso secreta",
+      "de": "Geheimer Zugriffsschlüssel",
+      "it": "Chiave di accesso segreta",
+      "pt-PT": "Chave de acesso secreta",
+      "pt-BR": "Chave de acesso secreta",
+      "ko": "비밀 액세스 키",
+      "ja": "シークレットアクセスキー",
+      "zh-Hans": "秘密访问密钥",
+      "zh-Hant": "秘密存取金鑰",
+      "yue-Hant": "秘密存取金鑰"
+    }
+  },
+  "s3-session-token": {
+    "description": {
+      "en": "Session token (temporary credentials)",
+      "fr": "Jeton de session (identifiants temporaires)",
+      "es": "Token de sesión (credenciales temporales)",
+      "de": "Sitzungstoken (temporäre Zugangsdaten)",
+      "it": "Token di sessione (credenziali temporanee)",
+      "pt-PT": "Token de sessão (credenciais temporárias)",
+      "pt-BR": "Token de sessão (credenciais temporárias)",
+      "ko": "세션 토큰(임시 자격 증명)",
+      "ja": "セッショントークン（一時的な認証情報）",
+      "zh-Hans": "会话令牌（临时凭证）",
+      "zh-Hant": "工作階段權杖（臨時憑證）",
+      "yue-Hant": "工作階段權杖（臨時憑證）"
+    }
+  },
+  "s3-expires-at": {
+    "description": {
+      "en": "Expiration (temporary credentials)",
+      "fr": "Expiration (identifiants temporaires)",
+      "es": "Caducidad (credenciales temporales)",
+      "de": "Ablaufzeit (temporäre Zugangsdaten)",
+      "it": "Scadenza (credenziali temporanee)",
+      "pt-PT": "Validade (credenciais temporárias)",
+      "pt-BR": "Validade (credenciais temporárias)",
+      "ko": "만료 시간(임시 자격 증명)",
+      "ja": "有効期限（一時的な認証情報）",
+      "zh-Hans": "到期时间（临时凭证）",
+      "zh-Hant": "到期時間（臨時憑證）",
+      "yue-Hant": "到期時間（臨時憑證）"
+    }
   }
 }

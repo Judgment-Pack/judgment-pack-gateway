@@ -1035,3 +1035,43 @@ redirect destinations before dialing, and fetches at most 4 MiB without cookies,
 credentials, proxies, JavaScript, or OCR. HTML becomes a static text snapshot;
 plain text/PDF retain original bytes. See [the source contract and limits](../docs/design/public-web-sources.md).
 Catalog v2 advertises it under `sources`, separately from account providers.
+
+## Amazon S3 file source
+
+The connection companion's catalog v3 advertises `aws-s3`. Existing hosts using
+`connection-v1`, credential forms, prefix queries and `resource-v1` can display it
+without provider-specific host code. The v2 catalog stays unchanged.
+
+In Desk, choose **+ → More connections → Amazon S3**. Supply the commercial AWS
+region, a general-purpose bucket and optional key prefix, and credentials with
+`s3:ListBucket` for that prefix and `s3:GetObject` for the files. Reading a selected
+object version also needs `s3:GetObjectVersion`; SSE-KMS objects may require
+`kms:Decrypt` on their key. The connector does not grant these permissions.
+Temporary credentials additionally need the session token and RFC 3339 expiration.
+Save checks listing access. Browse lists filenames starting with the configured
+prefix plus the entered query; it does not search file contents or other buckets.
+
+Select up to four PDF/text files, each at most 4 MiB. Listed archived, oversized,
+empty and unsupported objects are disabled. Objects needing extra permissions
+can still appear in listing and fail selection/read with a permission message.
+The connector does not restore archived objects, accept requester-pays charges,
+accept customer encryption keys or follow alternate/custom endpoints. Selected
+objects are read conditionally and version-pinned when S3 supplies a version ID,
+including `null`. Document bytes are retained, extracted locally with OCR off,
+and verified through the existing signed resource record.
+
+Browse contexts expire after five minutes, with the latest eight pages retained
+for selection. Grants last five minutes and can be used once. Changing the scope,
+credentials, policy or connection invalidates pending selections. Disconnect
+removes local credentials; remove or deactivate an IAM key at AWS to revoke it
+there. No AWS credentials or registrations are included in builds.
+
+Credential custody is currently supported on Linux/macOS. This adapter uses
+explicitly entered credentials; it does not read AWS CLI profiles, environment
+credentials or Identity Center caches. Browser-based Identity Center sign-in,
+GovCloud/China partitions, directory buckets, access points and custom S3 services
+are separate follow-ups. The official Go SigV4 signer and Smithy path encoder are
+pinned in `go.mod`, with license/notice files under `third_party/github.com/aws/`.
+
+See [the design and acceptance boundary](../docs/design/s3-file-source.md).
+Synthetic TLS and Desk tests are not a claim of live AWS account acceptance.
