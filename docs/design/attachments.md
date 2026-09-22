@@ -501,18 +501,25 @@ that context has run. The reading of the request is waited on to an instant — 
 the deadline, and never nearer than fifty milliseconds from when the read began: that floor is a
 minimum cutoff horizon and not a minimum wait, and it is the cutoff only where the deadline and
 the two seconds after it together fall earlier than fifty milliseconds from the read's start,
-which is a deadline already 1,950 milliseconds old when the adapter comes to read. Such a
-deadline would otherwise leave no room at all for a read of bytes that are already there, where a
-deadline a millisecond old leaves the rest of those two seconds and never reaches the floor. A
-read that ended at or before that instant is the request and is taken, whether
-or not its result had been handed over when the cutoff fired, since the instant it ended is
+which is a deadline more than 1,950 milliseconds old when the read begins. Such a deadline would
+otherwise leave a read of bytes that are already there less than fifty milliseconds, possibly
+none at all, where a deadline a millisecond old leaves the rest of those two seconds and never
+reaches the floor. A read that ended at or before that instant is the request and is taken,
+whether or not its result had been handed over when the cutoff fired, since the instant it ended is
 recorded where the cutoff's arbitration reads it; a read that ended after it is not the request,
 and the request is refused. An arbitration that finds that no read has ended is committed only
 once the clock is strictly past the cutoff, so that a read stamped after it is necessarily a late
 read: the refusal says that no read had ended by the cutoff, not that none had ended by the
-moment the adapter looked. At the deadline, an OCR program that has not finished is
-ended: the adapter kills the process it started, not that process's own children, waits up to
-two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
+moment the adapter looked. That has one exception, and it is a refusal rather than a longer wait:
+the looks such an arbitration makes are counted, and a clock that has stood still for 4,096 looks
+is treated as past the cutoff, so a read that then ends exactly at the cutoff is refused. Only a
+clock that does not advance reaches it — the adapter reads the system clock, and the cutoff's own
+timer has fired before it looks, so the first reading settles it — and without the exception a
+clock that never advanced, for a read that never ended, would be waited on for ever. Nothing
+there is an elapsed time: what ends the wait is a reading of the clock, not an interval. At the
+deadline, an OCR program that has not finished is ended: the adapter kills the process it
+started, not that process's own children, waits up to two seconds for that process to exit and
+its stdout to reach its end, and then closes the pipe
 itself, so a process left behind holding it does not delay the record past those two seconds.
 The record is therefore written some time after the deadline, which is why `--timeout` sits
 under the source's timeout — thirty seconds by default — with room to spare.

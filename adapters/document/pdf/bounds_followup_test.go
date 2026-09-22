@@ -1270,9 +1270,12 @@ func boundsOverlongStrings(candidates int, hex bool) []byte {
 		}
 	}
 	// More bytes than one string token may hold, so every candidate reads its
-	// way to the bound before refusing.
+	// way to the bound before refusing. The hex digits are not decimal ones:
+	// what a decimal run of tens of megabytes costs is the scan for object
+	// heads reading it as one number, which is a different bound's business
+	// and seconds of this test's time.
 	if hex {
-		out.Write(bytes.Repeat([]byte("41"), maxStringBytes+64))
+		out.Write(bytes.Repeat([]byte("AA"), maxStringBytes+64))
 	} else {
 		out.Write(bytes.Repeat([]byte("a"), maxStringBytes+64))
 	}
@@ -1451,11 +1454,24 @@ func TestBoundsTerminalLexerPathsAreCharged(t *testing.T) {
 		{"a token refused at the end of the data", "(" + strings.Repeat("a", maxStringBytes+8), func(l *lexer) { l.next() }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			d := &Document{data: make([]byte, 1<<20), budget: &inflateBudget{}}
-			lex := newLexer([]byte(c.data), 0).within(d.budgeted())
+			// The reading of the file and the memory of the token are two
+			// allowances here, where a document gives one allowance to both.
+			// What the assertion is about is the reading: a token's buffer of
+			// sixteen megabytes would otherwise stand in for the bytes
+			// advanced over, and a path that charged its reading nowhere
+			// would look paid for by the room the token reserved.
+			const room, work = 1 << 26, 1 << 26
+			held, read := &allowance{left: room}, &allowance{left: work}
+			lex := newLexer([]byte(c.data), 0).reserving(held)
+			lex.work = read
 			c.read(lex)
-			if d.parsedBytes < int64(lex.pos) {
-				t.Errorf("%d bytes were read and %d charged", lex.pos, d.parsedBytes)
+			advanced, reserved := work-read.remaining(), room-held.remaining()
+			t.Logf("%d bytes read: %d charged to the reading, %d to the room", lex.pos, advanced, reserved)
+			if advanced < int64(lex.pos) {
+				t.Errorf("%d bytes were read and %d charged to the reading of them", lex.pos, advanced)
+			}
+			if reserved >= room {
+				t.Errorf("the room ran out (%d of %d reserved), so what the reading was charged is not what this measures", reserved, room)
 			}
 		})
 	}
@@ -1523,6 +1539,88 @@ func boundsDenseWalk(t *testing.T, data []byte, perPage int) (pages, distinct, w
 	return len(w.pages), len(seen), whole, d.parsedBytes, d.parsedBudget(), d.bound
 }
 
+// boundsExtractLeaving walks a document and extracts its pages with the
+// balance left what leave says, or with all of it where leave is negative. It
+// reports the result and what the extraction itself spent. The walk and the
+// extraction are the ones Extract does, in the order it does them: what is
+// arranged is the balance they meet, which the calibration below arranges
+// with a million dictionaries and sixteen megabytes of file instead.
+func boundsExtractLeaving(t *testing.T, data []byte, leave int64) (*Result, int64) {
+	t.Helper()
+	ctx := context.Background()
+	result := &Result{}
+	w, stop := walk(ctx, data, testOptions(), result)
+	if stop != nil {
+		t.Fatalf("the page tree was not walked: fatal %+v problems %+v", result.Fatal, result.Problems)
+	}
+	if leave >= 0 {
+		if left := w.doc.parsedBudget() - w.doc.parsedBytes; left > leave {
+			w.doc.chargeParsed(left - leave)
+		}
+	}
+	before := w.doc.parsedBytes
+	extractPages(ctx, w, testOptions(), result)
+	return result, w.doc.parsedBytes - before
+}
+
+// Where the balance runs out part way through extraction, the pages read come
+// first and the pages that could not be read follow them, listed as failed
+// with a problem each rather than as pages that hold no text: a reader that
+// listed them as empty would report a document of blank pages where what
+// happened is that it stopped reading. This is that shape at a size a default
+// run can afford -- the balance is left half of what extracting these pages
+// costs -- and the calibration below is where the figure that balance takes
+// in an ordinary document is established.
+func TestBoundsPagesPastTheBalanceAreFailedRatherThanEmpty(t *testing.T) {
+	const pages = 8
+	data := boundsDensePages(pages, 400, false)
+	whole, cost := boundsExtractLeaving(t, data, -1)
+	t.Logf("%d pages of 400 one-member dictionaries (%d bytes) with the balance whole: %d pages, extraction spent %d", pages, len(data), len(whole.Pages), cost)
+	if whole.Fatal != nil || len(whole.Pages) != pages || len(whole.Problems) != 0 {
+		t.Fatalf("with the balance whole: fatal %+v pages %+v problems %+v", whole.Fatal, whole.Pages, whole.Problems)
+	}
+	for _, p := range whole.Pages {
+		if p.Status != PageOK || p.Text != "dense" {
+			t.Fatalf("with the balance whole: page %d read as %q (%v)", p.Number, p.Text, p.Status)
+		}
+	}
+	// Half of what extracting them costs: some of them are read and the rest
+	// are not, whatever a page costs on this build.
+	r, spent := boundsExtractLeaving(t, data, cost/2)
+	read := 0
+	for read < len(r.Pages) && r.Pages[read].Status == PageOK {
+		read++
+	}
+	done, failed := r.Pages[:read], r.Pages[read:]
+	t.Logf("the same pages with %d of the balance left: %d listed (%d read, %d failed), %d spent, problems %+v", cost/2, len(r.Pages), len(done), len(failed), spent, r.Problems)
+	if r.Fatal != nil || len(r.Pages) != pages {
+		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+	}
+	if len(done) == 0 || len(failed) == 0 {
+		t.Fatalf("%d pages read and %d failed; this is the shape where the balance runs out part way", len(done), len(failed))
+	}
+	for _, p := range done {
+		if p.Text != "dense" {
+			t.Errorf("page %d, read before the balance ran out, holds %q", p.Number, p.Text)
+		}
+	}
+	reported := map[int]string{}
+	for _, pr := range r.Problems {
+		reported[pr.Page] = pr.Code
+	}
+	for _, p := range failed {
+		if p.Status != PageFailed || p.Text != "" {
+			t.Errorf("page %d, past where the balance ran out, is listed as %v (%q)", p.Number, p.Status, p.Text)
+		}
+		if reported[p.Number] != "pdf-page-failed" {
+			t.Errorf("page %d, past where the balance ran out, is reported as %q", p.Number, reported[p.Number])
+		}
+	}
+	if len(r.Problems) != len(failed) {
+		t.Errorf("%d pages failed and %d problems are reported: %+v", len(failed), len(r.Problems), r.Problems)
+	}
+}
+
 // An ordinary document of many pages, each holding as much structure as the
 // densest shape the reader admits, is read whole: the ceiling is set above
 // what such a document costs, where the ratio would allow far more, and a
@@ -1531,7 +1629,18 @@ func boundsDenseWalk(t *testing.T, data []byte, perPage int) (pages, distinct, w
 // dictionaries lie in each page's own /Resources, which the walk reads whole
 // before the page is extracted, so nothing here is read only because the test
 // asked for it.
+//
+// This is the calibration of the ceiling against a real document, and it
+// costs what such a document costs: five hundred pages of up to one million
+// eight hundred and eighty-seven thousand dictionaries, a file of sixteen
+// megabytes, and the better part of a gigabyte held while it is read. The run
+// that skips the long tests skips it; what it establishes about the shape of
+// the outcome -- pages read, then pages failed -- is held by the small test
+// above on every run.
 func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
+	if testing.Short() {
+		t.Skip("walks and extracts five hundred-page documents of up to sixteen megabytes")
+	}
 	for _, inStream := range []bool{false, true} {
 		where := "at an offset"
 		if inStream {
@@ -2874,6 +2983,121 @@ func TestBoundsHexStringPaddingIsReserved(t *testing.T) {
 			}
 			if allow.left != 0 {
 				t.Errorf("the room left is %d; the token that did not fit spent it", allow.left)
+			}
+		})
+	}
+}
+
+// boundsHexOperandPages is a page whose content holds one hex string of
+// complete bytes, and a last nibble where nibble is set, as an operand no
+// operator is applied to: it is parsed, charged and dropped, which is what
+// makes what the reader does with the string itself the outcome. The hex
+// digits are written across streams Flate content streams, since a page's
+// content is joined from them and no one stream may inflate past the bound;
+// whitespace between them is skipped inside a hex string as any other is.
+func boundsHexOperandPages(complete int, nibble bool, streams int) []byte {
+	digits := bytes.Repeat([]byte("AA"), complete)
+	if nibble {
+		digits = append(digits, 'A')
+	}
+	b := &pdfgen.Builder{}
+	refs := make([]string, streams)
+	each := (len(digits) + streams - 1) / streams
+	for i := range refs {
+		var content bytes.Buffer
+		if i == 0 {
+			content.WriteString("[<")
+		}
+		from := i * each
+		to := from + each
+		if to > len(digits) {
+			to = len(digits)
+		}
+		if from < len(digits) {
+			content.Write(digits[from:to])
+		}
+		if i == streams-1 {
+			content.WriteString(">]")
+		}
+		refs[i] = fmt.Sprintf("%d 0 R", b.Add(pdfgen.Object{Body: "<< /Filter /FlateDecode >>", Stream: flateOf(content.Bytes()), Raw: true}))
+	}
+	pages := b.Next()
+	b.Add(pdfgen.Object{Body: "placeholder"})
+	page := b.Add(pdfgen.Object{Body: fmt.Sprintf("<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << >> /Contents [%s] >>", pages, strings.Join(refs, " "))})
+	b.Set(pages, pdfgen.Object{Body: fmt.Sprintf("<< /Type /Pages /Kids [%d 0 R] /Count 1 >>", page)})
+	b.Catalog(pages)
+	return b.Bytes()
+}
+
+// The byte an odd last nibble is padded into is a byte of the string, and the
+// bound on a string counts it: a hex string of the bound exactly and one
+// nibble more holds one byte more than the reader may hold, so it is refused
+// like any other string past the bound -- at a '>' and at the end of the data
+// alike, where a reader that padded without looking again would hand back a
+// token of 16,777,217 bytes.
+func TestBoundsHexStringPaddingMeetsTheStringBound(t *testing.T) {
+	for _, ended := range []struct{ name, tail string }{
+		{"ended by '>'", ">"},
+		{"ended by the end of the data", ""},
+	} {
+		for _, c := range []struct {
+			name   string
+			nibble bool
+		}{
+			{"the bound exactly", false},
+			{"the bound and a last nibble", true},
+		} {
+			t.Run(ended.name+", "+c.name, func(t *testing.T) {
+				source := make([]byte, 0, 2*maxStringBytes+3)
+				source = append(source, '<')
+				source = append(source, bytes.Repeat([]byte("AA"), maxStringBytes)...)
+				if c.nibble {
+					source = append(source, 'A')
+				}
+				source = append(source, ended.tail...)
+				// No allowance: what this establishes is the bound on the
+				// string, which holds whatever room the reading was given.
+				lex := newLexer(source, 0)
+				tok, err := lex.next()
+				t.Logf("%d complete bytes, a last nibble %v, %s: %d bytes held, %v", maxStringBytes, c.nibble, ended.name, len(tok.str), err)
+				if !c.nibble {
+					if err != nil || len(tok.str) != maxStringBytes {
+						t.Fatalf("a hex string of the bound exactly was read as %d bytes (%v)", len(tok.str), err)
+					}
+					return
+				}
+				if !errors.Is(err, errStructureBound) {
+					t.Fatalf("a hex string of %d bytes and a last nibble was read as %d bytes (%v)", maxStringBytes, len(tok.str), err)
+				}
+				if len(tok.str) != 0 {
+					t.Errorf("the token refused carries %d bytes", len(tok.str))
+				}
+			})
+		}
+	}
+}
+
+// And what that is worth to a caller: a page whose content holds such an
+// operand fails, as one holding a complete byte past the bound already does.
+// The two are one byte apart in what they hold and are the same page to read.
+func TestBoundsAHexOperandPastTheStringBoundFailsThePage(t *testing.T) {
+	for _, c := range []struct {
+		name     string
+		complete int
+		nibble   bool
+	}{
+		{"a last nibble past the bound", maxStringBytes, true},
+		{"a complete byte past the bound", maxStringBytes + 1, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := boundsHexOperandPages(c.complete, c.nibble, 4)
+			r := extract(t, data)
+			t.Logf("a hex operand of %d complete bytes and a last nibble %v (%d bytes): pages %+v problems %+v", c.complete, c.nibble, len(data), r.Pages, r.Problems)
+			if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" || r.Problems[0].Page != 1 {
+				t.Errorf("problems %+v", r.Problems)
 			}
 		})
 	}

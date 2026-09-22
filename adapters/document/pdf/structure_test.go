@@ -549,9 +549,42 @@ func TestOpeningBoundsArePDFMalformed(t *testing.T) {
 func TestObjectsPastABoundAreUnreadAndKept(t *testing.T) {
 	t.Run("the objects the reader reads", func(t *testing.T) {
 		d := openGenerated(t, normalDocument(&pdfgen.Builder{}))
-		d.parsed = maxObjects
-		if _, read := d.objectRead(1); read || !errors.Is(d.bound, errStructureBound) {
-			t.Fatalf("read %v, bound %v", read, d.bound)
+		// Two objects the opening did not read, so that what spends the last
+		// of the count is a reading of an object and not the test: the first
+		// is read and takes the last of it, and the second is the one refused.
+		// A reader that did not count what it read would read both.
+		var fresh []int
+		for num := 1; num <= len(d.xref)+1; num++ {
+			if _, ok := d.xref[num]; !ok {
+				continue
+			}
+			if _, cached := d.cache[num]; cached {
+				continue
+			}
+			fresh = append(fresh, num)
+		}
+		if len(fresh) < 2 {
+			t.Fatalf("the document has %d objects the opening left unread; this needs two", len(fresh))
+		}
+		first, next := fresh[0], fresh[1]
+		d.parsed = maxObjects - 1
+		if _, read := d.objectRead(first); !read || d.bound != nil {
+			t.Fatalf("the object of the last read the count allows was not read: read %v, bound %v", read, d.bound)
+		}
+		if d.parsed != maxObjects {
+			t.Errorf("reading an object left the count at %d, where the last read it allows takes it to %d", d.parsed, maxObjects)
+		}
+		if _, read := d.objectRead(next); read || !errors.Is(d.bound, errStructureBound) {
+			t.Fatalf("the object past the count was read: read %v, bound %v", read, d.bound)
+		}
+		// And a reading of what is already held is not another object read:
+		// the count is spent by parsing, not by asking.
+		spent := d.parsed
+		if _, read := d.objectRead(first); !read {
+			t.Fatal("the object already read was not read again from the cache")
+		}
+		if d.parsed != spent {
+			t.Errorf("rereading a cached object took the count from %d to %d", spent, d.parsed)
 		}
 	})
 	objectStreams := func(extra string) (*pdfgen.Builder, int) {
