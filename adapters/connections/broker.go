@@ -17,12 +17,13 @@ type Selection struct {
 	Grant  string `json:"grant"`
 }
 type Status struct {
-	Version      int      `json:"version"`
-	Provider     string   `json:"provider"`
-	State        string   `json:"state"`
-	Account      *account `json:"account,omitempty"`
-	MaxFileBytes int      `json:"maxFileBytes"`
-	MaxFiles     int      `json:"maxFiles"`
+	Version      int            `json:"version"`
+	Provider     string         `json:"provider"`
+	State        string         `json:"state"`
+	Account      *account       `json:"account,omitempty"`
+	MaxFileBytes int            `json:"maxFileBytes"`
+	MaxFiles     int            `json:"maxFiles"`
+	Resource     *ResourceScope `json:"resource,omitempty"`
 }
 type FlowResult struct {
 	ID         string      `json:"id"`
@@ -87,7 +88,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if b.disabled {
 		b.cancel()
 		if method == "status" {
-			return Status{1, b.provider.kind(), "blocked", nil, MaxFileBytes, 4}, nil
+			return Status{Version: 1, Provider: b.provider.kind(), State: "blocked", MaxFileBytes: MaxFileBytes, MaxFiles: 4}, nil
 		}
 		return nil, ErrPolicy
 	}
@@ -106,7 +107,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if decode(raw, &empty) != nil {
 			return nil, ErrRequest
 		}
-		out := Status{1, b.provider.kind(), "setup-required", nil, MaxFileBytes, 4}
+		out := Status{Version: 1, Provider: b.provider.kind(), State: "setup-required", MaxFileBytes: MaxFileBytes, MaxFiles: 4}
 		err := b.store.locked(func(v *state) error {
 			if v.Client.ID != "" || b.provider.notion {
 				out.State = "not-connected"
@@ -194,11 +195,10 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if err != nil {
 			return nil, err
 		}
-		revoked := true
-		if b.provider.notion {
-			revoked = false
-		}
-		if token != "" && !b.provider.notion {
+		// Local deletion is not proof of provider revocation. Only a
+		// completed revoke request may report that remote access was removed.
+		revoked := false
+		if token != "" && b.provider.revoke != "" && !b.provider.notion {
 			values := url.Values{"token": {token}}
 			_, _, err = b.provider.request(ctx, "POST", b.provider.revoke, "", values, 64<<10)
 			revoked = err == nil

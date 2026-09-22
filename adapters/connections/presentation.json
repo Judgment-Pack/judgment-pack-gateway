@@ -1,0 +1,157 @@
+{
+  "google-drive": {
+    "name": "Google Drive",
+    "description": {
+      "en": "Files, documents, spreadsheets, and presentations",
+      "yue-Hant": "檔案、文件、試算表同簡報",
+      "ko": "파일, 문서, 스프레드시트, 프레젠테이션",
+      "pt-BR": "Arquivos, documentos, planilhas e apresentações",
+      "zh-Hant": "檔案、文件、試算表與簡報",
+      "pt-PT": "Ficheiros, documentos, folhas de cálculo e apresentações",
+      "it": "File, documenti, fogli di calcolo e presentazioni",
+      "ja": "ファイル、ドキュメント、スプレッドシート、プレゼンテーション",
+      "fr": "Fichiers, documents, feuilles de calcul et présentations",
+      "es": "Archivos, documentos, hojas de cálculo y presentaciones",
+      "zh-Hans": "文件、文档、电子表格和演示文稿",
+      "de": "Dateien, Dokumente, Tabellen und Präsentationen"
+    },
+    "instructions": {
+      "en": "Connect your account, then choose the sources to attach. Connecting does not add anything to your chat.",
+      "yue-Hant": "連接帳戶之後，再揀要附加嘅資料。連接帳戶唔會自動將任何內容加入對話。",
+      "ko": "계정을 연결한 다음 첨부할 자료를 선택하세요. 연결만으로는 채팅에 아무것도 추가되지 않습니다.",
+      "pt-BR": "Conecte sua conta e escolha as fontes para anexar. Conectar a conta não adiciona nada à conversa.",
+      "zh-Hant": "連結帳號後，再選擇要附加的資料。連結帳號不會自動將任何內容加入聊天。",
+      "pt-PT": "Ligue a sua conta e escolha as fontes a anexar. A ligação não adiciona nada à conversa.",
+      "it": "Collega il tuo account, poi scegli le fonti da allegare. Il collegamento non aggiunge nulla alla chat.",
+      "ja": "アカウントを接続してから、添付するソースを選択してください。接続するだけではチャットに何も追加されません。",
+      "fr": "Connectez votre compte, puis choisissez les sources à joindre. La connexion n’ajoute rien à votre conversation.",
+      "es": "Conecta tu cuenta y elige las fuentes que quieres adjuntar. Conectar la cuenta no añade nada al chat.",
+      "zh-Hans": "连接账号后，再选择要附加的资料。连接账号不会自动向聊天添加任何内容。",
+      "de": "Verbinde dein Konto und wähle anschließend die Quellen zum Anhängen aus. Durch das Verbinden wird dem Chat nichts hinzugefügt."
+    }
+  },
+  "gmail": {
+    "name": "Gmail",
+    "description": {
+      "en": "Emails and conversations",
+      "yue-Hant": "電郵同對話",
+      "ko": "이메일과 대화",
+      "pt-BR": "E-mails e conversas",
+      "zh-Hant": "郵件與對話",
+      "pt-PT": "E-mails e conversas",
+      "it": "Email e conversazioni",
+      "ja": "メールと会話",
+      "fr": "E-mails et conversations",
+      "es": "Correos y conversaciones",
+      "zh-Hans": "邮件和会话",
+      "de": "E-Mails und Unterhaltungen"
+    },
+    "instructions": {
+      "en": "Choose up to four emails. Message text is attached; mail attachments are excluded.",
+      "yue-Hant": "最多揀四封電郵。只會附加電郵內文，唔包括電郵附件。",
+      "ko": "이메일을 최대 4개 선택하세요. 메시지 본문만 첨부되며 이메일의 첨부파일은 제외됩니다.",
+      "pt-BR": "Escolha até quatro e-mails. O texto das mensagens será anexado, sem os arquivos anexos.",
+      "zh-Hant": "最多選擇四封郵件。僅附加郵件內文，不包含郵件附件。",
+      "pt-PT": "Escolha até quatro emails. É anexado o texto das mensagens, sem os respetivos anexos.",
+      "it": "Scegli fino a quattro email. Viene allegato il testo dei messaggi, senza i relativi allegati.",
+      "ja": "メールを最大4件選択してください。本文のみ添付され、メールの添付ファイルは含まれません。",
+      "fr": "Choisissez jusqu’à quatre e-mails. Le texte des messages est joint, sans leurs pièces jointes.",
+      "es": "Elige hasta cuatro correos. Se adjunta el texto de los mensajes, sin sus archivos adjuntos.",
+      "zh-Hans": "最多选择四封邮件。仅附加邮件正文，不包含邮件附件。",
+      "de": "Wählen Sie bis zu vier E-Mails aus. Der Nachrichtentext wird angehängt, ohne E-Mail-Anhänge."
+    }
+  },
+  "notion": {
+    "name": "Notion",
+    "description": {
+      "en": "Pages and workspace knowledge",
+      "yue-Hant": "工作區頁面同知識",
+      "ko": "워크스페이스의 페이지와 지식",
+      "pt-BR": "Páginas e conhecimentos do espaço de trabalho",
+      "zh-Hant": "工作區頁面與知識",
+      "pt-PT": "Páginas e conhecimentos do espaço de trabalho",
+      "it": "Pagine e conoscenze dello spazio di lavoro",
+      "ja": "ワークスペースのページとナレッジ",
+      "fr": "Pages et connaissances de l’espace de travail",
+      "es": "Páginas y conocimientos del espacio de trabajo",
+      "zh-Hans": "工作区页面和知识",
+      "de": "Seiten und Wissen aus dem Arbeitsbereich"
+    },
+    "instructions": {
+      "en": "Notion may include connected workspace sources in search. Only Notion pages you select are attached to chat.",
+      "yue-Hant": "Notion 搜尋可能包括工作區已連接嘅來源。只有你揀嘅 Notion 頁面會附加到聊天。",
+      "ko": "Notion 검색에는 워크스페이스에 연결된 소스가 포함될 수 있습니다. 선택한 Notion 페이지만 채팅에 첨부됩니다.",
+      "pt-BR": "O Notion pode incluir fontes conectadas ao espaço de trabalho na busca. Só as páginas Notion selecionadas são anexadas à conversa.",
+      "zh-Hant": "Notion 搜尋可能包含工作區已連接的來源。只有您選擇的 Notion 頁面會附加到聊天。",
+      "pt-PT": "O Notion pode incluir fontes ligadas ao espaço de trabalho na pesquisa. Só as páginas Notion selecionadas são anexadas à conversa.",
+      "it": "Notion può includere nella ricerca le fonti collegate allo spazio di lavoro. Solo le pagine Notion selezionate vengono allegate alla chat.",
+      "ja": "Notion の検索にはワークスペースに接続されたソースが含まれる場合があります。選択した Notion ページだけがチャットに添付されます。",
+      "fr": "Notion peut inclure les sources connectées à votre espace dans la recherche. Seules les pages Notion sélectionnées sont jointes à la conversation.",
+      "es": "Notion puede incluir fuentes conectadas al espacio de trabajo en la búsqueda. Solo se adjuntan al chat las páginas de Notion que selecciones.",
+      "zh-Hans": "Notion 搜索可能包含工作区已连接的来源。只有您选择的 Notion 页面会附加到聊天。",
+      "de": "Notion kann verbundene Quellen des Arbeitsbereichs durchsuchen. Nur ausgewählte Notion-Seiten werden an den Chat angehängt."
+    }
+  },
+  "obsidian": {
+    "name": "Obsidian",
+    "description": {
+      "en": "Notes in a local vault",
+      "yue-Hant": "本機儲存庫入面嘅筆記",
+      "ko": "로컬 보관함의 노트",
+      "pt-BR": "Notas em um cofre local",
+      "zh-Hant": "本機儲存庫中的筆記",
+      "pt-PT": "Notas num cofre local",
+      "it": "Note in un vault locale",
+      "ja": "ローカル保管庫のノート",
+      "fr": "Notes dans un coffre local",
+      "es": "Notas en una bóveda local",
+      "zh-Hans": "本地仓库中的笔记",
+      "de": "Notizen in einem lokalen Tresor"
+    },
+    "instructions": {
+      "en": "In Obsidian, open Manage vaults and copy the folder path shown below your vault name. Paste that full path here. No plugin is needed.",
+      "yue-Hant": "喺 Obsidian 開啟「管理儲存庫」，複製儲存庫名稱下面嘅資料夾路徑，再將完整路徑貼喺呢度。唔使裝外掛程式。",
+      "ko": "Obsidian에서 보관함 관리를 열고 보관함 이름 아래의 폴더 경로를 복사하세요. 전체 경로를 여기에 붙여넣으세요. 플러그인은 필요하지 않습니다.",
+      "pt-BR": "No Obsidian, abra Gerenciar cofres e copie o caminho da pasta exibido abaixo do nome do cofre. Cole o caminho completo aqui. Não é necessário nenhum plugin.",
+      "zh-Hant": "在 Obsidian 中開啟「管理儲存庫」，複製儲存庫名稱下方顯示的資料夾路徑，並將完整路徑貼到這裡。不需要安裝外掛程式。",
+      "pt-PT": "No Obsidian, abra Gerir cofres e copie o caminho da pasta apresentado abaixo do nome do cofre. Cole aqui o caminho completo. Não é necessário qualquer suplemento.",
+      "it": "In Obsidian, apri Gestisci vault e copia il percorso della cartella sotto il nome del vault. Incolla qui il percorso completo. Non servono plugin.",
+      "ja": "Obsidian の保管庫管理を開き、保管庫名の下に表示されるフォルダーパスをコピーしてください。完全なパスをここに貼り付けてください。プラグインは不要です。",
+      "fr": "Dans Obsidian, ouvrez Gérer les coffres et copiez le chemin affiché sous le nom du coffre. Collez ce chemin complet ici. Aucun module complémentaire n’est nécessaire.",
+      "es": "En Obsidian, abre Administrar bóvedas y copia la ruta que aparece bajo el nombre de tu bóveda. Pega aquí la ruta completa. No necesitas ningún complemento.",
+      "zh-Hans": "在 Obsidian 中打开“管理仓库”，复制仓库名称下方显示的文件夹路径，并将完整路径粘贴到这里。无需安装插件。",
+      "de": "Öffne in Obsidian die Vault-Verwaltung und kopiere den Ordnerpfad unter dem Namen deines Vaults. Füge hier den vollständigen Pfad ein. Ein Plugin ist nicht erforderlich."
+    }
+  },
+  "vault-folder": {
+    "name": "Vault folder",
+    "description": {
+      "en": "Vault folder",
+      "yue-Hant": "儲存庫資料夾",
+      "ko": "보관함 폴더",
+      "pt-BR": "Pasta do cofre",
+      "zh-Hant": "儲存庫資料夾",
+      "pt-PT": "Pasta do cofre",
+      "it": "Cartella del vault",
+      "ja": "保管庫フォルダー",
+      "fr": "Dossier du coffre",
+      "es": "Carpeta de la bóveda",
+      "zh-Hans": "仓库文件夹",
+      "de": "Vault-Ordner"
+    },
+    "instructions": {
+      "en": "",
+      "yue-Hant": "",
+      "ko": "",
+      "pt-BR": "",
+      "zh-Hant": "",
+      "pt-PT": "",
+      "it": "",
+      "ja": "",
+      "fr": "",
+      "es": "",
+      "zh-Hans": "",
+      "de": ""
+    }
+  }
+}
