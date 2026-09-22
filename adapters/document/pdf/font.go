@@ -31,6 +31,11 @@ type font struct {
 	// symbolic and noWidths help the space heuristic: a font that
 	// declares no widths is measured as if every glyph were half an em.
 	noWidths bool
+	// encodingUnusable is a composite font whose own encoding CMap the reader
+	// cannot use. Its bytes are split into two-byte codes so that the glyphs
+	// can be counted, and every one of them is unmapped: which codes the page
+	// shows is not something the file says.
+	encodingUnusable bool
 }
 
 // glyph is one shown glyph: its runes (empty when unmapped), its code,
@@ -81,9 +86,18 @@ func (d *Document) cmapOf(s *stream) *cmap {
 	if c, ok := d.cmaps[s]; ok {
 		return c
 	}
+	// The cross-reference the read that resolved this stream began on, not
+	// the one it ends on: a CMap read from a stream a replaced
+	// cross-reference named is not held, since the number that named it names
+	// other bytes now.
+	defer d.beginRead()()
+	generation := d.readingGeneration()
 	var c *cmap
 	if data, err := d.decodeStream(s, false); err == nil {
 		c = parseCMap(data, &d.fontBudget)
+	}
+	if d.generation != generation {
+		return c
 	}
 	if d.cmaps == nil {
 		d.cmaps = map[*stream]*cmap{}
@@ -95,6 +109,11 @@ func (d *Document) cmapOf(s *stream) *cmap {
 // loadFont builds a font from its dictionary. Nothing here fails: a font
 // this reader cannot interpret still yields glyphs, unmapped.
 func (d *Document) loadFont(dict Dict) *font {
+	// Building a font reads the objects it names, and one of them may rebuild
+	// the cross-reference: everything the load reads after that belongs to a
+	// document this one no longer is, and publishes nothing -- not a cached
+	// object, not a bound met resolving a chain the old font named.
+	defer d.beginRead()()
 	f := &font{defaultWidth: 1000, fontMatrix: [6]float64{0.001, 0, 0, 0.001, 0, 0}}
 	subtype, _ := d.nameOf(dict["Subtype"])
 	if tu, ok := d.resolve(dict["ToUnicode"]).(*stream); ok {
@@ -119,6 +138,16 @@ func (d *Document) loadFont(dict Dict) *font {
 	return f
 }
 
+// unusableEncoding is a composite font whose encoding the reader cannot use:
+// its bytes are split into two-byte codes so that the glyphs can be counted,
+// and every one of them is unmapped, at the width the font gives a CID it has
+// no width for. Identity would be a reading of the page, and the page does
+// not say it.
+func (d *Document) unusableEncoding(f *font) {
+	f.encoding = twoByteCodespaces()
+	f.encodingUnusable = true
+}
+
 func (d *Document) loadType0(f *font, dict Dict) {
 	switch enc := d.resolve(dict["Encoding"]).(type) {
 	case Name:
@@ -126,20 +155,43 @@ func (d *Document) loadType0(f *font, dict Dict) {
 			f.encoding = identityCMap()
 			f.vertical = enc == "Identity-V"
 		} else {
-			// A predefined CMap this reader does not carry: codes are read
-			// as two bytes and mapped through ToUnicode alone.
-			f.encoding = identityCMap()
+			// A predefined CMap this reader does not carry: codes are mapped
+			// through ToUnicode alone, and where the font has a ToUnicode map
+			// its codespace ranges say how many bytes a code has. Reading
+			// every code as two bytes loses the text of an encoding whose
+			// codes are one byte or two, which the predefined CMaps of the CJK
+			// registries are; two bytes is what is left when the font declares
+			// no codespace range anywhere. Neither carries a CID: this font's
+			// codes stand for the CIDs of a CMap the reader does not have.
+			f.encoding = twoByteCodespaces()
+			if f.toUnicode != nil && f.toUnicode.declaredCodespaces {
+				// Only ranges the map declares: a range the reader inferred
+				// from what a map holds is the reader's reading of it, and a
+				// font whose map declares none takes the two-byte fallback
+				// however that map's parsing ended.
+				f.encoding = f.toUnicode.codespacesOnly()
+			}
 			f.vertical = strings.HasSuffix(string(enc), "-V")
 		}
 	case *stream:
-		if c := d.cmapOf(enc); c != nil {
+		// A CMap stream whose parse established no encoding -- no bytes, bytes
+		// that hold no operator of the syntax, a begincmap and an endcmap with
+		// nothing between them, a stream naming a parent CMap this reader does
+		// not look up -- is a stream the reader cannot use: it declares no
+		// codespace range and maps no code, so nothing in it says how this
+		// font's bytes split into codes or what they stand for.
+		if c := d.cmapOf(enc); c != nil && c.established {
 			f.encoding = c
 			f.vertical = c.vertical
 		} else {
-			f.encoding = identityCMap()
+			d.unusableEncoding(f)
 		}
 	default:
-		f.encoding = identityCMap()
+		// An /Encoding that is neither a name nor a CMap stream: absent,
+		// null, a number, a dictionary, or a reference to an object the
+		// reader could not read. None of them says how this font's bytes
+		// split into codes or what they stand for.
+		d.unusableEncoding(f)
 	}
 	descendants := d.arrayOf(dict["DescendantFonts"])
 	if len(descendants) == 0 {
@@ -347,7 +399,7 @@ func (f *font) glyphs(s []byte) iter.Seq[glyph] {
 				g := glyph{isSpace: b == 32}
 				code := uint32(b)
 				if f.toUnicode != nil {
-					if rs, ok := f.toUnicode.toUnicode(code); ok {
+					if rs, ok := f.toUnicode.toUnicode(code, 1); ok {
 						g.runes = rs
 					}
 				}
@@ -375,15 +427,35 @@ func (f *font) glyphs(s []byte) iter.Seq[glyph] {
 			enc = identityCMap()
 		}
 		for len(s) > 0 {
-			code, n, _ := enc.nextCode(s)
+			code, n, declared := enc.nextCode(s)
 			if n <= 0 {
 				n = 1
 			}
 			s = s[n:]
+			if f.encodingUnusable {
+				// The font's own encoding is one the reader cannot use: no
+				// code it might make is one the file gives it.
+				if !yield(glyph{unmapped: true, width: f.defaultWidth / 1000}) {
+					return
+				}
+				continue
+			}
+			if !declared {
+				// Bytes in no codespace range of the encoding are no code of
+				// this font: the number they make is not one the CMap gives,
+				// and reading a mapping at it would put on the page a
+				// character the page does not show. The glyph is unmapped and
+				// counted, and takes the width the font gives a CID it has no
+				// width for.
+				if !yield(glyph{unmapped: true, width: f.defaultWidth / 1000}) {
+					return
+				}
+				continue
+			}
 			g := glyph{isSpace: n == 1 && code == 32}
-			cid, hasCID := enc.toCID(code)
+			cid, hasCID := enc.toCID(code, n)
 			if f.toUnicode != nil {
-				if rs, ok := f.toUnicode.toUnicode(code); ok {
+				if rs, ok := f.toUnicode.toUnicode(code, n); ok {
 					g.runes = rs
 				}
 			}

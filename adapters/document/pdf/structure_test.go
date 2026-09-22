@@ -43,6 +43,9 @@ func TestContentStructureBoundsFailThePage(t *testing.T) {
 		middle string
 		form   func(b *pdfgen.Builder, font int) int
 	}
+	// The keys that measure an image of one byte: a dictionary bound is what
+	// these cases are about, so the image itself says where it ends.
+	const measured = "/W 1 /H 1 /BPC 8 /CS /G"
 	cases := []struct {
 		name           string
 		within, pastIt content
@@ -63,11 +66,11 @@ func TestContentStructureBoundsFailThePage(t *testing.T) {
 			content{middle: strings.Repeat("q ", maxGraphicsStates) + strings.Repeat("Q ", maxGraphicsStates)},
 			content{middle: strings.Repeat("q ", maxGraphicsStates+1) + strings.Repeat("Q ", maxGraphicsStates+1)}},
 		{"an inline image's dictionary",
-			content{middle: "BI " + strings.Repeat("/A ", 2*maxOperands) + "ID x EI"},
-			content{middle: "BI " + strings.Repeat("/A ", 2*maxOperands+1) + "ID x EI"}},
+			content{middle: "BI " + strings.Repeat("/A ", 2*maxOperands-8) + measured + " ID x EI"},
+			content{middle: "BI " + strings.Repeat("/A ", 2*maxOperands-7) + measured + " ID x EI"}},
 		{"a name token in an inline image's dictionary",
-			content{middle: "BI /" + strings.Repeat("N", maxNameBytes) + " ID x EI"},
-			content{middle: "BI /" + strings.Repeat("N", maxNameBytes+1) + " ID x EI"}},
+			content{middle: "BI " + measured + " /" + strings.Repeat("N", maxNameBytes) + " /V ID x EI"},
+			content{middle: "BI " + measured + " /" + strings.Repeat("N", maxNameBytes+1) + " /V ID x EI"}},
 		{"forms drawn within forms",
 			content{middle: "/X1 Do", form: func(b *pdfgen.Builder, font int) int { return formChain(b, maxFormDepth, font) }},
 			content{middle: "/X1 Do", form: func(b *pdfgen.Builder, font int) int { return formChain(b, maxFormDepth+1, font) }}},
@@ -107,6 +110,9 @@ func TestContentStructureBoundsFailThePage(t *testing.T) {
 
 // An inline image whose data runs past the bound without its EI fails the
 // page: the content after it cannot be found. Data up to the bound is read.
+// The image is encoded by a filter the reader does not frame and carries no
+// length, so where its data ends is looked for in the data itself, which is
+// what the bound bounds.
 func TestInlineImagePastItsBoundFailsThePage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes two inline images of sixteen megabytes")
@@ -119,7 +125,7 @@ func TestInlineImagePastItsBoundFailsThePage(t *testing.T) {
 	}{{maxInlineImageBytes, false}, {maxInlineImageBytes + 1, true}} {
 		b := &pdfgen.Builder{}
 		helv := b.Font("Helvetica", "WinAnsiEncoding", "")
-		content := shown("before", 700) + "BI /W 1 /H 1 /BPC 8 /CS /G ID " + strings.Repeat("x", c.bytes) + " EI\n" + shown("after", 680)
+		content := shown("before", 700) + "BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID " + strings.Repeat("4", c.bytes-1) + "> EI\n" + shown("after", 680)
 		b.Catalog(b.Pages([]pdfgen.Page{{Content: content, Fonts: map[string]int{"F1": helv}}}))
 		r := Extract(context.Background(), b.Bytes(), opt)
 		if r.Fatal != nil || len(r.Pages) != 1 {
@@ -547,11 +553,14 @@ func TestOpeningBoundsArePDFMalformed(t *testing.T) {
 // object stream past the inflate bound, an object in a stream nested past
 // the bound -- is unread, and the bound is kept for the walk to end at.
 func TestObjectsPastABoundAreUnreadAndKept(t *testing.T) {
+	// The objects read in one document are what the file has cost the reader,
+	// which rebuilding its cross-reference does not give back: that bound is
+	// the file's and not one cross-reference's.
 	t.Run("the objects the reader reads", func(t *testing.T) {
 		d := openGenerated(t, normalDocument(&pdfgen.Builder{}))
 		d.parsed = maxObjects
-		if _, read := d.objectRead(1); read || !errors.Is(d.bound, errStructureBound) {
-			t.Fatalf("read %v, bound %v", read, d.bound)
+		if _, read := d.objectRead(1); read || !errors.Is(d.fileBound, errStructureBound) {
+			t.Fatalf("read %v, bound %v", read, d.fileBound)
 		}
 	})
 	objectStreams := func(extra string) (*pdfgen.Builder, int) {

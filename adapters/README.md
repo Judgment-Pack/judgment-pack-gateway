@@ -448,10 +448,240 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   handler opened with an empty user password (revisions 2 to 6, RC4 and AES), simple fonts
   through the predefined encodings and `Differences`, composite fonts through `Identity-H`,
   `Identity-V` and embedded CMaps, `ToUnicode` maps for both, and the text operators of each
-  page in stream order, with spaces and line breaks inferred from glyph positions. A damaged
-  cross-reference is rebuilt by scanning for objects. It decodes no image and renders nothing:
-  a page that draws an image and whose text is empty after normalisation is `needs-ocr`. Page
-  text is normalised as it is built, so the text budget is decided on the normalised bytes.
+  page in stream order, with spaces and line breaks inferred from glyph positions. A CMap's
+  codespace ranges split a string into codes byte by byte, as 9.7.6.2 has it; bytes that fall in
+  no range are consumed as the range holding the longest run of them says (9.7.6.3, the shortest
+  such range deciding between equals) and are unmapped whatever number they make, since that
+  number is no code the CMap gives. A code is its bytes and how many of them it has, so a
+  mapping is found among the mappings for codes of that length: `<41>` and `<0041>` are two
+  codes. A CMap whose ranges of two lengths hold the same leading bytes says two things about
+  how long a code is and is not used at all, as a CMap past a
+  bound is not used — a bound met anywhere in it, in a section of it or at the outer parse, since
+  a map read no further than a bound is no reading of the map; what reading it cost is charged
+  all the same. A CMap that declares no codespace range of its own is read at the lengths of the
+  sources it maps, every one of them, the single codes of a `cidchar` or `bfchar` section as much
+  as the ends of a range: one length throughout is that length, several are given the codes each
+  actually maps, and where those cannot stand beside one another the map says two things about
+  how long a code is and is not used either. The ranges given a length are drawn about the runs
+  of codes it maps and no wider, so that a length takes in no leading byte another length's codes
+  begin with, and are split where a byte carries — `<00FF>` to `<0100>` is two ranges, a range
+  holding a byte at a time, and the one range from `00` to `01` beside `FF` to `00` holds neither
+  of those codes; where a length maps more runs than the reader holds ranges for, they are taken
+  together, from its lowest code to its highest. A map holding no mapping at all is read at two
+  bytes. What a CMap establishes is what it holds that a code can be looked up in — a codespace
+  range it declared, a range it maps, a single code it maps — and not what the parser was given
+  to read: an entry whose destination is no text (an empty string, an odd number of bytes, an
+  unpaired surrogate) maps nothing, and neither does a range of codes whose destinations are
+  every one of them a surrogate half or past the last scalar value Unicode has; a map of nothing
+  establishes nothing. What follows from that depends on which CMap it was: a composite font whose
+  own **encoding** CMap is unusable has its glyphs unmapped and counted, by the rule below, while
+  a font whose **`ToUnicode`** map is unusable keeps the encoding it has — a simple font's bytes
+  are codes of one byte whatever a `ToUnicode` map says, so its glyphs are the ones its own
+  encoding gives. Dropping the map is no defect of the document and adds no problem of its own;
+  what that encoding maps is mapped and not counted, and a code it does not map — a
+  `/Differences` naming a glyph no name of the standard sets gives, say — is unmapped and counted
+  there as it is anywhere. A composite font whose `/Encoding` is neither `Identity-H`, `Identity-V`, a predefined CMap's
+  name nor a CMap stream the reader can use — a stream it cannot use, a stream whose parse
+  establishes no encoding at all (no bytes, bytes holding no operator of the syntax, a `begincmap`
+  and an `endcmap` with nothing between them, or a stream naming a parent CMap with `/UseCMap`,
+  which this reader does not look up), a reference to an object
+  the file does not hold, `null`, a number, a dictionary, or no `/Encoding` at all — is not read as
+  `Identity-H`: its bytes are split into two-byte codes so that the glyphs can be counted, every
+  one of them is unmapped and takes the font's default width, and a `ToUnicode` map is not
+  consulted — which codes the page shows is not something the file says. Where a font names a
+  predefined CMap the reader does not carry, the codespace ranges its `ToUnicode` map
+  **declares** say how many bytes its codes have, or two bytes where the map declares none — a
+  range the reader inferred from the mappings a map holds is the reader's reading of it and is
+  not borrowed — and every glyph takes the font's default width: the CID a
+  code stands for is in the CMap the reader does not have, and a width read at the code's own
+  number would be some other glyph's. An object a cross-reference places in an object stream is
+  read by the number the stream's own header declares it at. Every place that header gives is
+  kept as it stands, a pair the reader cannot use included, so that the place a cross-reference
+  entry names is the place the header gave; a number is declared by its place before the offset
+  beside it is read, so a pair whose offset the header does not hold, or holds as a token the
+  reader cannot read, is a place that holds no object and a number declared there all the same;
+  an offset is from the first object's and lies within what the stream holds after it. Where the header declares one number twice, the entry's place
+  decides, and only where the header declares that number at it.
+
+  Where an inline image's data ends is established from the way the image is encoded, and from
+  nothing else. The dictionary between `BI` and `ID` is read first, as pairs, at every depth it
+  holds: `ID` stands between two complete pairs of the dictionary itself, and any other keyword,
+  a key with no value, a value where a key stands, a stray delimiter, a byte that begins no token
+  (a `)` closing no string, a `>` that is not half of `>>`, a byte in a hexadecimal string that is
+  neither a hexadecimal digit nor white space — all of which elsewhere are skipped so a
+  damaged file still yields its objects), or a container that does not close — in the dictionary
+  or in a value of it — fails the page, since what follows an unfinished value may be the
+  image's data rather than the dictionary. A key bearing on the end
+  given twice with values that disagree fails it too — the abbreviations of 8.9.7 standing for
+  the names they abbreviate, a filter written alone standing for the same filter in an array of
+  one, a device colour space standing for the array of its family alone (a device space takes no
+  parameters), and numbers compared by value, so `1` and `1.0` are one value, of which the reader
+  keeps the integer whichever was written first. A colour space stands at the name written alone,
+  at the family at the head of an array, and at the positions such an array gives a colour space
+  of its own — the base of an `Indexed` space, the alternate of a `Separation` or a `DeviceN` one —
+  each of which is read as a colour space under the same rule as the outermost, however deep it
+  lies, so `[/Indexed [/DeviceRGB] 1 <000000FFFFFF>]` and `[/Indexed /DeviceRGB 1 <000000FFFFFF>]`
+  are one value. Those are the only positions read as colour spaces: what an array holds besides
+  them is that family's parameters — a colourant's name, a tint transformation, a hival, a lookup
+  table — and is compared as the image wrote it. An array of one element is the device space
+  written another way only where that element is a device family's own name, so `[[/DeviceGray]]`
+  is not `/DeviceGray` — it has no name at its family position — and beside it says a second thing
+  about the image; a name at a nested family's position that is no family of one is left as
+  written too. A bare name that is no device colour space is the
+  name of one of the resources in force and abbreviates nothing, so `/I` and `/Indexed` name two
+  resources and an image giving both says two things; only at the head of an array does `/I`
+  stand for `Indexed`. The device names are the other way about: `/DeviceGray`, `/DeviceRGB` and
+  `/DeviceCMYK`, and their abbreviations, name the device families themselves wherever they stand
+  (8.6.8) — never a resource of that name, whatever the resources in force hold under it — and so
+  does the array of such a family alone. A value written `null` is an entry the dictionary does not have (7.3.9):
+  it says nothing of its key, and nothing another writing of that key says can disagree with it.
+  That holds at every depth two writings are compared to: two dictionaries differing only by a
+  `null` member are the same dictionary, however deep the member lies. An array's `null` element
+  is not absent, since an array's elements are its positions.
+  One white-space byte separates `ID` from the data, a carriage return and a line feed
+  counting as the one end-of-line marker 7.2.3 makes them.
+
+  An image no filter encodes is then measured: every viewer consumes the bytes its width,
+  height, bit depth and colour components take, a row at a time and each row whole bytes. The
+  depth is one of 1, 2, 4, 8 or 16 written as an integer (an image mask's is 1, or is not written
+  at all — a mask that writes `0` has written a depth no sample has, which is not the same as
+  leaving it out);
+  the colour space is a device space, a space written as an array — `CalGray`, `CalRGB`, `Lab`,
+  `ICCBased` by its stream's `/N`, `Indexed`, `Separation`, `DeviceN` by its up to 32 colourants
+  — or the name of one of the resources in force, the page's or the form's, which is looked up
+  there and read the same way. An `ICCBased` space's `/N` is 1, 3 or 4 written as an integer and
+  is no other count (8.6.5.5): a stream declaring 2, 5, 32, `3.0` or no number at all has
+  declared a packing no such space has, and an image in it is not measured from it.
+  An image whose dictionary says none of this is not measured. The
+  16 MiB bound below is a bound on the bytes the samples take, reached through the packing: a row
+  one bit a sample wide holds eight times the pixels of a row of the same length at eight bits,
+  and an image is past the bound when its bytes are past it and not when its pixels are.
+
+  An image a filter encodes is framed by its **first** filter — the filters after it act on what
+  the first decodes to, not on the bytes in the file — and only by one of the filters 8.9.7's
+  Table 93 gives an inline image an abbreviation for: ASCIIHexDecode's `>`, ASCII85Decode's `~>`,
+  RunLengthDecode's end-of-data, the end of a deflate or LZW stream, DCTDecode's end-of-image,
+  CCITTFaxDecode's end-of-block. The encoding must be the encoding it claims: hexadecimal digits
+  and white space — the white space of 7.2.3 and not every byte below a space — base-85 in groups
+  of five within a four-byte word, a final group of two to four standing for as many bytes less
+  one and completed as 7.4.3 completes it, a zlib header with the deflate data and the Adler-32
+  checksum of what it decodes to, LZW ending at its end-of-data code. Data that is not the
+  encoding at all is the image's own defect and is told from data whose end lies past what the
+  reader may read of one image: a deflate stream corrupted in its first block is the one, a
+  deflate stream that simply does not end within the window is the other. What a framing decodes
+  is charged to `--max-inflate` and dropped, and every one of the seven framings reads the
+  deadline as it walks, so that an encoding decoding to nothing is still bounded by the clock. The
+  clock is read as the *bytes* go and not as the steps do: a run of JPEG fill bytes is walked one
+  at a time, and a decoder handed a whole deflate block in one read has the clock read on that
+  read rather than on the cadence, which counts calls.
+
+  For the fax and JPEG framings the reader walks the encoding's own structure and decodes no
+  rows and no blocks: an end-of-block is the end of fax data by definition and an end-of-image
+  marker the end of a JPEG's, so the image ends there and what follows is the page's content —
+  a JPEG whose scan holds no block still ends at its marker. In entropy-coded data `FF 00` is a
+  sample byte and a restart marker resumes the data, the fill bytes ITU T.81 allows before one
+  belonging to it: only a marker that is neither ends the scan. Outside that data the walk steps
+  from marker to marker of the marker set alone — the markers that carry a segment whose first
+  two bytes are its length, `C0`–`C7`, `C9`–`CF`, `DA`–`DF`, `E0`–`EF` and `FE`; the markers that
+  carry none, `01` and `D0`–`D7`; `D9`, where the image ends; and `FF`, fill before a marker —
+  and every other code fails the page, two bytes of anything else being no segment
+  length: `FF 00` is the stuffing of a sample byte there as it is inside the scan, the codes
+  below `C0` that are neither the temporary marker nor a restart are reserved, a second
+  start-of-image begins no segment, and `C8` and `F0`–`FD` are reserved for extensions of the
+  format whose segments are whatever an extension made of them, which this reader does not
+  establish. A walk that read those two bytes as a length would step over
+  the end-of-image the image really has, and over the `EI` and the operators after it, to
+  whatever end-of-image lay beyond; the reader fails the page instead. Where such a structural end is
+  reached and no `EI` stands there, the page fails; the `EI` check refuses that, and establishes
+  nothing by itself.
+
+  The length `/L` states is not a boundary: viewers disagree over it — one honours it where an
+  `EI` follows, another decodes the filter and never reads it — so a record that took it would
+  carry one viewer's reading rather than the page. Nor is an `EI` found in the data: those two
+  bytes are as common in an image's samples as any other two, and a comment, a string or a later
+  image after a whole image holds them as readily. An image the reader can neither measure nor
+  frame therefore fails the page, and the record says so: that is CCITTFaxDecode with
+  `/EndOfBlock false` or with `/EncodedByteAlign true` (where the fill bits before a row make the
+  bits of an end-of-line, and telling the two apart means decoding the rows), JBIG2Decode and
+  JPXDecode (the specification's inline-image abbreviation list, Table 93, does not include them,
+  and this reader does not frame them), `Crypt`, a
+  filter this reader does not know **as the first filter**, an encoding that is not the encoding
+  it claims, and an unfiltered image whose width, height, bit depth or colour space the file does
+  not give. An encoding whose end lies past the 16 MiB the reader may read of one image has met
+  that bound and the page fails at it; a decode that meets `--max-inflate` fails with
+  `stream-over-bound`, which is the only bound that records one.
+
+  A predictor's last row, where the data ends inside it, is undone as far as the data goes, for
+  the PNG predictors at every depth the reader supports and for the TIFF predictor at 8 bits a
+  component, which is the only depth it implements. A
+  damaged cross-reference is rebuilt by scanning for objects; everything read under the one it
+  replaces goes with it — the objects, the object streams they came out of, and the fonts and
+  CMaps built from them — since an object number then names other bytes. Every operation that resolves
+  more than one of an object's fields is one read: following a chain of references, walking a
+  page-tree node, reading one cross-reference section — a table, or a stream with its length, its
+  `/W`, its `/Index` and its `/Size`, whether the chain reached it by `startxref`, by `/Prev` or by
+  a hybrid file's `/XRefStm` — reading the encryption dictionary, drawing a form, finding a font, sizing a
+  colour space, decoding a stream, looking for the page tree's root, reading a page's content and
+  building a font each begin one. A read publishes to a
+  cache, and records a bound or an undecodable object stream, only under the cross-reference it
+  began on, at every depth it reaches, so a read that was under way when the rebuild happened
+  leaves nothing of itself behind — the fields it goes on to resolve are fields of an object this
+  document no longer has; the bounds that are the file's rather than one cross-reference's — the objects a scan
+  of the file may find, the objects read in one document — stand whatever is rebuilt. The scan
+  that rebuilds has a scope of its own: whatever read it was called from, its own reads are begun
+  again under the cross-reference it is building, so that an object it could not read is marked as
+  such and a bound it met is kept — as the file's, since a scan reads the file and not the objects
+  of one cross-reference — and the read it was called from is put back afterwards and still
+  publishes nothing. The references that read was following are put aside with it, so that the
+  depth the scan reports is the depth the scan itself reached. A candidate the scan parses that
+  is nested past what the parser admits is such a bound, a trailer dictionary among them; damage
+  short of a bound is what the scan is for. A cross-reference section whose own read met the
+  rebuild is abandoned where it stands: it declares none of its entries, its trailer carries the
+  chain no further, and its failure — a bound of its own fields included — is published no more
+  than its entries are, since it is a section of a document this one no longer is. That holds
+  from the section's first field: a stream section whose `/Length` is the reference that rebuilt
+  declares no entry either. The sections the chain had already queued are dropped with it — a
+  `/Prev` or an `/XRefStm` named by the trailer of a section this document no longer has leads
+  nowhere it says — while what the scan itself met stands, being the file's. What the scan
+  registers, it registers under the trailer it rebuilt: the objects an object stream holds are
+  registered once that trailer has said which handler the document is read through, since a
+  stream decoded with the key the old trailer named holds no object to register and the file is
+  scanned once. The
+  encryption dictionary the trailer names is read again under the rebuilt cross-reference, and
+  its handler and key with it, before the restarted pages are read. It is read as it stands: that
+  dictionary's own strings are never encrypted (7.6.1), whichever read reaches it — the opening
+  of a handler, or an ordinary reference from another object's field, resolved while the handler
+  being replaced was still installed — and what the reader holds of the objects it has read is
+  dropped before a handler is opened, so that the dictionary a handler is opened from is the
+  dictionary the file holds and not one deciphered with a key this document does not name — a rebuild met while the page tree's root
+  is looked for is a rebuild the reading begins again from the top, the root the catalog now
+  names being read under a handler this walk is not the one to establish. Where the rebuilt
+  trailer names no encryption at all, what was read through the handler the old one named was
+  read through a key this document does not have, and those objects and the fonts and CMaps built
+  from them are dropped as they are when a handler is installed. A bound that is the file's own, met while a page was read — a scan of the whole file that ended
+  at one — refuses the document as it refuses one met opening it: what the reader has of the
+  pages was read while the file was being scanned, and a bound is not read past wherever it is
+  met. Extracting the pages ends at the
+  page whose reading rebuilt the cross-reference — the generation is read again the moment that
+  page's content comes back, before any of it is interpreted — and a walk that met a rebuild ends
+  where it stands and is not extracted at all: the pages after it belong to a document
+  this one no longer is, and what reading them would cost is not spent on them; a document is rebuilt at most once,
+  however its opening goes, so a reading that would need a second rebuild reads the object as one
+  that is unavailable — which refuses the document where the object is needed, and falls back to
+  the `endstream` after it where what was wanted was a stream's length. A reading
+  of the document's pages that began under the old cross-reference is begun again under the new,
+  so that a record's pages were all read under one. The bounds met under the cross-reference that
+  was replaced, and the object streams it could not decode, go with it: they are defects of a
+  document this one no longer is, and an object still past a bound meets it again. What is not
+  given back is what reading the file has cost — the inflate budget, the objects counted, the
+  font budget — since a file that made the reader read it twice has spent it twice.
+
+  A page-tree node named twice by a tree that holds no cycle is two nodes, and a page named
+  twice is two pages; a node under itself is walked once, the root included where the catalog
+  names it (a root found by scanning is known by no number, so one that names itself among its
+  kids is walked as a kid would be, to the bounds on the walk). It decodes no image and renders
+  nothing: a page that draws an image and whose text is empty after normalisation is `needs-ocr`.
+  Page text is normalised as it is built, so the text budget is decided on the normalised bytes.
 - **Scanned pages** go to the program named with `--ocr` — one word, resolved on the adapter's
   `PATH` and digested, the deadline checked immediately before it is started, and run in the
   adapter's own process group with its stderr discarded — once per document, with the page

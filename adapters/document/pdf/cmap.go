@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"sort"
 	"unicode/utf16"
 )
 
@@ -23,9 +24,55 @@ const (
 	maxCodespaces = 256
 )
 
+// codespace is one codespace range: the low and the high byte of each of the
+// positions a code of nbytes bytes has. A code falls in the range when each
+// of its bytes falls between the two bytes of its own position, which is what
+// 9.7.6.2 says a codespace range is -- not when the code read as one number
+// falls between the two endpoints, which would take <8130> for a code of
+// <8140> <9FFC> and read the bytes after it as codes the page never shows.
 type codespace struct {
-	nbytes  int
-	low, hi uint32
+	nbytes int
+	lo, hi [4]byte
+}
+
+// codespaceOf is the range from lo to hi, whose length is the length of both,
+// which the caller has checked is from one to four bytes.
+func codespaceOf(lo, hi []byte) codespace {
+	cs := codespace{nbytes: len(lo)}
+	copy(cs.lo[:], lo)
+	copy(cs.hi[:], hi)
+	return cs
+}
+
+// fullCodespace is the range of every code of n bytes.
+func fullCodespace(n int) codespace {
+	cs := codespace{nbytes: n}
+	for i := 0; i < n && i < len(cs.hi); i++ {
+		cs.hi[i] = 0xFF
+	}
+	return cs
+}
+
+// prefix is how many of the range's leading bytes hold the head of s at their
+// own positions: the range's own length when a whole code of it stands at the
+// head of s, and fewer when a byte does not hold or s is shorter than the
+// range is, which 9.7.6.3 calls a partial match.
+func (cs codespace) prefix(s []byte) int {
+	n := min(cs.nbytes, len(s))
+	for i := 0; i < n; i++ {
+		if s[i] < cs.lo[i] || s[i] > cs.hi[i] {
+			return i
+		}
+	}
+	return n
+}
+
+// code is one code of a CMap: its bytes, as a number, and how many bytes it
+// has. 9.7.6.2 gives a mapping for codes of one length, so <41> and <0041>
+// are two codes and not one, and the length is part of what names a mapping.
+type code struct {
+	value  uint32
+	nbytes int
 }
 
 // cmap is a parsed CMap. Codes are up to four bytes.
@@ -33,8 +80,8 @@ type cmap struct {
 	codespaces []codespace
 	// single maps a code to a CID (cid maps) or to a string of runes
 	// (unicode maps).
-	cid     map[uint32]uint32
-	unicode map[uint32][]rune
+	cid     map[code]uint32
+	unicode map[code][]rune
 	// ranges map [lo, hi] to a starting CID or rune.
 	cidRanges []cmapRange
 	uniRanges []cmapRange
@@ -44,12 +91,26 @@ type cmap struct {
 	entries  int
 	budget   *fontBudget
 	unusable bool
-	// The indexes, built once the CMap is read, find the first codespace of
-	// each code length (1 to 4), cid range and unicode range that holds a
-	// code; shortest is the shortest code length declared, or 4.
-	codespaceIndex     [5]firstSpans
-	cidIndex, uniIndex firstSpans
+	// The indexes, built once the CMap is read, find the first cid range and
+	// the first unicode range of a code's own length that holds it; shortest
+	// is the shortest code length declared, or 4. The codespace ranges are
+	// matched in the order they were declared, at most maxCodespaces of them,
+	// since a range is a range of each byte and not of the code as one
+	// number.
+	cidIndex, uniIndex [5]firstSpans
 	shortest           int
+	// declaredCodespaces says the CMap declared codespace ranges of its own,
+	// as against the one this reader infers for a map that declares none: an
+	// inferred range is the reader's reading of what the map holds, and a
+	// font borrowing ranges borrows only what was declared.
+	declaredCodespaces bool
+	// established says the parse found an encoding at all: a codespace range
+	// or a mapping. A CMap that found neither -- no bytes, bytes that hold no
+	// operator of the syntax, or a begincmap and an endcmap with nothing
+	// between them -- says nothing about how a string splits into codes or
+	// what its codes stand for, and a font whose own encoding it is has an
+	// encoding the reader cannot use.
+	established bool
 }
 
 type cmapRange struct {
@@ -64,7 +125,7 @@ type cmapRange struct {
 
 // identityCMap is Identity-H: two-byte codes, CID = code.
 func identityCMap() *cmap {
-	c := &cmap{codespaces: []codespace{{nbytes: 2, low: 0, hi: 0xFFFF}}, cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, cidRanges: []cmapRange{{nbytes: 2, lo: 0, hi: 0xFFFF, dst: 0}}}
+	c := &cmap{codespaces: []codespace{fullCodespace(2)}, cid: map[code]uint32{}, unicode: map[code][]rune{}, cidRanges: []cmapRange{{nbytes: 2, lo: 0, hi: 0xFFFF, dst: 0}}}
 	return c.finish()
 }
 
@@ -74,7 +135,7 @@ func identityCMap() *cmap {
 // or than the budget has left, or that declares more codespace ranges than
 // one CMap may, is not used: parseCMap returns nil.
 func parseCMap(data []byte, budget *fontBudget) *cmap {
-	c := &cmap{cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}, budget: budget}
+	c := &cmap{cid: map[code]uint32{}, unicode: map[code][]rune{}, budget: budget}
 	lex := newLexer(data, 0)
 	p := &parser{lex: lex, contentMode: true}
 	var stack []object
@@ -83,6 +144,13 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 		if err != nil {
 			var kw errKeyword
 			if !asKeyword(err, &kw) {
+				// A CMap the parser could not read to the end of is read as
+				// far as it goes, and that is what it says -- except at a
+				// bound, which is not damage to read past: a CMap past a
+				// bound is not used at all, and the glyphs it would have
+				// mapped are unmapped and counted. What was charged for it
+				// stays charged.
+				c.boundIf(err)
 				break
 			}
 			switch kw.keyword {
@@ -100,7 +168,7 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 				// A predefined parent this reader does not carry; an
 				// embedded one would need the resource. Nothing to do.
 			case "endcmap":
-				return c.finish()
+				return c.parsed()
 			case "def":
 				if len(stack) >= 2 {
 					if name, ok := stack[len(stack)-2].(Name); ok && name == "WMode" {
@@ -121,33 +189,192 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 			stack = stack[1:]
 		}
 	}
-	if c.unusable {
+	return c.parsed()
+}
+
+// parsed is the CMap a parse yielded: what it declared, with a codespace
+// range inferred where it declared none, and whether it established an
+// encoding at all. A parse that ended at endcmap and one whose bytes ran out
+// end the same way -- a CMap declaring no codespace range says nothing about
+// how long its codes are, and four bytes is no reading of it.
+func (c *cmap) parsed() *cmap {
+	// What the CMap established is what it holds that a code can be looked up
+	// in -- a codespace range it declared, a range of codes it maps, a single
+	// code it maps -- and not what it was given to read: an entry the parser
+	// read and the reader could not use maps nothing, and a map of nothing
+	// establishes no encoding, however many entries were charged for.
+	established := c.declaredCodespaces || len(c.cidRanges) > 0 || len(c.uniRanges) > 0 || len(c.cid) > 0 || len(c.unicode) > 0
+	if len(c.codespaces) == 0 {
+		c.codespaces = inferredCodespaces(c)
+	}
+	out := c.finish()
+	if out != nil {
+		out.established = established
+	}
+	return out
+}
+
+// inferredCodespaces is how a CMap that declares no codespace range of its
+// own splits a string into codes: by the sources it maps, every one of them --
+// the ranges and the single codes alike, since a code is its bytes and how
+// many of them it has and a mapping is for codes of one length.
+//
+// A map whose sources are all of one length is read at that length whatever
+// the bytes are, which is the reading the specification's own embedded maps
+// make of themselves, and a map holding no mapping at all is read at two
+// bytes, which is what those maps declare where they declare anything. Where
+// the sources are of several lengths, no one length is the map's reading of a
+// string: each length is given the codes it actually maps, so that the
+// lengths stand beside one another where the bytes let them -- and where they
+// do not, the ranges are ambiguous and finish does not use the map, since
+// which length a code beginning with those bytes has is then not something
+// the map says.
+func inferredCodespaces(c *cmap) []codespace {
+	var mapped [5][]codeRun
+	lengths := 0
+	add := func(nbytes int, lo, hi uint32) {
+		if nbytes < 1 || nbytes > 4 || hi < lo {
+			return
+		}
+		if len(mapped[nbytes]) == 0 {
+			lengths++
+		}
+		mapped[nbytes] = append(mapped[nbytes], codeRun{lo, hi})
+	}
+	for _, ranges := range [][]cmapRange{c.uniRanges, c.cidRanges} {
+		for _, r := range ranges {
+			add(r.nbytes, r.lo, r.hi)
+		}
+	}
+	for key := range c.cid {
+		add(key.nbytes, key.value, key.value)
+	}
+	for key := range c.unicode {
+		add(key.nbytes, key.value, key.value)
+	}
+	switch lengths {
+	case 0:
+		return []codespace{fullCodespace(2)}
+	case 1:
+		for n := 1; n <= 4; n++ {
+			if len(mapped[n]) > 0 {
+				return []codespace{fullCodespace(n)}
+			}
+		}
+	}
+	var out []codespace
+	for n := 1; n <= 4; n++ {
+		out = append(out, codespacesCovering(n, mapped[n])...)
+	}
+	return out
+}
+
+// codeRun is a run of codes of one length, read as numbers: what one mapping
+// of the CMap covers.
+type codeRun struct{ lo, hi uint32 }
+
+// maxInferredCodespaces bounds the ranges inferred for one code length, so
+// that the four lengths together declare no more than one CMap may.
+const maxInferredCodespaces = maxCodespaces / 4
+
+// codespacesCovering is the codespace ranges of nbytes bytes that hold the
+// codes given: the runs are put in order and joined where they meet, and each
+// run is split where a byte carries, since a codespace range is a range of
+// each byte and not of the code read as one number -- the codes from 00FF to
+// 0100 are two ranges, where the one range 00 to 01 of a first byte beside FF
+// to 00 of a second holds neither of them. The ranges hold what the map maps
+// and no more, so that a length stands beside another without taking in the
+// leading bytes the other's codes begin with.
+//
+// Where the runs of one length need more ranges than the reader holds for it,
+// they are taken together, from the lowest code to the highest: the ranges
+// then hold codes the map does not map, which is the one widening a reader
+// that cannot hold them all can make.
+func codespacesCovering(nbytes int, runs []codeRun) []codespace {
+	if len(runs) == 0 {
 		return nil
 	}
-	if len(c.codespaces) == 0 {
-		// Infer the code length from the mappings: most embedded
-		// ToUnicode maps declare <0000> <FFFF>; a map with none is read
-		// with the widest source seen, and two bytes by default.
-		n := 2
-		for _, r := range c.uniRanges {
-			if r.nbytes > 0 {
-				n = r.nbytes
-				break
-			}
+	sort.Slice(runs, func(i, j int) bool { return runs[i].lo < runs[j].lo })
+	joined := runs[:1]
+	for _, r := range runs[1:] {
+		last := &joined[len(joined)-1]
+		if uint64(r.lo) <= uint64(last.hi)+1 {
+			last.hi = max(last.hi, r.hi)
+			continue
 		}
-		for _, r := range c.cidRanges {
-			if r.nbytes > 0 {
-				n = r.nbytes
-				break
-			}
-		}
-		if n == 1 {
-			c.codespaces = []codespace{{nbytes: 1, low: 0, hi: 0xFF}}
-		} else {
-			c.codespaces = []codespace{{nbytes: n, low: 0, hi: 1<<(8*uint(n)) - 1}}
-		}
+		joined = append(joined, r)
 	}
-	return c.finish()
+	var out []codespace
+	for _, r := range joined {
+		// Count the actual fragments: a run may cross several byte carries,
+		// while a singleton still needs only one range. With at most four
+		// bytes, this temporary split contains at most fifteen ranges.
+		parts := appendCarrySplit(nil, codeBytes(r.lo, nbytes), codeBytes(r.hi, nbytes), 0)
+		if len(out)+len(parts) > maxInferredCodespaces {
+			low, high := joined[0].lo, joined[len(joined)-1].hi
+			return appendCarrySplit(nil, codeBytes(low, nbytes), codeBytes(high, nbytes), 0)
+		}
+		out = append(out, parts...)
+	}
+	return out
+}
+
+// appendCarrySplit adds to out the codespace ranges holding every code from
+// lo to hi and no other, the bytes of the two before at being equal, which
+// the caller has made so. A byte position where the two differ is split into
+// the low end's own run to the top of its byte, the bytes between the two
+// taken whole, and the high end's run from the bottom of its byte: each of
+// those is a range of each byte, which a run across a carry is not.
+func appendCarrySplit(out []codespace, lo, hi []byte, at int) []codespace {
+	n := len(lo)
+	if at >= n-1 || lo[at] == hi[at] {
+		if at < n-1 {
+			return appendCarrySplit(out, lo, hi, at+1)
+		}
+		return append(out, codespaceOf(lo, hi))
+	}
+	ends := func(b []byte, from int, fill byte) []byte {
+		out := append([]byte{}, b...)
+		for i := from; i < n; i++ {
+			out[i] = fill
+		}
+		return out
+	}
+	out = appendCarrySplit(out, lo, ends(lo, at+1, 0xFF), at+1)
+	if hi[at]-lo[at] > 1 {
+		between := ends(lo, at+1, 0x00)
+		between[at] = lo[at] + 1
+		top := ends(hi, at+1, 0xFF)
+		top[at] = hi[at] - 1
+		out = append(out, codespaceOf(between, top))
+	}
+	return appendCarrySplit(out, ends(hi, at+1, 0x00), hi, at+1)
+}
+
+// rangeMapsScalar reports whether a range of codes standing at the scalar
+// values from dst upwards stands at any value a text can carry: the values a
+// surrogate half has and those past the last of Unicode are no characters,
+// and a range lying wholly among them maps nothing at all.
+func rangeMapsScalar(dst, span uint32) bool {
+	first, last := uint64(dst), uint64(dst)+uint64(span)
+	if last > 0x10FFFF {
+		last = 0x10FFFF
+	}
+	if first > last {
+		return false
+	}
+	return first < 0xD800 || last > 0xDFFF
+}
+
+// codeBytes is a code of nbytes bytes written as its bytes, most significant
+// first.
+func codeBytes(v uint32, nbytes int) []byte {
+	out := make([]byte, nbytes)
+	for i := nbytes - 1; i >= 0; i-- {
+		out[i] = byte(v)
+		v >>= 8
+	}
+	return out
 }
 
 // finish indexes what the CMap holds, and returns it; or nil when it met a
@@ -156,27 +383,101 @@ func (c *cmap) finish() *cmap {
 	if c.unusable {
 		return nil
 	}
+	if ambiguousCodespaces(c.codespaces) {
+		// Two ranges of different lengths whose leading bytes hold the same
+		// codes: what length a code beginning there has is not something this
+		// CMap says, and the reader would be choosing by declaration order.
+		// The CMap is not used, as one past a bound is not: the glyphs it
+		// would have mapped are unmapped, and the record counts them.
+		return nil
+	}
 	c.shortest = 4
-	var byLength [5][]span
-	for i, cs := range c.codespaces {
-		byLength[cs.nbytes] = append(byLength[cs.nbytes], span{lo: cs.low, hi: cs.hi, order: int32(i)})
+	for _, cs := range c.codespaces {
 		c.shortest = min(c.shortest, cs.nbytes)
 	}
-	for n := range byLength {
-		c.codespaceIndex[n] = indexSpans(byLength[n])
+	for n := 1; n <= 4; n++ {
+		c.cidIndex[n] = indexRanges(c.cidRanges, n)
+		c.uniIndex[n] = indexRanges(c.uniRanges, n)
 	}
-	c.cidIndex = indexRanges(c.cidRanges)
-	c.uniIndex = indexRanges(c.uniRanges)
 	return c
 }
 
-// indexRanges indexes cid or unicode ranges in the order they were read.
-func indexRanges(ranges []cmapRange) firstSpans {
-	spans := make([]span, len(ranges))
+// ambiguousCodespaces reports whether two ranges of different code lengths
+// hold the same leading bytes, which 9.7.6.2 does not admit: a code beginning
+// with those bytes would be as long as one range says and as long as the
+// other says. Ranges of one length may overlap without ambiguity -- a code in
+// both is the same code either way -- and a range declared twice says one
+// thing twice.
+func ambiguousCodespaces(spaces []codespace) bool {
+	for i, a := range spaces {
+		for _, b := range spaces[i+1:] {
+			if a.nbytes == b.nbytes || a.nbytes == 0 || b.nbytes == 0 {
+				continue
+			}
+			shared := min(a.nbytes, b.nbytes)
+			overlap := true
+			for k := 0; k < shared && overlap; k++ {
+				overlap = a.lo[k] <= b.hi[k] && b.lo[k] <= a.hi[k]
+			}
+			if overlap {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// codespacesOnly is a CMap that splits a string into codes the way c does
+// and maps none of them: what one CMap declares of the lengths its codes
+// have, for a font whose own encoding CMap the reader does not carry.
+func (c *cmap) codespacesOnly() *cmap {
+	out := codespacesCMap(c.codespaces)
+	if out != nil {
+		out.declaredCodespaces = c.declaredCodespaces
+	}
+	return out
+}
+
+// twoByteCodespaces splits a string into codes of two bytes and maps none of
+// them: what is left of an encoding CMap the reader does not carry when the
+// font declares no codespace range anywhere either. It maps none, where
+// Identity-H maps a code to the CID of the same number, because a code of a
+// CMap the reader does not carry stands for a CID only that CMap knows: a
+// width taken at the code's own number would be some other glyph's.
+func twoByteCodespaces() *cmap {
+	return codespacesCMap([]codespace{fullCodespace(2)})
+}
+
+// codespacesCMap is a CMap of the codespace ranges given and no mappings.
+func codespacesCMap(spaces []codespace) *cmap {
+	out := &cmap{codespaces: spaces, cid: map[code]uint32{}, unicode: map[code][]rune{}}
+	return out.finish()
+}
+
+// indexRanges indexes the cid or unicode ranges whose codes have n bytes, in
+// the order they were read. A range of another length holds none of these
+// codes: a code is the bytes it has, and a mapping is for codes of one length.
+func indexRanges(ranges []cmapRange, n int) firstSpans {
+	var spans []span
 	for i, r := range ranges {
-		spans[i] = span{lo: r.lo, hi: r.hi, order: int32(i)}
+		if r.nbytes == n {
+			spans = append(spans, span{lo: r.lo, hi: r.hi, order: int32(i)})
+		}
 	}
 	return indexSpans(spans)
+}
+
+// boundIf marks the CMap unusable where the error given is a bound of the
+// parser: a CMap read no further than a bound is not used, wherever the
+// bound was met -- in a section of it or at the outer parse -- as a CMap
+// whose codespaces are ambiguous is not used. What it charged the font
+// budget for is not given back: the reader did the reading.
+func (c *cmap) boundIf(err error) bool {
+	if err != nil && isBound(err) {
+		c.unusable = true
+		return true
+	}
+	return false
 }
 
 // take charges one mapping, and reports whether the CMap may hold it.
@@ -211,10 +512,12 @@ func (c *cmap) readCodespaces(p *parser) {
 	for {
 		lo, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		hi, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		ls, ok1 := lo.(String)
@@ -222,13 +525,20 @@ func (c *cmap) readCodespaces(p *parser) {
 		if !ok1 || !ok2 || len(ls) == 0 || len(ls) > 4 {
 			return
 		}
+		if len(hs) != len(ls) {
+			// The two ends of a range have the same number of bytes, which is
+			// how many bytes the codes in it have. A pair whose ends differ
+			// declares no range: read as one it would hold codes of a length
+			// neither end gives. The pairs after it are still read, since the
+			// two objects of this one were read whole.
+			continue
+		}
 		if len(c.codespaces) == maxCodespaces {
 			c.unusable = true
 			return
 		}
-		l, n := bytesToCode(ls)
-		h, _ := bytesToCode(hs)
-		c.codespaces = append(c.codespaces, codespace{nbytes: n, low: l, hi: h})
+		c.codespaces = append(c.codespaces, codespaceOf(ls, hs))
+		c.declaredCodespaces = true
 	}
 }
 
@@ -236,14 +546,17 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 	for !c.unusable {
 		lo, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		hi, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		dst, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		ls, ok1 := lo.(String)
@@ -267,6 +580,15 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				continue
 			}
 			if unicode {
+				// A range whose destinations are no text a page can carry --
+				// every code in it standing at a surrogate half or past the
+				// last scalar value -- maps nothing, as a destination that is
+				// no character maps nothing: it is not held, so its codes are
+				// U+FFFD and counted, and a map holding only such ranges
+				// establishes no encoding. What reading it cost is charged.
+				if !rangeMapsScalar(uint32(d), h-l) {
+					continue
+				}
 				c.uniRanges = append(c.uniRanges, cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(d)})
 			} else {
 				c.cidRanges = append(c.cidRanges, cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(d)})
@@ -275,8 +597,14 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 			if !unicode || len(d) > maxCMapDestinationBytes {
 				continue
 			}
+			// The entry is charged before its destination is read, as a
+			// single mapping's is: the reader did the reading whether what it
+			// read is text or not.
+			if !c.take() {
+				continue
+			}
 			runes := utf16Runes(d)
-			if len(runes) == 0 || !c.take() {
+			if len(runes) == 0 {
 				continue
 			}
 			r := cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(runes[0])}
@@ -299,7 +627,9 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				if !c.take() {
 					break
 				}
-				c.unicode[l+uint32(i)] = utf16Runes(s)
+				if runes := utf16Runes(s); len(runes) > 0 {
+					c.unicode[code{l + uint32(i), n}] = runes
+				}
 			}
 		default:
 			return
@@ -311,17 +641,20 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 	for !c.unusable {
 		src, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		dst, err := p.parseObject(0)
 		if err != nil {
+			c.boundIf(err)
 			return
 		}
 		ss, ok := src.(String)
 		if !ok || len(ss) == 0 || len(ss) > 4 {
 			return
 		}
-		code, _ := bytesToCode(ss)
+		v, n := bytesToCode(ss)
+		key := code{v, n}
 		switch d := dst.(type) {
 		case int64:
 			if d < 0 || d > 1<<31 {
@@ -338,30 +671,35 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 				continue
 			}
 			if unicode {
-				c.unicode[code] = []rune{rune(d)}
+				c.unicode[key] = []rune{rune(d)}
 			} else {
-				c.cid[code] = uint32(d)
+				c.cid[key] = uint32(d)
 			}
 		case String:
+			// A destination of no characters -- an empty string, an odd
+			// number of bytes, an unpaired surrogate -- is no text the code
+			// stands for: the mapping is not held, so the glyph is U+FFFD and
+			// counted, and a map holding no mapping establishes nothing. The
+			// entry is charged for all the same.
 			if unicode && len(d) <= maxCMapDestinationBytes && c.take() {
-				c.unicode[code] = utf16Runes(d)
+				if runes := utf16Runes(d); len(runes) > 0 {
+					c.unicode[key] = runes
+				}
 			}
 		case Name:
 			if unicode {
 				if r, ok := glyphToRune(string(d)); ok && c.take() {
-					c.unicode[code] = []rune{r}
+					c.unicode[key] = []rune{r}
 				}
 			}
 		}
 	}
 }
 
-// utf16Runes decodes a ToUnicode destination: UTF-16BE, with a lone byte
-// read as a single code unit's low half.
+// utf16Runes decodes a ToUnicode destination, which 9.10.3 writes as
+// UTF-16BE: an odd number of bytes is half a code unit, and half a code unit
+// is no character, whether the odd byte stands alone or after whole ones.
 func utf16Runes(b []byte) []rune {
-	if len(b) == 1 {
-		return []rune{rune(b[0])}
-	}
 	if len(b)%2 != 0 {
 		return nil
 	}
@@ -387,58 +725,86 @@ func utf16Runes(b []byte) []rune {
 }
 
 // nextCode reads one code from the head of s by the codespace ranges,
-// returning the code, its byte length, and whether it fell in a range. A
-// byte sequence in no range consumes the shortest codespace length (one
-// byte when none is declared), as the specification prescribes.
+// returning the code, its byte length, and whether it fell in a range. The
+// ranges are matched byte by byte in the order they were declared, the first
+// that holds the head winning; a CMap declares at most maxCodespaces of them,
+// so the scan is bounded whatever the CMap holds.
+//
+// A head in no range is a code the CMap does not declare, and how many bytes
+// of it to consume is the partial match of 9.7.6.3: the range that holds the
+// longest run of leading bytes decides, and among ranges that hold the same
+// run the shortest code length does. Where no range holds even the first
+// byte, the shortest length declared is taken, one byte when none is. Those
+// bytes are consumed as one code and not read again as codes of their own,
+// and the code is reported as holding in no range: what its number would mean
+// in a mapping is not what the page shows.
 func (c *cmap) nextCode(s []byte) (code uint32, n int, ok bool) {
-	// The first codespace declared that holds the head of s, of any length.
-	first := -1
-	for length := 1; length <= 4 && length <= len(s); length++ {
-		v, _ := bytesToCode(s[:length])
-		if i, found := c.codespaceIndex[length].find(v); found && (first < 0 || i < first) {
-			first, code, n = i, v, length
+	if len(s) == 0 {
+		return 0, 0, false
+	}
+	longest, partial := -1, 0
+	for i, cs := range c.codespaces {
+		if cs.nbytes == 0 {
+			continue
+		}
+		p := cs.prefix(s)
+		if p == cs.nbytes {
+			// A whole code of this range stands at the head of s. The first
+			// range declared that holds it wins, whatever the ranges after it
+			// hold.
+			v, _ := bytesToCode(s[:cs.nbytes])
+			return v, cs.nbytes, true
+		}
+		if p > partial || (p == partial && longest >= 0 && cs.nbytes < c.codespaces[longest].nbytes) {
+			longest, partial = i, p
 		}
 	}
-	if first >= 0 {
-		return code, n, true
+	n = c.shortest
+	if partial > 0 {
+		n = c.codespaces[longest].nbytes
 	}
-	// Partial match on the first byte decides the length, per 9.7.6.3;
-	// this reader takes the shortest declared length.
-	shortest := c.shortest
-	if shortest > len(s) {
-		shortest = len(s)
+	if n > len(s) {
+		n = len(s)
 	}
-	if shortest == 0 {
-		shortest = 1
+	if n < 1 {
+		n = 1
 	}
-	v, _ := bytesToCode(s[:shortest])
-	return v, shortest, false
+	v, _ := bytesToCode(s[:n])
+	return v, n, false
 }
 
-// toCID maps a code to a CID through the cid mappings.
-func (c *cmap) toCID(code uint32) (uint32, bool) {
-	if v, ok := c.cid[code]; ok {
-		return v, true
+// toCID maps a code of n bytes to a CID through the cid mappings of that
+// length.
+func (c *cmap) toCID(v uint32, n int) (uint32, bool) {
+	if cid, ok := c.cid[code{v, n}]; ok {
+		return cid, true
 	}
-	if i, ok := c.cidIndex.find(code); ok {
+	if n < 1 || n > 4 {
+		return 0, false
+	}
+	if i, ok := c.cidIndex[n].find(v); ok {
 		r := c.cidRanges[i]
-		return r.dst + (code - r.lo), true
+		return r.dst + (v - r.lo), true
 	}
 	return 0, false
 }
 
-// toUnicode maps a code to runes through the unicode mappings.
-func (c *cmap) toUnicode(code uint32) ([]rune, bool) {
-	if v, ok := c.unicode[code]; ok {
-		return v, len(v) > 0
+// toUnicode maps a code of n bytes to runes through the unicode mappings of
+// that length.
+func (c *cmap) toUnicode(v uint32, n int) ([]rune, bool) {
+	if rs, ok := c.unicode[code{v, n}]; ok {
+		return rs, len(rs) > 0
 	}
-	if i, ok := c.uniIndex.find(code); ok {
+	if n < 1 || n > 4 {
+		return nil, false
+	}
+	if i, ok := c.uniIndex[n].find(v); ok {
 		r := c.uniRanges[i]
 		if r.runes != nil {
 			// The last character advanced by the code's distance from lo,
 			// as the specification says. Past the scalar values it is no
 			// character a text can carry, and the code maps nothing.
-			last := r.runes[len(r.runes)-1] + rune(code-r.lo)
+			last := r.runes[len(r.runes)-1] + rune(v-r.lo)
 			if !validScalar(last) {
 				return nil, false
 			}
@@ -447,7 +813,7 @@ func (c *cmap) toUnicode(code uint32) ([]rune, bool) {
 			rs[len(rs)-1] = last
 			return rs, true
 		}
-		ru := rune(r.dst + (code - r.lo))
+		ru := rune(r.dst + (v - r.lo))
 		if !validScalar(ru) {
 			return nil, false
 		}

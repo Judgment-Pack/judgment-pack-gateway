@@ -444,12 +444,13 @@ func pngRowsOf(data []byte, columns int) []byte {
 }
 
 // tiffRowsOf applies the TIFF predictor to rows of columns bytes, one byte
-// per pixel.
+// per pixel, a last row the data ends inside included: its bytes stand to
+// the bytes before them in that row as any other row's do.
 func tiffRowsOf(data []byte, columns int) []byte {
 	out := append([]byte{}, data...)
-	for r := 0; r+columns <= len(data); r += columns {
-		for i := columns - 1; i >= 1; i-- {
-			out[r+i] -= out[r+i-1]
+	for r := 0; r < len(data); r += columns {
+		for i := min(r+columns, len(data)) - 1; i > r; i-- {
+			out[i] -= out[i-1]
 		}
 	}
 	return out
@@ -704,7 +705,9 @@ func TestCMapPastItsMappingsIsNotUsed(t *testing.T) {
 	cmapOf := func(extra string) []byte {
 		var sb strings.Builder
 		sb.WriteString("begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n")
-		item := strings.Repeat("<41> ", 65536)
+		// Two bytes to a destination: a destination of one byte is half a
+		// code unit and maps nothing (9.10.3).
+		item := strings.Repeat("<0041> ", 65536)
 		for i := 0; i < maxCMapEntries/65536; i++ {
 			sb.WriteString("1 beginbfrange <0000> <FFFF> [" + item + "] endbfrange\n")
 		}
@@ -764,9 +767,9 @@ func TestPredictorLeavesTheDocumentUnchanged(t *testing.T) {
 }
 
 // A CMap's lookups find what a scan of its declarations in order finds, however
-// they overlap: the first codespace range of any code length that holds the
-// head of a string, the first cid range and the first unicode range that hold
-// a code.
+// they overlap: the first codespace range, of any code length, each of whose
+// bytes holds the byte of the head of a string at its own position, the first
+// cid range and the first unicode range that hold a code.
 func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 	codeOf := func(b []byte) uint32 {
 		v, _ := bytesToCode(b)
@@ -789,28 +792,52 @@ func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 	grow(nil)
 	rng := rand.New(rand.NewSource(13))
 	for trial := 0; trial < 400; trial++ {
-		c := &cmap{cid: map[uint32]uint32{}, unicode: map[uint32][]rune{}}
+		// The ranges below are all of one code length, which is the length
+		// their lookups use: a mapping is for codes of one length.
+		const length = 2
+		c := &cmap{cid: map[code]uint32{}, unicode: map[code][]rune{}}
 		for n := rng.Intn(10); n > 0; n-- {
 			lo, hi := heads[rng.Intn(len(heads))], heads[rng.Intn(len(heads))]
 			length := len(lo)
 			hi = append(append([]byte{}, hi...), 0, 0, 0)[:length]
-			c.codespaces = append(c.codespaces, codespace{nbytes: length, low: codeOf(lo), hi: codeOf(hi)})
+			c.codespaces = append(c.codespaces, codespaceOf(lo, hi))
 		}
 		for n := rng.Intn(14); n > 0; n-- {
 			lo := uint32(rng.Intn(70))
-			c.uniRanges = append(c.uniRanges, cmapRange{lo: lo, hi: lo + uint32(rng.Intn(25)), dst: uint32(0x41 + rng.Intn(26))})
+			c.uniRanges = append(c.uniRanges, cmapRange{nbytes: length, lo: lo, hi: lo + uint32(rng.Intn(25)), dst: uint32(0x41 + rng.Intn(26))})
 			lo = uint32(rng.Intn(70))
-			c.cidRanges = append(c.cidRanges, cmapRange{lo: lo, hi: lo + uint32(rng.Intn(25)), dst: uint32(rng.Intn(1000))})
+			c.cidRanges = append(c.cidRanges, cmapRange{nbytes: length, lo: lo, hi: lo + uint32(rng.Intn(25)), dst: uint32(rng.Intn(1000))})
 		}
 		if rng.Intn(4) == 0 {
 			// A range at the top of the codes.
-			c.uniRanges = append(c.uniRanges, cmapRange{lo: 0xFFFFFFF0, hi: 0xFFFFFFFF, dst: 0x61})
+			c.uniRanges = append(c.uniRanges, cmapRange{nbytes: length, lo: 0xFFFFFFF0, hi: 0xFFFFFFFF, dst: 0x61})
 		}
-		c.finish()
+		// Codespace ranges of two lengths whose leading bytes hold the same
+		// codes say two things about how long a code is: such a CMap is not
+		// used at all, and its glyphs are unmapped.
+		ambiguous := false
+		for i, a := range c.codespaces {
+			for _, b := range c.codespaces[i+1:] {
+				if a.nbytes == b.nbytes {
+					continue
+				}
+				shared, overlap := min(a.nbytes, b.nbytes), true
+				for k := 0; k < shared && overlap; k++ {
+					overlap = a.lo[k] <= b.hi[k] && b.lo[k] <= a.hi[k]
+				}
+				ambiguous = ambiguous || overlap
+			}
+		}
+		if (c.finish() == nil) != ambiguous {
+			t.Fatalf("trial %d: the CMap was used %v with codespaces %+v", trial, c.finish() != nil, c.codespaces)
+		}
+		if ambiguous {
+			continue
+		}
 		// The index is disjoint segments in ascending order, and two adjacent
 		// segments name different spans.
-		for k := 1; k < len(c.uniIndex); k++ {
-			prev, seg := c.uniIndex[k-1], c.uniIndex[k]
+		for k := 1; k < len(c.uniIndex[length]); k++ {
+			prev, seg := c.uniIndex[length][k-1], c.uniIndex[length][k]
 			if prev.hi >= seg.lo || seg.lo > seg.hi || (prev.hi+1 == seg.lo && prev.order == seg.order) {
 				t.Fatalf("trial %d: segments %+v then %+v", trial, prev, seg)
 			}
@@ -823,7 +850,7 @@ func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 					break
 				}
 			}
-			if got, found := c.toCID(code); found != cidFound || got != wantCID {
+			if got, found := c.toCID(code, length); found != cidFound || got != wantCID {
 				t.Fatalf("trial %d, code %d: CID %d %v, want %d %v (ranges %+v)", trial, code, got, found, wantCID, cidFound, c.cidRanges)
 			}
 			want := ""
@@ -833,11 +860,11 @@ func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 					break
 				}
 			}
-			if got, _ := c.toUnicode(code); string(got) != want {
+			if got, _ := c.toUnicode(code, length); string(got) != want {
 				t.Fatalf("trial %d, code %d: %q, want %q (ranges %+v)", trial, code, string(got), want, c.uniRanges)
 			}
 		}
-		if got, _ := c.toUnicode(0xFFFFFFFF); len(c.uniRanges) > 0 && c.uniRanges[len(c.uniRanges)-1].hi == 0xFFFFFFFF && string(got) != string(rune(0x61+15)) {
+		if got, _ := c.toUnicode(0xFFFFFFFF, length); len(c.uniRanges) > 0 && c.uniRanges[len(c.uniRanges)-1].hi == 0xFFFFFFFF && string(got) != string(rune(0x61+15)) {
 			t.Fatalf("trial %d: the last code maps to %q", trial, string(got))
 		}
 		for _, head := range heads {
@@ -847,16 +874,39 @@ func TestCMapLookupsFindTheFirstDeclaration(t *testing.T) {
 				shortest = min(shortest, cs.nbytes)
 			}
 			for _, cs := range c.codespaces {
-				if cs.nbytes <= len(head) {
-					if v := codeOf(head[:cs.nbytes]); v >= cs.low && v <= cs.hi {
-						wantCode, wantN, wantOK = v, cs.nbytes, true
+				if cs.nbytes > len(head) {
+					continue
+				}
+				within := true
+				for i := 0; i < cs.nbytes; i++ {
+					if head[i] < cs.lo[i] || head[i] > cs.hi[i] {
+						within = false
 						break
 					}
 				}
+				if within {
+					wantCode, wantN, wantOK = codeOf(head[:cs.nbytes]), cs.nbytes, true
+					break
+				}
 			}
 			if !wantOK {
-				wantN = min(shortest, len(head))
-				wantCode = codeOf(head[:wantN])
+				// 9.7.6.3: a head in no range takes the length of the range
+				// that holds the longest run of its leading bytes, the
+				// shortest of the ranges that hold the same run, and the
+				// shortest length declared where no range holds even the
+				// first byte.
+				longest := 0
+				wantN = shortest
+				for _, cs := range c.codespaces {
+					run := 0
+					for run < cs.nbytes && run < len(head) && head[run] >= cs.lo[run] && head[run] <= cs.hi[run] {
+						run++
+					}
+					if run > longest || (run == longest && longest > 0 && cs.nbytes < wantN) {
+						longest, wantN = run, cs.nbytes
+					}
+				}
+				wantCode, wantN = codeOf(head[:min(wantN, len(head))]), min(wantN, len(head))
 			}
 			if code, n, ok := c.nextCode(head); code != wantCode || n != wantN || ok != wantOK {
 				t.Fatalf("trial %d, %x: code %d of %d bytes %v, want %d of %d %v (codespaces %+v)", trial, head, code, n, ok, wantCode, wantN, wantOK, c.codespaces)
@@ -1017,8 +1067,8 @@ func TestCMapDestinationsPastTheirBoundsMapNothing(t *testing.T) {
 		"a bfrange array element at the bound":     {"1 beginbfrange <0005> <0005> [<" + atBound + ">] endbfrange", 5, whole},
 		"a bfrange array element one byte past it": {"1 beginbfrange <0005> <0005> [<" + odd + ">] endbfrange", 5, ""},
 		"a bfrange array element past the bound":   {"1 beginbfrange <0005> <0005> [<" + long + ">] endbfrange", 5, ""},
-		"the last element a bfrange spans":         {"1 beginbfrange <0000> <0001> [<41> <42> <43>] endbfrange", 1, "B"},
-		"an element past the codes it spans":       {"1 beginbfrange <0000> <0001> [<41> <42> <43>] endbfrange", 2, ""},
+		"the last element a bfrange spans":         {"1 beginbfrange <0000> <0001> [<0041> <0042> <0043>] endbfrange", 1, "B"},
+		"an element past the codes it spans":       {"1 beginbfrange <0000> <0001> [<0041> <0042> <0043>] endbfrange", 2, ""},
 	} {
 		b := &pdfgen.Builder{}
 		num := cidFont(b, "", b.Add(pdfgen.Object{Body: "<< >>", Stream: []byte("begincmap\n1 begincodespacerange <0000> <FFFF> endcodespacerange\n" + c.mapping + "\nendcmap\n")}))
@@ -1305,11 +1355,11 @@ func TestALongCMapRangeIsCutToItsSpan(t *testing.T) {
 			t.Fatal("the CMap was not used")
 		}
 		for _, code := range []uint32{0, maxCMapRange - 1} {
-			if cid, ok := c.toCID(code); !ok || cid != code {
+			if cid, ok := c.toCID(code, 4); !ok || cid != code {
 				t.Errorf("code %d maps to CID %d (mapped %v)", code, cid, ok)
 			}
 		}
-		if cid, ok := c.toCID(maxCMapRange); ok {
+		if cid, ok := c.toCID(maxCMapRange, 4); ok {
 			t.Errorf("code %d maps to CID %d; a cut range spans %d codes", maxCMapRange, cid, maxCMapRange)
 		}
 	})
@@ -1318,13 +1368,13 @@ func TestALongCMapRangeIsCutToItsSpan(t *testing.T) {
 		if c == nil {
 			t.Fatal("the CMap was not used")
 		}
-		if rs, ok := c.toUnicode(0); !ok || string(rs) != "A" {
+		if rs, ok := c.toUnicode(0, 4); !ok || string(rs) != "A" {
 			t.Errorf("code 0 maps to %q (mapped %v)", string(rs), ok)
 		}
-		if _, ok := c.toUnicode(maxCMapRange - 1); !ok {
+		if _, ok := c.toUnicode(maxCMapRange-1, 4); !ok {
 			t.Errorf("code %d maps nothing; a cut range spans %d codes", maxCMapRange-1, maxCMapRange)
 		}
-		if rs, ok := c.toUnicode(maxCMapRange); ok {
+		if rs, ok := c.toUnicode(maxCMapRange, 4); ok {
 			t.Errorf("code %d maps to %q; a cut range spans %d codes", maxCMapRange, string(rs), maxCMapRange)
 		}
 	})
@@ -1513,7 +1563,7 @@ func TestTheEndstreamIndexFindsWhatASearchWouldFind(t *testing.T) {
 // page's /Resources does not hold yields the same font whatever the name, and
 // past the cache's bound a name is not held at all.
 func TestFontsHeldWhileOnePageIsReadAreBounded(t *testing.T) {
-	it := &interp{ctx: context.Background(), fonts: map[string]*font{}, fontRefs: map[ref]*font{}}
+	it := &interp{d: &Document{}, ctx: context.Background(), fonts: map[string]*font{}}
 	first := it.fontFor(Dict{}, "one")
 	if second := it.fontFor(Dict{}, "two"); second != first {
 		t.Fatal("two names the resources do not hold yielded two fonts")
