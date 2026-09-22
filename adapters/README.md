@@ -714,10 +714,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   well as in bytes. The cutoff is an instant: two seconds past the deadline, and never nearer
   than fifty milliseconds from when the read began. That floor is the cutoff only where the
   deadline and the two seconds after it together fall earlier than fifty milliseconds from the
-  read's start — a deadline already 1,950 milliseconds old when the adapter comes to read — and
-  it is there because such a deadline would otherwise leave no room at all for a read of bytes
-  that are there; a deadline a millisecond old leaves the rest of those two seconds and never
-  reaches the floor. A read that **ended** at or before the cutoff is the
+  read's start — a deadline more than 1,950 milliseconds old when the read begins — and it is
+  there because such a deadline would otherwise leave a read of bytes that are there less than
+  fifty milliseconds, possibly none at all; a deadline a millisecond old leaves the rest of those
+  two seconds and never reaches the floor. A read that **ended** at or before the cutoff is the
   request, and the record then says `timeout`; one that ended after it is not, and is refused
   with `adapter-failed`, since no document has been established and there is nothing to record.
   The instant the read ended is stamped and recorded where the cutoff's arbitration can see it,
@@ -726,9 +726,16 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   came to look. An arbitration that finds no read has ended is committed only once the clock is
   strictly past the cutoff, so that a read stamped after it is necessarily a late read: the
   refusal says that no read had ended by the cutoff, and not that none had ended by the moment
-  the adapter looked. What the cutoff does not promise is that a read the operating system has
-  not finished scheduling will be taken. `durationMs` runs from the instant the adapter turns to reading the
-  request, so it carries that reading as well as the work after it. While the document is opened — its
+  the adapter looked. That has one exception, and it is a refusal: the looks such an arbitration
+  makes are counted, and a clock that has stood still for 4,096 looks is treated as past the
+  cutoff, so a read that then ends exactly at the cutoff is refused. A clock that advances never
+  reaches it — the adapter reads the system clock, and the cutoff's own timer has fired before
+  the adapter looks, so the first reading settles it — and without the exception a clock that
+  never advanced, for a read that never ended, would be waited on for ever. Nothing there is an
+  elapsed time: what ends the wait is a reading of the clock, not an interval. What the cutoff
+  does not promise is that a read the operating system has not finished scheduling will be taken.
+  `durationMs` runs from the instant the adapter turns to reading the request, so it carries that
+  reading as well as the work after it. While the document is opened — its
   cross-reference and trailer read, and a damaged cross-reference rebuilt by scanning — the
   deadline is checked at the intervals in the structure bounds below, and one met there ends the
   run the way one met while the page tree is walked does: `timeout`, `truncated` `true`, and no

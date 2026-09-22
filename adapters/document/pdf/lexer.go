@@ -496,13 +496,9 @@ func (l *lexer) hexString() (token, error) {
 		l.pos++
 		if c == '>' {
 			if half {
-				// The byte an odd last nibble is padded into is appended like
-				// every other, and reserved like every other: a token that grew
-				// into a larger buffer to hold it is a token that holds it, and
-				// one the allowance cannot pay for is not returned.
-				out = append(out, pending<<4)
-				if !l.reserve(cap(out)) {
-					return token{}, l.errRead()
+				var err error
+				if out, err = l.padHex(out, pending); err != nil {
+					return token{}, err
 				}
 			}
 			return l.stringToken(start, out), nil
@@ -537,14 +533,31 @@ func (l *lexer) hexString() (token, error) {
 		}
 	}
 	// Unterminated: what was read is the string, and its last nibble is padded
-	// and reserved as it would be at a '>'.
+	// as it would be at a '>'.
 	if half {
-		out = append(out, pending<<4)
-		if !l.reserve(cap(out)) {
-			return token{}, l.errRead()
+		var err error
+		if out, err = l.padHex(out, pending); err != nil {
+			return token{}, err
 		}
 	}
 	return l.stringToken(start, out), nil
+}
+
+// padHex appends the byte an odd last nibble is padded into. That byte is a
+// byte of the string like every other: it is reserved like every other -- a
+// token that grew into a larger buffer to hold it is a token that holds it,
+// and one the allowance cannot pay for is not returned -- and it counts
+// against the bound on a string like every other, so a string of the bound
+// exactly and one nibble more is a string past the bound, wherever it ended.
+func (l *lexer) padHex(out []byte, pending byte) ([]byte, error) {
+	out = append(out, pending<<4)
+	if !l.reserve(cap(out)) {
+		return nil, l.errRead()
+	}
+	if len(out) > maxStringBytes {
+		return nil, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
+	}
+	return out, nil
 }
 
 func (l *lexer) literalString() (token, error) {

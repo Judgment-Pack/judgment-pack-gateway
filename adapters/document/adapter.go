@@ -222,11 +222,13 @@ const requestReadFloor = 50 * time.Millisecond
 // requestArbitrationYields, requestArbitrationSpin and
 // requestArbitrationSpins are how an arbitration that found no stamp waits
 // for the clock a stamp is taken from to pass the cutoff: it yields that many
-// times, then sleeps that long between looks, and gives up looking after that
-// many looks. The adapter's clock is time.Now, which is past the cutoff as
-// soon as the cutoff's timer has fired, so the first look ends the wait and
-// nothing here is waited on; a clock that stands still is a test's, and these
-// keep even that bounded.
+// times, then sleeps that long between looks, and makes that many looks at
+// most. The adapter's clock is time.Now, which is past the cutoff as soon as
+// the cutoff's timer has fired, so the first look ends the wait and nothing
+// here is waited on; a clock that stands still is a test's, and the last of
+// these keeps even that bounded -- a clock that has stood still for
+// requestArbitrationSpins looks is treated as past the cutoff, which is the
+// one exception to what an empty arbitration otherwise waits for.
 const (
 	requestArbitrationYields = 16
 	requestArbitrationSpin   = 50 * time.Microsecond
@@ -273,6 +275,17 @@ var errRequestNotRead = errors.New("the request was not read in full")
 // necessarily after the cutoff: a refusal then says that no read had ended by
 // the cutoff, rather than that none had ended by the time the arbitration
 // looked.
+//
+// That wait has one exception, and it is an exception rather than a longer
+// wait: a clock that has stood still for requestArbitrationSpins looks is
+// treated as past the cutoff, and the arbitration commits its refusal there
+// although the clock has not passed it -- so a read that then stamps exactly
+// the cutoff is refused. Only a clock that does not advance at all reaches it.
+// The adapter's is time.Now, and the cutoff's own timer has fired before the
+// arbitration looks, so the first comparison it makes is past the cutoff and
+// ends the wait; a clock that stands still is a test's, and without the
+// exception such a clock, with a read that never ends, would be waited on for
+// ever.
 func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	type read struct {
 		data []byte
@@ -346,21 +359,32 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	// instant. Where the clock has not passed the cutoff, the lock is
 	// released and taken again until either a stamp is there to judge or the
 	// clock has passed it; in the adapter the clock is time.Now and the
-	// cutoff's own timer has already fired, so it is past the cutoff by the
-	// nanoseconds reading it takes and the first look ends this. What the
-	// spins bound is a clock that stands still, which is a test's and not the
-	// adapter's.
+	// cutoff's own timer has already fired when this is reached, so the first
+	// comparison it makes is already past the cutoff and settles it. Nothing
+	// here is an elapsed time: neither the yields nor the sleeps promise one,
+	// and what ends the wait is a reading of the clock, not an interval.
+	//
+	// The looks are counted, and the count is the one exception to that rule:
+	// a clock that has stood still for requestArbitrationSpins looks is
+	// treated as past the cutoff, so a read that stamps exactly the cutoff
+	// after those looks is refused. Only a clock that does not advance reaches
+	// it -- the adapter's advances, and its first look ends this -- and
+	// without it a clock that never advanced, for a read that never ended,
+	// would be waited on for ever.
 	var at time.Time
 	var hasEnded bool
-	for spin := 0; ; spin++ {
+	for look := 1; ; look++ {
+		if readLocking != nil {
+			readLocking()
+		}
 		mu.Lock()
 		at, hasEnded = ended, stamped
-		settled := hasEnded || readStamp().After(cutoff)
+		settled := hasEnded || readStamp().After(cutoff) || look >= requestArbitrationSpins
 		mu.Unlock()
-		if settled || spin >= requestArbitrationSpins {
+		if settled {
 			break
 		}
-		if spin < requestArbitrationYields {
+		if look <= requestArbitrationYields {
 			runtime.Gosched()
 		} else {
 			time.Sleep(requestArbitrationSpin)
@@ -371,6 +395,9 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 		readArbitrated(taken)
 	}
 	if taken {
+		if readReceiving != nil {
+			readReceiving()
+		}
 		got := <-done
 		if !readTaken(got.at, cutoff) {
 			return nil, errRequestNotRead
@@ -412,6 +439,22 @@ var readStamping func(time.Time)
 // stamped and published. It is nil in the adapter, and a test sets it to
 // learn that the result is there to be taken.
 var readStamped func(time.Time)
+
+// readLocking is called immediately before an arbitration that the cutoff has
+// woken takes the mutex a stamp is written under, once for each look it
+// makes. It is nil in the adapter, and a test sets it to let go of a stamp it
+// is holding inside that critical section, so that what waits for the stamp is
+// the lock itself and not how long the test held it: a reader that reached the
+// lock is there until the stamp is released, and one that reads the stamp
+// without the lock is not.
+var readLocking func()
+
+// readReceiving is called immediately before an arbitration that decided a
+// read was on time blocks on that read's result. It is nil in the adapter, and
+// a test sets it to hand over a result it has been holding back, so that a
+// reader which committed to waiting and then did not wait finds the channel as
+// empty as it was rather than finding a result some delay let through.
+var readReceiving func()
 
 // readArbitrated is called once the cutoff has fired and the stamp has been
 // read, with what the stamp settled: true where a read ended at or before the
