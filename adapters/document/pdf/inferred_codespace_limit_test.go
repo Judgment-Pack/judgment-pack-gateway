@@ -17,7 +17,7 @@ func TestReadsInferredCodespacesAtExactLimit(t *testing.T) {
 				fmt.Fprintf(&enc, "<%02X> %d\n", 2*i, 5+i)
 			}
 			enc.WriteString("<0100> 200\nendcidchar\nendcmap\n")
-			cm := parseCMap([]byte(enc.String()), &fontBudget{}, nil)
+			cm := parseCMap([]byte(enc.String()), &fontBudget{})
 			if cm == nil {
 				t.Errorf("prefix-free %d one-byte singleton runs plus <0100> rejected; all runs fit the per-length cap %d", count, maxInferredCodespaces)
 			}
