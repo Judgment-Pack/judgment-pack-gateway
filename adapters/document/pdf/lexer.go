@@ -99,9 +99,56 @@ type token struct {
 type lexer struct {
 	data []byte
 	pos  int
+	// allow is what the parse this lexer serves may spend, where it serves
+	// one: the bytes it advances over are charged to it, so that a file whose
+	// objects each read the rest of it -- a comment with no line end after
+	// every object is one -- spends the allowance instead of being read once
+	// for every object. It is nil for a lexer with none, where the slice it
+	// reads bounds what it can advance over.
+	allow *allowance
+	// charged is how far the bytes advanced over have been charged. It only
+	// rises, so a parser that goes back over what it has read does not pay for
+	// it twice, and each byte of the slice costs this lexer one charge.
+	charged int
 }
 
-func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos} }
+func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos, charged: pos} }
+
+// within gives the lexer the allowance the parse spends, and returns it.
+func (l *lexer) within(a *allowance) *lexer {
+	l.allow = a
+	return l
+}
+
+// advanced charges the bytes read since the last charge. What a value costs
+// to hold is charged apart from this, by the parser that builds it: the two
+// are different costs of the same object -- the file it was read from and the
+// memory it takes -- and a file that is read without being held, as a comment
+// or a candidate given up on is, is charged only here.
+//
+// It is called where a token begins, where a comment ends and where a string
+// ends, rather than on the way out of every call: a short token is bounded
+// by the bound on its kind, so charging it at the next token costs nothing
+// that matters, while a comment runs to the end of a line that may be the
+// end of the file, and a string with no end runs to the end of the data, and
+// each is charged where it ends. A string is charged there rather than at
+// the next token because the parser reads one ahead and steps back: an
+// unterminated string read as the token after a value would otherwise be
+// stepped back over before any call saw how far it went, and the rest of
+// the data would be read once for every value in it and charged for none.
+func (l *lexer) advanced() {
+	if l.pos > l.charged {
+		l.allow.take(int64(l.pos - l.charged))
+		l.charged = l.pos
+	}
+}
+
+// stringToken is a string token read from start to the lexer's position,
+// its bytes charged where it ends.
+func (l *lexer) stringToken(start int, out []byte) token {
+	l.advanced()
+	return token{kind: tokString, pos: start, end: l.pos, str: out}
+}
 
 func isWhitespace(c byte) bool {
 	return c == 0 || c == '\t' || c == '\n' || c == '\f' || c == '\r' || c == ' '
@@ -117,8 +164,11 @@ func isDelimiter(c byte) bool {
 
 func isRegular(c byte) bool { return !isWhitespace(c) && !isDelimiter(c) }
 
-// skipSpace skips whitespace and comments.
+// skipSpace skips whitespace and comments. A comment runs to the end of its
+// line, which may be the end of the data: what it passes over is charged, as
+// every other advance is.
 func (l *lexer) skipSpace() {
+	l.advanced()
 	for l.pos < len(l.data) {
 		c := l.data[l.pos]
 		if isWhitespace(c) {
@@ -129,6 +179,7 @@ func (l *lexer) skipSpace() {
 			for l.pos < len(l.data) && l.data[l.pos] != '\n' && l.data[l.pos] != '\r' {
 				l.pos++
 			}
+			l.advanced()
 			continue
 		}
 		return
@@ -157,6 +208,7 @@ var errLexer = fmt.Errorf("%w: lexical error", errStructureBound)
 // loop, never a call per byte skipped, so a run of such bytes takes no more
 // stack than one does.
 func (l *lexer) next() (token, error) {
+	l.advanced()
 	for {
 		l.skipSpace()
 		if l.pos >= len(l.data) {
@@ -361,7 +413,7 @@ func (l *lexer) hexString() (token, error) {
 			if half {
 				out = append(out, pending<<4)
 			}
-			return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+			return l.stringToken(start, out), nil
 		}
 		if isWhitespace(c) {
 			continue
@@ -385,7 +437,7 @@ func (l *lexer) hexString() (token, error) {
 	if half {
 		out = append(out, pending<<4)
 	}
-	return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+	return l.stringToken(start, out), nil
 }
 
 func (l *lexer) literalString() (token, error) {
@@ -440,7 +492,7 @@ func (l *lexer) literalString() (token, error) {
 		case ')':
 			depth--
 			if depth == 0 {
-				return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+				return l.stringToken(start, out), nil
 			}
 			out = append(out, c)
 		case '\r':
@@ -456,7 +508,7 @@ func (l *lexer) literalString() (token, error) {
 			return token{}, fmt.Errorf("%w: string past %d bytes", errLexer, maxStringBytes)
 		}
 	}
-	return token{kind: tokString, pos: start, end: l.pos, str: out}, nil
+	return l.stringToken(start, out), nil
 }
 
 // peekKeyword reports whether the next token is the keyword given,
@@ -474,6 +526,23 @@ type parser struct {
 	// contentMode is set for content streams, where "R" is not a reference
 	// and operators are keywords the caller reads.
 	contentMode bool
+	// allow is what the values this parser builds may cost to hold. It is
+	// spent as they are built, element by element and member by member, so
+	// that a value past what the reader may hold ends the parse where it
+	// stands rather than being built whole and refused after: the memory a
+	// refused value would have taken is never taken. It is nil for a parse
+	// with no allowance -- the header of an object stream, a test's own --
+	// where the value's size is bounded by what it is parsed from.
+	allow *allowance
+}
+
+// hold charges what a value the parser has just built costs to hold, and
+// reports the error to end the parse with when the document may not hold it.
+func (p *parser) hold(n int64) error {
+	if p.allow.take(n) {
+		return nil
+	}
+	return p.allow.exhausted()
 }
 
 // errKeyword carries a keyword the parser met where an object was
@@ -507,6 +576,9 @@ func (p *parser) parseObject(depth int) (object, error) {
 	case tokEOF:
 		return nil, errUnexpectedEOF
 	case tokInteger:
+		if err := p.hold(parsedValueBytes); err != nil {
+			return nil, err
+		}
 		if !p.contentMode {
 			// Two integers followed by R are a reference.
 			save := p.lex.pos
@@ -524,12 +596,24 @@ func (p *parser) parseObject(depth int) (object, error) {
 		}
 		return t.i, nil
 	case tokReal:
+		if err := p.hold(parsedValueBytes); err != nil {
+			return nil, err
+		}
 		return t.f, nil
 	case tokName:
+		if err := p.hold(parsedStringBytes + roundUp16(int64(len(t.name)))); err != nil {
+			return nil, err
+		}
 		return t.name, nil
 	case tokString:
+		if err := p.hold(parsedStringBytes + roundUp16(int64(len(t.str)))); err != nil {
+			return nil, err
+		}
 		return String(t.str), nil
 	case tokArrayOpen:
+		if err := p.hold(parsedArrayBytes); err != nil {
+			return nil, err
+		}
 		arr := Array{}
 		for {
 			save := p.lex.pos
@@ -567,12 +651,18 @@ func (p *parser) parseObject(depth int) (object, error) {
 				}
 				return nil, err
 			}
+			if err := p.hold(parsedSlotBytes); err != nil {
+				return nil, err
+			}
 			arr = append(arr, item)
 			if len(arr) > maxContainerItems {
 				return nil, fmt.Errorf("%w: array past %d items", errStructureBound, maxContainerItems)
 			}
 		}
 	case tokDictOpen:
+		if err := p.hold(parsedDictBytes); err != nil {
+			return nil, err
+		}
 		dict := Dict{}
 		for {
 			tt, err := p.lex.next()
@@ -606,6 +696,9 @@ func (p *parser) parseObject(depth int) (object, error) {
 				return nil, err
 			}
 			if vt.kind == tokDictClose {
+				if err := p.hold(parsedMemberBytes + roundUp16(int64(len(key)))); err != nil {
+					return nil, err
+				}
 				dict[key] = nil
 				return dict, nil
 			}
@@ -622,6 +715,11 @@ func (p *parser) parseObject(depth int) (object, error) {
 				}
 				return nil, err
 			}
+			if _, taken := dict[key]; !taken {
+				if err := p.hold(parsedMemberBytes + roundUp16(int64(len(key)))); err != nil {
+					return nil, err
+				}
+			}
 			dict[key] = val
 			if len(dict) > maxContainerItems {
 				return nil, fmt.Errorf("%w: dictionary past %d members", errStructureBound, maxContainerItems)
@@ -629,10 +727,11 @@ func (p *parser) parseObject(depth int) (object, error) {
 		}
 	case tokKeyword:
 		switch t.keyword {
-		case "true":
-			return true, nil
-		case "false":
-			return false, nil
+		case "true", "false":
+			if err := p.hold(parsedValueBytes); err != nil {
+				return nil, err
+			}
+			return t.keyword == "true", nil
 		case "null":
 			return nil, nil
 		}

@@ -152,6 +152,13 @@ func (d *Document) decodeStream(s *stream, noDecrypt bool) ([]byte, error) {
 		return nil, err
 	}
 	for _, f := range specs {
+		// Applying a filter is work the page that asked for the stream answers
+		// for, however little the filter yields: a list of a hundred thousand
+		// filters over an empty stream charges the inflation budget nothing
+		// and is read for every stream it belongs to.
+		if err := d.chargeWork(filterStepBytes); err != nil {
+			return nil, err
+		}
 		switch f.name {
 		case "FlateDecode", "Fl":
 			data, err = d.inflate(data)

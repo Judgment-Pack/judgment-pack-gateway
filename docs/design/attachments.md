@@ -485,14 +485,17 @@ keeps the bound, and every figure derived from it, within the canonical domain's
 `--max-bytes`, whose read bound is derived from it, that holds up to 6,755,399,441,006,589, and
 `attachment.Check` refuses a record reporting a larger `maxBytes`. Object count, the bytes the
 objects read hold, nesting depth, cross-reference chain length, page-tree depth, operators per
-page, what the operand stack holds and the bytes of the file a page's content streams hold are
+page, the bytes the operands of a page hold, and the work one page costs in streams read and
+filters applied are
 bounded by constants the adapter states in its documentation: one met while the document is opened or
 its page tree walked is `pdf-malformed` (step 4), and one met in a page's content fails that
 page (step 5).
 
 **A deadline is when work stops being started, not a completion guarantee.** The adapter checks
 its deadline at the points [the steps](#how-a-document-is-processed) name, and an operation
-between two checks runs to its end. At the deadline, an OCR program that has not finished is
+between two checks runs to its end. Each check reads the clock as well as the context it was
+given, so a deadline the clock has reached stops the work whether or not the timer that cancels
+that context has run. At the deadline, an OCR program that has not finished is
 ended: the adapter kills the process it started, not that process's own children, waits up to
 two seconds for that process to exit and its stdout to reach its end, and then closes the pipe
 itself, so a process left behind holding it does not delay the record past those two seconds.

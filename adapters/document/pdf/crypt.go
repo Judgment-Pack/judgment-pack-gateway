@@ -183,7 +183,10 @@ func (d *Document) openEncryption() (*Encryption, error) {
 	// Objects parsed before the handler was installed (the encryption
 	// dictionary's own referents) are not encrypted content; anything
 	// cached so far is dropped so that strings and streams are read
-	// through the handler from here.
+	// through the handler from here. What they were charged stays charged:
+	// the trailer holds some of them still, and reading them again through
+	// the handler is charged again, which leaves the count above what the
+	// reader holds and never below it.
 	d.cache = map[int]object{}
 	d.objStms = map[int]*objStm{}
 	d.objStmHeaders = map[int]*objStmParsed{}

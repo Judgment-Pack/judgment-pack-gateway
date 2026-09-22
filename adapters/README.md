@@ -520,7 +520,9 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | Bound | Value | Met |
   |---|---|---|
   | indirect objects read in one document | 262,144 | wherever objects are read |
-  | bytes of parsed objects held, for each byte of the file and of each byte its streams inflate to | 16 | wherever objects are read: a well-formed file, whose objects do not overlap, holds a small multiple of its own length; past the bound an object is left unread and the ones after it are not parsed |
+  | bytes read and held for each byte of the file and of each byte its streams inflate to | 160 | wherever objects are read: the bytes a value holds, charged as it is built, so one past the bound is never held whole, and the bytes of the file read to build it, charged as they are read, so a file read once for every object it declares spends the allowance; past it the object is left unread and the ones after it are not parsed |
+  | bytes of parsed objects held in all | 512 MiB | wherever objects are read: the ratio above bounds a small file, this bounds every file |
+  | the bytes of an object read to decide whether it is the page tree or the catalog | 1,024 bytes | rebuilding: the window is read as objects, not searched for a word, and an object it cannot settle is parsed |
   | references resolving to references | 32 | wherever objects are read |
   | indirect objects read inside another object's read, including stream lengths | 32 | wherever objects are read |
   | the bytes searched for an `endstream` a stream's `/Length` does not locate | 4,096 bytes | wherever objects are read: the file's `endstream` offsets are indexed once, one per block of that size, and the index answers past the block |
@@ -538,20 +540,20 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | glyphs shown between two readings of the deadline | 4,096 | content: the deadline is read at least this often within one operator that shows a string |
   | forms drawn within forms | 12 | content |
   | the operand stack | 64 | content |
-  | items the operand stack holds, the elements and members of its operands counted | 1,048,576 | content: the stacks of the forms a page draws counted with it, since a form is drawn while its caller's operands are held |
+  | bytes the operands of a page hold at one time, the forms it draws included | 64 MiB | content: the allowance is handed to the parser, which spends it as it builds each operand, so one operand past the bound ends the page rather than being built first |
   | graphics states saved and not restored | 256 | content |
   | one inline image's dictionary; its data | 128 objects; 16 MiB | content |
   | a page's content streams, concatenated | 64 MiB | content |
-  | the bytes of the file a page's content streams hold, before any filter | 64 MiB | content: a `/Contents` array may name one stream any number of times, and a filter that yields little charges the inflate bounds that little for each of them |
+  | the work one page may cost: the bytes its content streams and the forms it draws hold, and each filter applied | 64 MiB; 256 bytes a filter | content: a `/Contents` array may name one stream any number of times, a page may draw one form any number of times, and a filter that yields little charges the inflate bounds that little for each of them |
   | characters the glyphs shown on one page map to, the forms it draws included | 4,000,000 | content: an unmapped glyph counts as one, and glyphs past the text budget count |
   | fonts held by reference for a document; font resource names held while one page's content is read | 4,096; 4,096 | a font: past either the font is read again rather than held (no error) |
   | width entries one font's `/W` declares | 262,144 | a font: past it the font keeps no widths |
   | the CID a `/W` entry names; the CIDs one `/W` range spans | below 1,048,576; 65,536 | a font: past either the entry is left out |
-  | mappings one CMap holds | 1,048,576 | a CMap: past it the CMap is not used |
+  | mappings one CMap holds | 1,048,576 | a CMap: counted in the entries each mapping is charged, below; past it the CMap is not used |
   | codespace ranges one CMap declares | 256 | a CMap: past it the CMap is not used |
-  | width entries and CMap mappings of all of a document's fonts together | 4,194,304 | a font: the `/W` or CMap a charge would take past it is not used |
+  | width entries and CMap mappings of all of a document's fonts together | 4,194,304 | a font: the `/W` or CMap a charge would take past it is not used, and a page shown with a font that kept none of its mappings reports its glyphs as unmapped rather than as an error |
   | the codes one `bfrange` or `cidrange` spans | 65,536 | a CMap: a longer range is cut to that span |
-  | the entries one `bfrange` or `cidrange` is charged | 4 | a CMap: a range is held as its endpoints, so one range maps as many codes as its span while the two bounds above count it four times |
+  | the entries one `bfrange` or `cidrange` is charged | 4; one more for each 8 characters of its destination | a CMap: a range is held as its endpoints and the characters it maps to, so one range maps as many codes as its span while the two bounds above count what holding it costs |
   | a `bfchar` or `bfrange` destination string | 512 bytes | a CMap: a longer one maps nothing |
 
   Widths serve the glyph positions from which spaces and line breaks are inferred; they do not
@@ -560,24 +562,42 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   **What the bounds cost.** Two of them are stated in entries, and an operator sizing the
   adapter's process reads them as memory rather than as bytes of the file, since a compressed
   stream declares an entry in far fewer bytes than an entry costs. A cross-reference section may
-  declare 4,194,304 object numbers, and the reader holds each as an entry of about 160 bytes, so
+  declare 4,194,304 object numbers, and the reader holds each as an entry of about 112 bytes, so
   a file of a few kilobytes whose cross-reference stream declares that many leaves it holding
-  several hundred megabytes. A document's fonts may hold 4,194,304 width entries and CMap
+  about 470 MB. A document's fonts may hold 4,194,304 width entries and CMap
   mappings together, and a `/W` range is held as a width for each CID it spans rather than as its
   endpoints, so a file of a few kilobytes whose fonts share `/W` ranges that long leaves it
-  holding about 200 MB. What the same 4,194,304 entries cost as CMap mappings the shape of the
-  mappings decides: a code mapped on its own is held at about 96 bytes, so a file whose CMaps map
-  codes one at a time leaves the reader holding about 400 MB, the most any of these three costs;
-  a `bfrange` or `cidrange` is held at about 70 bytes and charged four entries, so ranges alone
-  leave it holding about 70 MB, whatever spans they declare. The objects a document holds are
-  bounded against the file rather than in entries — sixteen bytes held for each byte of the file
-  and for each byte its streams inflate to — which a file whose objects do not overlap does not
-  approach, since parsing one of its bytes into an object costs a handful of bytes and not
-  sixteen, and which a file whose objects all hold the same bytes meets: a file of 64 KiB whose
-  every object is an unterminated string running to its end holds about a megabyte of them, and
-  one at `--max-bytes` 16 MiB with the default 64 MiB of inflation at most about 1.3 GB. All of
-  these are within the bounds above and within `--max-bytes`; none is a refusal, and the process
-  wants room for them.
+  holding about 200 MB; the cross-reference above is the most any of these entry bounds costs.
+  What the same
+  4,194,304 font entries cost as CMap mappings the shape of the mappings decides, and each shape
+  is charged what it costs so that no shape costs much more than another: a code mapped on its
+  own is held at about 96 bytes and charged one entry, about 400 MB at the bound; a `bfrange` or
+  `cidrange` with a short destination is held at about 70 bytes and charged four, about 70 MB;
+  and a mapping of either kind whose destination is 256 characters is held at about 1.1 KB and
+  charged a further entry for each eight of them, about 130 MB. A document whose fonts spend the
+  bound on ranges keeps no mappings past it: the CMap that would cross it is not used at all, the
+  glyphs it would have mapped are counted in `unmapped`, and no error is recorded, since a font
+  past its bound is not a failure of the page (step 5).
+
+  The objects a document holds are bounded against what the reader spends on them rather than
+  against the file's length: 160 bytes for each byte of the file and for each byte its streams
+  inflate to, and 512 MiB in all, whichever is smaller. Two costs are charged against it, which
+  are not the same cost of the same bytes: what a value **holds**, charged as the value is
+  built, and what was **read** to build it, charged as each of a document's lexers advances over
+  the file — a comment with no line end, a string with no end read ahead of a value and stepped back over, a candidate given up on and a token all count, and each
+  byte counts once for each lexer that reads it. A file whose objects are each followed by a
+  comment that runs to its end is read once for every object it declares, holds almost nothing,
+  and is bounded by the second of those. The ratio is what dense ordinary
+  structure needs — the smallest dictionary a file can spell, `<</A 1>>`, is eight bytes of file
+  and a Go map of about 370 bytes held, and a pair of coordinates, `[0 0]`, about a hundred — and
+  it is what bounds a file whose objects hold, or read, the same bytes over and over, where what
+  the reader spends would otherwise grow with the square of the file: a file of 64 KiB whose
+  every object is an unterminated string running to its end holds about 10 MB of them, and one
+  whose every object ends in a comment with no line end reads about 10 MB of it. The charge is taken as each
+  value is built, so a value past the bound is never held whole, and it is measured against what
+  Go retains for each shape (`TestBoundsChargeCoversWhatIsRetained`), so the bound is a bound on
+  memory and not on an estimate of it. All of these are within the bounds above and within
+  `--max-bytes`; none is a refusal, and the process wants room for them.
 
   A `/Filter` name whose bytes are not valid UTF-8 is recorded as `null`, the way a `/R` outside
   the canonical range is: the record carries the name the document declared or nothing, not a

@@ -66,7 +66,11 @@ func TestBoundsTimeoutBoundsTheReadOfTheRequest(t *testing.T) {
 // request is still read and the record says timeout, as the note has a
 // deadline found passed do. It is run many times over because the deadline
 // and the read are both ready at once, and neither order of the two may
-// refuse it.
+// refuse it. Which of them the runtime offers first does not decide the
+// outcome: the read is judged by the instant it ended against the cutoff the
+// deadline fixes, and every check of the deadline reads the clock as well as
+// the context, so a deadline the clock has reached is found passed whether
+// or not the timer that cancels the context has run.
 func TestBoundsRequestThatIsThereIsRecordedWhateverTheDeadline(t *testing.T) {
 	identity, err := document.OwnIdentity()
 	if err != nil {

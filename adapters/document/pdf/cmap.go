@@ -29,7 +29,18 @@ const (
 	// come to close to three hundred megabytes held, which is the sort of
 	// thing these bounds are for; charged four, to about seventy.
 	cmapRangeEntries = 4
+	// cmapRunsPerEntry is how many characters of a mapping's destination one
+	// further entry covers. A destination is held as the characters it
+	// decoded to, up to the hundred and twenty-eight a destination string may
+	// carry, so a mapping is not one size: charging its characters as well
+	// keeps what a document's fonts may hold within the same figure whatever
+	// shape its mappings take.
+	cmapRunsPerEntry = 8
 )
+
+// destinationEntries is what a mapping's destination is charged beyond the
+// mapping itself: its characters, by the measure above.
+func destinationEntries(runes []rune) int { return len(runes) / cmapRunsPerEntry }
 
 type codespace struct {
 	nbytes  int
@@ -263,6 +274,13 @@ func (c *cmap) readCodespaces(p *parser) {
 
 func (c *cmap) readRanges(p *parser, unicode bool) {
 	for !c.unusable {
+		// The deadline is read on the cadence of the entries examined, and
+		// not of the entries kept: a section of a million entries the CMap
+		// keeps none of is a section it read.
+		if c.stopped() {
+			c.unusable = true
+			return
+		}
 		lo, err := p.parseObject(0)
 		if err != nil {
 			return
@@ -305,7 +323,7 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				continue
 			}
 			runes := utf16Runes(d)
-			if len(runes) == 0 || !c.takeN(cmapRangeEntries) {
+			if len(runes) == 0 || !c.takeN(cmapRangeEntries+destinationEntries(runes)) {
 				continue
 			}
 			r := cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(runes[0])}
@@ -325,10 +343,11 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 				if !ok || len(s) > maxCMapDestinationBytes {
 					continue
 				}
-				if !c.take() {
+				runes := utf16Runes(s)
+				if !c.takeN(1 + destinationEntries(runes)) {
 					break
 				}
-				c.unicode[l+uint32(i)] = utf16Runes(s)
+				c.unicode[l+uint32(i)] = runes
 			}
 		default:
 			return
@@ -338,6 +357,10 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 
 func (c *cmap) readChars(p *parser, unicode bool) {
 	for !c.unusable {
+		if c.stopped() {
+			c.unusable = true
+			return
+		}
 		src, err := p.parseObject(0)
 		if err != nil {
 			return
@@ -372,8 +395,11 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 				c.cid[code] = uint32(d)
 			}
 		case String:
-			if unicode && len(d) <= maxCMapDestinationBytes && c.take() {
-				c.unicode[code] = utf16Runes(d)
+			if unicode && len(d) <= maxCMapDestinationBytes {
+				runes := utf16Runes(d)
+				if c.takeN(1 + destinationEntries(runes)) {
+					c.unicode[code] = runes
+				}
 			}
 		case Name:
 			if unicode {

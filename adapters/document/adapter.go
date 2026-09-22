@@ -207,8 +207,15 @@ func ParseRequest(ctx context.Context, r io.Reader, cfg Config, now func() time.
 // reading of its request to end, as ocrPipeWait is for the OCR program's
 // stdout: a request that is there to be read is read, however late the
 // deadline finds the adapter, and only a stdin whose writer neither writes
-// nor closes it is given up on.
+// nor closes it is given up on. It is measured from the deadline itself, so
+// the wait is the same whenever the adapter comes to it.
 const requestPipeWait = 2 * time.Second
+
+// requestReadFloor is the least the adapter waits for a read that has begun,
+// however old the deadline is by then: long enough for a read of bytes that
+// are there to end, and short enough that a stdin nobody writes is not
+// waited on.
+const requestReadFloor = 50 * time.Millisecond
 
 // errRequestNotRead is a request whose reading had not ended requestPipeWait
 // past the deadline.
@@ -217,11 +224,19 @@ var errRequestNotRead = errors.New("the request was not read in full")
 // readWithin reads at most n bytes of r, waiting for the read no longer than
 // requestPipeWait past the deadline the context carries. A read of a pipe
 // ends when the writer closes it or writes, and neither is the adapter's to
-// make happen, so it runs in a goroutine of its own and the deadline is
-// waited on beside it: nothing here interrupts the read, and one still
-// waiting when the adapter exits ends with the process. The channel is
-// buffered, so such a read hands its bytes over and stops rather than holding
-// the goroutine.
+// make happen, so it runs in a goroutine of its own and the wait is beside
+// it: nothing here interrupts the read, and one still waiting when the
+// adapter exits ends with the process. The channel is buffered, so such a
+// read hands its bytes over and stops rather than holding the goroutine.
+//
+// The cutoff is an instant, not a duration waited from wherever the deadline
+// was noticed: requestPipeWait past the deadline the context declares, so a
+// deadline already old when the read begins does not buy the read another
+// wait of its own. The read stamps the instant it ended, and a read that
+// ended at or before the cutoff is taken however late it is noticed: the
+// stamp decides, where waiting on two things at once would leave it to
+// whichever the runtime happened to offer. A context with no deadline is
+// waited on until the read ends, since there is no instant to measure from.
 //
 // The deadline passing does not by itself refuse the request. A request that
 // has arrived is a document to establish and record, and the record then
@@ -233,26 +248,53 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	type read struct {
 		data []byte
 		err  error
+		// at is when the read ended, by the clock the cutoff is on.
+		at time.Time
 	}
 	done := make(chan read, 1)
 	go func() {
 		data, err := io.ReadAll(io.LimitReader(r, n))
-		done <- read{data: data, err: err}
+		done <- read{data: data, err: err, at: time.Now()}
 	}()
-	select {
-	case got := <-done:
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		got := <-done
 		return got.data, got.err
-	case <-ctx.Done():
 	}
-	wait := time.NewTimer(requestPipeWait)
+	cutoff := deadline.Add(requestPipeWait)
+	// A deadline already past when the read begins leaves no wait at all,
+	// where a request that is there needs only the moment its read takes to
+	// end. The cutoff is never nearer than that moment: what it bounds is a
+	// read waiting on a writer, not the scheduling of a read that can end at
+	// once.
+	if floor := time.Now().Add(requestReadFloor); cutoff.Before(floor) {
+		cutoff = floor
+	}
+	wait := time.NewTimer(time.Until(cutoff))
 	defer wait.Stop()
 	select {
 	case got := <-done:
 		return got.data, got.err
 	case <-wait.C:
+	}
+	// The cutoff has passed. A read that ended at or before it is still the
+	// request; one that ends after it is not, and is left to the goroutine.
+	select {
+	case got := <-done:
+		if !readTaken(got.at, cutoff) {
+			return nil, errRequestNotRead
+		}
+		return got.data, got.err
+	default:
 		return nil, errRequestNotRead
 	}
 }
+
+// readTaken reports whether a read that ended at an instant is the request:
+// one that ended at or before the cutoff is, and one that ended after it is
+// not. The instant decides it, so that a read and a cutoff that are ready at
+// the same moment are not settled by whichever a select happens to offer.
+func readTaken(ended, cutoff time.Time) bool { return !ended.After(cutoff) }
 
 // parseArguments is the second check: the arguments table. Once the members
 // are known to be exactly the table's, arguments outside the canonical domain

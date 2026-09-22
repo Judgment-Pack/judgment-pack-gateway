@@ -28,15 +28,17 @@ const (
 	// maxOperands bounds the operand stack, and twice it the keys and values
 	// of an inline image's dictionary.
 	maxOperands = 64
-	// maxOperandItems bounds what the operand stacks of a page hold at one
-	// time, the forms it draws included, counting the elements of nested
-	// arrays and the members of nested dictionaries. The stack is bounded by
-	// what it holds and not by the count of operands alone: one operand may
-	// be an array of a million names, which a content stream spells in two
-	// bytes each and the reader holds at about twenty times that. It admits
-	// one array of maxContainerItems elements, which is the most any one
-	// operand can hold.
-	maxOperandItems = 1 << 20
+	// maxOperandBytes bounds what the operand stacks of a page hold at one
+	// time, the forms it draws included, in the bytes the reader charges for
+	// holding a value. The stack is bounded by what it holds and not by the
+	// count of operands alone: one operand may be an array of a million
+	// names, which a content stream spells in two bytes each and the reader
+	// holds at about forty. The allowance is handed to the parser, which
+	// spends it element by element, so an operand past it ends the page where
+	// it is met rather than being built whole first. It admits an array of
+	// maxContainerItems numbers, the most elements any one operand may hold,
+	// at the forty bytes each of them is charged.
+	maxOperandBytes = 64 << 20
 	// maxGraphicsStates bounds the graphics states saved and not restored.
 	maxGraphicsStates = 256
 	// maxInlineImageBytes bounds one inline image's data.
@@ -173,10 +175,10 @@ type interp struct {
 	fontRefs map[ref]*font
 	images   int
 	textOps  int
-	// operandItems counts what the operand stacks hold at this moment: the
+	// operandBytes counts what the operand stacks hold at this moment: the
 	// stream being interpreted and, while it draws a form, the streams it was
 	// drawn from, since those hold their operands until the form returns.
-	operandItems int
+	operandBytes int64
 	// chars counts the characters the page's glyphs map to, and glyphs the
 	// glyphs shown, which paces the deadline within one operator.
 	chars  int
@@ -217,6 +219,12 @@ func (d *Document) interpretPage(ctx context.Context, content []byte, resources 
 	}()
 	it.run(content, resources, gstate{ctm: identity, hscale: 1}, 0)
 	return pageResult{text: tb.norm.text(), hasImage: it.images > 0, unmapped: tb.unmapped, cut: tb.cut(), err: it.err}
+}
+
+// errOperandBudget is a page whose operands hold more than one page's
+// operands may hold.
+func errOperandBudget() error {
+	return structureBound("the operands held past %d bytes", maxOperandBytes)
 }
 
 // errPageDefect is a page the interpreter could not continue through.
@@ -265,6 +273,13 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 		// An unknown font: glyphs are unmapped one byte at a time.
 		f = unknownFont
 	}
+	if f.deadline != nil {
+		// The deadline passed while this font's own resources were read. The
+		// page is ended here rather than at the interpreter's next check of
+		// the deadline, which the rest of the page's operators may not reach:
+		// what it would show under a font read in part is not its text.
+		it.noteStreamError(f.deadline)
+	}
 	if len(it.fonts) < maxFontCacheEntries {
 		it.fonts[string(name)] = f
 	}
@@ -300,8 +315,8 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 	// while they are held and given back when this stream is done with them:
 	// the operands of a stream that drew a form are still held while the form
 	// is interpreted, and are counted there too.
-	held := 0
-	defer func() { it.operandItems -= held }()
+	held := int64(0)
+	defer func() { it.operandBytes -= held }()
 	var tm, tlm matrix
 	inText := false
 	for {
@@ -317,19 +332,35 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 			it.noteStreamError(errTooManyOperators)
 			return
 		}
+		// The operand about to be parsed may hold what is left of the page's
+		// operand allowance and no more: the parser is handed the allowance
+		// and stops within it, so the memory an operand past the bound would
+		// take is never taken. What the parse spent is held until an operator
+		// consumes the operands, whether the parse ended in a value, in an
+		// operator or at the bound.
+		// The allowance bounds what the operands hold. The bytes of the content
+		// stream itself are not charged to it: this lexer reads the stream once
+		// from end to end, where the bytes a document's lexers read are charged
+		// because each object starts one of its own, and what reading a page
+		// costs is bounded by the page's work allowance instead.
+		room := &allowance{left: maxOperandBytes - it.operandBytes, past: errOperandBudget}
+		p.allow = room
+		before := room.left
 		obj, err := p.parseObject(0)
+		spent := before - room.left
+		held += spent
+		it.operandBytes += spent
 		if err == nil {
 			if len(operands) == maxOperands {
 				it.noteStreamError(structureBound("operands past %d", maxOperands))
 				return
 			}
-			items := operandItems(obj)
-			if items > maxOperandItems-it.operandItems {
-				it.noteStreamError(structureBound("the operands held past %d items", maxOperandItems))
+			if !room.take(parsedSlotBytes) {
+				it.noteStreamError(errOperandBudget())
 				return
 			}
-			held += items
-			it.operandItems += items
+			held += parsedSlotBytes
+			it.operandBytes += parsedSlotBytes
 			operands = append(operands, obj)
 			continue
 		}
@@ -466,32 +497,16 @@ func (it *interp) run(content []byte, resources Dict, gs gstate, depth int) {
 		case "d0", "d1":
 			// Type3 glyph metrics; nothing for text.
 		}
+		// The slots the operands leave behind still refer to them: they are
+		// cleared before the charge goes back, so that what is no longer
+		// charged is no longer held either.
+		for i := range operands {
+			operands[i] = nil
+		}
 		operands = operands[:0]
-		it.operandItems -= held
+		it.operandBytes -= held
 		held = 0
 	}
-}
-
-// operandItems is what an operand holds: itself, and what its elements or
-// members hold in turn, since an array or a dictionary is held whole while
-// it is an operand. A value holds no value twice and none holds itself, so
-// this walk ends within the nesting the parser admits.
-func operandItems(o object) int {
-	switch x := o.(type) {
-	case Array:
-		n := 1
-		for _, item := range x {
-			n += operandItems(item)
-		}
-		return n
-	case Dict:
-		n := 1
-		for _, v := range x {
-			n += 1 + operandItems(v)
-		}
-		return n
-	}
-	return 1
 }
 
 // show renders a string's glyphs into the text builder, advancing tm. Every
@@ -579,8 +594,15 @@ func (it *interp) do(resources Dict, name Name, gs gstate, depth int) {
 		}
 		// A form is decoded and read each time it is drawn, before its first
 		// operator: the deadline is checked before that, so that a large form
-		// drawn many times is not read many times between two checks.
+		// drawn many times is not read many times between two checks, and the
+		// bytes it holds are charged to the page for each drawing, so that a
+		// form drawn a thousand times costs the page a thousand readings of
+		// it whether or not a deadline is there to stop them.
 		if it.deadlinePassed() {
+			return
+		}
+		if err := it.d.chargeWork(int64(len(s.raw))); err != nil {
+			it.noteStreamError(err)
 			return
 		}
 		data, err := it.d.decodeStream(s, false)
@@ -609,15 +631,22 @@ func (it *interp) do(resources Dict, name Name, gs gstate, depth int) {
 }
 
 // deadlinePassed checks the deadline, and records the context's error as
-// what stopped the page when it has passed.
+// what stopped the page when it has passed. The context is asked first,
+// since a caller may end the work by cancelling it; the clock is read after,
+// so a deadline the clock has reached stops the page whether or not the
+// timer that cancels the context has run.
 func (it *interp) deadlinePassed() bool {
 	select {
 	case <-it.ctx.Done():
 		it.noteStreamError(it.ctx.Err())
 		return true
 	default:
-		return false
 	}
+	if err := deadlineMet(it.ctx); err != nil {
+		it.noteStreamError(err)
+		return true
+	}
+	return false
 }
 
 // noteStreamError records the first stream problem met on a page.
