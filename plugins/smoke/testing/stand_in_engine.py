@@ -13,14 +13,17 @@ request for request.
 As the engine does, it answers, routing by path whatever the query:
   /publickey       the key document, to any method (HEAD without a body)
   POST /acquire    reads the body as the engine does -- at most 1 MiB, one
-                   value, decoded into its struct with member names matched
-                   without regard to case, the last of several taking the
-                   place, a string's lone surrogates and bytes that are not
-                   UTF-8 read as U+FFFD, others ignored, nested as deep as
-                   Go's decoder takes -- then holds
+                   JSON object, its members read by their exact names and
+                   each given once, a member it does not read refusing the
+                   body by its name, a string's lone surrogates and bytes
+                   that are not UTF-8 read as U+FFFD, nested as deep as Go's
+                   decoder takes -- then holds
                    the arguments to the canonical domain, then refuses a
                    session that is not a flat token, then a source other
-                   than screening, then a sealed session: each a 400 in the
+                   than screening, then a sealed session -- before the source
+                   exists, as admission refuses it -- then arguments the
+                   source's own echo writes deeper than the engine's parser
+                   reads: each a 400 in the
                    engine's words (a malformed body's words are Go's
                    decoder's, and differ here). Otherwise the source's echo
                    of the arguments -- {} when the member is absent, as given
@@ -31,10 +34,10 @@ As the engine does, it answers, routing by path whatever the query:
                    before the body is read, as an engine with no identity
                    refuses every action; it then takes what the client still
                    sends, briefly, and closes
-  POST /seal       reads the session as /acquire does and refuses, 400, one
-                   that is not a flat token, one it does not hold, or one
-                   already sealed; otherwise the seal at the count the
-                   session holds
+  POST /seal       reads the body as /acquire does, session being the one
+                   member it reads, and refuses, 400, a session that is not
+                   a flat token, one it does not hold, or one already
+                   sealed; otherwise the seal at the count the session holds
   another method on /acquire, /act or /seal: 404 {"error": "not found"}
   any other path: 404 page not found, as the engine's router answers
 It sends the engine's headers: no Server, a Date, on the router's 404
@@ -224,6 +227,21 @@ def make_handler(fault, require_length):
                 return self._send(400, {"error": answers.SESSION_REFUSAL})
             if source != answers.SOURCE:
                 return self._send(400, {"error": f"unknown source: {answers.request_text(source)}"})
+            # A sealed session is refused before the source exists, as the
+            # engine's admission refuses it: nothing the source writes is
+            # read for a session that is closed. A session not held is not
+            # made here either, since an acquisition that fails after this
+            # point must leave none behind.
+            with lock:
+                held = sessions.get(session)
+                if held is not None and held["sealed"]:
+                    return self._send(400, {"error": f"session is sealed: {session}"})
+            # The source has run by now, and what it wrote is the engine's to
+            # read: arguments admitted at the parser's own depth are one level
+            # deeper inside the result the source writes around them.
+            problem = answers.source_output_problem(arguments)
+            if problem:
+                return self._send(400, {"error": problem})
             with lock:
                 state = sessions.setdefault(session, {"count": 0, "last": None, "sealed": False})
                 if state["sealed"]:

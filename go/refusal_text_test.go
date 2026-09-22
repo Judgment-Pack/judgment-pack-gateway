@@ -141,10 +141,21 @@ func TestAnAcquireRefusalQuotesABoundedPrefixOfTheRequest(t *testing.T) {
 			want: []string{"adapter member", "is not one an adapter reports", marker},
 		},
 		{
-			// The decoder names no member of its own: a guard on what is
-			// quoted before the gateway's own reading begins.
-			name: "a body the decoder refuses after a long member name",
+			// A member /acquire does not read is refused by its name, and
+			// the name is quoted bounded like any other text the caller
+			// sent -- before the member's value is looked at, which here is
+			// not even JSON.
+			name: "a long member name the endpoint does not read",
 			body: `{"` + big + `": x}`,
+			code: http.StatusBadRequest,
+			want: []string{"does not read", marker},
+		},
+		{
+			// The decoder names no member of its own: a guard on what is
+			// quoted when the refusal is the decoder's rather than the
+			// gateway's own reading.
+			name: "a body the decoder refuses inside a member it reads",
+			body: `{"session": x}`,
 			code: http.StatusBadRequest,
 			want: []string{"invalid character 'x'"},
 		},

@@ -12,7 +12,7 @@ recomputed from the salt the answer carries (SPEC.md §1.2a), a result digest
 from the result, and times parse and never run backward. Everything else --
 the result digest and the adapter digest included, which the seed does not
 touch -- is compared exactly. Where the words are Go's JSON decoder's own
-(a body that is not JSON, or not an object), the status, the headers but the
+(a body that is not JSON at all), the status, the headers but the
 length, and that the error is a string are compared, and not the words.
 
 The engine is the binary GATEWAY_BIN names. Without one the comparison
@@ -80,6 +80,27 @@ REQUESTS = (
     ("an acquisition with its members in other cases", acquire({"Session": "diff-1", "SOURCE": "screening", "Arguments": {"a": 1}})),
     ("an acquisition naming its session twice", acquire(raw=b'{"session":"../x","session":"diff-1","source":"screening"}')),
     ("an acquisition whose session is null", acquire(raw=b'{"session":"diff-1","session":null,"source":"screening"}')),
+    ("an acquisition naming its source twice, the same both times", acquire(raw=b'{"session":"diff-1","source":"screening","source":"screening"}')),
+    ("an acquisition naming its arguments twice", acquire(raw=b'{"session":"diff-1","source":"screening","arguments":{},"arguments":{}}')),
+    ("a member the engine does not read before a mistyped one", acquire(raw=b'{"extra":1,"session":3,"source":"screening"}')),
+    ("a mistyped member before one the engine does not read", acquire(raw=b'{"session":3,"extra":1,"source":"screening"}')),
+    ("a member the engine does not read before a value that is not JSON", acquire(raw=b'{"extra": x}')),
+    ("mistyped members, answered in the order the handler reads them", acquire(raw=b'{"source":5,"session":true}')),
+    ("a member the engine does not read at its quotation bound", acquire(raw=b'{"session":"diff-1","' + b"a" * 64 + b'":1}')),
+    ("a member the engine does not read past its quotation bound", acquire(raw=b'{"session":"diff-1","' + b"a" * 65 + b'":1}')),
+    ("a member the engine does not read, split within a UTF-8 sequence", acquire(raw='{"session":"diff-1","'.encode() + ("a" * 63 + "界").encode() + b'":1}')),
+    ("a member the engine does not read whose name is empty", acquire(raw=b'{"":1}')),
+    ("a member the engine does not read whose name carries an escape sequence", acquire(raw=b'{"session":"diff-1","\\u001b]0;changed\\u0007":1}')),
+    ("a source whose name carries an escape sequence", acquire(raw=b'{"session":"diff-1","source":"\\u001b]0;changed\\u0007"}')),
+    ("a source whose name carries a byte that is not UTF-8", acquire(raw=b'{"session":"diff-1","source":"a\xffb"}')),
+    ("a body that ends after a member the engine does not read", acquire(raw=b'{"extra"')),
+    ("a body that ends after a member named twice", acquire(raw=b'{"session":"a","session"')),
+    ("no colon after a member the engine reads", acquire(raw=b'{"session" 1}')),
+    ("no colon after a member the engine does not read", acquire(raw=b'{"extra" 1}')),
+    ("a number no float64 holds, as the body", acquire(raw=b"1e1000")),
+    ("a number of ten thousand digits, as the body", acquire(raw=b"9" * 10000)),
+    ("a number no float64 holds, after the object", acquire(raw=b'{"session":"diff-1"} 1e1000')),
+    ("a number of ten thousand digits, after the object", acquire(raw=b'{"session":"diff-1"} ' + b"9" * 10000)),
     ("arguments at the largest safe integer", arguments(b"9007199254740991")),
     ("arguments of minus zero", arguments(b"-0")),
     ("arguments with a fraction", arguments(b"1.5")),
@@ -99,8 +120,20 @@ REQUESTS = (
     ("arguments with a byte that is not UTF-8", arguments(b'"\xff"')),
     ("arguments nested 600 deep", acquire(raw=b'{"session":"diff-600","source":"screening","arguments":' + b"[" * 600 + b"]" * 600 + b"}")),
     ("arguments nested as deep as the engine takes", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 9999 + b"]" * 9999 + b"}", parse=False)),
-    ("arguments nested past the engine's depth", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 10000 + b"]" * 10000 + b"}")),
+    # A member's value is read as a value of its own, so the decoder's depth
+    # is the depth of the arguments themselves: at exactly that depth the
+    # request is admitted and the source's own echo is what the engine
+    # cannot read, one level deeper.
+    ("arguments nested as deep as the engine reads but deeper than its source writes", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 10000 + b"]" * 10000 + b"}")),
+    ("arguments nested past the engine's depth", acquire(raw=b'{"session":"diff-deep","source":"screening","arguments":' + b"[" * 10001 + b"]" * 10001 + b"}")),
     ("a body past 1 MiB", acquire(raw=b'{"session":"diff-big","source":"screening","arguments":"' + b"a" * (1 << 20) + b'"}')),
+    ("a trailing value that crosses the bound", acquire(raw=b'{"session":"diff-1"} "' + b"a" * (1 << 20))),
+    # A scalar the bound cuts short is the bound, wherever it stands: the
+    # digits of a number, or a string stopped inside an escape, end where
+    # the reading was stopped and not where they were written to end.
+    ("a number longer than the bound, as the body", acquire(raw=b"9" * ((1 << 20) + 1))),
+    ("a number longer than the bound, after the object", acquire(raw=b'{"session":"diff-1"} ' + b"9" * ((1 << 20) + 1))),
+    ("a trailing string the bound cuts inside an escape", acquire(raw=b'{"session":"diff-1"} "' + b"a" * ((1 << 20) - 23) + b'\\u0041"')),
     ("a body past 1 MiB whose rest never arrives", lambda p: unfinished_upload(p, "/acquire", 2 << 20, b'{"session":"diff-big","source":"screening","arguments":"' + b"a" * ((1 << 20) + 10))),
     ("an integer 5000 digits long", arguments(b"9" * 5000)),
     ("a duplicate name at its quotation bound", arguments(b'{"' + b'a' * 64 + b'":1,"' + b'a' * 64 + b'":2}')),
@@ -116,6 +149,7 @@ REQUESTS = (
     ("a source with a lone surrogate", acquire(raw=b'{"session":"diff-2","source":"\\ud800"}')),
     ("a source with a byte that is not UTF-8", acquire(raw=b'{"session":"diff-2","source":"\xff"}')),
     ("a body that is null", acquire(raw=b"null")),
+    ("a body that is a bare string", acquire(raw=b'"diff-1"')),
     ("a mistyped member before a second value", acquire(raw=b'{"session":3} {}')),
     ("a session refused before the source", acquire({"session": "../x", "source": "elsewhere"})),
     ("a source the engine does not have", acquire({"session": "diff-2", "source": "elsewhere", "arguments": {}})),
@@ -133,8 +167,15 @@ REQUESTS = (
     ("a seal of a session the engine does not hold", seal({"session": "diff-none"})),
     ("a seal with a member it does not read", seal({"session": "diff-none", "source": "screening"})),
     ("a seal with a member it does not read, not a string", seal({"session": "diff-none", "source": 5})),
+    ("a seal naming its session twice", seal(raw=b'{"session":"diff-none","session":"diff-none"}')),
+    ("a seal carrying the arguments member /acquire reads", seal({"session": "diff-none", "arguments": {}})),
     ("a seal", seal({"session": "diff-1"})),
-    ("a second seal, its member in another case", seal({"SESSION": "diff-1"})),
+    ("an acquisition into a session about to be sealed", acquire({"session": "diff-sealed", "source": "screening", "arguments": {}})),
+    ("a seal of that session", seal({"session": "diff-sealed"})),
+    # The sealed session is refused before the source exists, so what the
+    # source would have written of arguments this deep is never read.
+    ("arguments at the parser's depth into a sealed session", acquire(raw=b'{"session":"diff-sealed","source":"screening","arguments":' + b"[" * 10000 + b"]" * 10000 + b"}")),
+    ("a seal whose session member is in another case", seal({"SESSION": "diff-1"})),
     ("an acquisition into a sealed session", acquire({"session": "diff-1", "source": "screening", "arguments": {}})),
     ("an unknown source into a sealed session", acquire({"session": "diff-1", "source": "elsewhere"})),
     ("a seal whose body is not JSON", seal(raw=b"nope")),
@@ -146,10 +187,11 @@ REQUESTS = (
     ("a path under a route", lambda p: exchange(p, "POST", "/acquire/", {"session": "diff-1"})),
 )
 # the refusals whose words are Go's JSON decoder's own, and an answer nested
-# past what Python's json module reads, whose body is left unread
+# past what Python's json module reads, whose body is left unread. A body
+# that is not an object is not among them: the engine judges that at the
+# first token, and says so in words of its own.
 DECODER_WORDS = {
     "an acquisition whose body is not JSON",
-    "an acquisition whose body is not an object",
     "a seal whose body is not JSON",
     "arguments nested as deep as the engine takes",
 }
