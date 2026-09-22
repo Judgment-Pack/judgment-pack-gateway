@@ -1557,8 +1557,12 @@ func boundsExtractLeaving(t *testing.T, data []byte, leave int64) (*Result, int6
 	t.Helper()
 	ctx := context.Background()
 	result := &Result{}
-	w, stop := walk(ctx, data, testOptions(), result)
+	doc, stop := openDocument(ctx, data, testOptions(), result)
 	if stop != nil {
+		t.Fatalf("the fixture was not opened: fatal %+v problems %+v", result.Fatal, result.Problems)
+	}
+	w, generation, stop := walkPages(ctx, doc, testOptions(), result)
+	if stop != nil || doc.generation != generation {
 		t.Fatalf("the page tree was not walked: fatal %+v problems %+v", result.Fatal, result.Problems)
 	}
 	if leave >= 0 {

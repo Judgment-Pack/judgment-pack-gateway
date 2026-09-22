@@ -372,14 +372,16 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	// without it a clock that never advanced, for a read that never ended,
 	// would be waited on for ever.
 	var at time.Time
-	var hasEnded bool
+	var hasEnded, exhausted bool
 	for look := 1; ; look++ {
 		if readLocking != nil {
 			readLocking()
 		}
 		mu.Lock()
 		at, hasEnded = ended, stamped
-		settled := hasEnded || readStamp().After(cutoff) || look >= requestArbitrationSpins
+		pastCutoff := !hasEnded && readStamp().After(cutoff)
+		exhausted = !hasEnded && !pastCutoff && look >= requestArbitrationSpins
+		settled := hasEnded || pastCutoff || exhausted
 		mu.Unlock()
 		if settled {
 			break
@@ -393,6 +395,11 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	taken := hasEnded && readTaken(at, cutoff)
 	if readArbitrated != nil {
 		readArbitrated(taken)
+	}
+	// Once the frozen-clock exception commits a refusal, a result published
+	// afterward cannot reverse it through the nonblocking receive below.
+	if exhausted {
+		return nil, errRequestNotRead
 	}
 	if taken {
 		if readReceiving != nil {
