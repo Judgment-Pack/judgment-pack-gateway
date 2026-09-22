@@ -1607,7 +1607,9 @@ func TestMaxRequestRaisesTheAcquireBoundAlone(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("a body past the default under a raised bound: %d %s", resp.StatusCode, raw)
 	}
-	seal := fmt.Sprintf(`{"session":"raised","pad":%q}`, pad)
+	// The padding is the session itself: /seal reads that member, so the
+	// body is refused for its size and not for a member /seal does not read.
+	seal := fmt.Sprintf(`{"session":%q}`, pad)
 	if code, answer := post(t, server, "/seal", seal); code != http.StatusBadRequest || !strings.Contains(fmt.Sprint(answer["error"]), "request body too large") {
 		t.Fatalf("/seal under a raised /acquire bound: %d %v", code, answer)
 	}

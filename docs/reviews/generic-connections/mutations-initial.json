@@ -1,0 +1,199 @@
+{
+  "kind": "focused semantic mutations",
+  "independentReview": false,
+  "baseline": "both passed",
+  "results": [
+    {
+      "repo": "gateway",
+      "name": "remote-revocation-default",
+      "file": "adapters/connections/broker.go",
+      "before": "revoked := false",
+      "after": "revoked := true",
+      "command": [
+        "go",
+        "test",
+        "./connections",
+        "./cmd/gateway-connections",
+        "-run",
+        "Test(ResourcePageBoundsAndAvailability|DisconnectDoesNotInventRemoteRevocation|ControlReplyRefusesOversizeWithoutLeakingPartialResult)$",
+        "-count=1"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "gateway",
+      "name": "control-line-budget",
+      "file": "adapters/cmd/gateway-connections/main.go",
+      "before": "len(raw)+1 > connections.ControlLineBytes",
+      "after": "false",
+      "command": [
+        "go",
+        "test",
+        "./connections",
+        "./cmd/gateway-connections",
+        "-run",
+        "Test(ResourcePageBoundsAndAvailability|DisconnectDoesNotInventRemoteRevocation|ControlReplyRefusesOversizeWithoutLeakingPartialResult)$",
+        "-count=1"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "gateway",
+      "name": "resource-page-budget",
+      "file": "adapters/connections/resource_controls.go",
+      "before": "len(raw) > ResourcePageBytes",
+      "after": "len(raw) < 0",
+      "command": [
+        "go",
+        "test",
+        "./connections",
+        "./cmd/gateway-connections",
+        "-run",
+        "Test(ResourcePageBoundsAndAvailability|DisconnectDoesNotInventRemoteRevocation|ControlReplyRefusesOversizeWithoutLeakingPartialResult)$",
+        "-count=1"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "gateway",
+      "name": "resource-page-count",
+      "file": "adapters/connections/resource_controls.go",
+      "before": "len(page.Items) > ResourcePageItems",
+      "after": "len(page.Items) < 0",
+      "command": [
+        "go",
+        "test",
+        "./connections",
+        "./cmd/gateway-connections",
+        "-run",
+        "Test(ResourcePageBoundsAndAvailability|DisconnectDoesNotInventRemoteRevocation|ControlReplyRefusesOversizeWithoutLeakingPartialResult)$",
+        "-count=1"
+      ],
+      "verdict": "survived",
+      "exitCode": 0
+    },
+    {
+      "repo": "gateway",
+      "name": "resource-page-cursor",
+      "file": "adapters/connections/resource_controls.go",
+      "before": "page.More != (page.NextPageToken != \"\")",
+      "after": "false",
+      "command": [
+        "go",
+        "test",
+        "./connections",
+        "./cmd/gateway-connections",
+        "-run",
+        "Test(ResourcePageBoundsAndAvailability|DisconnectDoesNotInventRemoteRevocation|ControlReplyRefusesOversizeWithoutLeakingPartialResult)$",
+        "-count=1"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "desk",
+      "name": "resource-status-ceiling",
+      "file": "web/src/connections/resourceProtocol.ts",
+      "before": "(value.maxFileBytes as number)>RESOURCE_MAX_BYTES",
+      "after": "false",
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "src/connections/resourceProtocol.test.ts",
+        "src/connections/ConnectionsPane.test.tsx"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "desk",
+      "name": "resource-page-budget",
+      "file": "web/src/connections/resourceProtocol.ts",
+      "before": "encode.encode(JSON.stringify(value)).length>48<<10",
+      "after": "false",
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "src/connections/resourceProtocol.test.ts",
+        "src/connections/ConnectionsPane.test.tsx"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "desk",
+      "name": "resource-scope-change",
+      "file": "web/src/connections/ConnectionsPane.tsx",
+      "before": ", status?.data?.resource?.id]",
+      "after": "]",
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "src/connections/resourceProtocol.test.ts",
+        "src/connections/ConnectionsPane.test.tsx"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "desk",
+      "name": "unavailable-row-affordance",
+      "file": "web/src/connections/ConnectionsPane.tsx",
+      "before": "working || Boolean(row.unavailable) ||",
+      "after": "working ||",
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "src/connections/resourceProtocol.test.ts",
+        "src/connections/ConnectionsPane.test.tsx"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "desk",
+      "name": "cursor-loop-refusal",
+      "file": "web/src/connections/ConnectionsPane.tsx",
+      "before": "answer.nextPageToken === pageToken || visitedPages.current.has(answer.nextPageToken)",
+      "after": "false",
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "src/connections/resourceProtocol.test.ts",
+        "src/connections/ConnectionsPane.test.tsx"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    },
+    {
+      "repo": "desk",
+      "name": "disconnect-confirmation",
+      "file": "web/src/connections/ConnectionsPane.tsx",
+      "before": "descriptor?.protocol && result.disconnected !== true",
+      "after": "false",
+      "command": [
+        "npm",
+        "test",
+        "--",
+        "--maxWorkers=2",
+        "src/connections/resourceProtocol.test.ts",
+        "src/connections/ConnectionsPane.test.tsx"
+      ],
+      "verdict": "killed",
+      "exitCode": 1
+    }
+  ]
+}

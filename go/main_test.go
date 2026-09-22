@@ -302,12 +302,12 @@ func TestParseServeOptions(t *testing.T) {
 		{
 			name:    "source max output zero",
 			args:    []string{"store", "seed", "authority", "registry", "--source-max-output", "0"},
-			wantErr: `--source-max-output "0" is not a positive number of bytes`,
+			wantErr: `--source-max-output "0" is not a number of bytes from 1 to 67108864`,
 		},
 		{
 			name:    "source max output not a number",
 			args:    []string{"store", "seed", "authority", "registry", "--source-max-output", "1MiB"},
-			wantErr: `--source-max-output "1MiB" is not a positive number of bytes`,
+			wantErr: `--source-max-output "1MiB" is not a number of bytes from 1 to 67108864`,
 		},
 		{
 			name: "max request",

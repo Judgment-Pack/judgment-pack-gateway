@@ -177,8 +177,10 @@ check only where capabilities cannot be read, and fails at its first acquisition
 operating system's reason is reported. **A
 source's run is bounded in time** (thirty seconds, or its own `--source-timeout`, at most ten
 minutes), **a request body in size** (one mebibyte; `/acquire`'s set by `--max-request`, from 1 byte
-to 64 MiB), and **a source's stdout** (`--source-max-output`, one mebibyte by default); its
-stderr is bounded and truncated: a source that crosses the stdout bound is killed, its
+to 64 MiB), and **a source's stdout** (`--source-max-output`, one mebibyte by default, from 1 byte
+to 64 MiB as well — a source's output is parsed under no value budget, so its bytes are the whole
+of what bounds that parse); its stderr is bounded and truncated: a source that crosses the stdout
+bound is killed, its
 acquisition fails, and nothing it wrote is retained. An operator raising `--max-request` weighs
 it against what one request may cost. The body is read whole, and its arguments are parsed into
 values and canonicalized again for the source's stdin, so a request holds a multiple of its body
@@ -207,9 +209,10 @@ some bytes six times over (`<` becomes `\u003c`), so a result raised towards
 `--source-max-output` can be answered as several times its own size — six, for a result made of
 such bytes; about its own size for ordinary text.
 Parsing and canonicalization run before the source's timeout
-starts and are not bounded by it; their time grows with the body. `--max-request` and
-`--source-timeout` are command-line options: under an engine configuration `/acquire` keeps its
-one-mebibyte bound and the derived sources keep the thirty-second timeout.
+starts and are not bounded by it; their time grows with the body. `--max-request`,
+`--source-timeout` and `--source-max-output` are command-line options: under an engine
+configuration `/acquire` keeps its one-mebibyte bound, the derived sources keep the
+thirty-second timeout, and their stdout keeps its own one-mebibyte bound.
 **The seed is opened once and judged as the file that was opened** —
 a regular file, on Unix also owned by the gateway's own user and readable by nobody else — before
 it is read through that same descriptor, so the file checked is the file loaded, and a file larger

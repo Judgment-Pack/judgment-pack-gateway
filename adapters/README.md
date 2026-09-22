@@ -909,3 +909,14 @@ selection and operation identifiers with their own supported handlers, then ask
 for live account status. The catalog does not authorize access or prove a service
 is currently available. See [the catalog contract](../docs/design/connection-catalog.md)
 for compatibility, limits and the distinction from tool listings and receipts.
+
+### Selected public web pages
+
+`adapter-web` accepts `{"url":"https://example.com/policy"}` and returns an HTTP
+acquisition envelope with a verified attachment record. Configure it as an HTTP
+source (`--source web=adapter-web --source-shape web=http --source-timeout web=60`)
+and allow 16 MiB source output. It admits public HTTPS only, validates DNS and
+redirect destinations before dialing, and fetches at most 4 MiB without cookies,
+credentials, proxies, JavaScript, or OCR. HTML becomes a static text snapshot;
+plain text/PDF retain original bytes. See [the source contract and limits](../docs/design/public-web-sources.md).
+Catalog v2 advertises it under `sources`, separately from account providers.

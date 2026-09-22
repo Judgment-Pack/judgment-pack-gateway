@@ -29,6 +29,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -93,6 +94,19 @@ var adapterShapes = map[string]bool{"airbyte": true, "mcp": true, "http": true}
 // this process by. Before this bound existed a source's output was read into
 // memory without limit.
 const defaultMaxSourceOutput int64 = 1 << 20
+
+// maxSourceOutputCeiling is the largest --source-max-output accepts, the
+// same ceiling --max-request has at the other end of an acquisition
+// (maxRequestCeiling). A source's output is the one parse this gateway makes
+// under no value budget -- a request body's arguments have maxArgumentValues,
+// a source's stdout has nothing but its bytes -- so the byte bound is the
+// whole of what keeps that parse finite, and it is also what the result is
+// held under twice more: canonicalized for the store, and escaped into an
+// answer that JSON spells some bytes six times over (SECURITY.md gives the
+// figures). An operator raising it towards the ceiling is raising all of
+// that, which is why there is a ceiling at all rather than any number the
+// command line carries.
+const maxSourceOutputCeiling int64 = 64 << 20
 
 // defaultSourceTimeout is how long a source runs before its context is
 // cancelled, unless --source-timeout sets another for it; maxSourceTimeout
@@ -380,16 +394,63 @@ type badRequest struct{ error }
 // (requestText).
 const maxRequestText = 64
 
-// requestText is text a refusal or a diagnostic quotes: whole when it is at
-// most maxRequestText bytes; otherwise its first bytes up to that bound, cut
-// before a UTF-8 sequence the bound would split, followed by how many bytes
-// the whole was. What it is for is text a caller sent, which is otherwise
-// quoted whole: an answer is JSON, which spells some bytes six times over, so
-// a source name as long as a raised request bound made an answer several
-// times the body. It bounds the same quotation wherever a diagnostic makes
-// one -- exactlyMembers quotes a member of an engine configuration, or of an
-// adapter's snapshot, through it as well as a member of a request.
-func requestText(s string) string { return boundedText(s, maxRequestText) }
+// requestText is text a refusal or a diagnostic quotes: made printable,
+// then whole when what is left is at most maxRequestText bytes; otherwise
+// its first bytes up to that bound, cut before a UTF-8 sequence the bound
+// would split, followed by how many bytes the whole was. What it is for is
+// text a caller sent, which is otherwise quoted whole and as written: an
+// answer is JSON, which spells some bytes six times over, so a source name
+// as long as a raised request bound made an answer several times the body,
+// and a name carrying an escape sequence made the answer address whatever
+// renders it. It quotes the same way wherever a diagnostic quotes such text
+// -- a source name, a member of a request, a tool named to the MCP server, a
+// member of an engine configuration or of an adapter's snapshot
+// (exactlyMembers) -- so that a refusal repeats none of the bytes a terminal
+// acts on. A message that quotes through %q composes with this: %q escapes
+// what it escapes, and what reaches it has had the control characters taken
+// out already, so neither step has to undo the other's work.
+func requestText(s string) string { return boundedText(printableText(s), maxRequestText) }
+
+// printableText is s with each of these bytes replaced by '?': every control
+// character -- C0, DEL and the C1 range, which is unicode.IsControl's Cc --
+// and every byte that is not part of a valid UTF-8 sequence. One '?' takes
+// the place of one byte, so text quoted through the bound is as many bytes
+// as what was sent and the figure the bound reports stays that count.
+//
+// That is the whole of it. A formatting character (Unicode's Cf, among them
+// the bidi overrides U+202E and U+200E) prints as nothing and passes
+// through, so a name carrying one reaches a caller as it was written and a
+// renderer honouring bidi shows it reordered. That is a display concern of
+// whatever renders a refusal rather than a byte a terminal acts on, and
+// nothing here tries to settle it.
+//
+// What prints is left as it was, outside ASCII included: a source or a tool
+// may be named in any script, and a refusal that spelled such a name as
+// question marks would name nothing the caller could recognize. (A session
+// id is not such a name: it is a flat token, [A-Za-z0-9._-], before any
+// refusal can quote it.)
+func printableText(s string) string {
+	var made []byte
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && size == 1) || unicode.IsControl(r) {
+			if made == nil {
+				made = make([]byte, 0, len(s))
+				made = append(made, s[:i]...)
+			}
+			for byteOfRune := 0; byteOfRune < size; byteOfRune++ {
+				made = append(made, '?')
+			}
+		} else if made != nil {
+			made = append(made, s[i:i+size]...)
+		}
+		i += size
+	}
+	if made == nil {
+		return s
+	}
+	return string(made)
+}
 
 // boundedText is s whole when it is at most bound bytes; otherwise its first
 // bytes up to that bound, cut before a UTF-8 sequence the bound would split,
@@ -405,6 +466,35 @@ func boundedText(s string, bound int) string {
 		cut--
 	}
 	return s[:cut] + "…(" + strconv.Itoa(len(s)) + " bytes)"
+}
+
+// maxSourceFailureText is how much of a failed source's stderr the refusal
+// that reports it carries (sourceFailureText).
+const maxSourceFailureText = 200
+
+// sourceFailureText is a failed source's stderr as the refusal reporting it
+// carries the text: the surrounding whitespace dropped, since a program's
+// last line ends in a newline and that is not part of what it said; every
+// remaining byte outside printable ASCII replaced by '?'; and the whole
+// bounded like any other text this gateway did not write.
+//
+// A source's stderr is a program's, not this gateway's, and it reaches a
+// caller and an operator's terminal as it was written: an escape sequence in
+// it addresses whatever renders the refusal, and a cut at a byte offset can
+// leave half a character behind. Replacing byte for byte keeps the bound's
+// figure the count of the text quoted. The adapters write their own refusal
+// lines the same way (adapters/document, Refusal.Line).
+func sourceFailureText(stderr string) string {
+	said := strings.TrimSpace(stderr)
+	printable := make([]byte, len(said))
+	for i := 0; i < len(said); i++ {
+		c := said[i]
+		if c < 0x20 || c > 0x7e {
+			c = '?'
+		}
+		printable[i] = c
+	}
+	return boundedText(string(printable), maxSourceFailureText)
 }
 
 // maxRequestBody bounds what /seal and /act will read before deciding
@@ -453,20 +543,107 @@ func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
 	r.Body = http.MaxBytesReader(w, r.Body, limit)
 }
 
-func decodeSingleJSON(r io.Reader, dst any) error {
-	decoder := json.NewDecoder(r)
-	if err := decoder.Decode(dst); err != nil {
-		return err
-	}
+// The members each endpoint reads, and no others. A name absent from the
+// set its endpoint names is refused rather than ignored: an envelope this
+// gateway half-reads is an envelope a caller and this gateway disagree
+// about, and what is signed or sealed is decided by the disagreement.
+var (
+	acquireRequestMembers = map[string]bool{"session": true, "source": true, "arguments": true}
+	actRequestMembers     = map[string]bool{"session": true, "platform": true, "tool": true, "arguments": true, "decision": true, "cites": true}
+	sealRequestMembers    = map[string]bool{"session": true}
+)
 
-	var trailing json.RawMessage
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return errors.New("request body must contain exactly one JSON value")
-		}
-		return fmt.Errorf("request body contains trailing content: %w", err)
+// requestMembers reads a request body as one JSON object and returns its
+// members by their exact names: a name the endpoint does not read, and a
+// name given twice, are refused before anything is done with the body.
+//
+// Reading the envelope into a tagged struct does neither. encoding/json
+// matches a member name without regard to case and keeps the last of
+// several spellings, so `{"session":"a","SESSION":"b"}` was read here as
+// "b" while a consumer that reads member names exactly -- the MCP front,
+// which reads its messages that way (members(), mcp.go); a client, a proxy
+// or an audit log reading the same bytes -- read the request as naming "a".
+// The receipt minted was consistent with what actually ran, so nothing in
+// it was wrong; what was wrong is that the request meant one thing to this
+// gateway and another to any consumer of the same bytes that reads member
+// names exactly, and a seal taken from the second spelling of "session"
+// cannot be taken back.
+//
+// The body is walked as it arrives: there is no whole-body read before
+// anything is decided, so the bound the handler put on it (limitBodyTo) is
+// what stops a body past the endpoint's limit, and a member the endpoint
+// does not read is refused by its name, its value never decoded. What the
+// decoder has read ahead of the walk it holds, and a member it does decode
+// is copied out of that buffer, so a body carrying one large value is held
+// about twice while that member is read (SECURITY.md gives the figures a
+// request costs). A body still carries a single JSON value with nothing but
+// whitespace after it.
+func requestMembers(r io.Reader, allowed map[string]bool) (map[string]json.RawMessage, error) {
+	decoder := json.NewDecoder(r)
+	// A number is kept as the literal the caller wrote rather than made a
+	// float64: a token the conversion cannot represent comes back as an
+	// error carrying the whole literal, and a body of ten thousand digits
+	// would then be quoted back whole in the refusal.
+	decoder.UseNumber()
+	opening, err := decoder.Token()
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if opening != json.Delim('{') {
+		return nil, errors.New("request body must be a JSON object")
+	}
+	members := map[string]json.RawMessage{}
+	for decoder.More() {
+		// Where a member's value has not been read yet, the decoder admits
+		// that member's name and nothing else, so the token is the name.
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		name, isName := token.(string)
+		if !isName {
+			return nil, errors.New("request body must be a JSON object")
+		}
+		if _, twice := members[name]; twice {
+			return nil, fmt.Errorf("member %q appears twice", requestText(name))
+		}
+		if !allowed[name] {
+			return nil, fmt.Errorf("request body carries a member this endpoint does not read: %s", requestText(name))
+		}
+		var held json.RawMessage
+		if err := decoder.Decode(&held); err != nil {
+			return nil, err
+		}
+		members[name] = held
+	}
+	if _, err := decoder.Token(); err != nil { // the object's own end
+		return nil, err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		if err == nil {
+			return nil, errors.New("request body must contain exactly one JSON value")
+		}
+		return nil, fmt.Errorf("request body contains trailing content: %w", err)
+	}
+	return members, nil
+}
+
+// memberText reads a string-valued member of a request envelope, or "" when
+// the envelope does not carry it and when it carries it as null -- which is
+// what the endpoint's own refusal then speaks about, as it did when these
+// members were struct fields. A member of another type is the caller's
+// error and is named in the refusal, since the type alone no longer says
+// which member was meant.
+func memberText(members map[string]json.RawMessage, name string) (string, error) {
+	raw, present := members[name]
+	if !present {
+		return "", nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return "", fmt.Errorf("member %q: %w", name, err)
+	}
+	return text, nil
 }
 
 func (g *gatewayService) acquire(sessionID, source string, arguments value, who *caller) (map[string]any, error) {
@@ -728,8 +905,9 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	cmd.Cancel = recordCancellation(cmd.Cancel, &cancelled)
 	cmd.WaitDelay = g.waitDelay
 	// stdout is bounded and its overflow kills the source; stderr is bounded
-	// and simply truncated, because only its first line is ever reported and
-	// a chatty source is not a failed one.
+	// and simply truncated, because what a failure reports of it is a short
+	// printable prefix (sourceFailureText) and a chatty source is not a
+	// failed one.
 	stdout := &boundedBuffer{limit: g.maxSourceOutput, stop: cancel}
 	stderr := &boundedBuffer{limit: 4096}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
@@ -748,12 +926,16 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if g.afterSourceWait != nil {
 		g.afterSourceWait()
 	}
-	// Whatever Wait returned, nothing of the source's process group survives
-	// the acquisition. os/exec stops watching the context once the direct
-	// child has exited, so an overflow written by a descendant after that
-	// cancels a context nobody acts on; the bounded wait then returns, and
-	// this is what kills the descendant. The group's anchor is reaped last,
-	// so the kill cannot reach a reused pid.
+	// Whatever Wait returned, nothing that is still in the source's process
+	// group survives the acquisition, where the platform has process groups.
+	// os/exec stops watching the context once the direct child has exited, so
+	// an overflow written by a descendant after that cancels a context nobody
+	// acts on; the bounded wait then returns, and on Unix this is what kills
+	// the descendant. The group's anchor is reaped last, so the kill cannot
+	// reach a reused pid. Elsewhere there is no group (spawn_other.go): the
+	// direct child is what os/exec can end, a descendant that outlives it
+	// gets the bounded wait and not the acquisition, and SECURITY.md says so
+	// rather than claiming the Unix guarantee everywhere.
 	group.reap()
 	if stdout.overflowed {
 		// Whether the kill landed first or the source exited on its own, the
@@ -769,11 +951,7 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 			// it was killed is not why it failed.
 			return nil, "", "", fmt.Errorf("source did not finish within its %d-second timeout", int64(timeout/time.Second))
 		}
-		trimmed := stderr.buf.String()
-		if len(trimmed) > 200 {
-			trimmed = trimmed[:200]
-		}
-		return nil, "", "", fmt.Errorf("source failed: %s", trimmed)
+		return nil, "", "", fmt.Errorf("source failed: %s", sourceFailureText(stderr.buf.String()))
 	}
 	observedAt = nowStamp()
 	result, err = parseJSON(stdout.buf.Bytes())
@@ -1205,25 +1383,31 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		limitBodyTo(w, r, g.maxRequest)
-		var body struct {
-			Session   string          `json:"session"`
-			Source    string          `json:"source"`
-			Arguments json.RawMessage `json:"arguments"`
+		body, err := requestMembers(r.Body, acquireRequestMembers)
+		if err != nil {
+			fail(w, badRequest{err})
+			return
 		}
-		if err := decodeSingleJSON(r.Body, &body); err != nil {
+		session, err := memberText(body, "session")
+		if err != nil {
+			fail(w, badRequest{err})
+			return
+		}
+		source, err := memberText(body, "source")
+		if err != nil {
 			fail(w, badRequest{err})
 			return
 		}
 		arguments := value(newObject())
-		if len(body.Arguments) > 0 {
-			parsed, err := parseJSONWithin(body.Arguments, maxArgumentValues)
+		if len(body["arguments"]) > 0 {
+			parsed, err := parseJSONWithin(body["arguments"], maxArgumentValues)
 			if err != nil {
 				fail(w, badRequest{err})
 				return
 			}
 			arguments = parsed
 		}
-		out, err := g.acquire(body.Session, body.Source, arguments, who)
+		out, err := g.acquire(session, source, arguments, who)
 		if err != nil {
 			fail(w, err)
 			return
@@ -1255,19 +1439,15 @@ func (g *gatewayService) handler() http.Handler {
 		// Every member is read at its own step of the ladder (act), the
 		// string-valued ones included: a member of the wrong type is a
 		// refusal at that step, not a decoding error ahead of the session's.
-		var body struct {
-			Session   json.RawMessage `json:"session"`
-			Platform  json.RawMessage `json:"platform"`
-			Tool      json.RawMessage `json:"tool"`
-			Arguments json.RawMessage `json:"arguments"`
-			Decision  json.RawMessage `json:"decision"`
-			Cites     json.RawMessage `json:"cites"`
-		}
-		if err := decodeSingleJSON(r.Body, &body); err != nil {
+		// What the envelope may name at all is decided here, before the
+		// ladder: an action is a write, and a write taken from a member this
+		// engine does not read is one nobody asked for.
+		body, err := requestMembers(r.Body, actRequestMembers)
+		if err != nil {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.act(body.Session, body.Platform, body.Tool, body.Arguments, body.Decision, body.Cites, who)
+		out, err := g.act(body["session"], body["platform"], body["tool"], body["arguments"], body["decision"], body["cites"], who)
 		if err != nil {
 			var refusal actRefusal
 			if errors.As(err, &refusal) {
@@ -1297,14 +1477,17 @@ func (g *gatewayService) handler() http.Handler {
 			return
 		}
 		limitBody(w, r)
-		var body struct {
-			Session string `json:"session"`
-		}
-		if err := decodeSingleJSON(r.Body, &body); err != nil {
+		body, err := requestMembers(r.Body, sealRequestMembers)
+		if err != nil {
 			fail(w, badRequest{err})
 			return
 		}
-		out, err := g.sealSession(body.Session)
+		session, err := memberText(body, "session")
+		if err != nil {
+			fail(w, badRequest{err})
+			return
+		}
+		out, err := g.sealSession(session)
 		if err != nil {
 			fail(w, err)
 			return

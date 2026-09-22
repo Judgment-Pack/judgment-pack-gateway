@@ -82,7 +82,9 @@ defaults an inline document is at most about 760 KiB, and its processing, OCR in
 cancelled at thirty seconds. Both are what the operator sets: `--max-request BYTES` raises the
 `/acquire` body bound, and `--source-timeout NAME=SECONDS` gives the documents source a timeout
 of its own — a later change to the core, made after this note was written, so an operator who
-wants a larger document or a longer read has the options for it. What cancelling does and does
+wants a larger document or a longer read has the options for it, on the command line only: under
+an engine configuration `/acquire` keeps its one-mebibyte bound and the derived sources keep the
+thirty-second timeout (README.md, SECURITY.md). What cancelling does and does
 not guarantee is in [Bounds and cancellation](#bounds-and-cancellation). The adapter's own
 `--max-bytes` and `--timeout` sit under whatever the gateway allows; the record's
 `processing.bounds` says which bounds applied.
@@ -671,3 +673,33 @@ checks identify the source; they do not establish that the provider returned it.
 A snapshot is the returned/exported text, not a claim of complete upstream content.
 Old consumers that do not know this source kind must not reinterpret it as an
 inline upload. The original Google and inline variants keep their existing rules.
+
+## Selected public web source extension
+
+[Public web sources](public-web-sources.md) adds `kind: "web"` with required
+`requestedUrl`, `url`, `version`, `responseDigest`, `mediaType`, and `format`.
+Both URLs are bounded public-HTTPS source identities; network admission belongs
+to the adapter. `version` equals the retained byte digest and document identity.
+HTML uses `static-text-v1` and retains a plain-text snapshot, not original HTML;
+plain text and PDFs use `original-v1` with equal response and retained digests.
+Original bytes are inline base64; OCR is absent. Consumers must reject an unknown
+source kind and must not reinterpret it as a caller upload. No earlier variant
+or receipt format changes.
+
+
+### Generic connection resources
+
+[Host-independent connections](host-independent-connections.md) adds
+`kind: "connection-resource"`. Its required source members are `provider`,
+`resourceId`, `url`, `version`, and `format: "retained-file-v1"`; no extra members
+are accepted. `provider` is a lowercase bounded identifier, `resourceId` is an
+opaque UTF-8 identifier of 1..4096 bytes without controls, and `url` is empty or
+a bounded HTTPS display link with no credentials, query, or fragment.
+`version` equals `document.version` and `document.id`, the retained-byte digest.
+Originals are retained inline. Existing extraction, OCR and partial-result rules
+apply. The common producer helper performs no authorization: provider adapters
+must consume a valid selection grant and bound retrieval first.
+
+Consumers must bind the selected provider/resource and grant commitment to the
+signed acquisition and retained bytes, as detailed in the linked contract. An
+unknown source kind is refused; earlier source variants are not broadened.
