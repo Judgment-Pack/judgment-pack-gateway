@@ -97,7 +97,13 @@ func Extract(ctx context.Context, data []byte, opt Options) *Result {
 	encryption := result.Encryption
 	for again := 0; ; again++ {
 		w, generation, stop := walkPages(ctx, doc, opt, result)
-		if stop == nil {
+		// The pages the walk gathered are the pages of the cross-reference it
+		// walked. Where reading the tree rebuilt that cross-reference, they
+		// are the nodes of a document this one no longer is: they are not
+		// extracted at all, and the document is read again from the top --
+		// its encryption included -- rather than a discarded page list being
+		// interpreted first and its reading thrown away after.
+		if stop == nil && doc.generation == generation {
 			extractPages(ctx, w, opt, result)
 		}
 		if doc.generation == generation {
@@ -246,7 +252,7 @@ func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) 
 		result.Fatal = &Problem{Code: "pdf-malformed", Message: message}
 		return nil, generation, errStopped
 	}
-	w := &walker{d: doc, ctx: ctx, path: map[ref]bool{}, limit: opt.MaxPages}
+	w := &walker{d: doc, ctx: ctx, path: map[ref]bool{}, limit: opt.MaxPages, generation: doc.generation}
 	if rootRef != (ref{}) {
 		// The root stands under itself as any other node does: a tree whose
 		// root is among its own kids holds the pages below it once.
@@ -254,6 +260,14 @@ func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) 
 	}
 	ending := w.node(pagesRoot, inherited{}, 0)
 	switch ending {
+	case walkStale:
+		// Reading the tree rebuilt the cross-reference: the nodes counted so
+		// far are nodes of a document this one no longer is, and the rest of
+		// the tree is not this walk's to count. The walk ends where it stands,
+		// as it ends at the deadline, and the caller reads the document again
+		// from the top -- it is the generation returned, not a defect of the
+		// file, that says so.
+		return nil, generation, errStopped
 	case walkDefect:
 		result.Fatal = &Problem{Code: "pdf-malformed", Message: w.defect}
 		return nil, generation, errStopped
@@ -313,6 +327,13 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) {
 			return
 		}
 		content, err := pageContent(w.doc, pn.dict)
+		if w.doc.generation != generation {
+			// Reading this page's content rebuilt the cross-reference: the
+			// bytes it gave back are the content of a page this document no
+			// longer has, and the resources the walk gathered beside them name
+			// objects it no longer has either. Nothing of it is interpreted.
+			return
+		}
 		var pr pageResult
 		if err == nil {
 			remaining := opt.MaxTextBytes - result.TextBytes
@@ -456,11 +477,17 @@ const (
 	walkBound
 	walkDeadline
 	walkDefect
+	// walkStale is a walk whose cross-reference was replaced while it ran.
+	walkStale
 )
 
 type walker struct {
 	d   *Document
 	ctx context.Context
+	// generation is the cross-reference the walk began on. A node that meets
+	// a rebuild ends the walk there: the nodes after it are nodes of another
+	// document, and the caller walks that one from its own root.
+	generation int
 	// path holds the nodes the walk stands under, so that a node that is its
 	// own ancestor is walked once. A node named twice by a tree that holds no
 	// cycle is two nodes, and a page named twice is two pages: that is what
@@ -497,6 +524,9 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	typ, _ := w.d.nameOf(node["Type"])
 	// A /Kids that is null is one that is absent.
 	kids, kidsRead := w.d.resolveRead(node["Kids"])
+	if w.d.generation != w.generation {
+		return walkStale
+	}
 	if defect := w.d.walkDefect(); defect != "" {
 		w.defect = defect
 		return walkDefect
@@ -528,6 +558,9 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 			w.path[r] = true
 		}
 		child := w.d.dictOf(kid)
+		if w.d.generation != w.generation {
+			return walkStale
+		}
 		if child == nil {
 			// Why it could not be read, where reading it met something the
 			// reader can name: a bound, or a stream of objects it could not

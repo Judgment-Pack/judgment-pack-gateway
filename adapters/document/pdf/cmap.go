@@ -103,6 +103,13 @@ type cmap struct {
 	// inferred range is the reader's reading of what the map holds, and a
 	// font borrowing ranges borrows only what was declared.
 	declaredCodespaces bool
+	// established says the parse found an encoding at all: a codespace range
+	// or a mapping. A CMap that found neither -- no bytes, bytes that hold no
+	// operator of the syntax, or a begincmap and an endcmap with nothing
+	// between them -- says nothing about how a string splits into codes or
+	// what its codes stand for, and a font whose own encoding it is has an
+	// encoding the reader cannot use.
+	established bool
 }
 
 type cmapRange struct {
@@ -153,7 +160,7 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 				// A predefined parent this reader does not carry; an
 				// embedded one would need the resource. Nothing to do.
 			case "endcmap":
-				return c.finish()
+				return c.parsed()
 			case "def":
 				if len(stack) >= 2 {
 					if name, ok := stack[len(stack)-2].(Name); ok && name == "WMode" {
@@ -174,9 +181,16 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 			stack = stack[1:]
 		}
 	}
-	if c.unusable {
-		return nil
-	}
+	return c.parsed()
+}
+
+// parsed is the CMap a parse yielded: what it declared, with a codespace
+// range inferred where it declared none, and whether it established an
+// encoding at all. A parse that ended at endcmap and one whose bytes ran out
+// end the same way -- a CMap declaring no codespace range says nothing about
+// how long its codes are, and four bytes is no reading of it.
+func (c *cmap) parsed() *cmap {
+	established := c.declaredCodespaces || c.entries > 0
 	if len(c.codespaces) == 0 {
 		// Infer the code length from the mappings: most embedded
 		// ToUnicode maps declare <0000> <FFFF>; a map with none is read
@@ -196,7 +210,11 @@ func parseCMap(data []byte, budget *fontBudget) *cmap {
 		}
 		c.codespaces = []codespace{fullCodespace(n)}
 	}
-	return c.finish()
+	out := c.finish()
+	if out != nil {
+		out.established = established
+	}
+	return out
 }
 
 // finish indexes what the CMap holds, and returns it; or nil when it met a

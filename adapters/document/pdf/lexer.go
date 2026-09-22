@@ -380,6 +380,14 @@ func (l *lexer) hexString() (token, error) {
 		}
 		v, ok := hexValue(c)
 		if !ok {
+			if l.strict {
+				// In an inline image's dictionary a byte that is neither a
+				// hexadecimal digit nor white space begins no token of the
+				// string: skipping it would read the bytes after it -- the
+				// image's data among them, where the '>' that would end the
+				// string lies past the dictionary -- as the value's own.
+				return token{}, errInlineImageUnended
+			}
 			// A stray character in a hex string is skipped, as viewers do.
 			continue
 		}

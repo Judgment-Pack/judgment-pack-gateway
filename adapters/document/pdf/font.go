@@ -174,7 +174,13 @@ func (d *Document) loadType0(f *font, dict Dict) {
 			f.vertical = strings.HasSuffix(string(enc), "-V")
 		}
 	case *stream:
-		if c := d.cmapOf(enc); c != nil {
+		// A CMap stream whose parse established no encoding -- no bytes, bytes
+		// that hold no operator of the syntax, a begincmap and an endcmap with
+		// nothing between them, a stream naming a parent CMap this reader does
+		// not look up -- is a stream the reader cannot use: it declares no
+		// codespace range and maps no code, so nothing in it says how this
+		// font's bytes split into codes or what they stand for.
+		if c := d.cmapOf(enc); c != nil && c.established {
 			f.encoding = c
 			f.vertical = c.vertical
 		} else {

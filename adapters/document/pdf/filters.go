@@ -648,12 +648,21 @@ func abs(x int) int {
 // reader can believe -- viewers disagree over /L, and a boundary taken from a
 // declaration is one reading of the page rather than the page -- so for an
 // image a filter encodes the reader asks the filter: every filter framed
-// below ends its data where every decoder of it stops, and that is where the
-// image ends. What a framing decodes is charged to the document's inflate
+// below ends its data at the end its own encoding gives it, and that is where
+// the image ends. What a framing decodes is charged to the document's inflate
 // budget and dropped, the reader wanting the offset and not the picture; the
 // input is bounded by the caller, which hands over at most the bytes one
 // inline image may hold; and the deadline is read as the work goes, since a
 // stream that decodes to nothing is still a stream to walk.
+//
+// That end is the encoding's structure and not a decoder's verdict on what it
+// holds. The fax and JPEG framings walk the markers and decode no row and no
+// block, so the end they give is the structural end -- an end-of-block, an
+// end-of-image -- that the decoders this reader's maintainers can name stop
+// at, and data that holds nothing but those markers frames all the same. A
+// decoder that validates the rows or the blocks may refuse such an image and
+// recover some other reading of the page; that recovery is not this reader's
+// boundary, and the record says what the encoding's own structure says.
 //
 // The filters framed here are the seven the specification's inline-image
 // abbreviation list holds -- ASCIIHexDecode, ASCII85Decode, LZWDecode,

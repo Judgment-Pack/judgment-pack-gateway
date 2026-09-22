@@ -867,6 +867,17 @@ func inlineDeclared(key Name, v object) object {
 // of those; standing alone it is a device space under either spelling, or
 // else the name of a resource, which abbreviates nothing. Two images naming
 // two resources name two colour spaces however alike the names look.
+//
+// Those are the positions a colour space stands in, and the only ones
+// rewritten here: what an array holds after its family is that family's
+// parameters, and a name among them is no family of this image's. An array of
+// one element is that device space written another way where the element the
+// image wrote is a device family's name -- a device space takes no parameters
+// (8.6.4) -- and is not unwrapped otherwise: an array whose element is itself
+// an array has no name at its family position at all, and is no writing of
+// the space that array would be; a family that does take parameters, written
+// alone, is a space missing what it needs; and a resource's name is not a
+// family.
 func inlineColourValue(v object) object {
 	switch x := v.(type) {
 	case Name:
@@ -874,29 +885,22 @@ func inlineColourValue(v object) object {
 			return full
 		}
 	case Array:
-		out := make(Array, len(x))
-		for i, item := range x {
-			out[i] = inlineColourValue(item)
+		if len(x) == 1 {
+			if name, ok := x[0].(Name); ok {
+				if _, device := inlineDeviceComponents[name]; device {
+					if full, ok := inlineDeviceColourNames[name]; ok {
+						return full
+					}
+					return name
+				}
+			}
 		}
+		out := make(Array, len(x))
+		copy(out, x)
 		if len(out) > 0 {
 			if name, ok := x[0].(Name); ok {
 				if full, ok := inlineColourNames[name]; ok {
 					out[0] = full
-				} else {
-					out[0] = name
-				}
-			}
-		}
-		if len(out) == 1 {
-			if name, ok := out[0].(Name); ok {
-				if _, device := inlineDeviceComponents[name]; device {
-					// A device colour space takes no parameters (8.6.4), so
-					// an array holding its family alone is that space
-					// written another way -- and is measured as that space.
-					// A family that does take parameters is not unwrapped:
-					// an array of it alone is a space missing what it needs,
-					// and a resource's name is not a family at all.
-					return name
 				}
 			}
 		}

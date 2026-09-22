@@ -107,6 +107,11 @@ type Document struct {
 	// rebuilt document's reading of them.
 	reading        int
 	readGeneration int
+	// scanning is set while the cross-reference is being rebuilt by scanning
+	// the file. The reads the scan makes are its own -- begun again under the
+	// cross-reference it is building, whatever read it was called from -- and
+	// what they meet is the file's: see reconstruct and noteBoundAt.
+	scanning bool
 	// bound is the first structure or inflate bound met while reading an
 	// object the cross-reference named, which leaves that object unread; the
 	// walk ends at it. It belongs to that cross-reference: a rebuild drops it,
@@ -167,7 +172,15 @@ func (d *Document) noteBound(err error) {
 // noteBoundAt is noteBound for a read that began under the generation given.
 // A read whose cross-reference was replaced while it ran says nothing about
 // the document that replaced it: its bound goes with the objects it read.
+//
+// A bound the scan that rebuilds the cross-reference met is the file's own,
+// wherever in the scan it was met: the scan reads the file, not the objects
+// of one cross-reference, and rebuilding does not drop what it met.
 func (d *Document) noteBoundAt(generation int, err error) {
+	if d.scanning {
+		d.noteFileBound(err)
+		return
+	}
 	if d.generation == generation {
 		d.noteBound(err)
 	}
@@ -409,6 +422,15 @@ func (d *Document) readXref() error {
 // readXrefSection reads one section: a table beginning with "xref", or a
 // cross-reference stream. It returns the section's trailer dictionary.
 func (d *Document) readXrefSection(offset int64) (Dict, error) {
+	// Reading one section is one read: a cross-reference stream's /Length,
+	// the objects it decodes through, its /W, its /Index and the /Prev of its
+	// trailer are fields of one object, resolved one after another. Where one
+	// of them rebuilds the cross-reference, the fields after it are fields of
+	// a section this document no longer has, and nothing of them -- an object,
+	// a bound -- is published. See beginRead. The section is the whole of the
+	// read whichever chain reaches it: a /Prev, a hybrid file's /XRefStm, or
+	// the startxref the file ends with.
+	defer d.beginRead()()
 	lex := newLexer(d.data, int(offset))
 	lex.skipSpace()
 	if bytes.HasPrefix(d.data[lex.pos:], []byte("xref")) {
@@ -599,6 +621,19 @@ var objHeader = regexp.MustCompile(`(?s)(\d{1,10})[ \t\r\n\f\x00]+(\d{1,5})[ \t\
 // A bound met while scanning ends it with that bound.
 func (d *Document) reconstruct() error {
 	d.reconstructed = true
+	// The scan reads objects of its own: the streams it finds, the object
+	// streams they name, a catalog among them. Those reads are the scan's and
+	// not the caller's. A caller whose own read met the rebuild publishes
+	// nothing -- the objects it goes on to touch are not this document's --
+	// but the scan is the rebuilding of this document and reads under the
+	// cross-reference it is building, so its reads are begun again here,
+	// outermost, and what they meet stands: an object it could not read is
+	// marked unread, and a bound it met is the file's own, since the scan
+	// reads the file and not the objects of one cross-reference. The caller's
+	// read is put back afterwards, and still publishes nothing.
+	reading, readGeneration, scanning := d.reading, d.readGeneration, d.scanning
+	d.reading, d.scanning = 0, true
+	defer func() { d.reading, d.readGeneration, d.scanning = reading, readGeneration, scanning }()
 	found := 0
 	matches := objHeader.FindAllSubmatchIndex(d.data, maxScanObjects+1)
 	if len(matches) > maxScanObjects {
