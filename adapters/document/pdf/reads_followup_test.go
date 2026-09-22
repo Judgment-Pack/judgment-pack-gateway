@@ -2877,23 +2877,27 @@ func TestReadsInferredCodespacesHoldTheCodesTheMapMaps(t *testing.T) {
 // What a CMap cost the font budget is charged whatever came of it: a
 // destination the reader cannot use is charged as a usable one is, in each of
 // the three forms a destination takes, and a map put down at a bound or at
-// two readings of how long a code is keeps what it charged. The budget below
-// has one entry left, so a map that charged for its unusable destination has
-// nothing left for the mapping after it and is not used at all.
+// two readings of how long a code is keeps what it charged. A fresh budget
+// lets construction finish independently of its token-memory allowance, so
+// the exact mapping charge distinguishes an unusable destination from one
+// silently skipped. A range costs the bounds reader's four entries.
 func TestReadsAnUnusableCMapIsChargedForAllTheSame(t *testing.T) {
-	for _, c := range []struct{ name, section string }{
-		{"a single mapping whose destination is no text", "1 beginbfchar\n<0041> <D800>\nendbfchar"},
-		{"a range whose destination is no text", "1 beginbfrange\n<0041> <0041> <D800>\nendbfrange"},
-		{"a range whose destination array holds no text", "1 beginbfrange\n<0041> <0041> [<D800>]\nendbfrange"},
+	for _, c := range []struct {
+		name, section string
+		charge        int
+	}{
+		{"a single mapping whose destination is no text", "1 beginbfchar\n<0041> <D800>\nendbfchar", 1},
+		{"a range whose destination is no text", "1 beginbfrange\n<0041> <0041> <D800>\nendbfrange", cmapRangeEntries},
+		{"a range whose destination array holds no text", "1 beginbfrange\n<0041> <0041> [<D800>]\nendbfrange", 1},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			budget := &fontBudget{used: maxFontEntries - 1}
+			budget := &fontBudget{}
 			data := "begincmap\n" + c.section + "\n1 begincidchar\n<0042> 5\nendcidchar\nendcmap\n"
-			if m := parseCMap([]byte(data), budget); m != nil {
-				t.Error("the CMap was used; the one entry left went on a destination that maps nothing, so the mapping after it takes the map past the budget")
+			if m := parseCMap([]byte(data), budget, nil); m == nil {
+				t.Fatal("a usable mapping after the unusable destination was not read")
 			}
-			if budget.used != maxFontEntries {
-				t.Errorf("the budget holds %d entries of %d; what the reader read is charged whether it could use it or not", budget.used, maxFontEntries)
+			if budget.used != c.charge+1 {
+				t.Errorf("the budget charged %d entries, want %d for the unusable destination and subsequent mapping", budget.used, c.charge+1)
 			}
 		})
 	}
@@ -2904,7 +2908,7 @@ func TestReadsAnUnusableCMapIsChargedForAllTheSame(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			budget := &fontBudget{}
 			data := "begincmap\n1 begincidchar\n<41> 5\nendcidchar\n" + c.tail
-			if m := parseCMap([]byte(data), budget); m != nil {
+			if m := parseCMap([]byte(data), budget, nil); m != nil {
 				t.Error("the CMap was used; it is one the reader puts down")
 			}
 			if budget.used == 0 {

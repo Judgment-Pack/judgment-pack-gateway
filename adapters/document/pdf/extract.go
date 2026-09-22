@@ -70,6 +70,21 @@ const (
 	maxPageTreeDepth = 64
 	// maxPageTreeNodes bounds the nodes visited while walking it.
 	maxPageTreeNodes = 1 << 20
+	// maxPageWorkBytes bounds the work one page may cost the reader beyond
+	// what its bounds on memory already cover: the bytes of the file its
+	// content streams hold as they lie in it, the bytes of every form
+	// XObject it draws, each time it is drawn, and a charge for each filter
+	// applied on its behalf. A /Contents array may name one stream any number
+	// of times, a page may draw one form any number of times, and a filter
+	// that yields little charges the inflation budget that little for each of
+	// them: what the page costs to read is bounded here rather than there.
+	maxPageWorkBytes = 64 << 20
+	// filterStepBytes is what one entry of a stream's filter list costs
+	// against the page's work, charged as the entry is read and whether or
+	// not it names a filter the reader applies: a list is read for every
+	// stream it belongs to, and a list of a hundred thousand filters that
+	// yields nothing is work whatever it yields.
+	filterStepBytes = 256
 )
 
 // Extract reads the document within the options and the context's
@@ -217,7 +232,7 @@ func establishEncryption(ctx context.Context, doc *Document, result *Result) err
 			result.Encryption = &Encryption{}
 		}
 		result.Encryption.Opened = false
-		if ctx.Err() != nil {
+		if deadlineMet(ctx) != nil {
 			// The deadline passed while the trailer's own objects were read:
 			// that is the deadline, not a dictionary that cannot be read.
 			return endedAtDeadline(result, openedPastDeadline)
@@ -259,7 +274,7 @@ func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) 
 		pagesRoot, rootRef = doc.pagesRoot()
 	}
 	if pagesRoot == nil {
-		if ctx.Err() != nil {
+		if deadlineMet(ctx) != nil {
 			return nil, generation, endedAtDeadline(result, openedPastDeadline)
 		}
 		message := "the file names no page tree, and scanning found none"
@@ -339,12 +354,13 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 	generation := w.doc.generation
 	for i, pn := range w.pages {
 		number := i + 1
-		if ctx.Err() != nil {
+		if deadlineMet(ctx) != nil {
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline had passed before page %d was extracted", number, len(w.pages))})
 			return false
 		}
+		w.doc.startPageWork()
 		content, err := pageContent(w.doc, pn.dict)
 		if w.doc.generation != generation {
 			// Reading this page's content rebuilt the cross-reference: the
@@ -373,7 +389,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 			// the reading ends here, whatever the page came to.
 			return true
 		}
-		if err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		if err != nil && deadlineMet(ctx) != nil && isDeadline(err) {
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline passed while page %d was extracted", number, len(w.pages))})
@@ -535,7 +551,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	// fields of one object, and a rebuild met reading one of them leaves the
 	// rest of a node this document no longer has. See beginRead.
 	defer w.d.beginRead()()
-	if w.ctx.Err() != nil {
+	if deadlineMet(w.ctx) != nil {
 		return walkDeadline
 	}
 	if depth > maxPageTreeDepth || w.nodes >= maxPageTreeNodes {
@@ -620,7 +636,17 @@ func (d *Document) findPagesRoot() Dict {
 		if d.deadlineNow() {
 			return nil
 		}
-		dict, ok := d.resolve(ref{num, d.xref[num].gen}).(Dict)
+		e := d.xref[num]
+		// An object the reader can see is not a page tree without parsing it
+		// is not parsed, as the catalog the rebuild looks for is not: without
+		// that, this search reads and holds every object the file declares.
+		// Only an object the window settles is skipped; one it cannot is
+		// resolved, as is one inside an object stream, which has no bytes of
+		// the file to look at.
+		if !e.inStream && d.notOfType(e, "Pages") {
+			continue
+		}
+		dict, ok := d.resolve(ref{num, e.gen}).(Dict)
 		if !ok {
 			continue
 		}
@@ -651,12 +677,24 @@ func pageContent(d *Document, page Dict) (out []byte, err error) {
 		}
 	}()
 	appendStream := func(v object) error {
+		// One element of a /Contents array is a whole stream to decode, which
+		// may be as long as the file: the deadline is read before each of
+		// them, so that a page whose /Contents names one stream a thousand
+		// times ends at the deadline and not a thousand decodes after it.
+		if err := deadlineMet(d.ctx); err != nil {
+			return fmt.Errorf("the deadline passed while a page's content streams were read: %w", err)
+		}
 		o, read := d.resolveRead(v)
 		s, ok := o.(*stream)
 		if !read || !ok {
 			return errContentUnread
 		}
-		data, err := d.decodeStream(s, false)
+		if err := d.chargeWork(int64(len(s.raw))); err != nil {
+			// No stream went past an inflate bound, and the bytes read are
+			// past what reading one page may cost.
+			return err
+		}
+		data, err := d.decodeStream(s, false, heldByPage)
 		if err != nil {
 			return err
 		}

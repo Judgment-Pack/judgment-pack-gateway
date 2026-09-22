@@ -23,7 +23,9 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -168,14 +170,20 @@ func ReadBound(cfg Config) (bound int64, ok bool) {
 
 // ParseRequest reads the request and refuses it at the first of the note's
 // four checks that fails: the read bound, the arguments, the decoded size,
-// the digest.
-func ParseRequest(r io.Reader, cfg Config, now func() time.Time) (Request, error) {
+// the digest. The read is bounded in time as well as in bytes: the deadline
+// runs from the adapter's start, and a request that has not arrived in full
+// by requestPipeWait past it is refused, since nothing the adapter does makes
+// the writer of its stdin close it or write.
+func ParseRequest(ctx context.Context, r io.Reader, cfg Config, now func() time.Time) (Request, error) {
 	bound, ok := ReadBound(cfg)
 	if !ok {
 		return Request{}, refuse("adapter-failed", "--max-bytes %d has no read bound", cfg.MaxBytes)
 	}
-	raw, err := io.ReadAll(io.LimitReader(r, bound+1))
+	raw, err := readWithin(ctx, r, bound+1)
 	if err != nil {
+		if errors.Is(err, errRequestNotRead) {
+			return Request{}, refuse("adapter-failed", "the deadline passed and the request had not been read in full")
+		}
 		return Request{}, refuse("adapter-failed", "stdin could not be read")
 	}
 	if int64(len(raw)) > bound {
@@ -196,6 +204,227 @@ func ParseRequest(r io.Reader, cfg Config, now func() time.Time) (Request, error
 	req.Bytes = data
 	return req, nil
 }
+
+// requestPipeWait is how long past the deadline the adapter waits for the
+// reading of its request to end, as ocrPipeWait is for the OCR program's
+// stdout: a request that is there to be read is read, however late the
+// deadline finds the adapter, and only a stdin whose writer neither writes
+// nor closes it is given up on. It is measured from the deadline itself, so
+// the wait is the same whenever the adapter comes to it.
+const requestPipeWait = 2 * time.Second
+
+// requestReadFloor is the least the adapter waits for a read that has begun,
+// however old the deadline is by then: long enough for a read of bytes that
+// are there to end, and short enough that a stdin nobody writes is not
+// waited on.
+const requestReadFloor = 50 * time.Millisecond
+
+// requestArbitrationYields, requestArbitrationSpin and
+// requestArbitrationSpins are how an arbitration that found no stamp waits
+// for the clock a stamp is taken from to pass the cutoff: it yields that many
+// times, then sleeps that long between looks, and gives up looking after that
+// many looks. The adapter's clock is time.Now, which is past the cutoff as
+// soon as the cutoff's timer has fired, so the first look ends the wait and
+// nothing here is waited on; a clock that stands still is a test's, and these
+// keep even that bounded.
+const (
+	requestArbitrationYields = 16
+	requestArbitrationSpin   = 50 * time.Microsecond
+	requestArbitrationSpins  = 4096
+)
+
+// errRequestNotRead is a request whose reading had not ended requestPipeWait
+// past the deadline.
+var errRequestNotRead = errors.New("the request was not read in full")
+
+// readWithin reads at most n bytes of r, waiting for the read no longer than
+// requestPipeWait past the deadline the context carries. A read of a pipe
+// ends when the writer closes it or writes, and neither is the adapter's to
+// make happen, so it runs in a goroutine of its own and the wait is beside
+// it: nothing here interrupts the read, and one still waiting when the
+// adapter exits ends with the process. The channel is buffered, so such a
+// read hands its bytes over and stops rather than holding the goroutine.
+//
+// The cutoff is an instant, not a duration waited from wherever the deadline
+// was noticed: requestPipeWait past the deadline the context declares, so a
+// deadline already old when the read begins does not buy the read another
+// wait of its own. The read stamps the instant it ended, and a read that
+// ended at or before the cutoff is taken however late it is noticed: the
+// stamp decides, where waiting on two things at once would leave it to
+// whichever the runtime happened to offer. A context with no deadline is
+// waited on until the read ends, since there is no instant to measure from.
+//
+// The deadline passing does not by itself refuse the request. A request that
+// has arrived is a document to establish and record, and the record then
+// says timeout, from the first check of the deadline after it: that is what
+// the note has the deadline do, and it holds when the deadline had passed
+// before the read began, where a read of bytes already there ends at once.
+// What the wait past the deadline bounds is a read that does not end.
+//
+// Stamping and arbitration are one step against each other. The read takes
+// its instant under a mutex and records it where the arbitration can see it,
+// and the arbitration takes that mutex when the cutoff fires: a read that
+// ended at or before the cutoff is the request whether or not its result had
+// reached the channel by then, so a goroutine the runtime paused between
+// stamping and publishing does not turn an on-time request into a refusal.
+// The send follows the unlock, so the wait for it ends. An arbitration that
+// finds no stamp at all is committed only once the clock those stamps are
+// taken from is strictly past the cutoff, so that a stamp taken after it is
+// necessarily after the cutoff: a refusal then says that no read had ended by
+// the cutoff, rather than that none had ended by the time the arbitration
+// looked.
+func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
+	type read struct {
+		data []byte
+		err  error
+		// at is when the read ended, by the clock the cutoff is on.
+		at time.Time
+	}
+	done := make(chan read, 1)
+	// ended is the instant the read ended, and stamped that it ended at all,
+	// both written under mu by the read and read under mu by the arbitration
+	// below.
+	var mu sync.Mutex
+	var ended time.Time
+	stamped := false
+	go func() {
+		data, err := io.ReadAll(io.LimitReader(r, n))
+		mu.Lock()
+		at := readStamp()
+		ended, stamped = at, true
+		mu.Unlock()
+		if readStamping != nil {
+			readStamping(at)
+		}
+		done <- read{data: data, err: err, at: at}
+		if readStamped != nil {
+			readStamped(at)
+		}
+	}()
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		got := <-done
+		return got.data, got.err
+	}
+	cutoff := deadline.Add(requestPipeWait)
+	// A deadline already past when the read begins leaves no wait at all,
+	// where a request that is there needs only the moment its read takes to
+	// end. The cutoff is never nearer than that moment: what it bounds is a
+	// read waiting on a writer, not the scheduling of a read that can end at
+	// once.
+	if floor := readClock().Add(requestReadFloor); cutoff.Before(floor) {
+		cutoff = floor
+	}
+	wait := time.NewTimer(time.Until(cutoff))
+	defer wait.Stop()
+	if readWaiting != nil {
+		readWaiting()
+	}
+	// Every result is judged by the instant it ended, wherever it is
+	// received: a read and the cutoff may both be ready here, and which of
+	// them this select offers first must not decide whether the request was
+	// read.
+	select {
+	case got := <-done:
+		if !readTaken(got.at, cutoff) {
+			return nil, errRequestNotRead
+		}
+		return got.data, got.err
+	case <-wait.C:
+	}
+	// The cutoff has passed. A read that ended at or before it is still the
+	// request: the stamp it took under the mutex says so, and this waits for
+	// its result rather than refusing a request that had arrived and had not
+	// yet been handed over. One that ended after the cutoff is not the
+	// request, and one that has not ended is left to the goroutine.
+	//
+	// An arbitration that finds no stamp at all is committed only once the
+	// clock a stamp is taken from is strictly past the cutoff. Until then a
+	// read about to stamp could still stamp the cutoff itself, which is an
+	// instant a request is read at, and refusing it would leave the outcome
+	// to which of two goroutines the runtime ran first rather than to the
+	// instant. Where the clock has not passed the cutoff, the lock is
+	// released and taken again until either a stamp is there to judge or the
+	// clock has passed it; in the adapter the clock is time.Now and the
+	// cutoff's own timer has already fired, so it is past the cutoff by the
+	// nanoseconds reading it takes and the first look ends this. What the
+	// spins bound is a clock that stands still, which is a test's and not the
+	// adapter's.
+	var at time.Time
+	var hasEnded bool
+	for spin := 0; ; spin++ {
+		mu.Lock()
+		at, hasEnded = ended, stamped
+		settled := hasEnded || readStamp().After(cutoff)
+		mu.Unlock()
+		if settled || spin >= requestArbitrationSpins {
+			break
+		}
+		if spin < requestArbitrationYields {
+			runtime.Gosched()
+		} else {
+			time.Sleep(requestArbitrationSpin)
+		}
+	}
+	taken := hasEnded && readTaken(at, cutoff)
+	if readArbitrated != nil {
+		readArbitrated(taken)
+	}
+	if taken {
+		got := <-done
+		if !readTaken(got.at, cutoff) {
+			return nil, errRequestNotRead
+		}
+		return got.data, got.err
+	}
+	select {
+	case got := <-done:
+		if !readTaken(got.at, cutoff) {
+			return nil, errRequestNotRead
+		}
+		return got.data, got.err
+	default:
+		return nil, errRequestNotRead
+	}
+}
+
+// readWaiting is called once the wait for the request has been armed and
+// before either outcome is taken. It is nil in the adapter, and a test sets
+// it to hold the reader there until a read and the cutoff are both ready,
+// which is the moment the two are decided between.
+var readWaiting func()
+
+// readClock is when the wait for a request thinks it is, which is where the
+// floor under the cutoff is measured from; readStamp is the instant a read
+// that has ended is stamped with, and is read again by an arbitration that
+// found no stamp, to learn whether the clock those stamps come from is past
+// the cutoff. Both are time.Now in the adapter, and a test drives them where
+// the cutoff and the read's own instant must be its to choose.
+var readClock, readStamp = time.Now, time.Now
+
+// readStamping is called with the instant a read ended, once that instant has
+// been stamped and recorded where the arbitration can see it and before the
+// result is published. It is nil in the adapter, and a test sets it to hold a
+// read there, which is the ordering an on-time request must survive.
+var readStamping func(time.Time)
+
+// readStamped is called with the instant a read ended, once it has been
+// stamped and published. It is nil in the adapter, and a test sets it to
+// learn that the result is there to be taken.
+var readStamped func(time.Time)
+
+// readArbitrated is called once the cutoff has fired and the stamp has been
+// read, with what the stamp settled: true where a read ended at or before the
+// cutoff and its result is waited for, false where the request is refused. It
+// is nil in the adapter, and a test sets it to release a read it held, so
+// that what admits the request is the wait and not a race with the send.
+var readArbitrated func(bool)
+
+// readTaken reports whether a read that ended at an instant is the request:
+// one that ended at or before the cutoff is, and one that ended after it is
+// not. The instant decides it, so that a read and a cutoff that are ready at
+// the same moment are not settled by whichever a select happens to offer.
+func readTaken(ended, cutoff time.Time) bool { return !ended.After(cutoff) }
 
 // parseArguments is the second check: the arguments table. Once the members
 // are known to be exactly the table's, arguments outside the canonical domain

@@ -65,7 +65,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 2
 	}
 	// The deadline runs from the adapter's start, before the request is
-	// read: reading its own executable for its identity is inside it.
+	// read: reading its own executable for its identity is inside it, and
+	// the wait for the request itself is held to it, which is why the context
+	// goes to ParseRequest below.
 	ctx, cancel := context.WithDeadline(context.Background(), started.Add(cfg.Timeout))
 	defer cancel()
 	identity, err := ownIdentity()
@@ -76,7 +78,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	// which begins here: resolving and digesting the executable above is
 	// inside the deadline, not inside the duration the record reports.
 	reading := time.Now()
-	req, err := document.ParseRequest(stdin, cfg, time.Now)
+	req, err := document.ParseRequest(ctx, stdin, cfg, time.Now)
 	if err != nil {
 		return refused(stderr, err)
 	}

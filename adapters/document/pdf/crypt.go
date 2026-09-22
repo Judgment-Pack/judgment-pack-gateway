@@ -192,6 +192,9 @@ func (d *Document) openEncryption() (*Encryption, error) {
 	// and streams are read through the handler from here. The
 	// cross-reference is the one it was: what was met reading the file, or an
 	// object this same cross-reference names, stands.
+	// What they were charged stays charged: the trailer or the abandoned
+	// reading may hold them still, and reading through the handler is charged
+	// again, leaving the count above what is held and never below it.
 	d.dropCachedObjects()
 	return info, nil
 }
