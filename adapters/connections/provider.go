@@ -58,6 +58,16 @@ func (p provider) request(ctx context.Context, method, endpoint, token string, f
 		return nil, nil, ErrProvider
 	}
 	defer response.Body.Close()
+	if p.notion && endpoint == p.token && (response.StatusCode == 400 || response.StatusCode == 401) {
+		raw, readErr := io.ReadAll(io.LimitReader(response.Body, 64<<10+1))
+		var failure struct {
+			Error string `json:"error"`
+		}
+		if readErr == nil && len(raw) <= 64<<10 && json.Unmarshal(raw, &failure) == nil && failure.Error == "invalid_client" {
+			return nil, nil, Error("registration-expired")
+		}
+		return nil, nil, ErrProvider
+	}
 	if response.StatusCode == 401 {
 		return nil, nil, ErrRevoked
 	}
@@ -103,11 +113,14 @@ func (p provider) exchange(ctx context.Context, client Client, values url.Values
 		return tokenReply{}, err
 	}
 	var t tokenReply
-	if json.Unmarshal(raw, &t) != nil || len(t.Access) == 0 || len(t.Access) > 8192 || len(t.Refresh) > 8192 || t.Expires <= 0 || t.Expires > 86400 || !strings.EqualFold(t.Type, "Bearer") || strings.ContainsAny(t.Access+t.Refresh, "\x00\r\n") {
+	if json.Unmarshal(raw, &t) != nil || len(t.Access) == 0 || len(t.Access) > 8192 || len(t.Refresh) > 8192 || t.Expires <= 0 || (!p.notion && t.Expires > 86400) || !strings.EqualFold(t.Type, "Bearer") || strings.ContainsAny(t.Access+t.Refresh, "\x00\r\n") {
 		return t, ErrProvider
 	}
 	if t.Scope != "" && t.Scope != p.scope() {
 		return t, ErrProvider
+	}
+	if p.notion {
+		t.Expires = min(t.Expires, 86400)
 	}
 	return t, nil
 }

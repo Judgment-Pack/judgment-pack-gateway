@@ -39,17 +39,29 @@ origin. HTTP redirects are refused; authorization opens in the user's browser.
 
 The companion dynamically registers a public PKCE client. It persists its client
 identity and loopback redirect together and reuses them across restarts. If the
-registered loopback port is occupied, sign-in fails with a recoverable message;
-it does not silently replace the registration and orphan an existing grant.
+registered loopback port is occupied while disconnected, the next sign-in replaces
+the registration on a new loopback port. With a live connection it refuses instead;
+disconnect first to replace that registration without silently orphaning a grant.
 The callback is IPv4 loopback only, validates Host, state and expiry, and is single
 use. The code verifier is held in memory. Token exchange uses the discovered
 resource audience. No user-managed Google registration is involved.
 
 Rotating refresh tokens are serialized with a separate OS file lock shared by
-broker and adapter processes. The state lock stays free during network I/O so
-local disconnect takes effect immediately. A refreshed token commits only against
-the same connection generation. `invalid_grant` clears the connection; it is never
-retried. Other provider failures do not erase an otherwise recoverable connection.
+broker and adapter processes. A separate broker can update custody while a read is
+in flight; a disconnect sent to the same serial companion waits for the current
+operation (50-second deadline). It is not immediate. A refreshed token commits only
+against the same connection generation and refresh token. Before starting rotation,
+the caller must have 20 seconds left; a started exchange has its own 15-second
+context and saves the reply despite ordinary caller cancellation. Desk drains a
+canceled companion call before retiring the process. An OS crash, forced kill,
+lost provider response, or exhausted commit deadline can still require reconnecting.
+`invalid_grant` clears the connection and is never retried. `invalid_client` also
+clears the dead registration and redirect, including during initial consent. The
+next explicit connect discovers and registers again. Other provider failures do
+not erase an otherwise recoverable connection. Positive token lifetimes above
+24 hours are accepted with a conservative 24-hour cache ceiling before conversion
+to a duration. The account label currently says Notion; it is not a verified
+workspace name. Workspace/user IDs bind the stored account and reconnect checks.
 Disconnect deletes local credentials and grants become unusable. This slice does
 not claim provider-side revocation: the UI directs the user to remove the Notion
 connection in Notion settings as well.
@@ -65,12 +77,21 @@ Tool permission is a fixed allowlist: `notion-get-tool-access`, `notion-search`,
 `notion-ai-search`, `notion-fetch`. Tool descriptions and read-only annotations do
 not grant permission. Search routes according to the exposed tool/access map.
 Notion may search sources connected inside its workspace; the connection UI states
-this. Only results with a matching Notion page ID and an approved Notion URL are
-selectable. Fetch accepts a Notion ID, not an arbitrary URL. No write tool can be
+this. Search displays only results with a matching Notion page ID and approved
+Notion URL; Desk offers selection from those displayed results. The private broker
+`select` operation accepts any syntactically valid Notion ID for the current
+connection epoch, not only IDs from a previous search. The authenticated local
+caller is therefore trusted to choose an ID; the model has no access to this RPC.
+A grant binds that chosen ID and epoch and is consumed once. Fetch accepts a
+Notion ID, not an arbitrary URL. No write tool can be
 called through this companion. Plan restrictions remain Notion's, not bypassed.
 
-The attachment is a snapshot of text returned by the fetch tool, including any
-provider-reported incompleteness. It is not a recursive crawl, complete database
+The attachment is a snapshot of text returned by the fetch tool. A response with
+`truncated: true` is refused as `source-incomplete`; no record is signed and no
+invented truncation sentence is prepended to the original. Version 1's extraction
+status describes local processing, so it cannot honestly be reused to describe
+upstream completeness. Supporting partial upstream snapshots needs a separately
+specified source-completeness field and explicit consumer consent. It is not a recursive crawl, complete database
 export, or a guarantee that every linked page was included. Notion retrieval uses
 the existing `mcp` receipt shape and adapter envelope.
 
@@ -96,7 +117,11 @@ matches, and reads at most 32 MiB of note content per search. Results may be par
 Absolute paths are omitted from results and records. Source links use only
 `obsidian://open` with an encoded vault name and relative note name. Vault names
 are not globally unique; the saved snapshot remains the source used in chat even
-if the desktop app later opens a similarly named vault.
+if the desktop app later opens a similarly named vault. The private vault identity
+binds connection custody and grants but is not attested in the saved record; the
+record alone cannot distinguish two vaults with the same display name and note
+path. No unused acquisition statement is constructed for this command source.
+Spaces use `%20`, and literal plus signs use `%2B`.
 
 Obsidian produces the attachment record directly under the existing `command`
 receipt shape. It does not pretend to be an HTTP or MCP upstream.

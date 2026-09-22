@@ -28,19 +28,19 @@ type SourceSearch struct {
 	More             bool            `json:"more"`
 }
 
-func (p provider) notionClient(ctx context.Context, s *Store, client Client, c credential, epoch string) (*mcphttp.Client, error) {
+func (p provider) notionClient(ctx context.Context, s *Store, client Client, c credential, epoch string) (*mcphttp.Client, string, error) {
 	token, err := p.access(ctx, s, client, c, epoch)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	m, err := mcphttp.New(p.api, token, notionTools, p.client)
 	if err != nil {
-		return nil, ErrProvider
+		return nil, "", ErrProvider
 	}
 	if err = m.Initialize(ctx); err != nil {
-		return nil, notionError(err)
+		return nil, "", notionError(err)
 	}
-	return m, nil
+	return m, token, nil
 }
 func notionText(raw []byte) (string, error) {
 	var r struct {
@@ -149,7 +149,7 @@ func (b *Broker) notionOperation(ctx context.Context, method string, raw []byte)
 	if decode(raw, &q) != nil || strings.TrimSpace(q.Query) == "" || len(q.Query) > 1024 || strings.ContainsAny(q.Query, "\x00\r\n") {
 		return nil, ErrRequest
 	}
-	m, err := b.provider.notionClient(ctx, b.store, client, c, epoch)
+	m, token, err := b.provider.notionClient(ctx, b.store, client, c, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +209,9 @@ func (b *Broker) notionOperation(ctx context.Context, method string, raw []byte)
 	seen := map[string]bool{}
 	for _, item := range matches.Results {
 		// Never fetch connected-app URLs, even when Notion includes them in search.
+		if strings.Contains(item.Title+item.URL, token) {
+			return nil, ErrProvider
+		}
 		if !notionID.MatchString(item.ID) || !notionPageURL(item.URL, item.ID) || seen[item.ID] {
 			continue
 		}
@@ -255,7 +258,7 @@ func (p provider) readNotion(ctx context.Context, s *Store, raw []byte) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	m, err := p.notionClient(ctx, s, client, c, epoch)
+	m, token, err := p.notionClient(ctx, s, client, c, epoch)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +273,7 @@ func (p provider) readNotion(ctx context.Context, s *Store, raw []byte) ([]byte,
 	}
 	title := "Notion page"
 	pageURL := "https://www.notion.so/" + strings.ReplaceAll(q.ResourceID, "-", "")
-	// Prefer the provider's readable page text, preserving any truncation notice.
+	// Preserve the readable text exactly; incomplete upstream snapshots are refused.
 	var page struct {
 		Title     string `json:"title"`
 		URL       string `json:"url"`
@@ -282,7 +285,7 @@ func (p provider) readNotion(ctx context.Context, s *Store, raw []byte) ([]byte,
 			text = page.Text
 		}
 		if page.Truncated {
-			text = "[Notion returned partial content; some source content is missing.]\n\n" + text
+			return nil, Error("source-incomplete")
 		}
 		if page.Title != "" {
 			title = page.Title
@@ -290,6 +293,9 @@ func (p provider) readNotion(ctx context.Context, s *Store, raw []byte) ([]byte,
 		if page.URL != "" && notionPageURL(page.URL, q.ResourceID) {
 			pageURL = page.URL
 		}
+	}
+	if strings.Contains(text+title+pageURL, token) {
+		return nil, ErrProvider
 	}
 	out, err := sourceDocument(ctx, "notion", q.ResourceID, title, pageURL, []byte(text), map[string]any{"tool": "notion-fetch", "arguments": map[string]string{"id": q.ResourceID}}, p.api)
 	if err != nil {
