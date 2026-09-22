@@ -80,6 +80,18 @@ func vaultReadBounded(root *os.Root, id string, limit int) ([]byte, int, error) 
 		return nil, 0, ErrUnsupported
 	}
 	defer f.Close()
+	return readVaultFile(f, limit)
+}
+
+// Keep the before/after check around the same open file, including when the
+// underlying read overlaps an edit. The small interface permits deterministic
+// tests of that overlap without timing-dependent filesystem races.
+type vaultFile interface {
+	io.Reader
+	Stat() (os.FileInfo, error)
+}
+
+func readVaultFile(f vaultFile, limit int) ([]byte, int, error) {
 	before, err := f.Stat()
 	if err != nil || !before.Mode().IsRegular() || before.Size() > int64(limit) {
 		return nil, 0, ErrLimit
@@ -98,7 +110,7 @@ func vaultReadBounded(root *os.Root, id string, limit int) ([]byte, int, error) 
 	return raw, len(raw), nil
 }
 func vaultURL(name, id string) string {
-	return "obsidian://open?" + url.Values{"vault": {name}, "file": {strings.TrimSuffix(id, path.Ext(id))}}.Encode()
+	return "obsidian://open?" + strings.ReplaceAll(url.Values{"vault": {name}, "file": {strings.TrimSuffix(id, path.Ext(id))}}.Encode(), "+", "%20")
 }
 func (b *Broker) vaultOperation(ctx context.Context, method string, raw []byte) (any, error) {
 	switch method {
@@ -260,6 +272,9 @@ func (b *Broker) vaultOperation(ctx context.Context, method string, raw []byte) 
 	}
 }
 func ReadObsidian(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
+	return readObsidian(ctx, s, raw, sourceDocument)
+}
+func readObsidian(ctx context.Context, s *Store, raw []byte, snapshot func(context.Context, string, string, string, string, []byte, any, string) ([]byte, error)) ([]byte, error) {
 	var q SourceSelection
 	if decode(raw, &q) != nil || !opaque.MatchString(q.Grant) || !validNote(q.ResourceID) {
 		return nil, ErrRequest
@@ -288,7 +303,7 @@ func ReadObsidian(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	out, err := sourceDocument(ctx, "obsidian", q.ResourceID, strings.TrimSuffix(path.Base(q.ResourceID), path.Ext(q.ResourceID)), vaultURL(c.Account.Name, q.ResourceID), data, map[string]any{"operation": "read-note", "vaultId": c.Account.ID, "resourceId": q.ResourceID}, "obsidian:"+c.Account.ID)
+	out, err := snapshot(ctx, "obsidian", q.ResourceID, strings.TrimSuffix(path.Base(q.ResourceID), path.Ext(q.ResourceID)), vaultURL(c.Account.Name, q.ResourceID), data, nil, "")
 	if err != nil {
 		return nil, err
 	}
