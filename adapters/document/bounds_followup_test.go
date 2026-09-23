@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"adapters/internal/pdfgen"
@@ -209,15 +210,31 @@ const boundsStalledClockEscape = requestArbitrationSpins + 64
 // the result over on a decision the instant does not call for: what the test
 // establishes is the arbitration's own, and a wrong decision is not to be
 // rescued by the result arriving anyway. An on-time request's result is
-// published from inside the receive the arbitration makes for it -- the receive
-// itself is the operation this test replaces, so a reader that did not block
-// there did not run it -- and a reader which decided to wait and then did not
-// wait finds the channel as empty as it was when it looked, however long
-// anything pauses; a refused one's result is published and waited for before
-// the arbitration returns, so that what refuses it is the instant it carries
-// and not an empty channel. Nothing here is timed: the seams are the whole of
-// the ordering.
+// published from inside the receive the arbitration makes for it, and the
+// receive the reader makes there is the adapter's own: the replacement records
+// that the reader came to it and then hands the same channel to receiveRead, so
+// what waits is the operation the adapter ships and not one the test wrote. A
+// refused request's result is published and waited for before the arbitration
+// returns, so that what refuses it is the instant it carries and not an empty
+// channel. Nothing here is timed: the seams are the whole of the ordering.
+//
+// The reading runs in a bubble, because one step of that ordering is not a
+// seam: the result is published once the reader is blocked in the receive it
+// committed to, and what says it is blocked there is synctest.Wait. A reader
+// that came to the receive and did not wait in it therefore finds the channel
+// as empty as it was when it looked, under every schedule and not merely under
+// the ones a pause is short enough for.
 func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration, want bool) ([]byte, error) {
+	t.Helper()
+	var got []byte
+	var err error
+	synctest.Test(t, func(t *testing.T) { got, err = boundsDriveHeldRead(t, past, want) })
+	return got, err
+}
+
+// boundsDriveHeldRead is boundsReadHeldPastTheCutoff's reading, inside the
+// bubble.
+func boundsDriveHeldRead(t *testing.T, past time.Duration, want bool) ([]byte, error) {
 	t.Helper()
 	boundsRestoreReadSeams(t)
 	// A deadline old enough that the floor is the cutoff, and a clock far
@@ -242,18 +259,27 @@ func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration, want bool) ([
 	readLocking = nil
 	// The receive the arbitration makes for an on-time result is this
 	// function, and not a seam beside it: it records that the reader came
-	// here, releases the result, and then makes the receive itself. An
-	// arbitration that never comes here never releases the result and never
-	// waits for one, so the channel it looks at afterwards is empty; one that
-	// kept a seam and dropped the wait has kept nothing, since there is no
-	// seam left to keep.
+	// here, and it then hands the channel to the receive the adapter ships,
+	// so that the wait the test establishes is that one. An arbitration that
+	// never comes here never publishes the result and never waits for one, so
+	// the channel it looks at afterwards is empty; one that kept a seam and
+	// dropped the wait has kept nothing, since there is no seam left to keep.
+	//
+	// The result is published only once the reader is blocked in that receive,
+	// and nothing else in the bubble is then waiting on what publishing it
+	// releases, so a receive that did not wait -- one made nonblocking, say --
+	// looks at an empty channel however the two goroutines are scheduled.
+	production := readReceive
 	received := make(chan struct{})
 	var receivedOnce sync.Once
 	decided := make(chan bool, 1)
 	readReceive = func(done <-chan read) read {
 		receivedOnce.Do(func() { close(received) })
-		free()
-		return <-done
+		go func() {
+			synctest.Wait()
+			free()
+		}()
+		return production(done)
 	}
 	readArbitrated = func(taken bool) {
 		decided <- taken
