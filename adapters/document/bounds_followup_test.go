@@ -219,11 +219,17 @@ const boundsStalledClockEscape = requestArbitrationSpins + 64
 // channel. Nothing here is timed: the seams are the whole of the ordering.
 //
 // The reading runs in a bubble, because one step of that ordering is not a
-// seam: the result is published once the reader is blocked in the receive it
-// committed to, and what says it is blocked there is synctest.Wait. A reader
-// that came to the receive and did not wait in it therefore finds the channel
-// as empty as it was when it looked, under every schedule and not merely under
-// the ones a pause is short enough for.
+// seam: the result is held back for an hour of the bubble's clock after the
+// reader has come to the receive and everything in the bubble has blocked, and
+// is published only then. The bubble's clock moves only when every goroutine in
+// it is durably blocked, so a pause inside the receive expires before the hour
+// does, and so does any other wait shorter than it. What this establishes is
+// therefore that a receive which returns while the result is unpublished, after
+// waiting anything less than that hour, is caught: it finds the channel empty
+// under every schedule. It does not establish that the reader is blocked on the
+// channel itself -- synctest.Wait reports a sleep as durable blocking just as
+// it reports a receive -- and a receive that paused for longer than the hour
+// and then looked once would find the result there.
 func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration, want bool) ([]byte, error) {
 	t.Helper()
 	var got []byte
@@ -265,11 +271,19 @@ func boundsDriveHeldRead(t *testing.T, past time.Duration, want bool) ([]byte, e
 	// the channel it looks at afterwards is empty; one that kept a seam and
 	// dropped the wait has kept nothing, since there is no seam left to keep.
 	//
-	// The result is published only once the reader is blocked in that receive,
-	// and nothing else in the bubble is then waiting on what publishing it
-	// releases, so a receive that did not wait -- one made nonblocking, say --
-	// looks at an empty channel however the two goroutines are scheduled.
+	// The result is published an hour of the bubble's clock after everything
+	// in the bubble has blocked with the reader in that receive. A receive that
+	// did not wait -- one made nonblocking, or one that pauses and then looks
+	// once -- returns before the hour has passed, since its pause is on the same
+	// clock and shorter, and looks at an empty channel however the goroutines
+	// are scheduled; one that waits on the channel is still waiting when the
+	// hour ends and the result arrives. The arbitration has decided by then and
+	// its timer has fired, so nothing else in the reading is on that clock. A
+	// reader that returns before the hour ends the hold as well, so that what
+	// reports it is the assertions below and not the bubble finding a waiter
+	// left asleep behind the test.
 	production := readReceive
+	returned := make(chan struct{})
 	received := make(chan struct{})
 	var receivedOnce sync.Once
 	decided := make(chan bool, 1)
@@ -277,6 +291,10 @@ func boundsDriveHeldRead(t *testing.T, past time.Duration, want bool) ([]byte, e
 		receivedOnce.Do(func() { close(received) })
 		go func() {
 			synctest.Wait()
+			select {
+			case <-time.After(time.Hour):
+			case <-returned:
+			}
 			free()
 		}()
 		return production(done)
@@ -306,6 +324,7 @@ func boundsDriveHeldRead(t *testing.T, past time.Duration, want bool) ([]byte, e
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	got, err := readWithin(ctx, r, 1<<20)
+	close(returned)
 	// Whatever the arbitration did, the read is let go and waited for before
 	// the seams it reads are put back.
 	free()
