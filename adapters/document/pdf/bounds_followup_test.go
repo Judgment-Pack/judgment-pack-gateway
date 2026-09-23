@@ -267,10 +267,17 @@ func TestBoundsAnArrayIsChargedTheRoomItGrowsTo(t *testing.T) {
 		// operator, so a reference is read the way a document's own objects
 		// are read.
 		content bool
+		// is says whether one element is what the row names. A row is only a
+		// measurement of its length and its kind if every copy parsed to
+		// exactly that: a source read in the wrong mode ends the array early
+		// -- in content mode a reference's "R" is an operator, and the array
+		// stops after two integers -- and a row that measured whatever came
+		// out would pass on a two-slot array whatever its label said.
+		is func(object) bool
 	}{
-		{"integers", "1000000000000 ", true},
-		{"arrays of no elements", "[] ", true},
-		{"references", "1 0 R ", false},
+		{"integers", "1000000000000 ", true, func(o object) bool { return o == object(int64(1000000000000)) }},
+		{"arrays of no elements", "[] ", true, func(o object) bool { a, ok := o.(Array); return ok && len(a) == 0 }},
+		{"references", "1 0 R ", false, func(o object) bool { return o == object(ref{1, 0}) }},
 	} {
 		for _, n := range []int{32, 33, 71, 72, 143, 144, 303, 304, 591, 592, 1023, 1024, 1535, 1536, 2560, 2561} {
 			t.Run(fmt.Sprintf("%s/%d", strings.ReplaceAll(element.name, " ", "_"), n), func(t *testing.T) {
@@ -293,6 +300,17 @@ func TestBoundsAnArrayIsChargedTheRoomItGrowsTo(t *testing.T) {
 						held = append(held, v)
 					}
 					spent = d.parsedBytes - before
+					for i, v := range held {
+						a, ok := v.(Array)
+						if !ok || len(a) != n {
+							t.Fatalf("copy %d of %d parsed to %T of %d elements, not an array of %d %s", i+1, count, v, len(a), n, element.name)
+						}
+						for k, e := range a {
+							if !element.is(e) {
+								t.Fatalf("copy %d of %d: element %d is %#v, not one of the %s the row measures", i+1, count, k, e, element.name)
+							}
+						}
+					}
 					for _, v := range held {
 						modeled += parsedBytesOf(v)
 					}
@@ -365,6 +383,44 @@ func spelledOut(n int) string {
 		parts = append(parts, below100(n))
 	}
 	return strings.Join(parts, " ")
+}
+
+// The README's sentence about a pair of coordinates states what the reader
+// charges for "[0 0]", and that is held here to what parsedBytesOf gives for
+// the pair the parser builds, rounded to the ten the prose rounds it to. The
+// sentence also states what Go holds for the pair, and that half is measured
+// and logged but not asserted: the retained-heap delta of four thousand
+// parsed pairs reads fifty-four, fifty-five or fifty-six bytes each depending
+// on what the heap held before, which is too close a figure to fail a build
+// on. What bounds the reader is the charge, and the charge is exact.
+func TestBoundsREADMEStatesWhatACoordinatePairCosts(t *testing.T) {
+	if boundsInstrumented {
+		t.Skip("the race detector's own allocations are not the reader's, and what it retains is not what this measures")
+	}
+	const count = 4000
+	source := []byte("[0 0]")
+	parse := func() object {
+		p := &parser{lex: newLexer(source, 0), contentMode: true}
+		v, err := p.parseObject(0)
+		if err != nil {
+			t.Fatalf("[0 0]: %v", err)
+		}
+		return v
+	}
+	charged := parsedBytesOf(parse())
+	held := make(Array, count)
+	for i := range held {
+		held[i] = parse()
+	}
+	with := boundsLiveHeap()
+	for i := range held {
+		held[i] = nil
+	}
+	retained := int64(with-boundsLiveHeap()) / count
+	runtime.KeepAlive(held)
+	t.Logf("[0 0]: %d charged, %d retained, each", charged, retained)
+	about := strings.Replace(spelledOut(int((charged+5)/10*10)), "one hundred", "a hundred", 1)
+	boundsREADMESays(t, fmt.Sprintf("`[0 0]`, is five bytes and charged about %s,", about))
 }
 
 // boundsDense is a one-page document whose page names a resource holding
