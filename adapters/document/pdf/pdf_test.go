@@ -57,7 +57,13 @@ func hexOf(s string) string {
 
 func extract(t *testing.T, data []byte) *Result {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// The deadline the tests that call this share, scaled like the allowances
+	// some of them hold their readings to. An allowance says how long a
+	// reading may take; a deadline below it answers instead with a reading
+	// that timed out and carries no page, and what fails is the page rather
+	// than the clock. The allowance is what bounds the reading here, so the
+	// deadline stays above it.
+	ctx, cancel := context.WithTimeout(context.Background(), raceFactor*10*time.Second)
 	defer cancel()
 	return Extract(ctx, data, testOptions())
 }
@@ -203,7 +209,7 @@ func TestInflateBombIsStopped(t *testing.T) {
 	if len(data) > 1<<20 {
 		t.Fatalf("the bomb did not compress: %d bytes", len(data))
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), raceFactor*10*time.Second)
 	defer cancel()
 	opt := testOptions()
 	opt.MaxInflateOne = 1 << 20

@@ -654,7 +654,7 @@ func readsTwoSectionDoc(chainLen int) []byte {
 func TestReadsBoundFromADiscardedCrossReferenceDoesNotEndTheWalk(t *testing.T) {
 	for _, chainLen := range []int{5, maxRefDepth + 2} {
 		data := readsTwoSectionDoc(chainLen)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), raceFactor*20*time.Second)
 		r := Extract(ctx, data, testOptions())
 		cancel()
 		got := ""
@@ -5287,8 +5287,8 @@ func TestReadsABoundMetWhileAPageIsReadRefusesTheDocument(t *testing.T) {
 						d.generation, d.reconstructed)
 				}
 				// The files of megabytes are scanned in seconds on a bare build,
-				// and in ten times that under the race detector, past the ten
-				// seconds the shared helper allows: the reading is given the time
+				// and in ten times that under the race detector, past what the
+				// shared helper allows even scaled: the reading is given the time
 				// it needs, since what is asserted is the bound and not the clock.
 				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				r := Extract(ctx, data, testOptions())
