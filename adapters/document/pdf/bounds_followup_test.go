@@ -233,17 +233,44 @@ func TestBoundsChargeCoversWhatIsRetained(t *testing.T) {
 // side of each growth, where the room the array has just taken is furthest
 // from the elements in it, and both reckonings are measured at each: what a
 // parse spends as it builds the array, and what parsedBytesOf makes of the
-// array it built, which must agree and must cover what Go retains. The
-// elements are integers, whose own charge leaves room over what they hold, and
-// then arrays of no elements, which are charged what they hold and no more, so
-// that what covers the second row is the room the slots take and nothing else.
+// array it built, which must agree and must cover what Go retains.
+//
+// The three kinds of element are the ones whose elements leave the array's own
+// charge to do the covering, by decreasing margin. An integer is charged
+// sixteen bytes and holds eight, so those rows have room to spare; an array of
+// no elements is charged sixty-four and holds twenty-four, since the charge on
+// an array covers the allocator's rounding on a backing array it may not have;
+// and a reference is charged sixteen and holds sixteen, so a reference row is
+// covered by the array's own charge and by nothing else -- some two or three
+// dozen bytes for the whole array, whatever its length.
+//
+// What a parse spends is the same as what the built array reckons for these
+// three kinds and for arrays of them, and that is claimed of them and not
+// generally. It holds because none of their tokens carries a buffer: the array
+// loop reads the token after each element to see whether the array has closed
+// and steps back over it, so every element's first token is read twice, and a
+// token with a buffer -- a string or a name -- has that buffer reserved on
+// both readings. Thirty-three one-byte strings are charged eight bytes twice
+// each for it, so the parse spends 2,784 where the array it built reckons
+// 2,256. That way round is the safe one, and it is the one that counts: the
+// parse is what spends the balance, and a page gives back what its operands
+// spent rather than what a value reckons, so its count of what it holds is
+// right either way.
 func TestBoundsAnArrayIsChargedTheRoomItGrowsTo(t *testing.T) {
 	if boundsInstrumented {
 		t.Skip("the race detector's own allocations are not the reader's, and what it retains is not what this measures")
 	}
-	for _, element := range []struct{ name, source string }{
-		{"integers", "1000000000000 "},
-		{"arrays of no elements", "[] "},
+	for _, element := range []struct {
+		name, source string
+		// content is set where the elements are read as a content stream's
+		// operands are. A reference is not one: in content mode "R" is an
+		// operator, so a reference is read the way a document's own objects
+		// are read.
+		content bool
+	}{
+		{"integers", "1000000000000 ", true},
+		{"arrays of no elements", "[] ", true},
+		{"references", "1 0 R ", false},
 	} {
 		for _, n := range []int{32, 33, 71, 72, 143, 144, 303, 304, 591, 592, 1023, 1024, 1535, 1536, 2560, 2561} {
 			t.Run(fmt.Sprintf("%s/%d", strings.ReplaceAll(element.name, " ", "_"), n), func(t *testing.T) {
@@ -258,7 +285,7 @@ func TestBoundsAnArrayIsChargedTheRoomItGrowsTo(t *testing.T) {
 					before := d.parsedBytes
 					var held Array
 					for i := 0; i < count; i++ {
-						p := &parser{lex: newLexer(source, 0).reserving(d.budgeted()), allow: d.budgeted(), contentMode: true}
+						p := &parser{lex: newLexer(source, 0).reserving(d.budgeted()), allow: d.budgeted(), contentMode: element.content}
 						v, err := p.parseObject(0)
 						if err != nil {
 							t.Fatalf("copy %d of %d: %v", i+1, count, err)
@@ -283,6 +310,61 @@ func TestBoundsAnArrayIsChargedTheRoomItGrowsTo(t *testing.T) {
 			})
 		}
 	}
+}
+
+// boundsREADMESays requires that adapters/README.md's prose holds the
+// sentence given, whatever line ends its wrapping put in the middle of it: the
+// tables are checked cell by cell elsewhere, and this is what holds a figure
+// written into a paragraph to the measurement it came from.
+func boundsREADMESays(t *testing.T, want string) {
+	t.Helper()
+	raw, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(strings.Fields(string(raw)), " "), want) {
+		t.Errorf("adapters/README.md does not say %q; the figures it states for these documents are the ones measured here", want)
+	}
+}
+
+// roundedMB writes bytes as adapters/README.md's prose does, in millions of
+// bytes rounded to the nearest.
+func roundedMB(n int64) int64 { return (n + 500_000) / 1_000_000 }
+
+// spelledOut writes n, below ten thousand, the way adapters/README.md's prose
+// writes a count: "three thousand seven hundred and ninety".
+func spelledOut(n int) string {
+	small := []string{"zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+		"eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"}
+	tens := []string{"", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"}
+	below100 := func(n int) string {
+		if n < 20 {
+			return small[n]
+		}
+		if n%10 == 0 {
+			return tens[n/10]
+		}
+		return tens[n/10] + "-" + small[n%10]
+	}
+	if n <= 0 || n >= 10000 {
+		return fmt.Sprint(n)
+	}
+	var parts []string
+	if n >= 1000 {
+		parts = append(parts, below100(n/1000)+" thousand")
+		n %= 1000
+	}
+	if n >= 100 {
+		parts = append(parts, small[n/100]+" hundred")
+		n %= 100
+	}
+	if n > 0 {
+		if len(parts) > 0 {
+			parts = append(parts, "and")
+		}
+		parts = append(parts, below100(n))
+	}
+	return strings.Join(parts, " ")
 }
 
 // boundsDense is a one-page document whose page names a resource holding
@@ -502,12 +584,13 @@ func TestBoundsOperandsAreBoundedWhileTheyAreBuilt(t *testing.T) {
 // backing array the interpreter reuses.
 func TestBoundsConsumedOperandsAreReleased(t *testing.T) {
 	// Sixty arrays of short strings, consumed by an operator, then one array
-	// of as many: each pile is within the page's operand allowance on its own,
-	// so the page reads, and the two are the same size, so a reader that keeps
-	// the first while it builds the second holds twice what it charges. The
-	// page's text is shown before either pile, so what the page reads does not
-	// depend on them.
-	const perPile, arrays = 800_000, 60
+	// of as many: each pile is within the page's operand allowance on its own
+	// -- the growth that builds it included, which holds the array it is
+	// copying from beside the one it is copying into -- so the page reads, and
+	// the two are the same size, so a reader that keeps the first while it
+	// builds the second holds twice what it charges. The page's text is shown
+	// before either pile, so what the page reads does not depend on them.
+	const perPile, arrays = 700_000, 60
 	var content strings.Builder
 	content.WriteString(pdfgen.Text("F1", 12, []string{"released"}))
 	for i := 0; i < arrays; i++ {
@@ -527,11 +610,11 @@ func TestBoundsConsumedOperandsAreReleased(t *testing.T) {
 	if r.Fatal != nil || len(r.Pages) != 1 || len(r.Problems) != 0 || r.Pages[0].Status != PageOK || r.Pages[0].Text != "released" {
 		t.Fatalf("fatal %+v pages %+v problems %+v", r.Fatal, r.Pages, r.Problems)
 	}
-	// One pile of this size is held at about 63 MiB and the two together at
-	// about 106 MiB: the threshold lies between them, so a reader that left
+	// One pile of this size is held at about 56 MiB and the two together at
+	// about 97 MiB: the threshold lies between them, so a reader that left
 	// the consumed slots pointing at the first pile fails here.
 	if peak > 84<<20 {
-		t.Errorf("the page held %d MiB at once; one pile of that size is about 63 MiB, and the pile an operator consumed is not held beside the second", peak>>20)
+		t.Errorf("the page held %d MiB at once; one pile of that size is about 56 MiB, and the pile an operator consumed is not held beside the second", peak>>20)
 	}
 }
 
@@ -1605,6 +1688,105 @@ func TestBoundsOneBalanceIsAuthoritative(t *testing.T) {
 	}
 }
 
+// A refusal is final. Once a charge has been refused, the balance it was
+// refused by is closed: nothing charged after it is admitted, and nothing
+// given back after it reopens it -- not a refund from the allowance that met
+// the refusal, and not one from another allowance that was reading beside it
+// and had every right to its own refund. A reader that gave room back after
+// saying it had none would go on reading the file it has just refused.
+func TestBoundsARefusalIsFinal(t *testing.T) {
+	t.Run("a document's balance", func(t *testing.T) {
+		d := &Document{data: make([]byte, 10), budget: &inflateBudget{}}
+		limit := d.parsedBudget()
+		first, second := d.budgeted(), d.budgeted()
+		if !first.take(100) {
+			t.Fatal("the first take of 100 did not fit")
+		}
+		if second.take(limit) {
+			t.Fatal("a take of the whole budget fitted beside the first")
+		}
+		if d.parsedBytes != limit {
+			t.Errorf("a refused charge left %d of %d spent; a refusal spends the balance", d.parsedBytes, limit)
+		}
+		first.give(100)
+		if d.parsedBytes != limit {
+			t.Errorf("a refund after the refusal left %d of %d spent; what was refused stays refused", d.parsedBytes, limit)
+		}
+		if third := d.budgeted(); third.take(16) {
+			t.Errorf("16 bytes were charged after the balance was refused, leaving %d of %d", d.parsedBytes, limit)
+		}
+		if d.chargeParsed(16) {
+			t.Errorf("the document charged 16 bytes after refusing, leaving %d of %d", d.parsedBytes, limit)
+		}
+	})
+	t.Run("an allowance of its own", func(t *testing.T) {
+		a := &allowance{left: 100}
+		if !a.take(60) {
+			t.Fatal("the take of 60 did not fit in 100")
+		}
+		if a.take(1000) {
+			t.Fatal("a take of 1,000 fitted in what was left of 100")
+		}
+		a.give(60)
+		if a.left != 0 {
+			t.Errorf("a refund after the refusal left %d to spend; what was refused stays refused", a.left)
+		}
+		if a.take(1) {
+			t.Errorf("one byte was taken after the refusal, leaving %d", a.left)
+		}
+	})
+}
+
+// A refund gives back what was taken and never more. An allowance that gives
+// back more than it spent would hand the reader room no one charged for, and
+// on a document, where every parse spends the one balance, it would hand back
+// room another parse is still holding.
+func TestBoundsARefundIsBoundedByWhatWasTaken(t *testing.T) {
+	t.Run("more than was taken", func(t *testing.T) {
+		a := &allowance{left: 100}
+		if !a.take(60) {
+			t.Fatal("the take of 60 did not fit in 100")
+		}
+		a.give(1000)
+		if a.left != 100 || a.taken != 0 {
+			t.Errorf("a refund of 1,000 against 60 spent left %d to spend and %d taken; a refund is bounded by what was taken", a.left, a.taken)
+		}
+	})
+	t.Run("twice over", func(t *testing.T) {
+		a := &allowance{left: 100}
+		if !a.take(60) {
+			t.Fatal("the take of 60 did not fit in 100")
+		}
+		a.give(60)
+		a.give(60)
+		if a.left != 100 || a.taken != 0 {
+			t.Errorf("the same 60 given back twice left %d to spend and %d taken", a.left, a.taken)
+		}
+	})
+	t.Run("nothing at all", func(t *testing.T) {
+		a := &allowance{left: 100}
+		if !a.take(60) {
+			t.Fatal("the take of 60 did not fit in 100")
+		}
+		a.give(0)
+		a.give(-1000)
+		if a.left != 40 || a.taken != 60 {
+			t.Errorf("a refund of nothing left %d to spend and %d taken; it must change neither", a.left, a.taken)
+		}
+	})
+	t.Run("on a balance two allowances share", func(t *testing.T) {
+		d := &Document{data: make([]byte, 1<<20), budget: &inflateBudget{}}
+		first, second := d.budgeted(), d.budgeted()
+		if !first.take(100) || !second.take(200) {
+			t.Fatal("300 bytes did not fit in a megabyte's worth of allowance")
+		}
+		second.give(1000)
+		if d.parsedBytes != 100 {
+			t.Errorf("one allowance's refund of 1,000 against 200 spent left the document charged %d; the other allowance's 100 is still held", d.parsedBytes)
+		}
+	})
+}
+
 // What a document may hold is the smaller of the ratio and the ceiling: the
 // ratio binds a small file, and the ceiling every file past a few megabytes.
 func TestBoundsCeilingBindsPastTheRatio(t *testing.T) {
@@ -1828,6 +2010,13 @@ func TestBoundsPagesPastTheBalanceAreFailedRatherThanEmpty(t *testing.T) {
 // that skips the long tests skips it; what it establishes about the shape of
 // the outcome -- pages read, then pages failed -- is held by the small test
 // above on every run.
+//
+// It is also what holds adapters/README.md's prose to the reader: the figures
+// the README states for these documents are the ones measured here, checked
+// against what each case charged. The tables are checked against the constants
+// elsewhere, cell by cell, but a figure written into a sentence is held by
+// nothing unless it is held here, and a charge that drifts from the prose is a
+// README that describes a reader the caller does not have.
 func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
 	if testing.Short() {
 		t.Skip("walks and extracts five hundred-page documents of up to sixteen megabytes")
@@ -1857,6 +2046,9 @@ func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
 			if pages != 500 || distinct != 500 || whole != 500 || bound != nil {
 				t.Errorf("%d pages, %d distinct resources, %d whole, bound %v", pages, distinct, whole, bound)
 			}
+			if !inStream {
+				boundsREADMESays(t, fmt.Sprintf("five hundred pages of %s each, an eight-megabyte file, are charged about %s MB", spelledOut(2000), grouped(int(roundedMB(charged)))))
+			}
 		})
 	}
 	// Five hundred pages of three thousand six hundred one-member dictionaries
@@ -1874,6 +2066,7 @@ func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
 		if pages != 500 || whole != 500 || bound != nil {
 			t.Errorf("%d a page: %d pages, %d whole, bound %v", per, pages, whole, bound)
 		}
+		boundsREADMESays(t, fmt.Sprintf("five hundred pages of %s each, fourteen megabytes, about %s MB", spelledOut(per), grouped(int(roundedMB(charged)))))
 	}
 	// The densest the ceiling admits at all: at three thousand seven hundred
 	// and ninety a page -- one million eight hundred and ninety-five thousand
@@ -1955,6 +2148,7 @@ func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
 		if rn.Fatal == nil || rn.Fatal.Code != "pdf-malformed" || len(rn.Pages) != 0 {
 			t.Errorf("%d a page: fatal %+v, %d pages listed", per+1, rn.Fatal, len(rn.Pages))
 		}
+		boundsREADMESays(t, fmt.Sprintf("five hundred pages of about %s each, fifteen megabytes, about %s MB, which is the densest the ceiling admits at all", spelledOut(per), grouped(int(roundedMB(charged)))))
 	}
 	// A little more of it is past the ceiling, on any build: what the reader
 	// cannot hold it does not hold, and the record says so rather than listing

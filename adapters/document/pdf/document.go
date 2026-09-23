@@ -43,11 +43,12 @@ const (
 	// have inflated. What a file costs to hold is not its length: the smallest
 	// dictionary a file can spell, "<</A 1>>", is eight bytes of file and a Go
 	// map of about 370 bytes held, and a pair of coordinates, "[0 0]", is five
-	// bytes and about a hundred and thirty. This many bytes for each byte read
-	// admits the densest of those shapes several times over while it bounds a
-	// file whose objects hold the same bytes over and over: "k 0 obj (" with no
-	// closing parenthesis gives every object a copy of the rest of the file,
-	// and what the reader holds then grows with the square of the file.
+	// bytes and charged about a hundred and thirty for the fifty-six it holds.
+	// This many bytes for each byte read admits the densest of those shapes
+	// several times over while it bounds a file whose objects hold the same
+	// bytes over and over: "k 0 obj (" with no closing parenthesis gives every
+	// object a copy of the rest of the file, and what the reader holds then
+	// grows with the square of the file.
 	parsedBytesPerFileByte = 160
 	// maxParsedBytesHeld is what a document's parsed objects may hold whatever
 	// its length: the multiple above bounds a small file, and this bounds
@@ -165,6 +166,9 @@ type Document struct {
 	// header declared.
 	objStmHeaders map[int]*objStmParsed
 	parsed        int
+	// parsedRefused is set once a charge has been refused, and closes the
+	// balance for good: see chargeParsed.
+	parsedRefused bool
 	// parsedBytes is what everything the document holds costs to hold: its
 	// objects, its trailer, the headers of its object streams, and the work
 	// the rebuild does on its way to them. It is released only where the
@@ -1417,10 +1421,16 @@ func (d *Document) parsedSpent() bool { return d.parsedBytes >= d.parsedBudget()
 // budget spent, as a stream stopped at the inflation budget's total leaves
 // that spent: everything read after it finds nothing left, so that a file
 // whose objects each hold the rest of it is parsed a few times over and not
-// once per object.
+// once per object. Spent is a state the document does not come back from:
+// once a charge has been refused the balance is closed, and neither a budget
+// that grew with a later inflation nor a refund from a parse that was reading
+// beside the one refused opens it again. The reader has said it could not
+// hold what the file asked for, and what it reads after that is read on the
+// strength of that answer.
 func (d *Document) chargeParsed(n int64) bool {
 	limit := d.parsedBudget()
-	if n < 0 || n > limit-d.parsedBytes {
+	if d.parsedRefused || n < 0 || n > limit-d.parsedBytes {
+		d.parsedRefused = true
 		d.parsedBytes = limit
 		return false
 	}
@@ -1429,14 +1439,15 @@ func (d *Document) chargeParsed(n int64) bool {
 }
 
 // releaseParsed gives back n of what the document was charged, where the
-// charge was taken for room the reader turns out not to hold: an array's
-// growth is charged at an estimate before the allocation that takes it, and
-// what the allocator left short of that estimate is no longer held. The
-// balance never goes below nothing, and a charge the budget refused is not
-// given back by it, since a refused charge leaves the balance spent and the
-// parse that met it ends there.
+// charge was taken for room the reader no longer holds: an array's growth is
+// charged for the backing array it is copying from as well as the one it is
+// copying into, and the one it copied from is let go the moment it is. The
+// balance never goes below nothing, and a document whose balance has been
+// refused gives nothing back: the refusal is what every later reading of the
+// file is answered with, and a refund after it would hand back room the
+// reader has already said it does not have.
 func (d *Document) releaseParsed(n int64) {
-	if n <= 0 {
+	if n <= 0 || d.parsedRefused {
 		return
 	}
 	if n > d.parsedBytes {
@@ -1467,6 +1478,12 @@ type allowance struct {
 	// back more than it spent cannot leave the balance better off than it
 	// found it.
 	taken int64
+	// spent is set once a charge on this allowance has been refused. It is a
+	// state the allowance does not come back from, as the document's balance
+	// does not: every charge after it is refused and every refund after it is
+	// dropped, so that the value being built is abandoned where it stands and
+	// nothing it gives back can be spent on reading further.
+	spent bool
 }
 
 // exhausted is the error a parse ends with when this allowance runs out.
@@ -1487,16 +1504,20 @@ func (a *allowance) take(n int64) bool {
 	switch {
 	case a == nil:
 		return true
+	case a.spent:
+		return false
 	case a.doc != nil:
 		// The document's own balance, read and spent in one step, so that
 		// what this parse takes is not offered to another.
 		if !a.doc.chargeParsed(n) {
+			a.spent = true
 			return false
 		}
 		a.taken += n
 		return true
 	case n < 0 || n > a.left:
 		a.left = 0
+		a.spent = true
 		return false
 	default:
 		a.left -= n
@@ -1505,17 +1526,19 @@ func (a *allowance) take(n int64) bool {
 	}
 }
 
-// give returns n of what this allowance took, where the reader turns out to
-// hold less than the charge taken for it: an array's growth is held at an
-// estimate before the allocation that takes it, and the room the allocator
-// left short of that estimate goes back the moment the growth is known. It is
+// give returns n of what this allowance took, where the reader no longer
+// holds what the charge was taken for: an array's growth reserves room for
+// the backing array it is copying from as well as the one it is copying into,
+// and what was reserved for the old one goes back once the copy is made. It is
 // the refund a page's operands already get when an operator consumes them,
 // taken here against the one balance a parse spends rather than against a
 // count the caller keeps. Nothing goes back that was not taken, and for an
 // allowance on a document it goes back to the balance every parse of that
-// document spends, so that what one parse gives back another may take.
+// document spends, so that what one parse gives back another may take. An
+// allowance that has met a refusal gives nothing back, and neither does a
+// document that has: what was refused stays refused.
 func (a *allowance) give(n int64) {
-	if a == nil || n <= 0 {
+	if a == nil || a.spent || n <= 0 {
 		return
 	}
 	if n > a.taken {

@@ -850,15 +850,19 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   mappings together, and a `/W` range is held as a width for each CID it spans rather than as its
   endpoints, so a file of a few kilobytes whose fonts share `/W` ranges that long leaves it
   holding about 200 MB — the figure a `/W` of that many entries extrapolates to is about 151 MB,
-  and 200 MB is the round number an operator sizes with; the cross-reference above is the most
-  any of these entry bounds costs. What the same
+  and 200 MB is the round number an operator sizes with. What the same
   4,194,304 font entries cost as CMap mappings the shape of the mappings decides, and each shape
   is charged what it costs so that no shape costs much more than another: a code mapped to one
   character on its own is held at about 96 bytes and charged one entry, about 400 MB at the
   bound, and one mapped to seven characters at about 112 bytes, about 470 MB; a `bfrange` or
   `cidrange` with a short destination is held at about 70 bytes and charged four, about 70 MB;
   and a mapping of either kind whose destination is 256 characters is held at about 1.1 KB and
-  charged a further entry for each eight of them, about 130 MB. A document whose fonts spend the
+  charged a further entry for each eight of them, about 130 MB. Each of those is one measured
+  population carried out to the bound, and none of them is a ceiling over the others: what a
+  mapping costs for each depends on how full the Go map holding it is, so the same codes mapped
+  to seven characters come to about 400 MB measured a hundred thousand mappings to a map and
+  about 540 MB measured thirty-two thousand to a map. They are the order of the memory an
+  operator should size for and not the most a bound can cost. A document whose fonts spend the
   bound keeps no mappings past it: the CMap that would cross it is not used at all, the codes it
   would have mapped are left to whatever mapping the font has without it — a simple font still
   maps through its encoding, and a font with none leaves its glyphs unmapped and counted in
@@ -920,9 +924,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   comment that runs to its end is read once for every object it declares, holds almost nothing,
   and is bounded by the second of those. The ratio is what dense ordinary
   structure needs — the smallest dictionary a file can spell, `<</A 1>>`, is eight bytes of file
-  and a Go map of about 370 bytes held, and a pair of coordinates, `[0 0]`, about a hundred and
-  thirty — and it is what bounds a file whose objects hold, or read, the same bytes over and
-  over, where what the reader spends would otherwise grow with the square of the file: a file of
+  and a Go map of about 370 bytes held, and a pair of coordinates, `[0 0]`, is five bytes and
+  charged about a hundred and thirty, for the fifty-six it holds — and it is what bounds a file
+  whose objects hold, or read, the same bytes over and over, where what the reader spends would
+  otherwise grow with the square of the file: a file of
   64 KiB whose every object is an unterminated string running to its end holds about 10 MB of
   them, and one whose every object ends in a comment with no line end reads about 10 MB of it.
   The charge is taken as each value is built, so a value past the bound is never held whole, and
