@@ -294,24 +294,32 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 		at time.Time
 	}
 	done := make(chan read, 1)
-	// ended is the instant the read ended, and stamped that it ended at all,
+	// ended is the instant the read ended, and hasStamp that it ended at all,
 	// both written under mu by the read and read under mu by the arbitration
 	// below.
 	var mu sync.Mutex
 	var ended time.Time
-	stamped := false
+	hasStamp := false
+	// The seams a read is handed are taken here, once, and the goroutine
+	// below uses only what it was handed: a read goes on past the hand-over
+	// of its bytes, and one the wait gave up on goes on without an end, so a
+	// seam it read after that is no longer necessarily the one the read began
+	// with. In the adapter they are time.Now and nil throughout; in a test
+	// they are the test's own until it returns, and the next test's after
+	// that.
+	stamp, stamping, stamped := readStamp, readStamping, readStamped
 	go func() {
 		data, err := io.ReadAll(io.LimitReader(r, n))
 		mu.Lock()
-		at := readStamp()
-		ended, stamped = at, true
+		at := stamp()
+		ended, hasStamp = at, true
 		mu.Unlock()
-		if readStamping != nil {
-			readStamping(at)
+		if stamping != nil {
+			stamping(at)
 		}
 		done <- read{data: data, err: err, at: at}
-		if readStamped != nil {
-			readStamped(at)
+		if stamped != nil {
+			stamped(at)
 		}
 	}()
 	deadline, hasDeadline := ctx.Deadline()
@@ -378,8 +386,8 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 			readLocking()
 		}
 		mu.Lock()
-		at, hasEnded = ended, stamped
-		pastCutoff := !hasEnded && readStamp().After(cutoff)
+		at, hasEnded = ended, hasStamp
+		pastCutoff := !hasEnded && stamp().After(cutoff)
 		exhausted = !hasEnded && !pastCutoff && look >= requestArbitrationSpins
 		settled := hasEnded || pastCutoff || exhausted
 		mu.Unlock()
