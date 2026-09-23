@@ -718,6 +718,16 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 			} else {
 				c.cidRanges = append(c.cidRanges, cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(d)})
 			}
+		case float64:
+			// A destination is written as an integer (9.7.6.2, 9.10.3), and a
+			// number this reader holds as a real is no destination it holds: a
+			// number written with a fractional part is one, and so is an
+			// integer past what an int64 holds, which is read as a real of its
+			// magnitude. The range is not held, so its codes are U+FFFD and
+			// counted, as a range whose destinations are no characters is, and
+			// what reading it cost is charged as a range's is: the reader did
+			// the reading whether the number it read is a destination or not.
+			c.takeN(cmapRangeEntries)
 		case String:
 			if !unicode || len(d) > maxCMapDestinationBytes {
 				continue
@@ -829,6 +839,17 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 			} else {
 				c.cid[key] = uint32(d)
 			}
+		case float64:
+			// A destination is written as an integer (9.7.6.2, 9.10.3), and a
+			// number this reader holds as a real is no destination it holds: a
+			// number written with a fractional part is one, and so is an
+			// integer past what an int64 holds, which is read as a real of its
+			// magnitude. The code is left unmapped, so the glyph is U+FFFD and
+			// counted, as a number outside the interval the reader holds
+			// destinations in leaves it. The entry is charged all the same:
+			// the reader did the reading whether the number it read is a
+			// destination or not.
+			c.take()
 		case String:
 			// A destination of no characters -- an empty string, an odd
 			// number of bytes, an unpaired surrogate -- is no text the code

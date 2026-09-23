@@ -3138,6 +3138,18 @@ func TestReadsAnUnusableCMapIsChargedForAllTheSame(t *testing.T) {
 		{"a range whose destination is past the last the reader holds", "1 beginbfrange\n<0041> <0041> 2147483649\nendbfrange", cmapRangeEntries},
 		{"a single CID mapping whose destination is below zero", "1 begincidchar\n<0041> -1\nendcidchar", 1},
 		{"a CID range whose destination is past the last the reader holds", "1 begincidrange\n<0041> <0041> 2147483649\nendcidrange", cmapRangeEntries},
+		// A destination written as a number is charged whatever the number is,
+		// and a real is a number: a destination written with a fraction, one
+		// written below zero, and an integer past what an int64 holds -- which
+		// the reader holds as a real of its magnitude -- are none of them
+		// destinations this reader holds, and it read each of them as it read
+		// one that is. The same arms serve the cid forms here too.
+		{"a single mapping whose destination is a real below zero", "1 beginbfchar\n<0041> -1.0\nendbfchar", 1},
+		{"a single mapping whose destination is written with a fraction", "1 beginbfchar\n<0041> 40.5\nendbfchar", 1},
+		{"a single mapping whose destination is past what an integer holds", "1 beginbfchar\n<0041> 9223372036854775808\nendbfchar", 1},
+		{"a range whose destination is a real below zero", "1 beginbfrange\n<0041> <0041> -1.0\nendbfrange", cmapRangeEntries},
+		{"a range whose destination is a real past the last the reader holds", "1 beginbfrange\n<0041> <0041> 2147483649.0\nendbfrange", cmapRangeEntries},
+		{"a single CID mapping whose destination is written with a fraction", "1 begincidchar\n<0041> 40.5\nendcidchar", 1},
 		// The ends of a range are codes of one length, and a pair whose ends
 		// differ gives no range at all: it establishes nothing, and the
 		// reader read it all the same, charged as a range is.
@@ -3176,7 +3188,23 @@ func TestReadsAnUnusableCMapIsChargedForAllTheSame(t *testing.T) {
 // the bound, the CMap is not used at all, and the budget is full. That is what
 // charging an unusable entry means, and a charge the reader skipped would
 // leave the map usable and the budget with room in it.
+//
+// What the budget has left is also what the room a CMap is read through is
+// drawn from, so a map read with the entries below left would be read through
+// the bytes of those entries alone -- which its sections would spend before
+// the usable mapping was read, and what put the map down would be the room and
+// not the budget. Each map here begins with mappings that spend the budget
+// down to the entries the unusable destination takes: the room those mappings
+// brought with them is the parse's, and the last of the budget is the unusable
+// destination's, which is what these cases are about.
 func TestReadsAnUnusableDestinationCanExhaustTheBudget(t *testing.T) {
+	const held = 8
+	var spent strings.Builder
+	fmt.Fprintf(&spent, "%d begincidchar\n", held)
+	for i := 1; i <= held; i++ {
+		fmt.Fprintf(&spent, "<%04X> %d\n", i, i)
+	}
+	spent.WriteString("endcidchar\n")
 	for _, c := range []struct {
 		name, section string
 		charge        int
@@ -3188,10 +3216,15 @@ func TestReadsAnUnusableDestinationCanExhaustTheBudget(t *testing.T) {
 		{"a destination past the last the reader holds", "1 beginbfchar\n<0041> 2147483649\nendbfchar", 1},
 		{"a range whose ends are of two lengths", "1 begincidrange\n<41> <0100> 5\nendcidrange", cmapRangeEntries},
 		{"a range whose destination is a surrogate half", "1 beginbfrange\n<0041> <0041> 55296\nendbfrange", cmapRangeEntries},
+		// A destination written as a real is charged as one written as an
+		// integer is, so it takes the last of the budget as one does, in the
+		// single form and in the range form.
+		{"a destination written as a real below zero", "1 beginbfchar\n<0041> -1.0\nendbfchar", 1},
+		{"a range whose destination is written with a fraction", "1 beginbfrange\n<0041> <0041> 40.5\nendbfrange", cmapRangeEntries},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			budget := &fontBudget{used: maxFontEntries - c.charge}
-			data := "begincmap\n" + c.section + "\n1 begincidchar\n<0042> 5\nendcidchar\nendcmap\n"
+			budget := &fontBudget{used: maxFontEntries - held - c.charge}
+			data := "begincmap\n" + spent.String() + c.section + "\n1 begincidchar\n<0042> 5\nendcidchar\nendcmap\n"
 			if m := parseCMap([]byte(data), budget, nil); m != nil {
 				t.Error("the CMap was used; the entry the reader cannot use took the last of the budget, and the mapping after it met the bound")
 			}
@@ -5671,16 +5704,17 @@ func TestReadsColourSpacesAreComparedAtEveryColourSpacePosition(t *testing.T) {
 // does, would read the bytes after it -- the image's data among them, where
 // the '>' that would end the string lies past the dictionary -- as the
 // value's own, and the page would be read from a dictionary the file does not
-// hold. The white space is 7.2.3's and not every byte below a space: a NUL
-// stands between two digits as a space does, where a start of heading, a unit
-// separator and a delete stand between nothing. A string of no digits is a
-// string all the same -- it is complete where it ends -- and the image it
-// stands in is read.
+// hold. The white space is 7.2.3's and not every byte below a space: each of
+// the six -- a NUL, a tab, a line feed, a form feed, a carriage return and a
+// space -- stands between two digits as a space does, where a start of
+// heading, a unit separator and a delete stand between nothing. A string of no
+// digits is a string all the same -- it is complete where it ends -- and the
+// image it stands in is read.
 func TestReadsAHexadecimalValueInAnInlineDictionaryIsHexadecimal(t *testing.T) {
-	for _, c := range []struct{ name, parms, want string }{
+	type hexCase struct{ name, parms, want string }
+	cases := []hexCase{
 		{"a hexadecimal value", "/DP << /Unused <4142> >>", "REAL"},
 		{"white space among the digits", "/DP << /Unused <41 42\n43> >>", "REAL"},
-		{"a NUL among the digits", "/DP << /Unused <4\x001> >>", "REAL"},
 		{"an odd final digit", "/DP << /Unused <4> >>", "REAL"},
 		{"no digits at all", "/DP << /Unused <> >>", "REAL"},
 		{"no digits at all, in an array in a nested dictionary", "/DP << /A << /B [<>] >> >>", "REAL"},
@@ -5691,7 +5725,29 @@ func TestReadsAHexadecimalValueInAnInlineDictionaryIsHexadecimal(t *testing.T) {
 		{"a start of heading in an array in a nested dictionary", "/DP << /A << /B [<4\x011>] >> >>", ""},
 		{"a unit separator in an array in a nested dictionary", "/DP << /A << /B [<4\x1f1>] >> >>", ""},
 		{"operators before a later terminator", "/DP << /Unused <41 (EI) Tj 41> >>", ""},
+	}
+	// The six white-space bytes are one rule and not the three a reader
+	// happens to have met: a tab, a form feed and a carriage return stand
+	// between the digits of a value as a NUL, a line feed and a space do, and
+	// the image around them is measured and ordinary. Each stands at both
+	// depths the cases above reach -- directly as the dictionary's value, and
+	// inside an array inside a dictionary inside it -- because the rule
+	// belongs to the string and not to where the string is written.
+	for _, w := range []struct{ name, byte string }{
+		{"a NUL", "\x00"},
+		{"a tab", "\t"},
+		{"a line feed", "\n"},
+		{"a form feed", "\f"},
+		{"a carriage return", "\r"},
+		{"a space", " "},
 	} {
+		value := "<4" + w.byte + "1>"
+		cases = append(cases,
+			hexCase{w.name + " between the digits", "/DP << /Unused " + value + " >>", "REAL"},
+			hexCase{w.name + " between the digits, in an array in a nested dictionary", "/DP << /A << /B [" + value + "] >> >>", "REAL"},
+		)
+	}
+	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			var content bytes.Buffer
 			content.WriteString("BI /W 80 /H 2 /BPC 8 /CS /G " + c.parms + " ID ")
@@ -7233,6 +7289,11 @@ func TestReadsAJPEGFramingReadsTheStructureItIsGiven(t *testing.T) {
 		{"a restart marker outside a scan", []byte{0xFF, 0xD8, 0xFF, 0xD0, 0xFF, 0xD9}, 6, nil},
 		{"a segment shorter than the two bytes of its own length", []byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x01}, 0, errMalformed},
 		{"fill bytes the data ends inside", []byte{0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02, 0xFF, 0xFF}, 0, errFilterUnended},
+		// The entropy-coded data of a scan is walked to the marker that ends
+		// it, and the walk goes no further than the bytes it was given: data
+		// the bytes end inside holds no end-of-image, as fill bytes they end
+		// inside hold none.
+		{"entropy-coded data the bytes end inside", []byte{0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02, 0x42}, 0, errFilterUnended},
 		{"a segment the data ends after, with no end-of-image", []byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x02}, 0, errFilterUnended},
 		{"a byte that is no marker where no scan has begun", []byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x02, 0x42, 0xFF, 0xD9}, 0, errMalformed},
 	} {
@@ -7247,35 +7308,51 @@ func TestReadsAJPEGFramingReadsTheStructureItIsGiven(t *testing.T) {
 	}
 }
 
-// A JPEG whose segments fill the bytes the reader may read of one image
-// without reaching an end-of-image has met that bound, and the bound is what
-// the record says. The image below is the window exactly: the "EI" stands at
-// the first byte past it, where a reader that ended the walk at the window
-// would find one.
+// A JPEG whose markers fill the bytes the reader may read of one image without
+// reaching an end-of-image has met that bound, and the bound is what the record
+// says. Each image below is the window exactly: the "EI" stands at the first
+// byte past it, where a reader that ended the walk at the window would find
+// one. One fills the window with segments and one with the entropy-coded data
+// of a scan, which is walked byte by byte to the marker that ends it: neither
+// walk goes further than the bytes it was given.
 func TestReadsAJPEGFillingTheInputWindowIsThatBound(t *testing.T) {
 	if testing.Short() {
 		t.Skip("writes an inline image of sixteen megabytes")
 	}
-	// A start-of-image, a comment segment carrying two bytes, and comment
-	// segments carrying none to the end of the window.
-	samples := append([]byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x04, 0x41, 0x42},
-		bytes.Repeat([]byte{0xFF, 0xFE, 0x00, 0x02}, (maxInlineImageBytes-8)/4)...)
-	if len(samples) != maxInlineImageBytes {
-		t.Fatalf("the image is %d bytes, want the window of %d", len(samples), maxInlineImageBytes)
-	}
-	data := readsInlineImagePage("/W 1 /H 1 /BPC 8 /CS /G /F /DCT", samples, shown("REAL", 700))
-	opt := testOptions()
-	opt.MaxInflateOne, opt.MaxInflateTotal = 64<<20, 64<<20
-	r := Extract(context.Background(), data, opt)
-	if out, ok := readsPoppler(t, data); ok {
-		t.Logf("pdftotext reads %q", out)
-	}
-	if r.Fatal != nil || len(r.Pages) != 1 {
-		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
-	}
-	want := "the content of page 1 is past a structure bound the reader holds"
-	if r.Pages[0].Status != PageFailed || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" || r.Problems[0].Message != want {
-		t.Errorf("pages %+v problems %+v; the markers held no end-of-image within the bytes the reader may read of one image", r.Pages, r.Problems)
+	for _, c := range []struct {
+		name    string
+		samples []byte
+	}{
+		// A start-of-image, a comment segment carrying two bytes, and comment
+		// segments carrying none to the end of the window.
+		{"segments that carry to the end of the window",
+			append([]byte{0xFF, 0xD8, 0xFF, 0xFE, 0x00, 0x04, 0x41, 0x42},
+				bytes.Repeat([]byte{0xFF, 0xFE, 0x00, 0x02}, (maxInlineImageBytes-8)/4)...)},
+		// A start-of-image and a scan whose entropy-coded data holds no byte
+		// that reads as a marker at all, to the end of the window.
+		{"the entropy-coded data of a scan that carries to the end of the window",
+			append([]byte{0xFF, 0xD8, 0xFF, 0xDA, 0x00, 0x02},
+				bytes.Repeat([]byte{0x42}, maxInlineImageBytes-6)...)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if len(c.samples) != maxInlineImageBytes {
+				t.Fatalf("the image is %d bytes, want the window of %d", len(c.samples), maxInlineImageBytes)
+			}
+			data := readsInlineImagePage("/W 1 /H 1 /BPC 8 /CS /G /F /DCT", c.samples, shown("REAL", 700))
+			opt := testOptions()
+			opt.MaxInflateOne, opt.MaxInflateTotal = 64<<20, 64<<20
+			r := Extract(context.Background(), data, opt)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			want := "the content of page 1 is past a structure bound the reader holds"
+			if r.Pages[0].Status != PageFailed || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" || r.Problems[0].Message != want {
+				t.Errorf("pages %+v problems %+v; the markers held no end-of-image within the bytes the reader may read of one image", r.Pages, r.Problems)
+			}
+		})
 	}
 }
 
@@ -7992,6 +8069,147 @@ func TestReadsARangeEstablishesTheCodesItUsablyMaps(t *testing.T) {
 	}
 }
 
+// The scan puts the page's scope back as it stood and no better. The work
+// allowance of a page being extracted is put aside while the scan runs, so
+// that what the scan decodes is charged to the balance every reading of the
+// file spends and not to the page whose resolve began it, and it is put back
+// however the scan ended: at the objects it found, at a bound met reading a
+// trailer, at the deadline, or at a defect it could not continue past. What
+// the page spent before the scan stays spent, and what the scan spent stays on
+// the document's balance.
+func TestReadsTheScanPutsThePageScopeBackAsItStood(t *testing.T) {
+	const spent = 1234
+	data := readsTableFile([]readsObject{
+		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+		{3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R >>"},
+		{6, readsStreamObject("", shown("A", 700))},
+	}, 6, "")
+	for _, c := range []struct {
+		name string
+		// end makes the scan end the way the case is named for.
+		end func(d *Document)
+		// charged says the scan read bytes of the file before it ended, which
+		// are the document's charge and are not given back.
+		charged bool
+	}{
+		{"a scan that found the objects of the file", func(d *Document) {}, true},
+		{"a scan put down at a bound", func(d *Document) {
+			d.data = readsBeforeTheStartxref(d.data, []byte("trailer "+readsOverNested()+"\n"))
+		}, true},
+		{"a scan the deadline ended", func(d *Document) {
+			d.ctx = &readsScanDeadline{Context: context.Background(), doc: d, armed: true}
+		}, false},
+		{"a scan that could not continue past a defect", func(d *Document) {
+			// A cross-reference the scan cannot write the objects it finds to.
+			// The panic that raises leaves the scan through the restorations it
+			// deferred and through nothing else, as the panic the adapter
+			// recovers from at the top does.
+			d.xref = nil
+		}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := openGenerated(t, data)
+			d.startPageWork()
+			if err := d.chargeWork(spent); err != nil {
+				t.Fatalf("charging the page's work ended with %v", err)
+			}
+			c.end(d)
+			balance := d.parsedBytes
+			err := func() (err error) {
+				defer func() {
+					if r := recover(); r != nil {
+						err = fmt.Errorf("the scan could not continue past %v", r)
+					}
+				}()
+				return d.reconstruct()
+			}()
+			t.Logf("the scan ended with %v, having charged the document %d bytes", err, d.parsedBytes-balance)
+			if d.pageWork != spent || !d.pageWorking {
+				t.Errorf("the page has spent %d of its allowance and is being extracted %v, want %d and true: the scan puts the page's scope back as it stood",
+					d.pageWork, d.pageWorking, spent)
+			}
+			if d.parsedBytes < balance || (c.charged && d.parsedBytes == balance) {
+				t.Errorf("the document's balance holds %d bytes where it held %d before the scan; what the scan read is charged to the document, and nothing it spent is given back",
+					d.parsedBytes, balance)
+			}
+		})
+	}
+}
+
+// A range whose destinations leave the scalar values part way along is cut
+// into the runs of them that are characters, and each run keeps the
+// destination of its own codes: the run after the hole begins at the character
+// its first code stands for and not at the one the range began at. The
+// destination advances at its last character, so the characters before it are
+// the same for every code the range maps and only the last one moves.
+//
+// The range below maps <0000> to <0802> to a destination whose last character
+// is U+D7FF, the scalar value below the surrogate halves. Its first run is the
+// one code at lo; the codes whose destinations would be surrogate halves are
+// mapped by nothing, and are U+FFFD and counted where a page shows them; and
+// the run after them begins at U+E000, the scalar value above them. A page
+// showing a code of each reads the destination of the run the code stands in.
+func TestReadsARangeCutInTwoKeepsEachRunsDestinations(t *testing.T) {
+	for _, c := range []struct{ name, destination, prefix string }{
+		{"a destination of two characters", "<0041D7FF>", "A"},
+		{"a destination of three characters", "<00420041D7FF>", "BA"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			unicode := "begincmap\n1 beginbfrange\n<0000> <0802> " + c.destination + "\nendbfrange\nendcmap\n"
+			// What the range cost to read is one range's, whatever it was cut
+			// into.
+			budget := &fontBudget{}
+			m := parseCMap([]byte(unicode), budget, nil)
+			if m == nil {
+				t.Fatal("the CMap was not used; it maps the codes whose destinations a text can carry")
+			}
+			if budget.used != cmapRangeEntries {
+				t.Errorf("the budget charged %d entries, want %d for one range", budget.used, cmapRangeEntries)
+			}
+			// The same code read twice reads the same: the range holds one
+			// destination and every lookup makes its own answer from it.
+			for _, look := range []struct {
+				code uint32
+				want string
+			}{
+				{0x0000, c.prefix + "퟿"},
+				{0x0001, ""},
+				{0x0400, ""},
+				{0x0800, ""},
+				{0x0801, c.prefix + ""},
+				{0x0802, c.prefix + ""},
+				{0x0000, c.prefix + "퟿"},
+			} {
+				rs, mapped := m.toUnicode(look.code, 2)
+				if string(rs) != look.want || mapped != (look.want != "") {
+					t.Errorf("the code %04X stands for %q, mapped %v, want %q", look.code, string(rs), mapped, look.want)
+				}
+			}
+			// The page shows a code of the first run, one of the hole between
+			// the runs, and the two of the second run.
+			encoding := "begincmap\n1 begincidrange\n<0000> <FFFF> 0\nendcidrange\nendcmap\n"
+			data, _ := readsCIDFont(encoding, unicode, "0000040008010802", 0, 123)
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				// The other reader carries the range whole and reads a
+				// replacement character where its destinations are none: what
+				// it reads is logged beside this reader's answer and is not the
+				// assertion.
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			want := c.prefix + "퟿" + "�" + c.prefix + "" + c.prefix + ""
+			if r.Pages[0].Text != want || r.Pages[0].Unmapped != 1 || r.Pages[0].Status != PageOK || len(r.Problems) != 0 {
+				t.Errorf("the record reads %s %q with %d glyphs unmapped and problems %+v, want %q with one unmapped",
+					r.Pages[0].Status, r.Pages[0].Text, r.Pages[0].Unmapped, r.Problems, want)
+			}
+		})
+	}
+}
+
 // Nothing the reader did not find after the deadline is known to be absent,
 // and that holds while the page tree is walked as it holds while a page is
 // read. An indirect /Kids, or a kid of a node, at an offset that holds no
@@ -8036,6 +8254,50 @@ func TestReadsAWalkThatFindsNothingAfterTheDeadlineEndsThere(t *testing.T) {
 			}
 			if r.Fatal != nil || !r.TimedOut || !r.Truncated || len(r.Pages) != 0 {
 				t.Errorf("fatal %+v timedOut %v truncated %v pages %+v; the object was not found after the deadline, which is no defect of the file",
+					r.Fatal, r.TimedOut, r.Truncated, r.Pages)
+			}
+			want := "the deadline passed while the page tree was walked, after 0 pages were counted"
+			if len(r.Problems) != 1 || r.Problems[0].Code != "timeout" || r.Problems[0].Message != want {
+				t.Errorf("problems %+v, want one timeout saying %q", r.Problems, want)
+			}
+		})
+	}
+	// A node resolves its inherited resources and its type before its kids,
+	// and the rule holds of every one of them: where the scan one of them
+	// began ends at the deadline, what the reads after it meet is not the
+	// file's defect either. The node below names its kids in a stream of
+	// objects compressed with Flate, of which this document may inflate one
+	// byte: reading it meets a bound, which is what the walk would end at
+	// where it had not met the deadline first.
+	for _, c := range []struct {
+		name, node, object string
+	}{
+		{"a node's inherited resources", "<< /Type /Pages /Resources 9 0 R /Kids 10 0 R /Count 1 >>", "<< /ProcSet [/PDF /Text] >>"},
+		{"a node's type", "<< /Type 9 0 R /Kids 10 0 R /Count 1 >>", "/Pages"},
+	} {
+		t.Run("the scan begun resolving "+c.name, func(t *testing.T) {
+			data := readsRawFile([]readsObject{
+				{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+				{2, c.node},
+				{3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R >>"},
+				{6, readsStreamObject("", shown("A", 700))},
+				{9, c.object},
+				{11, readsStreamObject("/Type /ObjStm /N 1 /First 5 /Filter /FlateDecode", string(flateOf([]byte("10 0 [3 0 R]"))))},
+			}, 9, map[int][2]int{10: {11, 0}})
+			opt := testOptions()
+			opt.MaxInflateOne = 1
+			ctx := &readsScanDeadline{Context: context.Background()}
+			r := &Result{}
+			d, stop := openDocument(ctx, data, opt, r)
+			if stop != nil {
+				t.Fatalf("opening the file ended with %v", stop)
+			}
+			ctx.doc, ctx.armed = d, true
+			if _, _, stop := walkPages(ctx, d, opt, r); stop == nil {
+				t.Fatal("the walk ended with pages to extract; the deadline passed inside the scan its reading began")
+			}
+			if r.Fatal != nil || !r.TimedOut || !r.Truncated || len(r.Pages) != 0 {
+				t.Errorf("fatal %+v timedOut %v truncated %v pages %+v; the field was not found after the deadline, and what the reads after it met is no defect of the file",
 					r.Fatal, r.TimedOut, r.Truncated, r.Pages)
 			}
 			want := "the deadline passed while the page tree was walked, after 0 pages were counted"

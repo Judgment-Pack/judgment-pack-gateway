@@ -576,6 +576,18 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	if w.d.generation != w.generation {
 		return walkStale
 	}
+	// The deadline is read once every field of the node is resolved and before
+	// anything those reads came to is called a defect. Each of them -- the
+	// inherited resources, the type, the kids -- may stand at an offset that
+	// holds no object and send the reader scanning the file, and a scan the
+	// deadline ended found what it reached and not what is there: what the
+	// reads after it then met, a stream of objects the reader could not decode
+	// among it, is no defect of the file this reader may name. Nothing it did
+	// not find after the deadline is known to be absent, so the walk ends at
+	// the deadline, as it ends where the deadline is met between two nodes.
+	if deadlineMet(w.ctx) != nil {
+		return walkDeadline
+	}
 	if defect := w.d.walkDefect(); defect != "" {
 		w.defect = defect
 		return walkDefect
