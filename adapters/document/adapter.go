@@ -225,10 +225,11 @@ const requestReadFloor = 50 * time.Millisecond
 // times, then sleeps that long between looks, and makes that many looks at
 // most. The adapter's clock is time.Now, which is past the cutoff as soon as
 // the cutoff's timer has fired, so the first look ends the wait and nothing
-// here is waited on; a clock that stands still is a test's, and the last of
-// these keeps even that bounded -- a clock that has stood still for
-// requestArbitrationSpins looks is treated as past the cutoff, which is the
-// one exception to what an empty arbitration otherwise waits for.
+// here is waited on; a clock that does not arrive is a test's, and the last of
+// these keeps even that bounded -- requestArbitrationSpins looks that found no
+// stamp and no reading strictly past the cutoff are treated as past it,
+// whether the clock stood still through them or advanced without arriving,
+// which is the one exception to what an empty arbitration otherwise waits for.
 const (
 	requestArbitrationYields = 16
 	requestArbitrationSpin   = 50 * time.Microsecond
@@ -238,6 +239,16 @@ const (
 // errRequestNotRead is a request whose reading had not ended requestPipeWait
 // past the deadline.
 var errRequestNotRead = errors.New("the request was not read in full")
+
+// read is what a reading of the request hands over: the bytes it read, why the
+// read ended, and the instant it ended at by the clock the cutoff is on. It is
+// named here rather than inside readWithin so that the receive the reader makes
+// for it can be the operation a test replaces.
+type read struct {
+	data []byte
+	err  error
+	at   time.Time
+}
 
 // readWithin reads at most n bytes of r, waiting for the read no longer than
 // requestPipeWait past the deadline the context carries. A read of a pipe
@@ -277,22 +288,20 @@ var errRequestNotRead = errors.New("the request was not read in full")
 // looked.
 //
 // That wait has one exception, and it is an exception rather than a longer
-// wait: a clock that has stood still for requestArbitrationSpins looks is
-// treated as past the cutoff, and the arbitration commits its refusal there
-// although the clock has not passed it -- so a read that then stamps exactly
-// the cutoff is refused. Only a clock that does not advance at all reaches it.
-// The adapter's is time.Now, and the cutoff's own timer has fired before the
-// arbitration looks, so the first comparison it makes is past the cutoff and
-// ends the wait; a clock that stands still is a test's, and without the
-// exception such a clock, with a read that never ends, would be waited on for
-// ever.
+// wait: requestArbitrationSpins looks that found no stamp and no reading
+// strictly past the cutoff exhaust it, and the arbitration commits its refusal
+// there although the clock has not passed the cutoff -- so a read that then
+// stamps exactly the cutoff is refused. What the exception counts is looks and
+// not a clock standing still: a clock advancing a nanosecond a look, from far
+// enough behind the cutoff, is exhausted by it as surely as one that never
+// moves. The adapter's clock is time.Now, and the cutoff's own timer has fired
+// before the arbitration looks, so the first comparison it makes is past the
+// cutoff and ends the wait; a clock that reaches the exception is a test's,
+// and without it such a clock, with a read that never ends, would be waited on
+// for ever. What the exhausted arbitration commits is the request's outcome:
+// nothing is received after it, so a result published in the meantime does not
+// turn that refusal back into a request.
 func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
-	type read struct {
-		data []byte
-		err  error
-		// at is when the read ended, by the clock the cutoff is on.
-		at time.Time
-	}
 	done := make(chan read, 1)
 	// ended is the instant the read ended, and hasStamp that it ended at all,
 	// both written under mu by the read and read under mu by the arbitration
@@ -373,12 +382,14 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	// and what ends the wait is a reading of the clock, not an interval.
 	//
 	// The looks are counted, and the count is the one exception to that rule:
-	// a clock that has stood still for requestArbitrationSpins looks is
-	// treated as past the cutoff, so a read that stamps exactly the cutoff
-	// after those looks is refused. Only a clock that does not advance reaches
-	// it -- the adapter's advances, and its first look ends this -- and
-	// without it a clock that never advanced, for a read that never ended,
-	// would be waited on for ever.
+	// requestArbitrationSpins looks that found no stamp and no reading strictly
+	// past the cutoff are treated as past it, so a read that stamps exactly the
+	// cutoff after those looks is refused. What is counted is the looks and not
+	// a clock standing still -- a clock advancing a nanosecond a look, from far
+	// enough behind the cutoff, is exhausted with the cutoff still ahead of it
+	// -- and the adapter's clock is past the cutoff at its first look and never
+	// reaches this. Without it a clock that did not arrive, for a read that
+	// never ended, would be waited on for ever.
 	var at time.Time
 	var hasEnded, exhausted bool
 	for look := 1; ; look++ {
@@ -404,16 +415,14 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	if readArbitrated != nil {
 		readArbitrated(taken)
 	}
-	// Once the frozen-clock exception commits a refusal, a result published
-	// afterward cannot reverse it through the nonblocking receive below.
+	// An arbitration that exhausted its looks has committed the refusal, and
+	// that refusal is the outcome: no receive follows it, so a result the read
+	// published between the last look and here is not what decides.
 	if exhausted {
 		return nil, errRequestNotRead
 	}
 	if taken {
-		if readReceiving != nil {
-			readReceiving()
-		}
-		got := <-done
+		got := readReceive(done)
 		if !readTaken(got.at, cutoff) {
 			return nil, errRequestNotRead
 		}
@@ -464,12 +473,18 @@ var readStamped func(time.Time)
 // without the lock is not.
 var readLocking func()
 
-// readReceiving is called immediately before an arbitration that decided a
-// read was on time blocks on that read's result. It is nil in the adapter, and
-// a test sets it to hand over a result it has been holding back, so that a
-// reader which committed to waiting and then did not wait finds the channel as
-// empty as it was rather than finding a result some delay let through.
-var readReceiving func()
+// readReceive is the wait an arbitration that decided a read was on time makes
+// for that read's result: the receive itself, and not an announcement that one
+// is about to be made. It is receiveRead in the adapter, and a test replaces it
+// with one that records that the reader came here and then makes the same
+// receive, so that what the test establishes is the waiting and not a seam a
+// reader could keep while dropping the wait. A reader that returns without
+// going through it has not waited, under any schedule.
+var readReceive = receiveRead
+
+// receiveRead waits for the result of a read, and is what readReceive is
+// wherever a test has not replaced it.
+func receiveRead(done <-chan read) read { return <-done }
 
 // readArbitrated is called once the cutoff has fired and the stamp has been
 // read, with what the stamp settled: true where a read ended at or before the

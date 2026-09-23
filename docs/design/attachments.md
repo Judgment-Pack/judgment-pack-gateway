@@ -513,12 +513,16 @@ and the request is refused. An arbitration that finds that no read has ended is 
 once the clock is strictly past the cutoff, so that a read stamped after it is necessarily a late
 read: the refusal says that no read had ended by the cutoff, not that none had ended by the
 moment the adapter looked. That has one exception, and it is a refusal rather than a longer wait:
-the looks such an arbitration makes are counted, and a clock that has stood still for 4,096 looks
-is treated as past the cutoff, so a read that then ends exactly at the cutoff is refused. Only a
-clock that does not advance reaches it — the adapter reads the system clock, and the cutoff's own
-timer has fired before it looks, so the first reading settles it — and without the exception a
-clock that never advanced, for a read that never ended, would be waited on for ever. Nothing
-there is an elapsed time: what ends the wait is a reading of the clock, not an interval. At the
+the looks such an arbitration makes are counted, and 4,096 looks that found no read ended and no
+reading strictly past the cutoff are treated as past it, so a read that then ends exactly at the
+cutoff is refused. What is counted is the looks and not a clock standing still — a clock
+advancing a nanosecond a look, from far enough behind the cutoff, is exhausted by them with the
+cutoff still ahead of it. The adapter never reaches the exception: it reads the system clock, and
+the cutoff's own timer has fired before it looks, so the first reading settles it. Without the
+exception a clock that did not arrive, for a read that never ended, would be waited on for ever.
+What an exhausted arbitration refuses stays refused, and no read is taken after it: a result the
+read hands over in the meantime is not what decides. Nothing there is an elapsed time: what ends
+the wait is a reading of the clock, not an interval. At the
 deadline, an OCR program that has not finished is ended: the adapter kills the process it
 started, not that process's own children, waits up to two seconds for that process to exit and
 its stdout to reach its end, and then closes the pipe
