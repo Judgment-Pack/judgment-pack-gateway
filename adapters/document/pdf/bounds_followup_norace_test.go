@@ -7,6 +7,7 @@ package pdf
 // measurement taken under it is not what the reader retains.
 const boundsInstrumented = false
 
-// raceFactor is what every wall-clock allowance in these tests is multiplied
-// by. Nothing instruments this binary, so the allowances are the ones written.
+// raceFactor is what every wall-clock allowance in this package's tests is
+// multiplied by. Nothing instruments this binary, so the allowances are the
+// ones written.
 const raceFactor = 1

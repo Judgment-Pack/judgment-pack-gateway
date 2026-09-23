@@ -37,10 +37,22 @@ func isolated(t *testing.T, maxStack int, maxAlloc uint64) bool {
 	t.Helper()
 	if os.Getenv(childTest) == t.Name() {
 		debug.SetMaxStack(maxStack)
-		go allocationWatchdog(maxAlloc)
+		// The ceiling is scaled like the wall-clock allowances, and for the
+		// same reason: what it counts is every allocation the child makes,
+		// and under the race detector most of them are the detector's own
+		// rather than the reader's. Measured on the deadline test below, a
+		// child that allocates about 170 megabytes uninstrumented allocates
+		// about 590 under it. What the ceiling stops is an allocation without
+		// end, which reaches any of these figures at once.
+		go allocationWatchdog(raceFactor * maxAlloc)
 		return true
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	// The child is given a minute, which its work ends well within, and it is
+	// scaled like every other wall-clock allowance here: what this bounds is
+	// a child that does not end at all, and a cap left unscaled would end a
+	// child the detector had merely slowed before the test it runs could say
+	// anything.
+	ctx, cancel := context.WithTimeout(context.Background(), raceFactor*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+t.Name()+"$", "-test.count=1", "-test.v")
 	cmd.Env = append(os.Environ(), childTest+"="+t.Name())
@@ -941,11 +953,14 @@ func TestManyCMapRangesAreLookedUpQuickly(t *testing.T) {
 	b := &pdfgen.Builder{Compress: true}
 	f := cidFont(b, "", b.Add(pdfgen.Object{Body: "<< >>", Stream: []byte(cm.String())}))
 	b.Catalog(b.Pages([]pdfgen.Page{{Content: "BT /F1 12 Tf 1 0 0 1 72 700 Tm <" + string(shown) + "> Tj ET\n", Fonts: map[string]int{"F1": f}}}))
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// The deadline and the allowance under it are scaled together, so that
+	// what ends a reading which takes minutes is the allowance here and not
+	// the deadline cutting it short into a reading that timed out.
+	ctx, cancel := context.WithTimeout(context.Background(), raceFactor*30*time.Second)
 	defer cancel()
 	started := time.Now()
 	r := Extract(ctx, b.Bytes(), testOptions())
-	if elapsed := time.Since(started); r.TimedOut || elapsed > 20*time.Second {
+	if elapsed := time.Since(started); r.TimedOut || elapsed > raceFactor*20*time.Second {
 		t.Fatalf("timed out %v after %v", r.TimedOut, elapsed)
 	}
 	if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageOK || r.Pages[0].Unmapped != codes || len(r.Problems) != 0 {
@@ -1468,6 +1483,27 @@ func TestOpeningADocumentIsBoundedByTheDeadline(t *testing.T) {
 		return
 	}
 	data := scanned(60000)
+	// The scan finds the objects in one match of the whole file, which
+	// nothing interrupts and no deadline is read inside; the file has no
+	// startxref, so opening it reaches that match having read no deadline at
+	// all, and the first the reader reads is the one the scan reads before
+	// each object it then parses. That match is the floor under every opening
+	// of this document, cut short or whole, and what a deadline can cut is
+	// the opening past it -- so the floor is measured here, on this machine
+	// and under whatever instruments this binary, and taken off both sides
+	// below.
+	//
+	// Taking it off is what the race detector makes necessary, and it is the
+	// detector's cost and not the reader's: the detector charges the match
+	// about twenty times and the object reading after it about five, so an
+	// opening the deadline cut before a single object was read still stands
+	// at more than half the whole, and a fraction of the whole would read
+	// that as a deadline that cut nothing. Nothing here is scaled by a
+	// factor: both sides carry the same instrumentation, and what is compared
+	// is the work a deadline can cut against itself.
+	floorBegan := time.Now()
+	objHeader.FindAllSubmatchIndex(data, maxScanObjects+1)
+	floor := time.Since(floorBegan)
 	// What opening it whole costs, so that the deadline's cut is measured
 	// against this machine and not against a fixed time.
 	whole, r := timeExtracting(context.Background(), data)
@@ -1498,9 +1534,13 @@ func TestOpeningADocumentIsBoundedByTheDeadline(t *testing.T) {
 			if len(r.Problems) != 1 || r.Problems[0].Code != "timeout" || r.Problems[0].Page != 0 {
 				t.Fatalf("problems %+v", r.Problems)
 			}
-			t.Logf("whole %v, cut %v", whole, cut)
-			if cut > whole/2 {
-				t.Fatalf("opening ran %v past a deadline that had passed, and opening it whole takes %v", cut, whole)
+			t.Logf("whole %v, floor %v, cut %v", whole, floor, cut)
+			// The deadline cuts at least half of what it can cut: a reader
+			// that read it and gave up does almost none of the opening past
+			// the floor, and one that ignored it does all of it and stands at
+			// the whole.
+			if allowed := floor + (whole-floor)/2; cut > allowed {
+				t.Fatalf("opening ran %v past a deadline that had passed, and opening it whole takes %v over a floor of %v: at most %v", cut, whole, floor, allowed)
 			}
 		})
 	}
@@ -1530,7 +1570,7 @@ func TestReconstructionDoesNotGrowWithTheSquareOfTheFile(t *testing.T) {
 		t.Fatalf("80,000 objects: fatal %+v timedOut %v", r.Fatal, r.TimedOut)
 	}
 	t.Logf("20,000 objects %v, 80,000 objects %v", small, large)
-	if large > 8*small+2*time.Second {
+	if large > 8*small+raceFactor*2*time.Second {
 		t.Fatalf("four times the objects took %v against %v", large, small)
 	}
 }

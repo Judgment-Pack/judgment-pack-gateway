@@ -3476,7 +3476,7 @@ func TestReadsAPageOfManyCodesMeetsItsDeadline(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	r := Extract(ctx, data, testOptions())
-	if elapsed := time.Since(started); elapsed > 10*time.Second {
+	if elapsed := time.Since(started); elapsed > raceFactor*10*time.Second {
 		t.Errorf("the reading took %v past a deadline of 50ms", elapsed)
 	}
 	if !r.TimedOut || len(r.Pages) != 0 {
