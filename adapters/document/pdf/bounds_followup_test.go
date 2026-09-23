@@ -1694,6 +1694,13 @@ func TestBoundsOneBalanceIsAuthoritative(t *testing.T) {
 // the refusal, and not one from another allowance that was reading beside it
 // and had every right to its own refund. A reader that gave room back after
 // saying it had none would go on reading the file it has just refused.
+//
+// A closed balance is not the same as an empty one, and the cases below are
+// the ones that tell them apart: a charge of no bytes, which fits an empty
+// balance, and a budget that grows after the refusal, as a document's does
+// when its streams inflate further. Both are refused, on both kinds of
+// allowance; a charge of nothing is refused too, since the rule is that a
+// closed balance admits nothing and not that it admits nothing that costs.
 func TestBoundsARefusalIsFinal(t *testing.T) {
 	t.Run("a document's balance", func(t *testing.T) {
 		d := &Document{data: make([]byte, 10), budget: &inflateBudget{}}
@@ -1718,6 +1725,32 @@ func TestBoundsARefusalIsFinal(t *testing.T) {
 		if d.chargeParsed(16) {
 			t.Errorf("the document charged 16 bytes after refusing, leaving %d of %d", d.parsedBytes, limit)
 		}
+		// Nothing at all is admitted either: a charge of no bytes fits any
+		// balance that is merely spent, and it is refused here because the
+		// balance is closed and not because it is empty.
+		if d.chargeParsed(0) {
+			t.Error("the document admitted a charge of no bytes after refusing")
+		}
+		if fresh := d.budgeted(); fresh.take(0) {
+			t.Error("a fresh allowance admitted a charge of no bytes after the document refused")
+		}
+		if first.take(0) {
+			t.Error("an allowance that took before the refusal admitted a charge of no bytes after it")
+		}
+		// A budget that grows after the refusal does not open it: the file's
+		// streams inflating further raise what the document may hold, and a
+		// balance that was only spent would have room again.
+		d.budget.used += 1000
+		grown := d.parsedBudget()
+		if grown <= limit {
+			t.Fatalf("the budget did not grow with the inflation: %d, was %d", grown, limit)
+		}
+		if fresh := d.budgeted(); fresh.take(16) {
+			t.Errorf("a fresh allowance charged 16 bytes once the budget grew from %d to %d after the refusal", limit, grown)
+		}
+		if d.chargeParsed(16) {
+			t.Errorf("the document charged 16 bytes once its budget grew from %d to %d after refusing", limit, grown)
+		}
 	})
 	t.Run("an allowance of its own", func(t *testing.T) {
 		a := &allowance{left: 100}
@@ -1733,6 +1766,9 @@ func TestBoundsARefusalIsFinal(t *testing.T) {
 		}
 		if a.take(1) {
 			t.Errorf("one byte was taken after the refusal, leaving %d", a.left)
+		}
+		if a.take(0) {
+			t.Error("a charge of no bytes was admitted after the refusal; the allowance is closed, not empty")
 		}
 	})
 }
