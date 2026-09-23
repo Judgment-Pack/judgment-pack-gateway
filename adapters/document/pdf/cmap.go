@@ -349,7 +349,12 @@ const maxInferredCodespaces = maxCodespaces / 4
 // Where the runs of one length need more ranges than the reader holds for it,
 // they are taken together, from the lowest code to the highest: the ranges
 // then hold codes the map does not map, which is the one widening a reader
-// that cannot hold them all can make.
+// that cannot hold them all can make. The ranges are counted as they are
+// drawn and not reserved before them, so that a length whose runs the reader
+// does hold ranges for is drawn about its codes exactly, however many bytes
+// a run of it might have carried across. Where the widening does take in the
+// leading bytes another length's codes begin with, the map says two things
+// about how long a code is, and finish does not use it.
 func codespacesCovering(nbytes int, runs []codeRun) []codespace {
 	if len(runs) == 0 {
 		return nil
@@ -411,19 +416,29 @@ func appendCarrySplit(out []codespace, lo, hi []byte, at int) []codespace {
 	return appendCarrySplit(out, ends(hi, at+1, 0x00), hi, at+1)
 }
 
-// rangeMapsScalar reports whether a range of codes standing at the scalar
-// values from dst upwards stands at any value a text can carry: the values a
-// surrogate half has and those past the last of Unicode are no characters,
-// and a range lying wholly among them maps nothing at all.
-func rangeMapsScalar(dst, span uint32) bool {
+// scalarParts cuts the destinations from dst to dst+span into the runs of
+// them a text can carry: those below the first surrogate half, and those from
+// the last of them to the last scalar value Unicode has. The values a
+// surrogate half stands at and those past the last of Unicode are no
+// characters, so a code standing at one is mapped by nothing.
+//
+// Each run is given as the distance from dst at which it begins and the
+// distance at which it ends, which are the distances from the range's own low
+// code as well: a range advances its destination by the code's distance from
+// that code, so the codes of a run stand at the same distances its
+// destinations do. A destination interval lying wholly among the values no
+// text can carry yields no run at all.
+func scalarParts(dst, span uint32) [][2]uint32 {
 	first, last := uint64(dst), uint64(dst)+uint64(span)
-	if last > 0x10FFFF {
-		last = 0x10FFFF
+	var out [][2]uint32
+	for _, carried := range [][2]uint64{{0, 0xD7FF}, {0xE000, 0x10FFFF}} {
+		lo, hi := max(first, carried[0]), min(last, carried[1])
+		if lo > hi {
+			continue
+		}
+		out = append(out, [2]uint32{uint32(lo - first), uint32(hi - first)})
 	}
-	if first > last {
-		return false
-	}
-	return first < 0xD800 || last > 0xDFFF
+	return out
 }
 
 // codeBytes is a code of nbytes bytes written as its bytes, most significant
@@ -647,6 +662,20 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 		if !ok1 || !ok2 || len(ls) == 0 || len(ls) > 4 {
 			return
 		}
+		if len(hs) != len(ls) {
+			// The two ends of a range are codes of one length, which is how
+			// many bytes the codes in it have, as the two ends of a codespace
+			// range are (9.7.6.2). A pair whose ends differ gives no range of
+			// one length: read at either end's length it would hold codes of a
+			// length neither end gives, and the length it was read at would be
+			// the reader's choice of an end and not the map's own reading. It
+			// establishes nothing -- no mapping, and no length a code of this
+			// map has -- and what reading it cost is charged all the same, as
+			// a range is. The pairs after it are still read, the three objects
+			// of this one having been read whole.
+			c.takeN(cmapRangeEntries)
+			continue
+		}
 		l, n := bytesToCode(ls)
 		h, _ := bytesToCode(hs)
 		if h < l {
@@ -659,23 +688,46 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 		}
 		switch d := dst.(type) {
 		case int64:
-			if d < 0 || d > 1<<31 || !c.takeN(cmapRangeEntries) {
+			// The range is charged before the integer it read is looked at, as
+			// a single mapping's numeric destination is: the reader did the
+			// reading whether the integer it read is a destination or not.
+			if !c.takeN(cmapRangeEntries) {
+				continue
+			}
+			// A number below zero or past 2^31 is no destination this reader
+			// holds: the range is not held, so its codes are U+FFFD and
+			// counted, as a range whose destinations are no characters is.
+			if d < 0 || d > 1<<31 {
 				continue
 			}
 			if unicode {
-				// A range whose destinations are no text a page can carry --
-				// every code in it standing at a surrogate half or past the
-				// last scalar value -- maps nothing, as a destination that is
-				// no character maps nothing: it is not held, so its codes are
-				// U+FFFD and counted, and a map holding only such ranges
-				// establishes no encoding. What reading it cost is charged.
-				if !rangeMapsScalar(uint32(d), h-l) {
-					continue
+				// A range establishes the codes whose destinations a text can
+				// carry and no others: a code standing at a surrogate half or
+				// past the last scalar value is mapped by nothing, as a single
+				// mapping to such a value maps nothing, so it is U+FFFD and
+				// counted -- and it is no source this map gives either, which
+				// the lengths inferred for a map that declares no codespace
+				// range are drawn about. The range is cut to the runs of its
+				// destinations that are characters, each run a range of its own
+				// over the codes standing at it, and a range with no such run
+				// maps nothing at all. What reading it cost is one range's,
+				// charged above whatever it was cut into.
+				for _, part := range scalarParts(uint32(d), h-l) {
+					c.uniRanges = append(c.uniRanges, cmapRange{nbytes: n, lo: l + part[0], hi: l + part[1], dst: uint32(d) + part[0]})
 				}
-				c.uniRanges = append(c.uniRanges, cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(d)})
 			} else {
 				c.cidRanges = append(c.cidRanges, cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(d)})
 			}
+		case float64:
+			// A destination is written as an integer (9.7.6.2, 9.10.3), and a
+			// number this reader holds as a real is no destination it holds: a
+			// number written with a fractional part is one, and so is an
+			// integer past what an int64 holds, which is read as a real of its
+			// magnitude. The range is not held, so its codes are U+FFFD and
+			// counted, as a range whose destinations are no characters is, and
+			// what reading it cost is charged as a range's is: the reader did
+			// the reading whether the number it read is a destination or not.
+			c.takeN(cmapRangeEntries)
 		case String:
 			if !unicode || len(d) > maxCMapDestinationBytes {
 				continue
@@ -690,11 +742,29 @@ func (c *cmap) readRanges(p *parser, unicode bool) {
 			if len(runes) == 0 || !c.takeN(destinationEntries(runes)) {
 				continue
 			}
-			r := cmapRange{nbytes: n, lo: l, hi: h, dst: uint32(runes[0])}
-			if len(runes) > 1 {
-				r.runes = runes
+			// The destination advances at its last character by the code's
+			// distance from lo, so it is that character's values the range is
+			// cut to: this range establishes the codes whose destinations a
+			// text can carry, as a range whose destination was written as a
+			// number does. The character itself is one a text carries, an
+			// unpaired surrogate being no destination at all, so the code at lo
+			// is always among them.
+			advancing := uint32(runes[len(runes)-1])
+			for _, part := range scalarParts(advancing, h-l) {
+				r := cmapRange{nbytes: n, lo: l + part[0], hi: l + part[1], dst: advancing + part[0]}
+				if len(runes) > 1 {
+					// A run holds a destination of its own, whose last
+					// character is the one the run begins at; the characters
+					// before it are the same for every code the range maps.
+					rs := runes
+					if part[0] != 0 {
+						rs = append([]rune(nil), runes...)
+						rs[len(rs)-1] = rune(advancing + part[0])
+					}
+					r.dst, r.runes = uint32(rs[0]), rs
+				}
+				c.uniRanges = append(c.uniRanges, r)
 			}
-			c.uniRanges = append(c.uniRanges, r)
 		case Array:
 			if !unicode {
 				continue
@@ -745,6 +815,15 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 		key := code{v, n}
 		switch d := dst.(type) {
 		case int64:
+			// The entry is charged before the integer it read is looked at, as
+			// a range's numeric destination is: the reader did the reading
+			// whether the integer it read is a destination or not.
+			if !c.take() {
+				continue
+			}
+			// A number below zero or past 2^31 is no destination this reader
+			// holds: the code is left unmapped, so that the glyph is U+FFFD
+			// and counted, as a destination that is no character leaves it.
 			if d < 0 || d > 1<<31 {
 				continue
 			}
@@ -755,14 +834,22 @@ func (c *cmap) readChars(p *parser, unicode bool) {
 			if unicode && !validScalar(rune(d)) {
 				continue
 			}
-			if !c.take() {
-				continue
-			}
 			if unicode {
 				c.unicode[key] = []rune{rune(d)}
 			} else {
 				c.cid[key] = uint32(d)
 			}
+		case float64:
+			// A destination is written as an integer (9.7.6.2, 9.10.3), and a
+			// number this reader holds as a real is no destination it holds: a
+			// number written with a fractional part is one, and so is an
+			// integer past what an int64 holds, which is read as a real of its
+			// magnitude. The code is left unmapped, so the glyph is U+FFFD and
+			// counted, as a number outside the interval the reader holds
+			// destinations in leaves it. The entry is charged all the same:
+			// the reader did the reading whether the number it read is a
+			// destination or not.
+			c.take()
 		case String:
 			// A destination of no characters -- an empty string, an odd
 			// number of bytes, an unpaired surrogate -- is no text the code

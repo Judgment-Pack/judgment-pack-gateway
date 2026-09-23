@@ -465,23 +465,38 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   sources it maps, every one of them, the single codes of a `cidchar` or `bfchar` section as much
   as the ends of a range: one length throughout is that length, several are given the codes each
   actually maps, and where those cannot stand beside one another the map says two things about
-  how long a code is and is not used either. The ranges given a length are drawn about the runs
-  of codes it maps and no wider, so that a length takes in no leading byte another length's codes
-  begin with, and are split where a byte carries — `<00FF>` to `<0100>` is two ranges, a range
-  holding a byte at a time, and the one range from `00` to `01` beside `FF` to `00` holds neither
-  of those codes; where a length maps more runs than the reader holds ranges for, they are taken
-  together, from its lowest code to its highest. A map holding no mapping at all is read at two
+  how long a code is and is not used either. The two ends of a range are codes of one length, as
+  the two ends of a codespace range are, and a pair whose ends are of two lengths gives no range
+  at all: read at either end's length it would hold codes of a length neither end gives, and
+  which end to read it at is the reader's choice and not the map's. Such a pair maps nothing and
+  says nothing of how long a code is; what reading it cost is charged all the same. The ranges
+  given a length are drawn about the runs of codes it maps and no wider, so that a length takes
+  in no leading byte another length's codes begin with, and are split where a byte carries —
+  `<00FF>` to `<0100>` is two ranges, a range holding a byte at a time, and the one range from
+  `00` to `01` beside `FF` to `00` holds neither of those codes; where a length maps more runs
+  than the reader holds ranges for — the ranges counted as they are drawn, and not set aside
+  before a run that may need fewer — they are taken together, from its lowest code to its
+  highest, and where the range that takes them together does hold the leading bytes another
+  length's codes begin with, the map says two things about how long a code is and is not used at
+  all. A map holding no mapping at all is read at two
   bytes. What a CMap establishes is what it holds that a code can be looked up in — a codespace
   range it declared, a range it maps, a single code it maps — and not what the parser was given
   to read: an entry whose destination is no text (an empty string, an odd number of bytes, an
-  unpaired surrogate) maps nothing, and neither does a range of codes whose destinations are
-  every one of them a surrogate half or past the last scalar value Unicode has; a map of nothing
-  establishes nothing. What follows from that depends on which CMap it was: a composite font whose
-  own **encoding** CMap is unusable has its glyphs unmapped and counted, by the rule below, while
-  a font whose **`ToUnicode`** map is unusable keeps the encoding it has — a simple font's bytes
-  are codes of one byte whatever a `ToUnicode` map says, so its glyphs are the ones its own
-  encoding gives. Dropping the map is no defect of the document and adds no problem of its own;
-  what that encoding maps is mapped and not counted, and a code it does not map — a
+  unpaired surrogate) maps nothing, and neither does a range of codes whose destinations are every
+  one of them a surrogate half or past the last scalar value Unicode has; a map of nothing
+  establishes nothing. A range whose destinations leave the scalar values part way along
+  establishes the codes whose destinations a text can carry and no others, being cut to them: a
+  code the cut leaves out is mapped by nothing, and is no source this map gives when the lengths of
+  its codes are inferred. A destination written as a number is charged whatever the number is,
+  since the reader read it: one below zero and one past 2^31, neither of which is a destination
+  this reader holds, are charged as much as a surrogate half or a value past the last scalar value
+  — one entry in the single form of a `bfchar` or a `cidchar`, and what a range costs in the range
+  form of a `bfrange` or a `cidrange`. What follows from that depends on which CMap it was: a
+  composite font whose own **encoding** CMap is unusable has its glyphs unmapped and counted, by
+  the rule below, while a font whose **`ToUnicode`** map is unusable keeps the encoding it has — a
+  simple font's bytes are codes of one byte whatever a `ToUnicode` map says, so its glyphs are the
+  ones its own encoding gives. Dropping the map is no defect of the document and adds no problem of
+  its own; what that encoding maps is mapped and not counted, and a code it does not map — a
   `/Differences` naming a glyph no name of the standard sets gives, say — is unmapped and counted
   there as it is anywhere. A composite font whose `/Encoding` is neither `Identity-H`, `Identity-V`, a predefined CMap's
   name nor a CMap stream the reader can use — a stream it cannot use, a stream whose parse
@@ -503,46 +518,54 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   entry names is the place the header gave; a number is declared by its place before the offset
   beside it is read, so a pair whose offset the header does not hold, or holds as a token the
   reader cannot read, is a place that holds no object and a number declared there all the same;
-  an offset is from the first object's and lies within what the stream holds after it. Where the header declares one number twice, the entry's place
+  an offset is from the first object's and lies within what the stream holds after it. A token of
+  the header past a bound of the parser is no such damage: a bound is not read past, so the
+  header is no reading at all — not the places before the bound either — and the bound goes back
+  to the reading that asked for the stream, the file's own where a scan of the file was the one
+  reading it. Where the header declares one number twice, the entry's place
   decides, and only where the header declares that number at it.
 
   Where an inline image's data ends is established from the way the image is encoded, and from
   nothing else. The dictionary between `BI` and `ID` is read first, as pairs, at every depth it
-  holds: `ID` stands between two complete pairs of the dictionary itself, and any other keyword,
-  a key with no value, a value where a key stands, a stray delimiter, a byte that begins no token
-  (a `)` closing no string, a `>` that is not half of `>>`, a byte in a hexadecimal string that is
-  neither a hexadecimal digit nor white space — all of which elsewhere are skipped so a
-  damaged file still yields its objects), or a container that does not close — in the dictionary
-  or in a value of it — fails the page, since what follows an unfinished value may be the
-  image's data rather than the dictionary. A key bearing on the end
-  given twice with values that disagree fails it too — the abbreviations of 8.9.7 standing for
-  the names they abbreviate, a filter written alone standing for the same filter in an array of
-  one, a device colour space standing for the array of its family alone (a device space takes no
-  parameters), and numbers compared by value, so `1` and `1.0` are one value, of which the reader
-  keeps the integer whichever was written first. A colour space stands at the name written alone,
-  at the family at the head of an array, and at the positions such an array gives a colour space
-  of its own — the base of an `Indexed` space, the alternate of a `Separation` or a `DeviceN` one —
-  each of which is read as a colour space under the same rule as the outermost, however deep it
-  lies, so `[/Indexed [/DeviceRGB] 1 <000000FFFFFF>]` and `[/Indexed /DeviceRGB 1 <000000FFFFFF>]`
-  are one value. Those are the only positions read as colour spaces: what an array holds besides
-  them is that family's parameters — a colourant's name, a tint transformation, a hival, a lookup
-  table — and is compared as the image wrote it. An array of one element is the device space
-  written another way only where that element is a device family's own name, so `[[/DeviceGray]]`
-  is not `/DeviceGray` — it has no name at its family position — and beside it says a second thing
-  about the image; a name at a nested family's position that is no family of one is left as
-  written too. A bare name that is no device colour space is the
-  name of one of the resources in force and abbreviates nothing, so `/I` and `/Indexed` name two
-  resources and an image giving both says two things; only at the head of an array does `/I`
-  stand for `Indexed`. The device names are the other way about: `/DeviceGray`, `/DeviceRGB` and
-  `/DeviceCMYK`, and their abbreviations, name the device families themselves wherever they stand
-  (8.6.8) — never a resource of that name, whatever the resources in force hold under it — and so
-  does the array of such a family alone. A value written `null` is an entry the dictionary does not have (7.3.9):
-  it says nothing of its key, and nothing another writing of that key says can disagree with it.
-  That holds at every depth two writings are compared to: two dictionaries differing only by a
-  `null` member are the same dictionary, however deep the member lies. An array's `null` element
-  is not absent, since an array's elements are its positions.
-  One white-space byte separates `ID` from the data, a carriage return and a line feed
-  counting as the one end-of-line marker 7.2.3 makes them.
+  holds: `ID` stands between two complete pairs of the dictionary itself, and any other keyword, a
+  key with no value, a value where a key stands, a stray delimiter, a byte that begins no token (a
+  `)` closing no string, a `>` that is not half of `>>`, a byte in a hexadecimal string that is
+  neither a hexadecimal digit nor white space — all of which elsewhere are skipped so a damaged
+  file still yields its objects), or a container that does not close — in the dictionary or in a
+  value of it — fails the page, since what follows an unfinished value may be the image's data
+  rather than the dictionary. A key bearing on the end given twice with values that disagree fails
+  it too — the abbreviations of 8.9.7 standing for the names they abbreviate, a filter written
+  alone standing for the same filter in an array of one, a device colour space standing for the
+  array of its family alone (a device space takes no parameters), and numbers compared by the value
+  the reader holds: an integer as a 64-bit integer, a real as a binary64, and a real written finer
+  than a binary64 holds as the nearest binary64 to what was written. Two writings the reader holds
+  as one value are one declaration, so `1` and `1.0` are one value, of which the reader keeps the
+  integer whichever was written first; two it holds as different values are two, whatever was
+  written, so a whole number past 2^53 written as a real, beside that same number written as an
+  integer, is one declaration or two as the binary64 falls, and a pair the reader holds as two
+  values fails the page and is reported. A colour space stands at the name written alone, at the
+  family at the head of an array, and at the positions such an array gives a colour space of its
+  own — the base of an `Indexed` space, the alternate of a `Separation` or a `DeviceN` one — each
+  of which is read as a colour space under the same rule as the outermost, however deep it lies, so
+  `[/Indexed [/DeviceRGB] 1 <000000FFFFFF>]` and `[/Indexed /DeviceRGB 1 <000000FFFFFF>]` are one
+  value. Those are the only positions read as colour spaces: what an array holds besides them is
+  that family's parameters — a colourant's name, a tint transformation, a hival, a lookup table —
+  and is compared as the image wrote it. An array of one element is the device space written
+  another way only where that element is a device family's own name, so `[[/DeviceGray]]` is not
+  `/DeviceGray` — it has no name at its family position — and beside it says a second thing about
+  the image; a name at a nested family's position that is no family of one is left as written too.
+  A bare name that is no device colour space is the name of one of the resources in force and
+  abbreviates nothing, so `/I` and `/Indexed` name two resources and an image giving both says two
+  things; only at the head of an array does `/I` stand for `Indexed`. The device names are the
+  other way about: `/DeviceGray`, `/DeviceRGB` and `/DeviceCMYK`, and their abbreviations, name the
+  device families themselves wherever they stand (8.6.8) — never a resource of that name, whatever
+  the resources in force hold under it — and so does the array of such a family alone. A value
+  written `null` is an entry the dictionary does not have (7.3.9): it says nothing of its key, and
+  nothing another writing of that key says can disagree with it. That holds at every depth two
+  writings are compared to: two dictionaries differing only by a `null` member are the same
+  dictionary, however deep the member lies. An array's `null` element is not absent, since an
+  array's elements are its positions. One white-space byte separates `ID` from the data, a carriage
+  return and a line feed counting as the one end-of-line marker 7.2.3 makes them.
 
   An image no filter encodes is then measured: every viewer consumes the bytes its width,
   height, bit depth and colour components take, a row at a time and each row whole bytes. The
@@ -744,7 +767,12 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   structure bounds below, and before each reading of a form the page draws,
   and within one operator that shows a string at the interval below for
   glyphs; work between two checks is not interrupted, so what one check admits runs to its end
-  within the structure bounds below. A deadline is read from the
+  within the structure bounds below. The deadline is read once more when the page's reading
+  ends, whatever the page came to: a deadline that has passed by then passed while the page was
+  read, and an object a resolve did not find after it — the scan that resolve began, ended by the
+  deadline; the font the page was then shown with as unknown; the content stream then unread — is
+  not known to be absent, so the page is not listed as it stands, nor as failed, and the run ends
+  as one met in the page's content ends it. A deadline is read from the
   clock as well as from the context, so one that has passed while nothing has cancelled the
   context is still a deadline that has passed. An OCR program's outcome is taken once the program
   has exited and its stdout has ended, or once the adapter has ended it; a deadline passed by

@@ -1352,11 +1352,55 @@ func boundsAliasedOffsets(aliases, members int) []byte {
 	return out.Bytes()
 }
 
+// boundsDistinctCandidates is a file whose cross-reference stream names as
+// many objects as there are candidates, each an object of its own: its own
+// header, its own offset and a dictionary of the members given. Nothing here
+// is aliased, so no entry sends the reader to another object's header, the
+// cross-reference is never rebuilt, and what the candidates cost is what
+// reading each of them once costs. Its offsets are written four bytes wide,
+// since a file of this many objects is past the three the aliased file needs.
+func boundsDistinctCandidates(candidates, members int) []byte {
+	var out bytes.Buffer
+	out.WriteString("%PDF-1.7\n")
+	catalog := out.Len()
+	out.WriteString("1 0 obj<< /Type /Catalog >>endobj\n")
+	pages := out.Len()
+	out.WriteString("2 0 obj<< /Type /Nothing >>endobj\n")
+	body := "<< /Type /Other " + strings.Repeat("/A <</B 1>> ", members) + ">>"
+	offsets := make([]int, 0, candidates)
+	for i := 0; i < candidates; i++ {
+		offsets = append(offsets, out.Len())
+		fmt.Fprintf(&out, "%d 0 obj%sendobj\n", 3+i, body)
+	}
+	at := out.Len()
+	var entries []byte
+	put := func(typ byte, f2, f3 int) {
+		entries = append(entries, typ, byte(f2>>24), byte(f2>>16), byte(f2>>8), byte(f2), byte(f3))
+	}
+	put(0, 0, 255)
+	put(1, catalog, 0)
+	put(1, pages, 0)
+	for _, off := range offsets {
+		put(1, off, 0)
+	}
+	fmt.Fprintf(&out, "%d 0 obj<< /Type /XRef /Size %d /W [1 4 1] /Root 1 0 R /Length %d >>stream\n", 3+candidates, 4+candidates, len(entries))
+	out.Write(entries)
+	out.WriteString("\nendstream endobj\n")
+	fmt.Fprintf(&out, "startxref\n%d\n%%%%EOF\n", at)
+	return out.Bytes()
+}
+
 // Reading an object's head is charged, and what it settled is kept by the
 // offset it was read at: a cross-reference that gives thousands of object
-// numbers one offset costs one reading of that head where the head settles
-// what the object is, and where it cannot, the reading of the object itself
-// spends the allowance and meets the bound instead of running on.
+// numbers one offset costs one reading of that head, and not one for every
+// number that names it. Where the window cannot settle what the object is,
+// those numbers cost nothing further either -- but for a reason of the
+// cross-reference and not of the search. Reading one of them finds the header
+// of another object, which is a damaged cross-reference, and the rebuilt one
+// is the scan's alone: the aliases go with the cross-reference that invented
+// them, so the whole reads they would have cost are never done and the
+// allowance is not what ends the search. What that search costs where the
+// candidates are objects the file really holds is below.
 func TestBoundsHeadInspectionIsChargedAndKept(t *testing.T) {
 	for _, c := range []struct {
 		name    string
@@ -1373,15 +1417,20 @@ func TestBoundsHeadInspectionIsChargedAndKept(t *testing.T) {
 				if d == nil {
 					t.Fatalf("not opened: %v", err)
 				}
+				// Opening reads the cross-reference and nothing it names, so
+				// whatever the search below meets, it meets there.
+				if d.reconstructed {
+					t.Fatal("the document was rebuilt before the search began")
+				}
 				started := time.Now()
 				// The page tree is looked for among the objects the
 				// cross-reference names, which is where each entry's head is
-				// inspected. It is asked for directly, since rebuilding by
-				// scanning would replace the cross-reference whose aliases
-				// are the point.
+				// inspected. It is asked for directly, so that what the search
+				// costs is what this measures.
 				root := d.findPagesRoot()
 				took := time.Since(started)
-				t.Logf("%d bytes, %d aliases of one offset: %v, %d charged of %d allowed (bound %v)", len(data), aliases, took, d.parsedBytes, d.parsedBudget(), d.bound != nil || d.parsedSpent())
+				t.Logf("%d bytes, %d aliases of one offset: %v, %d charged of %d allowed (bound %v, rebuilt %v, %d entries)",
+					len(data), aliases, took, d.parsedBytes, d.parsedBudget(), d.bound != nil || d.parsedSpent(), d.reconstructed, len(d.xref))
 				if root != nil {
 					t.Error("a file that holds no page tree yielded one")
 				}
@@ -1394,17 +1443,84 @@ func TestBoundsHeadInspectionIsChargedAndKept(t *testing.T) {
 					t.Errorf("%d aliases of one offset charged %d bytes; reading one head costs more than that", aliases, d.parsedBytes)
 				}
 				if c.settled {
-					// Read once for the offset, not once for every number.
+					// The window settles what the object at that offset is, so
+					// no alias is read as an object and nothing is rebuilt: the
+					// head is read once for the offset, not once for every
+					// number.
+					if d.reconstructed {
+						t.Error("a search that settled every candidate in the window rebuilt the cross-reference")
+					}
 					if d.parsedBytes > int64(headWindow)*64 {
 						t.Errorf("%d aliases of one offset charged %d bytes; the head at that offset is read once", aliases, d.parsedBytes)
 					}
-				} else if !d.parsedSpent() {
-					// Nothing the window settles, so every alias is a whole
-					// object to read: the allowance is what ends that.
-					t.Errorf("%d aliases of an object the window cannot settle charged %d of %d without meeting the bound", aliases, d.parsedBytes, d.parsedBudget())
+					continue
+				}
+				// The window settles nothing, so the first alias is read as an
+				// object -- and the object at that offset carries another
+				// number's header. That is a damaged cross-reference, and the
+				// rebuilt one holds the objects the scan found and no aliases
+				// at all: objects 1, 2, 3 and the cross-reference stream.
+				if !d.reconstructed {
+					t.Error("an entry naming another object's header did not rebuild the cross-reference")
+				}
+				if len(d.xref) != 4 {
+					t.Errorf("the rebuilt cross-reference holds %d entries, want the 4 objects the file's headers declare", len(d.xref))
+				}
+				if _, named := d.xref[2+aliases]; named {
+					t.Errorf("the rebuilt cross-reference names object %d; the only cross-reference that declared it is the one the rebuild replaced", 2+aliases)
+				}
+				// The work the aliases would have cost is never done, so the
+				// allowance is not what ends the search.
+				if d.parsedSpent() {
+					t.Errorf("%d aliases charged %d of %d and met the bound; the aliases went with the cross-reference that invented them", aliases, d.parsedBytes, d.parsedBudget())
 				}
 			}
 		})
+	}
+}
+
+// A candidate whose head the window cannot settle is a whole object to read,
+// and the allowance the document holds its parsed objects under is what ends
+// a search through thousands of them. The candidates below are objects the
+// file really holds -- each its own header at its own offset, named by an
+// entry of its own -- so nothing sends the reader to another object's header
+// and no rebuild replaces them: what the search costs is what reading each of
+// them costs, and it costs everything the document may hold.
+func TestBoundsCandidatesTheWindowCannotSettleAreReadWhole(t *testing.T) {
+	if testing.Short() {
+		t.Skip("writes a file of fifteen megabytes")
+	}
+	// Twelve thousand of them. Reading one charges about 107,000 bytes -- a
+	// hundred members, each a dictionary of its own, charged as the parser
+	// builds them -- so the whole of them is about 1.29 GB against the
+	// ceiling of maxParsedBytesHeld, which a file this long puts the
+	// allowance at: 160 bytes for each of its own would be more still.
+	const candidates = 12000
+	data := boundsDistinctCandidates(candidates, 100)
+	d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+	if d == nil {
+		t.Fatalf("not opened: %v", err)
+	}
+	started := time.Now()
+	root := d.findPagesRoot()
+	took := time.Since(started)
+	t.Logf("%d bytes, %d candidates of their own: %v, %d charged of %d allowed (rebuilt %v, %d entries)",
+		len(data), candidates, took, d.parsedBytes, d.parsedBudget(), d.reconstructed, len(d.xref))
+	if root != nil {
+		t.Error("a file that holds no page tree yielded one")
+	}
+	if took > 30*time.Second {
+		t.Errorf("%d candidates of their own took %v", candidates, took)
+	}
+	// Every entry holds the object its number names, so nothing here is a
+	// damaged cross-reference and the candidates are the file's own.
+	if d.reconstructed || len(d.xref) != candidates+3 {
+		t.Errorf("rebuilt %v with %d entries; every entry names the object whose header stands at its offset", d.reconstructed, len(d.xref))
+	}
+	// Nothing the window settles, so every candidate is a whole object to
+	// read: the allowance is what ends that.
+	if !d.parsedSpent() {
+		t.Errorf("%d candidates the window cannot settle charged %d of %d without meeting the bound", candidates, d.parsedBytes, d.parsedBudget())
 	}
 }
 

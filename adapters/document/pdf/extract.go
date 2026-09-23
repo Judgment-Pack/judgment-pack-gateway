@@ -389,7 +389,15 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 			// the reading ends here, whatever the page came to.
 			return true
 		}
-		if err != nil && deadlineMet(ctx) != nil && isDeadline(err) {
+		if deadlineMet(ctx) != nil {
+			// The deadline passed while this page was read, whatever the page
+			// came to. A reading past the deadline is not this reader's: an
+			// object a resolve did not find after it -- the scan that resolve
+			// began, ended by the deadline; the font the page was then shown
+			// with as unknown; the content stream then unread -- is not known
+			// to be absent, so the page is not listed as it stands, nor as
+			// failed. It is not listed at all, and the run ends as it ends
+			// when the interpreter met the deadline itself.
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline passed while page %d was extracted", number, len(w.pages))})
@@ -568,6 +576,18 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	if w.d.generation != w.generation {
 		return walkStale
 	}
+	// The deadline is read once every field of the node is resolved and before
+	// anything those reads came to is called a defect. Each of them -- the
+	// inherited resources, the type, the kids -- may stand at an offset that
+	// holds no object and send the reader scanning the file, and a scan the
+	// deadline ended found what it reached and not what is there: what the
+	// reads after it then met, a stream of objects the reader could not decode
+	// among it, is no defect of the file this reader may name. Nothing it did
+	// not find after the deadline is known to be absent, so the walk ends at
+	// the deadline, as it ends where the deadline is met between two nodes.
+	if deadlineMet(w.ctx) != nil {
+		return walkDeadline
+	}
 	if defect := w.d.walkDefect(); defect != "" {
 		w.defect = defect
 		return walkDefect
@@ -580,6 +600,15 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 		return walkComplete
 	}
 	if !kidsRead {
+		// Nothing the reader did not find after the deadline is known to be
+		// absent: an offset that holds no object sends the reader scanning the
+		// file, and a scan the deadline ended found what it reached and not
+		// what is there. The walk ends at the deadline, as it ends where the
+		// deadline is met between two nodes, and the record says the reading
+		// was cut short rather than naming a defect of the file.
+		if deadlineMet(w.ctx) != nil {
+			return walkDeadline
+		}
 		w.defect = "a page-tree node's /Kids could not be read"
 		return walkDefect
 	}
@@ -603,6 +632,13 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 			return walkStale
 		}
 		if child == nil {
+			// A node not found after the deadline is not known to be absent,
+			// as a /Kids not found after it is not: the walk ends at the
+			// deadline rather than at a defect the reader cannot say the file
+			// has.
+			if deadlineMet(w.ctx) != nil {
+				return walkDeadline
+			}
 			// Why it could not be read, where reading it met something the
 			// reader can name: a bound, or a stream of objects it could not
 			// take the node out of.
