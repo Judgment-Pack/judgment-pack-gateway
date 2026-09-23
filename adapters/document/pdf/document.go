@@ -226,6 +226,13 @@ type Document struct {
 	// not an object stream -- which leaves the objects it holds unread; the
 	// walk ends at it too.
 	undecoded error
+	// noObjects is the failure of a scan that found no object in the file at
+	// all. Such a scan replaces the cross-reference with an empty one, so the
+	// document holds no object under any number: that is the file's own
+	// failure and not one cross-reference's, as a bound the scan met is, and
+	// a rebuild does not drop it. The walk ends at it, and a document is
+	// scanned once, so every reading made after it refuses the file.
+	noObjects error
 }
 
 // unread is what the cache holds for an object the reader could not read,
@@ -296,12 +303,20 @@ func (d *Document) noteFileBound(err error) {
 // could not be decoded, met while it was opened or its page tree walked.
 const undecodedMessage = "the file has an object stream the reader could not decode, met while it was opened or its page tree walked"
 
+// noObjectsMessage is the defect of a document whose cross-reference was
+// rebuilt by a scan that found no object in the file at all: the document
+// holds none, and what was read under the cross-reference the scan replaced
+// is not a reading of it.
+const noObjectsMessage = "scanning the file for objects found none, and the cross-reference the scan replaced is gone"
+
 // walkDefect is the message of the defect a walk ends at, a bound first, or
 // "" when reading objects has met none.
 func (d *Document) walkDefect() string {
 	switch {
 	case d.bound != nil, d.fileBound != nil:
 		return boundMessage
+	case d.noObjects != nil:
+		return noObjectsMessage
 	case d.undecoded != nil:
 		return undecodedMessage
 	}
@@ -326,6 +341,24 @@ func (d *Document) readingGeneration() int {
 		return d.generation
 	}
 	return d.readGeneration
+}
+
+// scanEnded is what a scan leaves behind where it ends after it has begun
+// writing its own cross-reference and before it has finished it: the entries
+// it wrote stand, since what it reached is what it read of the file, and
+// nothing read under the cross-reference it replaced does. Replacement and
+// invalidation are one step, and this is the second half of it for the ways
+// out that are not the scan's own end.
+//
+// The generation is not advanced here, and the failures of the objects being
+// dropped are not: a scan that ended at a bound ended before it replaced the
+// cross-reference this document will be read under, and the reading that
+// meets the failure it left is the reading that began before it. What ends
+// such a reading is the failure itself -- a bound the scan met, which is the
+// file's own -- or the deadline, at which every route ends.
+func (d *Document) scanEnded(err error) error {
+	d.dropCachedObjects()
+	return err
 }
 
 // forgetObjects drops everything the reader holds of the objects a
@@ -850,10 +883,18 @@ func (d *Document) reconstruct() error {
 	// entry left standing would otherwise be read under the rebuilt
 	// cross-reference, and what a page reads would depend on which
 	// cross-reference stood before the scan rather than on the file.
+	//
+	// From here the document's cross-reference is the scan's, whichever way
+	// the scan leaves: replacing it and giving up what was read under the one
+	// it replaced are one step, so that no reading made after the scan can be
+	// made from the entries of one cross-reference beside the objects of
+	// another. Every way out below therefore goes through scanEnded, and each
+	// of them leaves a document the reader must stop at rather than answer
+	// from -- a failure of the file's own, or the deadline.
 	d.xref = map[int]xrefEntry{}
 	for _, m := range matches {
 		if d.deadlinePassed() {
-			return d.deadline()
+			return d.scanEnded(d.deadline())
 		}
 		// The match must begin at a token boundary, not inside a number.
 		if m[0] > 0 && isRegular(d.data[m[0]-1]) {
@@ -868,7 +909,18 @@ func (d *Document) reconstruct() error {
 		found++
 	}
 	if found == 0 {
-		return malformed("no object found by scanning the file")
+		// The file the scan read holds no object at all, so the
+		// cross-reference it replaces is replaced by nothing. The reading made
+		// under the old one is invalidated exactly as a scan that found
+		// objects invalidates it, and the failure is kept as the file's own --
+		// a bound the scan met is kept the same way -- so that every route
+		// that reads the document after this refuses the file instead of
+		// answering, under a number the file names nothing at, out of what the
+		// discarded cross-reference read there.
+		d.forgetObjects()
+		err := malformed("no object found by scanning the file")
+		d.noObjects = err
+		return err
 	}
 	// Trailer dictionaries, in file order; a later /Root wins.
 	trailer := Dict{}
@@ -883,7 +935,7 @@ func (d *Document) reconstruct() error {
 		// exactly that -- so the deadline is read before each of them and not
 		// once per so many of them.
 		if d.deadlineNow() {
-			return d.deadline()
+			return d.scanEnded(d.deadline())
 		}
 		i := bytes.Index(d.data[at:], []byte("trailer"))
 		if i < 0 {
@@ -909,7 +961,7 @@ func (d *Document) reconstruct() error {
 		if d.parsedSpent() {
 			err := errParsedBudget()
 			d.noteFileBound(err)
-			return err
+			return d.scanEnded(err)
 		}
 		isDict := bytes.HasPrefix(d.data[lex.pos:], []byte("<<"))
 		var obj object
@@ -923,7 +975,7 @@ func (d *Document) reconstruct() error {
 			// file has more structure than the reader holds, and the next
 			// candidate would meet the same bound after reading as far again.
 			d.noteFileBound(err)
-			return err
+			return d.scanEnded(err)
 		}
 		if !isDict || err != nil {
 			continue
