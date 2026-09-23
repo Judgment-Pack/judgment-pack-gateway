@@ -22,6 +22,17 @@ func (s *boundsHeldOpen) Read([]byte) (int, error) {
 	return 0, io.EOF
 }
 
+// boundsNotReadLine is the whole of what the adapter writes on stderr when a
+// request had not been read in full by the cutoff: the refusal the document
+// package makes there, put through the same Line the command prints it with,
+// and the newline the command ends it with. The reason is the document
+// package's own wording, which it keeps inside ParseRequest rather than in
+// anything this package can name, so it is written out here.
+var boundsNotReadLine = (&document.Refusal{
+	Code:   "adapter-failed",
+	Reason: "the deadline passed and the request had not been read in full",
+}).Line() + "\n"
+
 // The deadline bounds the reading of the request as well as the work after
 // it: a writer that holds the adapter's stdin open cannot hold the adapter
 // past its deadline, and what comes back is the refusal that names the
@@ -46,7 +57,7 @@ func TestBoundsTimeoutBoundsTheReadOfTheRequest(t *testing.T) {
 	}()
 	select {
 	case got := <-done:
-		if got.code != 1 || !strings.HasPrefix(got.stderr, "adapter-failed: the deadline passed and the request had not been read in full") {
+		if got.code != 1 || got.stderr != boundsNotReadLine {
 			t.Fatalf("exit %d after %v: %q", got.code, got.took, got.stderr)
 		}
 		// The deadline, and then the wait the adapter gives a read that has
@@ -114,11 +125,12 @@ func TestBoundsRequestThatIsThereIsRecordedWhateverTheDeadline(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			code := run([]string{"--timeout", c.timeout}, strings.NewReader(in), &stdout, &stderr)
 			if code != 0 {
-				if c.starved && code == 1 && stdout.Len() == 0 &&
-					strings.HasPrefix(stderr.String(), "adapter-failed: the deadline passed and the request had not been read in full") {
+				if c.starved && code == 1 && stdout.Len() == 0 && stderr.String() == boundsNotReadLine {
 					// The read of bytes that were there had not ended by the
 					// cutoff, which is the one thing the wait past a deadline
-					// bounds, and the refusal names it.
+					// bounds, and the refusal names it and says nothing else:
+					// stderr is that one line and its newline, so a refusal
+					// that went on to say more is not counted as this one.
 					unscheduled++
 					continue
 				}
