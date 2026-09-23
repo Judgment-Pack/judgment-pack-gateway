@@ -842,6 +842,15 @@ func (d *Document) reconstruct() error {
 	if len(matches) > maxScanObjects {
 		return structureBound("more than %d objects found by scanning", maxScanObjects)
 	}
+	// The rebuilt cross-reference is the scan's alone, so the scan begins from
+	// an empty one. Everything read under the cross-reference being replaced
+	// goes with it, and so does every entry it held: a number the scan does not
+	// find is a number the file the scan read holds no object of, and the
+	// offset the damaged cross-reference gave for it names other bytes. An
+	// entry left standing would otherwise be read under the rebuilt
+	// cross-reference, and what a page reads would depend on which
+	// cross-reference stood before the scan rather than on the file.
+	d.xref = map[int]xrefEntry{}
 	for _, m := range matches {
 		if d.deadlinePassed() {
 			return d.deadline()

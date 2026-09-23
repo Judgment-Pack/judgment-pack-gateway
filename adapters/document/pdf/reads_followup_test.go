@@ -2417,6 +2417,57 @@ func TestReadsInlineImageBitsPerComponent(t *testing.T) {
 	}
 }
 
+// A depth the specification does not give is no depth the reader measures by,
+// however whole the image is at it. The image below carries exactly the bytes
+// its own declaration of three bits a component would take, so that a reader
+// admitting that depth would measure it whole and read the page: 8.9.5 gives
+// 1, 2, 4, 8 and 16 and no others, so where this image's data ends is not
+// something the file says, and the page fails rather than the record carrying
+// a reading taken at a depth the specification does not have.
+func TestReadsInlineImageAtADepthTheReaderDoesNotAdmitFailsThePage(t *testing.T) {
+	for _, where := range []struct {
+		name   string
+		inForm bool
+	}{{"drawn by the page", false}, {"drawn by a form the page draws", true}} {
+		t.Run(where.name, func(t *testing.T) {
+			// 97 samples of one three-bit component take (97*3+7)/8 = 37 bytes
+			// a row, a row being whole bytes as 8.9.7 has it, and three rows
+			// are 111: exactly what the image carries, so nothing but the depth
+			// stands between this image and a measurement that ends at its EI.
+			// The samples hold an apparent end of image and the operators of a
+			// line of text no viewer shows.
+			var samples bytes.Buffer
+			samples.Write(bytes.Repeat([]byte{'A'}, 40))
+			samples.WriteString(" EI ")
+			samples.WriteString(shown("BETWEEN", 686))
+			samples.WriteString("%" + strings.Repeat("x", 111-samples.Len()-1))
+			var content bytes.Buffer
+			content.WriteString("BI /W 97 /H 3 /BPC 3 /CS /G ID ")
+			content.Write(samples.Bytes())
+			content.WriteString("\nEI\n")
+			content.WriteString(shown("VISIBLE", 650))
+			data := readsResourcePage(content.Bytes(), "", where.inForm)
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				// The other reader measures the image at the depth it declares
+				// and reads the page; the depths this reader signs are the
+				// ones the specification gives.
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Text != "" || r.Pages[0].Status != PageFailed || len(r.Problems) != 1 {
+				t.Errorf("the record reads %s %q with problems %+v, want %s %q: three bits a component is no depth 8.9.5 gives, so the image's 111 bytes measure nothing",
+					r.Pages[0].Status, r.Pages[0].Text, r.Problems, PageFailed, "")
+			}
+			if len(r.Problems) == 1 && r.Problems[0].Code != "pdf-page-failed" {
+				t.Errorf("problems %+v", r.Problems)
+			}
+		})
+	}
+}
+
 // Samples are measured by the row: a row takes whole bytes, and the bits a
 // row does not fill are the row's too.
 func TestReadsInlineImageSampleArithmetic(t *testing.T) {
@@ -5952,6 +6003,23 @@ func readsBeforeTheStartxref(data, candidate []byte) []byte {
 	return append(out, data[i:]...)
 }
 
+// readsHiddenFromTheScan is the document given with the byte before the
+// header of the object numbered given replaced by "+", which is a regular
+// character: the scan's expression matches the header, the match begins no
+// token, and the scan passes over it, while the object stands exactly where
+// it did and is read by any cross-reference that names its offset. One byte
+// is replaced and none is added, so every offset the file states still holds.
+func readsHiddenFromTheScan(data []byte, num int) []byte {
+	header := []byte(fmt.Sprintf("\n%d 0 obj", num))
+	i := bytes.Index(data, header)
+	if i < 0 {
+		return data
+	}
+	out := append([]byte{}, data...)
+	out[i] = '+'
+	return out
+}
+
 // Reading one cross-reference section is one read from its first field to its
 // last: a stream's length, the objects it decodes through, its /W, its /Index
 // and its /Size are fields of one object. Where resolving one of them rebuilds
@@ -6101,6 +6169,102 @@ func TestReadsTheScanThatRebuildsHasAScopeOfItsOwn(t *testing.T) {
 // definitions the record was read under.
 func readsHelvetica(glyph string) string {
 	return "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << /Differences [65 /" + glyph + "] >> >>"
+}
+
+// The rebuilt cross-reference is the scan's alone: an entry the damaged one
+// held for a number the scan does not find goes with the cross-reference it
+// belonged to. The file below locates its page's font, object 77, in a table
+// the scan cannot find it by -- the byte before its header is a regular
+// character, so the header the scan's expression matches begins no token --
+// and the rebuild is begun inside the reading of a /Prev section whose /W is
+// a damaged reference, with the table's own entries standing. What the record
+// reads is what it reads of the same objects scanned from a startxref that
+// names nothing: the font is no object of the file the scan read, and a
+// reading that turned on which cross-reference stood before the scan would be
+// a reading of the reader and not of the file.
+func TestReadsTheRebuiltCrossReferenceIsTheScansAlone(t *testing.T) {
+	objects := []readsObject{
+		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+		{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 77 0 R >> >> /Contents 6 0 R >>"},
+		{6, readsStreamObject("", shown("A", 700))},
+		{20, "[1 4 2]"},
+		{77, readsHelvetica("B")},
+	}
+	// The older section's /W is object 20, whose offset the table writes as 3.
+	section := readsObject{30, "<< /Type /XRef /Size 100 /W 20 0 R /Index [88 1] /Length 7 >>\nstream\n" + string(make([]byte, 7)) + "\nendstream"}
+	hidden := readsHiddenFromTheScan(readsSectionFile(objects, 20, section, false), 77)
+	for _, c := range []struct {
+		name string
+		data []byte
+	}{
+		{"a rebuild begun inside a section the table names", hidden},
+		{"the same objects scanned from a startxref that names nothing", readsPastTheStartxref(hidden)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := extract(t, c.data)
+			if out, ok := readsPoppler(t, c.data); ok {
+				// The other reader keeps the table's entry and shows the glyph
+				// it locates; what this one signs is the file the scan read.
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Text != "�" || r.Pages[0].Unmapped != 1 {
+				t.Errorf("the record reads %s %q with %d unmapped, want %q and one: object 77 is no object of the file the scan read",
+					r.Pages[0].Status, r.Pages[0].Text, r.Pages[0].Unmapped, "�")
+			}
+			if _, named := openGenerated(t, c.data).xref[77]; named {
+				t.Error("the rebuilt cross-reference names object 77; the only cross-reference that located it is the one the rebuild replaced")
+			}
+		})
+	}
+}
+
+// An entry the damaged cross-reference held stands in the way of nothing the
+// scan found. The page's font below is an object of an object stream the scan
+// finds and decodes, and the cross-reference being replaced says two other
+// things about that number -- that it is free, and that it lies in a stream
+// which is no object stream at all. Both go with the cross-reference that said
+// them, so the object the scan registered is the page's font: an entry left
+// behind would hold the number against the file's own object.
+func TestReadsAStaleEntryDoesNotBlockAnObjectTheScanFound(t *testing.T) {
+	objects := []readsObject{
+		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		{2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+		{3, "<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 33 0 R >> >> /Contents 6 0 R >>"},
+		{6, readsStreamObject("", shown("A", 700))},
+		// The page's font is an object of this stream and of nowhere else, so
+		// the scan registers it by decoding the stream or not at all.
+		{40, readsObjectStream(33, readsHelvetica("Z"))},
+	}
+	for _, c := range []struct {
+		name     string
+		extra    []readsObject
+		inStream map[int][2]int
+	}{
+		{"an entry that says the number is free", nil, nil},
+		{"an entry that says it lies in a stream which is no object stream",
+			[]readsObject{{41, "null"}}, map[int][2]int{33: {41, 0}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			// The catalog's offset is written as 3: reading it rebuilds, with
+			// the cross-reference stream's own entries standing.
+			data := readsRawFile(append(append([]readsObject{}, objects...), c.extra...), 1, c.inStream)
+			r := extract(t, data)
+			if out, ok := readsPoppler(t, data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			if r.Fatal != nil || len(r.Pages) != 1 {
+				t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+			}
+			if r.Pages[0].Text != "Z" || r.Pages[0].Unmapped != 0 {
+				t.Errorf("the record reads %s %q with %d unmapped, want %q and none: the font is the object the scan found in the stream it decoded",
+					r.Pages[0].Status, r.Pages[0].Text, r.Pages[0].Unmapped, "Z")
+			}
+		})
+	}
 }
 
 // Reading a page's content may rebuild the cross-reference, and the bytes it
@@ -7142,6 +7306,85 @@ func TestReadsAnEmptyFlateContentStreamIsNoDefect(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Deflate data that produced output before it ended is deflate data, and is
+// not read a second time from byte zero. The retry belongs to a stream whose
+// first two bytes only looked like a zlib header and decoded nothing after
+// them; a stream that wrote and then ended prematurely has been read, and
+// reading it again would charge it twice and put the reader in the position
+// of signing whichever of two readings of one stream yielded text.
+func TestReadsDeflateThatWroteAfterAZlibHeaderIsNotReadAgain(t *testing.T) {
+	// 144 bytes beginning 78 01 00 FE FF 01, which are two readings of one
+	// stream. From byte zero: the three low bits of 0x78 are 0, 0 and 0, a
+	// nonfinal stored block, whose LEN is 01 00 and NLEN FE FF, holding the
+	// one byte 01; then 00 opens a second nonfinal stored block, LEN 80 00 and
+	// NLEN 7F FF, holding the 128 bytes of the page's text operators and the
+	// comment that pads them; then 01 00 00 FF FF is an empty final block, so
+	// that reading decodes 129 bytes and reaches the end of the data. From
+	// byte two, after the apparent zlib header 78 01: 00 opens a stored block
+	// whose LEN is FE FF -- 65,534 bytes -- and whose NLEN is 01 00, and only
+	// the 137 bytes to the end of the stream follow it, so that reading writes
+	// those 137 and ends before its block does.
+	inner := "\n" + shown("AFTER", 700)
+	inner += "%" + strings.Repeat("x", 128-len(inner)-1)
+	var stream bytes.Buffer
+	stream.Write([]byte{0x78, 0x01, 0x00, 0xFE, 0xFF, 0x01})
+	stream.Write([]byte{0x00, 0x80, 0x00, 0x7F, 0xFF})
+	stream.WriteString(inner)
+	stream.Write([]byte{0x01, 0x00, 0x00, 0xFF, 0xFF})
+	if stream.Len() != 144 || len(inner) != 128 {
+		t.Fatalf("the stream is %d bytes holding a block of %d, want 144 holding 128", stream.Len(), len(inner))
+	}
+	t.Run("the data after the header wrote before it ended", func(t *testing.T) {
+		d := budgeted(1<<20, 1<<20)
+		out, wrote, err := d.inflateDeflate(stream.Bytes()[2:])
+		if !errors.Is(err, errDeflateData) || out != nil || !wrote {
+			t.Errorf("%d bytes, wrote %v, %v; the block declares 65,534 bytes, 137 follow it, and those 137 were written",
+				len(out), wrote, err)
+		}
+		if d.budget.used != 137 {
+			t.Errorf("the reading charged %d bytes, want the 137 it wrote", d.budget.used)
+		}
+	})
+	t.Run("and the stream is not read again from byte zero", func(t *testing.T) {
+		d := budgeted(1<<20, 1<<20)
+		out, err := d.inflate(stream.Bytes())
+		if !errors.Is(err, errDeflateData) || len(out) != 0 {
+			t.Errorf("the stream decoded to %d bytes, %v; the data after the zlib header wrote before it ended", len(out), err)
+		}
+		if d.budget.used != 137 {
+			t.Errorf("the stream charged %d bytes, want the 137 the one reading wrote: a reading from byte zero would charge 129 more",
+				d.budget.used)
+		}
+	})
+	t.Run("and the page whose content it is fails", func(t *testing.T) {
+		b := &pdfgen.Builder{}
+		helv := b.Font("Helvetica", "WinAnsiEncoding", "")
+		pages := b.Next()
+		b.Add(pdfgen.Object{Body: "placeholder"})
+		cs := b.Add(pdfgen.Object{Body: "<< /Filter /FlateDecode >>", Stream: stream.Bytes(), Raw: true})
+		num := b.Add(pdfgen.Object{Body: fmt.Sprintf(
+			"<< /Type /Page /Parent %d 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 %d 0 R >> >> /Contents %d 0 R >>",
+			pages, helv, cs)})
+		b.Set(pages, pdfgen.Object{Body: fmt.Sprintf("<< /Type /Pages /Kids [%d 0 R] /Count 1 >>", num)})
+		b.Catalog(pages)
+		data := b.Bytes()
+		r := extract(t, data)
+		if out, diagnostics, ok := readsPopplerRead(t, data); ok {
+			// The other reader recovers the reading from byte zero and shows
+			// its text; a stream that says two things is a stream this reader
+			// signs neither reading of.
+			t.Logf("pdftotext reads %q, with %q as diagnostics", out, diagnostics)
+		}
+		if r.Fatal != nil || len(r.Pages) != 1 {
+			t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+		}
+		if r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" || len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+			t.Errorf("the record reads %s %q with problems %+v, want %s %q: the deflate data after the zlib header ends before its block does",
+				r.Pages[0].Status, r.Pages[0].Text, r.Problems, PageFailed, "")
+		}
+	})
 }
 
 // The "EI" that ends an image is a token of its own: two bytes another token
