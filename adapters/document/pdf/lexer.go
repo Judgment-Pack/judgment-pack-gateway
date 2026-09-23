@@ -676,6 +676,42 @@ func (p *parser) hold(n int64) error {
 	return p.allow.exhausted()
 }
 
+// appended puts item in arr, holding the room the array grows by before the
+// allocation that takes it. What the reader holds is the whole backing array
+// and not the elements in it: append grows that array by Go's own policy,
+// which leaves room past the length, and an array charged element by element
+// would be charged less than it holds. An element that fits the room the
+// array already has is held by a slot already charged and costs nothing more.
+//
+// The growth is held at the doubling Go gives a small slice -- as many new
+// slots as the array has room for now, and one where it has none -- which is
+// at or above the quarter a large slice grows by, and reconciled once the
+// growth is known: the allocator rounds a block up, which leaves a few slots
+// more than the doubling for a small array and a size class or a page for a
+// large one, and that is held then, while an estimate the growth fell short
+// of goes back. The array therefore holds what has been charged for it by the
+// time this returns, and between the two it holds at most one rounding more.
+func (p *parser) appended(arr Array, item object) (Array, error) {
+	if len(arr) < cap(arr) {
+		return append(arr, item), nil
+	}
+	estimate := int64(max(cap(arr), 1))
+	if err := p.hold(estimate * parsedSlotBytes); err != nil {
+		return nil, err
+	}
+	before := int64(cap(arr))
+	arr = append(arr, item)
+	switch grew := int64(cap(arr)) - before; {
+	case grew > estimate:
+		if err := p.hold((grew - estimate) * parsedSlotBytes); err != nil {
+			return nil, err
+		}
+	case grew < estimate:
+		p.allow.give((estimate - grew) * parsedSlotBytes)
+	}
+	return arr, nil
+}
+
 // errKeyword carries a keyword the parser met where an object was
 // expected: "endobj", "stream", "obj", or, in content mode, an operator.
 type errKeyword struct {
@@ -804,10 +840,10 @@ func (p *parser) parseObject(depth int) (object, error) {
 				}
 				return nil, err
 			}
-			if err := p.hold(parsedSlotBytes); err != nil {
+			arr, err = p.appended(arr, item)
+			if err != nil {
 				return nil, err
 			}
-			arr = append(arr, item)
 			if len(arr) > maxContainerItems {
 				return nil, fmt.Errorf("%w: array past %d items", errStructureBound, maxContainerItems)
 			}

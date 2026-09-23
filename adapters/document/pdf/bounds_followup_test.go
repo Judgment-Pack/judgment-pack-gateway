@@ -116,13 +116,16 @@ func boundsPeakLiveHeap(f func()) uint64 {
 // boundsRetained is what holding the values f returns costs: the heap with
 // them alive, less the heap once they are dropped, the heap collected on
 // both sides so that what is measured is what is held and not what was
-// allocated on the way.
-func boundsRetained(f func() []object) (retained uint64, charged int64) {
+// allocated on the way. The values are held in an array and charged as the
+// reader charges one, its slots included, so that what is measured against
+// the charge is the whole of what is held: f must grow that array by
+// appending, as the parser does, since a slice made at a capacity keeps the
+// block the allocator rounded that capacity up to while one grown by
+// appending carries the rounding in the capacity itself.
+func boundsRetained(f func() Array) (retained uint64, charged int64) {
 	held := f()
 	with := boundsLiveHeap()
-	for _, v := range held {
-		charged += parsedSlotBytes + parsedBytesOf(v)
-	}
+	charged = parsedBytesOf(held)
 	runtime.KeepAlive(held)
 	held = nil
 	return with - boundsLiveHeap(), charged
@@ -208,8 +211,8 @@ func TestBoundsChargeCoversWhatIsRetained(t *testing.T) {
 		if strings.Contains(s.name, "hundred") || strings.Contains(s.name, "sixty-five") {
 			count = n / 10
 		}
-		retained, charged := boundsRetained(func() []object {
-			held := make([]object, 0, count)
+		retained, charged := boundsRetained(func() Array {
+			var held Array
 			for i := 0; i < count; i++ {
 				held = append(held, s.make(i))
 			}
@@ -218,6 +221,66 @@ func TestBoundsChargeCoversWhatIsRetained(t *testing.T) {
 		t.Logf("%-36s %6d retained, %6d charged, each", s.name, int(retained)/count, int(charged)/count)
 		if int64(retained) > charged {
 			t.Errorf("%s: %d bytes retained for each, %d charged; the charge must cover what is held", s.name, int(retained)/count, int(charged)/count)
+		}
+	}
+}
+
+// An array is charged the room it grows to and not the elements put in it.
+// Go's append leaves room past the length, by a policy of its own: thirty-three
+// elements are held in a backing array of seventy-one slots, a hundred and
+// forty-four in three hundred and three, and an array charged a slot for each
+// element would be charged less than it holds. These are the lengths either
+// side of each growth, where the room the array has just taken is furthest
+// from the elements in it, and both reckonings are measured at each: what a
+// parse spends as it builds the array, and what parsedBytesOf makes of the
+// array it built, which must agree and must cover what Go retains. The
+// elements are integers, whose own charge leaves room over what they hold, and
+// then arrays of no elements, which are charged what they hold and no more, so
+// that what covers the second row is the room the slots take and nothing else.
+func TestBoundsAnArrayIsChargedTheRoomItGrowsTo(t *testing.T) {
+	if boundsInstrumented {
+		t.Skip("the race detector's own allocations are not the reader's, and what it retains is not what this measures")
+	}
+	for _, element := range []struct{ name, source string }{
+		{"integers", "1000000000000 "},
+		{"arrays of no elements", "[] "},
+	} {
+		for _, n := range []int{32, 33, 71, 72, 143, 144, 303, 304, 591, 592, 1023, 1024, 1535, 1536, 2560, 2561} {
+			t.Run(fmt.Sprintf("%s/%d", strings.ReplaceAll(element.name, " ", "_"), n), func(t *testing.T) {
+				const count = 1000
+				source := []byte("[" + strings.Repeat(element.source, n) + "]")
+				// A document large enough that the allowance is not what stops
+				// this: what is measured is what a parse spends.
+				d := &Document{data: make([]byte, 64<<20), budget: &inflateBudget{}}
+				var spent, modeled int64
+				var capacity int
+				retained, charged := boundsRetained(func() Array {
+					before := d.parsedBytes
+					var held Array
+					for i := 0; i < count; i++ {
+						p := &parser{lex: newLexer(source, 0).reserving(d.budgeted()), allow: d.budgeted(), contentMode: true}
+						v, err := p.parseObject(0)
+						if err != nil {
+							t.Fatalf("copy %d of %d: %v", i+1, count, err)
+						}
+						held = append(held, v)
+					}
+					spent = d.parsedBytes - before
+					for _, v := range held {
+						modeled += parsedBytesOf(v)
+					}
+					capacity = cap(held[0].(Array))
+					return held
+				})
+				runtime.KeepAlive(source)
+				t.Logf("%d %s in %d slots: %d retained, %d charged as it was built, %d reckoned from it, each", n, element.name, capacity, int(retained)/count, int(spent)/count, int(modeled)/count)
+				if spent != modeled {
+					t.Errorf("%d %s: the parse spent %d and the array it built reckons %d; the two must agree", n, element.name, spent/count, modeled/count)
+				}
+				if int64(retained) > charged {
+					t.Errorf("%d %s in %d slots: %d bytes retained for each, %d charged; the charge must cover what is held", n, element.name, capacity, int(retained)/count, int(charged)/count)
+				}
+			})
 		}
 	}
 }
@@ -1760,7 +1823,7 @@ func TestBoundsPagesPastTheBalanceAreFailedRatherThanEmpty(t *testing.T) {
 //
 // This is the calibration of the ceiling against a real document, and it
 // costs what such a document costs: five hundred pages of up to one million
-// eight hundred and eighty-seven thousand dictionaries, a file of sixteen
+// eight hundred and ninety-five thousand dictionaries, a file of sixteen
 // megabytes, and the better part of a gigabyte held while it is read. The run
 // that skips the long tests skips it; what it establishes about the shape of
 // the outcome -- pages read, then pages failed -- is held by the small test
@@ -1813,8 +1876,8 @@ func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
 		}
 	}
 	// The densest the ceiling admits at all: at three thousand seven hundred
-	// and seventy-four a page -- one million eight hundred and eighty-seven
-	// thousand dictionaries -- the page tree is walked whole and every page is
+	// and ninety a page -- one million eight hundred and ninety-five thousand
+	// dictionaries -- the page tree is walked whole and every page is
 	// listed, with what is left of the balance too little for the content of
 	// the later ones, which are listed as failed rather than left out; one
 	// dictionary a page more and the document itself is refused. Where exactly
@@ -1823,7 +1886,7 @@ func TestBoundsAnOrdinaryDenseDocumentIsReadWhole(t *testing.T) {
 	// something else, so this pair is asserted where the allocator is the
 	// ordinary one. The cases either side of it hold on any build.
 	if !boundsInstrumented {
-		const per = 3774
+		const per = 3790
 		data := boundsDensePages(500, per, false)
 		r := boundsDenseExtract(t, data)
 		pages, _, whole, charged, budget, bound := boundsDenseWalk(t, data, per)
@@ -2037,6 +2100,44 @@ func TestBoundsAnOperandOfStringsStopsThePage(t *testing.T) {
 	if peak > 256<<20 {
 		t.Errorf("the page held %d MiB at once; the bound on what its operands hold is %d MiB", peak>>20, maxOperandBytes>>20)
 	}
+}
+
+// An operand of many short arrays is past the bound on what a page's operands
+// hold, although the elements in those arrays are not: a twenty-five-kilobyte
+// file whose content names one array of forty-eight thousand arrays of
+// thirty-three integers holds sixty-seven megabytes of backing arrays, since
+// Go grows an array of thirty-three elements to seventy-one slots, and a
+// reader charging a slot for each element would say it held sixty-three. The
+// page fails and is reported; the same shape a little under the bound is read,
+// and is the control that says the bound and not the shape is what stopped the
+// other.
+func TestBoundsAnOperandOfArraysStopsThePage(t *testing.T) {
+	arrayPage := func(arrays int) []byte {
+		b := &pdfgen.Builder{Compress: true}
+		helv := b.Font("Helvetica", "WinAnsiEncoding", "")
+		content := pdfgen.Text("F1", 12, []string{"ordinary"}) + "[" + strings.Repeat("["+strings.Repeat("256 ", 33)+"]", arrays) + "]"
+		b.Catalog(b.Pages([]pdfgen.Page{{Content: content, Fonts: map[string]int{"F1": helv}}}))
+		return b.Bytes()
+	}
+	t.Run("past the bound", func(t *testing.T) {
+		data := arrayPage(48000)
+		r := extract(t, data)
+		t.Logf("one operand of 48,000 arrays of 33 integers (%d bytes): pages %+v problems %+v", len(data), r.Pages, r.Problems)
+		if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageFailed || r.Pages[0].Text != "" {
+			t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
+		}
+		if len(r.Problems) != 1 || r.Problems[0].Code != "pdf-page-failed" {
+			t.Errorf("the page failed with %+v; what it met is the bound on what its operands hold", r.Problems)
+		}
+	})
+	t.Run("under the bound", func(t *testing.T) {
+		data := arrayPage(36000)
+		r := extract(t, data)
+		t.Logf("one operand of 36,000 arrays of 33 integers (%d bytes): pages %+v problems %+v", len(data), r.Pages, r.Problems)
+		if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageOK || r.Pages[0].Text != "ordinary" || len(r.Problems) != 0 {
+			t.Fatalf("fatal %+v pages %+v problems %+v", r.Fatal, r.Pages, r.Problems)
+		}
+	})
 }
 
 // A decrypted stream is a copy the reader holds, and it is charged before it

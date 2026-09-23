@@ -876,10 +876,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   container's items with a fraction of that charged. The figures are of pages whose dense
   structure lies in their own `/Resources`, which the walk reads whole before a page is
   extracted, so they are what an extraction parses and not what a test resolved for itself: five
-  hundred pages of two thousand each, an eight-megabyte file, are charged about 570 MB and read
+  hundred pages of two thousand each, an eight-megabyte file, are charged about 566 MB and read
   whole; five hundred pages of three thousand six hundred each, fourteen megabytes, about
-  1,024 MB and read whole; five hundred pages of about three thousand seven hundred and
-  seventy-four each, fifteen megabytes, about 1,074 MB, which is the densest the ceiling admits
+  1,022 MB and read whole; five hundred pages of about three thousand seven hundred and
+  ninety each, fifteen megabytes, about 1,074 MB, which is the densest the ceiling admits
   at all — the page tree is walked whole and what is left is too little for the later pages'
   content, so they are listed as failed — and a little more than that, four thousand each among
   them, is `pdf-malformed` with no page listed. The last dictionary either side of that figure is
@@ -920,17 +920,22 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   comment that runs to its end is read once for every object it declares, holds almost nothing,
   and is bounded by the second of those. The ratio is what dense ordinary
   structure needs — the smallest dictionary a file can spell, `<</A 1>>`, is eight bytes of file
-  and a Go map of about 370 bytes held, and a pair of coordinates, `[0 0]`, about a hundred — and
-  it is what bounds a file whose objects hold, or read, the same bytes over and over, where what
-  the reader spends would otherwise grow with the square of the file: a file of 64 KiB whose
-  every object is an unterminated string running to its end holds about 10 MB of them, and one
-  whose every object ends in a comment with no line end reads about 10 MB of it. The charge is taken as each
-  value is built, so a value past the bound is never held whole, and it is measured against what
-  Go retains for each shape (`TestBoundsChargeCoversWhatIsRetained`), so the bound is a bound on
-  memory and not on an estimate of it. The entry figures above are within the bounds and within
-  `--max-bytes`, and none of them is a refusal: the process wants room for them. The overlapping
-  shapes are not — a file whose objects hold or read the same bytes over and over meets this
-  bound, and the document is `pdf-malformed` with no page listed.
+  and a Go map of about 370 bytes held, and a pair of coordinates, `[0 0]`, about a hundred and
+  thirty — and it is what bounds a file whose objects hold, or read, the same bytes over and
+  over, where what the reader spends would otherwise grow with the square of the file: a file of
+  64 KiB whose every object is an unterminated string running to its end holds about 10 MB of
+  them, and one whose every object ends in a comment with no line end reads about 10 MB of it.
+  The charge is taken as each value is built, so a value past the bound is never held whole, and
+  it is measured against what Go retains for each shape
+  (`TestBoundsChargeCoversWhatIsRetained`), so the bound is a bound on memory and not on an
+  estimate of it. An array is charged the room it grows to and not the elements put in it: Go's
+  append leaves room past the length — thirty-three elements are held in a backing array of
+  seventy-one slots — so the room is charged before the growth that takes it, at the doubling a
+  small slice gets, and reconciled to the room the growth left once it is known, what was
+  charged and not taken going back to the balance. The entry figures above are within the bounds
+  and within `--max-bytes`, and none of them is a refusal: the process wants room for them. The
+  overlapping shapes are not — a file whose objects hold or read the same bytes over and over
+  meets this bound, and the document is `pdf-malformed` with no page listed.
 
   A `/Filter` name whose bytes are not valid UTF-8 is recorded as `null`, the way a `/R` outside
   the canonical range is: the record carries the name the document declared or nothing, not a
