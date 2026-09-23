@@ -233,6 +233,16 @@ type Document struct {
 	// a rebuild does not drop it. The walk ends at it, and a document is
 	// scanned once, so every reading made after it refuses the file.
 	noObjects error
+	// scanUnfinished is the failure of a scan the reader could not finish: a
+	// defect it could not continue past was met after it had replaced the
+	// cross-reference and before it had written the whole of the one it was
+	// building. What the document holds is the part of a cross-reference the
+	// scan had reached, which is a reading of neither the file nor the
+	// cross-reference it replaced: that is the file's own failure, as a scan
+	// that found no object is, and a rebuild does not drop it. The walk ends
+	// at it, and a document is scanned once, so every reading made after it
+	// refuses the file.
+	scanUnfinished error
 }
 
 // unread is what the cache holds for an object the reader could not read,
@@ -309,6 +319,14 @@ const undecodedMessage = "the file has an object stream the reader could not dec
 // is not a reading of it.
 const noObjectsMessage = "scanning the file for objects found none, and the cross-reference the scan replaced is gone"
 
+// scanUnfinishedMessage is the defect of a document whose scan could not be
+// finished: the cross-reference it was writing is written in part, and the one
+// it replaced is gone. It is a failure of its own and not the failure of a
+// scan that found no object: the scan may have found many, and a record that
+// said none were found would say of the file something the reader did not
+// meet.
+const scanUnfinishedMessage = "scanning the file for objects could not be finished, and the cross-reference the scan replaced is gone"
+
 // walkDefect is the message of the defect a walk ends at, a bound first, or
 // "" when reading objects has met none.
 func (d *Document) walkDefect() string {
@@ -317,6 +335,8 @@ func (d *Document) walkDefect() string {
 		return boundMessage
 	case d.noObjects != nil:
 		return noObjectsMessage
+	case d.scanUnfinished != nil:
+		return scanUnfinishedMessage
 	case d.undecoded != nil:
 		return undecodedMessage
 	}
@@ -892,6 +912,28 @@ func (d *Document) reconstruct() error {
 	// of them leaves a document the reader must stop at rather than answer
 	// from -- a failure of the file's own, or the deadline.
 	d.xref = map[int]xrefEntry{}
+	// A panic is a way out too, and the rule holds for it as it holds for the
+	// returns: a defect the scan could not continue past leaves the document
+	// holding the part of a cross-reference the scan had written, so the
+	// reading made under the one it replaced is given up here exactly as the
+	// zero-found exit gives it up -- the objects, the fonts and the CMaps
+	// dropped, and the generation advanced, so that a reading begun before the
+	// scan can tell that what it gathered no longer stands. The failure is the
+	// file's own, since the scan reads the file and not the objects of one
+	// cross-reference, and a rebuild does not drop it: a scan the reader could
+	// not finish leaves a document the reader must stop at, whatever part of
+	// the file the scan had reached. The panic is raised again so that the
+	// reading above ends where it would have ended -- the page being
+	// interpreted is reported as the page the reader could not continue
+	// through -- and so that this restores what the scan replaced and decides
+	// nothing else.
+	defer func() {
+		if r := recover(); r != nil {
+			d.forgetObjects()
+			d.scanUnfinished = malformed("the scan of the file could not be finished")
+			panic(r)
+		}
+	}()
 	for _, m := range matches {
 		if d.deadlinePassed() {
 			return d.scanEnded(d.deadline())

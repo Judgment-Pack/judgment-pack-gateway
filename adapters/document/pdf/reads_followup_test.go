@@ -6361,6 +6361,156 @@ func TestReadsAScanThatFindsNothingRefusesTheDocument(t *testing.T) {
 	})
 }
 
+// A scan the reader could not finish leaves no reading of the document to
+// publish. Replacing the cross-reference and giving up what was read under the
+// one it replaced are one step whichever way the scan leaves, a defect it could
+// not continue past included: a document left holding the part of a
+// cross-reference the scan had written, beside the objects the discarded one
+// named, would answer out of both at once -- the page after the one the scan
+// was begun for reads its text through a font held under a number the part
+// written names nothing at. The failure is the file's own, as a bound the scan
+// met is, so every route that reads the document after it refuses the file
+// rather than listing pages of a reading the scan cut in half.
+//
+// The defect is injected through the seam the package's own tests use for it: a
+// deadline the reader cannot read while the document is scanning, whose reading
+// panics inside the scan. No sequence of bytes is known to panic the scan on
+// its own -- the reader is written not to -- so the case is of what the reader
+// does with a defect it did not anticipate, wherever one comes from, and not of
+// a file that raises one.
+//
+// The file below indexes two pages sharing one content stream, which shows a
+// glyph through a font the first page's reading caches and then selects a
+// second font whose offset the table has damaged: resolving it sends the reader
+// scanning, and the scan panics after it has reset the cross-reference. Each
+// case names the objects hidden from the scan by the regular character before
+// their headers -- which the cross-reference reads past and the scan's
+// expression matches as no token -- so that the part of a cross-reference the
+// scan had written is a different part in each.
+func TestReadsAScanThatCannotFinishLeavesNoReadingPublishable(t *testing.T) {
+	page := "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R /F2 8 0 R >> >> /Contents 6 0 R >>"
+	objects := []readsObject{
+		{1, "<< /Type /Catalog /Pages 2 0 R >>"},
+		{2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>"},
+		{3, page},
+		{4, page},
+		{6, readsStreamObject("", "BT /F1 12 Tf 1 0 0 1 72 700 Tm (A) Tj /F2 12 Tf (A) Tj ET\n")},
+		{7, readsHelvetica("Z")},
+		{8, readsHelvetica("B")},
+		// An object of no part in the page tree, which the scan does find.
+		{99, "<< /Type /Metadata >>"},
+	}
+	file := func(hidden ...int) []byte {
+		data := readsTableFile(objects, 8, "")
+		for _, num := range hidden {
+			data = readsHiddenFromTheScan(data, num)
+		}
+		return data
+	}
+	// The objects hidden from the scan in the first case, which leaves it
+	// holding the unrelated object alone.
+	nothingOfTheTree := []int{1, 2, 3, 4, 6, 7, 8}
+	for _, c := range []struct {
+		name string
+		data []byte
+		// reached are the objects the part of a cross-reference the scan had
+		// written must name, so that each case says what it is a case of: the
+		// scan writes its entries before it reads the deadline that panics, and
+		// a case whose scan had reached less than this is a case of something
+		// else.
+		reached []int
+	}{
+		{"a scan that had reached an unrelated object alone", file(nothingOfTheTree...), []int{99}},
+		// The tree and the content stand where the scan finds them, and the
+		// fonts do not: a document that kept the part written and said nothing
+		// of the scan would walk both pages and read their text through no font
+		// at all, which is a reading of neither cross-reference.
+		{"a scan that had reached the page tree and the content", file(7, 8), []int{1, 2, 3, 4, 6, 99}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if out, ok := readsPoppler(t, c.data); ok {
+				t.Logf("pdftotext reads %q", out)
+			}
+			// The reading is driven through the package's own composition: the
+			// seam holds the document to know when it is scanning, and Extract
+			// opens the document itself.
+			ctx := &readsScanPanic{Context: context.Background()}
+			r := &Result{}
+			d, stop := openDocument(ctx, c.data, testOptions(), r)
+			if stop != nil {
+				t.Fatalf("opening the file ended with %v", stop)
+			}
+			ctx.doc = d
+			w, generation, stop := walkPages(ctx, d, testOptions(), r)
+			if stop != nil || d.generation != generation || len(w.pages) != 2 {
+				t.Fatalf("the walk ended with %v at generation %d with %d pages; the table names both pages, and the tree holds no damaged offset", stop, d.generation, len(w.pages))
+			}
+			if refused := extractPages(ctx, w, testOptions(), r); refused {
+				t.Fatal("the reading ended at a bound of the file; the defect the scan could not continue past is what ends it")
+			}
+			if len(r.Pages) != 0 || r.TextBytes != 0 {
+				t.Errorf("the record lists %+v holding %d bytes of text; the scan could not be finished while the first page was read, and no page read after that is this document's",
+					r.Pages, r.TextBytes)
+			}
+			if d.generation == generation || d.scanUnfinished == nil || len(d.cache) != 0 {
+				t.Errorf("the document stands at generation %d holding %d objects, its failure being %v, where it stood at %d before the page was read; the scan replaced the cross-reference and the reading made under the one it replaced is given up with it",
+					d.generation, len(d.cache), d.scanUnfinished, generation)
+			}
+			for _, num := range c.reached {
+				if _, named := d.xref[num]; !named {
+					t.Fatalf("the cross-reference the scan left holds %d entries and does not name object %d; the case is of what the scan had written when it could not go on", len(d.xref), num)
+				}
+			}
+			if len(d.xref) != len(c.reached) {
+				t.Errorf("the cross-reference the scan left names %d objects, want the %d this case is of", len(d.xref), len(c.reached))
+			}
+			// The reading begun again, as Extract begins it again where the
+			// cross-reference was rebuilt while the pages were read. The scan
+			// ran once, so this walk is of the part of a cross-reference it
+			// left: the document is refused, and the record says which failure
+			// of the file it was refused for.
+			again := &Result{}
+			if w, _, stop := walkPages(ctx, d, testOptions(), again); stop == nil {
+				t.Fatalf("the walk after the scan gathered %d pages and ended with %v; a scan the reader could not finish leaves a document the reader must stop at", len(w.pages), stop)
+			}
+			if again.Fatal == nil || again.Fatal.Code != "pdf-malformed" || again.Fatal.Message != scanUnfinishedMessage || len(again.Pages) != 0 {
+				t.Errorf("the record reads fatal %+v with pages %+v, want %q", again.Fatal, again.Pages, scanUnfinishedMessage)
+			}
+		})
+	}
+	// What the scan left behind, read from the document itself: the font at a
+	// good offset is read and held, and the resolve that begins the scan leaves
+	// nothing of what was read, a generation that has moved, and the file's own
+	// failure.
+	t.Run("what the document holds after the scan", func(t *testing.T) {
+		d := openGenerated(t, file(nothingOfTheTree...))
+		d.ctx = &readsScanPanic{Context: context.Background(), doc: d}
+		if _, read := d.resolveRead(ref{7, 0}); !read {
+			t.Fatal("the font at the offset the table names was not read; the cross-reference locates it")
+		}
+		held, generation := len(d.cache), d.generation
+		if held == 0 {
+			t.Fatal("the font the reader read is held under no number; the case is of a reading the scan invalidates")
+		}
+		panicked := func() (panicked bool) {
+			defer func() { panicked = recover() != nil }()
+			d.resolveRead(ref{8, 0})
+			return false
+		}()
+		if !panicked {
+			t.Fatal("the resolve at the broken offset ended without a panic; the seam raises the defect inside the scan, and the scan leaves through it")
+		}
+		if d.scanUnfinished == nil || len(d.cache) != 0 || d.generation == generation {
+			t.Errorf("the document holds %d objects at generation %d, its failure being %v, where it held %d objects at generation %d before the scan; a scan the reader could not finish leaves no reading of the cross-reference it replaced",
+				len(d.cache), d.generation, d.scanUnfinished, held, generation)
+		}
+		t.Logf("the scan left %d entries behind", len(d.xref))
+		if got := d.walkDefect(); got != scanUnfinishedMessage {
+			t.Errorf("the walk would end at %q, want %q", got, scanUnfinishedMessage)
+		}
+	})
+}
+
 // An entry the damaged cross-reference held stands in the way of nothing the
 // scan found. The page's font below is an object of an object stream the scan
 // finds and decodes, and the cross-reference being replaced says two other
