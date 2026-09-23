@@ -588,6 +588,15 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 		return walkComplete
 	}
 	if !kidsRead {
+		// Nothing the reader did not find after the deadline is known to be
+		// absent: an offset that holds no object sends the reader scanning the
+		// file, and a scan the deadline ended found what it reached and not
+		// what is there. The walk ends at the deadline, as it ends where the
+		// deadline is met between two nodes, and the record says the reading
+		// was cut short rather than naming a defect of the file.
+		if deadlineMet(w.ctx) != nil {
+			return walkDeadline
+		}
 		w.defect = "a page-tree node's /Kids could not be read"
 		return walkDefect
 	}
@@ -611,6 +620,13 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 			return walkStale
 		}
 		if child == nil {
+			// A node not found after the deadline is not known to be absent,
+			// as a /Kids not found after it is not: the walk ends at the
+			// deadline rather than at a defect the reader cannot say the file
+			// has.
+			if deadlineMet(w.ctx) != nil {
+				return walkDeadline
+			}
 			// Why it could not be read, where reading it met something the
 			// reader can name: a bound, or a stream of objects it could not
 			// take the node out of.

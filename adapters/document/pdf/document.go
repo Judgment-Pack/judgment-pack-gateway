@@ -822,6 +822,21 @@ func (d *Document) reconstruct() error {
 	defer func() {
 		d.reading, d.readGeneration, d.scanning, d.resolving = reading, readGeneration, scanning, resolving
 	}()
+	// The work allowance of a page being extracted is put aside with that
+	// read. The scan is a reading of the file, not of the page whose resolve
+	// began it: what it decodes is charged to the balance every other reading
+	// of the file spends, and a bound it meets there is the file's own,
+	// exactly as they are for a scan begun at the file's own startxref. A page
+	// half way through its allowance would otherwise lend the scan what little
+	// it had left, so that the same objects are read or refused by where the
+	// scan happened to begin -- and what the scan decoded would go uncharged
+	// against the file, since a page's work is charged instead of the
+	// document's balance. The page's scope is put back as it stood and no
+	// better: what it spent before the scan stays spent, what the scan spent
+	// stays on the document's balance, and nothing is given back.
+	pageWork, pageWorking := d.pageWork, d.pageWorking
+	d.pageWork, d.pageWorking = 0, false
+	defer func() { d.pageWork, d.pageWorking = pageWork, pageWorking }()
 	found := 0
 	matches := objHeader.FindAllSubmatchIndex(d.data, maxScanObjects+1)
 	if len(matches) > maxScanObjects {
