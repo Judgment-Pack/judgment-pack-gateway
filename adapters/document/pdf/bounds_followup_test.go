@@ -333,9 +333,19 @@ func TestBoundsAnArrayIsChargedTheRoomItGrowsTo(t *testing.T) {
 // boundsREADMESays requires that adapters/README.md's prose holds the
 // sentence given, whatever line ends its wrapping put in the middle of it: the
 // tables are checked cell by cell elsewhere, and this is what holds a figure
-// written into a paragraph to the measurement it came from.
+// written into a paragraph to the measurement it came from. The README states
+// what the reader charges in the build it ships in, and a charge follows the
+// capacity append grows an array to, which the race detector's allocator
+// changes -- the dense document below is charged about 542 MB under it against
+// 566 without -- so an instrumented binary measures the detector's figure and
+// not the one the README states, and the prose is checked where the
+// allocations are the reader's own.
 func boundsREADMESays(t *testing.T, want string) {
 	t.Helper()
+	if boundsInstrumented {
+		t.Logf("the race detector's allocations are not the reader's: not holding adapters/README.md to %q", want)
+		return
+	}
 	raw, err := os.ReadFile("../../README.md")
 	if err != nil {
 		t.Fatal(err)
