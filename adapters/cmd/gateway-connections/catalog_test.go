@@ -26,7 +26,7 @@ func TestCatalogCLIHasNoAccountOrFilesystemPrerequisite(t *testing.T) {
 		raw, err := cmd.Output()
 		if len(flags) == 1 {
 			var catalog connections.Catalog
-			if err != nil || json.Unmarshal(raw, &catalog) != nil || catalog.Version != 2 || len(catalog.Sources) != 1 || len(catalog.Providers) != 4 {
+			if err != nil || json.Unmarshal(raw, &catalog) != nil || catalog.Version != 2 || len(catalog.Sources) != 2 || len(catalog.Providers) != 4 {
 				t.Fatalf("catalog command failed: %s %v", raw, err)
 			}
 		} else if err == nil || len(raw) != 0 {

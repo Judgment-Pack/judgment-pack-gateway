@@ -1,4 +1,4 @@
-// adapter-web reads one explicitly selected public HTTPS page through the gateway.
+// adapter-web reads public HTTPS pages or discovers a bounded website through the gateway.
 package main
 
 import (
@@ -11,7 +11,8 @@ import (
 
 func main() { os.Exit(run()) }
 func run() int {
-	if len(os.Args) != 1 {
+	discover := len(os.Args) == 2 && os.Args[1] == "--discover"
+	if len(os.Args) != 1 && !discover {
 		return 2
 	}
 	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 8193))
@@ -19,7 +20,12 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "web-invalid-request")
 		return 1
 	}
-	out, err := websource.Read(context.Background(), raw)
+	var out []byte
+	if discover {
+		out, err = websource.Discover(context.Background(), raw)
+	} else {
+		out, err = websource.Read(context.Background(), raw)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1

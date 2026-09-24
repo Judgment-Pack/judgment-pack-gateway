@@ -131,13 +131,25 @@ func (f fetcher) dialPublic(ctx context.Context, network, address string) (net.C
 }
 
 type response struct {
-	raw   []byte
-	media string
-	url   string
-	tls   *tls.ConnectionState
+	raw    []byte
+	media  string
+	url    string
+	tls    *tls.ConnectionState
+	status int
+}
+
+// readPolicy is internal to the adapter: callers cannot choose network rules.
+type readPolicy struct {
+	before    func(context.Context, *url.URL) error
+	maxBytes  int
+	remaining *int
+	robots    bool
 }
 
 func (f fetcher) read(ctx context.Context, rawURL string) (response, error) {
+	return f.readWith(ctx, rawURL, readPolicy{maxBytes: MaxBytes})
+}
+func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy) (response, error) {
 	current, err := admittedURL(rawURL)
 	if err != nil {
 		return response{}, err
@@ -146,6 +158,11 @@ func (f fetcher) read(ctx context.Context, rawURL string) (response, error) {
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	for redirects := 0; redirects <= 5; redirects++ {
+		if policy.before != nil {
+			if err := policy.before(ctx, current); err != nil {
+				return response{}, err
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, "GET", current.String(), nil)
 		if err != nil {
 			return response{}, ErrURL
@@ -176,6 +193,10 @@ func (f fetcher) read(ctx context.Context, rawURL string) (response, error) {
 			}
 			continue
 		}
+		if policy.robots && res.StatusCode != 200 && res.TLS != nil && len(res.TLS.VerifiedChains) > 0 {
+			res.Body.Close()
+			return response{url: current.String(), tls: res.TLS, status: res.StatusCode}, nil
+		}
 		if res.StatusCode != 200 || res.TLS == nil || len(res.TLS.VerifiedChains) == 0 {
 			res.Body.Close()
 			return response{}, ErrNetwork
@@ -189,19 +210,27 @@ func (f fetcher) read(ctx context.Context, rawURL string) (response, error) {
 			res.Body.Close()
 			return response{}, ErrMedia
 		}
-		if res.ContentLength > MaxBytes {
+		limit := policy.maxBytes
+		if policy.remaining != nil && *policy.remaining <= limit {
+			// Reserve the overflow probe within the total crawl budget.
+			limit = *policy.remaining - 1
+		}
+		if limit <= 0 || res.ContentLength > int64(limit) {
 			res.Body.Close()
 			return response{}, ErrLimit
 		}
-		raw, err := io.ReadAll(io.LimitReader(res.Body, MaxBytes+1))
+		raw, err := io.ReadAll(io.LimitReader(res.Body, int64(limit)+1))
 		res.Body.Close()
+		if policy.remaining != nil {
+			*policy.remaining -= len(raw)
+		}
 		if err != nil || ctx.Err() != nil {
 			return response{}, ErrNetwork
 		}
-		if len(raw) == 0 || len(raw) > MaxBytes {
+		if len(raw) == 0 && !policy.robots || len(raw) > limit {
 			return response{}, ErrLimit
 		}
-		return response{raw, media, current.String(), res.TLS}, nil
+		return response{raw: raw, media: media, url: current.String(), tls: res.TLS, status: res.StatusCode}, nil
 	}
 	return response{}, ErrRedirect
 }
