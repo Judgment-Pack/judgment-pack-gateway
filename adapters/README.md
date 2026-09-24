@@ -750,12 +750,16 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   strictly past the cutoff, so that a read stamped after it is necessarily a late read: the
   refusal says that no read had ended by the cutoff, and not that none had ended by the moment
   the adapter looked. That has one exception, and it is a refusal: the looks such an arbitration
-  makes are counted, and a clock that has stood still for 4,096 looks is treated as past the
-  cutoff, so a read that then ends exactly at the cutoff is refused. A clock that advances never
-  reaches it — the adapter reads the system clock, and the cutoff's own timer has fired before
-  the adapter looks, so the first reading settles it — and without the exception a clock that
-  never advanced, for a read that never ended, would be waited on for ever. Nothing there is an
-  elapsed time: what ends the wait is a reading of the clock, not an interval. What the cutoff
+  makes are counted, and 4,096 looks that found no read ended and no reading strictly past the
+  cutoff are treated as past it, so a read that then ends exactly at the cutoff is refused. What
+  is counted is the looks and not a clock standing still — a clock advancing a nanosecond a look,
+  from far enough behind the cutoff, is exhausted by them with the cutoff still ahead of it. The
+  adapter never reaches the exception: it reads the system clock, and the cutoff's own timer has
+  fired before the adapter looks, so the first reading settles it. Without the exception a clock
+  that did not arrive, for a read that never ended, would be waited on for ever. What an
+  exhausted arbitration refuses stays refused, and no read is taken after it: a result the read
+  hands over in the meantime is not what decides. Nothing there is an elapsed time: what ends the
+  wait is a reading of the clock, not an interval. What the cutoff
   does not promise is that a read the operating system has not finished scheduling will be taken.
   `durationMs` runs from the instant the adapter turns to reading the request, so it carries that
   reading as well as the work after it. While the document is opened — its

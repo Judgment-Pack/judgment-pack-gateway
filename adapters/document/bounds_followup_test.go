@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"adapters/internal/pdfgen"
@@ -71,11 +72,11 @@ func boundsRestoreReadSeams(t *testing.T) {
 	t.Helper()
 	clock, stamp, waiting := readClock, readStamp, readWaiting
 	stamping, stamped, arbitrated := readStamping, readStamped, readArbitrated
-	locking, receiving := readLocking, readReceiving
+	locking, receive := readLocking, readReceive
 	t.Cleanup(func() {
 		readClock, readStamp, readWaiting = clock, stamp, waiting
 		readStamping, readStamped, readArbitrated = stamping, stamped, arbitrated
-		readLocking, readReceiving = locking, receiving
+		readLocking, readReceive = locking, receive
 	})
 }
 
@@ -91,7 +92,7 @@ func boundsReadAt(t *testing.T, deadline, now, ended time.Time) ([]byte, error) 
 	readStamp = func() time.Time { return ended }
 	readStamping = nil
 	readArbitrated = nil
-	readLocking, readReceiving = nil, nil
+	readLocking, readReceive = nil, receiveRead
 	published := make(chan struct{})
 	readStamped = func(time.Time) { close(published) }
 	r := &boundsDrivenRead{release: make(chan struct{}), data: "hello"}
@@ -191,7 +192,7 @@ func TestBoundsRequestReadIsDecidedByAnInstant(t *testing.T) {
 }
 
 // boundsStalledClockEscape is the look at which the standing clock of the
-// stalled-clock test below gives up standing still and moves past the cutoff.
+// exhaustion helper below gives up standing still and moves past the cutoff.
 // It is past every look an arbitration is allowed, so a reader that bounds its
 // looks never reaches it and the clock stands still for every look it makes;
 // a reader that does not bound them is let out here rather than left looking
@@ -209,14 +210,37 @@ const boundsStalledClockEscape = requestArbitrationSpins + 64
 // the result over on a decision the instant does not call for: what the test
 // establishes is the arbitration's own, and a wrong decision is not to be
 // rescued by the result arriving anyway. An on-time request's result is
-// published only once the arbitration has entered the receive it committed to
-// -- the seam it calls immediately before that receive is what publishes it --
-// so that a reader which decided to wait and then did not wait finds the
-// channel as empty as it was when it looked; a refused one's is published and
-// waited for before the arbitration returns, so that what refuses it is the
-// instant it carries and not an empty channel. Nothing here is timed: the
-// seams are the whole of the ordering.
+// published from inside the receive the arbitration makes for it, and the
+// receive the reader makes there is the adapter's own: the replacement records
+// that the reader came to it and then hands the same channel to receiveRead, so
+// what waits is the operation the adapter ships and not one the test wrote. A
+// refused request's result is published and waited for before the arbitration
+// returns, so that what refuses it is the instant it carries and not an empty
+// channel. Nothing here is timed: the seams are the whole of the ordering.
+//
+// The reading runs in a bubble, because one step of that ordering is not a
+// seam: the result is held back for an hour of the bubble's clock after the
+// reader has come to the receive and everything in the bubble has blocked, and
+// is published only then. The bubble's clock moves only when every goroutine in
+// it is durably blocked, so a pause inside the receive expires before the hour
+// does, and so does any other wait shorter than it. What this establishes is
+// therefore that a receive which returns while the result is unpublished, after
+// waiting anything less than that hour, is caught: it finds the channel empty
+// under every schedule. It does not establish that the reader is blocked on the
+// channel itself -- synctest.Wait reports a sleep as durable blocking just as
+// it reports a receive -- and a receive that paused for longer than the hour
+// and then looked once would find the result there.
 func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration, want bool) ([]byte, error) {
+	t.Helper()
+	var got []byte
+	var err error
+	synctest.Test(t, func(t *testing.T) { got, err = boundsDriveHeldRead(t, past, want) })
+	return got, err
+}
+
+// boundsDriveHeldRead is boundsReadHeldPastTheCutoff's reading, inside the
+// bubble.
+func boundsDriveHeldRead(t *testing.T, past time.Duration, want bool) ([]byte, error) {
 	t.Helper()
 	boundsRestoreReadSeams(t)
 	// A deadline old enough that the floor is the cutoff, and a clock far
@@ -239,16 +263,41 @@ func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration, want bool) ([
 	readStamped = func(time.Time) { close(published) }
 	readWaiting = func() { <-reached }
 	readLocking = nil
-	// The result is handed over inside the receive seam, which is to say at
-	// the instant the arbitration blocks on the result and not before: an
-	// arbitration that never enters that receive never releases it, and the
-	// channel it looks at is empty.
-	receiving := make(chan struct{})
-	var receivingOnce sync.Once
+	// The receive the arbitration makes for an on-time result is this
+	// function, and not a seam beside it: it records that the reader came
+	// here, and it then hands the channel to the receive the adapter ships,
+	// so that the wait the test establishes is that one. An arbitration that
+	// never comes here never publishes the result and never waits for one, so
+	// the channel it looks at afterwards is empty; one that kept a seam and
+	// dropped the wait has kept nothing, since there is no seam left to keep.
+	//
+	// The result is published an hour of the bubble's clock after everything
+	// in the bubble has blocked with the reader in that receive. A receive that
+	// did not wait -- one made nonblocking, or one that pauses and then looks
+	// once -- returns before the hour has passed, since its pause is on the same
+	// clock and shorter, and looks at an empty channel however the goroutines
+	// are scheduled; one that waits on the channel is still waiting when the
+	// hour ends and the result arrives. The arbitration has decided by then and
+	// its timer has fired, so nothing else in the reading is on that clock. A
+	// reader that returns before the hour ends the hold as well, so that what
+	// reports it is the assertions below and not the bubble finding a waiter
+	// left asleep behind the test.
+	production := readReceive
+	returned := make(chan struct{})
+	received := make(chan struct{})
+	var receivedOnce sync.Once
 	decided := make(chan bool, 1)
-	readReceiving = func() {
-		receivingOnce.Do(func() { close(receiving) })
-		free()
+	readReceive = func(done <-chan read) read {
+		receivedOnce.Do(func() { close(received) })
+		go func() {
+			synctest.Wait()
+			select {
+			case <-time.After(time.Hour):
+			case <-returned:
+			}
+			free()
+		}()
+		return production(done)
 	}
 	readArbitrated = func(taken bool) {
 		decided <- taken
@@ -275,6 +324,7 @@ func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration, want bool) ([
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	got, err := readWithin(ctx, r, 1<<20)
+	close(returned)
 	// Whatever the arbitration did, the read is let go and waited for before
 	// the seams it reads are put back.
 	free()
@@ -285,13 +335,13 @@ func boundsReadHeldPastTheCutoff(t *testing.T, past time.Duration, want bool) ([
 			t.Errorf("the arbitration made %v of a read stamped %v from the cutoff; the instant makes it %v", taken, past, want)
 		} else if want {
 			// A read the arbitration decided was on time is waited for in the
-			// receive the seam announces. One that returned without entering
-			// that receive released nothing, and whatever it returned it did
-			// not wait for the result it had committed to waiting for.
+			// receive the test put in its place. One that returned without
+			// making that receive released nothing, and whatever it returned
+			// it did not wait for the result it had committed to waiting for.
 			select {
-			case <-receiving:
+			case <-received:
 			default:
-				t.Error("the arbitration decided to wait for an on-time read and returned without entering the receive")
+				t.Error("the arbitration decided to wait for an on-time read and returned without making the receive")
 			}
 		}
 	default:
@@ -331,6 +381,16 @@ func TestBoundsARequestStampedAfterTheCutoffIsRefused(t *testing.T) {
 // committed the empty arbitration while its clock stood at the cutoff would
 // refuse a request the next look showed had arrived in time, and which of the
 // two goroutines the runtime ran first would be what decided.
+//
+// The plateau this drives is one look long, and the test drives it rather than
+// hoping for it: the read is released inside the first look, and the second is
+// not taken until that read has recorded its stamp. The wait for the stamp is
+// outside the mutex the stamp is written under -- the seam the arbitration
+// calls immediately before it takes the lock -- so it waits on the read and not
+// on the lock. Without it the read could be left unscheduled for every look an
+// arbitration is allowed, and a reader that then refused the request would be
+// right to: an exhausted plateau is what the exhaustion tests below drive, and
+// this one must not depend on the schedule to avoid it.
 func TestBoundsAnEmptyArbitrationWaitsForTheClock(t *testing.T) {
 	boundsRestoreReadSeams(t)
 	// The cutoff is long past by the clock the timer runs on, so the wait is
@@ -342,10 +402,13 @@ func TestBoundsAnEmptyArbitrationWaitsForTheClock(t *testing.T) {
 	r := &boundsDrivenRead{release: make(chan struct{}), data: "hello"}
 	var readOnce, publishOnce sync.Once
 	endRead := func() { readOnce.Do(func() { close(r.release) }) }
+	t.Cleanup(endRead)
 	release := make(chan struct{})
 	publish := func() { publishOnce.Do(func() { close(release) }) }
+	t.Cleanup(publish)
+	stamped := make(chan struct{})
 	published := make(chan struct{})
-	var looks atomic.Int32
+	var looks, locks atomic.Int32
 	readClock = func() time.Time { return now }
 	readStamp = func() time.Time {
 		if looks.Add(1) == 1 {
@@ -357,12 +420,22 @@ func TestBoundsAnEmptyArbitrationWaitsForTheClock(t *testing.T) {
 		}
 		return cutoff
 	}
+	// Every look after the first waits for the read the first look released to
+	// have recorded its stamp. This seam is called before the lock is taken, so
+	// the wait is on the read and the second look finds the stamp it was told
+	// to find.
+	readLocking = func() {
+		if locks.Add(1) > 1 {
+			<-stamped
+		}
+	}
 	// Nothing is published while the arbitration is deciding: a refusal here
-	// is the arbitration's own and not an empty channel's.
-	readStamping = func(time.Time) { <-release }
+	// is the arbitration's own and not an empty channel's. The stamp is
+	// recorded before this is called, so the look waiting on it finds it.
+	readStamping = func(time.Time) { close(stamped); <-release }
 	readStamped = func(time.Time) { close(published) }
 	readWaiting = nil
-	readLocking, readReceiving = nil, nil
+	readReceive = receiveRead
 	decided := make(chan bool, 1)
 	readArbitrated = func(taken bool) {
 		decided <- taken
@@ -391,24 +464,29 @@ func TestBoundsAnEmptyArbitrationWaitsForTheClock(t *testing.T) {
 	}
 }
 
-// A clock that stands still is the one exception to that, and it is a refusal.
+// Looks that find nothing are the one exception to that, and it is a refusal.
 // The looks an empty arbitration makes are counted, because an unbounded wait
-// on a clock that never advances, for a read that never ends, would not return
-// at all; where those looks are exhausted with the clock still not past the
-// cutoff, the clock is treated as past and the request is refused although a
-// read stamped exactly the cutoff is there to be had. This drives exactly
-// that: the clock the stamps come from stands at the cutoff for every look the
-// arbitration is allowed, the read then ends and records a stamp of exactly
-// the cutoff before the final receive, with its publication held so that what
-// refuses the request is the exhausted look and not an empty channel. The
-// count of looks is asserted as well as the refusal: a reader that did not
-// bound its looks is let out by the clock moving well past that count, and
-// fails here on the count rather than by hanging.
+// on a clock that never arrives, for a read that never ends, would not return
+// at all; where those looks are exhausted with no stamp and no reading strictly
+// past the cutoff, the clock is treated as past it and the request is refused
+// although a read stamped exactly the cutoff is there to be had.
+//
+// boundsAStalledClockIsExhausted drives exactly that with a clock that stands
+// at the cutoff for every look the arbitration is allowed. The read then ends
+// and records a stamp of exactly the cutoff -- an instant a request is read at
+// -- before the arbitration returns, so what refuses the request is the
+// exhausted look. Whether that result had been handed over by then is the one
+// thing the two callers differ in: published says the read's result is in the
+// channel before the arbitration goes on, and held says it is not. The count of
+// looks is asserted as well as the refusal: a reader that did not bound its
+// looks is let out by the clock moving well past that count, and fails on the
+// count rather than by hanging.
 //
 // The adapter's clock is time.Now, which the cutoff's own timer has already
 // left behind by the time this is reached, so its first look ends the wait and
 // this exception is a test's clock and not the adapter's.
-func TestBoundsAStalledClockIsTreatedAsPastTheCutoff(t *testing.T) {
+func boundsAStalledClockIsExhausted(t *testing.T, published bool) ([]byte, error) {
+	t.Helper()
 	boundsRestoreReadSeams(t)
 	now := time.Now().Add(-time.Hour)
 	deadline := now.Add(-time.Hour)
@@ -421,7 +499,7 @@ func TestBoundsAStalledClockIsTreatedAsPastTheCutoff(t *testing.T) {
 	publish := func() { publishOnce.Do(func() { close(release) }) }
 	t.Cleanup(publish)
 	stamping := make(chan struct{})
-	published := make(chan struct{})
+	handedOver := make(chan struct{})
 	var looks atomic.Int64
 	readClock = func() time.Time { return now }
 	readStamp = func() time.Time {
@@ -432,10 +510,12 @@ func TestBoundsAStalledClockIsTreatedAsPastTheCutoff(t *testing.T) {
 	}
 	// The read's instant is recorded under the lock and its result held back
 	// there, so an arbitration that looks again after the read has ended finds
-	// the stamp and an arbitration that looks at the channel finds nothing.
+	// the stamp, and the result reaches the channel only where this test says
+	// it does.
 	readStamping = func(time.Time) { close(stamping); <-release }
-	readStamped = func(time.Time) { close(published) }
-	readWaiting, readLocking, readReceiving = nil, nil, nil
+	readStamped = func(time.Time) { close(handedOver) }
+	readWaiting, readLocking = nil, nil
+	readReceive = receiveRead
 	decided := make(chan bool, 1)
 	made := make(chan int64, 1)
 	readArbitrated = func(taken bool) {
@@ -443,10 +523,16 @@ func TestBoundsAStalledClockIsTreatedAsPastTheCutoff(t *testing.T) {
 		// it: the read has not ended yet, so every look is the arbitration's.
 		decided <- taken
 		made <- looks.Load()
-		// The read now ends and stamps exactly the cutoff -- an instant a
-		// request is read at -- and records it before the final receive.
+		// The read now ends and stamps exactly the cutoff, and records it
+		// before the arbitration goes any further.
 		endRead()
 		<-stamping
+		if published {
+			// And it hands its result over as well, so that a reader which
+			// looked at the channel once more would find the request there.
+			publish()
+			<-handedOver
+		}
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
@@ -455,7 +541,7 @@ func TestBoundsAStalledClockIsTreatedAsPastTheCutoff(t *testing.T) {
 	// back, whatever the arbitration made of it.
 	endRead()
 	publish()
-	<-published
+	<-handedOver
 	select {
 	case taken := <-decided:
 		if taken {
@@ -471,8 +557,98 @@ func TestBoundsAStalledClockIsTreatedAsPastTheCutoff(t *testing.T) {
 		}
 	default:
 	}
+	return got, err
+}
+
+// With the result held back, the exhausted look is what refuses the request and
+// the channel it leaves behind is empty.
+func TestBoundsAStalledClockIsTreatedAsPastTheCutoff(t *testing.T) {
+	got, err := boundsAStalledClockIsExhausted(t, false)
 	if !errors.Is(err, errRequestNotRead) {
 		t.Fatalf("a clock that stood still for every look was not treated as past the cutoff: %q %v", string(got), err)
+	}
+}
+
+// And with the same result handed over before the reader goes on, the refusal
+// the exhausted look committed is still the outcome: what the exception decides
+// is not to be undone by the read arriving a moment later, and a reader that
+// looked at the channel once more would return the request the exception had
+// just refused.
+func TestBoundsStalledClockRefusalIsNotUndoneByPublication(t *testing.T) {
+	got, err := boundsAStalledClockIsExhausted(t, true)
+	if !errors.Is(err, errRequestNotRead) {
+		t.Fatalf("a request published after the looks were exhausted undid the refusal: %q %v", string(got), err)
+	}
+}
+
+// What the exception counts is looks, and not a clock standing still: a clock
+// that advances with every look, from far enough behind the cutoff that it does
+// not arrive within the looks an arbitration is allowed, is exhausted by them
+// as surely as a motionless one. The clock here begins twice those looks in
+// nanoseconds before the cutoff and advances a nanosecond a look, so the last
+// look it is allowed reads it with the cutoff still that many nanoseconds ahead
+// -- which the test asserts, so that what is established is an exhausted count
+// and not a clock that quietly arrived. A reader that did not bound its looks
+// is let out when the clock passes the cutoff, twice as many looks later, and
+// fails on the count rather than by hanging.
+func TestBoundsAnAdvancingClockIsExhaustedByItsLooks(t *testing.T) {
+	boundsRestoreReadSeams(t)
+	now := time.Now().Add(-time.Hour)
+	deadline := now.Add(-time.Hour)
+	cutoff := now.Add(requestReadFloor)
+	// Two nanoseconds behind for every look allowed: the look at which the
+	// arbitration must give up still reads the clock before the cutoff.
+	start := cutoff.Add(-2 * requestArbitrationSpins * time.Nanosecond)
+	reading := func(look int64) time.Time { return start.Add(time.Duration(look) * time.Nanosecond) }
+	r := &boundsDrivenRead{release: make(chan struct{}), data: "hello"}
+	var readOnce, publishOnce sync.Once
+	endRead := func() { readOnce.Do(func() { close(r.release) }) }
+	t.Cleanup(endRead)
+	release := make(chan struct{})
+	publish := func() { publishOnce.Do(func() { close(release) }) }
+	t.Cleanup(publish)
+	handedOver := make(chan struct{})
+	var looks atomic.Int64
+	readClock = func() time.Time { return now }
+	readStamp = func() time.Time { return reading(looks.Add(1)) }
+	// The read does not end while the arbitration is looking, so every look is
+	// the arbitration's and every reading of the clock is one of its own.
+	readStamping = func(time.Time) { <-release }
+	readStamped = func(time.Time) { close(handedOver) }
+	readWaiting, readLocking = nil, nil
+	readReceive = receiveRead
+	decided := make(chan bool, 1)
+	made := make(chan int64, 1)
+	readArbitrated = func(taken bool) {
+		decided <- taken
+		made <- looks.Load()
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	got, err := readWithin(ctx, r, 1<<20)
+	endRead()
+	publish()
+	<-handedOver
+	select {
+	case taken := <-decided:
+		if taken {
+			t.Error("an arbitration with no stamp at all took a read that had not ended")
+		}
+	default:
+		t.Error("the cutoff fired and nothing was arbitrated")
+	}
+	select {
+	case n := <-made:
+		if n != requestArbitrationSpins {
+			t.Errorf("the arbitration looked %d times at a clock that advanced without arriving, and the looks it is allowed are %d", n, requestArbitrationSpins)
+		}
+		if last := reading(n); !last.Before(cutoff) {
+			t.Errorf("the clock had reached %v when the arbitration gave up, and the cutoff is %v: the looks are not what refused the request", last, cutoff)
+		}
+	default:
+	}
+	if !errors.Is(err, errRequestNotRead) {
+		t.Fatalf("a clock that advanced without reaching the cutoff was not exhausted by its looks: %q %v", string(got), err)
 	}
 }
 
@@ -529,7 +705,7 @@ func TestBoundsAStampBeingTakenIsWaitedFor(t *testing.T) {
 	// correct outcome and would leave nothing to arbitrate.
 	readStamping = func(time.Time) { <-arbitrated }
 	readStamped = func(time.Time) { close(published) }
-	readReceiving = nil
+	readReceive = receiveRead
 	// The arbitration begins only once the stamp has begun, so the lock is
 	// held when it arrives.
 	readWaiting = func() { <-stamping }
@@ -596,7 +772,7 @@ func TestBoundsAnOnTimeRequestHeldBackIsStillRecorded(t *testing.T) {
 	readStamping = func(time.Time) { close(reached); <-release }
 	readStamped = func(time.Time) { close(published) }
 	readWaiting = func() { <-reached }
-	readLocking, readReceiving = nil, nil
+	readLocking, readReceive = nil, receiveRead
 	readArbitrated = func(taken bool) {
 		if taken {
 			free()
