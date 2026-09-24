@@ -34,10 +34,11 @@ const (
 	// is opened: once per this many cross-reference entries, scanned objects
 	// or trailers, so the clock is read on a cadence and not per byte.
 	entriesPerCheck = 4096
-	// scanBytesPerCheck is how many bytes of the file the scan for object
-	// headers examines between two readings of the deadline, so that the
-	// largest single piece of work opening does is read around and not only
-	// after. The reading costs nothing measurable at this size: the scan of a
+	// scanBytesPerCheck is how many inspections of a byte of the file the
+	// scan for object headers makes between two readings of the deadline, so
+	// that the largest single piece of work opening does is read around and
+	// not only after; the search for a keyword may look two bytes past it, so
+	// no more than this and two are made between two readings. The reading costs nothing measurable at this size: the scan of a
 	// file of sixty thousand headers takes the same time whether the deadline
 	// is read every four kibibytes or once for the whole file, and the part is
 	// small beside the file a deadline has to cut.
@@ -873,15 +874,42 @@ var objHeader = regexp.MustCompile(`(?s)(\d{1,10})[ \t\r\n\f\x00]+(\d{1,5})[ \t\
 // objKeyword is the word every match of objHeader ends with.
 var objKeyword = []byte("obj")
 
-// scanObserved, where it is set, is told how many bytes of the file each scan
-// for object headers examined. It is how the tests see where the deadline
+// scanObserved, where it is set, is told how many inspections of a byte of
+// the file each scan for object headers made. It is how the tests see where the deadline
 // stopped the scan; the reader never sets it.
 var scanObserved func(examined int)
 
+// scanInspected, where it is set, is told of every span of the file the scan
+// for object headers inspects, as it inspects it and apart from what the scan
+// charges for it, so that the tests can count what lies between two readings
+// of the deadline without taking the scan's word for it. The reader never
+// sets it.
+var scanInspected func(from, to int)
+
+func inspected(from, to int) {
+	if scanInspected != nil {
+		scanInspected(from, to)
+	}
+}
+
 // headerScan finds the matches of objHeader in a file part by part, reading
-// the deadline before it begins and again whenever it has examined a part's
-// worth of bytes since the last reading, so that no more than a part's work
-// lies between two of them.
+// the deadline before it begins and again whenever it has inspected a part's
+// worth of bytes since the last reading.
+//
+// Every inspection of a byte is charged, whether it continues what is being
+// read or ends it: the bytes the search for a keyword looks at, the byte after
+// a keyword that decides whether it ends a word, and each byte a backward run
+// tests, the one that stops the run included. A byte inspected twice -- the
+// byte that ends a run of whitespace is tested again as the first of the
+// digits before it, and the two bytes a search looks at past its part are
+// looked at again by the next search -- is charged twice, so what the scan
+// charges is what it inspects. A single byte is charged only while some of
+// the part is left, and a search looks at no more than what is left and two
+// bytes past it, so that a keyword beginning inside the part is found whole.
+// No more than a part and two bytes are therefore inspected between two
+// readings of the deadline, or after the last of them: the charge that uses
+// the part up is either one byte, which it had room for, or a search, which
+// reaches at most two bytes past it.
 //
 // It looks for the keyword "obj" and reads each header backwards from it,
 // which is what makes the parts safe to cut anywhere: whatever precedes a
@@ -910,30 +938,36 @@ type headerScan struct {
 }
 
 // scanHeaders returns the first limit matches of objHeader in data, with
-// their submatch indices as FindAllSubmatchIndex gives them, and how many
-// bytes of data it examined. stop is the reading of the deadline, and a scan
-// it ended reports stopped with the matches it had found.
+// their submatch indices as FindAllSubmatchIndex gives them -- none where
+// limit is zero, and all of them where it is negative -- and how many byte
+// inspections it made. stop is the reading of the deadline, and a scan it
+// ended reports stopped with the matches it had found.
 func scanHeaders(data []byte, limit, part int, stop func() bool) (matches [][]int, examined int, stopped bool) {
+	if limit == 0 {
+		return nil, 0, false
+	}
 	s := &headerScan{data: data, part: part, stop: stop}
 	if s.read() {
 		return nil, 0, true
 	}
 	for at := 0; at < len(data); {
-		// What is left of the part is what may be examined before the next
-		// reading, and the search runs two bytes past it so that a keyword
+		// What is left of the part is what may be inspected before the next
+		// reading, and the search looks two bytes past it so that a keyword
 		// beginning inside it is found whole. It is measured again after each
-		// header, since reading a header backwards examines bytes as well.
+		// header, since reading a header backwards inspects bytes as well.
 		end := min(at+s.left, len(data))
 		window := min(end+len(objKeyword)-1, len(data))
 		i := bytes.Index(data[at:window], objKeyword)
 		if i < 0 {
-			if s.spend(end - at) {
+			inspected(at, window)
+			if s.spend(window - at) {
 				return matches, s.count, true
 			}
 			at = end
 			continue
 		}
 		o := at + i
+		inspected(at, o+len(objKeyword))
 		if s.spend(o + len(objKeyword) - at) {
 			return matches, s.count, true
 		}
@@ -962,20 +996,30 @@ func (s *headerScan) read() bool {
 	return false
 }
 
-// spend counts n bytes examined, and reads the deadline once a part's worth
-// has been examined since the last reading.
+// spend charges n byte inspections, and reads the deadline once a part's
+// worth has been inspected since the last reading.
 func (s *headerScan) spend(n int) bool {
 	s.count += n
 	s.left -= n
 	return s.left <= 0 && s.read()
 }
 
+// look inspects the byte at i and charges it, reporting whether the reading
+// of the deadline that charge brought found it passed.
+func (s *headerScan) look(i int) (byte, bool) {
+	inspected(i, i+1)
+	return s.data[i], s.spend(1)
+}
+
 // header reads backwards from the keyword at o the header it ends, and
 // returns the match objHeader finds there, or nil where it finds none.
 func (s *headerScan) header(o int) (match []int, stopped bool) {
 	end := o + len(objKeyword)
-	if end < len(s.data) && isWordByte(s.data[end]) {
-		return nil, false
+	if end < len(s.data) {
+		c, stopped := s.look(end)
+		if stopped || isWordByte(c) {
+			return nil, stopped
+		}
 	}
 	genEnd, stopped := s.spaceBefore(o)
 	if stopped || genEnd == o {
@@ -1000,11 +1044,15 @@ func (s *headerScan) header(o int) (match []int, stopped bool) {
 // spaceBefore is where the run of the header's whitespace that ends at i
 // begins.
 func (s *headerScan) spaceBefore(i int) (int, bool) {
-	for i > 0 && isHeaderSpace(s.data[i-1]) {
-		i--
-		if s.spend(1) {
+	for i > 0 {
+		c, stopped := s.look(i - 1)
+		if stopped {
 			return i, true
 		}
+		if !isHeaderSpace(c) {
+			break
+		}
+		i--
 	}
 	return i, false
 }
@@ -1012,12 +1060,15 @@ func (s *headerScan) spaceBefore(i int) (int, bool) {
 // digitsBefore is where the run of digits that ends at i begins, reading no
 // more than most of them: a run that long is longer than a match takes.
 func (s *headerScan) digitsBefore(i, most int) (int, bool) {
-	start := i
-	for i > 0 && start-i < most && s.data[i-1] >= '0' && s.data[i-1] <= '9' {
-		i--
-		if s.spend(1) {
+	for start := i; i > 0 && start-i < most; {
+		c, stopped := s.look(i - 1)
+		if stopped {
 			return i, true
 		}
+		if c < '0' || c > '9' {
+			break
+		}
+		i--
 	}
 	return i, false
 }
@@ -1106,7 +1157,8 @@ func (d *Document) reconstruct() error {
 	// at all. It is therefore read before the search begins and between the
 	// parts of the file the search examines, and not only after it: a
 	// deadline that has passed when the scan begins costs no search, and one
-	// that passes during it costs at most one part more. What is counted
+	// that passes during it costs at most one part, and the two bytes a
+	// search looks past it, more. What is counted
 	// against the bound is every match the expression finds, before the
 	// boundary check below turns any of them away.
 	matches, examined, stopped := scanHeaders(d.data, maxScanObjects+1, scanBytesPerCheck, d.deadlineNow)

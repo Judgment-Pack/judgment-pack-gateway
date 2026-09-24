@@ -1,6 +1,7 @@
 package pdf
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -76,7 +77,7 @@ func scanCases() [][]byte {
 
 // sameScan reports where scanning data in parts of part bytes, for at most
 // limit matches, finds other than the expression finds; limit -1 is every
-// match.
+// match, and zero is none.
 func sameScan(data []byte, part, limit int) error {
 	want := objHeader.FindAllSubmatchIndex(data, limit)
 	got, examined, stopped := scanHeaders(data, limit, part, func() bool { return false })
@@ -112,7 +113,7 @@ func TestTheScanFindsWhatTheExpressionFinds(t *testing.T) {
 				t.Fatalf("%q: %v", data, err)
 			}
 		}
-		for limit := 1; limit <= 4; limit++ {
+		for limit := -1; limit <= 4; limit++ {
 			for _, part := range []int{1, 2, 3, 7, 1 << 10} {
 				if err := sameScan(data, part, limit); err != nil {
 					t.Fatalf("%q: %v", data, err)
@@ -123,20 +124,16 @@ func TestTheScanFindsWhatTheExpressionFinds(t *testing.T) {
 }
 
 // The same, over files the fuzzer makes, cut into parts of every size up to
-// sixty-four bytes and scanned for every match or for a few.
+// sixty-four bytes and scanned for every match, for none or for a few.
 func FuzzScanMatchesTheExpression(f *testing.F) {
 	for i, data := range scanCases() {
 		f.Add(data, uint8(i), uint8(0))
 		f.Add(data, uint8(0), uint8(1))
+		f.Add(data, uint8(1), uint8(2))
 	}
 	f.Fuzz(func(t *testing.T, data []byte, part, limit uint8) {
-		n := -1
-		if limit > 0 {
-			n = int(limit % 8)
-			if n == 0 {
-				n = -1
-			}
-		}
+		// From -1, which is every match, through zero, which is none, to six.
+		n := int(limit%8) - 1
 		if err := sameScan(data, int(part%64)+1, n); err != nil {
 			t.Fatalf("%q: %v", data, err)
 		}
@@ -184,6 +181,66 @@ func TestTheScanReadsTheDeadlineBetweenParts(t *testing.T) {
 			}
 			if c.timedOut != r.TimedOut || (c.timedOut && stop == nil) {
 				t.Fatalf("timedOut %v stop %v, want timedOut %v", r.TimedOut, stop, c.timedOut)
+			}
+		})
+	}
+}
+
+// scanStretches scans data in parts of part bytes, counting every byte the
+// scan inspects through scanInspected rather than through what it charges, and
+// returns the most inspected between two readings of the deadline, or after
+// the last of them, the readings made, and what was inspected and what the
+// scan charged in all.
+func scanStretches(data []byte, part int) (most, reads, inspections, charged int) {
+	stretch := 0
+	scanInspected = func(from, to int) {
+		stretch += to - from
+		inspections += to - from
+		most = max(most, stretch)
+	}
+	defer func() { scanInspected = nil }()
+	_, charged, _ = scanHeaders(data, -1, part, func() bool {
+		reads++
+		stretch = 0
+		return false
+	})
+	return most, reads, inspections, charged
+}
+
+// scanStretchInputs are files whose every byte is inspected more than once,
+// or whose backward runs are longer than several parts.
+func scanStretchInputs() []struct {
+	name string
+	data []byte
+} {
+	const n = 262144
+	return []struct {
+		name string
+		data []byte
+	}{
+		{"\" obj\" repeated", bytes.Repeat([]byte(" obj"), n)},
+		{"\"obj!\" repeated", bytes.Repeat([]byte("obj!"), n)},
+		{"\"1 0 obj \" repeated", bytes.Repeat([]byte("1 0 obj "), n)},
+		{"whitespace of four parts before a header", []byte("1" + strings.Repeat(" ", 4*scanBytesPerCheck) + "0" + strings.Repeat("\f", 4*scanBytesPerCheck) + "obj!")},
+		{"digits of four parts before a header", []byte(strings.Repeat("7", 4*scanBytesPerCheck) + " 0 obj!")},
+	}
+}
+
+// No more than a part and the two bytes past it the search for a keyword looks
+// at are inspected between two readings of the deadline, however often the
+// file makes the scan inspect a byte: counted as the scan inspects them, and
+// not as it charges them. What the scan charges is what it inspects.
+func TestTheScanInspectsNoMoreThanAPartBetweenReadings(t *testing.T) {
+	bound := scanBytesPerCheck + len(objKeyword) - 1
+	for _, c := range scanStretchInputs() {
+		t.Run(c.name, func(t *testing.T) {
+			most, reads, inspections, charged := scanStretches(c.data, scanBytesPerCheck)
+			t.Logf("%d bytes: at most %d inspected between two readings, %d readings, %d inspected and %d charged in all", len(c.data), most, reads, inspections, charged)
+			if most > bound {
+				t.Fatalf("%d bytes inspected between two readings of the deadline, at most %d", most, bound)
+			}
+			if inspections != charged {
+				t.Fatalf("the scan inspected %d bytes and charged %d", inspections, charged)
 			}
 		})
 	}

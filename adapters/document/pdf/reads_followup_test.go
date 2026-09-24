@@ -8404,8 +8404,8 @@ func TestReadsADeadlineThatPassesWhileAPageIsReadEndsTheReading(t *testing.T) {
 	// file of megabytes: what it makes of it says no more than the small files
 	// of the bound test do.
 	//
-	// The trailer holds one member fewer than the bound, so that no bound is
-	// met in it. The deadline must pass while a parse that meets no bound is
+	// The trailer holds as many members as the bound admits, one fewer than
+	// a trailer past it, so that no bound is met in it. The deadline must pass while a parse that meets no bound is
 	// running: one object's parse reads no deadline however long it runs
 	// (#157), so the deadline is read when the parse has ended, and a parse
 	// that ended at the bound would end the run at the bound, which is the
