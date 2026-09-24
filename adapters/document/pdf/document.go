@@ -34,6 +34,14 @@ const (
 	// is opened: once per this many cross-reference entries, scanned objects
 	// or trailers, so the clock is read on a cadence and not per byte.
 	entriesPerCheck = 4096
+	// scanBytesPerCheck is how many bytes of the file the scan for object
+	// headers examines between two readings of the deadline, so that the
+	// largest single piece of work opening does is read around and not only
+	// after. The reading costs nothing measurable at this size: the scan of a
+	// file of sixty thousand headers takes the same time whether the deadline
+	// is read every four kibibytes or once for the whole file, and the part is
+	// small beside the file a deadline has to cut.
+	scanBytesPerCheck = 64 << 10
 	// endstreamBlock is the bytes searched for the "endstream" of a stream
 	// whose /Length does not locate one; the file's own "endstream" offsets,
 	// indexed one per block of that size, answer beyond it.
@@ -855,7 +863,175 @@ func (d *Document) readXrefStream(s *stream, generation int) (Dict, error) {
 	return s.dict, nil
 }
 
+// objHeader is what the scan looks for: an object's number, its generation
+// and the keyword, separated by any run of whitespace. The scan does not run
+// it -- a match of the whole file is one piece of work nothing interrupts, and
+// cutting the file into parts for it would miss a header that straddles two
+// of them -- but finds exactly its matches, and the tests hold the scan to it.
 var objHeader = regexp.MustCompile(`(?s)(\d{1,10})[ \t\r\n\f\x00]+(\d{1,5})[ \t\r\n\f\x00]+obj\b`)
+
+// objKeyword is the word every match of objHeader ends with.
+var objKeyword = []byte("obj")
+
+// scanObserved, where it is set, is told how many bytes of the file each scan
+// for object headers examined. It is how the tests see where the deadline
+// stopped the scan; the reader never sets it.
+var scanObserved func(examined int)
+
+// headerScan finds the matches of objHeader in a file part by part, reading
+// the deadline before it begins and again whenever it has examined a part's
+// worth of bytes since the last reading, so that no more than a part's work
+// lies between two of them.
+//
+// It looks for the keyword "obj" and reads each header backwards from it,
+// which is what makes the parts safe to cut anywhere: whatever precedes a
+// keyword is read from the file and not from the part the keyword was found
+// in, so a header that straddles two parts, or whose whitespace runs through
+// several, is read whole. Reading backwards finds the regexp's match exactly,
+// because nothing in a match is a choice. The whitespace before the keyword is
+// all the whitespace there, since the generation cannot end in whitespace;
+// the generation is the whole run of digits before it, since the whitespace
+// before the generation cannot end in a digit, and so a run of more than five
+// digits is no match at all; the whitespace before that is, again, all of it;
+// and the number is the last ten digits of the run before that, or the whole
+// run if it is shorter, since the leftmost match is the one that begins
+// earliest and a number may be at most ten digits long. A number of more than
+// ten digits therefore matches from inside its run, as the regexp does, and
+// the scan's boundary check rejects it there. The matches are in the order of
+// their keywords, since a match holds no keyword before its own, and none
+// overlaps the one before it, since a match holds no letter before its own
+// keyword either.
+type headerScan struct {
+	data  []byte
+	part  int
+	stop  func() bool
+	left  int
+	count int
+}
+
+// scanHeaders returns the first limit matches of objHeader in data, with
+// their submatch indices as FindAllSubmatchIndex gives them, and how many
+// bytes of data it examined. stop is the reading of the deadline, and a scan
+// it ended reports stopped with the matches it had found.
+func scanHeaders(data []byte, limit, part int, stop func() bool) (matches [][]int, examined int, stopped bool) {
+	s := &headerScan{data: data, part: part, stop: stop}
+	if s.read() {
+		return nil, 0, true
+	}
+	for at := 0; at < len(data); {
+		// What is left of the part is what may be examined before the next
+		// reading, and the search runs two bytes past it so that a keyword
+		// beginning inside it is found whole. It is measured again after each
+		// header, since reading a header backwards examines bytes as well.
+		end := min(at+s.left, len(data))
+		window := min(end+len(objKeyword)-1, len(data))
+		i := bytes.Index(data[at:window], objKeyword)
+		if i < 0 {
+			if s.spend(end - at) {
+				return matches, s.count, true
+			}
+			at = end
+			continue
+		}
+		o := at + i
+		if s.spend(o + len(objKeyword) - at) {
+			return matches, s.count, true
+		}
+		at = o + len(objKeyword)
+		m, stopped := s.header(o)
+		if stopped {
+			return matches, s.count, true
+		}
+		if m != nil {
+			matches = append(matches, m)
+			if len(matches) == limit {
+				return matches, s.count, false
+			}
+		}
+	}
+	return matches, s.count, false
+}
+
+// read reads the deadline, and gives the scan another part when it has not
+// passed.
+func (s *headerScan) read() bool {
+	if s.stop() {
+		return true
+	}
+	s.left = s.part
+	return false
+}
+
+// spend counts n bytes examined, and reads the deadline once a part's worth
+// has been examined since the last reading.
+func (s *headerScan) spend(n int) bool {
+	s.count += n
+	s.left -= n
+	return s.left <= 0 && s.read()
+}
+
+// header reads backwards from the keyword at o the header it ends, and
+// returns the match objHeader finds there, or nil where it finds none.
+func (s *headerScan) header(o int) (match []int, stopped bool) {
+	end := o + len(objKeyword)
+	if end < len(s.data) && isWordByte(s.data[end]) {
+		return nil, false
+	}
+	genEnd, stopped := s.spaceBefore(o)
+	if stopped || genEnd == o {
+		return nil, stopped
+	}
+	genStart, stopped := s.digitsBefore(genEnd, 6)
+	if stopped || genStart == genEnd || genEnd-genStart > 5 {
+		return nil, stopped
+	}
+	numEnd, stopped := s.spaceBefore(genStart)
+	if stopped || numEnd == genStart {
+		return nil, stopped
+	}
+	numStart, stopped := s.digitsBefore(numEnd, 11)
+	if stopped || numStart == numEnd {
+		return nil, stopped
+	}
+	numStart = max(numStart, numEnd-10)
+	return []int{numStart, end, numStart, numEnd, genStart, genEnd}, false
+}
+
+// spaceBefore is where the run of the header's whitespace that ends at i
+// begins.
+func (s *headerScan) spaceBefore(i int) (int, bool) {
+	for i > 0 && isHeaderSpace(s.data[i-1]) {
+		i--
+		if s.spend(1) {
+			return i, true
+		}
+	}
+	return i, false
+}
+
+// digitsBefore is where the run of digits that ends at i begins, reading no
+// more than most of them: a run that long is longer than a match takes.
+func (s *headerScan) digitsBefore(i, most int) (int, bool) {
+	start := i
+	for i > 0 && start-i < most && s.data[i-1] >= '0' && s.data[i-1] <= '9' {
+		i--
+		if s.spend(1) {
+			return i, true
+		}
+	}
+	return i, false
+}
+
+// isHeaderSpace is the whitespace objHeader admits between a header's tokens.
+func isHeaderSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == 0
+}
+
+// isWordByte is a byte \b counts as part of a word: an ASCII letter, a digit
+// or an underscore.
+func isWordByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '_'
+}
 
 // reconstruct rebuilds the cross-reference by scanning the file for
 // "N G obj", the last occurrence of each number winning, and the trailer
@@ -901,7 +1077,49 @@ func (d *Document) reconstruct() error {
 	d.pageWork, d.pageWorking = 0, false
 	defer func() { d.pageWork, d.pageWorking = pageWork, pageWorking }()
 	found := 0
-	matches := objHeader.FindAllSubmatchIndex(d.data, maxScanObjects+1)
+	// A panic is a way out too, and the rule below holds for it as it holds
+	// for the returns: a defect the scan could not continue past leaves the
+	// document holding the part of a cross-reference the scan had written, or
+	// the one it was to replace where the search for headers had not ended,
+	// since the search reads the deadline and a reading may panic. The
+	// reading made under the cross-reference being replaced is therefore
+	// given up here exactly as the zero-found exit gives it up -- the objects, the fonts and the CMaps
+	// dropped, and the generation advanced, so that a reading begun before the
+	// scan can tell that what it gathered no longer stands. The failure is the
+	// file's own, since the scan reads the file and not the objects of one
+	// cross-reference, and a rebuild does not drop it: a scan the reader could
+	// not finish leaves a document the reader must stop at, whatever part of
+	// the file the scan had reached. The panic is raised again so that the
+	// reading above ends where it would have ended -- the page being
+	// interpreted is reported as the page the reader could not continue
+	// through -- and so that this restores what the scan replaced and decides
+	// nothing else.
+	defer func() {
+		if r := recover(); r != nil {
+			d.forgetObjects()
+			d.scanUnfinished = malformed("the scan of the file could not be finished")
+			panic(r)
+		}
+	}()
+	// Finding the headers is the largest single piece of work opening does,
+	// and a file with no usable startxref reaches it having read no deadline
+	// at all. It is therefore read before the search begins and between the
+	// parts of the file the search examines, and not only after it: a
+	// deadline that has passed when the scan begins costs no search, and one
+	// that passes during it costs at most one part more. What is counted
+	// against the bound is every match the expression finds, before the
+	// boundary check below turns any of them away.
+	matches, examined, stopped := scanHeaders(d.data, maxScanObjects+1, scanBytesPerCheck, d.deadlineNow)
+	if scanObserved != nil {
+		scanObserved(examined)
+	}
+	if stopped {
+		// The search ended at the deadline, which is the scan's end as the
+		// loop below meets it: the cross-reference is the scan's from here, and
+		// it names what the scan had recorded when it ended, which is nothing.
+		d.xref = map[int]xrefEntry{}
+		return d.scanEnded(d.deadline())
+	}
 	if len(matches) > maxScanObjects {
 		return structureBound("more than %d objects found by scanning", maxScanObjects)
 	}
@@ -922,28 +1140,6 @@ func (d *Document) reconstruct() error {
 	// of them leaves a document the reader must stop at rather than answer
 	// from -- a failure of the file's own, or the deadline.
 	d.xref = map[int]xrefEntry{}
-	// A panic is a way out too, and the rule holds for it as it holds for the
-	// returns: a defect the scan could not continue past leaves the document
-	// holding the part of a cross-reference the scan had written, so the
-	// reading made under the one it replaced is given up here exactly as the
-	// zero-found exit gives it up -- the objects, the fonts and the CMaps
-	// dropped, and the generation advanced, so that a reading begun before the
-	// scan can tell that what it gathered no longer stands. The failure is the
-	// file's own, since the scan reads the file and not the objects of one
-	// cross-reference, and a rebuild does not drop it: a scan the reader could
-	// not finish leaves a document the reader must stop at, whatever part of
-	// the file the scan had reached. The panic is raised again so that the
-	// reading above ends where it would have ended -- the page being
-	// interpreted is reported as the page the reader could not continue
-	// through -- and so that this restores what the scan replaced and decides
-	// nothing else.
-	defer func() {
-		if r := recover(); r != nil {
-			d.forgetObjects()
-			d.scanUnfinished = malformed("the scan of the file could not be finished")
-			panic(r)
-		}
-	}()
 	for _, m := range matches {
 		if d.deadlinePassed() {
 			return d.scanEnded(d.deadline())

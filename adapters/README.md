@@ -814,6 +814,7 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   | cross-reference sections in the `/Prev` and `/XRefStm` chain | 64 | opening |
   | the object numbers one cross-reference section declares | 4,194,304 | opening |
   | cross-reference entries, scanned objects or trailers read between two readings of the deadline | 4,096 | opening: the deadline is read at least this often |
+  | bytes of the file examined for object headers between two readings of the deadline | 65,536 bytes | rebuilding: the deadline is read before the search for headers begins and at least this often during it, so a deadline already passed costs no search and one that passes during it at most this many bytes more |
   | objects found while the cross-reference is rebuilt by scanning | 262,144 | wherever objects are read |
   | page-tree depth; page-tree nodes visited | 64; 1,048,576 | the walk |
   | operators interpreted on one page, the forms it draws included | 4,000,000 | content |
