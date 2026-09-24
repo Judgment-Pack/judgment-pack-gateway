@@ -45,8 +45,11 @@ func TestCatalogDoesNotAdvertiseUnsupportedOperations(t *testing.T) {
 
 func TestPublicWebIsAnInputSourceNotAnAccountProvider(t *testing.T) {
 	first := ConnectionCatalog()
-	if first.Version != 2 || len(first.Sources) != 1 {
+	if first.Version != 2 || len(first.Sources) != 2 {
 		t.Fatal("wrong catalog version or sources")
+	}
+	if first.Sources[1].ID != "web-discovery" || first.Sources[1].MaxBytes != 1<<20 {
+		t.Fatal(first.Sources[1])
 	}
 	source := first.Sources[0]
 	if source.ID != "web" || source.Input != "url" || source.MaxBytes != 4<<20 || len(source.MediaTypes) != 3 {

@@ -35,7 +35,8 @@ func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
 		return nil, ErrRequest
 	}
 	var req struct {
-		URL string `json:"url"`
+		URL  string `json:"url"`
+		Site string `json:"site,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(canonical))
 	dec.DisallowUnknownFields()
@@ -44,13 +45,62 @@ func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
 	}
 	// encoding/json is case insensitive; enforce the contract's exact keys.
 	var members map[string]any
-	if json.Unmarshal(canonical, &members) != nil || len(members) != 1 || members["url"] != req.URL {
+	if json.Unmarshal(canonical, &members) != nil || (len(members) != 1 && len(members) != 2 || len(members) == 2 && members["site"] != req.Site || len(members) == 2 && req.Site == "") || members["url"] != req.URL {
 		return nil, ErrRequest
 	}
 	ctx, cancel := context.WithTimeout(ctx, Timeout)
 	defer cancel()
 	started := time.Now()
-	res, err := f.read(ctx, req.URL)
+	policy := readPolicy{maxBytes: MaxBytes}
+	if req.Site != "" {
+		site, err := admittedURL(req.Site)
+		if err != nil {
+			return nil, err
+		}
+		target, err := admittedURL(req.URL)
+		if err != nil {
+			return nil, err
+		}
+		if webOrigin(target) != webOrigin(site) {
+			return nil, errScope
+		}
+		scope := func(_ context.Context, u *url.URL) error {
+			if webOrigin(u) != webOrigin(site) {
+				return errScope
+			}
+			return nil
+		}
+		robots, err := f.readWith(ctx, webOrigin(site)+"/robots.txt", readPolicy{before: scope, maxBytes: robotsBytes, robots: true})
+		if err != nil {
+			return nil, err
+		}
+		group, ok := robotRules(robots)
+		if !ok {
+			return nil, errRobots
+		}
+		delay, last := 500*time.Millisecond, time.Now()
+		if group != nil && group.CrawlDelay > delay {
+			delay = group.CrawlDelay
+		}
+		policy.before = func(ctx context.Context, u *url.URL) error {
+			if err := scope(ctx, u); err != nil {
+				return err
+			}
+			if group != nil && !group.Test(robotsPath(u)) {
+				return errRobots
+			}
+			timer := time.NewTimer(time.Until(last.Add(delay)))
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			last = time.Now()
+			return nil
+		}
+	}
+	res, err := f.readWith(ctx, req.URL, policy)
 	if err != nil {
 		return nil, err
 	}

@@ -1119,3 +1119,42 @@ pinned in `go.mod`, with license/notice files under `third_party/github.com/aws/
 
 See [the design and acceptance boundary](../docs/design/s3-file-source.md).
 Synthetic TLS and Desk tests are not a claim of live AWS account acceptance.
+
+### Bounded website exploration
+
+`adapter-web --discover` accepts exactly `{"url":"https://example.com/"}`.
+Declare it as `web-discovery` with HTTP shape and a 60-second source timeout.
+The connection catalog and local source plan advertise it separately from `web`,
+so existing consumers can keep reading individual pages. No credentials are used.
+
+The breadth-first crawl follows `<a>` and `<area>` links, resolves the first
+HTML base URL, removes fragments, and stays on the exact HTTPS origin (not sibling
+subdomains). Every request and redirect passes the existing public-DNS/numeric-dial
+checks. It sends no cookies or authorization and does not execute JavaScript,
+enumerate sitemaps, or follow external links. Robots.txt must be readable or return
+an ordinary 4xx absence; 401, 403, 429, 5xx, malformed rules, and unsupported media
+stop exploration. Redirects of robots.txt also stay on the same origin. Matching
+uses `github.com/temoto/robotstxt` (MIT; license in `licenses/robotstxt/`).
+
+Fixed limits, not caller arguments: 10 attempted pages, two link levels, 100
+manifest rows, 1,000 candidate links per page, 8 MiB total body bytes including
+failed reads, 30 HTTP requests including redirects/robots.txt, and 45 seconds.
+Each page retains the existing 4 MiB response limit; robots.txt is limited to
+512 KiB. Requests are spaced by at least 500 ms, increased by Crawl-delay. Page
+attempts include blocked and failed pages. Depth-three links are listed as skipped.
+
+The signed JSON result has `version:1`, `seed`, `origin`, `pages`, `stopReason`,
+`bytes`, `requests`, `externalLinks`, and `limits`. Each page has `url`, `from`,
+`depth`, `title`, `status` (`discovered`, `blocked`, `failed`, or `skipped`), and
+`reason`. It is a navigation manifest, not extracted evidence or a claim of full
+coverage. `discovered` means fetched successfully during discovery. The HTTP
+acquisition describes the initial robots observation; the signed result records
+subsequent page outcomes. Body counters exclude headers and unconsumed redirect
+bodies. Response output is capped at 1 MiB.
+
+A consumer reads selected discovered pages through ordinary `web` acquisitions
+using `{"url":"https://example.com/page","site":"https://example.com/"}`.
+The optional `site` enforces the exact origin and robots rules again, including
+redirects. Each page then has its own verified document and citation; fetching
+again may observe newer content. Those later reads have their own limits and
+are not counted in the discovery budget. Direct `{"url":...}` reads are unchanged.
