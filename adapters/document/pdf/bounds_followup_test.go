@@ -544,7 +544,7 @@ func TestBoundsFormsAreChargedEachTimeTheyAreDrawn(t *testing.T) {
 	if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageFailed {
 		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
 	}
-	if took > 3*time.Second {
+	if took > raceFactor*3*time.Second {
 		t.Errorf("%d draws of a %d-byte form took %v", draws, size, took)
 	}
 }
@@ -572,7 +572,7 @@ func TestBoundsFilterStepsAreCharged(t *testing.T) {
 	if r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Status != PageFailed {
 		t.Fatalf("fatal %+v pages %+v", r.Fatal, r.Pages)
 	}
-	if took > 3*time.Second {
+	if took > raceFactor*3*time.Second {
 		t.Errorf("the page took %v", took)
 	}
 }
@@ -820,9 +820,9 @@ func TestBoundsTrailerRescanIsBoundedByWhatItExamines(t *testing.T) {
 			}
 			// Reading the file a few times over takes milliseconds; reading it
 			// once for each candidate takes tens of seconds, which is what
-			// this catches with room for a machine reading it with the race
-			// detector on.
-			if took > 8*time.Second {
+			// this catches; the room a machine reading it under the race
+			// detector needs is the factor the allowance is scaled by.
+			if took > raceFactor*8*time.Second {
 				t.Errorf("rebuilding from %d bytes took %v", len(c.data), took)
 			}
 		})
@@ -1153,7 +1153,7 @@ func boundsChargeGrowsWithTheFile(t *testing.T, body string) {
 	if !last.bound {
 		t.Errorf("%-12q %d bytes: %d charged in %v, and no bound met", body, last.size, last.charged, last.took)
 	}
-	if last.took > 5*time.Second {
+	if last.took > raceFactor*5*time.Second {
 		t.Errorf("%-12q %d bytes took %v", body, last.size, last.took)
 	}
 }
@@ -1434,7 +1434,7 @@ func TestBoundsHeadInspectionIsChargedAndKept(t *testing.T) {
 				if root != nil {
 					t.Error("a file that holds no page tree yielded one")
 				}
-				if took > 3*time.Second {
+				if took > raceFactor*3*time.Second {
 					t.Errorf("%d aliases of one offset took %v", aliases, took)
 				}
 				// The head at that offset is read, and charged: a search that
@@ -1509,7 +1509,7 @@ func TestBoundsCandidatesTheWindowCannotSettleAreReadWhole(t *testing.T) {
 	if root != nil {
 		t.Error("a file that holds no page tree yielded one")
 	}
-	if took > 30*time.Second {
+	if took > raceFactor*30*time.Second {
 		t.Errorf("%d candidates of their own took %v", candidates, took)
 	}
 	// Every entry holds the object its number names, so nothing here is a
@@ -2178,7 +2178,7 @@ func TestBoundsWhitespaceBetweenObjectsIsCharged(t *testing.T) {
 	if d.parsedBytes < 64<<10 {
 		t.Errorf("reading 2,000 objects across %d bytes of whitespace charged %d bytes", 64<<10, d.parsedBytes)
 	}
-	if took > 3*time.Second {
+	if took > raceFactor*3*time.Second {
 		t.Errorf("reading them took %v", took)
 	}
 }
@@ -2508,7 +2508,7 @@ func TestBoundsObjectStreamHeadersAreReadWithinTheAllowance(t *testing.T) {
 	// takes minutes under the race detector; the bound above is what this
 	// establishes, and the time is a guard against a reader that does not
 	// meet it at all.
-	if took > 20*time.Second {
+	if took > raceFactor*20*time.Second {
 		t.Errorf("reading them took %v", took)
 	}
 }
@@ -2731,7 +2731,7 @@ func TestBoundsFilterWorkAtOpeningIsCharged(t *testing.T) {
 	if r.Fatal == nil || r.Fatal.Code != "pdf-malformed" {
 		t.Errorf("a document whose object streams share a list of 16,384 filters: fatal %+v", r.Fatal)
 	}
-	if took > 10*time.Second {
+	if took > raceFactor*10*time.Second {
 		t.Errorf("opening it took %v", took)
 	}
 }
@@ -2765,7 +2765,7 @@ func TestBoundsFilterListEntriesAreCharged(t *testing.T) {
 	// the page (step 5 of the note), and what the bound stops is the reading
 	// of those lists over and over. Reading them all takes seconds; charging
 	// them as they are read stops within the page's allowance.
-	if took > 10*time.Second {
+	if took > raceFactor*10*time.Second {
 		t.Errorf("the page took %v; its filter lists are read within what one page may cost", took)
 	}
 	// What the charge is, read directly: an entry costs one step as it is
