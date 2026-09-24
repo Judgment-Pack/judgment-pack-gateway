@@ -43,11 +43,12 @@ const (
 	// have inflated. What a file costs to hold is not its length: the smallest
 	// dictionary a file can spell, "<</A 1>>", is eight bytes of file and a Go
 	// map of about 370 bytes held, and a pair of coordinates, "[0 0]", is five
-	// bytes and about a hundred. This many bytes for each byte read admits the
-	// densest of those shapes several times over while it bounds a file whose
-	// objects hold the same bytes over and over: "k 0 obj (" with no closing
-	// parenthesis gives every object a copy of the rest of the file, and what
-	// the reader holds then grows with the square of the file.
+	// bytes and charged about a hundred and thirty for the fifty-six it holds.
+	// This many bytes for each byte read admits the densest of those shapes
+	// several times over while it bounds a file whose objects hold the same
+	// bytes over and over: "k 0 obj (" with no closing parenthesis gives every
+	// object a copy of the rest of the file, and what the reader holds then
+	// grows with the square of the file.
 	parsedBytesPerFileByte = 160
 	// maxParsedBytesHeld is what a document's parsed objects may hold whatever
 	// its length: the multiple above bounds a small file, and this bounds
@@ -56,7 +57,7 @@ const (
 	// further, as one past any other structure bound is. It is set above what
 	// an ordinary document of the densest shape costs -- five hundred pages of
 	// two thousand one-member dictionaries each, which an eight-megabyte file
-	// holds, are charged about 570 MB -- so that a document of that shape is
+	// holds, are charged about 566 MB -- so that a document of that shape is
 	// read whole. It is not a bound on overlapping structure alone: a document
 	// that holds a great deal without overlapping anything meets it too, which
 	// is what the pages above are measured against, and a document is as
@@ -70,12 +71,18 @@ const (
 // values of each -- so that the charge bounds the memory and not the other
 // way about; TestBoundsChargeCoversWhatIsRetained holds them to that.
 const (
-	// parsedSlotBytes is one element of an array: the interface pair in the
-	// backing array, with the room append leaves beyond the length.
-	parsedSlotBytes = 24
+	// parsedSlotBytes is one slot of an array's backing array: the interface
+	// pair alone. The room an array has beyond its length is charged as the
+	// slots it has and not as the elements put in them, since append grows the
+	// backing array by Go's own policy and the reader holds the whole of what
+	// it grew to.
+	parsedSlotBytes = 16
 	// parsedArrayBytes is an array of no elements: the slice header the
-	// interface holding it points at.
-	parsedArrayBytes = 24
+	// interface holding it points at, and what the allocator adds to the
+	// backing array beyond the slots the capacity reports -- a header for a
+	// block that holds pointers, and the rounding up to a size class, neither
+	// of which the capacity itself carries.
+	parsedArrayBytes = 64
 	// parsedDictBytes is a dictionary of no members: Go's map, whose smallest
 	// form is a header and a whole group of slots.
 	parsedDictBytes = 384
@@ -159,6 +166,9 @@ type Document struct {
 	// header declared.
 	objStmHeaders map[int]*objStmParsed
 	parsed        int
+	// parsedRefused is set once a charge has been refused, and closes the
+	// balance for good: see chargeParsed.
+	parsedRefused bool
 	// parsedBytes is what everything the document holds costs to hold: its
 	// objects, its trailer, the headers of its object streams, and the work
 	// the rebuild does on its way to them. It is released only where the
@@ -1411,15 +1421,39 @@ func (d *Document) parsedSpent() bool { return d.parsedBytes >= d.parsedBudget()
 // budget spent, as a stream stopped at the inflation budget's total leaves
 // that spent: everything read after it finds nothing left, so that a file
 // whose objects each hold the rest of it is parsed a few times over and not
-// once per object.
+// once per object. Spent is a state the document does not come back from:
+// once a charge has been refused the balance is closed, and neither a budget
+// that grew with a later inflation nor a refund from a parse that was reading
+// beside the one refused opens it again. The reader has said it could not
+// hold what the file asked for, and what it reads after that is read on the
+// strength of that answer.
 func (d *Document) chargeParsed(n int64) bool {
 	limit := d.parsedBudget()
-	if n < 0 || n > limit-d.parsedBytes {
+	if d.parsedRefused || n < 0 || n > limit-d.parsedBytes {
+		d.parsedRefused = true
 		d.parsedBytes = limit
 		return false
 	}
 	d.parsedBytes += n
 	return true
+}
+
+// releaseParsed gives back n of what the document was charged, where the
+// charge was taken for room the reader no longer holds: an array's growth is
+// charged for the backing array it is copying from as well as the one it is
+// copying into, and the one it copied from is let go the moment it is. The
+// balance never goes below nothing, and a document whose balance has been
+// refused gives nothing back: the refusal is what every later reading of the
+// file is answered with, and a refund after it would hand back room the
+// reader has already said it does not have.
+func (d *Document) releaseParsed(n int64) {
+	if n <= 0 || d.parsedRefused {
+		return
+	}
+	if n > d.parsedBytes {
+		n = d.parsedBytes
+	}
+	d.parsedBytes -= n
 }
 
 // allowance is what one parse may spend of a document's budget. The parser
@@ -1439,6 +1473,17 @@ type allowance struct {
 	// past names the bound a parse ends at when the allowance runs out; the
 	// document's own where it is nil.
 	past func() error
+	// taken is what this allowance has spent and not given back. It bounds a
+	// refund: nothing goes back that was not taken here, so a parse that gave
+	// back more than it spent cannot leave the balance better off than it
+	// found it.
+	taken int64
+	// spent is set once a charge on this allowance has been refused. It is a
+	// state the allowance does not come back from, as the document's balance
+	// does not: every charge after it is refused and every refund after it is
+	// dropped, so that the value being built is abandoned where it stands and
+	// nothing it gives back can be spent on reading further.
+	spent bool
 }
 
 // exhausted is the error a parse ends with when this allowance runs out.
@@ -1459,17 +1504,52 @@ func (a *allowance) take(n int64) bool {
 	switch {
 	case a == nil:
 		return true
+	case a.spent:
+		return false
 	case a.doc != nil:
 		// The document's own balance, read and spent in one step, so that
 		// what this parse takes is not offered to another.
-		return a.doc.chargeParsed(n)
+		if !a.doc.chargeParsed(n) {
+			a.spent = true
+			return false
+		}
+		a.taken += n
+		return true
 	case n < 0 || n > a.left:
 		a.left = 0
+		a.spent = true
 		return false
 	default:
 		a.left -= n
+		a.taken += n
 		return true
 	}
+}
+
+// give returns n of what this allowance took, where the reader no longer
+// holds what the charge was taken for: an array's growth reserves room for
+// the backing array it is copying from as well as the one it is copying into,
+// and what was reserved for the old one goes back once the copy is made. It is
+// the refund a page's operands already get when an operator consumes them,
+// taken here against the one balance a parse spends rather than against a
+// count the caller keeps. Nothing goes back that was not taken, and for an
+// allowance on a document it goes back to the balance every parse of that
+// document spends, so that what one parse gives back another may take. An
+// allowance that has met a refusal gives nothing back, and neither does a
+// document that has: what was refused stays refused.
+func (a *allowance) give(n int64) {
+	if a == nil || a.spent || n <= 0 {
+		return
+	}
+	if n > a.taken {
+		n = a.taken
+	}
+	a.taken -= n
+	if a.doc != nil {
+		a.doc.releaseParsed(n)
+		return
+	}
+	a.left += n
 }
 
 // remaining is what this allowance may still spend.
@@ -1534,9 +1614,13 @@ func parsedBytesOf(o object) int64 {
 	case Name:
 		return parsedStringBytes + grownBytes(int64(len(x)))
 	case Array:
-		n := int64(parsedArrayBytes)
+		// The slots are counted by the room the array has and not by the
+		// elements in it: what the reader holds is the backing array append
+		// grew to, whose room beyond the length is held as surely as the
+		// elements are.
+		n := int64(parsedArrayBytes) + int64(cap(x))*parsedSlotBytes
 		for _, item := range x {
-			n += parsedSlotBytes + parsedBytesOf(item)
+			n += parsedBytesOf(item)
 		}
 		return n
 	case Dict:

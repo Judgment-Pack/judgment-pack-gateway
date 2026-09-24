@@ -676,6 +676,52 @@ func (p *parser) hold(n int64) error {
 	return p.allow.exhausted()
 }
 
+// appended puts item in arr, holding the room the array grows by before the
+// allocation that takes it. What the reader holds is the whole backing array
+// and not the elements in it: append grows that array by Go's own policy,
+// which leaves room past the length, and an array charged element by element
+// would be charged less than it holds. An element that fits the room the
+// array already has is held by a slot already charged and costs nothing more.
+//
+// A growth holds two backing arrays at once, since append copies the old into
+// the new before the old is let go, so what is reserved here covers both: the
+// array as it stands, charged a second time, and the doubling Go gives a small
+// slice over it. The array's own slots are charged already, so the reserve is
+// twice its room -- and one slot where it has none -- and the two of them
+// together cover what is held while the copy is made: a small slice grows to
+// twice its room and the allocator's rounding over that, a large one to a
+// quarter more and that rounding, which is well within the same reserve. The
+// rounding is the one thing the reader holds before it is charged, and it is
+// charged the moment the growth is known.
+//
+// Once the copy is made the old array is the collector's, so what was reserved
+// for it goes back: the reserve less the room the growth actually left, which
+// is never less than nothing at any capacity Go grows through. What the array
+// has cost when this returns is the room it now has, however it got there.
+// The cost of reserving for both is that an array whose old room and doubled
+// new room do not fit together is refused at that growth rather than at the
+// next one, which is the reader declining to make a copy it could not hold.
+func (p *parser) appended(arr Array, item object) (Array, error) {
+	if len(arr) < cap(arr) {
+		return append(arr, item), nil
+	}
+	reserve := int64(max(2*cap(arr), 1))
+	if err := p.hold(reserve * parsedSlotBytes); err != nil {
+		return nil, err
+	}
+	before := int64(cap(arr))
+	arr = append(arr, item)
+	switch grew := int64(cap(arr)) - before; {
+	case grew > reserve:
+		if err := p.hold((grew - reserve) * parsedSlotBytes); err != nil {
+			return nil, err
+		}
+	case grew < reserve:
+		p.allow.give((reserve - grew) * parsedSlotBytes)
+	}
+	return arr, nil
+}
+
 // errKeyword carries a keyword the parser met where an object was
 // expected: "endobj", "stream", "obj", or, in content mode, an operator.
 type errKeyword struct {
@@ -804,10 +850,10 @@ func (p *parser) parseObject(depth int) (object, error) {
 				}
 				return nil, err
 			}
-			if err := p.hold(parsedSlotBytes); err != nil {
+			arr, err = p.appended(arr, item)
+			if err != nil {
 				return nil, err
 			}
-			arr = append(arr, item)
 			if len(arr) > maxContainerItems {
 				return nil, fmt.Errorf("%w: array past %d items", errStructureBound, maxContainerItems)
 			}
