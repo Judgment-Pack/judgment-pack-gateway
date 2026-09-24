@@ -36,12 +36,13 @@ const (
 	entriesPerCheck = 4096
 	// scanBytesPerCheck is how many inspections of a byte of the file the
 	// scan for object headers makes between two readings of the deadline, so
-	// that the largest single piece of work opening does is read around and
-	// not only after; the search for a keyword may look two bytes past it, so
-	// no more than this and two are made between two readings. The reading costs nothing measurable at this size: the scan of a
-	// file of sixty thousand headers takes the same time whether the deadline
-	// is read every four kibibytes or once for the whole file, and the part is
-	// small beside the file a deadline has to cut.
+	// that the search for headers, which was one pass over the whole file that
+	// nothing interrupted, is read around and not only after. The search for
+	// a keyword may look two bytes past it, so no more than this and two are
+	// made between two readings. The reading costs nothing measurable at this
+	// size: the scan of a file of sixty thousand headers takes the same time
+	// whether the deadline is read every four kibibytes or once for the whole
+	// file, and the part is small beside the file a deadline has to cut.
 	scanBytesPerCheck = 64 << 10
 	// endstreamBlock is the bytes searched for the "endstream" of a stream
 	// whose /Length does not locate one; the file's own "endstream" offsets,
@@ -1005,10 +1006,14 @@ func (s *headerScan) spend(n int) bool {
 }
 
 // look inspects the byte at i and charges it, reporting whether the reading
-// of the deadline that charge brought found it passed.
+// of the deadline that charge brought found it passed. The byte is loaded in
+// a statement of its own, before the charge: in one expression with the call
+// the call is made first, and the load would fall after the reading its
+// charge brings, in the next part.
 func (s *headerScan) look(i int) (byte, bool) {
+	c := s.data[i]
 	inspected(i, i+1)
-	return s.data[i], s.spend(1)
+	return c, s.spend(1)
 }
 
 // header reads backwards from the keyword at o the header it ends, and
@@ -1152,15 +1157,18 @@ func (d *Document) reconstruct() error {
 			panic(r)
 		}
 	}()
-	// Finding the headers is the largest single piece of work opening does,
-	// and a file with no usable startxref reaches it having read no deadline
-	// at all. It is therefore read before the search begins and between the
-	// parts of the file the search examines, and not only after it: a
-	// deadline that has passed when the scan begins costs no search, and one
-	// that passes during it costs at most one part, and the two bytes a
-	// search looks past it, more. What is counted
-	// against the bound is every match the expression finds, before the
-	// boundary check below turns any of them away.
+	// Finding the headers was one pass over the whole file that nothing
+	// interrupted, and a file with no usable startxref reaches it having read
+	// no deadline at all. The deadline is therefore read before the search
+	// begins and between the parts of the file the search examines, and not
+	// only after it: a deadline that has passed when the scan begins costs no
+	// search, and one that passes during it costs at most one part, and the
+	// two bytes a search looks past it, more. Other work that reads no
+	// deadline remains in the rebuild -- one object's parse, however long it
+	// runs within its bounds (#157), and the loops that gather the trailer,
+	// the object streams and the stream ends (#159). What is counted against
+	// the bound is every match the expression finds, before the boundary
+	// check below turns any of them away.
 	matches, examined, stopped := scanHeaders(d.data, maxScanObjects+1, scanBytesPerCheck, d.deadlineNow)
 	if scanObserved != nil {
 		scanObserved(examined)

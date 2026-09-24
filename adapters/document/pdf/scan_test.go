@@ -223,6 +223,32 @@ func scanStretchInputs() []struct {
 		{"\"1 0 obj \" repeated", bytes.Repeat([]byte("1 0 obj "), n)},
 		{"whitespace of four parts before a header", []byte("1" + strings.Repeat(" ", 4*scanBytesPerCheck) + "0" + strings.Repeat("\f", 4*scanBytesPerCheck) + "obj!")},
 		{"digits of four parts before a header", []byte(strings.Repeat("7", 4*scanBytesPerCheck) + " 0 obj!")},
+		// The last byte a header's backward reading tests uses the part up,
+		// and the search after it looks at a part and two bytes: the byte is
+		// the part's, and none of it may fall after the reading its charge
+		// brings.
+		{"a header whose last backward test uses the part up", []byte(strings.Repeat("x", scanBytesPerCheck-16) + "1 0 obj!" + strings.Repeat("x", scanBytesPerCheck+2))},
+	}
+}
+
+// A byte the scan looks at is loaded before the charge for it is made, and so
+// before the reading of the deadline that charge may bring: what is read
+// there, which may run any code a context runs, cannot change the byte the
+// inspection already made found.
+func TestTheScanLoadsAByteBeforeItChargesIt(t *testing.T) {
+	s := &headerScan{data: []byte("x"), part: 1, left: 1}
+	reads := 0
+	s.stop = func() bool {
+		reads++
+		s.data[0] = 'y'
+		return false
+	}
+	c, stopped := s.look(0)
+	if reads != 1 || stopped {
+		t.Fatalf("the look read the deadline %d times, stopped %v; its charge uses the part up and reads it once", reads, stopped)
+	}
+	if c != 'x' {
+		t.Fatalf("the look found %q, which the reading of the deadline wrote after it; it inspected %q", c, 'x')
 	}
 }
 
