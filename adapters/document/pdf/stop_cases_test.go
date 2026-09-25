@@ -35,23 +35,43 @@ func TestStopScalarLookahead(t *testing.T) {
 	}
 }
 
+// The integer lookahead's third token: "1 2", a comment of 40,000 bytes and
+// then "R", the deadline passing inside the comment, which the lookahead for
+// the keyword that would make the integers a reference reads. The parse ends
+// at the deadline, and the integer is not taken for the object.
+func TestStopLookaheadThirdToken(t *testing.T) {
+	d := stopDoc("1 2 %"+strings.Repeat("x", 40000)+"\nR", &stopReads{Context: context.Background(), n: 1})
+	p := &parser{lex: newLexer(d.data, 0).within(d.budgeted()), allow: d.budgeted()}
+	if v, err := p.parseObject(0); v != nil || !isDeadline(err) || d.stopped() == nil {
+		t.Fatalf("parsed %#v, %v, stopped %v: the deadline in the third token was lost", v, err, d.stopped())
+	}
+}
+
 // Resolving an object stream the deadline stops: stream 9 carries a string
 // its lexer reads the deadline in. Object 4 in it is unread, nothing is
-// cached, the stream is not marked tried, and the same object read again with
-// time left reads.
+// cached, and the stream is not marked tried. The same object read again in
+// the same document, with time left, is the stop still; read in a document
+// made again over the same bytes, it reads.
 func TestStopResolveStream(t *testing.T) {
 	raw := "9 0 obj << /Type /ObjStm /N 1 /First 4 /A (" + strings.Repeat("x", 40000) + ") /Length 5 >>stream\n4 0 1\nendstream\nendobj\n"
-	d := stopDoc(raw, &stopReads{Context: context.Background(), n: 1})
-	d.xref[9] = xrefEntry{offset: 0}
-	d.xref[4] = xrefEntry{inStream: true, stmNum: 9}
+	made := func(ctx context.Context) *Document {
+		d := stopDoc(raw, ctx)
+		d.xref[9] = xrefEntry{offset: 0}
+		d.xref[4] = xrefEntry{inStream: true, stmNum: 9}
+		return d
+	}
+	d := made(&stopReads{Context: context.Background(), n: 1})
 	v, read := d.objectRead(4)
 	_, tried := d.objStms[9]
 	if read || v != nil || tried || len(d.cache) != 0 {
 		t.Fatalf("read %v object %#v tried %v cache %v: the deadline was kept as a stream that could not be read", read, v, tried, d.cache)
 	}
 	d.ctx = context.Background()
-	if v, read = d.objectRead(4); !read || v != int64(1) {
-		t.Fatalf("read again with time left: %#v, read %v", v, read)
+	if v, read = d.objectRead(4); read || v != nil || len(d.cache) != 0 || len(d.objStms) != 0 || d.stopped() == nil {
+		t.Fatalf("read again in the stopped document with time left: %#v, read %v, cached %v, streams %v", v, read, d.cache, d.objStms)
+	}
+	if v, read = made(context.Background()).objectRead(4); !read || v != int64(1) {
+		t.Fatalf("read again in a document made again: %#v, read %v", v, read)
 	}
 }
 
@@ -131,9 +151,9 @@ func TestStopNestedResolutionRecords(t *testing.T) {
 		{"a catalog", reviewCatalogFile(), 2},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			r, d, _, rebuilt := stopRun(c.data, c.n)
-			if d == nil || !r.TimedOut || r.Fatal != nil || rebuilt {
-				t.Fatalf("stopped %v timedOut %v fatal %+v rebuilt after the stop %v", d != nil, r.TimedOut, r.Fatal, rebuilt)
+			trial := stopRun(c.data, c.n, false)
+			if trial.d == nil || !trial.r.TimedOut || trial.r.Fatal != nil || trial.rebuiltAfter {
+				t.Fatalf("stopped %v timedOut %v fatal %+v rebuilt after the stop %v", trial.d != nil, trial.r.TimedOut, trial.r.Fatal, trial.rebuiltAfter)
 			}
 		})
 	}
@@ -324,15 +344,33 @@ func TestStopStreamEndsIndex(t *testing.T) {
 		})
 	}
 	t.Run("before it is kept", func(t *testing.T) {
-		// The last reading is the one made before the index is kept.
-		live := &stopReads{Context: context.Background()}
-		d := stopDoc(string(data), live)
-		if _, err := d.nextEndstream(0); err != nil || d.endstream == nil {
-			t.Fatal(err)
+		// The deadline passes once the last block has been filled -- counted
+		// from the work of filling, and not from the readings the index
+		// makes -- so that only a reading made after the filling, before
+		// the index is kept, can find it passed.
+		filled := 0
+		loopStepped = func(l string, _ int) {
+			if l == "blocks filled" {
+				filled++
+			}
 		}
-		d = stopDoc(string(data), &stopReads{Context: context.Background(), n: live.reads})
-		if _, err := d.nextEndstream(0); !isDeadline(err) || d.endstream != nil {
-			t.Fatalf("error %v, index kept %v", err, d.endstream != nil)
+		defer func() { loopStepped = nil }()
+		d := stopDoc(string(data), context.Background())
+		if _, err := d.nextEndstream(0); err != nil || d.endstream == nil || filled == 0 {
+			t.Fatalf("with no deadline: %v, %d blocks filled", err, filled)
+		}
+		ctx := &stopArmed{Context: context.Background()}
+		steps := 0
+		loopStepped = func(l string, _ int) {
+			if l == "blocks filled" {
+				if steps++; steps == filled {
+					ctx.armed = true
+				}
+			}
+		}
+		d = stopDoc(string(data), ctx)
+		if _, err := d.nextEndstream(0); !isDeadline(err) || d.endstream != nil || !ctx.expired {
+			t.Fatalf("armed after the last of %d blocks filled: error %v, index kept %v, deadline read after the filling %v", filled, err, d.endstream != nil, ctx.expired)
 		}
 	})
 }
@@ -437,7 +475,7 @@ func TestStopRebuildExitsKeepNothingOfTheOldReading(t *testing.T) {
 		}
 		now := stopState(d)
 		for key, then := range held {
-			if strings.HasPrefix(key, "entry ") || strings.HasPrefix(key, "trailer ") {
+			if strings.HasPrefix(key, "entry ") || strings.HasPrefix(key, "trailer ") || key == "generation" {
 				continue
 			}
 			if now[key] == then {
@@ -473,4 +511,158 @@ func lastMemberFile() []byte {
 		{num: 2, body: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
 		{num: 3, body: "<< /Type /Page /Parent 2 0 R >>"},
 	}, b.String(), 0)
+}
+
+// The encryption dictionary read past the deadline. In the file of the second
+// review the crypt filter streams are read through is object 10, the name
+// /StdCF followed by a comment of 40,000 bytes the lexer reads the deadline
+// in: the name is unread, and Identity, the filter a dictionary that names
+// none is read through, is not what it names. The dictionary is not opened
+// and no handler is installed; the error is the deadline. And a stopped
+// document whose dictionary's /P is an object of its own, which it can no
+// longer read, returns the deadline and not a dictionary with no /P.
+func TestStopEncryption(t *testing.T) {
+	t.Run("the stream filter's name", func(t *testing.T) {
+		data := stopCryptFile()
+		if r := Extract(context.Background(), data, testOptions()); r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Text != "Hello" || r.Encryption == nil || !r.Encryption.Opened {
+			t.Fatalf("with no deadline: %+v", r)
+		}
+		d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.ctx = &stopReads{Context: context.Background(), n: 1}
+		info, err := d.openEncryption()
+		if !isDeadline(err) || d.crypt != nil || info != nil && info.Opened || d.stopped() == nil {
+			t.Fatalf("error %v, handler %v, record %+v, stopped %v: the handler was installed from a filter the deadline left unread", err, d.crypt != nil, info, d.stopped())
+		}
+	})
+	t.Run("a /P the stopped document cannot read", func(t *testing.T) {
+		d := stoppedDoc(t, "9 0 obj -4 endobj")
+		d.xref[9] = xrefEntry{offset: 0}
+		d.trailer["Encrypt"] = Dict{"Filter": Name("Standard"), "V": int64(2), "R": int64(3), "Length": int64(128), "O": String(bytes.Repeat([]byte{1}, 32)), "U": String(bytes.Repeat([]byte{2}, 32)), "P": ref{9, 0}}
+		if info, err := d.openEncryption(); !isDeadline(err) || errors.Is(err, errMalformed) || d.crypt != nil {
+			t.Fatalf("error %v, record %+v, handler %v: a field the stop left unread was taken for absent", err, info, d.crypt != nil)
+		}
+	})
+}
+
+// stopValueContext is a context that cannot be compared: a value holding a
+// slice.
+type stopValueContext struct {
+	context.Context
+	b []byte
+}
+
+// The stop is the document's, and final: it is set by a reading of the
+// deadline made under whatever context the document is read under -- its
+// own, the walk's, a page's, the interpreter's -- and every reading of the
+// document after it, under any context, is the stop, and neither a partial
+// reading nor a defect. Contexts are never compared, so one that cannot be
+// is read as any other. A document is read again by opening it again.
+func TestStopIsTheDocuments(t *testing.T) {
+	pages := stopTable(stopPages(), "<< /Root 1 0 R /Size 8 >>", 0)
+	opened := func(data []byte) *Document {
+		d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	stopped := func(t *testing.T, at string, r *Result) {
+		t.Helper()
+		if !r.TimedOut || r.Fatal != nil || len(r.Pages) != 0 {
+			t.Fatalf("%s: timedOut %v fatal %+v pages %+v problems %+v", at, r.TimedOut, r.Fatal, r.Pages, r.Problems)
+		}
+	}
+	t.Run("a live context after a rebuild the deadline stopped", func(t *testing.T) {
+		// The file of the second review: the font's entry names byte 3, so
+		// that reading it rebuilds the cross-reference, and the deadline
+		// passes at the scan's first reading of it.
+		data := stopTable(stopPages(), "<< /Root 1 0 R /Size 8 >>", 4)
+		d := opened(data)
+		for _, num := range []int{1, 2, 3} {
+			d.objectRead(num)
+		}
+		d.ctx = &stopReads{Context: context.Background(), n: 1}
+		if _, read := d.objectRead(4); read || !d.reconstructed || d.stopped() == nil {
+			t.Fatalf("read %v, rebuilt %v, stopped %v", read, d.reconstructed, d.stopped())
+		}
+		d.ctx = context.Background()
+		stopped(t, "read again with time left", stopReadAgain(d.ctx, d))
+		if r := Extract(context.Background(), data, testOptions()); r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Text != "Hello" {
+			t.Fatalf("opened again: %+v", r)
+		}
+	})
+	t.Run("a context that cannot be compared", func(t *testing.T) {
+		if r := Extract(stopValueContext{context.Background(), []byte{1}}, pages, testOptions()); r.Fatal != nil || len(r.Pages) != 1 || r.Pages[0].Text != "Hello" {
+			t.Fatalf("with time left: %+v", r)
+		}
+		passed, cancel := context.WithTimeout(context.Background(), 0)
+		defer cancel()
+		stopped(t, "past the deadline", Extract(stopValueContext{passed, []byte{1}}, pages, testOptions()))
+	})
+	t.Run("a page's context whose deadline has passed", func(t *testing.T) {
+		d := opened(pages)
+		w, _, stop := walkPages(context.Background(), d, testOptions(), &Result{})
+		if stop != nil {
+			t.Fatal(stop)
+		}
+		r := &Result{}
+		extractPages(&stopReads{Context: context.Background(), n: 1}, w, testOptions(), r)
+		stopped(t, "the page read under it", r)
+		if d.stopped() == nil {
+			t.Fatal("the page's reading of the deadline did not stop the document")
+		}
+		if _, read := d.objectRead(6); read {
+			t.Fatal("an object was read under the document's own context after the page's stop")
+		}
+	})
+	t.Run("a live page context after the document's stop", func(t *testing.T) {
+		d := opened(pages)
+		w, _, stop := walkPages(context.Background(), d, testOptions(), &Result{})
+		if stop != nil {
+			t.Fatal(stop)
+		}
+		d.ctx = &stopReads{Context: context.Background(), n: 1}
+		if !d.deadlineNow() {
+			t.Fatal("the document did not stop")
+		}
+		r := &Result{}
+		extractPages(context.Background(), w, testOptions(), r)
+		stopped(t, "the page read under a live context", r)
+	})
+	t.Run("the interpreter's context", func(t *testing.T) {
+		d := stopDoc("1 0 obj << /Subtype /Type1 /BaseFont /Helvetica >> endobj", context.Background())
+		d.xref[1] = xrefEntry{offset: 0}
+		pr := d.interpretPage(&stopReads{Context: context.Background(), n: 1}, []byte("q Q"), Dict{}, 100)
+		if !isDeadline(pr.err) || d.stopped() == nil {
+			t.Fatalf("page error %v, stopped %v: the interpreter's reading did not stop the document", pr.err, d.stopped())
+		}
+		if pr := d.interpretPage(context.Background(), []byte("BT /F1 12 Tf (Hello) Tj ET"), Dict{"Font": Dict{"F1": ref{1, 0}}}, 100); pr.text != "" || !isDeadline(pr.err) {
+			t.Fatalf("a page read after the stop under a live context: text %q, error %v", pr.text, pr.err)
+		}
+		if _, read := d.objectRead(1); read {
+			t.Fatal("an object was read after the interpreter's stop")
+		}
+	})
+}
+
+// What the sweep compares the document by sees into what it holds: a value
+// changed in place, under the same number and at the same address, with the
+// same length, is a change, and so is a handler installed or changed.
+func TestStopStateSeesContents(t *testing.T) {
+	d := stopDoc("", context.Background())
+	held := Dict{"A": int64(1)}
+	d.cache[1] = held
+	d.crypt = &cryptHandler{key: []byte{1}}
+	before := stopState(d)
+	held["A"] = int64(2)
+	if after := stopState(d); after["object 1"] == before["object 1"] {
+		t.Fatalf("a dictionary changed in place reads as it did: %s", after["object 1"])
+	}
+	d.crypt.key[0] = 2
+	if after := stopState(d); after["handler"] == before["handler"] {
+		t.Fatalf("a handler changed in place reads as it did: %s", after["handler"])
+	}
 }

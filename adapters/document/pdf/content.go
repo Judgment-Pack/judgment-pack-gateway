@@ -677,9 +677,8 @@ func (it *interp) deadlinePassed() bool {
 	select {
 	case <-it.ctx.Done():
 		// The document is stopped by what the context says, as by any
-		// other reading of it.
-		it.d.deadlineFor(it.ctx)
-		it.noteStreamError(it.ctx.Err())
+		// other reading of it, and the page by the error that stopped it.
+		it.noteStreamError(it.d.deadlineFor(it.ctx))
 		return true
 	default:
 	}

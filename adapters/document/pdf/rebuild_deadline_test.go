@@ -235,13 +235,19 @@ func TestTheRebuildReadsTheDeadlineAsItsLoopsRun(t *testing.T) {
 
 // The search for the page tree after a rebuild gathers and orders the numbers
 // the rebuilt cross-reference names as the rebuild does, and ends at a
-// deadline met there as it ends at one met between its objects.
+// deadline met there as it ends at one met between its objects. A document the
+// deadline has stopped stays stopped, so each loop is stopped in a document of
+// its own.
 func TestTheSearchForThePageTreeReadsTheDeadlineAsItOrdersNumbers(t *testing.T) {
 	data := rebuildLoops()[0].data
-	d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
-	if d == nil {
-		t.Fatalf("opening the file: %v", err)
+	opened := func() *Document {
+		d, err := open(context.Background(), data, &inflateBudget{total: 64 << 20, one: 16 << 20})
+		if d == nil {
+			t.Fatalf("opening the file: %v", err)
+		}
+		return d
 	}
+	d := opened()
 	// With time left, the numbers come back as the whole set of them the
 	// cross-reference names, each once, in order.
 	want := make([]int, 0, len(d.xref))
@@ -255,6 +261,7 @@ func TestTheSearchForThePageTreeReadsTheDeadlineAsItOrdersNumbers(t *testing.T) 
 	}
 	for _, loop := range []string{"gather", "sort", "merge"} {
 		ctx := &rebuildDeadline{Context: context.Background(), loop: loop}
+		d := opened()
 		d.ctx = ctx
 		steps := 0
 		loopStepped = func(l string, n int) {

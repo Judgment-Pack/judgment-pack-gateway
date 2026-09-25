@@ -3,8 +3,12 @@ package pdf
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"crypto/rc4"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"hash"
 	"reflect"
 	"sort"
 	"strings"
@@ -14,10 +18,16 @@ import (
 
 // stopReads is a deadline that passes at the reading of it numbered n and at
 // every reading after it, counting every reading; with n of zero it never
-// passes.
+// passes. With done set, its Done channel is closed once the reading before
+// the nth has been made, as a context's is closed when its deadline passes
+// before the next reading of it; without, it is never closed. asked holds
+// the readings Done was asked for before: those the interpreter makes, which
+// look at Done first.
 type stopReads struct {
 	context.Context
 	n, reads int
+	done     bool
+	asked    map[int]bool
 }
 
 func (c *stopReads) Err() error {
@@ -29,6 +39,25 @@ func (c *stopReads) Err() error {
 }
 
 func (c *stopReads) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+// stopClosed is a closed channel: the Done of a context whose deadline has
+// passed.
+var stopClosed = func() chan struct{} {
+	c := make(chan struct{})
+	close(c)
+	return c
+}()
+
+func (c *stopReads) Done() <-chan struct{} {
+	if c.asked == nil {
+		c.asked = map[int]bool{}
+	}
+	c.asked[c.reads+1] = true
+	if c.done && c.n > 0 && c.reads >= c.n-1 {
+		return stopClosed
+	}
+	return nil
+}
 
 // stopObject is an object of a file the tests below assemble: its number,
 // its dictionary or other body, and the data of the stream it is, where it is
@@ -126,11 +155,12 @@ func stopXrefStream(objects []stopObject, placed map[int][2]int, num int, dict s
 }
 
 // stopPages are the objects of a one-page document whose page shows "Hello"
-// in a font mapped through a ToUnicode CMap, each reached through a
-// reference, and whose page dictionary carries a comment long enough that
-// its parse reads the deadline. The content's length is object 7.
+// in a font mapped through a ToUnicode CMap, and an inline image, each
+// reached through a reference, and whose page dictionary carries a comment
+// long enough that its parse reads the deadline. The content's length is
+// object 7.
 func stopPages() []stopObject {
-	content := "BT /F1 12 Tf 72 700 Td (Hello) Tj ET"
+	content := "BT /F1 12 Tf 72 700 Td (Hello) Tj ET BI /W 1 /H 1 /BPC 8 /CS /G /F /AHx ID 00> EI"
 	cmap := "/CIDInit /ProcSet findresource begin 12 dict begin begincmap 1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <48> <0048> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end"
 	return []stopObject{
 		{num: 1, body: "<< /Type /Catalog /Pages 2 0 R >>"},
@@ -176,6 +206,14 @@ func stopFiles(t *testing.T) []struct {
 	// that the page's reading of it rebuilds the cross-reference.
 	rebuilt := stopTable(pages, "<< /Size 8 /Root 1 0 R >>", 4)
 
+	// A page tree whose /Kids names an object the cross-reference does not
+	// name: with no deadline, a defect of the file, and with the deadline
+	// found passed once that is known, the deadline.
+	missingKids := stopTable([]stopObject{
+		{num: 1, body: "<< /Type /Catalog /Pages 2 0 R >>"},
+		{num: 2, body: "<< /Type /Pages /Kids 99 0 R /Count 1 >>"},
+	}, "<< /Size 3 /Root 1 0 R >>", 0)
+
 	files := []struct {
 		name  string
 		data  []byte
@@ -187,10 +225,14 @@ func stopFiles(t *testing.T) []struct {
 		{"the xref-W file of the review", reviewXrefWFile(), 1},
 		{"the catalog file of the review", reviewCatalogFile(), 1},
 		{"the nested rebuild of the second review", nestedRebuildFile(), 1},
+		{"an encrypted file whose stream filter is read past a comment", stopCryptFile(), 1},
+		{"a page tree whose /Kids names no object", missingKids, 1},
 	}
-	if !testing.Short() {
+	if !testing.Short() && raceFactor == 1 {
 		// A trailer at the bound, parsed at over a second a reading: one
-		// reading position in every 350 of the 1,400 or so it makes.
+		// reading position in every 350 of the 1,400 or so it makes. Under
+		// the race detector each trial of it costs ten seconds, and it is
+		// left out, as from a short run.
 		files = append(files, struct {
 			name  string
 			data  []byte
@@ -250,10 +292,46 @@ func nestedRebuildFile() []byte {
 	return b.Bytes()
 }
 
-// stopIdentity names a value the document holds by what it is: a reference
-// type by where it lies and how long it is, and anything else by its value,
-// so that two states can be told apart by what they hold and not only by
-// what they hold it under.
+// stopCryptFile is the file of the second review whose encryption handler
+// was installed after the deadline stopped the document: the pages of
+// stopPages, their streams encrypted with RC4 under the empty user password,
+// through a revision 4 dictionary whose strings are read through Identity and
+// whose streams through the crypt filter object 10 names -- /StdCF, followed
+// by a comment of 40,000 bytes the lexer reads the deadline in. Stopped
+// there, the name is unread, and it is not Identity.
+func stopCryptFile() []byte {
+	id := []byte("0123456789abcdef")
+	o := bytes.Repeat([]byte{42}, 32)
+	key := computeLegacyKey(nil, o, -4, id, 4, 16, true)
+	sum := md5.Sum(append(append([]byte{}, passwordPad...), id...))
+	u := append([]byte{}, sum[:]...)
+	for i := 0; i < 20; i++ {
+		k := append([]byte{}, key...)
+		for j := range k {
+			k[j] ^= byte(i)
+		}
+		c, _ := rc4.NewCipher(k)
+		c.XORKeyStream(u, u)
+	}
+	u = append(u, make([]byte, 16)...)
+	pages := stopPages()
+	h := &cryptHandler{key: key, streams: cryptRC4}
+	for i := range pages {
+		if pages[i].data != nil {
+			pages[i].data, _ = h.decrypt(cryptRC4, pages[i].data, pages[i].num, 0)
+		}
+	}
+	pages = append(pages,
+		stopObject{num: 8, body: fmt.Sprintf("<< /Filter /Standard /V 4 /R 4 /Length 128 /P -4 /O <%x> /U <%x> /CF << /StdCF << /CFM /V2 >> >> /StrF /Identity /StmF 10 0 R >>", o, u)},
+		stopObject{num: 10, body: "/StdCF %" + strings.Repeat("x", 40000) + "\n"})
+	return stopTable(pages, fmt.Sprintf("<< /Root 1 0 R /Size 11 /Encrypt 8 0 R /ID [<%x> <%x>] >>", id, id), 0)
+}
+
+// stopIdentity names a value the document holds by what it is and what it
+// holds: a reference type by where it lies, how long it is and a digest of
+// everything it reaches, and anything else by its value, so that two states
+// can be told apart by what they hold, down to the contents of what they
+// hold, and not only by what they hold it under.
 func stopIdentity(v any) string {
 	if v == nil {
 		return "nil"
@@ -261,7 +339,9 @@ func stopIdentity(v any) string {
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Slice:
-		return fmt.Sprintf("%T@%x#%d", v, rv.Pointer(), stopLen(rv))
+		h := sha256.New()
+		stopDigest(h, rv, map[uintptr]bool{})
+		return fmt.Sprintf("%T@%x#%d:%x", v, rv.Pointer(), stopLen(rv), h.Sum(nil)[:12])
 	}
 	return fmt.Sprintf("%T:%#v", v, v)
 }
@@ -274,10 +354,106 @@ func stopLen(rv reflect.Value) int {
 	return 0
 }
 
+// stopDigest writes everything v holds to h: what a pointer, an interface, a
+// slice or a map holds, and every field of a struct, unexported ones
+// included, each pointer followed once.
+func stopDigest(h hash.Hash, v reflect.Value, seen map[uintptr]bool) {
+	switch v.Kind() {
+	case reflect.Invalid:
+		h.Write([]byte("nil;"))
+	case reflect.Pointer:
+		if v.IsNil() {
+			h.Write([]byte("nil;"))
+			return
+		}
+		if seen[v.Pointer()] {
+			fmt.Fprintf(h, "@%x;", v.Pointer())
+			return
+		}
+		seen[v.Pointer()] = true
+		h.Write([]byte("&"))
+		stopDigest(h, v.Elem(), seen)
+	case reflect.Interface:
+		if v.IsNil() {
+			h.Write([]byte("nil;"))
+			return
+		}
+		fmt.Fprintf(h, "%s(", v.Elem().Type())
+		stopDigest(h, v.Elem(), seen)
+		h.Write([]byte(")"))
+	case reflect.Slice:
+		if v.IsNil() {
+			h.Write([]byte("nil;"))
+			return
+		}
+		fmt.Fprintf(h, "[%d:", v.Len())
+		if v.Type().Elem().Kind() == reflect.Uint8 {
+			h.Write(v.Bytes())
+		} else {
+			for i := 0; i < v.Len(); i++ {
+				stopDigest(h, v.Index(i), seen)
+			}
+		}
+		h.Write([]byte("]"))
+	case reflect.Array:
+		h.Write([]byte("["))
+		for i := 0; i < v.Len(); i++ {
+			stopDigest(h, v.Index(i), seen)
+		}
+		h.Write([]byte("]"))
+	case reflect.Map:
+		if v.IsNil() {
+			h.Write([]byte("nil;"))
+			return
+		}
+		keys := v.MapKeys()
+		sort.Slice(keys, func(i, j int) bool {
+			a, b := keys[i], keys[j]
+			switch a.Kind() {
+			case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+				return a.Int() < b.Int()
+			case reflect.String:
+				return a.String() < b.String()
+			}
+			return fmt.Sprint(a) < fmt.Sprint(b)
+		})
+		fmt.Fprintf(h, "{%d:", v.Len())
+		for _, k := range keys {
+			stopDigest(h, k, seen)
+			h.Write([]byte("="))
+			stopDigest(h, v.MapIndex(k), seen)
+		}
+		h.Write([]byte("}"))
+	case reflect.Struct:
+		h.Write([]byte("{"))
+		for i := 0; i < v.NumField(); i++ {
+			fmt.Fprintf(h, "%s:", v.Type().Field(i).Name)
+			stopDigest(h, v.Field(i), seen)
+		}
+		h.Write([]byte("}"))
+	case reflect.Bool:
+		fmt.Fprintf(h, "%v;", v.Bool())
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		h.Write(binary.AppendVarint([]byte{'i'}, v.Int()))
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		h.Write(binary.AppendUvarint([]byte{'u'}, v.Uint()))
+	case reflect.Float32, reflect.Float64:
+		fmt.Fprintf(h, "%v;", v.Float())
+	case reflect.Complex64, reflect.Complex128:
+		fmt.Fprintf(h, "%v;", v.Complex())
+	case reflect.String:
+		fmt.Fprintf(h, "%q;", v.String())
+	default:
+		// A function, a channel or an unsafe pointer: where it lies.
+		fmt.Fprintf(h, "%s@%x;", v.Kind(), v.Pointer())
+	}
+}
+
 // stopState is what the document holds, by name: its objects, its object
 // streams and their headers, its fonts, its CMaps, the heads it has settled,
-// its index of stream ends, the failures it has kept, its cross-reference
-// and its trailer.
+// its index of stream ends, its encryption handler, the failures it has kept,
+// its generation, its cross-reference and its trailer, each with what it
+// holds.
 func stopState(d *Document) map[string]string {
 	s := map[string]string{}
 	for k, v := range d.cache {
@@ -301,11 +477,15 @@ func stopState(d *Document) map[string]string {
 	if d.endstream != nil {
 		s["stream ends"] = stopIdentity(d.endstream)
 	}
+	if d.crypt != nil {
+		s["handler"] = stopIdentity(d.crypt)
+	}
 	for name, err := range map[string]error{"bound": d.bound, "file bound": d.fileBound, "undecoded": d.undecoded, "no objects": d.noObjects, "scan unfinished": d.scanUnfinished} {
 		if err != nil {
 			s[name] = err.Error()
 		}
 	}
+	s["generation"] = fmt.Sprint(d.generation)
 	for k, v := range d.xref {
 		s[fmt.Sprintf("entry %d", k)] = fmt.Sprint(v)
 	}
@@ -315,32 +495,64 @@ func stopState(d *Document) map[string]string {
 	return s
 }
 
-// stopRun extracts data under a deadline that passes at the reading of it
-// numbered n, and returns the record, the document the deadline stopped, what
-// it held when it was stopped, and whether a rebuild began after it: a
-// document is rebuilt once at most, and the rebuild marks it the moment it
+// stopTrial is one extraction under a deadline that passes at the reading of
+// it numbered n: the record, the document the deadline stopped, what it held
+// when it was stopped, the reading it was stopped at, the readings the
+// context was asked for in all, and whether a rebuild began after the stop:
+// a document is rebuilt once at most, and the rebuild marks it the moment it
 // begins.
-func stopRun(data []byte, n int) (r *Result, d *Document, held map[string]string, rebuiltAfter bool) {
+type stopTrial struct {
+	r                *Result
+	d                *Document
+	held             map[string]string
+	stoppedAt, reads int
+	rebuiltAfter     bool
+}
+
+// stopRun extracts data under a deadline that passes at the reading of it
+// numbered n, its Done channel closed before that reading where done is set.
+func stopRun(data []byte, n int, done bool) stopTrial {
+	var trial stopTrial
+	ctx := &stopReads{Context: context.Background(), n: n, done: done}
 	rebuiltBefore := false
 	docExpired = func(stopped *Document) {
-		if d == nil {
-			d, held, rebuiltBefore = stopped, stopState(stopped), stopped.reconstructed
+		if trial.d == nil {
+			trial.d, trial.held, trial.stoppedAt, rebuiltBefore = stopped, stopState(stopped), ctx.reads, stopped.reconstructed
 		}
 	}
 	defer func() { docExpired = nil }()
-	r = Extract(&stopReads{Context: context.Background(), n: n}, data, testOptions())
-	return r, d, held, d != nil && d.reconstructed && !rebuiltBefore
+	trial.r = Extract(ctx, data, testOptions())
+	trial.reads = ctx.reads
+	trial.rebuiltAfter = trial.d != nil && trial.d.reconstructed && !rebuiltBefore
+	return trial
+}
+
+// stopReadAgain reads a document again from its page tree, as Extract reads
+// one whose cross-reference was rebuilt, under the context given.
+func stopReadAgain(ctx context.Context, d *Document) *Result {
+	r := &Result{}
+	if w, generation, stop := walkPages(ctx, d, testOptions(), r); stop == nil && d.generation == generation {
+		extractPages(ctx, w, testOptions(), r)
+	}
+	return r
 }
 
 // Once a reading of the deadline has found it passed, the document keeps
 // nothing more and publishes nothing more, and the reading ends at the
 // deadline and nothing else. Driven through every reading position of each
 // file -- the deadline passing at the first reading, the second, and so on
-// until the document is read whole -- the record says timeout and is neither
-// malformed nor a bound; no rebuild begins after the stop; everything the
-// document holds at the end it held, as it held it, when it was stopped,
-// what a rebuild's own end drops being the only change; and the same file
-// read again with time left reads as it reads with no deadline at all.
+// until the document is read whole, with the context's Done channel closed
+// before that reading and without, where the reading asks for it -- the
+// reading at that position stops the document, whatever made it: the
+// document's loops and lexers, the walk, a page, the interpreter. The record
+// says timeout and is neither malformed nor a bound, and says the encryption
+// opened only where its handler was installed before the stop; no context is
+// asked anything after the stop; no rebuild begins after it; everything the
+// document holds at the end it held, with what it held in it, when it was
+// stopped, what a rebuild's own end drops being the only change; the stopped
+// document read again under a context with time left is the stop still, asks
+// that context nothing and keeps nothing; and the file read again with time
+// left reads as it reads with no deadline at all.
 func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 	for _, f := range stopFiles(t) {
 		t.Run(f.name, func(t *testing.T) {
@@ -352,37 +564,65 @@ func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 			t.Logf("read whole: %d pages, fatal %v, %d readings of the deadline", len(whole.Pages), whole.Fatal, live.reads)
 			tried := 0
 			// Under the race detector one position in raceFactor of those
-			// the ordinary run tries is tried: the reader runs on one
-			// goroutine, so the positions differ in nothing the detector
-			// looks for, and each costs it several times what it costs off
-			// it.
+			// the ordinary run tries is tried: the reader and these tests
+			// run on one goroutine, so the positions differ in nothing the
+			// detector looks for, and each costs it several times what it
+			// costs off it.
 			for n := 1; n <= live.reads; n += f.every * raceFactor {
-				r, d, held, rebuiltAfter := stopRun(f.data, n)
-				if d == nil {
-					// The reading numbered n was made by the walk or a page
-					// with a context of their own, or never made: nothing
-					// stopped the document.
-					continue
+				// A reading Done was not asked for before is made the same
+				// way with Done closed, and is tried without it only.
+				dones := []bool{false}
+				if live.asked[n] {
+					dones = append(dones, true)
 				}
-				tried++
-				if !r.TimedOut || r.Fatal != nil {
-					t.Fatalf("deadline at reading %d: timedOut %v fatal %+v problems %+v", n, r.TimedOut, r.Fatal, r.Problems)
-				}
-				if rebuiltAfter {
-					t.Fatalf("deadline at reading %d: a rebuild began after the document was stopped", n)
-				}
-				for key, now := range stopState(d) {
-					if then, ok := held[key]; !ok || then != now {
-						t.Fatalf("deadline at reading %d: after the stop the document came to hold %s as %s, where it held %q", n, key, now, then)
+				for _, done := range dones {
+					at := fmt.Sprintf("deadline at reading %d, Done closed %v", n, done)
+					trial := stopRun(f.data, n, done)
+					r, d := trial.r, trial.d
+					if !r.TimedOut || r.Fatal != nil || len(r.Pages) != 0 {
+						t.Fatalf("%s: timedOut %v fatal %+v pages %+v problems %+v", at, r.TimedOut, r.Fatal, r.Pages, r.Problems)
 					}
-				}
-				if again := Extract(context.Background(), f.data, testOptions()); !reflect.DeepEqual(again, whole) {
-					t.Fatalf("deadline at reading %d: read again with time left, the file reads %+v, and %+v with no deadline", n, again, whole)
+					if d == nil || trial.stoppedAt != n {
+						t.Fatalf("%s: the reading that found it passed did not stop the document: stopped %v, at reading %d", at, d != nil, trial.stoppedAt)
+					}
+					if _, installed := trial.held["handler"]; r.Encryption != nil && r.Encryption.Opened && !installed {
+						t.Fatalf("%s: the record says the encryption opened, and no handler was installed before the stop", at)
+					}
+					if trial.reads != n {
+						t.Fatalf("%s: the context was asked %d times, %d of them after the stop", at, trial.reads, trial.reads-n)
+					}
+					if trial.rebuiltAfter {
+						t.Fatalf("%s: a rebuild began after the document was stopped", at)
+					}
+					end := stopState(d)
+					for key, now := range end {
+						if then, ok := trial.held[key]; !ok || then != now {
+							t.Fatalf("%s: after the stop the document came to hold %s as %s, where it held %q", at, key, now, then)
+						}
+					}
+					again := &stopReads{Context: context.Background()}
+					if r := stopReadAgain(again, d); !r.TimedOut || r.Fatal != nil || len(r.Pages) != 0 || again.reads != 0 {
+						t.Fatalf("%s: the stopped document read again with time left: timedOut %v fatal %+v pages %+v, the context asked %d times", at, r.TimedOut, r.Fatal, r.Pages, again.reads)
+					}
+					if after := stopState(d); !reflect.DeepEqual(after, end) {
+						t.Fatalf("%s: the stopped document read again kept what it read", at)
+					}
+					if raceFactor == 1 {
+						if fresh := Extract(context.Background(), f.data, testOptions()); !reflect.DeepEqual(fresh, whole) {
+							t.Fatalf("%s: read again with time left, the file reads %+v, and %+v with no deadline", at, fresh, whole)
+						}
+					}
+					tried++
 				}
 			}
-			t.Logf("%d reading positions stopped the document", tried)
+			// Under the race detector the file is read again with time left
+			// once, after every trial, rather than after each.
+			if fresh := Extract(context.Background(), f.data, testOptions()); !reflect.DeepEqual(fresh, whole) {
+				t.Fatalf("read again with time left after the trials, the file reads %+v, and %+v with no deadline", fresh, whole)
+			}
+			t.Logf("%d trials, each stopping the document at its reading", tried)
 			if tried == 0 {
-				t.Fatal("no reading position stopped the document")
+				t.Fatal("no reading position was tried")
 			}
 		})
 	}

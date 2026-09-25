@@ -190,9 +190,10 @@ func TestStopSitesReturnTheDeadline(t *testing.T) {
 	})
 }
 
-// The one state of the stop: a loop's reading answers at once, the walk's
-// and a page's reading stop the document, and a stopped document does not
-// ask its context again.
+// The one state of the stop: a loop's reading answers at once; the walk's,
+// a page's and the interpreter's readings stop the document, under the
+// document's own context and under any other; and a stopped document asks
+// no context again, its own or another.
 func TestStopSitesAreOneState(t *testing.T) {
 	t.Run("deadlinePassed", func(t *testing.T) {
 		d := stoppedDoc(t, "")
@@ -201,9 +202,15 @@ func TestStopSitesAreOneState(t *testing.T) {
 		}
 	})
 	t.Run("deadlineFor", func(t *testing.T) {
-		d := stopDoc("", &stopReads{Context: context.Background(), n: 1})
-		if err := d.deadlineFor(d.ctx); err == nil || d.stopped() == nil {
-			t.Fatalf("%v: the walk's reading did not stop the document", err)
+		for _, own := range []bool{true, false} {
+			ctx := &stopReads{Context: context.Background(), n: 1}
+			d := stopDoc("", context.Background())
+			if own {
+				d.ctx = ctx
+			}
+			if err := d.deadlineFor(ctx); err == nil || d.stopped() == nil {
+				t.Fatalf("the document's own context %v: %v: the walk's reading did not stop the document", own, err)
+			}
 		}
 	})
 	t.Run("deadlineNow", func(t *testing.T) {
@@ -211,6 +218,13 @@ func TestStopSitesAreOneState(t *testing.T) {
 		d := stopDoc("", ctx)
 		if !d.deadlineNow() || !d.deadlineNow() || ctx.reads != 1 {
 			t.Fatalf("a stopped document asked its context %d times, and was answered as the context now answers", ctx.reads)
+		}
+	})
+	t.Run("another context after the stop", func(t *testing.T) {
+		d := stoppedDoc(t, "")
+		live := &stopReads{Context: context.Background()}
+		if err := d.deadlineFor(live); err == nil || live.reads != 0 {
+			t.Fatalf("%v: a stopped document asked another context %d times, and was answered as it answers", err, live.reads)
 		}
 	})
 }

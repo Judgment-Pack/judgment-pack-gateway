@@ -225,7 +225,9 @@ func TestADeadlineThatPassesWhileAnObjectIsParsedEndsTheReading(t *testing.T) {
 // An object whose parse the deadline ended is unread, not unreadable: the
 // read publishes nothing of it and does not take the cross-reference that
 // named it for damaged, so it is neither cached as an object the reader could
-// not read nor the start of a rebuild.
+// not read nor the start of a rebuild. The document it was read in stays
+// stopped, under a context with time left as under any other, and the file
+// opened again reads the object.
 func TestAnObjectTheDeadlineEndedIsNotPublishedOrRebuiltFrom(t *testing.T) {
 	var out bytes.Buffer
 	out.WriteString("%PDF-1.7\n")
@@ -235,10 +237,14 @@ func TestAnObjectTheDeadlineEndedIsNotPublishedOrRebuiltFrom(t *testing.T) {
 	out.WriteString("2 0 obj\n(" + strings.Repeat("s", 4*lexBytesPerCheck) + ")\nendobj\n")
 	xref := out.Len()
 	fmt.Fprintf(&out, "xref\n0 3\n0000000000 65535 f \n%010d 00000 n \n%010d 00000 n \ntrailer\n<< /Root 1 0 R >>\nstartxref\n%d\n%%%%EOF\n", catalog, long, xref)
-	d, err := open(context.Background(), out.Bytes(), &inflateBudget{total: 64 << 20, one: 16 << 20})
-	if err != nil {
-		t.Fatalf("opening the file: %v", err)
+	opened := func() *Document {
+		d, err := open(context.Background(), out.Bytes(), &inflateBudget{total: 64 << 20, one: 16 << 20})
+		if err != nil {
+			t.Fatalf("opening the file: %v", err)
+		}
+		return d
 	}
+	d := opened()
 	scans := 0
 	scanObserved = func(int) { scans++ }
 	defer func() { scanObserved = nil }()
@@ -257,7 +263,10 @@ func TestAnObjectTheDeadlineEndedIsNotPublishedOrRebuiltFrom(t *testing.T) {
 		t.Fatalf("the reader rebuilt the cross-reference (%d scans) for an object the deadline ended", scans)
 	}
 	d.ctx = context.Background()
-	if v, read := d.objectRead(2); !read || len(v.(String)) != 4*lexBytesPerCheck {
-		t.Fatalf("read again with time left, the object read as %T, read %v", v, read)
+	if v, read := d.objectRead(2); read || v != nil || len(d.cache) != 0 || d.stopped() == nil {
+		t.Fatalf("read again in the stopped document with time left, the object read as %T, read %v, cached %v", v, read, d.cache)
+	}
+	if v, read := opened().objectRead(2); !read || len(v.(String)) != 4*lexBytesPerCheck {
+		t.Fatalf("read again in the file opened again, the object read as %T, read %v", v, read)
 	}
 }

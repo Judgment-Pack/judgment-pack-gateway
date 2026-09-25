@@ -263,13 +263,15 @@ type Document struct {
 	// scanned once, so every reading made after it refuses the file.
 	noObjects error
 	// expired is the context's error once any reading of the deadline made
-	// for the document has found it passed, and expiredCtx the context it was
-	// read from. It is one state for every reading -- a lexer's, a loop's, a
-	// filter's, the walk's and a page's -- and it does not come back: every
-	// reading after it finds the deadline passed without asking the context
-	// again, and nothing the reader reads after it is kept. See stopped.
-	expired    error
-	expiredCtx context.Context
+	// for the document has found it passed, under whatever context it was
+	// made. It is one state for every reading -- a lexer's, a loop's, a
+	// filter's, the walk's, a page's and the interpreter's -- and it is
+	// final: every reading after it, under any context, finds the deadline
+	// passed without asking a context again, and nothing the reader reads
+	// after it is kept. A document the deadline has stopped is not read
+	// again; a caller that would read the file again opens a new one, as
+	// Extract does for every run. See stopped.
+	expired error
 	// scanUnfinished is the failure of a scan the reader could not finish: a
 	// defect it could not continue past was met after it had replaced the
 	// cross-reference and before it had written the whole of the one it was
@@ -419,13 +421,10 @@ func (d *Document) readingGeneration() int {
 //
 // That every route ends at the deadline is held by the document's stop and
 // not by the generation: a reading of the deadline that finds it passed stops
-// the document, and nothing is published after it -- by the scan, or by the
-// reading the scan abandoned when that reading resumes, whose generation is
-// still the one it began on. Advancing the generation at a deadline exit
-// would add nothing to that, and it would send a walk or a page that met it
-// back to read the document again from the top, where what it met the second
-// time would be taken for a second rebuild of the cross-reference and the
-// file refused, rather than the reading ended at the deadline.
+// the document for good, and after it nothing is published -- by the scan,
+// or by the reading the scan abandoned when that reading resumes, whose
+// generation is still the one it began on -- and no rebuild begins. So the
+// generation need not move at a deadline exit, and does not.
 func (d *Document) scanEnded(err error) error {
 	d.dropCachedObjects()
 	return err
@@ -476,7 +475,7 @@ func (d *Document) dropCachedObjects() {
 // next entry and not entriesPerCheck entries on.
 func (d *Document) deadlinePassed() bool {
 	if d.expired != nil {
-		return d.deadlineNow()
+		return true
 	}
 	d.checks++
 	if d.checks%entriesPerCheck != 0 {
@@ -489,25 +488,15 @@ func (d *Document) deadlinePassed() bool {
 // resolves a whole object: there the read is small beside the step. A reading
 // that finds it passed stops the document.
 func (d *Document) deadlineNow() bool {
-	if d.stopped() != nil {
-		return true
-	}
-	if err := deadlineMet(d.ctx); err != nil {
-		d.expire(err)
-		return true
-	}
-	return false
+	return d.deadlineFor(d.ctx) != nil
 }
 
 // stopped is the context's error once a reading of the deadline made for the
-// document has found it passed, and nil before. The state belongs to the
-// context it was read from: a test that hands the same document a context of
-// its own, to read it again, reads it afresh.
+// document has found it passed, and nil before. It is final: the document
+// answers it to every reading after, whatever context that reading is made
+// under.
 func (d *Document) stopped() error {
-	if d.expired != nil && d.expiredCtx == d.ctx {
-		return d.expired
-	}
-	return nil
+	return d.expired
 }
 
 // expire stops the document at the deadline err says has passed: see
@@ -518,10 +507,10 @@ func (d *Document) stopped() error {
 // it begins a rebuild. Every caller that would have taken a failed read for
 // an absent value, a defect or a bound finds the deadline first.
 func (d *Document) expire(err error) {
-	if d.stopped() != nil {
+	if d.expired != nil {
 		return
 	}
-	d.expired, d.expiredCtx = err, d.ctx
+	d.expired = err
 	if docExpired != nil {
 		docExpired(d)
 	}
@@ -532,16 +521,20 @@ func (d *Document) expire(err error) {
 // then. The reader never sets it.
 var docExpired func(d *Document)
 
-// deadlineFor reads the deadline of ctx on the document's behalf, where the
-// walk or a page reads it with the context it was handed: a reading that finds
-// it passed stops the document as its own readings do, where ctx is the
-// document's. The error is the context's own.
+// deadlineFor reads the deadline of ctx on the document's behalf: the
+// document's own context, or the one the walk, a page or the interpreter was
+// handed. A document already stopped answers its stop without asking ctx,
+// and a reading that finds the deadline of ctx passed stops the document,
+// whichever context it is: the stop is the document's, not a context's.
+// Contexts are never compared, so any context serves. The error is the
+// context's own.
 func (d *Document) deadlineFor(ctx context.Context) error {
-	if ctx != d.ctx {
-		return deadlineMet(ctx)
+	if d.expired != nil {
+		return d.expired
 	}
-	if d.deadlineNow() {
-		return d.stopped()
+	if err := deadlineMet(ctx); err != nil {
+		d.expire(err)
+		return err
 	}
 	return nil
 }
@@ -570,12 +563,7 @@ func deadlineMet(ctx context.Context) error {
 // neither damage nor a bound: the run ends at the deadline, as it does when
 // the deadline passes while the page tree is walked.
 func (d *Document) deadline() error {
-	err := d.stopped()
-	if err == nil {
-		if err = deadlineMet(d.ctx); err != nil {
-			d.expire(err)
-		}
-	}
+	err := d.deadlineFor(d.ctx)
 	if err == nil {
 		err = context.DeadlineExceeded
 	}

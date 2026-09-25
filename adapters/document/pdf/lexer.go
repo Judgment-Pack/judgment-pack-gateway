@@ -114,8 +114,13 @@ type token struct {
 // lexer tokenizes a byte slice. It never allocates beyond the token it
 // returns, and every scan is bounded by the slice.
 type lexer struct {
-	data []byte
-	pos  int
+	// ident is what the probe build knows the lexer by, and every copy of
+	// it with it, so that what a copy reads again is counted as the lexer's
+	// own: see lexIdentity. In every other build it is empty and takes no
+	// room.
+	ident lexIdentity
+	data  []byte
+	pos   int
 	// work is what the bytes this lexer advances over are charged to: a file
 	// whose objects each read the rest of it -- a comment with no line end
 	// after every object is one -- spends the allowance instead of being read
@@ -174,7 +179,7 @@ type lexer struct {
 }
 
 func newLexer(data []byte, pos int) *lexer {
-	return &lexer{data: data, pos: pos, charged: pos, due: math.MaxInt}
+	return &lexer{ident: newLexIdentity(), data: data, pos: pos, charged: pos, due: math.MaxInt}
 }
 
 // within gives the lexer the allowance a document's reading spends: both what
@@ -256,10 +261,12 @@ func (l *lexer) stopped() error {
 	return l.work.doc.deadline()
 }
 
-// at is the byte of the data at i. Every byte the lexer reads it reads here,
-// so that a build made for the tests (see lexProbed) can count each byte a
-// lexer loads, where it loads it; in every other build this is the byte and
-// nothing else, and costs what indexing the data costs.
+// at is the byte of the data at i. Every byte the lexer inspects one at a
+// time it reads here -- a keyword's and a number's bytes are inspected here
+// to find their end, and then taken whole as a slice -- so that a build made
+// for the tests (see lexProbed) can see how far each lexer has loaded, where
+// it loads it; in every other build this is the byte and nothing else, and
+// costs what indexing the data costs.
 func (l *lexer) at(i int) byte {
 	if lexProbed {
 		lexLoaded(l, i)
@@ -268,8 +275,8 @@ func (l *lexer) at(i int) byte {
 }
 
 // lexLoaded, in the build made for the tests, is told of every byte a lexer
-// loads; lexEntered is told when a reading of tokens or a skip begins and
-// returns what to call when it ends. See lexProbed.
+// loads through at; lexEntered is told when a reading of tokens or a skip
+// begins and returns what to call when it ends. See lexProbed.
 var (
 	lexLoaded  func(l *lexer, i int)
 	lexEntered func(l *lexer) func()

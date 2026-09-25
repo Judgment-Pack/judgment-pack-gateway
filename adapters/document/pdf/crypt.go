@@ -59,13 +59,25 @@ var errPassword = errors.New("a user password is required")
 // with the reason. An /Encrypt that is absent or the null object names no
 // encryption dictionary; one that names an object the reader cannot read, or
 // that is not a dictionary, is a dictionary that cannot be read.
-func (d *Document) openEncryption() (*Encryption, error) {
+func (d *Document) openEncryption() (info *Encryption, err error) {
 	// Reading the encryption dictionary is one read: its filter, version,
 	// revision, strings and length are its fields, and a rebuild met reading
 	// one of them leaves the rest of a dictionary the trailer no longer
 	// names. The caller reads the dictionary again under the rebuilt
 	// cross-reference. See beginRead.
 	defer d.beginRead()()
+	// A field read after the deadline stopped the document resolves to
+	// nothing, and what the reader takes a field it did not find for -- a
+	// /Length of 40, metadata encrypted, a crypt filter of Identity or of no
+	// method, no identifier, no /P -- is not what the file declares. A
+	// failure met after the stop is the deadline, whatever the defaults it
+	// was reached through made of it, and no handler is installed after it:
+	// see below.
+	defer func() {
+		if err != nil && d.stopped() != nil {
+			err = d.deadline()
+		}
+	}()
 	ev, ok := d.trailer["Encrypt"]
 	if !ok {
 		return nil, nil
@@ -80,7 +92,7 @@ func (d *Document) openEncryption() (*Encryption, error) {
 	if enc == nil {
 		return &Encryption{}, malformed("/Encrypt is not a dictionary")
 	}
-	info := &Encryption{}
+	info = &Encryption{}
 	filter, hasFilter := d.nameOf(enc["Filter"])
 	if hasFilter && utf8.ValidString(string(filter)) {
 		name := string(filter)
@@ -183,6 +195,13 @@ func (d *Document) openEncryption() (*Encryption, error) {
 		h.strings, h.streams = sm, tm
 	default:
 		return info, fmt.Errorf("standard security handler revision %d is not one this reader implements", r)
+	}
+	if d.stopped() != nil {
+		// A field the handler was built from was read after the deadline
+		// stopped the document, and may be a default rather than what the
+		// file declares: the handler is not installed, and the dictionary
+		// is not opened.
+		return info, d.deadline()
 	}
 	info.Opened = true
 	d.crypt = h
