@@ -1,0 +1,61 @@
+{
+  "attachmentVersion": "1",
+  "content": {
+    "chars": 0,
+    "extraction": "none",
+    "kind": "text",
+    "pageCount": 0,
+    "pages": [],
+    "truncated": true
+  },
+  "document": {
+    "detectedMediaType": "application/pdf",
+    "encryption": {
+      "handler": "Standard",
+      "opened": false,
+      "revision": 4
+    },
+    "id": "sha256:5b7d0f6e2c8a4193b1d6e0f7a2c9b4d8e3f1a6c5b0d9e2f7a4c1b8d5e0f3a6c9",
+    "mediaType": "application/pdf",
+    "name": "slow-locked.pdf",
+    "size": 41076,
+    "version": null
+  },
+  "original": {
+    "bytes": null,
+    "encoding": null,
+    "retention": "caller"
+  },
+  "processing": {
+    "bounds": {
+      "maxBytes": 16777216,
+      "maxInflateBytes": 67108864,
+      "maxOcrOutputBytes": 33554432,
+      "maxPages": 500,
+      "maxTextBytes": 8388608,
+      "timeoutMs": 25000
+    },
+    "durationMs": 25002,
+    "errors": [
+      {
+        "code": "timeout",
+        "message": "the deadline passed while the document was opened, before its page tree was walked",
+        "page": null
+      }
+    ],
+    "status": "failed"
+  },
+  "provenance": {
+    "adapter": {
+      "digest": "sha256:9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e9c1e",
+      "name": "adapter-document",
+      "version": "0"
+    },
+    "observedAt": "2026-09-16T14:05:11Z",
+    "ocr": null,
+    "processor": "adapter-document/pdf/1",
+    "source": {
+      "kind": "inline"
+    }
+  }
+}

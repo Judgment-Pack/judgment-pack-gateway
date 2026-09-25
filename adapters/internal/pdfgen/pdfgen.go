@@ -56,6 +56,11 @@ type Encryption struct {
 	// User and Owner passwords; an empty user password opens without one.
 	User, Owner string
 	Permissions int32
+	// Dictionary, when set, is given the encryption dictionary as written
+	// and returns the one to write instead: a field made an object of its
+	// own, say. The key and the values it derives are the ones the fields
+	// above give.
+	Dictionary func(string) string
 }
 
 // Add appends an object and returns its number.
@@ -205,7 +210,11 @@ func (b *Builder) Bytes() []byte {
 	trailerExtra := ""
 	if b.Encrypt != nil {
 		enc = newEncryptor(*b.Encrypt)
-		encryptNum = b.Add(Object{Body: enc.dictionary()})
+		dict := enc.dictionary()
+		if b.Encrypt.Dictionary != nil {
+			dict = b.Encrypt.Dictionary(dict)
+		}
+		encryptNum = b.Add(Object{Body: dict})
 		trailerExtra = fmt.Sprintf(" /Encrypt %d 0 R", encryptNum)
 	}
 	offsets := make([]int, len(b.objects)+1)

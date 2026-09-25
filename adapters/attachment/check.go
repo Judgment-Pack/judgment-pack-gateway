@@ -804,12 +804,19 @@ func (c *checker) ocrAnswerSize(rec *Record, applied, ocrBudget []int64) {
 
 func (c *checker) encryption(rec *Record) {
 	enc := rec.Document.Encryption
-	encrypted := false
+	encrypted, timedOut := false, false
 	for _, e := range rec.Processing.Errors {
-		if e.Code == CodePDFEncrypted {
+		switch e.Code {
+		case CodePDFEncrypted:
 			encrypted = true
+		case CodeTimeout:
+			timedOut = true
 		}
 	}
+	// The deadline passed while the document was opened, before its
+	// encryption was established: the timeout is the record's one error and
+	// no page is counted, as step 4 ends at the deadline before the walk.
+	opening := timedOut && len(rec.Processing.Errors) == 1 && rec.Content.PageCount == 0
 	if enc == nil {
 		if encrypted {
 			c.fail("encryption-undeclared", "pdf-encrypted on a record that declares no encryption")
@@ -819,8 +826,11 @@ func (c *checker) encryption(rec *Record) {
 	if rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorPDF {
 		c.fail("encryption-not-pdf", "document.encryption on a record that is not a read PDF")
 	}
-	if enc.Opened == encrypted {
-		c.fail("encryption-opened", "document.encryption.opened is %v and pdf-encrypted is %v: a document not opened is exactly one reported encrypted", enc.Opened, encrypted)
+	switch {
+	case enc.Opened && encrypted:
+		c.fail("encryption-opened", "document.encryption.opened is true and pdf-encrypted is true: a document opened is not reported encrypted")
+	case !enc.Opened && encrypted == opening:
+		c.fail("encryption-opened", "document.encryption.opened is false, pdf-encrypted is %v and a timeout while the document was opened is %v: a document not opened is exactly one of reported encrypted or stopped by the deadline before its encryption was established", encrypted, opening)
 	}
 	if enc.Opened && (enc.Handler == nil || *enc.Handler != HandlerStandard || enc.Revision == nil || *enc.Revision < MinRevision || *enc.Revision > MaxRevision) {
 		c.fail("encryption-handler", "document.encryption is opened with a handler or revision version 1 does not open")

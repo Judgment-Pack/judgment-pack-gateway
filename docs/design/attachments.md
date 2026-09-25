@@ -214,7 +214,7 @@ is frozen; what may be added within version 1 is in [Versioning](#versioning).
 | `detectedMediaType` | `"application/pdf"`, `"text/plain"` or `null` | what the bytes look like to the adapter, for the declarations it checks: `"application/pdf"` for a declared PDF whose first 1024 bytes contain `%PDF-`; `"text/plain"` for a declared text type whose bytes are valid UTF-8; `null` otherwise, and for a declaration version 1 does not process |
 | `size` | integer | the original's length in bytes |
 | `version` | string or `null` | a version the *source* reported for the document — a drive's file version — `null` for a document the caller supplied |
-| `encryption` | object or `null` | `{"handler": string or null, "revision": integer or null, "opened": boolean}` when the adapter read a trailer that names an encryption dictionary: the dictionary's `/Filter` name as the document declares it, or `null` when that is absent or not a name; its `/R` as declared when that is an integer from −(2^53 − 1) to 2^53 − 1, the canonical domain's range, and `null` when it is absent, not an integer (a real such as `4.0` included), or outside that range; and whether the adapter opened the document. Version 1 opens only handler `Standard` at revisions 2 to 6 (RC4 and AES) with an empty user password; a document that needs a password, declares another handler or revision, or whose encryption dictionary cannot be read is not opened and fails with `pdf-encrypted`. `null` when the adapter read a trailer that names no encryption dictionary, and also when it did not get as far as a trailer — a mismatched or unsupported declaration, or a PDF that failed as `pdf-malformed` before its trailer was read — so `null` says no encryption was found, not that none exists |
+| `encryption` | object or `null` | `{"handler": string or null, "revision": integer or null, "opened": boolean}` when the adapter read a trailer that names an encryption dictionary: the dictionary's `/Filter` name as the document declares it, or `null` when that is absent or not a name, or when the deadline passed before the adapter read it; its `/R` as declared when that is an integer from −(2^53 − 1) to 2^53 − 1, the canonical domain's range, and `null` when it is absent, not an integer (a real such as `4.0` included), or outside that range, or when the deadline passed before the adapter read it — a record whose field is `null` for that reason carries the `timeout`; and whether the adapter opened the document. Version 1 opens only handler `Standard` at revisions 2 to 6 (RC4 and AES) with an empty user password; a document that needs a password, declares another handler or revision, or whose encryption dictionary cannot be read is not opened and fails with `pdf-encrypted`. A document whose encryption dictionary the deadline stopped the adapter reading, before its encryption was established, is not opened either, and fails with `timeout` alone, no page counted, and not `pdf-encrypted`: nothing was found that the adapter cannot open. `null` when the adapter read a trailer that names no encryption dictionary, and also when it did not get as far as a trailer — a mismatched or unsupported declaration, or a PDF that failed as `pdf-malformed` before its trailer was read — so `null` says no encryption was found, not that none exists |
 
 ### `original` — where the bytes are
 
@@ -403,7 +403,12 @@ record carries at most one of the two.
      `pdf-pages-over-bound` is recorded, `truncated` is `true`, and the adapter goes on to
      step 5;
    - **at the deadline**: `pageCount` is the number of pages found so far, `timeout` is recorded,
-     `truncated` is `true`, and the adapter goes to step 7;
+     `truncated` is `true`, and the adapter goes to step 7. A deadline that passes while the
+     cross-reference, the trailer or the encryption dictionary is read, before the walk, leaves
+     `pageCount` 0 and `timeout` the one error; where the trailer names an encryption dictionary
+     whose encryption was not established before it, `encryption.opened` is `false` and no
+     `pdf-encrypted` is recorded — a document not opened is reported either under
+     `pdf-encrypted` or under this `timeout`, never both;
    - **at a defect**: the document is encrypted and not opened — `pdf-encrypted`, with
      `encryption.opened` `false` — or anything else stops the reader before the walk completes:
      no usable cross-reference and no objects found by scanning, a page tree with no page, a
