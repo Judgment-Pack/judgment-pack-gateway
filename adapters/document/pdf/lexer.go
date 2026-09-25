@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 )
 
@@ -63,6 +64,22 @@ const (
 	// maxContainerItems bounds one array's elements and one dictionary's
 	// members.
 	maxContainerItems = 1 << 20
+	// lexBytesPerCheck is how many bytes a lexer that reads a document
+	// advances over between two readings of the deadline: the bytes of its
+	// tokens, the whitespace and comments it skips, and the bytes it reads
+	// again where a parser steps back over a token. One object's parse may run
+	// through a large part of the file within every bound the reader holds --
+	// a trailer of a million members, a run of whitespace or a comment as long
+	// as the file -- and the deadline is read as it runs and not only after
+	// it. A token the lexer reads with no reading inside it, a keyword or a
+	// number, is read whole, so no more than this and the bytes of a keyword,
+	// maxNameBytes, lie between two readings. A trailer of a million members
+	// is parsed at about seventy nanoseconds a byte, so at this size a reading
+	// falls due every millisecond or so of that parse, and the readings cost
+	// nothing measurable beside it: a larger size lets the longest wait
+	// between two readings grow with it, and a smaller one shortens the wait
+	// no further than the work a single token's growth does in one step.
+	lexBytesPerCheck = 16 << 10
 )
 
 // tokenKind says what a lexer token is.
@@ -97,14 +114,14 @@ type token struct {
 // lexer tokenizes a byte slice. It never allocates beyond the token it
 // returns, and every scan is bounded by the slice.
 type lexer struct {
-	data []byte
-	pos  int
-	// strict is set while an inline image's dictionary is read. A byte that
-	// begins no token is skipped everywhere else, so that a damaged file
-	// still yields its objects; there it is not, since what stands after it
-	// may be the image's data rather than the dictionary, and a dictionary
-	// read past a byte it does not admit establishes nothing.
-	strict bool
+	// ident is what the probe build knows the lexer by, and every copy of
+	// it with it, and every lexer made again over the same data where it
+	// stands, so that what a copy or a lexer made in its place reads again
+	// is counted as the lexer's own: see lexIdentity. In every other build
+	// it is empty and takes no room.
+	ident lexIdentity
+	data  []byte
+	pos   int
 	// work is what the bytes this lexer advances over are charged to: a file
 	// whose objects each read the rest of it -- a comment with no line end
 	// after every object is one -- spends the allowance instead of being read
@@ -125,21 +142,191 @@ type lexer struct {
 	// reserved is what the token being built has been charged for the room it
 	// holds, so that growing it charges what the growth costs and no more.
 	reserved int64
+	// due is where the lexer stands when the next reading of the deadline
+	// falls due: lexBytesPerCheck bytes past where it stood at the last one.
+	// Every byte advanced over counts toward it, however often it is advanced
+	// over: a parser that steps back over a token has the lexer read the
+	// token again, and back moves the reading that much earlier in the data,
+	// so that it still falls due after the same number of bytes read. A lexer
+	// that reads no deadline has it at the end of every slice there is, and
+	// the checks of it cost a comparison that never holds.
+	due int
+	// strict is set while an inline image's dictionary is read. A byte that
+	// begins no token is skipped everywhere else, so that a damaged file
+	// still yields its objects; there it is not, since what stands after it
+	// may be the image's data rather than the dictionary, and a dictionary
+	// read past a byte it does not admit establishes nothing.
+	strict bool
 	// spent is set when a charge did not fit. Every token after it is an
 	// error, so a parse whose reading has run out of allowance ends where it
 	// is rather than reading on and counting: a lookahead that threw its
 	// error away would otherwise go on reading at no cost.
 	spent bool
+	// halted is set once a reading of the deadline found it passed. Every
+	// token after it is the deadline's error, as every token after a spent
+	// allowance is the allowance's: a parse the deadline ended ends where it
+	// stands, a lookahead that would throw the error away included. The
+	// deadline read is that of the document whose allowance the lexer's
+	// reading spends, and a lexer whose reading spends none reads no
+	// deadline: a page's content and a CMap are read under the page's work
+	// allowance and the page's own readings of the deadline. The error is
+	// the document's, and a document stopped once stays stopped: see
+	// Document.stopped.
+	//
+	// The flags stand together at the end, and the lexer is as large as it
+	// was before it read a deadline: one is allocated for every object read,
+	// and a larger one costs a larger allocation every time.
+	halted bool
 }
 
-func newLexer(data []byte, pos int) *lexer { return &lexer{data: data, pos: pos, charged: pos} }
+func newLexer(data []byte, pos int) *lexer {
+	return &lexer{ident: newLexIdentity(data, pos), data: data, pos: pos, charged: pos, due: math.MaxInt}
+}
 
 // within gives the lexer the allowance a document's reading spends: both what
-// its tokens take and what its reading of the file costs.
+// its tokens take and what its reading of the file costs. An allowance on a
+// document gives it that document's deadline as well, read every
+// lexBytesPerCheck bytes the lexer advances over: a lexer charged to a
+// document reads that document's bytes, the file's own or those of a stream
+// of objects it holds.
 func (l *lexer) within(a *allowance) *lexer {
 	l.work, l.room = a, a
+	if a != nil && a.doc != nil {
+		l.due = l.pos + lexBytesPerCheck
+		if a.doc.expired != nil {
+			// A lexer made for a document the deadline has stopped reads the
+			// deadline before its first byte, and so reads none.
+			l.due = l.pos
+		}
+		if lexTrace != nil {
+			lexTrace(a, lexBegan, l.pos)
+		}
+	}
 	return l
 }
+
+// pace reads the deadline, where the lexer has one and has reached the
+// position the reading falls due at, and reports whether it has passed. The
+// next reading falls due lexBytesPerCheck bytes on. A lexer that has spent its
+// allowance reads no deadline: the allowance was met first, and every token
+// after it is that error.
+func (l *lexer) pace() bool {
+	if l.halted {
+		return true
+	}
+	if l.work == nil || l.work.doc == nil || l.spent {
+		l.due = math.MaxInt
+		return false
+	}
+	if l.pos < l.due {
+		return false
+	}
+	if lexTrace != nil {
+		lexTrace(l.work, lexReadAt, l.pos)
+	}
+	if l.work.doc.deadlineNow() {
+		// Every check of the position against due is met from here on, and
+		// each finds the lexer stopped.
+		l.halted = true
+		l.due = l.pos
+		return true
+	}
+	l.due = l.pos + lexBytesPerCheck
+	return false
+}
+
+// end is where a run the lexer reads byte by byte may be read to before the
+// deadline is read: where the reading falls due, or the end of the data.
+func (l *lexer) end() int {
+	return min(len(l.data), l.due)
+}
+
+// back steps the lexer back to an earlier position, where a parser gives up
+// what it read ahead. Every step back is made here and nowhere else, so that
+// what is read again is counted again: the reading of the deadline falls due
+// as much earlier in the data as the step back is long.
+func (l *lexer) back(to int) {
+	if lexTrace != nil {
+		lexTrace(l.work, lexSteppedBack, l.pos-to)
+	}
+	l.due -= l.pos - to
+	l.pos = to
+}
+
+// stopped is the deadline's error once a reading of it found it passed, and
+// nil before. The error is the document's: see Document.stopped.
+func (l *lexer) stopped() error {
+	if !l.halted {
+		return nil
+	}
+	return l.work.doc.deadline()
+}
+
+// at is the byte of the data at i. The lexer's loops over its data -- the
+// skip, and the reading of each kind of token to its end -- load each byte
+// here, so that a build made for the tests (see lexProbed) can see how far
+// each lexer has loaded, where it loads it. What reads a slice of the data
+// once the slice is taken does not load through at, and is not seen: a
+// keyword's string, a number's parsing, which ranges over the number's bytes
+// again. In every other build this is the byte and nothing else, and costs
+// what indexing the data costs.
+func (l *lexer) at(i int) byte {
+	if lexProbed {
+		lexLoaded(l, i)
+	}
+	return l.data[i]
+}
+
+// lexLoaded, in the build made for the tests, is told of every byte a lexer
+// loads through at; lexEntered is told when a reading of tokens or a skip
+// begins and returns what to call when it ends. See lexProbed.
+var (
+	lexLoaded  func(l *lexer, i int)
+	lexEntered func(l *lexer) func()
+)
+
+// failed is the error every token is once a reading of the deadline has found
+// it passed or the allowance is spent, whichever came first: a lexer that has
+// spent its allowance reads no deadline after it, and one that has stopped
+// reads no token.
+func (l *lexer) failed() error {
+	if l.halted {
+		return l.stopped()
+	}
+	return l.errRead()
+}
+
+// eof is the token at the end of the data, or the deadline's error where the
+// skipping before it ended at a reading that found it passed.
+func (l *lexer) eof() (token, error) {
+	if l.halted {
+		return token{}, l.stopped()
+	}
+	return token{kind: tokEOF, pos: l.pos, end: l.pos}, nil
+}
+
+// lexTrace, where it is set, is told where a lexer that reads a document
+// begins, where it stands at every reading of the deadline it makes, and how
+// far it steps back each time it does, as each happens. From those the tests
+// count what a lexer has advanced over between two readings -- where it
+// stands less where it began, and every step back again -- apart from due,
+// which decides when a reading falls due, so that the count does not take
+// due's word for it. It is told nothing at a token or a byte, and a lexer
+// that reads no deadline is told of nothing but its steps back. A lexer is
+// known to it by its work allowance, which no other lexer spends: a lexer
+// handed to it would escape to the heap wherever one is made, and a lexer is
+// made for every object read, where it otherwise lives on the stack. The
+// reader never sets it.
+var lexTrace func(work *allowance, event lexEvent, n int)
+
+// lexEvent is what lexTrace is told of.
+type lexEvent int
+
+const (
+	lexBegan lexEvent = iota
+	lexReadAt
+	lexSteppedBack
+)
 
 // reserving gives the lexer the allowance its tokens' memory is charged to,
 // and leaves its reading uncharged: a content stream and a CMap are each read
@@ -163,14 +350,24 @@ func (l *lexer) reserving(a *allowance) *lexer {
 // read as the token after a value is stepped back over, and the rest of the
 // data would otherwise be read for every value in it and charged for none.
 // A byte is charged once however often it is offered, so the calls that
-// overlap cost nothing.
+// overlap cost nothing: a call with nothing new to charge is a comparison,
+// made where it is called, and only one with something to charge is a call.
 func (l *lexer) advanced() {
 	if l.pos > l.charged {
-		if !l.work.take(int64(l.pos - l.charged)) {
-			l.spent = true
-		}
-		l.charged = l.pos
+		l.charge()
 	}
+}
+
+// charge charges the bytes advanced over since the last charge: see advanced.
+// It is kept out of line, so that advanced, which is called several times for
+// every token, is the comparison alone where it is called.
+//
+//go:noinline
+func (l *lexer) charge() {
+	if !l.work.take(int64(l.pos - l.charged)) {
+		l.spent = true
+	}
+	l.charged = l.pos
 }
 
 // reserve charges the room a token being built has grown to, and reports
@@ -223,23 +420,55 @@ func isRegular(c byte) bool { return !isWhitespace(c) && !isDelimiter(c) }
 
 // skipSpace skips whitespace and comments. A comment runs to the end of its
 // line, which may be the end of the data: what it passes over is charged, as
-// every other advance is.
+// every other advance is. A run of whitespace or a comment may be as long as
+// the data, and is one stretch between two tokens however long it is, so the
+// deadline is read within each of them and not only where they end; skipping
+// ends where a reading finds it passed, with the lexer halted.
+//
+// The skipping runs to end: where the reading of the deadline falls due, or
+// the end of the data, whichever comes first. Each byte costs what it did
+// before the lexer read a deadline, and a lexer that reads none skips to the
+// end of the data as it always has. Where end is where the reading falls due,
+// the deadline is read there, and the skipping goes on to the next end,
+// within a comment as well as between comments. Every token is read after a
+// skip, so a skip that begins where the reading has already fallen due -- a
+// token read whole has taken the lexer past it -- reads the deadline before
+// it skips anything: that is where the reading at the end of a token is made.
 func (l *lexer) skipSpace() {
+	if lexProbed {
+		defer lexEntered(l)()
+	}
 	l.advanced()
-	for l.pos < len(l.data) {
-		c := l.data[l.pos]
-		if isWhitespace(c) {
-			l.pos++
-			continue
-		}
-		if c == '%' {
-			for l.pos < len(l.data) && l.data[l.pos] != '\n' && l.data[l.pos] != '\r' {
+	end := l.end()
+skipping:
+	for {
+		for l.pos < end {
+			c := l.at(l.pos)
+			if isWhitespace(c) {
 				l.pos++
+				continue
+			}
+			if c != '%' {
+				break skipping
+			}
+			for {
+				for l.pos < end && l.at(l.pos) != '\n' && l.at(l.pos) != '\r' {
+					l.pos++
+				}
+				if l.pos < end || l.pos >= len(l.data) || l.pace() {
+					break
+				}
+				end = l.end()
 			}
 			l.advanced()
-			continue
+			if l.halted {
+				break skipping
+			}
 		}
-		break
+		if l.pos >= len(l.data) || l.pace() {
+			break
+		}
+		end = l.end()
 	}
 	// What was skipped is charged here and not at the next reading of a
 	// token: whitespace at the end of the data may be all that is left, and
@@ -273,21 +502,30 @@ var errLexer = fmt.Errorf("%w: lexical error", errStructureBound)
 // covers every way out of them: this call's error exits and the readers'
 // own -- a string past the bound on its kind is read before it is refused,
 // and a reader that refused one without charging would let a file be read
-// again for every object that asks. A token read once the allowance is spent
-// is an error rather than a token, so a parse that has run out of it ends
-// where it stands, a lookahead that would throw the error away included.
+// again for every object that asks. A token read once the allowance is spent,
+// or once a reading of the deadline has found it passed, is an error rather
+// than a token, so a parse that has run out of either ends where it stands, a
+// lookahead that would throw the error away included: a stopped lexer's skip
+// reads the deadline before it skips anything, finds it passed, and the token
+// is its error. Those errors, and the end of the data, leave by one return
+// each: Go makes the deferred charge a plain call only in a function of few
+// returns, and a charge made through the runtime's defer on every token costs
+// a measurable part of reading an ordinary file.
 func (l *lexer) next() (token, error) {
+	if lexProbed {
+		defer lexEntered(l)()
+	}
 	defer l.advanced()
 	if l.spent {
-		return token{}, l.errRead()
+		return token{}, l.failed()
 	}
 	for {
 		l.skipSpace()
-		if l.pos >= len(l.data) {
-			return token{kind: tokEOF, pos: l.pos, end: l.pos}, nil
+		if l.pos >= len(l.data) || l.halted {
+			return l.eof()
 		}
 		start := l.pos
-		c := l.data[l.pos]
+		c := l.at(l.pos)
 		switch {
 		case c == '[':
 			l.pos++
@@ -302,13 +540,13 @@ func (l *lexer) next() (token, error) {
 			l.pos++
 			return token{kind: tokBraceClose, pos: start, end: l.pos}, nil
 		case c == '<':
-			if l.pos+1 < len(l.data) && l.data[l.pos+1] == '<' {
+			if l.pos+1 < len(l.data) && l.at(l.pos+1) == '<' {
 				l.pos += 2
 				return token{kind: tokDictOpen, pos: start, end: l.pos}, nil
 			}
 			return l.hexString()
 		case c == '>':
-			if l.pos+1 < len(l.data) && l.data[l.pos+1] == '>' {
+			if l.pos+1 < len(l.data) && l.at(l.pos+1) == '>' {
 				l.pos += 2
 				return token{kind: tokDictClose, pos: start, end: l.pos}, nil
 			}
@@ -332,7 +570,7 @@ func (l *lexer) next() (token, error) {
 		}
 		// A keyword: regular characters up to a delimiter or whitespace.
 		end := l.pos
-		for end < len(l.data) && isRegular(l.data[end]) && end-start < maxNameBytes {
+		for end < len(l.data) && isRegular(l.at(end)) && end-start < maxNameBytes {
 			end++
 		}
 		if end == start {
@@ -349,7 +587,7 @@ func (l *lexer) next() (token, error) {
 func (l *lexer) number() (token, error) {
 	start := l.pos
 	end := start
-	for end < len(l.data) && (l.data[end] >= '0' && l.data[end] <= '9' || l.data[end] == '+' || l.data[end] == '-' || l.data[end] == '.' || l.data[end] == 'e' || l.data[end] == 'E') {
+	for end < len(l.data) && (l.at(end) >= '0' && l.at(end) <= '9' || l.at(end) == '+' || l.at(end) == '-' || l.at(end) == '.' || l.at(end) == 'e' || l.at(end) == 'E') {
 		end++
 		if end-start > maxNumberBytes {
 			return token{}, fmt.Errorf("%w: number token past %d bytes", errLexer, maxNumberBytes)
@@ -443,10 +681,15 @@ func (l *lexer) name() (token, error) {
 	start := l.pos
 	l.pos++ // the slash
 	var out []byte
-	for l.pos < len(l.data) && isRegular(l.data[l.pos]) {
-		c := l.data[l.pos]
+	for l.pos < len(l.data) && isRegular(l.at(l.pos)) {
+		// A name with every byte escaped is three times its bound in the
+		// file, so the deadline is read within it as within a string.
+		if l.pos >= l.due && l.pace() {
+			return token{}, l.stopped()
+		}
+		c := l.at(l.pos)
 		if c == '#' && l.pos+2 < len(l.data) {
-			if v, ok := hexPair(l.data[l.pos+1], l.data[l.pos+2]); ok {
+			if v, ok := hexPair(l.at(l.pos+1), l.at(l.pos+2)); ok {
 				c = v
 				l.pos += 2
 			}
@@ -492,7 +735,12 @@ func (l *lexer) hexString() (token, error) {
 	var pending byte
 	half := false
 	for l.pos < len(l.data) {
-		c := l.data[l.pos]
+		// A string may run to the bound on its kind, or to the end of the
+		// data where it is not closed: the deadline is read within it.
+		if l.pos >= l.due && l.pace() {
+			return token{}, l.stopped()
+		}
+		c := l.at(l.pos)
 		l.pos++
 		if c == '>' {
 			if half {
@@ -566,14 +814,19 @@ func (l *lexer) literalString() (token, error) {
 	depth := 1
 	var out []byte
 	for l.pos < len(l.data) {
-		c := l.data[l.pos]
+		// A string may run to the bound on its kind, or to the end of the
+		// data where it is not closed: the deadline is read within it.
+		if l.pos >= l.due && l.pace() {
+			return token{}, l.stopped()
+		}
+		c := l.at(l.pos)
 		l.pos++
 		switch c {
 		case '\\':
 			if l.pos >= len(l.data) {
 				break
 			}
-			e := l.data[l.pos]
+			e := l.at(l.pos)
 			l.pos++
 			switch e {
 			case 'n':
@@ -590,15 +843,15 @@ func (l *lexer) literalString() (token, error) {
 				out = append(out, e)
 			case '\r':
 				// Line continuation: \ followed by CR or CRLF.
-				if l.pos < len(l.data) && l.data[l.pos] == '\n' {
+				if l.pos < len(l.data) && l.at(l.pos) == '\n' {
 					l.pos++
 				}
 			case '\n':
 			default:
 				if e >= '0' && e <= '7' {
 					v := int(e - '0')
-					for i := 0; i < 2 && l.pos < len(l.data) && l.data[l.pos] >= '0' && l.data[l.pos] <= '7'; i++ {
-						v = v*8 + int(l.data[l.pos]-'0')
+					for i := 0; i < 2 && l.pos < len(l.data) && l.at(l.pos) >= '0' && l.at(l.pos) <= '7'; i++ {
+						v = v*8 + int(l.at(l.pos)-'0')
 						l.pos++
 					}
 					out = append(out, byte(v))
@@ -617,7 +870,7 @@ func (l *lexer) literalString() (token, error) {
 			out = append(out, c)
 		case '\r':
 			// An end-of-line in a literal is one LF, whatever form it took.
-			if l.pos < len(l.data) && l.data[l.pos] == '\n' {
+			if l.pos < len(l.data) && l.at(l.pos) == '\n' {
 				l.pos++
 			}
 			out = append(out, '\n')
@@ -639,7 +892,7 @@ func (l *lexer) literalString() (token, error) {
 func (l *lexer) peekKeyword(kw string) bool {
 	save := l.pos
 	t, err := l.next()
-	l.pos = save
+	l.back(save)
 	return err == nil && t.kind == tokKeyword && t.keyword == kw
 }
 
@@ -747,7 +1000,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 	// inlineImage field.
 	for err == nil && (t.kind == tokArrayClose || t.kind == tokDictClose || t.kind == tokBraceOpen || t.kind == tokBraceClose) {
 		if p.inlineImage {
-			p.lex.pos = t.pos
+			p.lex.back(t.pos)
 			return nil, errInlineImageUnended
 		}
 		t, err = p.lex.next()
@@ -766,8 +1019,17 @@ func (p *parser) parseObject(depth int) (object, error) {
 			// Two integers followed by R are a reference.
 			save := p.lex.pos
 			t2, err2 := p.lex.next()
+			if p.lex.halted {
+				// The deadline was read as passed while the lexer looked
+				// past the integer for a reference: the integer is not known
+				// to stand alone, and the parse ends at the deadline.
+				return nil, p.lex.stopped()
+			}
 			if err2 == nil && t2.kind == tokInteger {
 				t3, err3 := p.lex.next()
+				if p.lex.halted {
+					return nil, p.lex.stopped()
+				}
 				if err3 == nil && t3.kind == tokKeyword && t3.keyword == "R" {
 					if t.i < 0 || t.i > 1<<31 || t2.i < 0 || t2.i > 1<<16 {
 						return nil, fmt.Errorf("reference %d %d R out of range", t.i, t2.i)
@@ -775,7 +1037,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 					return ref{int(t.i), int(t2.i)}, nil
 				}
 			}
-			p.lex.pos = save
+			p.lex.back(save)
 		}
 		return t.i, nil
 	case tokReal:
@@ -815,12 +1077,12 @@ func (p *parser) parseObject(depth int) (object, error) {
 			}
 			if tt.kind == tokDictClose {
 				if p.inlineImage {
-					p.lex.pos = tt.pos
+					p.lex.back(tt.pos)
 					return nil, errInlineImageUnended
 				}
 				continue // stray
 			}
-			p.lex.pos = save
+			p.lex.back(save)
 			item, err := p.parseObject(depth + 1)
 			if err != nil {
 				var kw errKeyword
@@ -831,17 +1093,17 @@ func (p *parser) parseObject(depth int) (object, error) {
 						// unfinished value is no value. Ending the array
 						// here would let a keyword inside one stand for the
 						// end of the dictionary, which the page does not say.
-						p.lex.pos = kw.pos
+						p.lex.back(kw.pos)
 						return nil, errInlineImageUnended
 					}
 					if p.contentMode {
 						// An operator inside an array in a content
 						// stream: malformed; end the array here.
-						p.lex.pos = kw.pos
+						p.lex.back(kw.pos)
 						return arr, nil
 					}
 					if kw.keyword == "endobj" || kw.keyword == "stream" || kw.keyword == "endstream" {
-						p.lex.pos = kw.pos
+						p.lex.back(kw.pos)
 						return arr, nil
 					}
 					// An unknown keyword inside an array (e.g. a bare
@@ -882,15 +1144,15 @@ func (p *parser) parseObject(depth int) (object, error) {
 				// except inside an inline image's dictionary, where the
 				// pairs are read strictly at every depth.
 				if p.inlineImage {
-					p.lex.pos = tt.pos
+					p.lex.back(tt.pos)
 					return nil, errInlineImageUnended
 				}
 				if tt.kind == tokKeyword && (tt.keyword == "endobj" || tt.keyword == "stream" || tt.keyword == "endstream") {
-					p.lex.pos = tt.pos
+					p.lex.back(tt.pos)
 					return dict, nil
 				}
 				if tt.kind == tokArrayOpen || tt.kind == tokDictOpen {
-					p.lex.pos = tt.pos
+					p.lex.back(tt.pos)
 					if _, err := p.parseObject(depth + 1); err != nil {
 						return nil, err
 					}
@@ -907,7 +1169,7 @@ func (p *parser) parseObject(depth int) (object, error) {
 				if p.inlineImage {
 					// A key with no value: what the dictionary says of that
 					// key is not in the file.
-					p.lex.pos = vt.pos
+					p.lex.back(vt.pos)
 					return nil, errInlineImageUnended
 				}
 				if err := p.hold(parsedMemberBytes + grownBytes(int64(len(key)))); err != nil {
@@ -916,17 +1178,17 @@ func (p *parser) parseObject(depth int) (object, error) {
 				dict[key] = nil
 				return dict, nil
 			}
-			p.lex.pos = save
+			p.lex.back(save)
 			val, err := p.parseObject(depth + 1)
 			if err != nil {
 				var kw errKeyword
 				if errors.As(err, &kw) {
 					if p.inlineImage {
-						p.lex.pos = kw.pos
+						p.lex.back(kw.pos)
 						return nil, errInlineImageUnended
 					}
 					if kw.keyword == "endobj" || kw.keyword == "stream" || kw.keyword == "endstream" {
-						p.lex.pos = kw.pos
+						p.lex.back(kw.pos)
 						return dict, nil
 					}
 					continue

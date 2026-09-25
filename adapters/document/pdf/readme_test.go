@@ -59,6 +59,8 @@ func TestREADMEStatesTheStructureBounds(t *testing.T) {
 		"the bytes searched for an `endstream` a stream's `/Length` does not locate":                               grouped(endstreamBlock) + " bytes",
 		"cross-reference entries, scanned objects or trailers read between two readings of the deadline":           grouped(entriesPerCheck),
 		"inspections of a byte of the file made searching for object headers between two readings of the deadline": grouped(scanBytesPerCheck),
+		"bytes of the file searched for `trailer` or `endstream` between two readings of the deadline":             grouped(searchBytesPerCheck),
+		"bytes a document's lexer advances over between two readings of the deadline":                              grouped(lexBytesPerCheck),
 		"glyphs shown between two readings of the deadline":                                                        grouped(operatorsPerCheck),
 		"fonts held by reference for a document; font resource names held while one page's content is read":        grouped(maxFontCacheEntries) + "; " + grouped(maxFontCacheEntries),
 		"arrays and dictionaries nested in one another":                                                            grouped(maxNesting),

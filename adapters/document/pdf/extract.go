@@ -170,7 +170,10 @@ func openDocument(ctx context.Context, data []byte, opt Options, result *Result)
 	const unopened = "the file has no usable cross-reference, trailer or catalog, and scanning found none"
 	doc, openErr := open(ctx, data, budget)
 	if isDeadline(openErr) {
-		return nil, endedAtDeadline(result, openedPastDeadline)
+		// A rebuild the opening made may have read the encryption
+		// dictionary its trailer names before the deadline stopped it: the
+		// record says what it read, as establishEncryption's does.
+		return nil, encryptionAtDeadline(doc, result)
 	}
 	if doc == nil {
 		message := unopened
@@ -228,25 +231,56 @@ func establishEncryption(ctx context.Context, doc *Document, result *Result) err
 			}
 			return nil
 		}
-		if result.Encryption == nil {
-			result.Encryption = &Encryption{}
+		if doc.stopped() != nil {
+			// The deadline stopped the document before this reading ended,
+			// or while it went on past a failure it had already met: the
+			// record says what the readings of the dictionary made before
+			// the deadline established.
+			return encryptionAtDeadline(doc, result)
 		}
-		result.Encryption.Opened = false
-		if deadlineMet(ctx) != nil {
-			// The deadline passed while the trailer's own objects were read:
-			// that is the deadline, not a dictionary that cannot be read.
-			return endedAtDeadline(result, openedPastDeadline)
-		}
-		message := "the encryption dictionary could not be read, so the document was not opened"
-		switch {
-		case errors.Is(err, errPassword):
-			message = "the document is encrypted and a user password is required"
-		case !errors.Is(err, errMalformed):
-			message = "the document is encrypted with a security handler or revision version 1 does not open"
-		}
-		result.Fatal = &Problem{Code: "pdf-encrypted", Message: message}
-		return errStopped
+		// A failure met reading the dictionary stands: it is what the
+		// reading met first.
+		return encryptionFailed(result, enc, err)
 	}
+}
+
+// encryptionAtDeadline ends a document the deadline stopped before its
+// encryption was established, or while it was: the record declares what the
+// readings of the encryption dictionary made before the deadline
+// established, and a failure one of them met before it stands, as
+// pdf-encrypted; otherwise the reading ends at the deadline. See
+// Document.encryptionOnRecord.
+func encryptionAtDeadline(doc *Document, result *Result) error {
+	result.Encryption = nil
+	if doc == nil {
+		return endedAtDeadline(result, openedPastDeadline)
+	}
+	enc, failure := doc.encryptionOnRecord()
+	if failure != nil {
+		return encryptionFailed(result, enc, failure)
+	}
+	result.Encryption = enc
+	return endedAtDeadline(result, openedPastDeadline)
+}
+
+// encryptionFailed ends a document whose encryption dictionary the reader
+// met a failure reading: the document is not opened, and the record says
+// why.
+func encryptionFailed(result *Result, enc *Encryption, err error) error {
+	if enc == nil {
+		enc = &Encryption{}
+	}
+	enc.Opened = false
+	result.Encryption = enc
+	message := "the encryption dictionary could not be read, so the document was not opened"
+	switch {
+	case errors.Is(err, errPassword):
+		message = "the document is encrypted and a user password is required"
+	case !errors.Is(err, errMalformed):
+		message = "the document is encrypted with a security handler or revision version 1 does not open"
+	}
+	result.Fatal = &Problem{Code: "pdf-encrypted", Message: message}
+	return errStopped
 }
 
 // walkPages is the rest of step 4: find the page tree and count its pages. It
@@ -274,7 +308,7 @@ func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) 
 		pagesRoot, rootRef = doc.pagesRoot()
 	}
 	if pagesRoot == nil {
-		if deadlineMet(ctx) != nil {
+		if doc.deadlineFor(ctx) != nil {
 			return nil, generation, endedAtDeadline(result, openedPastDeadline)
 		}
 		message := "the file names no page tree, and scanning found none"
@@ -354,7 +388,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 	generation := w.doc.generation
 	for i, pn := range w.pages {
 		number := i + 1
-		if deadlineMet(ctx) != nil {
+		if w.doc.deadlineFor(ctx) != nil {
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline had passed before page %d was extracted", number, len(w.pages))})
@@ -389,7 +423,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 			// the reading ends here, whatever the page came to.
 			return true
 		}
-		if deadlineMet(ctx) != nil {
+		if w.doc.deadlineFor(ctx) != nil {
 			// The deadline passed while this page was read, whatever the page
 			// came to. A reading past the deadline is not this reader's: an
 			// object a resolve did not find after it -- the scan that resolve
@@ -559,7 +593,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	// fields of one object, and a rebuild met reading one of them leaves the
 	// rest of a node this document no longer has. See beginRead.
 	defer w.d.beginRead()()
-	if deadlineMet(w.ctx) != nil {
+	if w.d.deadlineFor(w.ctx) != nil {
 		return walkDeadline
 	}
 	if depth > maxPageTreeDepth || w.nodes >= maxPageTreeNodes {
@@ -585,7 +619,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	// among it, is no defect of the file this reader may name. Nothing it did
 	// not find after the deadline is known to be absent, so the walk ends at
 	// the deadline, as it ends where the deadline is met between two nodes.
-	if deadlineMet(w.ctx) != nil {
+	if w.d.deadlineFor(w.ctx) != nil {
 		return walkDeadline
 	}
 	if defect := w.d.walkDefect(); defect != "" {
@@ -606,7 +640,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 		// what is there. The walk ends at the deadline, as it ends where the
 		// deadline is met between two nodes, and the record says the reading
 		// was cut short rather than naming a defect of the file.
-		if deadlineMet(w.ctx) != nil {
+		if w.d.deadlineFor(w.ctx) != nil {
 			return walkDeadline
 		}
 		w.defect = "a page-tree node's /Kids could not be read"
@@ -636,7 +670,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 			// as a /Kids not found after it is not: the walk ends at the
 			// deadline rather than at a defect the reader cannot say the file
 			// has.
-			if deadlineMet(w.ctx) != nil {
+			if w.d.deadlineFor(w.ctx) != nil {
 				return walkDeadline
 			}
 			// Why it could not be read, where reading it met something the
@@ -662,11 +696,13 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 // findPagesRoot looks, after reconstruction, for a /Type /Pages node with
 // no /Parent.
 func (d *Document) findPagesRoot() Dict {
-	nums := make([]int, 0, len(d.xref))
-	for num := range d.xref {
-		nums = append(nums, num)
+	// The numbers are gathered and put in order under the deadline, as the
+	// rebuild gathers them; a deadline met there ends the search as one met
+	// between its objects does.
+	nums, ok := d.xrefNumbers()
+	if !ok {
+		return nil
 	}
-	sortInts(nums)
 	for _, num := range nums {
 		// Each step of this loop may resolve a whole object.
 		if d.deadlineNow() {
@@ -717,7 +753,7 @@ func pageContent(d *Document, page Dict) (out []byte, err error) {
 		// may be as long as the file: the deadline is read before each of
 		// them, so that a page whose /Contents names one stream a thousand
 		// times ends at the deadline and not a thousand decodes after it.
-		if err := deadlineMet(d.ctx); err != nil {
+		if err := d.deadlineFor(d.ctx); err != nil {
 			return fmt.Errorf("the deadline passed while a page's content streams were read: %w", err)
 		}
 		o, read := d.resolveRead(v)

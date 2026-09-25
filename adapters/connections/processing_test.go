@@ -5,8 +5,10 @@ package connections
 import (
 	"adapters/attachment"
 	"adapters/document"
+	"adapters/internal/canon"
 	"adapters/internal/pdfgen"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -76,5 +78,81 @@ func TestDriveRecordForPublishedSchema(t *testing.T) {
 		if err = os.WriteFile(path, envelope.Result, 0600); err != nil {
 			t.Fatal(err)
 		}
+	}
+}
+
+// readingsFrom is a deadline that passes at the reading of it numbered n and
+// at every reading after it; with n of zero it never passes.
+type readingsFrom struct {
+	context.Context
+	n, reads int
+}
+
+func (c *readingsFrom) Err() error {
+	c.reads++
+	if c.n > 0 && c.reads >= c.n {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
+func (c *readingsFrom) Deadline() (time.Time, bool) { return time.Time{}, false }
+
+// A Drive record of an encrypted PDF whose encryption dictionary the deadline
+// stopped the adapter reading is a record the route returns, and not a
+// processing failure: the record the document processor writes, given the
+// Drive route's source, version and original as the route gives them, passes
+// the check at every reading the deadline can pass at. The stream filter the
+// dictionary names is an object of its own, followed by a comment of 40,000
+// bytes the reader reads the deadline in. The processing seam's own deadline
+// is set on a context derived from the route's, which a counting context
+// does not reach, so the processor is called as the seam calls it.
+func TestDriveRecordOfAnEncryptionTheDeadlineStopped(t *testing.T) {
+	b := &pdfgen.Builder{Encrypt: &pdfgen.Encryption{Revision: 4, Permissions: -4}}
+	f := b.Font("Helvetica", "WinAnsiEncoding", "")
+	b.Catalog(b.Pages([]pdfgen.Page{{Content: pdfgen.Text("F1", 12, []string{"Hello"}), Fonts: map[string]int{"F1": f}}}))
+	held := b.Add(pdfgen.Object{Body: "/StdCF %" + strings.Repeat("x", 40000) + "\n"})
+	b.Encrypt.Dictionary = func(dict string) string {
+		return strings.Replace(dict, "/StmF /StdCF ", fmt.Sprintf("/StmF %d 0 R ", held), 1)
+	}
+	data := b.Bytes()
+	cfg := document.DefaultConfig()
+	cfg.OCR = ""
+	cfg.MaxOutput = 8 << 20
+	identity := attachment.Identity{Name: "adapter-drive", Version: "test", Digest: digest([]byte("test"))}
+	started := time.Now()
+	request := document.Request{Name: "locked.pdf", MediaType: "application/pdf", Bytes: data, SHA256: digest(data), OCR: "never", ReceivedAt: started}
+	live := &readingsFrom{Context: context.Background()}
+	if _, err := document.Process(live, cfg, request, identity, started); err != nil {
+		t.Fatal(err)
+	}
+	stopped := 0
+	for n := 1; n <= live.reads; n++ {
+		encoded, err := document.Process(&readingsFrom{Context: context.Background(), n: n}, cfg, request, identity, started)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var record map[string]any
+		dec := json.NewDecoder(strings.NewReader(string(encoded)))
+		dec.UseNumber()
+		if err := dec.Decode(&record); err != nil {
+			t.Fatal(err)
+		}
+		record["document"].(map[string]any)["version"] = "7"
+		record["original"] = map[string]any{"retention": "inline", "encoding": "base64", "bytes": base64.StdEncoding.EncodeToString(data)}
+		record["provenance"].(map[string]any)["source"] = map[string]any{"kind": "google-drive", "fileId": "file-A", "version": "7", "mediaType": "application/pdf"}
+		recordBytes, err := canon.EncodeJSON(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := attachment.Check(recordBytes); err != nil {
+			t.Fatalf("deadline at reading %d: the route would fail the record: %v\n%s", n, err, recordBytes)
+		}
+		if enc, _ := record["document"].(map[string]any)["encryption"].(map[string]any); enc != nil && enc["opened"] == false {
+			stopped++
+		}
+	}
+	if stopped == 0 {
+		t.Fatal("no reading position left the encryption unopened")
 	}
 }

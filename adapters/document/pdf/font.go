@@ -102,7 +102,9 @@ func (d *Document) cmapOf(s *stream) *cmap {
 	if data, err := d.decodeStream(s, false, heldByPage); err == nil {
 		c = parseCMap(data, &d.fontBudget, d.deadlinePassed)
 	}
-	if d.generation != generation {
+	if d.generation != generation || d.stopped() != nil {
+		// A CMap read under a cross-reference replaced since, or after the
+		// deadline stopped the document, is not held.
 		return c
 	}
 	if d.cmaps == nil {

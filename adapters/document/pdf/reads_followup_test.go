@@ -8331,7 +8331,7 @@ func TestReadsAnInlineColourSpaceHoldsNoReference(t *testing.T) {
 // deadline, whatever the page came to. The file below is opened from a
 // cross-reference of its own, and the scan begins only when the page's font,
 // or its content, is resolved: the offset the table gives it holds no object.
-// The scan then reads a trailer of as many members as one dictionary holds --
+// The scan then reads a trailer of more members than one dictionary holds --
 // megabytes of them, read for longer than the deadline allows -- and the
 // deadline passes inside it. The scan returns the deadline; the resolve finds
 // nothing; and what the page then comes to -- shown with an unknown font, or
@@ -8404,18 +8404,18 @@ func TestReadsADeadlineThatPassesWhileAPageIsReadEndsTheReading(t *testing.T) {
 	// file of megabytes: what it makes of it says no more than the small files
 	// of the bound test do.
 	//
-	// The trailer holds as many members as the bound admits, one fewer than
-	// a trailer past it, so that no bound is met in it. The deadline must pass while a parse that meets no bound is
-	// running: one object's parse reads no deadline however long it runs
-	// (#157), so the deadline is read when the parse has ended, and a parse
-	// that ended at the bound would end the run at the bound, which is the
-	// file's own, before any reading of the deadline could. The scan's search
-	// for headers once took long enough on this file for the deadline to pass
-	// before the trailer was reached; it reads the file in parts now, and
-	// takes milliseconds.
+	// The trailer holds one member more than the bound admits. The scan's
+	// search for headers once took long enough on this file for the deadline
+	// to pass before the trailer was reached; it reads the file in parts now
+	// (#155), and takes milliseconds, so the deadline passes inside the
+	// trailer's parse. The parse reads the deadline as it reads the file,
+	// every lexBytesPerCheck bytes (#157), and ends at the deadline where the
+	// deadline is read first, long before the member that would meet the
+	// bound: the run ends at the deadline, and not at the bound, which is
+	// what reading order has it meet first.
 	var members strings.Builder
 	members.WriteString("<< ")
-	for i := 0; i < maxContainerItems; i++ {
+	for i := 0; i <= maxContainerItems; i++ {
 		fmt.Fprintf(&members, "/K%d 1 ", i)
 	}
 	members.WriteString(">>")

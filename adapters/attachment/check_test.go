@@ -332,6 +332,9 @@ func TestCheckRefusesEachBrokenRule(t *testing.T) {
 			obj(v, "document", "encryption")["opened"] = true
 			obj(v, "document", "encryption")["revision"] = num(4)
 		}},
+		{"opened false under a timeout met after pages were counted", "partial-timeout", "encryption-opened", func(v map[string]any) {
+			obj(v, "document")["encryption"] = map[string]any{"handler": "Standard", "revision": num(4), "opened": false}
+		}},
 		{"opened with a handler version 1 does not open", "complete-encrypted-opened", "encryption-handler", func(v map[string]any) {
 			obj(v, "document", "encryption")["handler"] = "Adobe.PubSec"
 		}},
