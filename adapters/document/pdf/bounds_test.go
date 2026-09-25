@@ -1579,11 +1579,11 @@ func TestTheEndstreamIndexFindsWhatASearchWouldFind(t *testing.T) {
 		if want >= 0 {
 			want += start
 		}
-		if got := d.nextEndstream(start); got != want {
+		if got, _ := d.nextEndstream(start); got != want {
 			t.Fatalf("from %d: %d, want %d", start, got, want)
 		}
 	}
-	if got := d.nextEndstream(len(data)); got != -1 {
+	if got, _ := d.nextEndstream(len(data)); got != -1 {
 		t.Fatalf("from the end: %d, want -1", got)
 	}
 }

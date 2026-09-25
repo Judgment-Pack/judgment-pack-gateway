@@ -44,6 +44,15 @@ const (
 	// whether the deadline is read every four kibibytes or once for the whole
 	// file, and the part is small beside the file a deadline has to cut.
 	scanBytesPerCheck = 64 << 10
+	// searchBytesPerCheck is how many bytes of the file a search for a
+	// keyword the rebuild looks for -- "trailer", and the "endstream" whose
+	// offsets are indexed -- examines between two readings of the deadline.
+	// A search for a keyword the file does not hold is a search of the rest
+	// of it, which nothing interrupted, so the file is searched in parts of
+	// this size, each looking the keyword's length less one byte past its
+	// part so that a keyword beginning inside the part is found whole: no
+	// more than this and eight bytes are searched between two readings.
+	searchBytesPerCheck = 64 << 10
 	// endstreamBlock is the bytes searched for the "endstream" of a stream
 	// whose /Length does not locate one; the file's own "endstream" offsets,
 	// indexed one per block of that size, answer beyond it.
@@ -613,8 +622,14 @@ func (d *Document) readXref() error {
 		if err != nil {
 			return err
 		}
-		// The newest section is read first, so a member already set wins.
+		// The newest section is read first, so a member already set wins. A
+		// trailer may hold a million members, and they are merged with the
+		// deadline read as they are.
 		for k, v := range trailer {
+			if d.deadlinePassed() {
+				return d.deadline()
+			}
+			stepped("merge trailer", 1)
 			if _, ok := d.trailer[k]; !ok {
 				d.trailer[k] = v
 			}
@@ -835,7 +850,13 @@ func (d *Document) readXrefStream(s *stream, generation int) (Dict, error) {
 	size, _ := d.resolve(s.dict["Size"]).(int64)
 	var index []int64
 	if idx, ok := d.resolve(s.dict["Index"]).(Array); ok {
+		// /Index may hold a million elements, each resolved: the deadline is
+		// read as they are.
 		for _, v := range idx {
+			if d.deadlinePassed() {
+				return nil, d.deadline()
+			}
+			stepped("index", 1)
 			n, ok := d.resolve(v).(int64)
 			if !ok {
 				return nil, malformed("cross-reference stream /Index is not integers")
@@ -938,6 +959,121 @@ func inspected(from, to int) {
 	if scanInspected != nil {
 		scanInspected(from, to)
 	}
+}
+
+// searchInspected, where it is set, is told of every span of the file a
+// fileSearch searches, as it searches it, so that the tests can count what
+// lies between two readings of the deadline. The reader never sets it.
+var searchInspected func(from, to int)
+
+// fileSearch finds a keyword in the file part by part, reading the deadline
+// whenever it has searched a part's worth of bytes since the last reading,
+// across as many searches as one loop makes: a loop that searches again
+// after each keyword it finds carries what is left of the part from one
+// search to the next, so that no more than a part lies between two readings
+// however the keywords fall. It reads the deadline before its first search.
+type fileSearch struct {
+	d    *Document
+	left int
+}
+
+// index is the offset of the first keyword at or after at, or -1 where the
+// file has none there, and the deadline's error where a reading of it found
+// it passed first.
+func (s *fileSearch) index(at int, keyword []byte) (int, error) {
+	data := s.d.data
+	for at < len(data) {
+		if s.left <= 0 {
+			if s.d.deadlineNow() {
+				return -1, s.d.deadline()
+			}
+			s.left = searchBytesPerCheck
+		}
+		end := min(at+s.left, len(data))
+		window := min(end+len(keyword)-1, len(data))
+		i := bytes.Index(data[at:window], keyword)
+		if i >= 0 {
+			if searchInspected != nil {
+				searchInspected(at, at+i+len(keyword))
+			}
+			s.left -= i + len(keyword)
+			return at + i, nil
+		}
+		if searchInspected != nil {
+			searchInspected(at, window)
+		}
+		s.left -= window - at
+		at = end
+	}
+	return -1, nil
+}
+
+// loopStepped, where it is set, is told of the units of work each loop below
+// does whose work grows with a structure the file declares -- the numbers a
+// cross-reference names gathered, sorted and merged, the members of a trailer
+// copied, the places of an object stream's header, the entries of a
+// cross-reference stream's /Index -- as it does them and apart from where it
+// reads the deadline, so that the tests can count what lies between two
+// readings. The reader never sets it.
+var loopStepped func(loop string, n int)
+
+func stepped(loop string, n int) {
+	if loopStepped != nil {
+		loopStepped(loop, n)
+	}
+}
+
+// xrefNumbers is the numbers the cross-reference names, in order, and false
+// where the deadline ended the work: the numbers are gathered with the
+// deadline read every entriesPerCheck of them, and sorted in runs of that
+// many, the deadline read before each run, which are then merged with the
+// deadline read every entriesPerCheck numbers placed. A sort of the quarter
+// million numbers a rebuild may find is one piece of work of about twenty
+// milliseconds that nothing would interrupt, and the gathering, the runs and
+// the merge each read the deadline at the cadence the loops over entries do.
+func (d *Document) xrefNumbers() ([]int, bool) {
+	nums := make([]int, 0, len(d.xref))
+	for num := range d.xref {
+		if d.deadlinePassed() {
+			return nil, false
+		}
+		stepped("gather", 1)
+		nums = append(nums, num)
+	}
+	const run = entriesPerCheck
+	for lo := 0; lo < len(nums); lo += run {
+		if d.deadlineNow() {
+			return nil, false
+		}
+		hi := min(lo+run, len(nums))
+		stepped("sort", hi-lo)
+		sortInts(nums[lo:hi])
+	}
+	if len(nums) <= run {
+		return nums, true
+	}
+	src, dst := nums, make([]int, len(nums))
+	for width := run; width < len(src); width *= 2 {
+		for lo := 0; lo < len(src); lo += 2 * width {
+			mid, hi := min(lo+width, len(src)), min(lo+2*width, len(src))
+			i, j := lo, mid
+			for k := lo; k < hi; k++ {
+				if d.deadlinePassed() {
+					return nil, false
+				}
+				stepped("merge", 1)
+				if i < mid && (j >= hi || src[i] <= src[j]) {
+					dst[k] = src[i]
+					i++
+				} else {
+					dst[k] = src[j]
+					j++
+				}
+			}
+		}
+		src, dst = dst, src
+	}
+	return src, true
 }
 
 // headerScan finds the matches of objHeader in a file part by part, reading
@@ -1211,10 +1347,11 @@ func (d *Document) reconstruct() error {
 	// only after it: a deadline that has passed when the scan begins costs no
 	// search, and one that passes during it costs at most one part, and the
 	// two bytes a search looks past it, more. One object's parse reads the
-	// deadline as its lexer reads the file (#157); the loops that gather the
-	// trailer, the object streams and the stream ends read none (#159). What
-	// is counted against the bound is every match the expression finds,
-	// before the boundary check below turns any of them away.
+	// deadline as its lexer reads the file (#157), and the loops that gather
+	// the trailer, the object streams and the stream ends read it as they
+	// run (#159). What is counted against the bound is every match the
+	// expression finds, before the boundary check below turns any of them
+	// away.
 	matches, examined, stopped := scanHeaders(d.data, maxScanObjects+1, scanBytesPerCheck, d.deadlineNow)
 	if scanObserved != nil {
 		scanObserved(examined)
@@ -1283,6 +1420,10 @@ func (d *Document) reconstruct() error {
 			trailer[key] = v
 		}
 	}
+	// The word is searched for in parts, the deadline read between them: a
+	// file that holds no further "trailer" is otherwise searched to its end in
+	// one piece of work.
+	search := &fileSearch{d: d}
 	for at := 0; ; {
 		// Each step of this loop may parse a value that runs to the end of the
 		// file -- a "trailer" followed by a string that is never closed is
@@ -1291,11 +1432,14 @@ func (d *Document) reconstruct() error {
 		if d.deadlineNow() {
 			return d.scanEnded(d.deadline())
 		}
-		i := bytes.Index(d.data[at:], []byte("trailer"))
+		i, ended := search.index(at, trailerKeyword)
+		if ended != nil {
+			return d.scanEnded(ended)
+		}
 		if i < 0 {
 			break
 		}
-		at = at + i + len("trailer")
+		at = i + len(trailerKeyword)
 		lex := newLexer(d.data, at).within(d.budgeted())
 		// A trailer is a dictionary; a "trailer" followed by anything else is
 		// the word in some other place in the file, and is not parsed. Comments
@@ -1347,18 +1491,27 @@ func (d *Document) reconstruct() error {
 			continue
 		}
 		if dict, ok := obj.(Dict); ok {
+			// A trailer may hold a million members, and copying them is work
+			// of its own after the parse: the deadline is read as they are
+			// copied, and the trailer being gathered is given up with the
+			// scan where it has passed.
 			for k, v := range dict {
+				if d.deadlinePassed() {
+					return d.scanEnded(d.deadline())
+				}
+				stepped("copy", 1)
 				trailer[k] = v
 			}
 		}
 	}
 	// Cross-reference streams found by scanning contribute their
-	// dictionaries and the objects in the object streams they name.
-	nums := make([]int, 0, len(d.xref))
-	for num := range d.xref {
-		nums = append(nums, num)
+	// dictionaries and the objects in the object streams they name. The
+	// numbers are gathered and put in order under the deadline, and a
+	// deadline met there ends the scan as one met between trailers does.
+	nums, ok := d.xrefNumbers()
+	if !ok {
+		return d.scanEnded(d.deadline())
 	}
-	sortInts(nums)
 	d.forgetObjects()
 	// objStmFound is an object stream the scan found, kept until the trailer
 	// it is registered under has been gathered.
@@ -1461,6 +1614,12 @@ func (d *Document) reconstruct() error {
 		}
 		idx := 0
 		for _, inner := range st.order {
+			// A header may declare 65,536 places: the deadline is read as
+			// they are registered, as between the streams.
+			if d.deadlinePassed() {
+				return d.deadline()
+			}
+			stepped("register", 1)
 			if _, taken := d.xref[inner]; inner != unreadableObject && !taken {
 				d.xref[inner] = xrefEntry{inStream: true, stmNum: found.num, stmIndex: idx}
 			}
@@ -1596,7 +1755,12 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 		}
 	}
 	if end < 0 {
-		i := d.nextEndstream(start)
+		i, err := d.nextEndstream(start)
+		if err != nil {
+			// The deadline ended the indexing of the file's stream ends:
+			// where this stream ends is unread.
+			return num, gen, nil, err
+		}
 		if i < 0 {
 			end = len(d.data)
 		} else {
@@ -1615,17 +1779,23 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 
 var endstreamKeyword = []byte("endstream")
 
+// trailerKeyword is the word the rebuild looks for trailer dictionaries after.
+var trailerKeyword = []byte("trailer")
+
 // nextEndstream is the offset of the first "endstream" at or after start, or
 // -1 when the file has none there. It is the answer a search of the rest of
 // the file would give, at the cost of one block: the file's own offsets are
 // indexed once, so a file of many streams whose /Length locates nothing costs
-// its size and not that times the streams.
-func (d *Document) nextEndstream(start int) int {
+// its size and not that times the streams. The error is the deadline's, where
+// it ended the indexing.
+func (d *Document) nextEndstream(start int) (int, error) {
 	if start < 0 || start >= len(d.data) {
-		return -1
+		return -1, nil
 	}
 	if d.endstream == nil {
-		d.indexEndstreams()
+		if err := d.indexEndstreams(); err != nil {
+			return -1, err
+		}
 	}
 	// A match beginning in start's own block is found by searching it, the
 	// search reaching the length of the keyword less one byte into the block
@@ -1636,17 +1806,21 @@ func (d *Document) nextEndstream(start int) int {
 	next := (block + 1) * endstreamBlock
 	stop := min(next+len(endstreamKeyword)-1, len(d.data))
 	if i := bytes.Index(d.data[start:stop], endstreamKeyword); i >= 0 {
-		return start + i
+		return start + i, nil
 	}
 	if block+1 < len(d.endstream) {
-		return d.endstream[block+1]
+		return d.endstream[block+1], nil
 	}
-	return -1
+	return -1, nil
 }
 
 // indexEndstreams records, for each block of the file, the offset of the
 // first "endstream" at or after that block's start, in one pass up the file.
-func (d *Document) indexEndstreams() {
+// The pass searches the file in parts, the deadline read between them: a
+// file whose one "endstream" lies at its far end is otherwise searched whole
+// in one piece of work. A pass the deadline ended records nothing, and the
+// index is built again when a stream next needs it.
+func (d *Document) indexEndstreams() error {
 	index := make([]int, len(d.data)/endstreamBlock+2)
 	for i := range index {
 		index[i] = -1
@@ -1654,12 +1828,16 @@ func (d *Document) indexEndstreams() {
 	// A match is the answer for every block from the first without one up to
 	// its own, since the matches before it all lie below those blocks.
 	unfilled := 0
+	search := &fileSearch{d: d}
 	for at := 0; at < len(d.data); {
-		i := bytes.Index(d.data[at:], endstreamKeyword)
+		i, err := search.index(at, endstreamKeyword)
+		if err != nil {
+			return err
+		}
 		if i < 0 {
 			break
 		}
-		at += i
+		at = i
 		for b := unfilled; b <= at/endstreamBlock; b++ {
 			index[b] = at
 		}
@@ -1669,6 +1847,7 @@ func (d *Document) indexEndstreams() {
 		at++
 	}
 	d.endstream = index
+	return nil
 }
 
 // resolveLength resolves a stream's /Length without recursing into the
@@ -2384,6 +2563,13 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 	declared := map[int]int{}
 	body := int64(len(data)) - first
 	for i := int64(0); i < n; i++ {
+		// The deadline is read every entriesPerCheck places, as it is where
+		// the places are completed and mapped below, and the lexer reads it
+		// as it reads the header's bytes.
+		if d.deadlinePassed() {
+			return nil, d.deadline()
+		}
+		stepped("places", 1)
 		// Each declared place keeps two ordered slots and may have entries
 		// in both the number-count and offset maps (or the duplicate map).
 		// Reserve before publishing either the number or its place.
@@ -2452,7 +2638,14 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		st.order = append(st.order, inner)
 		st.offsetAt = append(st.offsetAt, at)
 	}
+	// The places the header's tokens did not reach, and the maps that find
+	// every place, are built with the deadline read as the places are: /N may
+	// declare 65,536 of them.
 	for int64(len(st.order)) < n {
+		if d.deadlinePassed() {
+			return nil, d.deadline()
+		}
+		stepped("places", 1)
 		if !d.chargeParsed(2 * parsedSlotBytes) {
 			return nil, errParsedBudget()
 		}
@@ -2460,6 +2653,10 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 		st.offsetAt = append(st.offsetAt, -1)
 	}
 	for i, inner := range st.order {
+		if d.deadlinePassed() {
+			return nil, d.deadline()
+		}
+		stepped("places", 1)
 		switch {
 		case inner == unreadableObject || st.offsetAt[i] < 0:
 		case declared[inner] > 1:

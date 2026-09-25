@@ -662,11 +662,13 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 // findPagesRoot looks, after reconstruction, for a /Type /Pages node with
 // no /Parent.
 func (d *Document) findPagesRoot() Dict {
-	nums := make([]int, 0, len(d.xref))
-	for num := range d.xref {
-		nums = append(nums, num)
+	// The numbers are gathered and put in order under the deadline, as the
+	// rebuild gathers them; a deadline met there ends the search as one met
+	// between its objects does.
+	nums, ok := d.xrefNumbers()
+	if !ok {
+		return nil
 	}
-	sortInts(nums)
 	for _, num := range nums {
 		// Each step of this loop may resolve a whole object.
 		if d.deadlineNow() {
