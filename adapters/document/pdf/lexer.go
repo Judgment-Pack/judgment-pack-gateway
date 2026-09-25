@@ -262,12 +262,14 @@ func (l *lexer) stopped() error {
 	return l.work.doc.deadline()
 }
 
-// at is the byte of the data at i. Every byte the lexer inspects one at a
-// time it reads here -- a keyword's and a number's bytes are inspected here
-// to find their end, and then taken whole as a slice -- so that a build made
-// for the tests (see lexProbed) can see how far each lexer has loaded, where
-// it loads it; in every other build this is the byte and nothing else, and
-// costs what indexing the data costs.
+// at is the byte of the data at i. The lexer's loops over its data -- the
+// skip, and the reading of each kind of token to its end -- load each byte
+// here, so that a build made for the tests (see lexProbed) can see how far
+// each lexer has loaded, where it loads it. What reads a slice of the data
+// once the slice is taken does not load through at, and is not seen: a
+// keyword's string, a number's parsing, which ranges over the number's bytes
+// again. In every other build this is the byte and nothing else, and costs
+// what indexing the data costs.
 func (l *lexer) at(i int) byte {
 	if lexProbed {
 		lexLoaded(l, i)

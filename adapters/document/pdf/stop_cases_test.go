@@ -330,7 +330,7 @@ func TestStopIndexRangesBeforeTheirBound(t *testing.T) {
 }
 
 // The index of stream ends is not kept when the deadline passes while it is
-// set up or filled, or before it is kept.
+// set up or filled, or after all of that and before it is kept.
 func TestStopStreamEndsIndex(t *testing.T) {
 	data := append(append([]byte("%PDF-1.7\n1 0 obj << /Length -1 >>stream\n"), bytes.Repeat([]byte("x"), 1<<20)...), "\nendstream\nendobj\n"...)
 	for _, loop := range []string{"blocks", "blocks filled"} {
@@ -373,6 +373,40 @@ func TestStopStreamEndsIndex(t *testing.T) {
 			t.Fatalf("armed after the last of %d blocks filled: error %v, index kept %v, deadline read after the filling %v", filled, err, d.endstream != nil, ctx.expired)
 		}
 	})
+	// The deadline passes at the last inspection the search for "endstream"
+	// makes -- counted from the search's work, not from the readings --
+	// after every block is filled and the search has run to the file's end,
+	// so that only a reading made after all of it, before the index is
+	// kept, can find it passed: in this file, and in a file of 1 MiB that
+	// holds no "endstream" at all.
+	for _, c := range []struct {
+		name string
+		data []byte
+	}{
+		{"after the last search", data},
+		{"after the last search of a file with no endstream", bytes.Repeat([]byte("x"), 1<<20)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			events := 0
+			searchInspected = func(int, int) { events++ }
+			defer func() { searchInspected = nil }()
+			d := stopDoc(string(c.data), context.Background())
+			if _, err := d.nextEndstream(0); err != nil || d.endstream == nil || events == 0 {
+				t.Fatalf("with no deadline: %v, %d search inspections", err, events)
+			}
+			ctx := &stopArmed{Context: context.Background()}
+			seen := 0
+			searchInspected = func(int, int) {
+				if seen++; seen == events {
+					ctx.armed = true
+				}
+			}
+			d = stopDoc(string(c.data), ctx)
+			if _, err := d.nextEndstream(0); !isDeadline(err) || d.endstream != nil || !ctx.expired {
+				t.Fatalf("armed at the last of %d search inspections: error %v, index kept %v, expired %v", events, err, d.endstream != nil, ctx.expired)
+			}
+		})
+	}
 }
 
 // A lexer stopped by the deadline returns the deadline at the call that read

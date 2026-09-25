@@ -10,10 +10,11 @@ import (
 )
 
 // These tests run in the build made with the pdflexprobe tag, where every
-// byte a lexer loads through at -- every byte it inspects one at a time --
-// and every reading of tokens and every skip are told to lexLoaded and
-// lexEntered: see lexProbed. TestTheLexerProbesHold runs them from the
-// ordinary build.
+// byte a lexer loads through at, and every reading of tokens and every skip,
+// are told to lexLoaded and lexEntered: see lexProbed. What reads a slice of
+// the data once taken -- a keyword's string, a number's parsing -- loads
+// nothing through at and is not counted. TestTheLexerProbesHold runs them
+// from the ordinary build.
 
 // probeLexer is what the probe has seen of one lexer and every copy of it:
 // how deep in a reading of tokens or a skip it stands, the copy doing that
@@ -28,6 +29,10 @@ type probeLexer struct {
 	document                bool
 	frontier, counted       int
 	gap, most, total, reads int
+	// loads is the bytes loaded through at since the last reading of the
+	// deadline, each load counted, a byte loaded again counted again, and
+	// mostLoads the most of them between two readings or after the last.
+	loads, mostLoads int
 }
 
 // probe counts what each lexer advances over from what it loads and where it
@@ -44,9 +49,12 @@ type probeLexer struct {
 // last seen standing: it is that reader made again, and it is given that
 // one's identity, so that a reader made again for every token, each with a
 // due of its own, is counted in one stretch as well.
-// What is counted is what a lexer advances over, and not every load: a
-// keyword's or a number's bytes, once found, are taken as a slice, and are
-// counted as advanced over and not as loaded again.
+// Beside what a lexer advances over, every load it makes through at is
+// counted, a byte loaded again counted again, between two readings of the
+// deadline: a lexer that runs forward and is put back before any reading
+// advances over nothing, and loads all it ran over. A keyword's or a
+// number's bytes, once found, are taken as a slice, and what reads the slice
+// loads nothing through at.
 type probe struct {
 	lexers map[int64]*probeLexer
 	loads  int
@@ -92,6 +100,8 @@ func newProbe() *probe {
 		p.loads++
 		if s := p.lexers[l.ident.id]; s != nil {
 			s.frontier = max(s.frontier, i+1)
+			s.loads++
+			s.mostLoads = max(s.mostLoads, s.loads)
 		}
 	}
 	lexEntered = func(l *lexer) func() {
@@ -133,7 +143,7 @@ func (p *probe) read() {
 	for _, s := range p.lexers {
 		if s.depth > 0 {
 			p.count(s)
-			s.gap = 0
+			s.gap, s.loads = 0, 0
 			s.reads++
 		}
 	}
@@ -154,13 +164,36 @@ func (p *probe) most() (most, total int) {
 	return most, total
 }
 
+// loadBound is the most loads through at a lexer makes between two readings
+// of the deadline: what it advances over between them, lexBytesPerCheck and a
+// keyword's bytes, each loaded at most eight times -- the loop that finds a
+// number's end tests each byte for seven characters, and next loads the
+// first once more. Advancing is counted from where a lexer stands, and a
+// lexer that ran forward and was put back before any reading of the deadline
+// would advance over nothing it did not read again; its loads are counted as
+// they are made.
+const loadBound = 8 * (lexBytesPerCheck + maxNameBytes)
+
+// mostLoads is the most loads through at any lexer that reads the deadline
+// made with no reading of it between.
+func (p *probe) mostLoads() (most int) {
+	for _, s := range p.lexers {
+		if s.document {
+			most = max(most, s.mostLoads)
+		}
+	}
+	return most
+}
+
 // No lexer that reads a document advances over more than lexBytesPerCheck and
 // a keyword's bytes between two readings of the deadline, or after its last
-// one: counted from the bytes it inspects and where it stands, apart from due
-// and from lexTrace, its copies with it, on the files of the counting test and
-// on a long hex string, fully escaped names, literal escapes, integers the
-// parser looks past, keywords at the worst alignment, short tokens and
-// repeated peeks.
+// one: counted from the bytes it loads through at and where it stands, apart
+// from due and from lexTrace, its copies with it, on the files of the counting
+// test and on a long hex string, fully escaped names, literal escapes,
+// integers the parser looks past, keywords at the worst alignment, short
+// tokens and repeated peeks, and a hex string and names the integer lookahead
+// reads and then reads again; and none loads through at more than loadBound
+// with no reading of the deadline.
 func TestLexerProbeAdvancement(t *testing.T) {
 	bound := lexBytesPerCheck + maxNameBytes
 	for _, c := range lexOpenings() {
@@ -172,6 +205,9 @@ func TestLexerProbeAdvancement(t *testing.T) {
 				t.Fatal(err)
 			}
 			most, total := p.most()
+			if loads := p.mostLoads(); loads > loadBound {
+				t.Fatalf("%d loads through at with no reading of the deadline, at most %d", loads, loadBound)
+			}
 			t.Logf("%d bytes: at most %d advanced over between two readings or after the last, %d in all", len(c.data), most, total)
 			if total < c.advanced {
 				t.Fatalf("the probe saw %d bytes advanced over, and reading the file advances over at least %d", total, c.advanced)
@@ -194,6 +230,8 @@ func TestLexerProbeAdvancement(t *testing.T) {
 		{"short tokens", strings.Repeat("[]", 50000), "parse"},
 		{"repeated peeks", strings.Repeat("obj endobj stream ", 6000), "peek"},
 		{"a comment ending where the reading falls due", "%" + strings.Repeat("x", lexBytesPerCheck-1) + "\n" + strings.Repeat("[]", 20000), "token"},
+		{"a long hex string the lookahead reads again", "[1 <" + strings.Repeat("4 1 ", 100000) + ">]", "parse"},
+		{"escaped names the lookahead reads again", "[" + strings.Repeat("1 /"+strings.Repeat("#41", maxNameBytes)+" ", 10) + "]", "parse"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			p := newProbe()
@@ -219,6 +257,9 @@ func TestLexerProbeAdvancement(t *testing.T) {
 				}
 			}
 			most, total := p.most()
+			if loads := p.mostLoads(); loads > loadBound {
+				t.Fatalf("%d loads through at with no reading of the deadline, at most %d", loads, loadBound)
+			}
 			t.Logf("%d bytes: at most %d advanced over between two readings or after the last, %d in all, %d readings", len(c.data), most, total, ctx.reads)
 			if total < len(c.data)-1 {
 				t.Fatalf("the probe saw %d bytes advanced over of %d", total, len(c.data))
@@ -226,15 +267,18 @@ func TestLexerProbeAdvancement(t *testing.T) {
 			if most > bound {
 				t.Fatalf("%d bytes advanced over with no reading of the deadline, at most %d", most, bound)
 			}
+			if ctx.reads == 0 {
+				t.Fatalf("%d bytes advanced over with no reading of the deadline at all", total)
+			}
 		})
 	}
 }
 
-// A lexer stopped by the deadline inspects nothing more: 16,384 spaces and
-// then "[]", the deadline passing at the first reading, which the skip makes
-// where the spaces end. The call that read it and every call after it return
-// the deadline, and the calls after it, a step back included, load no byte
-// through at.
+// A lexer stopped by the deadline loads nothing more through at: 16,384
+// spaces and then "[]", the deadline passing at the first reading, which the
+// skip makes where the spaces end. The call that read it and every call after
+// it return the deadline, and the calls after it, a step back included, load
+// no byte through at. Only loads through at are counted: see at.
 func TestLexerProbeStoppedLoadsNothing(t *testing.T) {
 	p := newProbe()
 	defer p.close()
@@ -274,6 +318,9 @@ func TestLexerProbeRepeatedKeyword(t *testing.T) {
 		l.peekKeyword("x")
 	}
 	most, total := p.most()
+	if loads := p.mostLoads(); loads > loadBound {
+		t.Fatalf("%d loads through at with no reading of the deadline, at most %d", loads, loadBound)
+	}
 	t.Logf("%d peeks: %d bytes advanced over, at most %d between two readings or after the last, %d readings", peeks, total, most, ctx.reads)
 	if want := peeks * maxNameBytes; total != want {
 		t.Fatalf("the probe saw %d bytes advanced over, and %d peeks of a keyword of %d bytes advance over %d", total, peeks, maxNameBytes, want)

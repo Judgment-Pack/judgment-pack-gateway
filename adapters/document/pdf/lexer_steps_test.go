@@ -39,7 +39,9 @@ import (
 // parser is built, from newLexer or from a lexer made so -- so that no
 // lexer is made again in the place of one at work, with a due of its own.
 // No value is converted to or from a type the lexer is, or a pointer to
-// one, and no type is declared that is a lexer under another name. The
+// one, no type is declared that is a lexer under another name, and no
+// generic function or type is instantiated with a lexer, a pointer to one or
+// such a type, so that a lexer is never the value of a type parameter. The
 // writes of a position allowed are the ones that only move a
 // lexer forward: back's own, a token's end where the lexer's reading of it
 // stands, an increment, an addition of a length or a constant, and an
@@ -67,7 +69,7 @@ func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
 		}
 		files = append(files, f)
 	}
-	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}}
+	info := &types.Info{Selections: map[*ast.SelectorExpr]*types.Selection{}, Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Defs: map[*ast.Ident]types.Object{}, Instances: map[*ast.Ident]types.Instance{}}
 	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil)}
 	pkg, err := conf.Check("pdf", fset, files, info)
 	if err != nil {
@@ -142,6 +144,16 @@ func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
 		m := named.Method(i)
 		if _, pointer := m.Type().(*types.Signature).Recv().Type().(*types.Pointer); !pointer {
 			t.Errorf("%s: the lexer's method %s has a value receiver, and works on a copy", fset.Position(m.Pos()), m.Name())
+		}
+	}
+	// A generic function or type given a lexer for a type argument works on
+	// a lexer as a value of a type parameter -- saves it, restores it --
+	// where nothing above sees it as a lexer.
+	for id, inst := range info.Instances {
+		for i := 0; i < inst.TypeArgs.Len(); i++ {
+			if lexerLike(inst.TypeArgs.At(i)) {
+				t.Errorf("%s: %s is instantiated with %s, a lexer as the value of a type parameter", fset.Position(id.Pos()), id.Name, inst.TypeArgs.At(i))
+			}
 		}
 	}
 	for id, obj := range info.Defs {
@@ -304,24 +316,76 @@ func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
 }
 
 // The tests of the build made with the pdflexprobe tag -- where what each
-// lexer, with every copy of it, advances over is counted from the bytes it
-// inspects and where it stands, apart from due, lexTrace and the sources'
-// spelling -- run from here, in a build of their own, so that the ordinary
-// test run holds the lexer to them, a short run included: they take a few
-// seconds. See lexprobe_test.go.
+// lexer, with every copy of it, advances over and loads through at is
+// counted from the bytes it loads and where it stands, apart from due,
+// lexTrace and the sources' spelling -- run from here, in a build of their
+// own, so that the ordinary test run holds the lexer to them, a short run
+// included: they take a few seconds. Every file of the probe build is read
+// here, so that a change to one is a change to this test's inputs and no
+// result of it is taken from the test cache; every test those files declare
+// must be one the run selects, and must pass by name, so that a run that
+// selects nothing, or a test renamed out of it, fails. See lexprobe_test.go.
 func TestTheLexerProbesHold(t *testing.T) {
 	if lexProbed {
 		t.Skip("this is the probe build")
+	}
+	const prefix = "TestLexerProbe"
+	names, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tests []string
+	fset := gotoken.NewFileSet()
+	for _, name := range names {
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		f, err := goparser.ParseFile(fset, name, src, goparser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		probed := false
+		for _, group := range f.Comments {
+			for _, c := range group.List {
+				if strings.HasPrefix(c.Text, "//go:build") && strings.Contains(c.Text, "pdflexprobe") && !strings.Contains(c.Text, "!pdflexprobe") {
+					probed = true
+				}
+			}
+		}
+		if !probed {
+			continue
+		}
+		for _, decl := range f.Decls {
+			if fn, ok := decl.(*ast.FuncDecl); ok && fn.Recv == nil && strings.HasPrefix(fn.Name.Name, "Test") {
+				if !strings.HasPrefix(fn.Name.Name, prefix) {
+					t.Errorf("%s declares %s, which the probe build's run does not select", name, fn.Name.Name)
+					continue
+				}
+				tests = append(tests, fn.Name.Name)
+			}
+		}
+	}
+	if len(tests) == 0 {
+		t.Fatal("no file of the probe build declares a test")
 	}
 	goTool, err := exec.LookPath("go")
 	if err != nil {
 		goTool = filepath.Join(runtime.GOROOT(), "bin", "go")
 	}
-	cmd := exec.Command(goTool, "test", "-tags", "pdflexprobe", "-count=1", "-run", "^TestLexerProbe", ".")
+	cmd := exec.Command(goTool, "test", "-tags", "pdflexprobe", "-count=1", "-v", "-run", "^"+prefix, ".")
 	cmd.Env = os.Environ()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("the probe build's tests: %v\n%s", err, out)
 	}
-	t.Logf("%s", bytes.TrimSpace(out))
+	if bytes.Contains(out, []byte("no tests to run")) {
+		t.Fatalf("the probe build ran no tests:\n%s", out)
+	}
+	for _, name := range tests {
+		if !bytes.Contains(out, []byte("--- PASS: "+name+" ")) {
+			t.Errorf("the probe build did not report %s passed", name)
+		}
+	}
+	t.Logf("%d tests of the probe build passed", len(tests))
 }

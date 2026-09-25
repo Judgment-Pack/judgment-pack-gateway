@@ -2,6 +2,8 @@ package pdf
 
 import (
 	"bytes"
+	"compress/lzw"
+	"compress/zlib"
 	"context"
 	"crypto/md5"
 	"crypto/rc4"
@@ -181,6 +183,82 @@ func stopPages() []stopObject {
 	}
 }
 
+// stopFramedFile is a one-page document whose content shows "Hello" and then
+// 5,000 glyphs in one string, draws a form XObject, and holds an inline image
+// under each filter the reader frames but ASCIIHexDecode, which the pages of
+// stopPages hold: base-85 data of 5,000 groups of zeros; 5,000 runs of one
+// byte; Flate data of stored blocks, of 8,000 bytes, and of compressed ones,
+// of 20,000 bytes of sixteen letters; LZW data of 10,000 bytes; fax data of
+// 5,000 bytes and the return-to-control; and a JPEG of 5,000 markers with no
+// segment, a scan of 5,000 bytes and a run of 5,000 fill bytes. Each is long
+// enough that the loop reading it reads the deadline on the package's cadence.
+func stopFramedFile(t *testing.T) []byte {
+	t.Helper()
+	noise := make([]byte, 10000)
+	seed := uint32(1)
+	for i := range noise {
+		seed = seed*1664525 + 1013904223
+		noise[i] = byte(seed >> 24)
+	}
+	// Sixteen letters drawn at random: data Huffman coding shortens, so
+	// that it is written in compressed blocks and not stored ones.
+	letters := make([]byte, 20000)
+	for i := range letters {
+		seed = seed*1664525 + 1013904223
+		letters[i] = 'a' + byte(seed>>28)
+	}
+	zlibOf := func(data []byte, level int) []byte {
+		var b bytes.Buffer
+		w, err := zlib.NewWriterLevel(&b, level)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write(data)
+		w.Close()
+		return b.Bytes()
+	}
+	var lzwData bytes.Buffer
+	lw := lzw.NewWriter(&lzwData, lzw.MSB, 8)
+	lw.Write(noise)
+	lw.Close()
+	rtc := []byte{0x00, 0x10, 0x01, 0x00, 0x10, 0x01, 0x00, 0x10, 0x01}
+	var jpeg bytes.Buffer
+	jpeg.Write([]byte{0xFF, 0xD8})
+	jpeg.Write(bytes.Repeat([]byte{0xFF, 0x01}, 5000))
+	jpeg.Write([]byte{0xFF, 0xDA, 0x00, 0x02})
+	jpeg.Write(bytes.Repeat([]byte{0x55}, 5000))
+	jpeg.Write(bytes.Repeat([]byte{0xFF}, 5001))
+	jpeg.Write([]byte{0xD0, 0xFF, 0xD9})
+	images := []struct {
+		filter, parms string
+		data          []byte
+	}{
+		{"/A85", "", []byte(strings.Repeat("z", 5000) + "~>")},
+		{"/RL", "", append(bytes.Repeat([]byte{0x00, 'a'}, 5000), 0x80)},
+		{"/Fl", "", zlibOf(noise[:8000], zlib.NoCompression)},
+		{"/Fl", "", zlibOf(letters, zlib.BestCompression)},
+		{"/LZW", " /DP << /EarlyChange 0 >>", lzwData.Bytes()},
+		{"/CCF", "", append(bytes.Repeat([]byte{0xFF}, 5000), rtc...)},
+		{"/DCT", "", jpeg.Bytes()},
+	}
+	var content bytes.Buffer
+	content.WriteString("BT /F1 12 Tf 72 700 Td (Hello) Tj (" + strings.Repeat("a", 5000) + ") Tj ET /Fm1 Do\n")
+	for _, img := range images {
+		fmt.Fprintf(&content, "BI /W 1 /H 1 /BPC 8 /CS /G /F %s%s ID ", img.filter, img.parms)
+		content.Write(img.data)
+		content.WriteString("\nEI\n")
+	}
+	form := "q Q"
+	return stopTable([]stopObject{
+		{num: 1, body: "<< /Type /Catalog /Pages 2 0 R >>"},
+		{num: 2, body: "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"},
+		{num: 3, body: "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 6 0 R >> >> /Contents 5 0 R >>"},
+		{num: 4, body: "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"},
+		{num: 5, body: fmt.Sprintf("<< /Length %d >>", content.Len()), data: content.Bytes()},
+		{num: 6, body: fmt.Sprintf("<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length %d >>", len(form)), data: []byte(form)},
+	}, "<< /Size 7 /Root 1 0 R >>", 0)
+}
+
 // stopFiles are the structured files every reading position is tried on.
 func stopFiles(t *testing.T) []struct {
 	name string
@@ -222,12 +300,24 @@ func stopFiles(t *testing.T) []struct {
 		{num: 2, body: "<< /Type /Pages /Kids 99 0 R /Count 1 >>"},
 	}, "<< /Size 3 /Root 1 0 R >>", 0)
 
+	// A cross-reference stream whose /Index holds 4,100 elements, 2,049
+	// ranges of no entries and then the file's: enough that its loops over
+	// the elements and the ranges read the deadline on the package's cadence.
+	manyRanges := stopXrefStream(pages, nil, 8, "<< /Type /XRef /W [1 4 2] /Size 9 /Index ["+strings.Repeat("0 0 ", 2049)+"0 9] /Root 1 0 R /Length LENGTH >>", 9)
+
+	// A catalog that names no page tree: the reader rebuilds the
+	// cross-reference and searches the objects for one.
+	noPages := stopTable(append([]stopObject{{num: 1, body: "<< /Type /Catalog >>"}}, pages[1:]...), "<< /Size 8 /Root 1 0 R >>", 0)
+
 	files := []struct {
 		name  string
 		data  []byte
 		every int
 	}{
 		{"a cross-reference stream with indirect /W, /Size and /Index", xrefStream, 1},
+		{"a cross-reference stream whose /Index holds 4,100 elements", manyRanges, 1},
+		{"a catalog that names no page tree", noPages, 1},
+		{"a page that draws a form, shows 5,000 glyphs and frames an inline image under each filter", stopFramedFile(t), 1},
 		{"an object stream with indirect /N, /First and /Length", objectStream, 1},
 		{"a table whose font's entry rebuilds the cross-reference", rebuilt, 1},
 		{"the xref-W file of the review", reviewXrefWFile(), 1},
@@ -563,6 +653,20 @@ func stopReadAgain(ctx context.Context, d *Document) *Result {
 // is the stop still, calls no method of that context and keeps nothing; and
 // the file read again with time left reads as it reads with no deadline at
 // all.
+//
+// The files are chosen so that every call in extract.go, content.go and
+// filters.go that reads the deadline runs in them -- under a coverage profile
+// of this test each one does -- and each one made to read the deadline without
+// stopping the document fails it. Those that read on the package's cadence --
+// a show operator's glyphs, the framing of an inline image under each filter,
+// a cross-reference stream's /Index -- run in files built to run their loops
+// past it: stopFramedFile, and the cross-reference stream whose /Index holds
+// 4,100 elements. Some run in these files only once the document has stopped,
+// and then call no context -- establishEncryption's after an encryption
+// dictionary the deadline stopped, the walk's where no page tree was found or
+// a kid could not be read, an inline image's after its framing's own reading
+// -- and they are held by the requirement that nothing be called after the
+// stop.
 func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 	for _, f := range stopFiles(t) {
 		t.Run(f.name, func(t *testing.T) {
