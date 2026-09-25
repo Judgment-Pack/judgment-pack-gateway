@@ -205,15 +205,18 @@ type Document struct {
 	pageWork    int64
 	pageWorking bool
 	crypt       *cryptHandler
-	// encryption is what the last reading of an encryption dictionary read
-	// of it -- the declaration, and whether it opened -- encryptionErr the
-	// failure that reading ended at, and encryptionGeneration the generation
-	// it was read under. A rebuild reads the dictionary its trailer names and
-	// may open it before the deadline stops the rebuild; the record declares
-	// what that reading read. See establishEncryption.
-	encryption           *Encryption
-	encryptionErr        error
-	encryptionGeneration int
+	// encryptionRead is the last complete reading of an encryption
+	// dictionary -- one that opened it, met a failure other than the
+	// deadline, or found that the trailer names none -- and encryptionSoFar
+	// the last reading the deadline stopped after it had reached the
+	// dictionary: what it had read of it. encryptionNamed says a reading has
+	// found a trailer that names a dictionary. See keepEncryption and
+	// encryptionOnRecord.
+	encryptionRead, encryptionSoFar *encryptionReading
+	encryptionNamed                 bool
+	// encryptionReadings numbers the readings of an encryption dictionary,
+	// for encryptionTraced.
+	encryptionReadings int
 	// budget is the inflation budget shared by every stream of the document.
 	budget *inflateBudget
 	// resolving guards against a reference cycle through object streams.
@@ -414,6 +417,122 @@ func (d *Document) readingGeneration() int {
 	return d.readGeneration
 }
 
+// encryptionReading is one reading of an encryption dictionary as it ended:
+// what it read of the declaration -- nil where the trailer names none -- and
+// the failure it met, nil where it opened, named none or was stopped.
+type encryptionReading struct {
+	info *Encryption
+	err  error
+}
+
+// keepEncryption keeps what the reading numbered id, begun under the
+// generation began, read of the encryption dictionary and how it ended. A
+// reading is complete where it opened the dictionary, met a failure other
+// than the deadline or found that the trailer names none, and partial where
+// the deadline stopped it. A complete reading is the last one; a partial
+// reading replaces no complete one, and is kept, where it reached the
+// dictionary, only as what was read so far, for a record that finds no
+// complete reading. A reading whose generation was replaced before it ended
+// -- a rebuild met reading one of its fields -- is of a cross-reference the
+// document no longer has, and is not kept at all: the rebuild made a reading
+// of its own, under the cross-reference it put in place.
+func (d *Document) keepEncryption(id, began int, reached bool, info *Encryption, err error) {
+	d.traceEncryption(encryptionEnded, id, info, err)
+	if d.generation != began {
+		return
+	}
+	var kept *Encryption
+	if info != nil {
+		read := *info
+		kept = &read
+	}
+	if isDeadline(err) {
+		if reached {
+			d.encryptionSoFar = &encryptionReading{info: kept}
+		}
+		return
+	}
+	d.encryptionRead = &encryptionReading{info: kept, err: err}
+}
+
+// encryptionOnRecord is what the record declares of the encryption once the
+// deadline has stopped the document, and the failure that stands, if one
+// does. It is the last complete reading of the dictionary -- its
+// declaration as read, whether it opened, and the failure it met, which was
+// met before the deadline and stands -- whichever cross-reference it was
+// read under: a rebuild the deadline stopped before its own reading
+// completed leaves the reading made before it. Where no reading completed,
+// it is what the last reading the deadline stopped read of the dictionary,
+// not opened; where none reached it, a dictionary declared and nothing of it
+// read, if a trailer read named one, and no encryption if none did.
+func (d *Document) encryptionOnRecord() (*Encryption, error) {
+	if r := d.encryptionRead; r != nil {
+		if r.info == nil {
+			return nil, nil
+		}
+		read := *r.info
+		return &read, r.err
+	}
+	if r := d.encryptionSoFar; r != nil {
+		read := *r.info
+		read.Opened = false
+		return &read, nil
+	}
+	if d.encryptionNamed {
+		return &Encryption{}, nil
+	}
+	return nil, nil
+}
+
+// encryptionEvent is an event of a reading of an encryption dictionary,
+// told to encryptionTraced.
+type encryptionEvent int
+
+const (
+	// encryptionBegan: a reading began; encryptionNamed: the trailer it read
+	// names a dictionary; encryptionReached: the reading reached it;
+	// encryptionField: it read the field named, with what it has read of the
+	// declaration; encryptionDecided: it opened the dictionary, or decided
+	// the failure given; encryptionEnded: it ended, with the error given;
+	// encryptionGeneration: the cross-reference was replaced.
+	encryptionBegan encryptionEvent = iota
+	encryptionNamed
+	encryptionReached
+	encryptionField
+	encryptionDecided
+	encryptionEnded
+	encryptionGeneration
+)
+
+// encryptionTraced, where it is set, is told of every event of every
+// reading of an encryption dictionary and every replacement of the
+// cross-reference, with the document's generation, so that a test can
+// derive from a run what a record stopped at any point of it should say. The
+// reader never sets it.
+var encryptionTraced func(d *Document, event encryptionEvent, reading, generation int, field string, info *Encryption, err error)
+
+// traceEncryption tells encryptionTraced of an event of the reading numbered
+// id, with what it has read and the error given, and numbers a reading that
+// begins.
+func (d *Document) traceEncryption(event encryptionEvent, id int, info *Encryption, err error) int {
+	if event == encryptionBegan {
+		d.encryptionReadings++
+		id = d.encryptionReadings
+	}
+	if encryptionTraced != nil {
+		encryptionTraced(d, event, id, d.generation, "", info, err)
+	}
+	return id
+}
+
+// traceField tells encryptionTraced that the reading numbered id has read
+// the field named, with what it has read of the declaration.
+func (d *Document) traceField(id int, field string, info *Encryption) {
+	if encryptionTraced != nil {
+		encryptionTraced(d, encryptionField, id, d.generation, field, info, nil)
+	}
+}
+
 // scanEnded is what a scan leaves behind where it ends after it has begun
 // writing its own cross-reference and before it has finished it: the entries
 // it wrote stand, since what it reached is what it read of the file, and
@@ -451,6 +570,7 @@ func (d *Document) scanEnded(err error) error {
 // has now.
 func (d *Document) forgetObjects() {
 	d.generation++
+	d.traceEncryption(encryptionGeneration, 0, nil, nil)
 	d.dropCachedObjects()
 	// The failures of the objects being dropped go with them: a bound met in
 	// an object the old cross-reference named, or a stream of objects it
@@ -602,9 +722,9 @@ var errNoCatalog = fmt.Errorf("%w: no catalog: the trailer names no /Root and sc
 // open reads the cross-reference and the trailer, rebuilding both by
 // scanning when the file's own are damaged, within the context's deadline. A
 // bound met while reading them is returned, not rebuilt from, and so is a
-// deadline met reading them. It does not open encryption; the caller does,
-// once it has read the trailer. A trailer that names no catalog is
-// errNoCatalog, returned with the document.
+// deadline met reading them, with the document it stopped. It does not open
+// encryption; the caller does, once it has read the trailer. A trailer that
+// names no catalog is errNoCatalog, returned with the document.
 func open(ctx context.Context, data []byte, budget *inflateBudget) (*Document, error) {
 	header := bytes.Index(data[:min(len(data), maxHeaderSearch)], []byte("%PDF-"))
 	if header < 0 {
@@ -619,7 +739,9 @@ func open(ctx context.Context, data []byte, budget *inflateBudget) (*Document, e
 		// The deadline was read as passed while the document was opened:
 		// that is the opening's end, whatever came after it -- a bound the
 		// parse went on to meet, a trailer that seemed to name no catalog.
-		return nil, d.deadline()
+		// The document is returned with it, for what a rebuild read of the
+		// encryption before the deadline: see encryptionOnRecord.
+		return d, d.deadline()
 	}
 	if err != nil && err != errNoCatalog {
 		return nil, err

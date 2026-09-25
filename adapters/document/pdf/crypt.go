@@ -66,145 +66,233 @@ func (d *Document) openEncryption() (info *Encryption, err error) {
 	// names. The caller reads the dictionary again under the rebuilt
 	// cross-reference. See beginRead.
 	defer d.beginRead()()
-	// A field read after the deadline stopped the document resolves to
-	// nothing, and what the reader takes a field it did not find for -- a
-	// /Length of 40, metadata encrypted, a crypt filter of Identity or of no
-	// method, no identifier, no /P -- is not what the file declares. A
-	// failure met after the stop is the deadline, whatever the defaults it
-	// was reached through made of it, and no handler is installed after it:
-	// see below.
+	// The reading is decided in the order its fields are read: each failure
+	// the moment the fields that establish it have been read, before any
+	// field after them is, so that a deadline met later in the dictionary
+	// does not undo a failure already met. A field read after the deadline
+	// stopped the document resolves to nothing, and what the reader takes a
+	// field it did not find for -- a /Length of 40, metadata encrypted, a
+	// crypt filter of Identity -- is not what the file declares: nothing is
+	// decided from a field read after the stop, which ends the reading at the
+	// deadline, and no field read after it is recorded. The handler is
+	// installed only where every field it is built from was read before it.
 	//
-	// What the reading read of the dictionary, and how it ended, is kept for
-	// the caller whose own reading of it the deadline then stops: see
-	// Document.encryption. A reading that did not reach the dictionary
-	// because the deadline had passed read nothing of it, and keeps nothing.
-	resolved := false
+	// How the reading ended, and what it read, is kept on the document for a
+	// record the deadline then stops: see keepEncryption.
+	began := d.readingGeneration()
+	id := d.traceEncryption(encryptionBegan, 0, nil, nil)
+	reached := false
+	var failed error
+	// fail decides the reading's failure, once: the first one met stands.
+	fail := func(e error) error {
+		if failed == nil {
+			failed = e
+			d.traceEncryption(encryptionDecided, id, info, e)
+		}
+		return failed
+	}
 	defer func() {
-		if err != nil && d.stopped() != nil {
+		if failed != nil {
+			err = failed
+		} else if err != nil && d.stopped() != nil {
 			err = d.deadline()
 		}
-		if info != nil && (resolved || !isDeadline(err)) {
-			d.encryption, d.encryptionErr, d.encryptionGeneration = info, err, d.generation
-		}
+		d.keepEncryption(id, began, reached, info, err)
 	}()
 	ev, ok := d.trailer["Encrypt"]
 	if !ok {
 		return nil, nil
 	}
+	d.encryptionNamed = true
+	d.traceEncryption(encryptionNamed, id, nil, nil)
 	// The encryption dictionary itself is never encrypted; resolve it
 	// before the handler is installed.
 	declared, read := d.resolveRead(ev)
+	d.traceField(id, "Encrypt", nil)
 	if read && declared == nil {
 		return nil, nil
 	}
 	enc := d.dictOf(declared)
-	if enc == nil {
-		return &Encryption{}, malformed("/Encrypt is not a dictionary")
+	if d.stopped() != nil {
+		return &Encryption{}, d.deadline()
 	}
-	resolved = true
+	if enc == nil {
+		return &Encryption{}, fail(malformed("/Encrypt is not a dictionary"))
+	}
+	reached = true
+	d.traceEncryption(encryptionReached, id, nil, nil)
 	info = &Encryption{}
 	filter, hasFilter := d.nameOf(enc["Filter"])
 	if hasFilter && utf8.ValidString(string(filter)) {
 		name := string(filter)
 		info.Handler = &name
 	}
+	d.traceField(id, "Filter", info)
+	if d.stopped() != nil {
+		info.Handler = nil
+		return info, d.deadline()
+	}
+	if filter != "Standard" {
+		// Decided here; /V and /R are still read, in the order they are
+		// read, for the record's declaration.
+		fail(fmt.Errorf("security handler %q is not one this reader implements", filter))
+	}
 	v, _ := d.intOf(enc["V"])
+	d.traceField(id, "V", info)
 	// The revision is recorded as declared, and the handler opened under it,
 	// only when it is an integer the record can carry: a real such as 4.0 is
 	// no revision, and is not opened as one.
 	r, hasRevision := d.declaredInteger(enc["R"])
-	if hasRevision {
+	if d.stopped() == nil && hasRevision {
 		revision := r
 		info.Revision = &revision
 	}
-	if filter != "Standard" {
-		return info, fmt.Errorf("security handler %q is not one this reader implements", filter)
+	d.traceField(id, "R", info)
+	if d.stopped() != nil {
+		return info, d.deadline()
+	}
+	if failed != nil {
+		return info, failed
+	}
+	legacy := r == 2 || r == 3 || (r == 4 && (v == 1 || v == 2 || v == 4))
+	modern := r == 5 || r == 6
+	switch {
+	case !hasRevision:
+		return info, fail(errors.New("a standard security handler with no integer revision is not one this reader implements"))
+	case modern && v != 5:
+		return info, fail(malformed("/R %d with /V %d", r, v))
+	case !legacy && !modern:
+		return info, fail(fmt.Errorf("standard security handler revision %d is not one this reader implements", r))
 	}
 	length := int64(40)
 	if l, ok := d.intOf(enc["Length"]); ok {
 		length = l
 	}
-	o, _ := d.resolve(enc["O"]).(String)
-	u, _ := d.resolve(enc["U"]).(String)
-	p, pok := d.intOf(enc["P"])
-	if !pok {
-		return info, malformed("/Encrypt has no /P")
+	d.traceField(id, "Length", info)
+	if d.stopped() != nil {
+		return info, d.deadline()
 	}
-	var id []byte
+	n := 5
+	if legacy && r >= 3 {
+		if length < 40 || length > 128 || length%8 != 0 {
+			return info, fail(malformed("/Length %d out of range", length))
+		}
+		n = int(length / 8)
+	}
+	// Revisions 2 to 4 need 32 bytes of each of /O and /U, and 5 and 6 need
+	// 48; each is decided once it is read.
+	least := 32
+	if modern {
+		least = 48
+	}
+	o, _ := d.resolve(enc["O"]).(String)
+	d.traceField(id, "O", info)
+	if d.stopped() != nil {
+		return info, d.deadline()
+	}
+	if len(o) < least {
+		return info, fail(malformed("/O shorter than %d bytes", least))
+	}
+	u, _ := d.resolve(enc["U"]).(String)
+	d.traceField(id, "U", info)
+	if d.stopped() != nil {
+		return info, d.deadline()
+	}
+	if len(u) < least {
+		return info, fail(malformed("/U shorter than %d bytes", least))
+	}
+	// Revisions 5 and 6 check the empty user password against /U alone.
+	hash := hash2B
+	if r == 5 {
+		hash = func(password, salt, udata []byte) []byte {
+			sum := sha256.Sum256(append(append(append([]byte{}, password...), salt...), udata...))
+			return sum[:]
+		}
+	}
+	if modern && !bytes.Equal(hash(nil, u[32:40], nil), u[:32]) {
+		return info, fail(errPassword)
+	}
+	p, pok := d.intOf(enc["P"])
+	d.traceField(id, "P", info)
+	if d.stopped() != nil {
+		return info, d.deadline()
+	}
+	if !pok {
+		return info, fail(malformed("/Encrypt has no /P"))
+	}
+	var id0 []byte
 	if ids := d.arrayOf(d.trailer["ID"]); len(ids) > 0 {
 		if s, ok := d.resolve(ids[0]).(String); ok {
-			id = []byte(s)
+			id0 = []byte(s)
+		}
+	}
+	d.traceField(id, "ID", info)
+	if d.stopped() != nil {
+		return info, d.deadline()
+	}
+	// Revisions 2 and 3 derive the key without /EncryptMetadata, and check
+	// the empty user password with it before that field is read; revision 4
+	// derives it with it, and checks it after.
+	var key []byte
+	if legacy && r < 4 {
+		key = computeLegacyKey(nil, o[:32], int32(p), id0, int(r), n, true)
+		if !checkLegacyUser(key, u[:32], id0, int(r)) {
+			return info, fail(errPassword)
 		}
 	}
 	encryptMetadata := true
 	if em, ok := d.resolve(enc["EncryptMetadata"]).(bool); ok {
 		encryptMetadata = em
 	}
+	d.traceField(id, "EncryptMetadata", info)
+	if d.stopped() != nil {
+		return info, d.deadline()
+	}
+	if legacy && r == 4 {
+		key = computeLegacyKey(nil, o[:32], int32(p), id0, int(r), n, encryptMetadata)
+		if !checkLegacyUser(key, u[:32], id0, int(r)) {
+			return info, fail(errPassword)
+		}
+	}
 	h := &cryptHandler{revision: int(r), encryptMetadata: encryptMetadata}
-	switch {
-	case !hasRevision:
-		return info, errors.New("a standard security handler with no integer revision is not one this reader implements")
-	case r == 2 || r == 3 || (r == 4 && (v == 1 || v == 2 || v == 4)):
-		if len(o) < 32 || len(u) < 32 {
-			return info, malformed("/O or /U shorter than 32 bytes")
-		}
-		n := 5
-		if r >= 3 {
-			if length < 40 || length > 128 || length%8 != 0 {
-				return info, malformed("/Length %d out of range", length)
-			}
-			n = int(length / 8)
-		}
-		key := computeLegacyKey(nil, o[:32], int32(p), id, int(r), n, encryptMetadata)
-		if !checkLegacyUser(key, u[:32], id, int(r)) {
-			return info, errPassword
-		}
+	if legacy {
 		h.key = key
 		h.strings, h.streams = cryptRC4, cryptRC4
 		if v == 4 {
-			sm, tm, err := d.cryptFilterMethods(enc)
-			if err != nil {
+			sm, tm, err := d.cryptFilterMethods(id, enc)
+			if isDeadline(err) {
 				return info, err
+			}
+			if err != nil {
+				return info, fail(err)
 			}
 			h.strings, h.streams = sm, tm
 		}
-	case r == 5 || r == 6:
-		if v != 5 {
-			return info, malformed("/R %d with /V %d", r, v)
-		}
-		if len(u) < 48 || len(o) < 48 {
-			return info, malformed("/O or /U shorter than 48 bytes")
-		}
+	} else {
 		ue, _ := d.resolve(enc["UE"]).(String)
+		d.traceField(id, "UE", info)
+		if d.stopped() != nil {
+			return info, d.deadline()
+		}
 		if len(ue) < 32 {
-			return info, malformed("/UE shorter than 32 bytes")
+			return info, fail(malformed("/UE shorter than 32 bytes"))
 		}
-		validationSalt, keySalt := u[32:40], u[40:48]
-		hash := hash2B
-		if r == 5 {
-			hash = func(password, salt, udata []byte) []byte {
-				sum := sha256.Sum256(append(append(append([]byte{}, password...), salt...), udata...))
-				return sum[:]
-			}
-		}
-		if !bytes.Equal(hash(nil, validationSalt, nil), u[:32]) {
-			return info, errPassword
-		}
-		intermediate := hash(nil, keySalt, nil)
+		intermediate := hash(nil, u[40:48], nil)
 		block, err := aes.NewCipher(intermediate)
 		if err != nil {
-			return info, err
+			return info, fail(err)
 		}
 		fileKey := make([]byte, 32)
 		cipher.NewCBCDecrypter(block, make([]byte, 16)).CryptBlocks(fileKey, ue[:32])
 		h.key = fileKey
-		sm, tm, err := d.cryptFilterMethods(enc)
-		if err != nil {
+		sm, tm, err := d.cryptFilterMethods(id, enc)
+		if isDeadline(err) {
 			return info, err
 		}
+		if err != nil {
+			return info, fail(err)
+		}
 		h.strings, h.streams = sm, tm
-	default:
-		return info, fmt.Errorf("standard security handler revision %d is not one this reader implements", r)
 	}
 	if d.stopped() != nil {
 		// A field the handler was built from was read after the deadline
@@ -215,6 +303,7 @@ func (d *Document) openEncryption() (info *Encryption, err error) {
 	}
 	info.Opened = true
 	d.crypt = h
+	d.traceEncryption(encryptionDecided, id, info, nil)
 	// Objects parsed before the handler was installed (the encryption
 	// dictionary's own referents) are not encrypted content; anything
 	// cached so far, and anything built from it, is dropped so that strings
@@ -243,21 +332,35 @@ func (d *Document) declaredInteger(v object) (int64, bool) {
 	return i, true
 }
 
-// cryptFilterMethods reads /StmF and /StrF through /CF for V4 and V5.
-func (d *Document) cryptFilterMethods(enc Dict) (strings, streams cryptMethod, err error) {
+// cryptFilterMethods reads /StmF and /StrF through /CF for V4 and V5, for
+// the reading of the dictionary numbered id.
+func (d *Document) cryptFilterMethods(id int, enc Dict) (strings, streams cryptMethod, err error) {
+	// Each filter is decided once the fields that establish it are read --
+	// /CF, /StrF and the filter it names for the strings, then /StmF and its
+	// filter for the streams -- and a field read after the deadline stopped
+	// the document decides nothing.
 	cf := d.dictOf(enc["CF"])
-	method := func(name Name) (cryptMethod, error) {
+	d.traceField(id, "CF", nil)
+	method := func(field string, name Name) (cryptMethod, error) {
 		if name == "" || name == "Identity" {
 			return cryptNone, nil
 		}
 		if cf == nil {
-			return cryptNone, malformed("/CF is missing")
+			return cryptNone, malformed("/CF is missing for /%s", field)
 		}
 		f := d.dictOf(cf[name])
+		d.traceField(id, field+" filter", nil)
+		if d.stopped() != nil {
+			return cryptNone, d.deadline()
+		}
 		if f == nil {
-			return cryptNone, malformed("crypt filter %q is not in /CF", name)
+			return cryptNone, malformed("/%s's crypt filter %q is not in /CF", field, name)
 		}
 		cfm, _ := d.nameOf(f["CFM"])
+		d.traceField(id, field+" CFM", nil)
+		if d.stopped() != nil {
+			return cryptNone, d.deadline()
+		}
 		switch cfm {
 		case "None", "":
 			return cryptNone, nil
@@ -268,20 +371,28 @@ func (d *Document) cryptFilterMethods(enc Dict) (strings, streams cryptMethod, e
 		case "AESV3":
 			return cryptAESV3, nil
 		}
-		return cryptNone, fmt.Errorf("crypt filter method %q is not one this reader implements", cfm)
+		return cryptNone, fmt.Errorf("/%s's crypt filter method %q is not one this reader implements", field, cfm)
 	}
 	strF := Name("Identity")
 	if n, ok := d.nameOf(enc["StrF"]); ok {
 		strF = n
 	}
+	d.traceField(id, "StrF", nil)
+	if d.stopped() != nil {
+		return cryptNone, cryptNone, d.deadline()
+	}
+	if strings, err = method("StrF", strF); err != nil {
+		return
+	}
 	stmF := Name("Identity")
 	if n, ok := d.nameOf(enc["StmF"]); ok {
 		stmF = n
 	}
-	if strings, err = method(strF); err != nil {
-		return
+	d.traceField(id, "StmF", nil)
+	if d.stopped() != nil {
+		return cryptNone, cryptNone, d.deadline()
 	}
-	streams, err = method(stmF)
+	streams, err = method("StmF", stmF)
 	return
 }
 

@@ -327,6 +327,8 @@ func stopFiles(t *testing.T) []struct {
 		{"the nested rebuild of the second review", nestedRebuildFile(), 1},
 		{"an encrypted file whose stream filter is read past a comment", stopCryptFile(), 1},
 		{"an encrypted file whose cross-reference is rebuilt and opened", stopRebuiltCryptFile(), 1},
+		{"two encryption dictionaries under one number, the page's content rebuilding", RebuiltEncryptionFiles()["the page's content is what rebuilds"], 1},
+		{"two encryption dictionaries under one number, one's member rebuilding", RebuiltEncryptionFiles()["a member of the encryption dictionary is"], 1},
 		{"a page tree whose /Kids names no object", missingKids, 1},
 	}
 	if !testing.Short() && raceFactor == 1 {

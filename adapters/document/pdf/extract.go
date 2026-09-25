@@ -170,7 +170,10 @@ func openDocument(ctx context.Context, data []byte, opt Options, result *Result)
 	const unopened = "the file has no usable cross-reference, trailer or catalog, and scanning found none"
 	doc, openErr := open(ctx, data, budget)
 	if isDeadline(openErr) {
-		return nil, endedAtDeadline(result, openedPastDeadline)
+		// A rebuild the opening made may have read the encryption
+		// dictionary its trailer names before the deadline stopped it: the
+		// record says what it read, as establishEncryption's does.
+		return nil, encryptionAtDeadline(doc, result)
 	}
 	if doc == nil {
 		message := unopened
@@ -229,44 +232,55 @@ func establishEncryption(ctx context.Context, doc *Document, result *Result) err
 			return nil
 		}
 		if doc.stopped() != nil {
-			// The deadline stopped the document before this reading ended:
-			// while the dictionary was read, or before -- in a rebuild the
-			// reading of the trailer's objects began, say. What the record
-			// declares is what the last reading of the dictionary the
-			// document names now read of it, and whether that opened: a
-			// rebuild reads the dictionary its trailer names, and may open
-			// it, before the deadline stops the rebuild, and a declaration
-			// read is not taken back. A failure that reading met before the
-			// deadline stands, as a failure met here does; otherwise the
-			// reading ends at the deadline.
-			if doc.encryption != nil && doc.encryptionGeneration == doc.generation {
-				read := *doc.encryption
-				result.Encryption, err = &read, doc.encryptionErr
-			}
-			if err == nil || isDeadline(err) {
-				if result.Encryption == nil {
-					result.Encryption = &Encryption{}
-				}
-				return endedAtDeadline(result, openedPastDeadline)
-			}
+			// The deadline stopped the document before this reading ended,
+			// or while it went on past a failure it had already met: the
+			// record says what the readings of the dictionary made before
+			// the deadline established.
+			return encryptionAtDeadline(doc, result)
 		}
-		// A failure met reading the dictionary before any reading of the
-		// deadline found it passed stands: it is what the reading met first,
-		// and a deadline read after it does not undo it.
-		if result.Encryption == nil {
-			result.Encryption = &Encryption{}
-		}
-		result.Encryption.Opened = false
-		message := "the encryption dictionary could not be read, so the document was not opened"
-		switch {
-		case errors.Is(err, errPassword):
-			message = "the document is encrypted and a user password is required"
-		case !errors.Is(err, errMalformed):
-			message = "the document is encrypted with a security handler or revision version 1 does not open"
-		}
-		result.Fatal = &Problem{Code: "pdf-encrypted", Message: message}
-		return errStopped
+		// A failure met reading the dictionary stands: it is what the
+		// reading met first.
+		return encryptionFailed(result, enc, err)
 	}
+}
+
+// encryptionAtDeadline ends a document the deadline stopped before its
+// encryption was established, or while it was: the record declares what the
+// readings of the encryption dictionary made before the deadline
+// established, and a failure one of them met before it stands, as
+// pdf-encrypted; otherwise the reading ends at the deadline. See
+// Document.encryptionOnRecord.
+func encryptionAtDeadline(doc *Document, result *Result) error {
+	result.Encryption = nil
+	if doc == nil {
+		return endedAtDeadline(result, openedPastDeadline)
+	}
+	enc, failure := doc.encryptionOnRecord()
+	if failure != nil {
+		return encryptionFailed(result, enc, failure)
+	}
+	result.Encryption = enc
+	return endedAtDeadline(result, openedPastDeadline)
+}
+
+// encryptionFailed ends a document whose encryption dictionary the reader
+// met a failure reading: the document is not opened, and the record says
+// why.
+func encryptionFailed(result *Result, enc *Encryption, err error) error {
+	if enc == nil {
+		enc = &Encryption{}
+	}
+	enc.Opened = false
+	result.Encryption = enc
+	message := "the encryption dictionary could not be read, so the document was not opened"
+	switch {
+	case errors.Is(err, errPassword):
+		message = "the document is encrypted and a user password is required"
+	case !errors.Is(err, errMalformed):
+		message = "the document is encrypted with a security handler or revision version 1 does not open"
+	}
+	result.Fatal = &Problem{Code: "pdf-encrypted", Message: message}
+	return errStopped
 }
 
 // walkPages is the rest of step 4: find the page tree and count its pages. It

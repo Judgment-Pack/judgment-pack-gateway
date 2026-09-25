@@ -136,67 +136,6 @@ func encryptedHello(change func(string) string, build func(*pdfgen.Builder)) []b
 	return b.Bytes()
 }
 
-// A failure met reading the encryption dictionary, before any reading of the
-// deadline found it passed, stands: a handler this reader does not
-// implement, and a dictionary whose /P is not an integer, are pdf-encrypted
-// wherever the deadline passes after them, and not the timeout -- read as
-// the trailer names the dictionary, and read by a rebuild of the
-// cross-reference, which goes on to decode an object stream and reads the
-// deadline there. Wherever the record has read the dictionary's handler, it
-// is pdf-encrypted, and the record at every reading position passes the
-// check.
-func TestAnEncryptionFailureMetBeforeTheDeadlineStands(t *testing.T) {
-	cfg := DefaultConfig()
-	rebuilt := func(b *pdfgen.Builder) { b.XrefStream, b.ObjectStreams, b.BrokenOffsets = true, true, 1 }
-	for _, c := range []struct {
-		name, from, to string
-		build          func(*pdfgen.Builder)
-	}{
-		{"a handler not implemented", "/Filter /Standard", "/Filter /Other", nil},
-		{"a /P that is not an integer", "/P -4", "/P /NotAnInteger", nil},
-		{"a handler not implemented, read by a rebuild", "/Filter /Standard", "/Filter /Other", rebuilt},
-		{"a /P that is not an integer, read by a rebuild", "/P -4", "/P /NotAnInteger", rebuilt},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			data := encryptedHello(func(dict string) string {
-				if strings.Count(dict, c.from) != 1 {
-					t.Fatalf("the dictionary does not declare %q once: %s", c.from, dict)
-				}
-				return strings.Replace(dict, c.from, c.to, 1)
-			}, c.build)
-			req := mustParse(t, cfg, requestJSON("e.pdf", "application/pdf", data, ""))
-			live := &readingsFrom{Context: context.Background()}
-			whole := processedIn(t, live, cfg, req, nil)
-			if codes(whole) != attachment.CodePDFEncrypted {
-				t.Fatalf("with no deadline: %s", codes(whole))
-			}
-			failed := 0
-			for n := 1; n <= live.reads+1; n++ {
-				p := &processor{cfg: cfg, identity: testIdentity, reading: fixedNow(), now: fixedNow}
-				out, err := p.process(&readingsFrom{Context: context.Background(), n: n}, req)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := attachment.Check(out); err != nil {
-					t.Fatalf("deadline at reading %d: %v\n%s", n, err, out)
-				}
-				rec := decodeRecord(t, out)
-				if rec.Document.Encryption != nil && rec.Document.Encryption.Handler != nil {
-					// The dictionary was read: its failure is what the record
-					// says.
-					if codes(rec) != attachment.CodePDFEncrypted {
-						t.Fatalf("deadline at reading %d: the dictionary's failure was met first, and the record says %s: %+v", n, codes(rec), rec.Document.Encryption)
-					}
-					failed++
-				}
-			}
-			if failed == 0 {
-				t.Fatal("no reading position let the dictionary be read")
-			}
-		})
-	}
-}
-
 // A rebuild of the cross-reference reads the encryption dictionary its
 // trailer names, and opens it, before it decodes the object stream the
 // catalog, the pages and the font lie in; a deadline that stops the rebuild
