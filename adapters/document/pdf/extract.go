@@ -232,7 +232,7 @@ func establishEncryption(ctx context.Context, doc *Document, result *Result) err
 			result.Encryption = &Encryption{}
 		}
 		result.Encryption.Opened = false
-		if deadlineMet(ctx) != nil {
+		if doc.deadlineFor(ctx) != nil {
 			// The deadline passed while the trailer's own objects were read:
 			// that is the deadline, not a dictionary that cannot be read.
 			return endedAtDeadline(result, openedPastDeadline)
@@ -274,7 +274,7 @@ func walkPages(ctx context.Context, doc *Document, opt Options, result *Result) 
 		pagesRoot, rootRef = doc.pagesRoot()
 	}
 	if pagesRoot == nil {
-		if deadlineMet(ctx) != nil {
+		if doc.deadlineFor(ctx) != nil {
 			return nil, generation, endedAtDeadline(result, openedPastDeadline)
 		}
 		message := "the file names no page tree, and scanning found none"
@@ -354,7 +354,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 	generation := w.doc.generation
 	for i, pn := range w.pages {
 		number := i + 1
-		if deadlineMet(ctx) != nil {
+		if w.doc.deadlineFor(ctx) != nil {
 			result.TimedOut = true
 			result.Truncated = true
 			result.Problems = append(result.Problems, Problem{Code: "timeout", Message: notListed("the deadline had passed before page %d was extracted", number, len(w.pages))})
@@ -389,7 +389,7 @@ func extractPages(ctx context.Context, w *walked, opt Options, result *Result) b
 			// the reading ends here, whatever the page came to.
 			return true
 		}
-		if deadlineMet(ctx) != nil {
+		if w.doc.deadlineFor(ctx) != nil {
 			// The deadline passed while this page was read, whatever the page
 			// came to. A reading past the deadline is not this reader's: an
 			// object a resolve did not find after it -- the scan that resolve
@@ -559,7 +559,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	// fields of one object, and a rebuild met reading one of them leaves the
 	// rest of a node this document no longer has. See beginRead.
 	defer w.d.beginRead()()
-	if deadlineMet(w.ctx) != nil {
+	if w.d.deadlineFor(w.ctx) != nil {
 		return walkDeadline
 	}
 	if depth > maxPageTreeDepth || w.nodes >= maxPageTreeNodes {
@@ -585,7 +585,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 	// among it, is no defect of the file this reader may name. Nothing it did
 	// not find after the deadline is known to be absent, so the walk ends at
 	// the deadline, as it ends where the deadline is met between two nodes.
-	if deadlineMet(w.ctx) != nil {
+	if w.d.deadlineFor(w.ctx) != nil {
 		return walkDeadline
 	}
 	if defect := w.d.walkDefect(); defect != "" {
@@ -606,7 +606,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 		// what is there. The walk ends at the deadline, as it ends where the
 		// deadline is met between two nodes, and the record says the reading
 		// was cut short rather than naming a defect of the file.
-		if deadlineMet(w.ctx) != nil {
+		if w.d.deadlineFor(w.ctx) != nil {
 			return walkDeadline
 		}
 		w.defect = "a page-tree node's /Kids could not be read"
@@ -636,7 +636,7 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 			// as a /Kids not found after it is not: the walk ends at the
 			// deadline rather than at a defect the reader cannot say the file
 			// has.
-			if deadlineMet(w.ctx) != nil {
+			if w.d.deadlineFor(w.ctx) != nil {
 				return walkDeadline
 			}
 			// Why it could not be read, where reading it met something the
@@ -719,7 +719,7 @@ func pageContent(d *Document, page Dict) (out []byte, err error) {
 		// may be as long as the file: the deadline is read before each of
 		// them, so that a page whose /Contents names one stream a thousand
 		// times ends at the deadline and not a thousand decodes after it.
-		if err := deadlineMet(d.ctx); err != nil {
+		if err := d.deadlineFor(d.ctx); err != nil {
 			return fmt.Errorf("the deadline passed while a page's content streams were read: %w", err)
 		}
 		o, read := d.resolveRead(v)

@@ -164,8 +164,8 @@ type lexer struct {
 	// reading spends, and a lexer whose reading spends none reads no
 	// deadline: a page's content and a CMap are read under the page's work
 	// allowance and the page's own readings of the deadline. The error is
-	// the document's, which every lexer of it that stops stops with: see
-	// stopped.
+	// the document's, and a document stopped once stays stopped: see
+	// Document.stopped.
 	//
 	// The flags stand together at the end, and the lexer is as large as it
 	// was before it read a deadline: one is allocated for every object read,
@@ -187,6 +187,11 @@ func (l *lexer) within(a *allowance) *lexer {
 	l.work, l.room = a, a
 	if a != nil && a.doc != nil {
 		l.due = l.pos + lexBytesPerCheck
+		if a.doc.expired != nil {
+			// A lexer made for a document the deadline has stopped reads the
+			// deadline before its first byte, and so reads none.
+			l.due = l.pos
+		}
 		if lexTrace != nil {
 			lexTrace(a, lexBegan, l.pos)
 		}
@@ -213,10 +218,9 @@ func (l *lexer) pace() bool {
 	if lexTrace != nil {
 		lexTrace(l.work, lexReadAt, l.pos)
 	}
-	if err := l.work.doc.deadlineRead(); err != nil {
+	if l.work.doc.deadlineNow() {
 		// Every check of the position against due is met from here on, and
 		// each finds the lexer stopped.
-		l.work.doc.lexStopped = err
 		l.halted = true
 		l.due = l.pos
 		return true
@@ -244,13 +248,32 @@ func (l *lexer) back(to int) {
 }
 
 // stopped is the deadline's error once a reading of it found it passed, and
-// nil before.
+// nil before. The error is the document's: see Document.stopped.
 func (l *lexer) stopped() error {
 	if !l.halted {
 		return nil
 	}
-	return l.work.doc.lexStopped
+	return l.work.doc.deadline()
 }
+
+// at is the byte of the data at i. Every byte the lexer reads it reads here,
+// so that a build made for the tests (see lexProbed) can count each byte a
+// lexer loads, where it loads it; in every other build this is the byte and
+// nothing else, and costs what indexing the data costs.
+func (l *lexer) at(i int) byte {
+	if lexProbed {
+		lexLoaded(l, i)
+	}
+	return l.data[i]
+}
+
+// lexLoaded, in the build made for the tests, is told of every byte a lexer
+// loads; lexEntered is told when a reading of tokens or a skip begins and
+// returns what to call when it ends. See lexProbed.
+var (
+	lexLoaded  func(l *lexer, i int)
+	lexEntered func(l *lexer) func()
+)
 
 // failed is the error every token is once a reading of the deadline has found
 // it passed or the allowance is spent, whichever came first: a lexer that has
@@ -402,12 +425,15 @@ func isRegular(c byte) bool { return !isWhitespace(c) && !isDelimiter(c) }
 // token read whole has taken the lexer past it -- reads the deadline before
 // it skips anything: that is where the reading at the end of a token is made.
 func (l *lexer) skipSpace() {
+	if lexProbed {
+		defer lexEntered(l)()
+	}
 	l.advanced()
 	end := l.end()
 skipping:
 	for {
 		for l.pos < end {
-			c := l.data[l.pos]
+			c := l.at(l.pos)
 			if isWhitespace(c) {
 				l.pos++
 				continue
@@ -416,7 +442,7 @@ skipping:
 				break skipping
 			}
 			for {
-				for l.pos < end && l.data[l.pos] != '\n' && l.data[l.pos] != '\r' {
+				for l.pos < end && l.at(l.pos) != '\n' && l.at(l.pos) != '\r' {
 					l.pos++
 				}
 				if l.pos < end || l.pos >= len(l.data) || l.pace() {
@@ -469,14 +495,18 @@ var errLexer = fmt.Errorf("%w: lexical error", errStructureBound)
 // again for every object that asks. A token read once the allowance is spent,
 // or once a reading of the deadline has found it passed, is an error rather
 // than a token, so a parse that has run out of either ends where it stands, a
-// lookahead that would throw the error away included. Those two, and the end
-// of the data with a skip the deadline ended, leave by one return each: Go
-// makes the deferred charge a plain call only in a function of few returns,
-// and a charge made through the runtime's defer on every token costs a
-// measurable part of reading an ordinary file.
+// lookahead that would throw the error away included: a stopped lexer's skip
+// reads the deadline before it skips anything, finds it passed, and the token
+// is its error. Those errors, and the end of the data, leave by one return
+// each: Go makes the deferred charge a plain call only in a function of few
+// returns, and a charge made through the runtime's defer on every token costs
+// a measurable part of reading an ordinary file.
 func (l *lexer) next() (token, error) {
+	if lexProbed {
+		defer lexEntered(l)()
+	}
 	defer l.advanced()
-	if l.halted || l.spent {
+	if l.spent {
 		return token{}, l.failed()
 	}
 	for {
@@ -485,7 +515,7 @@ func (l *lexer) next() (token, error) {
 			return l.eof()
 		}
 		start := l.pos
-		c := l.data[l.pos]
+		c := l.at(l.pos)
 		switch {
 		case c == '[':
 			l.pos++
@@ -500,13 +530,13 @@ func (l *lexer) next() (token, error) {
 			l.pos++
 			return token{kind: tokBraceClose, pos: start, end: l.pos}, nil
 		case c == '<':
-			if l.pos+1 < len(l.data) && l.data[l.pos+1] == '<' {
+			if l.pos+1 < len(l.data) && l.at(l.pos+1) == '<' {
 				l.pos += 2
 				return token{kind: tokDictOpen, pos: start, end: l.pos}, nil
 			}
 			return l.hexString()
 		case c == '>':
-			if l.pos+1 < len(l.data) && l.data[l.pos+1] == '>' {
+			if l.pos+1 < len(l.data) && l.at(l.pos+1) == '>' {
 				l.pos += 2
 				return token{kind: tokDictClose, pos: start, end: l.pos}, nil
 			}
@@ -530,7 +560,7 @@ func (l *lexer) next() (token, error) {
 		}
 		// A keyword: regular characters up to a delimiter or whitespace.
 		end := l.pos
-		for end < len(l.data) && isRegular(l.data[end]) && end-start < maxNameBytes {
+		for end < len(l.data) && isRegular(l.at(end)) && end-start < maxNameBytes {
 			end++
 		}
 		if end == start {
@@ -547,7 +577,7 @@ func (l *lexer) next() (token, error) {
 func (l *lexer) number() (token, error) {
 	start := l.pos
 	end := start
-	for end < len(l.data) && (l.data[end] >= '0' && l.data[end] <= '9' || l.data[end] == '+' || l.data[end] == '-' || l.data[end] == '.' || l.data[end] == 'e' || l.data[end] == 'E') {
+	for end < len(l.data) && (l.at(end) >= '0' && l.at(end) <= '9' || l.at(end) == '+' || l.at(end) == '-' || l.at(end) == '.' || l.at(end) == 'e' || l.at(end) == 'E') {
 		end++
 		if end-start > maxNumberBytes {
 			return token{}, fmt.Errorf("%w: number token past %d bytes", errLexer, maxNumberBytes)
@@ -641,15 +671,15 @@ func (l *lexer) name() (token, error) {
 	start := l.pos
 	l.pos++ // the slash
 	var out []byte
-	for l.pos < len(l.data) && isRegular(l.data[l.pos]) {
+	for l.pos < len(l.data) && isRegular(l.at(l.pos)) {
 		// A name with every byte escaped is three times its bound in the
 		// file, so the deadline is read within it as within a string.
 		if l.pos >= l.due && l.pace() {
 			return token{}, l.stopped()
 		}
-		c := l.data[l.pos]
+		c := l.at(l.pos)
 		if c == '#' && l.pos+2 < len(l.data) {
-			if v, ok := hexPair(l.data[l.pos+1], l.data[l.pos+2]); ok {
+			if v, ok := hexPair(l.at(l.pos+1), l.at(l.pos+2)); ok {
 				c = v
 				l.pos += 2
 			}
@@ -700,7 +730,7 @@ func (l *lexer) hexString() (token, error) {
 		if l.pos >= l.due && l.pace() {
 			return token{}, l.stopped()
 		}
-		c := l.data[l.pos]
+		c := l.at(l.pos)
 		l.pos++
 		if c == '>' {
 			if half {
@@ -779,14 +809,14 @@ func (l *lexer) literalString() (token, error) {
 		if l.pos >= l.due && l.pace() {
 			return token{}, l.stopped()
 		}
-		c := l.data[l.pos]
+		c := l.at(l.pos)
 		l.pos++
 		switch c {
 		case '\\':
 			if l.pos >= len(l.data) {
 				break
 			}
-			e := l.data[l.pos]
+			e := l.at(l.pos)
 			l.pos++
 			switch e {
 			case 'n':
@@ -803,15 +833,15 @@ func (l *lexer) literalString() (token, error) {
 				out = append(out, e)
 			case '\r':
 				// Line continuation: \ followed by CR or CRLF.
-				if l.pos < len(l.data) && l.data[l.pos] == '\n' {
+				if l.pos < len(l.data) && l.at(l.pos) == '\n' {
 					l.pos++
 				}
 			case '\n':
 			default:
 				if e >= '0' && e <= '7' {
 					v := int(e - '0')
-					for i := 0; i < 2 && l.pos < len(l.data) && l.data[l.pos] >= '0' && l.data[l.pos] <= '7'; i++ {
-						v = v*8 + int(l.data[l.pos]-'0')
+					for i := 0; i < 2 && l.pos < len(l.data) && l.at(l.pos) >= '0' && l.at(l.pos) <= '7'; i++ {
+						v = v*8 + int(l.at(l.pos)-'0')
 						l.pos++
 					}
 					out = append(out, byte(v))
@@ -830,7 +860,7 @@ func (l *lexer) literalString() (token, error) {
 			out = append(out, c)
 		case '\r':
 			// An end-of-line in a literal is one LF, whatever form it took.
-			if l.pos < len(l.data) && l.data[l.pos] == '\n' {
+			if l.pos < len(l.data) && l.at(l.pos) == '\n' {
 				l.pos++
 			}
 			out = append(out, '\n')
@@ -979,8 +1009,17 @@ func (p *parser) parseObject(depth int) (object, error) {
 			// Two integers followed by R are a reference.
 			save := p.lex.pos
 			t2, err2 := p.lex.next()
+			if p.lex.halted {
+				// The deadline was read as passed while the lexer looked
+				// past the integer for a reference: the integer is not known
+				// to stand alone, and the parse ends at the deadline.
+				return nil, p.lex.stopped()
+			}
 			if err2 == nil && t2.kind == tokInteger {
 				t3, err3 := p.lex.next()
+				if p.lex.halted {
+					return nil, p.lex.stopped()
+				}
 				if err3 == nil && t3.kind == tokKeyword && t3.keyword == "R" {
 					if t.i < 0 || t.i > 1<<31 || t2.i < 0 || t2.i > 1<<16 {
 						return nil, fmt.Errorf("reference %d %d R out of range", t.i, t2.i)

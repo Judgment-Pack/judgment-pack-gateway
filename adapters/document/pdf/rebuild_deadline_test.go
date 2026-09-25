@@ -77,10 +77,14 @@ func TestTheRebuildSearchesNoMoreThanAPartBetweenReadings(t *testing.T) {
 // million objects, whose numbers are gathered, sorted in runs and merged; a
 // trailer of a million members found by the rebuild, which it copies; an
 // object stream whose header declares 65,536 places, which are read and
-// mapped and then registered, and one that declares as many and holds none of
-// them, which are filled in; a trailer of a million members read through
-// startxref, which is merged into the document's; and a cross-reference
-// stream whose /Index holds a million elements, each resolved.
+// mapped and then registered, one that declares as many and holds none of
+// them, which are filled in, and one whose places are two bytes each, more of
+// them than a lexer's reading of the deadline spans; a trailer of a million
+// members read through startxref, which is merged into the document's; a
+// cross-reference stream whose /Index holds a million elements, each
+// resolved, making half a million ranges of no entries; and a stream whose
+// /Length locates nothing, with its "endstream" 64 MiB on, whose index of
+// stream ends is set up and filled a block at a time.
 func rebuildLoops() []struct {
 	name  string
 	data  []byte
@@ -124,10 +128,12 @@ func rebuildLoops() []struct {
 	}{
 		{"a quarter million objects", keys.Bytes(), map[string]int{"gather": maxScanObjects, "sort": maxScanObjects, "merge": maxScanObjects}},
 		{"a trailer of a million members found by the rebuild", []byte(rebuildHead + "trailer\n" + members.String() + "\n"), map[string]int{"copy": maxContainerItems}},
-		{"an object stream of 65,536 places", objStm(header.String()), map[string]int{"places": 2 * maxObjStmObjects, "register": maxObjStmObjects}},
-		{"an object stream declaring 65,536 places and holding none", objStm(""), map[string]int{"places": 2 * maxObjStmObjects}},
+		{"an object stream of 65,536 places", objStm(header.String()), map[string]int{"pairs": maxObjStmObjects, "mapped": maxObjStmObjects, "register": maxObjStmObjects}},
+		{"an object stream declaring 65,536 places and holding none", objStm(""), map[string]int{"filled": maxObjStmObjects, "mapped": maxObjStmObjects}},
+		{"an object stream whose header's places are delimiters", objStm(strings.Repeat("[]", maxObjStmObjects)), map[string]int{"pairs": maxObjStmObjects}},
 		{"a trailer of a million members read through startxref", table.Bytes(), map[string]int{"merge trailer": maxContainerItems}},
-		{"a cross-reference stream whose /Index holds a million elements", index.Bytes(), map[string]int{"index": maxContainerItems}},
+		{"a cross-reference stream whose /Index holds a million elements", index.Bytes(), map[string]int{"index": maxContainerItems, "ranges": maxContainerItems / 2}},
+		{"a stream whose end is indexed over 64 MiB", append(append([]byte("%PDF-1.7\n1 0 obj<< /Type /XRef /Length -1 >>stream\n"), bytes.Repeat([]byte(" "), 64<<20)...), "endstream\nendobj\n"...), map[string]int{"blocks": (64 << 20) / endstreamBlock, "blocks filled": (64 << 20) / endstreamBlock}},
 	}
 }
 
@@ -236,15 +242,16 @@ func TestTheSearchForThePageTreeReadsTheDeadlineAsItOrdersNumbers(t *testing.T) 
 	if d == nil {
 		t.Fatalf("opening the file: %v", err)
 	}
-	// With time left, the numbers come back every one of them, in order.
-	nums, ok := d.xrefNumbers()
-	if !ok || len(nums) != len(d.xref) || !slices.IsSorted(nums) {
-		t.Fatalf("ordered %d numbers of %d, ok %v, in order %v", len(nums), len(d.xref), ok, slices.IsSorted(nums))
+	// With time left, the numbers come back as the whole set of them the
+	// cross-reference names, each once, in order.
+	want := make([]int, 0, len(d.xref))
+	for num := range d.xref {
+		want = append(want, num)
 	}
-	for _, num := range nums {
-		if _, named := d.xref[num]; !named {
-			t.Fatalf("ordered %d, which the cross-reference does not name", num)
-		}
+	slices.Sort(want)
+	nums, ok := d.xrefNumbers()
+	if !ok || !slices.Equal(nums, want) {
+		t.Fatalf("ordered %d numbers, ok %v; they are not the %d the cross-reference names, in order", len(nums), ok, len(want))
 	}
 	for _, loop := range []string{"gather", "sort", "merge"} {
 		ctx := &rebuildDeadline{Context: context.Background(), loop: loop}

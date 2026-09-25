@@ -282,7 +282,7 @@ func (it *interp) fontFor(resources Dict, name Name) *font {
 				f = cached
 			} else if dict := it.d.dictOf(r); dict != nil {
 				f = it.d.loadFont(dict)
-				if it.d.generation == generation && len(it.d.fontRefs) < maxFontCacheEntries {
+				if it.d.generation == generation && it.d.stopped() == nil && len(it.d.fontRefs) < maxFontCacheEntries {
 					if it.d.fontRefs == nil {
 						it.d.fontRefs = map[ref]*font{}
 					}
@@ -676,11 +676,14 @@ func (it *interp) do(resources Dict, name Name, gs gstate, depth int) {
 func (it *interp) deadlinePassed() bool {
 	select {
 	case <-it.ctx.Done():
+		// The document is stopped by what the context says, as by any
+		// other reading of it.
+		it.d.deadlineFor(it.ctx)
 		it.noteStreamError(it.ctx.Err())
 		return true
 	default:
 	}
-	if err := deadlineMet(it.ctx); err != nil {
+	if err := it.d.deadlineFor(it.ctx); err != nil {
 		it.noteStreamError(err)
 		return true
 	}
@@ -736,7 +739,7 @@ func (it *interp) skipInlineImage(lex *lexer, resources Dict) error {
 	// Framing an encoded image decodes it, which is a stream's work: the
 	// deadline is read before it, as it is before the reading of a form.
 	if it.deadlinePassed() {
-		return deadlineMet(it.ctx)
+		return it.d.deadlineFor(it.ctx)
 	}
 	// What the reader may read of one image bounds the work of finding its
 	// end as well as the data it admits.

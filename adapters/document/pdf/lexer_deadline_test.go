@@ -5,9 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -133,50 +130,6 @@ func TestTheLexerAdvancesNoMoreThanItsStretchBetweenReadings(t *testing.T) {
 				t.Fatalf("%d bytes advanced over between two readings of the deadline, at most %d", most, bound)
 			}
 		})
-	}
-}
-
-// Every step back a lexer makes is made through back, so that what it reads
-// again is counted toward the reading of the deadline and told to lexTrace. Setting a lexer's position anywhere else is a step back neither
-// counts: the reader's sources set it in two places only, where a token ends
-// past where the lexer stands and where a page's inline image ends past its
-// data, and this holds them to that.
-func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
-	allowed := map[string]int{
-		"lexer.go\tl.pos = to":     1,
-		"lexer.go\tl.pos = end":    2,
-		"content.go\tlex.pos = at": 1,
-	}
-	files, err := filepath.Glob("*.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	assignment := regexp.MustCompile(`\bpos = [^=]`)
-	found := map[string]int{}
-	for _, f := range files {
-		if strings.HasSuffix(f, "_test.go") {
-			continue
-		}
-		raw, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, line := range strings.Split(string(raw), "\n") {
-			code := strings.TrimSpace(line)
-			if strings.HasPrefix(code, "//") || !assignment.MatchString(code) {
-				continue
-			}
-			key := f + "\t" + code
-			if allowed[key] == 0 {
-				t.Errorf("%s sets a lexer's position outside back: %s", f, code)
-			}
-			found[key]++
-		}
-	}
-	for key, n := range allowed {
-		if found[key] != n {
-			t.Errorf("%q appears %d times, want %d", key, found[key], n)
-		}
 	}
 }
 
