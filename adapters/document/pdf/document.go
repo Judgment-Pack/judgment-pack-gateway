@@ -485,6 +485,16 @@ func (d *Document) deadline() error {
 	return fmt.Errorf("the deadline passed while the document was opened: %w", err)
 }
 
+// deadlineRead reads the deadline once, and returns the error deadline
+// returns where it has passed and nil where it has not. It is the reading a
+// lexer that reads the document makes: see lexBytesPerCheck.
+func (d *Document) deadlineRead() error {
+	if !d.deadlineNow() {
+		return nil
+	}
+	return d.deadline()
+}
+
 // isDeadline reports whether err is the deadline met while the document was
 // opened.
 func isDeadline(err error) bool {
@@ -662,6 +672,11 @@ func (d *Document) readXrefSection(offset int64) (Dict, error) {
 func (d *Document) readXrefSectionAt(offset int64, generation int) (Dict, error) {
 	lex := newLexer(d.data, int(offset)).within(d.budgeted())
 	lex.skipSpace()
+	if lex.stopped != nil {
+		// The deadline passed while the whitespace before the section was
+		// skipped: where the section begins, and so what it is, is unread.
+		return nil, lex.stopped
+	}
 	if bytes.HasPrefix(d.data[lex.pos:], []byte("xref")) {
 		lex.pos += len("xref")
 		return d.readXrefTable(lex)
@@ -675,6 +690,11 @@ func (d *Document) readXrefSectionAt(offset int64, generation int) (Dict, error)
 		// entry -- and what it met is discarded with it, as readXrefSection
 		// discards what this returns.
 		return nil, nil
+	}
+	if isDeadline(err) {
+		// A parse the deadline ended is no defect of the section: it ends
+		// the opening at the deadline, as the reading of its entries does.
+		return nil, err
 	}
 	if err != nil {
 		return nil, malformedBy(err, "cross-reference at offset %d", offset)
@@ -693,9 +713,17 @@ func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
 	p := &parser{lex: lex, allow: d.budgeted()}
 	for {
 		lex.skipSpace()
+		if lex.stopped != nil {
+			return nil, lex.stopped
+		}
 		if bytes.HasPrefix(d.data[lex.pos:], []byte("trailer")) {
 			lex.pos += len("trailer")
 			obj, err := p.parseObject(0)
+			if isDeadline(err) {
+				// The deadline ended the trailer's parse: the trailer is
+				// unread, not damaged, and the opening ends at the deadline.
+				return nil, err
+			}
 			if err != nil {
 				return nil, malformedBy(err, "trailer")
 			}
@@ -705,7 +733,14 @@ func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
 			}
 			return dict, nil
 		}
+		// A token the deadline ended is the deadline and not a table that
+		// cannot be read, here and at every token of the table below: the
+		// opening ends at it rather than rebuilding a cross-reference the
+		// reader has not found damaged.
 		t, err := lex.next()
+		if isDeadline(err) {
+			return nil, err
+		}
 		if err != nil {
 			return nil, malformed("cross-reference table: %v", err)
 		}
@@ -714,6 +749,9 @@ func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
 		}
 		start := t.i
 		t, err = lex.next()
+		if isDeadline(err) {
+			return nil, err
+		}
 		if err != nil || t.kind != tokInteger {
 			return nil, malformed("cross-reference table: expected a subsection count")
 		}
@@ -731,14 +769,23 @@ func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
 			// Entries are "oooooooooo ggggg n" but writers get the width
 			// wrong; tokens are read instead of fixed columns.
 			t1, err := lex.next()
+			if isDeadline(err) {
+				return nil, err
+			}
 			if err != nil || t1.kind != tokInteger {
 				return nil, malformed("cross-reference entry %d: expected an offset", start+i)
 			}
 			t2, err := lex.next()
+			if isDeadline(err) {
+				return nil, err
+			}
 			if err != nil || t2.kind != tokInteger {
 				return nil, malformed("cross-reference entry %d: expected a generation", start+i)
 			}
 			t3, err := lex.next()
+			if isDeadline(err) {
+				return nil, err
+			}
 			if err != nil || t3.kind != tokKeyword || (t3.keyword != "n" && t3.keyword != "f") {
 				return nil, malformed("cross-reference entry %d: expected n or f", start+i)
 			}
@@ -1163,12 +1210,11 @@ func (d *Document) reconstruct() error {
 	// begins and between the parts of the file the search examines, and not
 	// only after it: a deadline that has passed when the scan begins costs no
 	// search, and one that passes during it costs at most one part, and the
-	// two bytes a search looks past it, more. Other work that reads no
-	// deadline remains in the rebuild -- one object's parse, however long it
-	// runs within its bounds (#157), and the loops that gather the trailer,
-	// the object streams and the stream ends (#159). What is counted against
-	// the bound is every match the expression finds, before the boundary
-	// check below turns any of them away.
+	// two bytes a search looks past it, more. One object's parse reads the
+	// deadline as its lexer reads the file (#157); the loops that gather the
+	// trailer, the object streams and the stream ends read none (#159). What
+	// is counted against the bound is every match the expression finds,
+	// before the boundary check below turns any of them away.
 	matches, examined, stopped := scanHeaders(d.data, maxScanObjects+1, scanBytesPerCheck, d.deadlineNow)
 	if scanObserved != nil {
 		scanObserved(examined)
@@ -1266,6 +1312,12 @@ func (d *Document) reconstruct() error {
 		// past it and the same comment is not read again.
 		lex.skipSpace()
 		at = lex.pos
+		if lex.stopped != nil {
+			// The deadline passed while the whitespace and comments after the
+			// word were skipped: the lexer reads it within them, since one run
+			// of either may be as long as the file.
+			return d.scanEnded(lex.stopped)
+		}
 		if d.parsedSpent() {
 			err := errParsedBudget()
 			d.noteFileBound(err)
@@ -1277,6 +1329,12 @@ func (d *Document) reconstruct() error {
 		if isDict {
 			p := &parser{lex: lex, allow: lex.room}
 			obj, err = p.parseObject(0)
+		}
+		if isDeadline(err) {
+			// The deadline ended the candidate's parse, which the lexer reads
+			// it within: the scan ends at the deadline, as it does between
+			// candidates.
+			return d.scanEnded(err)
 		}
 		if err != nil && isBound(err) {
 			// A candidate past a bound is not a candidate to pass over: the
@@ -1325,6 +1383,11 @@ func (d *Document) reconstruct() error {
 			continue
 		}
 		_, _, body, err := d.parseIndirectAt(int(e.offset))
+		if isDeadline(err) {
+			// The deadline ended the object's parse: the loop ends at it as it
+			// ends where it reads the deadline between objects.
+			return err
+		}
 		if err != nil {
 			if isBound(err) {
 				return err
@@ -1378,6 +1441,13 @@ func (d *Document) reconstruct() error {
 			return d.deadline()
 		}
 		st, err := d.loadObjStm(found.num, found.s)
+		if isDeadline(err) {
+			// The deadline ended the stream's decoding or the reading of its
+			// header: the loop ends at it as it ends where it reads the
+			// deadline between streams, and registers none of what the header
+			// had declared.
+			return err
+		}
 		if err != nil {
 			if isBound(err) {
 				// A bound met decoding an object stream the scan found, or
@@ -1442,17 +1512,32 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 	// object cannot be parsed has still been read, and a file of candidates
 	// that each read the rest of it would otherwise be read once for every
 	// one of them at no cost.
+	//
+	// The lexer reads the deadline as it reads, and a token or a parse it
+	// ended is returned as the deadline and nothing else: an object the
+	// deadline ended is not known to be absent from its offset, and a caller
+	// that took it for one would rebuild a cross-reference it has no reason to
+	// think damaged.
 	allow := d.budgeted()
 	lex := newLexer(d.data, offset).within(allow)
 	t1, err := lex.next()
+	if isDeadline(err) {
+		return 0, 0, nil, err
+	}
 	if err != nil || t1.kind != tokInteger {
 		return 0, 0, nil, errors.New("no object number")
 	}
 	t2, err := lex.next()
+	if isDeadline(err) {
+		return 0, 0, nil, err
+	}
 	if err != nil || t2.kind != tokInteger {
 		return 0, 0, nil, errors.New("no generation number")
 	}
 	t3, err := lex.next()
+	if isDeadline(err) {
+		return 0, 0, nil, err
+	}
 	if err != nil || t3.kind != tokKeyword || t3.keyword != "obj" {
 		return 0, 0, nil, errors.New("no obj keyword")
 	}
@@ -1466,7 +1551,13 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 		}
 		return num, gen, nil, err
 	}
-	if !lex.peekKeyword("stream") {
+	isStream := lex.peekKeyword("stream")
+	if lex.stopped != nil {
+		// The deadline passed while the lexer looked past the object for the
+		// keyword that would make it a stream: whether it is one is unread.
+		return num, gen, nil, lex.stopped
+	}
+	if !isStream {
 		return num, gen, body, nil
 	}
 	dict, ok := body.(Dict)
@@ -1475,6 +1566,9 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 	}
 	// Consume "stream" and the end-of-line after it.
 	lex.skipSpace()
+	if lex.stopped != nil {
+		return num, gen, nil, lex.stopped
+	}
 	lex.pos += len("stream")
 	if lex.pos < len(d.data) && d.data[lex.pos] == '\r' {
 		lex.pos++
@@ -2081,12 +2175,25 @@ func (d *Document) objectRead(num int) (object, bool) {
 	var v object
 	if e.inStream {
 		var read bool
-		if v, read = d.objectFromStream(num, e); !read {
-			d.publish(generation, num, unread{})
+		var stopped error
+		if v, read, stopped = d.objectFromStream(num, e); !read {
+			if stopped == nil {
+				// An object the deadline ended is unread, not unreadable, and
+				// nothing is published of it: see the offset's case below.
+				d.publish(generation, num, unread{})
+			}
 			return nil, false
 		}
 	} else {
 		n, gen, body, err := d.parseIndirectAt(int(e.offset))
+		if isDeadline(err) {
+			// The deadline ended the object's parse. The object is unread, not
+			// unreadable: nothing is published of it, and the cross-reference
+			// that named its offset is not taken for damaged and rebuilt. The
+			// reading this resolve serves ends at its own next reading of the
+			// deadline, which finds it passed.
+			return nil, false
+		}
 		if n == num && isBound(err) {
 			// The object is where the cross-reference says, and past a
 			// bound: rebuilding the cross-reference finds the same bytes.
@@ -2142,8 +2249,10 @@ func (d *Document) publish(generation, num int, v object) {
 }
 
 // objectFromStream reads the object with the number given out of an object
-// stream, and reports whether it read one.
-func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
+// stream, and reports whether it read one, and the deadline's error where the
+// deadline ended the reading: the stream's decoding, the reading of its header
+// or the object's own parse.
+func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool, error) {
 	// The cross-reference this read stands on, as objectRead holds one, read
 	// before anything is resolved: what a stream of objects held under the
 	// old one is not what this number names now.
@@ -2152,14 +2261,19 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	st, ok := d.objStmHeaders[e.stmNum]
 	if !ok {
 		if _, tried := d.objStms[e.stmNum]; tried {
-			return nil, false
+			return nil, false, nil
 		}
 		s, isStream := d.resolve(ref{e.stmNum, 0}).(*stream)
 		if !isStream {
 			d.markObjStm(generation, e.stmNum)
-			return nil, false
+			return nil, false, nil
 		}
 		loaded, err := d.loadObjStm(e.stmNum, s)
+		if isDeadline(err) {
+			// The stream is unread, not undecodable: it is not marked tried,
+			// and the deadline is no defect of the document's to keep.
+			return nil, false, err
+		}
 		if err != nil {
 			// The failure of a read that straddled a rebuild is the old
 			// cross-reference's, as its objects are: the stream this number
@@ -2169,12 +2283,12 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 				d.undecoded = err
 			}
 			d.markObjStm(generation, e.stmNum)
-			return nil, false
+			return nil, false, nil
 		}
 		st = loaded
 	}
 	if st == nil {
-		return nil, false
+		return nil, false, nil
 	}
 	// The object is found by the number wanted, which the stream's own header
 	// says where to read: the cross-reference entry's stmIndex names a
@@ -2191,14 +2305,14 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	off, ok := st.offsets[num]
 	if st.twice[num] {
 		if e.stmIndex < 0 || e.stmIndex >= len(st.order) || st.order[e.stmIndex] != num || st.offsetAt[e.stmIndex] < 0 {
-			return nil, false
+			return nil, false, nil
 		}
 		off, ok = st.offsetAt[e.stmIndex], true
 	}
 	if !ok {
 		// The stream does not declare this object: it is unread, as an object
 		// no cross-reference names is.
-		return nil, false
+		return nil, false, nil
 	}
 	// A lexer per object over the stream's data, as parseIndirectAt starts
 	// one per object over the file, and charged the same way: an object
@@ -2208,11 +2322,14 @@ func (d *Document) objectFromStream(num int, e xrefEntry) (object, bool) {
 	lex := newLexer(st.data, off).within(allow)
 	p := &parser{lex: lex, allow: allow}
 	v, err := p.parseObject(0)
+	if isDeadline(err) {
+		return nil, false, err
+	}
 	if err != nil {
 		d.noteBoundAt(generation, err)
-		return nil, false
+		return nil, false, nil
 	}
-	return v, true
+	return v, true, nil
 }
 
 // objStmParsed is an object stream's decoded data with its header read: the
@@ -2274,6 +2391,12 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 			return nil, errParsedBudget()
 		}
 		t1, err1 := lex.next()
+		if isDeadline(err1) {
+			// The deadline ended the header's reading, before any allowance
+			// the lexer spent after it: the header is unread, and none of it
+			// is published, as none of a header a bound ended is.
+			return nil, err1
+		}
 		if lex.spent {
 			return nil, errParsedBudget()
 		}
@@ -2304,6 +2427,9 @@ func (d *Document) loadObjStm(num int, s *stream) (*objStmParsed, error) {
 			declared[inner]++
 		}
 		t2, err2 := lex.next()
+		if isDeadline(err2) {
+			return nil, err2
+		}
 		if lex.spent {
 			return nil, errParsedBudget()
 		}

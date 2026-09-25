@@ -2699,7 +2699,9 @@ func TestBoundsObjectStreamValuesAreBuiltWithinTheAllowance(t *testing.T) {
 	d.parsedBytes = d.parsedBudget() - 1<<20
 	var read bool
 	var v object
-	grew := allocated(func() { v, read = d.objectFromStream(st.order[0], xrefEntry{inStream: true, stmNum: 2, stmIndex: 0}) })
+	grew := allocated(func() {
+		v, read, _ = d.objectFromStream(st.order[0], xrefEntry{inStream: true, stmNum: 2, stmIndex: 0})
+	})
 	held := 0
 	if arr, ok := v.(Array); ok {
 		held = len(arr)
