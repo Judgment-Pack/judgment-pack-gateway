@@ -1483,27 +1483,14 @@ func TestOpeningADocumentIsBoundedByTheDeadline(t *testing.T) {
 		return
 	}
 	data := scanned(60000)
-	// The scan finds the objects in one match of the whole file, which
-	// nothing interrupts and no deadline is read inside; the file has no
-	// startxref, so opening it reaches that match having read no deadline at
-	// all, and the first the reader reads is the one the scan reads before
-	// each object it then parses. That match is the floor under every opening
-	// of this document, cut short or whole, and what a deadline can cut is
-	// the opening past it -- so the floor is measured here, on this machine
-	// and under whatever instruments this binary, and taken off both sides
-	// below.
-	//
-	// Taking it off is what the race detector makes necessary, and it is the
-	// detector's cost and not the reader's: the detector charges the match
-	// about twenty times and the object reading after it about five, so an
-	// opening the deadline cut before a single object was read still stands
-	// at more than half the whole, and a fraction of the whole would read
-	// that as a deadline that cut nothing. Nothing here is scaled by a
-	// factor: both sides carry the same instrumentation, and what is compared
-	// is the work a deadline can cut against itself.
-	floorBegan := time.Now()
-	objHeader.FindAllSubmatchIndex(data, maxScanObjects+1)
-	floor := time.Since(floorBegan)
+	// The scan reads the deadline before it looks for the objects' headers
+	// and between the parts of the file it examines, so no part of opening
+	// is out of the deadline's reach: what a deadline cuts is measured
+	// against the whole, on this machine and under whatever instruments this
+	// binary. How many readings the search for headers makes is counted here,
+	// so that the countdown below passes after it, among the objects found.
+	searchReads := 0
+	scanHeaders(data, maxScanObjects+1, scanBytesPerCheck, func() bool { searchReads++; return false })
 	// What opening it whole costs, so that the deadline's cut is measured
 	// against this machine and not against a fixed time.
 	whole, r := timeExtracting(context.Background(), data)
@@ -1521,7 +1508,7 @@ func TestOpeningADocumentIsBoundedByTheDeadline(t *testing.T) {
 			return context.WithTimeout(context.Background(), time.Millisecond)
 		}},
 		{"a deadline that passes while the objects found are parsed", func() (context.Context, func()) {
-			return newCountdown(20), func() {}
+			return newCountdown(searchReads + 20), func() {}
 		}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -1534,13 +1521,12 @@ func TestOpeningADocumentIsBoundedByTheDeadline(t *testing.T) {
 			if len(r.Problems) != 1 || r.Problems[0].Code != "timeout" || r.Problems[0].Page != 0 {
 				t.Fatalf("problems %+v", r.Problems)
 			}
-			t.Logf("whole %v, floor %v, cut %v", whole, floor, cut)
-			// The deadline cuts at least half of what it can cut: a reader
-			// that read it and gave up does almost none of the opening past
-			// the floor, and one that ignored it does all of it and stands at
-			// the whole.
-			if allowed := floor + (whole-floor)/2; cut > allowed {
-				t.Fatalf("opening ran %v past a deadline that had passed, and opening it whole takes %v over a floor of %v: at most %v", cut, whole, floor, allowed)
+			t.Logf("whole %v, cut %v", whole, cut)
+			// The deadline cuts at least half of the opening: a reader that
+			// read it and gave up does almost none of it, and one that
+			// ignored it does all of it and stands at the whole.
+			if allowed := whole / 2; cut > allowed {
+				t.Fatalf("opening ran %v past a deadline that had passed, and opening it whole takes %v: at most %v", cut, whole, allowed)
 			}
 		})
 	}
@@ -1812,17 +1798,36 @@ func TestDeadlineBetweenSmallCrossReferenceSections(t *testing.T) {
 
 // A deadline during reconstruction stops adding scanned objects to the
 // cross-reference. Checking only when those objects are parsed afterwards
-// would still report a timeout, but would first retain the entire scan.
+// would still report a timeout, but would first retain the entire scan. The
+// search for headers reads the deadline before it begins and between the parts
+// of the file it examines, so a deadline passed at its first reading retains
+// nothing, and one that passes after the search, at the first reading the
+// recording of what it found makes, retains fewer objects than that reading's
+// interval.
 func TestDeadlineStopsRetainingScannedObjects(t *testing.T) {
-	d := &Document{
-		ctx: newCountdown(0), data: scanned(3 * entriesPerCheck),
-		xref: map[int]xrefEntry{}, budget: &inflateBudget{total: 64 << 20, one: 16 << 20},
-	}
-	if err := d.reconstruct(); !isDeadline(err) {
-		t.Fatalf("reconstruction ended at %v, want the deadline", err)
-	}
-	if len(d.xref) == 0 || len(d.xref) > entriesPerCheck {
-		t.Fatalf("retained %d objects before stopping, want a partial scan within %d", len(d.xref), entriesPerCheck)
+	data := scanned(3 * entriesPerCheck)
+	searchReads := 0
+	scanHeaders(data, maxScanObjects+1, scanBytesPerCheck, func() bool { searchReads++; return false })
+	for _, c := range []struct {
+		name        string
+		reads       int
+		least, most int
+	}{
+		{"at the search's first reading", 0, 0, 0},
+		{"at the first reading after the search", searchReads, 1, entriesPerCheck},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			d := &Document{
+				ctx: newCountdown(c.reads), data: data,
+				xref: map[int]xrefEntry{}, budget: &inflateBudget{total: 64 << 20, one: 16 << 20},
+			}
+			if err := d.reconstruct(); !isDeadline(err) {
+				t.Fatalf("reconstruction ended at %v, want the deadline", err)
+			}
+			if len(d.xref) < c.least || len(d.xref) > c.most {
+				t.Fatalf("retained %d objects before stopping, want %d to %d", len(d.xref), c.least, c.most)
+			}
+		})
 	}
 }
 

@@ -6415,7 +6415,8 @@ func TestReadsAScanThatCannotFinishLeavesNoReadingPublishable(t *testing.T) {
 		data []byte
 		// reached are the objects the part of a cross-reference the scan had
 		// written must name, so that each case says what it is a case of: the
-		// scan writes its entries before it reads the deadline that panics, and
+		// scan writes its entries before it reads the deadline that panics
+		// (the seam lets the search for headers read it first), and
 		// a case whose scan had reached less than this is a case of something
 		// else.
 		reached []int
@@ -6434,7 +6435,11 @@ func TestReadsAScanThatCannotFinishLeavesNoReadingPublishable(t *testing.T) {
 			// The reading is driven through the package's own composition: the
 			// seam holds the document to know when it is scanning, and Extract
 			// opens the document itself.
-			ctx := &readsScanPanic{Context: context.Background()}
+			// The file is less than one part of the search for headers long,
+			// so the search reads the deadline once, before it begins; the
+			// panic is raised at the next reading, after the scan has written
+			// its entries.
+			ctx := &readsScanPanic{Context: context.Background(), pass: 1}
 			r := &Result{}
 			d, stop := openDocument(ctx, c.data, testOptions(), r)
 			if stop != nil {
@@ -8326,7 +8331,7 @@ func TestReadsAnInlineColourSpaceHoldsNoReference(t *testing.T) {
 // deadline, whatever the page came to. The file below is opened from a
 // cross-reference of its own, and the scan begins only when the page's font,
 // or its content, is resolved: the offset the table gives it holds no object.
-// The scan then reads a trailer of more members than one dictionary holds --
+// The scan then reads a trailer of as many members as one dictionary holds --
 // megabytes of them, read for longer than the deadline allows -- and the
 // deadline passes inside it. The scan returns the deadline; the resolve finds
 // nothing; and what the page then comes to -- shown with an unknown font, or
@@ -8398,9 +8403,19 @@ func TestReadsADeadlineThatPassesWhileAPageIsReadEndsTheReading(t *testing.T) {
 	// asserted on a bare build alone. The other reader is not asked about a
 	// file of megabytes: what it makes of it says no more than the small files
 	// of the bound test do.
+	//
+	// The trailer holds as many members as the bound admits, one fewer than
+	// a trailer past it, so that no bound is met in it. The deadline must pass while a parse that meets no bound is
+	// running: one object's parse reads no deadline however long it runs
+	// (#157), so the deadline is read when the parse has ended, and a parse
+	// that ended at the bound would end the run at the bound, which is the
+	// file's own, before any reading of the deadline could. The scan's search
+	// for headers once took long enough on this file for the deadline to pass
+	// before the trailer was reached; it reads the file in parts now, and
+	// takes milliseconds.
 	var members strings.Builder
 	members.WriteString("<< ")
-	for i := 0; i <= maxContainerItems; i++ {
+	for i := 0; i < maxContainerItems; i++ {
 		fmt.Fprintf(&members, "/K%d 1 ", i)
 	}
 	members.WriteString(">>")
@@ -8456,14 +8471,22 @@ func (c *readsScanDeadline) Deadline() (time.Time, bool) { return time.Time{}, f
 // cannot continue past. It is a seam the scan itself calls into, so the panic
 // is raised inside the scan and leaves it through the restorations it
 // deferred and through nothing else, as the panic the adapter recovers from
-// at the top does.
+// at the top does. The first pass readings made while scanning are read
+// without a panic, so that a test can let the search for headers, which reads
+// the deadline before it begins, go past and have the panic raised after the
+// scan has written its cross-reference.
 type readsScanPanic struct {
 	context.Context
-	doc *Document
+	doc  *Document
+	pass int
 }
 
 func (c *readsScanPanic) Err() error {
 	if c.doc != nil && c.doc.scanning {
+		if c.pass > 0 {
+			c.pass--
+			return nil
+		}
 		panic("the deadline could not be read while the file was scanned")
 	}
 	return nil
