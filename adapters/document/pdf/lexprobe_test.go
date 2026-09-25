@@ -6,6 +6,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 // These tests run in the build made with the pdflexprobe tag, where every
@@ -39,16 +40,54 @@ type probeLexer struct {
 // gave it, and not by where it lies, so that what a copy of it reads is
 // counted as the lexer's own, in the same stretch: a copy that reads again
 // what the lexer read, with a due of its own, is a step back like any other.
+// So is a lexer made over the same data where the lexer last at work was
+// last seen standing: it is that reader made again, and it is given that
+// one's identity, so that a reader made again for every token, each with a
+// due of its own, is counted in one stretch as well.
 // What is counted is what a lexer advances over, and not every load: a
 // keyword's or a number's bytes, once found, are taken as a slice, and are
 // counted as advanced over and not as loaded again.
 type probe struct {
 	lexers map[int64]*probeLexer
 	loads  int
+	// last is the lexer last at work -- made, or beginning or ending a
+	// reading -- and at the last two places it was seen standing.
+	last   int64
+	lastAt [2]probePlace
+}
+
+// probePlace is a place in some data: the data, by where it lies and how
+// long it is, and a position in it.
+type probePlace struct {
+	data     *byte
+	size, at int
+}
+
+func placeOf(data []byte, at int) probePlace {
+	return probePlace{unsafe.SliceData(data), len(data), at}
+}
+
+// seen notes that the lexer known as id stands at pos in data and is the
+// last at work.
+func (p *probe) seen(id int64, data []byte, pos int) {
+	place := placeOf(data, pos)
+	if id != p.last {
+		p.last, p.lastAt = id, [2]probePlace{place, place}
+		return
+	}
+	p.lastAt = [2]probePlace{p.lastAt[1], place}
 }
 
 func newProbe() *probe {
 	p := &probe{lexers: map[int64]*probeLexer{}}
+	lexStanding = func(data []byte, pos int) int64 {
+		id := lexIdentities.Add(1)
+		if place := placeOf(data, pos); p.last != 0 && (p.lastAt[0] == place || p.lastAt[1] == place) {
+			id = p.last
+		}
+		p.seen(id, data, pos)
+		return id
+	}
 	lexLoaded = func(l *lexer, i int) {
 		p.loads++
 		if s := p.lexers[l.ident.id]; s != nil {
@@ -68,8 +107,10 @@ func newProbe() *probe {
 		s.depth++
 		s.current = l
 		s.document = s.document || l.work != nil && l.work.doc != nil
+		p.seen(l.ident.id, l.data, l.pos)
 		return func() {
 			p.count(s)
+			p.seen(l.ident.id, l.data, l.pos)
 			s.depth--
 			s.current = outer
 		}
@@ -98,7 +139,7 @@ func (p *probe) read() {
 	}
 }
 
-func (p *probe) close() { lexLoaded, lexEntered = nil, nil }
+func (p *probe) close() { lexLoaded, lexEntered, lexStanding = nil, nil, nil }
 
 // most is the longest stretch any lexer that reads the deadline advanced
 // over with no reading of it, its last stretch -- to the last byte it
@@ -214,5 +255,33 @@ func TestLexerProbeStoppedLoadsNothing(t *testing.T) {
 	}
 	if p.loads != loads {
 		t.Fatalf("the stopped lexer loaded %d bytes", p.loads-loads)
+	}
+}
+
+// A keyword of 4,096 bytes peeked at a hundred times: each peek reads the
+// keyword and steps back over it, so the lexer advances over 409,600 bytes
+// in all -- the figure the peeks make, and not one the lexer reports -- and
+// it reads the deadline as it goes, never more than lexBytesPerCheck and a
+// keyword's bytes between two readings, however the peek is made.
+func TestLexerProbeRepeatedKeyword(t *testing.T) {
+	const peeks = 100
+	p := newProbe()
+	defer p.close()
+	ctx := &lexReadings{Context: context.Background(), onRead: p.read}
+	d := stopDoc(strings.Repeat("k", maxNameBytes)+" ", ctx)
+	l := newLexer(d.data, 0).within(d.budgeted())
+	for i := 0; i < peeks; i++ {
+		l.peekKeyword("x")
+	}
+	most, total := p.most()
+	t.Logf("%d peeks: %d bytes advanced over, at most %d between two readings or after the last, %d readings", peeks, total, most, ctx.reads)
+	if want := peeks * maxNameBytes; total != want {
+		t.Fatalf("the probe saw %d bytes advanced over, and %d peeks of a keyword of %d bytes advance over %d", total, peeks, maxNameBytes, want)
+	}
+	if ctx.reads == 0 {
+		t.Fatalf("%d bytes advanced over with no reading of the deadline", total)
+	}
+	if bound := lexBytesPerCheck + maxNameBytes; most > bound {
+		t.Fatalf("%d bytes advanced over with no reading of the deadline, at most %d", most, bound)
 	}
 }

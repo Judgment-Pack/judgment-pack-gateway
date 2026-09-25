@@ -22,13 +22,17 @@ import (
 // the nth has been made, as a context's is closed when its deadline passes
 // before the next reading of it; without, it is never closed. asked holds
 // the readings Done was asked for before: those the interpreter makes, which
-// look at Done first.
+// look at Done first. Every call of its methods is counted: reads of Err,
+// dones of Done and deadlines of Deadline.
 type stopReads struct {
 	context.Context
-	n, reads int
-	done     bool
-	asked    map[int]bool
+	n, reads, dones, deadlines int
+	done                       bool
+	asked                      map[int]bool
 }
+
+// calls is every call made of the context's methods.
+func (c *stopReads) calls() int { return c.reads + c.dones + c.deadlines }
 
 func (c *stopReads) Err() error {
 	c.reads++
@@ -38,7 +42,10 @@ func (c *stopReads) Err() error {
 	return nil
 }
 
-func (c *stopReads) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *stopReads) Deadline() (time.Time, bool) {
+	c.deadlines++
+	return time.Time{}, false
+}
 
 // stopClosed is a closed channel: the Done of a context whose deadline has
 // passed.
@@ -49,6 +56,7 @@ var stopClosed = func() chan struct{} {
 }()
 
 func (c *stopReads) Done() <-chan struct{} {
+	c.dones++
 	if c.asked == nil {
 		c.asked = map[int]bool{}
 	}
@@ -497,16 +505,17 @@ func stopState(d *Document) map[string]string {
 
 // stopTrial is one extraction under a deadline that passes at the reading of
 // it numbered n: the record, the document the deadline stopped, what it held
-// when it was stopped, the reading it was stopped at, the readings the
-// context was asked for in all, and whether a rebuild began after the stop:
-// a document is rebuilt once at most, and the rebuild marks it the moment it
-// begins.
+// when it was stopped, the reading it was stopped at, the calls of the
+// context's methods made by then and in all, and whether a rebuild began
+// after the stop: a document is rebuilt once at most, and the rebuild marks
+// it the moment it begins.
 type stopTrial struct {
-	r                *Result
-	d                *Document
-	held             map[string]string
-	stoppedAt, reads int
-	rebuiltAfter     bool
+	r                  *Result
+	d                  *Document
+	held               map[string]string
+	stoppedAt          int
+	callsAtStop, calls int
+	rebuiltAfter       bool
 }
 
 // stopRun extracts data under a deadline that passes at the reading of it
@@ -517,12 +526,12 @@ func stopRun(data []byte, n int, done bool) stopTrial {
 	rebuiltBefore := false
 	docExpired = func(stopped *Document) {
 		if trial.d == nil {
-			trial.d, trial.held, trial.stoppedAt, rebuiltBefore = stopped, stopState(stopped), ctx.reads, stopped.reconstructed
+			trial.d, trial.held, trial.stoppedAt, trial.callsAtStop, rebuiltBefore = stopped, stopState(stopped), ctx.reads, ctx.calls(), stopped.reconstructed
 		}
 	}
 	defer func() { docExpired = nil }()
 	trial.r = Extract(ctx, data, testOptions())
-	trial.reads = ctx.reads
+	trial.calls = ctx.calls()
 	trial.rebuiltAfter = trial.d != nil && trial.d.reconstructed && !rebuiltBefore
 	return trial
 }
@@ -546,13 +555,14 @@ func stopReadAgain(ctx context.Context, d *Document) *Result {
 // reading at that position stops the document, whatever made it: the
 // document's loops and lexers, the walk, a page, the interpreter. The record
 // says timeout and is neither malformed nor a bound, and says the encryption
-// opened only where its handler was installed before the stop; no context is
-// asked anything after the stop; no rebuild begins after it; everything the
-// document holds at the end it held, with what it held in it, when it was
-// stopped, what a rebuild's own end drops being the only change; the stopped
-// document read again under a context with time left is the stop still, asks
-// that context nothing and keeps nothing; and the file read again with time
-// left reads as it reads with no deadline at all.
+// opened only where its handler was installed before the stop; no method of a
+// context -- Err, Done or Deadline -- is called after the stop; no rebuild
+// begins after it; everything the document holds at the end it held, with what
+// it held in it, when it was stopped, what a rebuild's own end drops being the
+// only change; the stopped document read again under a context with time left
+// is the stop still, calls no method of that context and keeps nothing; and
+// the file read again with time left reads as it reads with no deadline at
+// all.
 func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 	for _, f := range stopFiles(t) {
 		t.Run(f.name, func(t *testing.T) {
@@ -588,8 +598,8 @@ func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 					if _, installed := trial.held["handler"]; r.Encryption != nil && r.Encryption.Opened && !installed {
 						t.Fatalf("%s: the record says the encryption opened, and no handler was installed before the stop", at)
 					}
-					if trial.reads != n {
-						t.Fatalf("%s: the context was asked %d times, %d of them after the stop", at, trial.reads, trial.reads-n)
+					if trial.calls != trial.callsAtStop {
+						t.Fatalf("%s: the context's methods were called %d times, %d of them after the stop", at, trial.calls, trial.calls-trial.callsAtStop)
 					}
 					if trial.rebuiltAfter {
 						t.Fatalf("%s: a rebuild began after the document was stopped", at)
@@ -601,8 +611,8 @@ func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 						}
 					}
 					again := &stopReads{Context: context.Background()}
-					if r := stopReadAgain(again, d); !r.TimedOut || r.Fatal != nil || len(r.Pages) != 0 || again.reads != 0 {
-						t.Fatalf("%s: the stopped document read again with time left: timedOut %v fatal %+v pages %+v, the context asked %d times", at, r.TimedOut, r.Fatal, r.Pages, again.reads)
+					if r := stopReadAgain(again, d); !r.TimedOut || r.Fatal != nil || len(r.Pages) != 0 || again.calls() != 0 {
+						t.Fatalf("%s: the stopped document read again with time left: timedOut %v fatal %+v pages %+v, the context's methods called %d times", at, r.TimedOut, r.Fatal, r.Pages, again.calls())
 					}
 					if after := stopState(d); !reflect.DeepEqual(after, end) {
 						t.Fatalf("%s: the stopped document read again kept what it read", at)

@@ -33,7 +33,14 @@ import (
 // the lexer itself having a field or method taken from it, a lexer built or
 // allocated anywhere but in newLexer, a method of a lexer with a value
 // receiver, and a parser whose lexer, or which whole, is replaced after it
-// is built. The writes of a position allowed are the ones that only move a
+// is built. A lexer pointer is assigned only where it is first made: a
+// variable is made from newLexer and never assigned again, a parameter or a
+// receiver never assigned at all, and a parser's lexer is given where the
+// parser is built, from newLexer or from a lexer made so -- so that no
+// lexer is made again in the place of one at work, with a due of its own.
+// No value is converted to or from a type the lexer is, or a pointer to
+// one, and no type is declared that is a lexer under another name. The
+// writes of a position allowed are the ones that only move a
 // lexer forward: back's own, a token's end where the lexer's reading of it
 // stands, an increment, an addition of a length or a constant, and an
 // inline image's end, each known by the function it is written in as the
@@ -81,6 +88,46 @@ func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
 	skipInlineImage := lookup(types.NewPointer(pkg.Scope().Lookup("interp").Type()), "skipInlineImage")
 	construct := pkg.Scope().Lookup("newLexer")
 	isLexer := func(typ types.Type) bool { return types.Identical(typ, lexerType) }
+	// lexerLike reports whether typ is a lexer under any name, or a pointer
+	// to one.
+	lexerLike := func(typ types.Type) bool {
+		if p, ok := typ.Underlying().(*types.Pointer); ok {
+			typ = p.Elem()
+		}
+		return types.Identical(typ.Underlying(), lexerType.Underlying())
+	}
+	isLexerPointer := func(typ types.Type) bool { return typ != nil && types.Identical(typ, lexerPointer) }
+	within, reserving := lookup(lexerPointer, "within"), lookup(lexerPointer, "reserving")
+	// made reports whether e is a lexer made by newLexer, given an allowance
+	// or not.
+	var made func(e ast.Expr) bool
+	made = func(e ast.Expr) bool {
+		call, ok := ast.Unparen(e).(*ast.CallExpr)
+		if !ok {
+			return false
+		}
+		switch f := ast.Unparen(call.Fun).(type) {
+		case *ast.Ident:
+			return info.Uses[f] == construct
+		case *ast.SelectorExpr:
+			sel := info.Selections[f]
+			return sel != nil && (sel.Obj() == within || sel.Obj() == reserving) && made(f.X)
+		}
+		return false
+	}
+	// held reports whether e names a lexer already made: a variable, a
+	// parameter or a field that holds one.
+	held := func(e ast.Expr) bool {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.Ident:
+			_, isVar := info.Uses[x].(*types.Var)
+			return isVar
+		case *ast.SelectorExpr:
+			sel := info.Selections[x]
+			return sel != nil && sel.Kind() == types.FieldVal
+		}
+		return false
+	}
 	isField := func(e ast.Expr, field types.Object) bool {
 		sel, ok := ast.Unparen(e).(*ast.SelectorExpr)
 		return ok && info.Selections[sel] != nil && info.Selections[sel].Obj() == field
@@ -100,6 +147,9 @@ func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
 	for id, obj := range info.Defs {
 		if v, ok := obj.(*types.Var); ok && isLexer(v.Type()) {
 			t.Errorf("%s: %s is declared a lexer value", fset.Position(id.Pos()), id.Name)
+		}
+		if tn, ok := obj.(*types.TypeName); ok && tn != lexerType.(*types.Named).Obj() && !tn.IsAlias() && types.Identical(tn.Type().Underlying(), lexerType.Underlying()) {
+			t.Errorf("%s: %s is declared a type that is a lexer under another name", fset.Position(id.Pos()), id.Name)
 		}
 	}
 	// local reports whether id names a variable of the function decl.
@@ -167,6 +217,18 @@ func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
 				decl, fn = x, info.Defs[x.Name]
 			case *ast.AssignStmt:
 				for i, lhs := range x.Lhs {
+					if tv, ok := info.Types[lhs]; ok && isLexerPointer(tv.Type) {
+						id, _ := lhs.(*ast.Ident)
+						if x.Tok != gotoken.DEFINE || id == nil || info.Defs[id] == nil {
+							t.Errorf("%s: %s assigns a lexer pointer again in %s, where it was not first made", fset.Position(x.Pos()), source(x), where())
+						} else if len(x.Rhs) != len(x.Lhs) || !made(x.Rhs[i]) {
+							t.Errorf("%s: %s makes a lexer variable in %s from something other than newLexer", fset.Position(x.Pos()), source(x), where())
+						}
+					} else if id, ok := lhs.(*ast.Ident); ok && x.Tok == gotoken.DEFINE && info.Defs[id] != nil && isLexerPointer(info.Defs[id].Type()) {
+						if len(x.Rhs) != len(x.Lhs) || !made(x.Rhs[i]) {
+							t.Errorf("%s: %s makes a lexer variable in %s from something other than newLexer", fset.Position(x.Pos()), source(x), where())
+						}
+					}
 					if tv, ok := info.Types[lhs]; ok && types.Identical(tv.Type, parserType) {
 						t.Errorf("%s: %s replaces a whole parser in %s", fset.Position(x.Pos()), source(x), where())
 					}
@@ -196,7 +258,22 @@ func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
 				if x.Op == gotoken.AND && isField(x.X, lexOf) {
 					t.Errorf("%s: %s takes the address of a parser's lexer", fset.Position(x.Pos()), source(x))
 				}
+			case *ast.ValueSpec:
+				for i, name := range x.Names {
+					if v := info.Defs[name]; v != nil && isLexerPointer(v.Type()) && (len(x.Values) != len(x.Names) || !made(x.Values[i])) {
+						t.Errorf("%s: %s is declared a lexer variable in %s, not made from newLexer", fset.Position(name.Pos()), name.Name, where())
+					}
+				}
+			case *ast.KeyValueExpr:
+				if key, ok := x.Key.(*ast.Ident); ok && info.Uses[key] == lexOf && !made(x.Value) && !held(x.Value) {
+					t.Errorf("%s: %s gives a parser a lexer in %s that newLexer did not make", fset.Position(x.Pos()), source(x), where())
+				}
 			case *ast.CallExpr:
+				if tv, ok := info.Types[x.Fun]; ok && tv.IsType() && len(x.Args) == 1 {
+					if lexerLike(tv.Type) || lexerLike(info.Types[x.Args[0]].Type) {
+						t.Errorf("%s: %s converts to or from a lexer in %s", fset.Position(x.Pos()), source(x), where())
+					}
+				}
 				if id, ok := ast.Unparen(x.Fun).(*ast.Ident); ok && len(x.Args) == 1 {
 					if _, builtin := info.Uses[id].(*types.Builtin); builtin && id.Name == "new" && isLexer(info.Types[x.Args[0]].Type) && fn != construct {
 						t.Errorf("%s: %s allocates a lexer in %s and not by newLexer", fset.Position(x.Pos()), source(x), where())

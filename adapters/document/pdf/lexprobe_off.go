@@ -9,7 +9,8 @@ package pdf
 const lexProbed = false
 
 // lexIdentity is what the probe build knows a lexer by. In every other build
-// it is empty: a lexer holds it first, where it takes no room.
+// it is empty: a lexer holds it first, where it takes no room, and making it
+// costs nothing.
 type lexIdentity struct{}
 
-func newLexIdentity() lexIdentity { return lexIdentity{} }
+func newLexIdentity(data []byte, pos int) lexIdentity { return lexIdentity{} }

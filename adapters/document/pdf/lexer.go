@@ -115,9 +115,10 @@ type token struct {
 // returns, and every scan is bounded by the slice.
 type lexer struct {
 	// ident is what the probe build knows the lexer by, and every copy of
-	// it with it, so that what a copy reads again is counted as the lexer's
-	// own: see lexIdentity. In every other build it is empty and takes no
-	// room.
+	// it with it, and every lexer made again over the same data where it
+	// stands, so that what a copy or a lexer made in its place reads again
+	// is counted as the lexer's own: see lexIdentity. In every other build
+	// it is empty and takes no room.
 	ident lexIdentity
 	data  []byte
 	pos   int
@@ -179,7 +180,7 @@ type lexer struct {
 }
 
 func newLexer(data []byte, pos int) *lexer {
-	return &lexer{ident: newLexIdentity(), data: data, pos: pos, charged: pos, due: math.MaxInt}
+	return &lexer{ident: newLexIdentity(data, pos), data: data, pos: pos, charged: pos, due: math.MaxInt}
 }
 
 // within gives the lexer the allowance a document's reading spends: both what

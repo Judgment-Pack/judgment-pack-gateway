@@ -192,8 +192,9 @@ func TestStopSitesReturnTheDeadline(t *testing.T) {
 
 // The one state of the stop: a loop's reading answers at once; the walk's,
 // a page's and the interpreter's readings stop the document, under the
-// document's own context and under any other; and a stopped document asks
-// no context again, its own or another.
+// document's own context and under any other; and a stopped document calls
+// no method of a context again, its own or another, the interpreter's
+// included.
 func TestStopSitesAreOneState(t *testing.T) {
 	t.Run("deadlinePassed", func(t *testing.T) {
 		d := stoppedDoc(t, "")
@@ -223,8 +224,16 @@ func TestStopSitesAreOneState(t *testing.T) {
 	t.Run("another context after the stop", func(t *testing.T) {
 		d := stoppedDoc(t, "")
 		live := &stopReads{Context: context.Background()}
-		if err := d.deadlineFor(live); err == nil || live.reads != 0 {
-			t.Fatalf("%v: a stopped document asked another context %d times, and was answered as it answers", err, live.reads)
+		if err := d.deadlineFor(live); err == nil || live.calls() != 0 {
+			t.Fatalf("%v: a stopped document called another context's methods %d times, and was answered as it answers", err, live.calls())
+		}
+	})
+	t.Run("the interpreter after the stop", func(t *testing.T) {
+		d := stoppedDoc(t, "")
+		live := &stopReads{Context: context.Background()}
+		pr := d.interpretPage(live, []byte("q Q"), Dict{}, 100)
+		if !isDeadline(pr.err) || live.calls() != 0 {
+			t.Fatalf("page error %v: the interpreter of a stopped document called its context's methods %d times: Err %d, Done %d, Deadline %d", pr.err, live.calls(), live.reads, live.dones, live.deadlines)
 		}
 	})
 }

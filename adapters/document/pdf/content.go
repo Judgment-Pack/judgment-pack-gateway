@@ -669,11 +669,16 @@ func (it *interp) do(resources Dict, name Name, gs gstate, depth int) {
 }
 
 // deadlinePassed checks the deadline, and records the context's error as
-// what stopped the page when it has passed. The context is asked first,
-// since a caller may end the work by cancelling it; the clock is read after,
-// so a deadline the clock has reached stops the page whether or not the
-// timer that cancels the context has run.
+// what stopped the page when it has passed. A document the deadline has
+// stopped answers with its stop, and no context is asked anything. Otherwise
+// the context is asked first, since a caller may end the work by cancelling
+// it; the clock is read after, so a deadline the clock has reached stops the
+// page whether or not the timer that cancels the context has run.
 func (it *interp) deadlinePassed() bool {
+	if err := it.d.stopped(); err != nil {
+		it.noteStreamError(err)
+		return true
+	}
 	select {
 	case <-it.ctx.Done():
 		// The document is stopped by what the context says, as by any
