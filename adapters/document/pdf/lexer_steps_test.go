@@ -389,3 +389,41 @@ func TestTheLexerProbesHold(t *testing.T) {
 	}
 	t.Logf("%d tests of the probe build passed", len(tests))
 }
+
+// TestTheLexerProbesHold runs in every run of the ordinary build, a short one
+// included: once it skipped, nothing it checks is checked. Its body is read
+// here for any reference to testing.Short and any skip but the one the probe
+// build itself takes, where the tests it runs are the build's own.
+func TestTheLexerProbesRunInEveryRun(t *testing.T) {
+	fset := gotoken.NewFileSet()
+	f, err := goparser.ParseFile(fset, "lexer_steps_test.go", nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body *ast.BlockStmt
+	for _, decl := range f.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok && fn.Name.Name == "TestTheLexerProbesHold" {
+			body = fn.Body
+		}
+	}
+	if body == nil {
+		t.Fatal("TestTheLexerProbesHold is not in lexer_steps_test.go")
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.IfStmt:
+			if id, ok := x.Cond.(*ast.Ident); ok && id.Name == "lexProbed" {
+				// The probe build's own skip.
+				return false
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := x.X.(*ast.Ident); ok && pkg.Name == "testing" && x.Sel.Name == "Short" {
+				t.Errorf("%s: TestTheLexerProbesHold asks testing.Short", fset.Position(x.Pos()))
+			}
+			if strings.HasPrefix(x.Sel.Name, "Skip") {
+				t.Errorf("%s: TestTheLexerProbesHold skips", fset.Position(x.Pos()))
+			}
+		}
+		return true
+	})
+}

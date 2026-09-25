@@ -73,9 +73,18 @@ func (d *Document) openEncryption() (info *Encryption, err error) {
 	// failure met after the stop is the deadline, whatever the defaults it
 	// was reached through made of it, and no handler is installed after it:
 	// see below.
+	//
+	// What the reading read of the dictionary, and how it ended, is kept for
+	// the caller whose own reading of it the deadline then stops: see
+	// Document.encryption. A reading that did not reach the dictionary
+	// because the deadline had passed read nothing of it, and keeps nothing.
+	resolved := false
 	defer func() {
 		if err != nil && d.stopped() != nil {
 			err = d.deadline()
+		}
+		if info != nil && (resolved || !isDeadline(err)) {
+			d.encryption, d.encryptionErr, d.encryptionGeneration = info, err, d.generation
 		}
 	}()
 	ev, ok := d.trailer["Encrypt"]
@@ -92,6 +101,7 @@ func (d *Document) openEncryption() (info *Encryption, err error) {
 	if enc == nil {
 		return &Encryption{}, malformed("/Encrypt is not a dictionary")
 	}
+	resolved = true
 	info = &Encryption{}
 	filter, hasFilter := d.nameOf(enc["Filter"])
 	if hasFilter && utf8.ValidString(string(filter)) {

@@ -205,6 +205,15 @@ type Document struct {
 	pageWork    int64
 	pageWorking bool
 	crypt       *cryptHandler
+	// encryption is what the last reading of an encryption dictionary read
+	// of it -- the declaration, and whether it opened -- encryptionErr the
+	// failure that reading ended at, and encryptionGeneration the generation
+	// it was read under. A rebuild reads the dictionary its trailer names and
+	// may open it before the deadline stops the rebuild; the record declares
+	// what that reading read. See establishEncryption.
+	encryption           *Encryption
+	encryptionErr        error
+	encryptionGeneration int
 	// budget is the inflation budget shared by every stream of the document.
 	budget *inflateBudget
 	// resolving guards against a reference cycle through object streams.

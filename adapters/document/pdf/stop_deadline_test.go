@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"adapters/internal/pdfgen"
 )
 
 // stopReads is a deadline that passes at the reading of it numbered n and at
@@ -324,6 +326,7 @@ func stopFiles(t *testing.T) []struct {
 		{"the catalog file of the review", reviewCatalogFile(), 1},
 		{"the nested rebuild of the second review", nestedRebuildFile(), 1},
 		{"an encrypted file whose stream filter is read past a comment", stopCryptFile(), 1},
+		{"an encrypted file whose cross-reference is rebuilt and opened", stopRebuiltCryptFile(), 1},
 		{"a page tree whose /Kids names no object", missingKids, 1},
 	}
 	if !testing.Short() && raceFactor == 1 {
@@ -423,6 +426,19 @@ func stopCryptFile() []byte {
 		stopObject{num: 8, body: fmt.Sprintf("<< /Filter /Standard /V 4 /R 4 /Length 128 /P -4 /O <%x> /U <%x> /CF << /StdCF << /CFM /V2 >> >> /StrF /Identity /StmF 10 0 R >>", o, u)},
 		stopObject{num: 10, body: "/StdCF %" + strings.Repeat("x", 40000) + "\n"})
 	return stopTable(pages, fmt.Sprintf("<< /Root 1 0 R /Size 11 /Encrypt 8 0 R /ID [<%x> <%x>] >>", id, id), 0)
+}
+
+// stopRebuiltCryptFile is a one-page document encrypted with RC4 under
+// revision 4 and the empty user password, its catalog, pages, page and font
+// in an object stream, whose cross-reference stream names every object one
+// byte from where it stands: reading it rebuilds the cross-reference, and the
+// rebuild reads the encryption dictionary its trailer names and opens it
+// before it decodes the object stream.
+func stopRebuiltCryptFile() []byte {
+	b := &pdfgen.Builder{Encrypt: &pdfgen.Encryption{Revision: 4, Permissions: -4}, XrefStream: true, ObjectStreams: true, BrokenOffsets: 1}
+	f := b.Font("Helvetica", "WinAnsiEncoding", "")
+	b.Catalog(b.Pages([]pdfgen.Page{{Content: pdfgen.Text("F1", 12, []string{"Hello"}), Fonts: map[string]int{"F1": f}}}))
+	return b.Bytes()
 }
 
 // stopIdentity names a value the document holds by what it is and what it
@@ -645,8 +661,8 @@ func stopReadAgain(ctx context.Context, d *Document) *Result {
 // reading at that position stops the document, whatever made it: the
 // document's loops and lexers, the walk, a page, the interpreter. The record
 // says timeout and is neither malformed nor a bound, and says the encryption
-// opened only where its handler was installed before the stop; no method of a
-// context -- Err, Done or Deadline -- is called after the stop; no rebuild
+// opened exactly where its handler was installed before the stop; no method of
+// a context -- Err, Done or Deadline -- is called after the stop; no rebuild
 // begins after it; everything the document holds at the end it held, with what
 // it held in it, when it was stopped, what a rebuild's own end drops being the
 // only change; the stopped document read again under a context with time left
@@ -662,11 +678,11 @@ func stopReadAgain(ctx context.Context, d *Document) *Result {
 // a cross-reference stream's /Index -- run in files built to run their loops
 // past it: stopFramedFile, and the cross-reference stream whose /Index holds
 // 4,100 elements. Some run in these files only once the document has stopped,
-// and then call no context -- establishEncryption's after an encryption
-// dictionary the deadline stopped, the walk's where no page tree was found or
-// a kid could not be read, an inline image's after its framing's own reading
-// -- and they are held by the requirement that nothing be called after the
-// stop.
+// and then call no context -- the walk's where no page tree was found or a kid
+// could not be read, an inline image's after its framing's own reading -- and
+// they are held by the requirement that nothing be called after the stop.
+// establishEncryption reads no deadline: it asks whether the document was
+// stopped, so that a failure its reading met first stands.
 func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 	for _, f := range stopFiles(t) {
 		t.Run(f.name, func(t *testing.T) {
@@ -699,8 +715,12 @@ func TestADocumentKeepsNothingAfterTheDeadline(t *testing.T) {
 					if d == nil || trial.stoppedAt != n {
 						t.Fatalf("%s: the reading that found it passed did not stop the document: stopped %v, at reading %d", at, d != nil, trial.stoppedAt)
 					}
-					if _, installed := trial.held["handler"]; r.Encryption != nil && r.Encryption.Opened && !installed {
+					_, installed := trial.held["handler"]
+					if r.Encryption != nil && r.Encryption.Opened && !installed {
 						t.Fatalf("%s: the record says the encryption opened, and no handler was installed before the stop", at)
+					}
+					if installed && (r.Encryption == nil || !r.Encryption.Opened) {
+						t.Fatalf("%s: a handler was installed before the stop, and the record says the encryption did not open: %+v", at, r.Encryption)
 					}
 					if trial.calls != trial.callsAtStop {
 						t.Fatalf("%s: the context's methods were called %d times, %d of them after the stop", at, trial.calls, trial.calls-trial.callsAtStop)

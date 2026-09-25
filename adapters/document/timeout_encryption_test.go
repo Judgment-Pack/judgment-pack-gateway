@@ -122,3 +122,131 @@ func decodeRecord(t *testing.T, out []byte) attachment.Record {
 	}
 	return rec
 }
+
+// encryptedHello is a one-page document showing "Hello", encrypted with RC4
+// under revision 4 and the empty user password, its encryption dictionary
+// rewritten by change and the builder set by build.
+func encryptedHello(change func(string) string, build func(*pdfgen.Builder)) []byte {
+	b := &pdfgen.Builder{Encrypt: &pdfgen.Encryption{Revision: 4, Permissions: -4, Dictionary: change}}
+	if build != nil {
+		build(b)
+	}
+	f := b.Font("Helvetica", "WinAnsiEncoding", "")
+	b.Catalog(b.Pages([]pdfgen.Page{{Content: pdfgen.Text("F1", 12, []string{"Hello"}), Fonts: map[string]int{"F1": f}}}))
+	return b.Bytes()
+}
+
+// A failure met reading the encryption dictionary, before any reading of the
+// deadline found it passed, stands: a handler this reader does not
+// implement, and a dictionary whose /P is not an integer, are pdf-encrypted
+// wherever the deadline passes after them, and not the timeout -- read as
+// the trailer names the dictionary, and read by a rebuild of the
+// cross-reference, which goes on to decode an object stream and reads the
+// deadline there. Wherever the record has read the dictionary's handler, it
+// is pdf-encrypted, and the record at every reading position passes the
+// check.
+func TestAnEncryptionFailureMetBeforeTheDeadlineStands(t *testing.T) {
+	cfg := DefaultConfig()
+	rebuilt := func(b *pdfgen.Builder) { b.XrefStream, b.ObjectStreams, b.BrokenOffsets = true, true, 1 }
+	for _, c := range []struct {
+		name, from, to string
+		build          func(*pdfgen.Builder)
+	}{
+		{"a handler not implemented", "/Filter /Standard", "/Filter /Other", nil},
+		{"a /P that is not an integer", "/P -4", "/P /NotAnInteger", nil},
+		{"a handler not implemented, read by a rebuild", "/Filter /Standard", "/Filter /Other", rebuilt},
+		{"a /P that is not an integer, read by a rebuild", "/P -4", "/P /NotAnInteger", rebuilt},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			data := encryptedHello(func(dict string) string {
+				if strings.Count(dict, c.from) != 1 {
+					t.Fatalf("the dictionary does not declare %q once: %s", c.from, dict)
+				}
+				return strings.Replace(dict, c.from, c.to, 1)
+			}, c.build)
+			req := mustParse(t, cfg, requestJSON("e.pdf", "application/pdf", data, ""))
+			live := &readingsFrom{Context: context.Background()}
+			whole := processedIn(t, live, cfg, req, nil)
+			if codes(whole) != attachment.CodePDFEncrypted {
+				t.Fatalf("with no deadline: %s", codes(whole))
+			}
+			failed := 0
+			for n := 1; n <= live.reads+1; n++ {
+				p := &processor{cfg: cfg, identity: testIdentity, reading: fixedNow(), now: fixedNow}
+				out, err := p.process(&readingsFrom{Context: context.Background(), n: n}, req)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := attachment.Check(out); err != nil {
+					t.Fatalf("deadline at reading %d: %v\n%s", n, err, out)
+				}
+				rec := decodeRecord(t, out)
+				if rec.Document.Encryption != nil && rec.Document.Encryption.Handler != nil {
+					// The dictionary was read: its failure is what the record
+					// says.
+					if codes(rec) != attachment.CodePDFEncrypted {
+						t.Fatalf("deadline at reading %d: the dictionary's failure was met first, and the record says %s: %+v", n, codes(rec), rec.Document.Encryption)
+					}
+					failed++
+				}
+			}
+			if failed == 0 {
+				t.Fatal("no reading position let the dictionary be read")
+			}
+		})
+	}
+}
+
+// A rebuild of the cross-reference reads the encryption dictionary its
+// trailer names, and opens it, before it decodes the object stream the
+// catalog, the pages and the font lie in; a deadline that stops the rebuild
+// after that leaves a document that was opened, and the record says so --
+// the declaration the rebuild read and opened true, with the timeout the
+// opening met and no page counted -- rather than taking the declaration
+// back. The file names every object one byte from where it stands. At every
+// reading position the record passes the check, a declaration a record has
+// read is read by the record of every later position too, and so is an
+// opening; and some record says the encryption opened and the deadline
+// passed while the document was opened.
+func TestARebuildsOpeningIsWhatTheRecordDeclares(t *testing.T) {
+	cfg := DefaultConfig()
+	data := encryptedHello(nil, func(b *pdfgen.Builder) { b.XrefStream, b.ObjectStreams, b.BrokenOffsets = true, true, 1 })
+	req := mustParse(t, cfg, requestJSON("e.pdf", "application/pdf", data, ""))
+	live := &readingsFrom{Context: context.Background()}
+	whole := processedIn(t, live, cfg, req, nil)
+	if e := whole.Document.Encryption; e == nil || !e.Opened || e.Handler == nil || *e.Handler != "Standard" || whole.Content.Pages[0].Text != "Hello" {
+		t.Fatalf("with no deadline: %s %+v", codes(whole), whole.Document.Encryption)
+	}
+	declared, opened, rebuiltOpen := false, false, 0
+	for n := 1; n <= live.reads; n++ {
+		p := &processor{cfg: cfg, identity: testIdentity, reading: fixedNow(), now: fixedNow}
+		out, err := p.process(&readingsFrom{Context: context.Background(), n: n}, req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := attachment.Check(out); err != nil {
+			t.Fatalf("deadline at reading %d: %v\n%s", n, err, out)
+		}
+		rec := decodeRecord(t, out)
+		e := rec.Document.Encryption
+		if declared && (e == nil || e.Handler == nil || e.Revision == nil) {
+			t.Fatalf("deadline at reading %d: the declaration a deadline at an earlier reading left read is taken back: %+v", n, e)
+		}
+		if opened && (e == nil || !e.Opened) {
+			t.Fatalf("deadline at reading %d: the opening a deadline at an earlier reading left made is taken back: %+v", n, e)
+		}
+		if e != nil && e.Handler != nil && e.Revision != nil {
+			declared = true
+		}
+		if e != nil && e.Opened {
+			opened = true
+			if len(rec.Processing.Errors) == 1 && strings.Contains(rec.Processing.Errors[0].Message, "while the document was opened") {
+				rebuiltOpen++
+			}
+		}
+	}
+	t.Logf("%d readings; the record says the encryption opened and the deadline passed while the document was opened at %d of them", live.reads, rebuiltOpen)
+	if rebuiltOpen == 0 {
+		t.Fatal("no record says the encryption opened and the deadline then stopped the opening: the rebuild's opening was taken back")
+	}
+}

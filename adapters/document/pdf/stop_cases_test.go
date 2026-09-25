@@ -663,8 +663,12 @@ func TestStopIsTheDocuments(t *testing.T) {
 			t.Fatal("the document did not stop")
 		}
 		r := &Result{}
-		extractPages(context.Background(), w, testOptions(), r)
+		live := &stopReads{Context: context.Background()}
+		extractPages(live, w, testOptions(), r)
 		stopped(t, "the page read under a live context", r)
+		if live.calls() != 0 {
+			t.Fatalf("the pages of a stopped document called the live context's methods %d times: Err %d, Done %d, Deadline %d", live.calls(), live.reads, live.dones, live.deadlines)
+		}
 	})
 	t.Run("the interpreter's context", func(t *testing.T) {
 		d := stopDoc("1 0 obj << /Subtype /Type1 /BaseFont /Helvetica >> endobj", context.Background())

@@ -164,14 +164,20 @@ func (p *probe) most() (most, total int) {
 	return most, total
 }
 
-// loadBound is the most loads through at a lexer makes between two readings
-// of the deadline: what it advances over between them, lexBytesPerCheck and a
-// keyword's bytes, each loaded at most eight times -- the loop that finds a
-// number's end tests each byte for seven characters, and next loads the
-// first once more. Advancing is counted from where a lexer stands, and a
-// lexer that ran forward and was put back before any reading of the deadline
-// would advance over nothing it did not read again; its loads are counted as
-// they are made.
+// loadBound is the most loads through at a lexer may make between two
+// readings of the deadline: eight to each byte it may advance over between
+// them, lexBytesPerCheck and a keyword's bytes. It is a bound on the loads of
+// a stretch and not on the loads of a byte, which are more: the loop that
+// finds a number's end tests the byte after it for seven characters, and the
+// skip, next and a keyword's scan load it again, so the ':' of "1:" is loaded
+// ten times, and a byte the integer lookahead reaches is loaded again each
+// time a lookahead reads it -- the "]" of "[1 2 3 4 5]" thirty-four times,
+// the most found. Over a stretch those loads fall on few bytes: the most any
+// case here makes between two readings is 90,113, about four and a half to
+// each byte advanced over. Advancing is counted from where a lexer stands, and
+// a lexer that ran forward and was put back before any reading of the
+// deadline would advance over nothing it did not read again; its loads are
+// counted as they are made, and grow with what it ran over.
 const loadBound = 8 * (lexBytesPerCheck + maxNameBytes)
 
 // mostLoads is the most loads through at any lexer that reads the deadline

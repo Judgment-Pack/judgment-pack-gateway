@@ -228,15 +228,35 @@ func establishEncryption(ctx context.Context, doc *Document, result *Result) err
 			}
 			return nil
 		}
+		if doc.stopped() != nil {
+			// The deadline stopped the document before this reading ended:
+			// while the dictionary was read, or before -- in a rebuild the
+			// reading of the trailer's objects began, say. What the record
+			// declares is what the last reading of the dictionary the
+			// document names now read of it, and whether that opened: a
+			// rebuild reads the dictionary its trailer names, and may open
+			// it, before the deadline stops the rebuild, and a declaration
+			// read is not taken back. A failure that reading met before the
+			// deadline stands, as a failure met here does; otherwise the
+			// reading ends at the deadline.
+			if doc.encryption != nil && doc.encryptionGeneration == doc.generation {
+				read := *doc.encryption
+				result.Encryption, err = &read, doc.encryptionErr
+			}
+			if err == nil || isDeadline(err) {
+				if result.Encryption == nil {
+					result.Encryption = &Encryption{}
+				}
+				return endedAtDeadline(result, openedPastDeadline)
+			}
+		}
+		// A failure met reading the dictionary before any reading of the
+		// deadline found it passed stands: it is what the reading met first,
+		// and a deadline read after it does not undo it.
 		if result.Encryption == nil {
 			result.Encryption = &Encryption{}
 		}
 		result.Encryption.Opened = false
-		if doc.deadlineFor(ctx) != nil {
-			// The deadline passed while the trailer's own objects were read:
-			// that is the deadline, not a dictionary that cannot be read.
-			return endedAtDeadline(result, openedPastDeadline)
-		}
 		message := "the encryption dictionary could not be read, so the document was not opened"
 		switch {
 		case errors.Is(err, errPassword):
