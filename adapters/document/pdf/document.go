@@ -262,6 +262,10 @@ type Document struct {
 	// a rebuild does not drop it. The walk ends at it, and a document is
 	// scanned once, so every reading made after it refuses the file.
 	noObjects error
+	// lexStopped is the deadline's error once a lexer reading the document
+	// found the deadline passed; every lexer of the document that stops, stops
+	// with it. See the lexer's halted.
+	lexStopped error
 	// scanUnfinished is the failure of a scan the reader could not finish: a
 	// defect it could not continue past was met after it had replaced the
 	// cross-reference and before it had written the whole of the one it was
@@ -506,7 +510,16 @@ func (d *Document) deadlineRead() error {
 
 // isDeadline reports whether err is the deadline met while the document was
 // opened.
+//
+// It is asked of every token read where a token the deadline ended is told
+// apart from a defect, nearly always of no error at all, which it answers
+// where it is called.
 func isDeadline(err error) bool {
+	return err != nil && deadlineError(err)
+}
+
+// deadlineError is isDeadline of an error that is there.
+func deadlineError(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
@@ -687,10 +700,10 @@ func (d *Document) readXrefSection(offset int64) (Dict, error) {
 func (d *Document) readXrefSectionAt(offset int64, generation int) (Dict, error) {
 	lex := newLexer(d.data, int(offset)).within(d.budgeted())
 	lex.skipSpace()
-	if lex.stopped != nil {
+	if lex.stopped() != nil {
 		// The deadline passed while the whitespace before the section was
 		// skipped: where the section begins, and so what it is, is unread.
-		return nil, lex.stopped
+		return nil, lex.stopped()
 	}
 	if bytes.HasPrefix(d.data[lex.pos:], []byte("xref")) {
 		lex.pos += len("xref")
@@ -728,8 +741,8 @@ func (d *Document) readXrefTable(lex *lexer) (Dict, error) {
 	p := &parser{lex: lex, allow: d.budgeted()}
 	for {
 		lex.skipSpace()
-		if lex.stopped != nil {
-			return nil, lex.stopped
+		if lex.stopped() != nil {
+			return nil, lex.stopped()
 		}
 		if bytes.HasPrefix(d.data[lex.pos:], []byte("trailer")) {
 			lex.pos += len("trailer")
@@ -1456,11 +1469,11 @@ func (d *Document) reconstruct() error {
 		// past it and the same comment is not read again.
 		lex.skipSpace()
 		at = lex.pos
-		if lex.stopped != nil {
+		if lex.stopped() != nil {
 			// The deadline passed while the whitespace and comments after the
 			// word were skipped: the lexer reads it within them, since one run
 			// of either may be as long as the file.
-			return d.scanEnded(lex.stopped)
+			return d.scanEnded(lex.stopped())
 		}
 		if d.parsedSpent() {
 			err := errParsedBudget()
@@ -1711,10 +1724,10 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 		return num, gen, nil, err
 	}
 	isStream := lex.peekKeyword("stream")
-	if lex.stopped != nil {
+	if lex.stopped() != nil {
 		// The deadline passed while the lexer looked past the object for the
 		// keyword that would make it a stream: whether it is one is unread.
-		return num, gen, nil, lex.stopped
+		return num, gen, nil, lex.stopped()
 	}
 	if !isStream {
 		return num, gen, body, nil
@@ -1725,8 +1738,8 @@ func (d *Document) parseIndirectAt(offset int) (int, int, object, error) {
 	}
 	// Consume "stream" and the end-of-line after it.
 	lex.skipSpace()
-	if lex.stopped != nil {
-		return num, gen, nil, lex.stopped
+	if lex.stopped() != nil {
+		return num, gen, nil, lex.stopped()
 	}
 	lex.pos += len("stream")
 	if lex.pos < len(d.data) && d.data[lex.pos] == '\r' {
@@ -2244,7 +2257,7 @@ func (d *Document) readHeadType(e xrefEntry) headType {
 			break
 		}
 		if t.kind != tokInteger {
-			lex.pos = save
+			lex.back(save)
 			break
 		}
 	}

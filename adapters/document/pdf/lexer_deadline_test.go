@@ -5,6 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -72,47 +75,108 @@ func lexOpenings() []struct {
 	}
 }
 
-// lexStretches opens data under a deadline that never passes, counting every
-// byte a lexer advances over through lexAdvanced rather than through what the
-// lexer counts toward the deadline, and returns the most advanced over
-// between two readings of the deadline, or after the last of them, the
-// readings made, and what was advanced over in all.
-func lexStretches(t *testing.T, data []byte) (most, reads, advanced int) {
+// lexStretches opens data under a deadline that never passes and returns,
+// for every lexer that reads the deadline, the most it advanced over between
+// two of its readings, or before its first, what it had advanced over by its
+// last reading, all lexers together, and the readings of the deadline made.
+// What a lexer has advanced over is counted through lexTrace, from where it
+// began, where it stands at each reading and every step back it makes, and
+// not from due, which decides when the reading falls due. What a lexer
+// advances over after its last reading is not told to anything, which is why
+// what was advanced over is compared with what the file makes a lexer advance
+// over less a stretch.
+func lexStretches(t *testing.T, data []byte) (most, advanced, reads int) {
 	t.Helper()
-	stretch := 0
-	ctx := &lexReadings{Context: context.Background(), onRead: func() { stretch = 0 }}
-	lexAdvanced = func(from, to int) {
-		if to < from {
-			t.Fatalf("the lexer was told of a span from %d back to %d", from, to)
+	ctx := &lexReadings{Context: context.Background()}
+	began, back, last := map[*allowance]int{}, map[*allowance]int{}, map[*allowance]int{}
+	lexTrace = func(l *allowance, event lexEvent, n int) {
+		switch event {
+		case lexBegan:
+			began[l] = n
+		case lexSteppedBack:
+			if n < 0 {
+				t.Fatalf("a lexer stepped back by %d", n)
+			}
+			back[l] += n
+		case lexReadAt:
+			total := n - began[l] + back[l]
+			if total < last[l] {
+				t.Fatalf("a lexer had advanced over %d bytes and then over %d", last[l], total)
+			}
+			most = max(most, total-last[l])
+			advanced += total - last[l]
+			last[l] = total
 		}
-		stretch += to - from
-		advanced += to - from
-		most = max(most, stretch)
 	}
-	defer func() { lexAdvanced = nil }()
+	defer func() { lexTrace = nil }()
 	if _, err := open(ctx, data, &inflateBudget{total: 64 << 20, one: 16 << 20}); isDeadline(err) || isBound(err) {
 		t.Fatalf("opening ended with %v under a deadline that never passes, within every bound", err)
 	}
-	return most, ctx.reads, advanced
+	return most, advanced, ctx.reads
 }
 
 // No more than lexBytesPerCheck bytes, and the bytes of a keyword read whole,
 // are advanced over between two readings of the deadline while a document's
-// lexer reads it, however long one structure of it runs: counted as the lexer
-// advances, and not as it counts toward the deadline.
+// lexer reads it, however long one structure of it runs: counted from where
+// the lexer began, where it stands and what it has stepped back over, and not
+// from due.
 func TestTheLexerAdvancesNoMoreThanItsStretchBetweenReadings(t *testing.T) {
 	bound := lexBytesPerCheck + maxNameBytes
 	for _, c := range lexOpenings() {
 		t.Run(c.name, func(t *testing.T) {
-			most, reads, advanced := lexStretches(t, c.data)
-			t.Logf("%d bytes: at most %d advanced over between two readings, %d readings, %d advanced over in all", len(c.data), most, reads, advanced)
-			if advanced < c.advanced {
-				t.Fatalf("the lexer was told of %d bytes, and reading the file advances over at least %d", advanced, c.advanced)
+			most, advanced, reads := lexStretches(t, c.data)
+			t.Logf("%d bytes: at most %d advanced over between two readings, %d advanced over by the last reading, %d readings", len(c.data), most, advanced, reads)
+			if advanced < c.advanced-bound {
+				t.Fatalf("the lexers had advanced over %d bytes by their last readings, and reading the file advances over at least %d: more than %d were read after the last reading", advanced, c.advanced, bound)
 			}
 			if most > bound {
 				t.Fatalf("%d bytes advanced over between two readings of the deadline, at most %d", most, bound)
 			}
 		})
+	}
+}
+
+// Every step back a lexer makes is made through back, so that what it reads
+// again is counted toward the reading of the deadline and told to lexTrace. Setting a lexer's position anywhere else is a step back neither
+// counts: the reader's sources set it in two places only, where a token ends
+// past where the lexer stands and where a page's inline image ends past its
+// data, and this holds them to that.
+func TestALexerStepsBackOnlyThroughBack(t *testing.T) {
+	allowed := map[string]int{
+		"lexer.go\tl.pos = to":     1,
+		"lexer.go\tl.pos = end":    2,
+		"content.go\tlex.pos = at": 1,
+	}
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assignment := regexp.MustCompile(`\bpos = [^=]`)
+	found := map[string]int{}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			code := strings.TrimSpace(line)
+			if strings.HasPrefix(code, "//") || !assignment.MatchString(code) {
+				continue
+			}
+			key := f + "\t" + code
+			if allowed[key] == 0 {
+				t.Errorf("%s sets a lexer's position outside back: %s", f, code)
+			}
+			found[key]++
+		}
+	}
+	for key, n := range allowed {
+		if found[key] != n {
+			t.Errorf("%q appears %d times, want %d", key, found[key], n)
+		}
 	}
 }
 
