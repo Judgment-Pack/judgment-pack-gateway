@@ -113,7 +113,7 @@ const maxSourceOutputCeiling int64 = 64 << 20
 // is the longest --source-timeout accepts.
 const (
 	defaultSourceTimeout = 30 * time.Second
-	maxSourceTimeout     = 10 * time.Minute
+	maxSourceTimeout     = 7 * 24 * time.Hour
 )
 
 type gatewayService struct {

@@ -178,7 +178,7 @@ what a source may write on stdout, from 1 byte to 64 MiB (one mebibyte by defaul
 past it the source is killed — on Unix its whole process group, elsewhere the direct
 child — and the acquisition fails, and a descendant that outlives the kill gets a bounded wait rather
 than the acquisition. `--source-timeout NAME=SECONDS` gives source `NAME` a timeout of its
-own, a whole number of seconds from 1 to 600 (thirty by default); past it the source is killed
+own, a whole number of seconds from 1 to 604800 (thirty by default); past it the source is killed
 the same way and the caller is told it did not finish within its timeout. A source's timeout
 starts before its adapter does — the gateway resolves the command, digests it for a version 3
 receipt where the source is a bare command, and starts it, on Unix behind a process-group
@@ -296,3 +296,15 @@ attestation.
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
+
+
+### Long source reads
+
+Operators can set `--source-timeout NAME=SECONDS` up to seven days (604800
+seconds). The default remains 30 seconds; adapters keep their own timeout limits.
+Set the adapter timeout below the Gateway timeout, allowing cleanup time.
+
+Durable waiting belongs to the caller. Runner's independent `jpack-source-worker`
+calls the normal `/acquire` API and retains its response in the caller's private
+store. Gateway never stores the response's commitment salts or a replayable
+request record. See [source custody and recovery](docs/design/durable-operations.md).

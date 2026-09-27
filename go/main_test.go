@@ -368,18 +368,18 @@ func TestParseServeOptions(t *testing.T) {
 		{
 			name:    "source timeout zero",
 			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=0"},
-			wantErr: `--source-timeout "0" is not a whole number of seconds from 1 to 600`,
+			wantErr: `--source-timeout "0" is not a whole number of seconds from 1 to 604800`,
 		},
 		{
 			name:    "source timeout past the ceiling",
-			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=601"},
-			wantErr: `--source-timeout "601" is not a whole number of seconds from 1 to 600`,
+			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=604801"},
+			wantErr: `--source-timeout "604801" is not a whole number of seconds from 1 to 604800`,
 		},
 		{
 			name: "source timeout at the ceiling is accepted",
-			args: []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=600"},
+			args: []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=604800"},
 			wantOptions: serveOptions{
-				sources: map[string]sourceSpec{"screening": {argv: []string{"go"}, timeout: 600 * time.Second}},
+				sources: map[string]sourceSpec{"screening": {argv: []string{"go"}, timeout: 604800 * time.Second}},
 				port:    "8787",
 			},
 		},
@@ -397,7 +397,7 @@ func TestParseServeOptions(t *testing.T) {
 			// with no lower bound on the Duration would pass.
 			name:    "source timeout that would overflow a duration",
 			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=9223372037"},
-			wantErr: `--source-timeout "9223372037" is not a whole number of seconds from 1 to 600`,
+			wantErr: `--source-timeout "9223372037" is not a whole number of seconds from 1 to 604800`,
 		},
 		{
 			// A count that parses as an int64 and is refused by the seconds
@@ -407,7 +407,7 @@ func TestParseServeOptions(t *testing.T) {
 			// lower bound on the Duration.
 			name:    "source timeout that would wrap a duration to a small positive one",
 			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=18446744074"},
-			wantErr: `--source-timeout "18446744074" is not a whole number of seconds from 1 to 600`,
+			wantErr: `--source-timeout "18446744074" is not a whole number of seconds from 1 to 604800`,
 		},
 		{
 			// 2^55+1 seconds: multiplied first, it wraps a Duration to exactly
@@ -416,13 +416,13 @@ func TestParseServeOptions(t *testing.T) {
 			// after multiplying, would pass it.
 			name:    "source timeout that would wrap a duration to one second",
 			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=36028797018963969"},
-			wantErr: `--source-timeout "36028797018963969" is not a whole number of seconds from 1 to 600`,
+			wantErr: `--source-timeout "36028797018963969" is not a whole number of seconds from 1 to 604800`,
 		},
 		{
 			// 2^55+120 seconds, which wraps the same way to exactly 120 seconds.
 			name:    "source timeout that would wrap a duration to 120 seconds",
 			args:    []string{"store", "seed", "authority", "registry", "--source", "screening=go", "--source-timeout", "screening=36028797018964088"},
-			wantErr: `--source-timeout "36028797018964088" is not a whole number of seconds from 1 to 600`,
+			wantErr: `--source-timeout "36028797018964088" is not a whole number of seconds from 1 to 604800`,
 		},
 		{
 			name: "source timeout beside environment, user and shape",
