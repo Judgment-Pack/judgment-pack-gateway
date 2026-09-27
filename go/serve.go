@@ -183,10 +183,6 @@ type gatewayService struct {
 	// timeout's message for such a source without waiting thirty seconds.
 	defaultTimeout time.Duration
 
-	operationsMu   sync.Mutex
-	operations     map[string]context.CancelFunc
-	operationOwner string
-
 	mu       sync.Mutex
 	sessions map[string]*sessionState
 	// gate is the signer's admission gate (docs/design/mcp-server.md,
@@ -651,10 +647,6 @@ func memberText(members map[string]json.RawMessage, name string) (string, error)
 }
 
 func (g *gatewayService) acquire(sessionID, source string, arguments value, who *caller) (map[string]any, error) {
-	return g.acquireContext(g.ctx, sessionID, source, arguments, who)
-}
-
-func (g *gatewayService) acquireContext(ctx context.Context, sessionID, source string, arguments value, who *caller) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
@@ -696,7 +688,7 @@ func (g *gatewayService) acquireContext(ctx context.Context, sessionID, source s
 	}
 	defer g.release(sessionID)
 
-	result, adapterDigest, observedAt, err := g.runSourceContext(ctx, source, spec, canonicalArgs)
+	result, adapterDigest, observedAt, err := g.runSource(source, spec, canonicalArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -836,10 +828,6 @@ func (g *gatewayService) acquireContext(ctx context.Context, sessionID, source s
 // through the same boundary as a read, and the receipt's claims about the
 // process are the same claims.
 func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
-	return g.runSourceContext(g.ctx, source, spec, stdin)
-}
-
-func (g *gatewayService) runSourceContext(parent context.Context, source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
 	timeout := spec.timeout
 	if timeout <= 0 {
 		timeout = g.defaultTimeout
@@ -848,7 +836,7 @@ func (g *gatewayService) runSourceContext(parent context.Context, source string,
 	if g.sourceContext != nil {
 		makeContext = g.sourceContext
 	}
-	ctx, cancel := makeContext(parent, timeout)
+	ctx, cancel := makeContext(g.ctx, timeout)
 	defer cancel()
 	if g.sourceDeadline != nil {
 		// Read from the context itself rather than worked out again from
@@ -1384,8 +1372,6 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		return &who, true
 	}
-
-	g.operationRoutes(mux, authenticate, writeJSON, fail)
 
 	mux.HandleFunc("/acquire", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
