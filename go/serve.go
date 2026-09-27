@@ -113,7 +113,7 @@ const maxSourceOutputCeiling int64 = 64 << 20
 // is the longest --source-timeout accepts.
 const (
 	defaultSourceTimeout = 30 * time.Second
-	maxSourceTimeout     = 10 * time.Minute
+	maxSourceTimeout     = 7 * 24 * time.Hour
 )
 
 type gatewayService struct {
@@ -182,6 +182,10 @@ type gatewayService struct {
 	// name may run: defaultSourceTimeout, which a test lowers to reach the
 	// timeout's message for such a source without waiting thirty seconds.
 	defaultTimeout time.Duration
+
+	operationsMu   sync.Mutex
+	operations     map[string]context.CancelFunc
+	operationOwner string
 
 	mu       sync.Mutex
 	sessions map[string]*sessionState
@@ -647,6 +651,10 @@ func memberText(members map[string]json.RawMessage, name string) (string, error)
 }
 
 func (g *gatewayService) acquire(sessionID, source string, arguments value, who *caller) (map[string]any, error) {
+	return g.acquireContext(g.ctx, sessionID, source, arguments, who)
+}
+
+func (g *gatewayService) acquireContext(ctx context.Context, sessionID, source string, arguments value, who *caller) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
@@ -688,7 +696,7 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 	}
 	defer g.release(sessionID)
 
-	result, adapterDigest, observedAt, err := g.runSource(source, spec, canonicalArgs)
+	result, adapterDigest, observedAt, err := g.runSourceContext(ctx, source, spec, canonicalArgs)
 	if err != nil {
 		return nil, err
 	}
@@ -828,6 +836,10 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 // through the same boundary as a read, and the receipt's claims about the
 // process are the same claims.
 func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
+	return g.runSourceContext(g.ctx, source, spec, stdin)
+}
+
+func (g *gatewayService) runSourceContext(parent context.Context, source string, spec sourceSpec, stdin []byte) (result value, adapterDigest, observedAt string, err error) {
 	timeout := spec.timeout
 	if timeout <= 0 {
 		timeout = g.defaultTimeout
@@ -836,7 +848,7 @@ func (g *gatewayService) runSource(source string, spec sourceSpec, stdin []byte)
 	if g.sourceContext != nil {
 		makeContext = g.sourceContext
 	}
-	ctx, cancel := makeContext(g.ctx, timeout)
+	ctx, cancel := makeContext(parent, timeout)
 	defer cancel()
 	if g.sourceDeadline != nil {
 		// Read from the context itself rather than worked out again from
@@ -1372,6 +1384,8 @@ func (g *gatewayService) handler() http.Handler {
 		}
 		return &who, true
 	}
+
+	g.operationRoutes(mux, authenticate, writeJSON, fail)
 
 	mux.HandleFunc("/acquire", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
