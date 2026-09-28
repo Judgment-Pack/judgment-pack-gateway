@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"strings"
@@ -19,14 +20,21 @@ import (
 //
 // What it writes is the text and the structure it was given. How a reader
 // lays that out, and whether it has the fonts to show it, is the reader's.
+//
+// The parts are XML, which says the same thing at greater length than the
+// request did, and which compresses well: a file of a few kilobytes can hold
+// parts of many megabytes. So the bound on the file is held over what the
+// parts hold as well as over the archive, and the document part stops being
+// written at the first block that begins past the bound.
 
 // Every entry carries one timestamp, the earliest a ZIP archive can state:
 // the first of January 1980, at midnight. An entry written raw states its
 // date and its time in the archive's own form, a day in the low five bits of
 // the date, a month in the next four, and the years since 1980 above them.
 const (
-	archiveDate uint16 = 1<<5 | 1
-	archiveTime uint16 = 0
+	archiveDate    uint16 = 1<<5 | 1
+	archiveTime    uint16 = 0
+	archiveVersion uint16 = 20
 )
 
 const (
@@ -57,15 +65,24 @@ const (
 	tableWidth = 9000
 )
 
+// errPartsOverBound is a file whose parts would hold more than the bound.
+var errPartsOverBound = errors.New("the parts of the file hold more than the bound")
+
 // part is one entry of the archive.
 type part struct {
 	name string
 	data string
 }
 
-func writeDocx(doc Document) ([]byte, error) {
-	w := &docxWriter{targets: map[string]int{}}
+// writeDocx writes the file, or returns errPartsOverBound where its parts
+// together would hold more than most bytes. The archive itself is for the
+// caller to hold to its bound.
+func writeDocx(doc Document, most int64) ([]byte, error) {
+	w := &docxWriter{targets: map[string]int{}, most: most}
 	body := w.body(doc)
+	if w.over {
+		return nil, errPartsOverBound
+	}
 	parts := []part{
 		{"[Content_Types].xml", contentTypes},
 		{"_rels/.rels", packageRelationships},
@@ -74,6 +91,13 @@ func writeDocx(doc Document) ([]byte, error) {
 		{"word/_rels/document.xml.rels", w.relationships()},
 		{"word/styles.xml", styles(doc.Language)},
 		{"word/numbering.xml", w.numbering()},
+	}
+	var held int64
+	for _, p := range parts {
+		held += int64(len(p.data))
+	}
+	if held > most {
+		return nil, errPartsOverBound
 	}
 	var out bytes.Buffer
 	archive := zip.NewWriter(&out)
@@ -104,7 +128,11 @@ func store(archive *zip.Writer, p part) error {
 		return err
 	}
 	header := &zip.FileHeader{
-		Name:               p.name,
+		Name: p.name,
+		// An entry written raw states its own versions: 2.0, the version
+		// of the archive format that a deflated entry needs to be read.
+		CreatorVersion:     archiveVersion,
+		ReaderVersion:      archiveVersion,
 		Method:             zip.Deflate,
 		ModifiedDate:       archiveDate,
 		ModifiedTime:       archiveTime,
@@ -193,6 +221,10 @@ type docxWriter struct {
 	// lists is, for each list of the document in order, whether it is
 	// numbered.
 	lists []bool
+	// most is the bound on what the parts hold, and over that the document
+	// part alone has passed it, after which no further block is written.
+	most int64
+	over bool
 }
 
 // The relationships of the document part: the styles, the numbering, and
@@ -244,6 +276,10 @@ func (w *docxWriter) body(doc Document) string {
 	b.WriteString(xmlHeader)
 	b.WriteString(`<w:document xmlns:w="` + nsWord + `" xmlns:r="` + nsRelationships + `"><w:body>`)
 	for i, block := range doc.Blocks {
+		if int64(b.Len()) > w.most {
+			w.over = true
+			return ""
+		}
 		switch block.Type {
 		case BlockHeading:
 			w.paragraph(&b, fmt.Sprintf(`<w:pStyle w:val="Heading%d"/>`, block.Level), block.Runs, false)

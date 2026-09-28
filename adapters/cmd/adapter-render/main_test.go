@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -130,15 +134,117 @@ func TestRunBoundsTheUsageDiagnostic(t *testing.T) {
 	}
 }
 
-// failingWriter refuses every write.
-type failingWriter struct{}
+// failingWriter takes the first bytes it is given, as many as it has room
+// for, and refuses the rest.
+type failingWriter struct {
+	room  int
+	taken bytes.Buffer
+}
 
-func (failingWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (w *failingWriter) Write(p []byte) (int, error) {
+	n := min(len(p), w.room-w.taken.Len())
+	w.taken.Write(p[:n])
+	return n, io.ErrClosedPipe
+}
 
+// A record that cannot be written is a failure, exit 1, and the adapter says
+// so. What stdout had taken by then is not a record, and the gateway reads
+// none of the output of a source that failed.
 func TestRunSaysSoWhereTheRecordCannotBeWritten(t *testing.T) {
+	for _, room := range []int{0, 10} {
+		var stderr bytes.Buffer
+		stdout := &failingWriter{room: room}
+		if code := run(nil, strings.NewReader(request), stdout, &stderr); code != 1 || stderr.String() != "adapter-failed: stdout could not be written\n" || stdout.taken.Len() != room {
+			t.Fatalf("with room for %d bytes: exit %d, %d bytes taken: %s", room, code, stdout.taken.Len(), stderr.String())
+		}
+	}
+}
+
+// A refusal is written as its line and not as it stands: a reason that is
+// long, that holds a line feed, or that holds a byte outside ASCII reaches
+// stderr as one line of ASCII of at most 160 bytes. No reason the adapter
+// gives today is any of those, so the refusal is given here.
+func TestARefusalReachesStderrAsItsLine(t *testing.T) {
 	var stderr bytes.Buffer
-	if code := run(nil, strings.NewReader(request), failingWriter{}, &stderr); code != 1 || !strings.HasPrefix(stderr.String(), "adapter-failed: ") {
-		t.Fatalf("exit %d: %s", code, stderr.String())
+	reason := "the title is \u201cna\u00efve\u201d\nand a second line " + strings.Repeat("x", 300)
+	if code := refused(&stderr, &render.Refusal{Code: render.CodeContentInvalid, Reason: reason}); code != 1 {
+		t.Fatalf("exit %d", code)
+	}
+	line := stderr.String()
+	if len(line) != 161 || strings.Count(line, "\n") != 1 || !strings.HasSuffix(line, "\n") || !strings.HasPrefix(line, "content-invalid: the title is ???na??ve????and a second line xxx") {
+		t.Fatalf("stderr holds %d bytes: %q", len(line), line)
+	}
+	for i := 0; i < len(line)-1; i++ {
+		if line[i] < 0x20 || line[i] > 0x7e {
+			t.Fatalf("byte %d of the line is %#x", i, line[i])
+		}
+	}
+	// An error that is no refusal is reported as a failure of the adapter,
+	// in the adapter's words and not the error's.
+	stderr.Reset()
+	if code := refused(&stderr, io.ErrUnexpectedEOF); code != 1 || stderr.String() != "adapter-failed: the adapter could not continue\n" {
+		t.Fatalf("exit %d: %q", code, stderr.String())
+	}
+}
+
+// TestMain lets the test's own executable stand in for the adapter's: run
+// with asCommand set, it is the command and runs no test.
+func TestMain(m *testing.M) {
+	if os.Getenv(asCommand) == "1" {
+		os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	}
+	os.Exit(m.Run())
+}
+
+const asCommand = "ADAPTER_RENDER_TEST_AS_COMMAND"
+
+// An adapter that cannot read its own executable cannot say what it is, and
+// refuses: nothing is rendered by an adapter the record could not identify.
+// The executable here may be run and may not be read.
+func TestAnExecutableThatCannotBeReadRefuses(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the permissions of a file are not these on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a file whatever its permissions")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	image, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "adapter-render")
+	if err := os.WriteFile(path, image, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		mode   os.FileMode
+		exit   int
+		stderr string
+	}{
+		{0o500, 0, ""},
+		{0o100, 1, "adapter-failed: the adapter's own executable could not be read\n"},
+	} {
+		if err := os.Chmod(path, c.mode); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(path)
+		cmd.Env = append(os.Environ(), asCommand+"=1")
+		cmd.Stdin = strings.NewReader(request)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		if exit := cmd.ProcessState.ExitCode(); exit != c.exit || stderr.String() != c.stderr || (stdout.Len() == 0) != (c.exit != 0) {
+			t.Fatalf("mode %o: exit %d (%v) with %d bytes of record: %q", c.mode, exit, err, stdout.Len(), stderr.String())
+		}
+		if c.exit == 0 {
+			if err := render.Check(stdout.Bytes()); err != nil {
+				t.Fatalf("mode %o: the record does not pass its check: %v", c.mode, err)
+			}
+		}
 	}
 }
 

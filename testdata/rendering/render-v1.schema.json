@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Render record, version 1",
-  "description": "The result adapter-render writes for one rendering (docs/design/rendering.md), each value checked on its own: member sets, types, enumerations, ranges and lexical forms. It relates no value to another: that the size and the digest are those of the file the base64 holds, and that the file is within the bound the record states, are checked by render.Check (adapters/render). This is the producer's schema, closed as the adapter writes; a consumer validates for compatibility.",
+  "description": "The result adapter-render writes for one rendering (docs/design/rendering.md), each value checked on its own: member sets, types, enumerations, ranges and lexical forms. It relates no value to another: that the size and the digest are those of the file the base64 holds, and that the file is within the bound the record states, are checked by render.Check (adapters/render). The schema is looser than the check in two places, and a record it admits may be one the check refuses: a title's length is counted here in characters and by the check in bytes of UTF-8; and the pattern of provenance.observedAt admits a day the month does not have. This is the producer's schema, closed as the adapter writes; a consumer validates for compatibility.",
   "type": "object",
   "additionalProperties": false,
   "required": [

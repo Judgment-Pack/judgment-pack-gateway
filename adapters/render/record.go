@@ -81,6 +81,10 @@ type Provenance struct {
 }
 
 const (
+	// recordNesting is how deep a record nests: the record, a member of it,
+	// and a member of that.
+	recordNesting = 3
+
 	// StatusComplete is the one status of a version 1 record: a rendering
 	// is whole, or it is refused and there is no record.
 	StatusComplete = "complete"
@@ -94,6 +98,9 @@ const (
 // encoding of bytes of the stated size whose SHA-256 is the stated digest. It
 // says nothing of whether the file is a correct rendering of any content.
 func Check(raw []byte) error {
+	if !nestedWithin(raw, recordNesting) {
+		return errors.New("the record nests deeper than a record does")
+	}
 	if _, err := canon.Canonicalize(raw, canon.RefuseNumbers); err != nil {
 		return errors.New("the record is not JSON of the canonical domain")
 	}

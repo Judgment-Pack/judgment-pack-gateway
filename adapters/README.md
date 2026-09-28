@@ -1000,16 +1000,19 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   as text; the file embeds no typeface, and how a reader lays the text out is the reader's.
 - **A PDF** is refused with `renderer-not-configured`. ADR-0006 has a PDF produced by a
   program the operator configures, and this release has no flag to configure one.
-- **A link** is a text and a target of scheme `https`, `http` or `mailto`. The adapter writes
-  the target into the file and never follows it.
+- **A link** is a text and a target of scheme `https`, `http` or `mailto` that names a host
+  or one address. The adapter writes the target into the file as given and never follows it.
 - **The record** is held to `render.Check`, the contract's reference check, before the
   adapter writes it: the members closed, and the size and the digest those of the file the
   base64 holds. `cites.decision` is copied into it as the caller's assertion and checked for
   its form only.
 - **The bounds** are `--max-request` (1 MiB), `--max-blocks` (2,000), `--max-file` (4 MiB),
-  `--max-output` (1 MiB) and `--timeout` (25 s). The file travels in the record as base64, so
-  with every default the largest file that fits is about 766 KiB; the example above raises
-  the record's bound, and the gateway's, to carry a file of 4 MiB.
+  `--max-output` (1 MiB) and `--timeout` (25 s). `--max-file` bounds the archive and what its
+  parts hold uncompressed, since a small archive can hold long parts. The file travels in the
+  record as base64, so with every default the largest file that fits is about 766 KiB; the
+  example above raises the record's bound, and the gateway's, to carry a file of 4 MiB.
+  Arguments that nest deeper than the structure does are refused by one pass over their
+  bytes, before anything else is read of them.
 - **What the tests hold.** The file's parts are read back with the standard library's ZIP and
   XML readers and held to the text and the structure of the request. Where `pandoc` is
   installed, one test reads the file with it as well, and is skipped where it is not. No test

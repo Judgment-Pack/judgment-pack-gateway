@@ -65,7 +65,8 @@ type Config struct {
 	MaxRequest int64
 	// MaxBlocks bounds the blocks of one document.
 	MaxBlocks int
-	// MaxFile bounds the rendered file.
+	// MaxFile bounds the rendered file, and what its parts hold once they
+	// are read out of it.
 	MaxFile int64
 	// MaxOutput bounds the record.
 	MaxOutput int64
@@ -192,15 +193,21 @@ func process(ctx context.Context, cfg Config, req Request, identity attachment.I
 	if deadlinePassed(ctx, now) {
 		return nil, refuse(CodeTimeout, "the deadline had passed before the file was written")
 	}
-	file, err := writeDocx(req.Document)
+	file, err := writeDocx(req.Document, cfg.MaxFile)
+	// The deadline is read before anything is said of the file: a rendering
+	// whose deadline passed while it was written is refused for that,
+	// whatever else is true of it.
+	if deadlinePassed(ctx, now) {
+		return nil, refuse(CodeTimeout, "the deadline had passed when the file had been written")
+	}
+	if errors.Is(err, errPartsOverBound) {
+		return nil, refuse(CodeFileOverBound, "the parts of the file hold more than --max-file %d bytes", cfg.MaxFile)
+	}
 	if err != nil {
 		return nil, refuse(CodeAdapterFailed, "the Word file could not be written")
 	}
 	if int64(len(file)) > cfg.MaxFile {
 		return nil, refuse(CodeFileOverBound, "the file is %d bytes, past --max-file %d", len(file), cfg.MaxFile)
-	}
-	if deadlinePassed(ctx, now) {
-		return nil, refuse(CodeTimeout, "the deadline had passed when the file had been written")
 	}
 	rec := Record{
 		RenderVersion: RecordVersion,

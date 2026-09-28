@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -26,6 +27,11 @@ const (
 	maxTableRows    = 1000
 	maxTargetBytes  = 2048
 	maxLanguageSize = 35
+
+	// maxNesting is how deep the arguments nest at their deepest, which is
+	// a run in a cell of a table: the arguments, the document, its blocks,
+	// a block, its rows, a row, a cell, its runs, a run.
+	maxNesting = 9
 
 	// maxInteger is the largest integer of the canonical domain.
 	maxInteger = 1<<53 - 1
@@ -110,7 +116,14 @@ func parseArguments(raw []byte, cfg Config) (Request, error) {
 	invalid := func(format string, args ...any) (Request, error) {
 		return Request{}, refuse(CodeArgumentsInvalid, format, args...)
 	}
-	// The canonical domain is held first, over the whole of the arguments:
+	// The structure does not nest, so its depth is fixed, and arguments that
+	// nest deeper are none the contract admits. They are refused here, by one
+	// pass over their bytes, since putting deeply nested JSON in canonical
+	// form costs far more than its length.
+	if !nestedWithin(raw, maxNesting) {
+		return invalid("the arguments nest deeper than the structure does")
+	}
+	// The canonical domain is held next, over the whole of the arguments:
 	// what is read after it is JSON in which no object names a member twice.
 	if _, err := canon.Canonicalize(raw, canon.RefuseNumbers); err != nil {
 		return invalid("the arguments are not JSON of the canonical domain")
@@ -378,15 +391,19 @@ func literalText(text string) error {
 	return nil
 }
 
-// linkTarget holds a link's target to the schemes the contract names. The
-// adapter writes the target into the file and never follows it.
+// linkTarget holds a link's target to the schemes the contract names, and to
+// what a Word file can carry unchanged. The adapter writes the target into
+// the file and never follows it.
 func linkTarget(target string) error {
 	if target == "" || len(target) > maxTargetBytes {
 		return fmt.Errorf("a link's target is 1 to %d bytes", maxTargetBytes)
 	}
 	for _, r := range target {
-		if r <= 0x20 || r == 0x7f {
+		switch {
+		case r <= 0x20 || r == 0x7f:
 			return errors.New("a link's target holds a space or a control character")
+		case r == 0xfffe || r == 0xffff:
+			return errors.New("a link's target holds a code point a Word file cannot carry")
 		}
 	}
 	u, err := url.Parse(target)
@@ -396,17 +413,59 @@ func linkTarget(target string) error {
 	// Parse gives the scheme in lowercase, however the target spelt it.
 	switch u.Scheme {
 	case "https", "http":
-		if u.Host == "" {
+		// The host is what stands before any port: a target that names a
+		// port and no host names no host.
+		if u.Hostname() == "" {
 			return errors.New("a link's target names no host")
 		}
 	case "mailto":
-		if u.Opaque == "" {
+		if !mailbox(u.Opaque) {
 			return errors.New("a link's target names no address")
 		}
 	default:
 		return errors.New("a link's target has a scheme other than https, http and mailto")
 	}
 	return nil
+}
+
+// mailbox reports whether what follows "mailto:" and stands before any
+// question mark, which Parse has taken off it, is one address in its plainest
+// form: something, an at sign, and something, with no second at sign and none
+// of the characters that begin a path, a scheme or a list. It is a test of
+// form. Whether the address exists is nobody's to say here.
+func mailbox(address string) bool {
+	local, domain, found := strings.Cut(address, "@")
+	if !found || local == "" || domain == "" {
+		return false
+	}
+	return !strings.ContainsAny(address[len(local)+1:], "@") && !strings.ContainsAny(address, `/\:,;<>"`)
+}
+
+// nestedWithin reports whether the objects and arrays of a JSON text nest no
+// deeper than most. It counts the brackets that stand outside strings, in one
+// pass, and judges nothing else: whether the text is JSON at all is for the
+// canonicalizer to say, which reads what this has let through.
+func nestedWithin(raw []byte, most int) bool {
+	depth, inString := 0, false
+	for i := 0; i < len(raw); i++ {
+		switch c := raw[i]; {
+		case inString && c == '\\':
+			// What follows a backslash is part of the string, a quotation
+			// mark included.
+			i++
+		case inString:
+			inString = c != '"'
+		case c == '"':
+			inString = true
+		case c == '{' || c == '[':
+			if depth++; depth > most {
+				return false
+			}
+		case (c == '}' || c == ']') && depth > 0:
+			depth--
+		}
+	}
+	return true
 }
 
 // membersOf decodes a JSON object, and only an object, into its members by

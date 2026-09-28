@@ -101,6 +101,17 @@ for change, why in [
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'https://example.com/a b'), 'a target with a space'),
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'https://example.com/\n'), 'a target with a line feed after it'),
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'https://example.com/' + 'a' * 2048), 'a target past its length'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'https://example.com/\ufffe'), 'a target with U+FFFE'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'https://example.com/\uffff'), 'a target with U+FFFF'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:'), 'a target to no address'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:example.com'), 'an address with no at sign'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:@example.com'), 'an address with no name'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:someone@'), 'an address with no domain'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:a@b@example.com'), 'an address with two at signs'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:a@example.com,b@example.com'), 'two addresses'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:\\\\server\\share@x'), 'a share as an address'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:javascript:alert(1)@x'), 'a script as an address'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto://host/path'), 'an address that is a path'),
     (put('document', 'blocks', heading, 'level', 0), 'a heading of level 0'),
     (put('document', 'blocks', heading, 'level', 7), 'a heading of level 7'),
     (put('document', 'blocks', heading, 'level', '1'), 'a level that is a string'),
@@ -176,10 +187,31 @@ for change, why in [
     (put('document', 'blocks', paragraph, 'runs', 0, 'text', 'a\nb\tc'), 'a text with a line feed and a tab'),
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'HTTPS://example.com/'), 'a scheme in capitals'),
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:a@example.com'), 'an address'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'MAILTO:a.b+c@example.com?subject=Refund%20decision'), 'an address with a subject'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'https://[2001:db8::1]:8443/a?b=c#d'), 'a host that is an address, and a port'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'https://example.com/\u65e5\u672c\u8a9e'), 'a target outside ASCII'),
     (drop('document', 'blocks', table, 'header'), 'a table with no header'),
 ]:
     admitted = copy.deepcopy(request)
     change(admitted)
     assert arguments.is_valid(admitted), f'refused: {why}'
 
-print(f'PASS: the examples and the written record match the rendering schemas; {refused} broken variants refused')
+# Where a schema is looser than the adapter or the check, by its own
+# description: each of these is a value the adapter or render.Check refuses,
+# which the adapter's tests hold, and which the schema admits. They are here
+# so that the difference is a stated one: a schema that came to refuse one of
+# them would be a schema whose description is out of date.
+looser = 0
+for validator, value, change, why in [
+    (arguments, request, put('document', 'title', '\u00e9' * 128), 'a title of 128 characters and 256 bytes'),
+    (arguments, request, put('document', 'blocks', paragraph, 'runs', 0, 'link', 'http://:80/'), 'a target that names a port and no host'),
+    (arguments, request, put('document', 'blocks', [{'type': 'paragraph', 'runs': []}] * 2001), '2001 blocks, past the default bound'),
+    (record, written, put('request', 'title', '\u00e9' * 128), 'a recorded title of 128 characters and 256 bytes'),
+    (record, written, put('provenance', 'observedAt', '2026-02-30T12:00:00Z'), 'the thirtieth of February'),
+]:
+    admitted = copy.deepcopy(value)
+    change(admitted)
+    assert validator.is_valid(admitted), f'refused, against the description: {why}'
+    looser += 1
+
+print(f'PASS: the examples and the written record match the rendering schemas; {refused} broken variants refused, {looser} stated differences admitted')

@@ -50,6 +50,30 @@ func render(t *testing.T, raw string, cfg Config) (Record, []byte, []byte) {
 	if err != nil {
 		t.Fatalf("the request was refused: %v", err)
 	}
+	return renderRequest(t, req, cfg)
+}
+
+// unpacked is what the parts of a file hold, by the sizes the archive states
+// for them, each held to what the part gives when it is read.
+func unpacked(t *testing.T, file []byte) int64 {
+	t.Helper()
+	archive, err := zip.NewReader(bytes.NewReader(file), int64(len(file)))
+	if err != nil {
+		t.Fatalf("the file is not a ZIP archive: %v", err)
+	}
+	var held int64
+	for _, entry := range archive.File {
+		if n := len(docxPart(t, file, entry.Name)); uint64(n) != entry.UncompressedSize64 {
+			t.Fatalf("%s states %d bytes and holds %d", entry.Name, entry.UncompressedSize64, n)
+		}
+		held += int64(entry.UncompressedSize64)
+	}
+	return held
+}
+
+// renderRequest renders a request already admitted.
+func renderRequest(t *testing.T, req Request, cfg Config) (Record, []byte, []byte) {
+	t.Helper()
 	out, err := Process(context.Background(), cfg, req, testIdentity, time.Now())
 	if err != nil {
 		t.Fatalf("the rendering was refused: %v", err)
@@ -93,10 +117,16 @@ func TestARequestOutsideTheContractIsRefused(t *testing.T) {
 	}
 	const domain = "not JSON of the canonical domain"
 	for name, c := range map[string]struct{ raw, code, says string }{
-		"not JSON":                            {`not json`, CodeArgumentsInvalid, domain},
-		"nothing":                             {``, CodeArgumentsInvalid, domain},
-		"two documents":                       {arguments("docx", document(paragraph)) + `{}`, CodeArgumentsInvalid, domain},
-		"not an object":                       {`[]`, CodeArgumentsInvalid, "arguments: not a JSON object"},
+		"not JSON":      {`not json`, CodeArgumentsInvalid, domain},
+		"nothing":       {``, CodeArgumentsInvalid, domain},
+		"two documents": {arguments("docx", document(paragraph)) + `{}`, CodeArgumentsInvalid, domain},
+		"not an object": {`[]`, CodeArgumentsInvalid, "arguments: not a JSON object"},
+		// A run in a cell is as deep as the structure goes, and anything
+		// deeper is refused for its depth before it is read for anything
+		// else: a member the contract does not name, here, that holds an
+		// array.
+		"a value nested past the structure":   {arguments("docx", document(`{"type":"table","rows":[[{"runs":[{"text":"x","notes":[]}]}]]}`)), CodeArgumentsInvalid, "the arguments nest deeper than the structure does"},
+		"arguments nested nine thousand deep": {strings.Repeat(`{"x":`, 9000) + `"` + strings.Repeat("a", 500000) + `"` + strings.Repeat(`}`, 9000), CodeArgumentsInvalid, "the arguments nest deeper than the structure does"},
 		"null":                                {`null`, CodeArgumentsInvalid, "arguments: not a JSON object"},
 		"a member the contract does not name": {`{"format":"docx","document":` + document(paragraph) + `,"save":"drive"}`, CodeArgumentsInvalid, "arguments: a member the contract does not define"},
 		"format missing":                      {`{"document":` + document(paragraph) + `}`, CodeArgumentsInvalid, "arguments: member format is missing"},
@@ -178,6 +208,17 @@ func TestARequestOutsideTheContractIsRefused(t *testing.T) {
 		"a link over http with no host":        {run(`"text":"x","link":"http:"`), CodeContentInvalid, "names no host"},
 		"a link to no address":                 {run(`"text":"x","link":"mailto:"`), CodeContentInvalid, "names no address"},
 		"a link that is no URL":                {run(`"text":"x","link":"https://[::1"`), CodeContentInvalid, "is not a URL"},
+		"a link to a port and no host":         {run(`"text":"x","link":"http://:80/"`), CodeContentInvalid, "names no host"},
+		"a link to a user and no host":         {run(`"text":"x","link":"https://user@:443/"`), CodeContentInvalid, "names no host"},
+		"a link to an address with no domain":  {run(`"text":"x","link":"mailto:someone@"`), CodeContentInvalid, "names no address"},
+		"a link to an address with no name":    {run(`"text":"x","link":"mailto:@example.com"`), CodeContentInvalid, "names no address"},
+		"a link to an address with no at sign": {run(`"text":"x","link":"mailto:example.com"`), CodeContentInvalid, "names no address"},
+		"a link to two addresses":              {run(`"text":"x","link":"mailto:a@example.com,b@example.com"`), CodeContentInvalid, "names no address"},
+		"a link to an address with two signs":  {run(`"text":"x","link":"mailto:a@b@example.com"`), CodeContentInvalid, "names no address"},
+		"a link to a share as an address":      {run(`"text":"x","link":"mailto:\\\\server\\share@x"`), CodeContentInvalid, "names no address"},
+		"a link to a script as an address":     {run(`"text":"x","link":"mailto:javascript:alert(1)@x"`), CodeContentInvalid, "names no address"},
+		"a link with U+FFFE":                   {run(`"text":"x","link":"https://example.com/\ufffe"`), CodeContentInvalid, "a code point a Word file cannot carry"},
+		"a link with U+FFFF":                   {run(`"text":"x","link":"https://example.com/\uffff"`), CodeContentInvalid, "a code point a Word file cannot carry"},
 		"a link with a space":                  {run(`"text":"x","link":"https://example.com/a b"`), CodeContentInvalid, "a space or a control character"},
 		"a link with a tab":                    {run(`"text":"x","link":"https://example.com/a\tb"`), CodeContentInvalid, "a space or a control character"},
 		"a link with a delete":                 {run(`"text":"x","link":"https://example.com/a\u007fb"`), CodeContentInvalid, "a space or a control character"},
@@ -233,6 +274,10 @@ func TestWhatTheContractAdmits(t *testing.T) {
 		"headings of level 1 and level 6":      arguments("docx", document(`{"type":"heading","level":1,"runs":[]},{"type":"heading","level":6,"runs":[]}`)),
 		"a link over http":                     arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"http://example.com"}]}`)),
 		"a link whose scheme is in capitals":   arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"HTTPS://example.com/"}]}`)),
+		"a link to a host and a port":          arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"https://example.com:8443/a?b=c#d"}]}`)),
+		"a link to an address of six":          arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"https://[2001:db8::1]:8443/"}]}`)),
+		"a link outside ASCII":                 arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"https://example.com/日本語?q=é"}]}`)),
+		"a link to an address with a subject":  arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"mailto:a.b+c@example.com?subject=Refund"}]}`)),
 		"a link that is an address":            arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"mailto:a@example.com"}]}`)),
 		"a link at its length":                 arguments("docx", document(`{"type":"paragraph","runs":[{"text":"x","link":"https://example.com/`+strings.Repeat("a", maxTargetBytes-len("https://example.com/"))+`"}]}`)),
 		"a table with no header":               arguments("docx", document(`{"type":"table","rows":[[{"runs":[]}]]}`)),
@@ -297,6 +342,11 @@ func TestTheBoundsOfTheRequestTheFileAndTheRecord(t *testing.T) {
 		t.Fatalf("a request a byte past the read bound: %s, want %s", codeOf(err), CodeRequestOverBound)
 	}
 
+	// The bound on the file is on what its parts hold, which is what a
+	// reader of the file is given to read, and on the archive they are in.
+	// The parts are the longer of the two, so they are what the bound meets:
+	// a file whose parts are at the bound is written, and one whose parts
+	// are a byte past it is refused, though the archive is well within it.
 	cfg = DefaultConfig()
 	_, file, out := render(t, raw, cfg)
 	req, err := parse(t, raw, cfg)
@@ -307,13 +357,43 @@ func TestTheBoundsOfTheRequestTheFileAndTheRecord(t *testing.T) {
 		_, err := Process(context.Background(), cfg, req, testIdentity, time.Now())
 		return err
 	}
-	cfg.MaxFile = int64(len(file))
+	held := unpacked(t, file)
+	if held <= int64(len(file)) {
+		t.Fatalf("the parts hold %d bytes and the archive is %d: the test wants the parts to be the longer", held, len(file))
+	}
+	cfg.MaxFile = held
 	if err := within(cfg); err != nil {
-		t.Fatalf("a file at the file bound is refused: %v", err)
+		t.Fatalf("a file whose parts are at the file bound is refused: %v", err)
 	}
 	cfg.MaxFile--
-	if err := within(cfg); codeOf(err) != CodeFileOverBound {
-		t.Fatalf("a file a byte past the file bound: %s, want %s", codeOf(err), CodeFileOverBound)
+	if err := within(cfg); codeOf(err) != CodeFileOverBound || !strings.Contains(err.Error(), "the parts of the file hold more than --max-file") {
+		t.Fatalf("a file whose parts are a byte past the file bound: %v, want %s", err, CodeFileOverBound)
+	}
+	// Text that says little at length: 900 kilobytes of request whose
+	// document part is twelve megabytes and whose archive is under forty
+	// kilobytes. It is refused for what its parts hold.
+	long, err := parse(t, arguments("docx", `{"title":"T","blocks":[{"type":"paragraph","runs":[{"text":"`+strings.Repeat(`a\n`, 300000)+`"}]}]}`), DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Process(context.Background(), DefaultConfig(), long, testIdentity, time.Now()); codeOf(err) != CodeFileOverBound {
+		t.Fatalf("a file whose parts hold twelve megabytes: %s, want %s", codeOf(err), CodeFileOverBound)
+	}
+	roomy := DefaultConfig()
+	roomy.MaxFile, roomy.MaxOutput = 16<<20, 16<<20
+	if rec, archive, _ := renderRequest(t, long, roomy); unpacked(t, archive) < 12_000_000 || rec.File.Size > 64_000 {
+		t.Fatalf("the parts hold %d bytes in an archive of %d", unpacked(t, archive), rec.File.Size)
+	}
+	// The document part stops being written at the first block that begins
+	// past the bound: of a hundred lists, each past the bound by itself,
+	// the writer comes to one.
+	var lists []Block
+	for range 100 {
+		lists = append(lists, Block{Type: BlockList, Items: []Cell{{{Text: strings.Repeat("x", 2000)}}}})
+	}
+	stopped := &docxWriter{targets: map[string]int{}, most: 1000}
+	if body := stopped.body(Document{Title: "T", Blocks: lists}); !stopped.over || body != "" || len(stopped.lists) != 1 {
+		t.Fatalf("the writer came to %d lists and wrote %d bytes", len(stopped.lists), len(body))
 	}
 	// The record states the output bound it was held to, and its duration,
 	// so its length moves with both. The clock is held still, and the bound
@@ -341,8 +421,13 @@ func TestTheBoundsOfTheRequestTheFileAndTheRecord(t *testing.T) {
 }
 
 // A request for a PDF is admitted as a request and refused as a rendering,
-// by name: this adapter has no rendering program to be configured with.
+// by name: this adapter has no rendering program to be configured with. Its
+// content is held to every rule first, so a request for a PDF whose content
+// breaks one is refused for the content.
 func TestAPDFIsRefusedByName(t *testing.T) {
+	if _, err := parse(t, arguments("pdf", `{"title":"T","blocks":[{"type":"image"}]}`), DefaultConfig()); codeOf(err) != CodeContentInvalid {
+		t.Fatalf("a request for a PDF whose content breaks a rule: %s, want %s", codeOf(err), CodeContentInvalid)
+	}
 	req, err := parse(t, arguments("pdf", sampleDocument), DefaultConfig())
 	if err != nil {
 		t.Fatalf("the request is refused: %v", err)
@@ -397,6 +482,18 @@ func TestADeadlinePassedRefusesTheRendering(t *testing.T) {
 	}
 	if out, err := process(ahead, DefaultConfig(), req, testIdentity, time.Now(), passing); codeOf(err) != CodeTimeout || out != nil {
 		t.Errorf("a deadline that passed while the file was written: %s, want %s", codeOf(err), CodeTimeout)
+	}
+	// Where the deadline passed while the file was written and the file is
+	// past its bound as well, the rendering is refused for the deadline: the
+	// order of the refusals is the contract's.
+	tiny := DefaultConfig()
+	tiny.MaxFile = 1
+	readings = 0
+	if _, err := process(ahead, tiny, req, testIdentity, time.Now(), passing); codeOf(err) != CodeTimeout || readings != 2 {
+		t.Errorf("a deadline that passed and a file past its bound: %s after %d readings of the clock, want %s after 2", codeOf(err), readings, CodeTimeout)
+	}
+	if _, err := process(ahead, tiny, req, testIdentity, time.Now(), time.Now); codeOf(err) != CodeFileOverBound {
+		t.Errorf("a file past its bound with time left: %s, want %s", codeOf(err), CodeFileOverBound)
 	}
 }
 
@@ -683,6 +780,114 @@ func TestATableIsFollowedByAParagraph(t *testing.T) {
 	}
 }
 
+// What the writer chooses, the contract states, and the file holds as stated:
+// the sizes, the spacing, the indents and the colour the request did not give.
+func TestTheWritersDefaultsAreTheContracts(t *testing.T) {
+	_, file, _ := render(t, arguments("docx", sampleDocument), DefaultConfig())
+	styles := string(docxPart(t, file, "word/styles.xml"))
+	for what, want := range map[string]string{
+		"text at 11 points":                         `<w:rPrDefault><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/>`,
+		"8 points after a paragraph, lines at 1.08": `<w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault>`,
+		"a link in blue, underlined":                `w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:basedOn w:val="DefaultParagraphFont"/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>`,
+		"a table with cell margins":                 `<w:left w:w="108" w:type="dxa"/>`,
+		"a table with single borders":               `<w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>`,
+	} {
+		if !strings.Contains(styles, want) {
+			t.Errorf("%s: the styles do not hold %s", what, want)
+		}
+	}
+	for level, points := range []int{16, 13, 12, 11, 11, 11} {
+		want := fmt.Sprintf(`w:styleId="Heading%d"><w:name w:val="heading %d"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr><w:b/><w:bCs/><w:sz w:val="%d"/>`, level+1, level+1, level, 2*points)
+		if !strings.Contains(styles, want) {
+			t.Errorf("a heading of level %d at %d points, in bold, kept with what follows: the styles do not hold %s", level+1, points, want)
+		}
+	}
+	numbering := string(docxPart(t, file, "word/numbering.xml"))
+	for what, want := range map[string]string{
+		"a bullet of a dot, indented half an inch and hanging a quarter": `<w:numFmt w:val="bullet"/><w:lvlText w:val="•"/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>`,
+		"numbers as 1., indented the same":                               `<w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/><w:lvlJc w:val="left"/><w:pPr><w:ind w:left="720" w:hanging="360"/></w:pPr>`,
+	} {
+		if !strings.Contains(numbering, want) {
+			t.Errorf("%s: the numbering does not hold %s", what, want)
+		}
+	}
+	// A table is given the whole width of the text, and its layout is not
+	// fixed: the widths its columns state are preferred ones.
+	body := string(docxPart(t, file, "word/document.xml"))
+	if !strings.Contains(body, `<w:tblPr><w:tblStyle w:val="TableGrid"/><w:tblW w:w="5000" w:type="pct"/></w:tblPr>`) || strings.Contains(body, "tblLayout") {
+		t.Errorf("the table's properties are not the contract's: %s", body)
+	}
+}
+
+// An address is held to its form character by character: each of the
+// characters that would begin a path, a scheme or a list refuses the target
+// by itself, in an address that is otherwise one.
+func TestAnAddressHoldsNoneOfTheCharactersOfAList(t *testing.T) {
+	for _, c := range []string{`/`, `\\`, `:`, `,`, `;`, `<`, `>`, `\"`} {
+		for _, target := range []string{"mailto:a" + c + "b@example.com", "mailto:a@example.com" + c + "b"} {
+			raw := arguments("docx", `{"title":"T","blocks":[{"type":"paragraph","runs":[{"text":"x","link":"`+target+`"}]}]}`)
+			_, err := parse(t, raw, DefaultConfig())
+			if codeOf(err) != CodeContentInvalid || !strings.Contains(err.Error(), "a link's target names no address") {
+				t.Errorf("%s: %v", target, err)
+			}
+		}
+	}
+}
+
+// A target the adapter admits is in the file as it was given: read back out
+// of the relationships, it is the same string, whatever characters it holds.
+func TestAnAdmittedTargetIsWrittenAsGiven(t *testing.T) {
+	// Each is written here as the request's JSON spells it.
+	targets := []string{
+		`https://example.com/`,
+		`HTTPS://EXAMPLE.COM/Path`,
+		`http://example.com:8080/a?b=1&c=2#frag`,
+		`https://example.com/?q=<tag>&x='y'`,
+		`https://user:secret@example.com/`,
+		`https://[2001:db8::1]:8443/`,
+		`https://example.com/日本語/한국어?q=é`,
+		`https://example.com/\ufeff\u0085\u2028\ufffd`,
+		`https://example.com/\ud83d\ude00`,
+		`https://example.com/%00%0a%ff`,
+		`mailto:a.b+c@example.com`,
+		`mailto:a@example.com?subject=Refund%20decision&body=x`,
+		`MAILTO:A@EXAMPLE.COM`,
+	}
+	var runs []string
+	for _, target := range targets {
+		runs = append(runs, `{"text":"x","link":"`+target+`"}`)
+	}
+	_, file, _ := render(t, arguments("docx", `{"title":"T","blocks":[{"type":"paragraph","runs":[`+strings.Join(runs, ",")+`]}]}`), DefaultConfig())
+	var rels struct {
+		Relationship []struct {
+			ID     string `xml:"Id,attr"`
+			Target string `xml:"Target,attr"`
+			Mode   string `xml:"TargetMode,attr"`
+		}
+	}
+	if err := xml.Unmarshal(docxPart(t, file, "word/_rels/document.xml.rels"), &rels); err != nil {
+		t.Fatal(err)
+	}
+	written := map[string]string{}
+	for _, r := range rels.Relationship {
+		if r.Mode == "External" {
+			written[r.ID] = r.Target
+		}
+	}
+	if len(written) != len(targets) {
+		t.Fatalf("the file holds %d targets, want %d", len(written), len(targets))
+	}
+	for i, target := range targets {
+		var given string
+		if err := json.Unmarshal([]byte(`"`+target+`"`), &given); err != nil {
+			t.Fatal(err)
+		}
+		if got := written[fmt.Sprintf("rId%d", firstLinkRelationship+i)]; got != given {
+			t.Errorf("the target %q is in the file as %q", given, got)
+		}
+	}
+}
+
 // Every column of a table states its width, in the grid and in each cell. A
 // grid of two or more columns with no widths is a file LibreOffice 6.4
 // refuses to open, though it is one other readers accept.
@@ -775,6 +980,9 @@ func TestTheArchiveCarriesNothingOfTheEnvironment(t *testing.T) {
 		if entry.ModifiedDate != 0x21 || entry.ModifiedTime != 0 || !entry.Modified.Equal(time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)) {
 			t.Errorf("%s is dated %#x at %#x, which is %v", entry.Name, entry.ModifiedDate, entry.ModifiedTime, entry.Modified)
 		}
+		if entry.CreatorVersion != 20 || entry.ReaderVersion != 20 {
+			t.Errorf("%s states the versions %d and %d, want 20, which a deflated entry needs", entry.Name, entry.CreatorVersion, entry.ReaderVersion)
+		}
 		if entry.Flags != 0 || len(entry.Extra) != 0 || entry.Comment != "" || entry.Method != zip.Deflate {
 			t.Errorf("%s has flags %#x, %d bytes beside it, the comment %q and method %d", entry.Name, entry.Flags, len(entry.Extra), entry.Comment, entry.Method)
 		}
@@ -791,6 +999,31 @@ func TestTheArchiveCarriesNothingOfTheEnvironment(t *testing.T) {
 	}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Errorf("the entries are %v, want %v", got, want)
+	}
+	// What the archive's directory says of an entry, the entry's own header
+	// says before it: the headers are gone through from the first byte of
+	// the file, each followed by its name and its data and by nothing else.
+	at := 0
+	for _, entry := range archive.File {
+		header := file[at:]
+		if len(header) < 30 || string(header[:4]) != "PK\x03\x04" {
+			t.Fatalf("%s: no entry begins at byte %d", entry.Name, at)
+		}
+		field := func(offset int) uint16 { return uint16(header[offset]) | uint16(header[offset+1])<<8 }
+		long := func(offset int) uint32 { return uint32(field(offset)) | uint32(field(offset+2))<<16 }
+		if field(4) != 20 || field(6) != 0 || field(8) != zip.Deflate || field(10) != 0 || field(12) != 0x21 {
+			t.Errorf("%s: its header states version %d, flags %#x, method %d, time %#x and date %#x", entry.Name, field(4), field(6), field(8), field(10), field(12))
+		}
+		if long(14) != entry.CRC32 || uint64(long(18)) != entry.CompressedSize64 || uint64(long(22)) != entry.UncompressedSize64 {
+			t.Errorf("%s: its header states the checksum %#x and the sizes %d and %d", entry.Name, long(14), long(18), long(22))
+		}
+		if int(field(26)) != len(entry.Name) || field(28) != 0 || string(header[30:30+len(entry.Name)]) != entry.Name {
+			t.Errorf("%s: its header names it in %d bytes with %d bytes beside", entry.Name, field(26), field(28))
+		}
+		at += 30 + len(entry.Name) + int(entry.CompressedSize64)
+	}
+	if string(file[at:at+4]) != "PK\x01\x02" {
+		t.Errorf("the directory does not begin where the last entry ends, at byte %d", at)
 	}
 	if archive.Comment != "" {
 		t.Errorf("the archive has the comment %q", archive.Comment)
@@ -895,6 +1128,15 @@ func TestTheRecordSaysWhatWasRendered(t *testing.T) {
 		t.Errorf("the record of a clock that went backwards: %v: %s", err, timed)
 	}
 
+	// The adapter holds the record it built to the check before it writes
+	// it, and writes none that does not pass: an identity with no version is
+	// one the check refuses.
+	unversioned := testIdentity
+	unversioned.Version = ""
+	if out, err := Process(context.Background(), DefaultConfig(), req, unversioned, time.Now()); codeOf(err) != CodeAdapterFailed || out != nil || !strings.Contains(err.Error(), "does not pass its own check") {
+		t.Errorf("a record the check refuses: %v, with %d bytes of record", err, len(out))
+	}
+
 	// A request that cites nothing, and names no language, says so with null.
 	plain, _, plainOut := render(t, arguments("docx", `{"title":"T","blocks":[{"type":"paragraph","runs":[]}]}`), DefaultConfig())
 	if plain.Request.Cites != nil || plain.Request.Language != nil || !bytes.Contains(plainOut, []byte(`"cites":null`)) || !bytes.Contains(plainOut, []byte(`"language":null`)) {
@@ -939,6 +1181,7 @@ func TestTheCheckRefusesARecordThatIsNotOne(t *testing.T) {
 		"request without cites":             {func() { delete(member("request"), "cites") }, "request: member cites is missing"},
 		"a format that is not the file's":   {func() { member("request")["format"] = "pdf" }, `request.format is not "docx"`},
 		"a title that is empty":             {func() { member("request")["title"] = "" }, "request.title is not a title"},
+		"a title of 256 bytes":              {func() { member("request")["title"] = strings.Repeat("é", 128) }, "request.title is not a title"},
 		"a language that is no tag":         {func() { member("request")["language"] = "en us" }, "request.language is neither null nor a language tag"},
 		"a language that is a number":       {func() { member("request")["language"] = json.Number("1") }, "request.language is neither null nor a language tag"},
 		"a language past 35 bytes":          {func() { member("request")["language"] = "en-" + strings.Repeat("abcdefgh-", 3) + "abcdefgh" }, "request.language is neither null nor a language tag"},
@@ -1018,6 +1261,7 @@ func TestTheCheckRefusesARecordThatIsNotOne(t *testing.T) {
 		"a member given twice": {`{"renderVersion":"1","renderVersion":"1"}`, "the record is not JSON of the canonical domain"},
 		"not JSON":             {`record`, "the record is not JSON of the canonical domain"},
 		"an array":             {`[]`, "record: not a JSON object"},
+		"a record nested deep": {`{"request":{"cites":{"decision":["sha256"]}}}`, "the record nests deeper than a record does"},
 	} {
 		if err := Check([]byte(c.raw)); err == nil || !strings.Contains(err.Error(), c.says) {
 			t.Errorf("%s: the check says %v, want it to say %q", name, err, c.says)
@@ -1075,6 +1319,39 @@ func TestTheReadersOfSingleValues(t *testing.T) {
 		if _, ok := membersOf(json.RawMessage(raw)); ok {
 			t.Errorf("membersOf(%q) is an object", raw)
 		}
+	}
+}
+
+// The depth of a JSON text is the brackets that stand open outside its
+// strings: a bracket inside a string is text, and so is one after a quotation
+// mark that a backslash has made part of the string.
+func TestTheDepthOfTheArguments(t *testing.T) {
+	for raw, depth := range map[string]int{
+		``:                        0,
+		`"x"`:                     0,
+		`{}`:                      1,
+		`[[],[],[]]`:              2,
+		`{"a":{"b":[1,{"c":2}]}}`: 4,
+		`{"a":"[[[[{{{{"}`:        1,
+		`{"a":"\"[[[["}`:          1,
+		`{"a":"\\","b":[[]]}`:     3,
+		`{"[[":{"]]":[]}}`:        3,
+		// Text that is not JSON is counted as it stands, and refused for
+		// what it is by what reads it next.
+		`]]]]{[`: 2,
+		`[[[[`:   4,
+	} {
+		if depth > 0 && nestedWithin([]byte(raw), depth-1) {
+			t.Errorf("%s is within %d", raw, depth-1)
+		}
+		if !nestedWithin([]byte(raw), depth) {
+			t.Errorf("%s is not within %d", raw, depth)
+		}
+	}
+	// The deepest the contract admits is a run in a cell of a table, and
+	// the sample holds one.
+	if !nestedWithin([]byte(arguments("docx", sampleDocument)), maxNesting) || nestedWithin([]byte(arguments("docx", sampleDocument)), maxNesting-1) {
+		t.Errorf("the sample does not nest exactly %d deep", maxNesting)
 	}
 }
 

@@ -131,12 +131,19 @@ request is refused.
 A link is a text and a target. The adapter writes the target into the file and **never
 follows it**: nothing is resolved, fetched or checked for existence. A target is:
 
-- 1 to 2,048 bytes, with no character from U+0000 to U+0020 and no U+007F;
+- 1 to 2,048 bytes, with no character from U+0000 to U+0020, no U+007F, and neither U+FFFE
+  nor U+FFFF;
 - a URL whose scheme is `https`, `http` or `mailto`, in either case;
-- for `https` and `http`, one that names a host; for `mailto`, one that names an address.
+- for `https` and `http`, one that names a host. The host is what stands before any port, so
+  `http://:80/` names none;
+- for `mailto`, one address in its plainest form: one or more characters, an at sign, and one
+  or more characters, with no second at sign and none of `/ \ : , ; < > "`. A question mark
+  and what a mail program is to fill in may follow it. A list of addresses is not admitted.
+  The form is what is checked. Whether the address exists is not.
 
-Any other target refuses the request. The target is written as given, not normalised. What a
-reader does when a person follows a link is the reader's.
+Any other target refuses the request. The target is written as given, not normalised: a
+target the adapter admits is read back out of the file as the same string, and a test holds
+that. What a reader does when a person follows a link is the reader's.
 
 ### Nothing is brought in
 
@@ -149,7 +156,9 @@ make the file.
 A refused request is the adapter exiting 1 with one line on stderr and nothing on stdout; the
 gateway then mints nothing and retains nothing. The line is ASCII, at most 160 bytes, and
 begins with its code and a colon. It names the rule or the bound, and the block by its
-position, counted from 1. It does not repeat a member name or a text the caller wrote.
+position, counted from 1. Where the rule is a member's, it names the member, which is one the
+contract defines: `a run's bold is true or false`. It repeats no member name the contract
+does not define and no value the caller wrote.
 
 The gateway refuses some requests before the adapter runs: a body past its request bound,
 arguments that are not JSON, and arguments outside the canonical domain
@@ -157,11 +166,14 @@ arguments that are not JSON, and arguments outside the canonical domain
 checks in this order and refuses at the first check that fails:
 
 1. stdin holds more than `--max-request` bytes: `request-over-bound`;
-2. the arguments are not what the arguments table admits: `arguments-invalid`. The canonical
-   domain is held first, and over the whole of the arguments: arguments that are not JSON, a
-   fraction, or a member named twice in any object, a block or a run included, are refused
-   here. Then the members of the arguments, of `cites` and of `document`: one missing, unknown
-   or of another type, a `format`, `title`, `language` or `cites.decision` outside its rule;
+2. the arguments are not what the arguments table admits: `arguments-invalid`, for each of
+   three checks in turn. First their depth: arguments whose objects and arrays nest deeper
+   than nine, which is a run in a cell of a table, are refused by one pass over their bytes,
+   before they are read for anything else. Then the canonical domain, over the whole of the
+   arguments: arguments that are not JSON, a fraction, or a member named twice in any object,
+   a block or a run included. Then the members of the arguments, of `cites` and of
+   `document`: one missing, unknown or of another type, a `format`, `title`, `language` or
+   `cites.decision` outside its rule;
 3. `document.blocks` is empty: `content-invalid`; it holds more than `--max-blocks` blocks:
    `content-over-bound`;
 4. each block in order, and within it each member in the order the adapter reads them. A
@@ -170,17 +182,28 @@ checks in this order and refuses at the first check that fails:
    admits: `content-over-bound`. The first failure met is the one reported;
 5. the format is `"pdf"`: `renderer-not-configured`. The content of such a request has been
    held to every rule above by then;
-6. the deadline has passed, before the file is written or once it has been: `timeout`;
-7. the file is longer than `--max-file`: `file-over-bound`;
+6. the deadline has passed, before the file is written or once the writing has ended:
+   `timeout`. A rendering whose deadline passed while the file was written is refused for
+   that, whether or not the file is within its bound;
+7. the parts of the file together hold more than `--max-file` bytes, or the file itself is
+   longer than that: `file-over-bound`
+   ([Bounds and the deadline](#bounds-and-the-deadline));
 8. the record is longer than `--max-output`: `record-over-bound`.
 
 A failure of the adapter itself is `adapter-failed`: an executable of its own it cannot read, a
 request whose reading has not ended two seconds past the deadline
 ([attachments.md](attachments.md#bounds-and-cancellation) states that cutoff, and the adapter
-reads its request with the same code), a file or a record it could not write.
+reads its request with the same code), a record it built that does not pass its own check, a
+record it could not write.
 
-**A rendering is whole or it is refused.** There is no partial record and no record of a
-failure: a record exists only where there is a file.
+**A rendering is whole or it is refused.** The adapter writes no record of a failure and no
+record of part of a rendering: a record exists only where there is a file.
+
+**An output that fails is the one case with something on stdout.** Everything above is
+decided before the adapter writes anything. Writing the record can itself fail, and can fail
+after stdout has taken part of it: the adapter then exits 1 with `adapter-failed`, and what
+stdout took is not a record. The gateway reads none of the output of a source that exited
+with a failure (`runSource`, `go/serve.go`), so nothing is retained and nothing is minted.
 
 **Retrying is a new acquisition.** `/acquire` is not idempotent: the same arguments sent twice
 mint two receipts over two records, which hold the same file.
@@ -199,17 +222,17 @@ reading and with the file's base64 left out:
     "bytes": "<3,860 characters of base64>",
     "encoding": "base64",
     "mediaType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "sha256": "sha256:3194a1d299b8706d0e03abfb801c180419259d6debc74442fa51dcf10a299b4a",
+    "sha256": "sha256:5854407c533fae348fb3bcea207d8109aeba64fe02696c165e1d0387c328dc5d",
     "size": 2895
   },
   "provenance": {
-    "adapter": {"digest": "sha256:ecf1f1adaed246c4e83a8903691e65b0ef7064422c25b1eadaf4c4a061f570e0", "name": "adapter-render", "version": "0"},
-    "observedAt": "2026-09-28T19:37:48Z"
+    "adapter": {"digest": "sha256:632c39d9c847b5670a447cde08c960ad21397fe9ba8d472dc78399c32e27373a", "name": "adapter-render", "version": "0"},
+    "observedAt": "2026-09-28T20:10:07Z"
   },
   "renderVersion": "1",
   "rendering": {
     "bounds": {"maxBlocks": 2000, "maxFileBytes": 4194304, "maxOutputBytes": 1048576, "maxRequestBytes": 1048576, "timeoutMs": 25000},
-    "durationMs": 6,
+    "durationMs": 4,
     "renderer": {"kind": "module", "name": "adapter-render/docx/1"},
     "status": "complete"
   },
@@ -261,8 +284,26 @@ its own items. The title, and the language where one was given, are the file's p
 and the language is also stated as the default language of the text.
 
 **What it does not state.** No author, no time of creation or change, no application name and
-no revision. No page size and no margins: the page is the reader's default. A table is given
-the width of the text and its columns share that equally.
+no revision. No page size and no margins: the page is the reader's default.
+
+**What the writer chooses.** The request gives no sizes, colours or spacing, so the writer
+supplies them, the same for every file:
+
+- text at 11 points, with 8 points after a paragraph and lines at 1.08 of their height;
+- headings in bold, at 16, 13 and 12 points for levels 1 to 3 and 11 points for levels 4 to
+  6, each kept with the paragraph after it and marked with its outline level;
+- a list indented half an inch, its bullet or number hanging a quarter of an inch, with a
+  bullet of `•` and numbers as `1.`;
+- a link in blue, underlined;
+- a table with single borders and cell margins, given the whole width of the text, its
+  columns stated as equal widths. Those are preferred widths: the table's layout is not
+  fixed, and a reader that lays a table out to its content may give them other widths;
+- a header row in bold, marked to be repeated where the table continues on another page;
+- an empty paragraph after a table that ends the document, and between two tables that
+  follow one another, which a reader would otherwise join.
+
+These are part of what `adapter-render/docx/1` names. None of them is content, and the empty
+paragraphs are the only paragraphs in the file that the request did not give.
 
 **The same content gives the same bytes.** Two requests whose `document` has the same
 canonical form yield the same file, byte for byte, from the same build of the adapter. No
@@ -276,8 +317,9 @@ change what it writes. `provenance.adapter.digest` names the build.
 **What is the reader's.** How the text is laid out, where a line or a page breaks, and
 whether the reader has a typeface for a script. The file names typefaces and embeds none: the
 text's own typeface is left to the reader, and `code` names `Courier New`, for which a reader
-substitutes what it has. The file holds the text of any language as text. Whether it is shown
-is not the adapter's to promise.
+substitutes what it has. The language is stated for a reader's proofing. It sets no direction
+of text and chooses no typeface. The file holds the text of any language as text. Whether it
+is shown is not the adapter's to promise.
 
 ## Bounds and the deadline
 
@@ -287,7 +329,7 @@ Every bound is the operator's, on the adapter's command line, and the record rep
 |---|---|---|---|
 | `--max-request` | 1 MiB | 64 MiB | the request read from stdin; at or below the gateway's `--max-request` |
 | `--max-blocks` | 2,000 | 100,000 | the blocks of one document |
-| `--max-file` | 4 MiB | 64 MiB | the file. The default is the payload ceiling of the storage controls ([storage-files.md](storage-files.md)) |
+| `--max-file` | 4 MiB | 64 MiB | the file, and what its parts hold once they are read out of it. The default is the payload ceiling of the storage controls ([storage-files.md](storage-files.md)) |
 | `--max-output` | 1 MiB | 1 TiB | the record on stdout; at or below the gateway's `--source-max-output` |
 | `--timeout` | 25 s | 10 min | the adapter's deadline, from its start, a whole number of milliseconds |
 
@@ -296,19 +338,39 @@ positional argument is a usage error, and the adapter exits 2 without reading th
 
 The structure's own bounds are the contract's and not the operator's: 6 heading levels, 512
 runs in one block, item or cell, 1,000 items in a list, 1,000 rows and 64 columns in a table,
-2,048 bytes in a target. The structure does not nest, so its depth is fixed. The text of a
-document is bounded by the request that carries it.
+2,048 bytes in a target. The structure does not nest, so its depth is fixed at nine: the
+arguments, the document, its blocks, a block, its rows, a row, a cell, its runs, a run. The
+text of a document is bounded by the request that carries it.
+
+**The file's parts are bounded as the file is.** A Word file is a compressed archive, and its
+parts are XML, which says at length what the request said briefly and compresses well. A
+request of 900 KiB has been made to yield a file of 38 KiB whose document part holds 12 MiB.
+So `--max-file` is held over two things: the bytes the seven parts hold together, as a reader
+of the file is given them, and the bytes of the archive. The parts have been the longer of
+the two in every file the adapter has been seen to write, so they are what the bound meets,
+and the archive is held to it as a second guard. A consumer can take
+`rendering.bounds.maxFileBytes` as a bound on what opening the file unpacks.
+
+**What bounds the adapter's memory is the request.** The document part stops being written at
+the first block that begins past the bound, so the adapter holds at most the bound and one
+block more. One block can carry the whole text of a request, and the XML is longer than the
+text: about fifteen times at the worst found, for text that alternates an ampersand and a
+tab. An operator who raises `--max-request` raises that with it.
 
 A record past `--max-output` is not cut, and a file past `--max-file` is not cut: the adapter
 refuses. With the defaults as they stand, a file of more than about 766 KiB is refused with
 `record-over-bound`, since its record is past a mebibyte, and an operator who wants larger
-files raises `--max-output` and the gateway's `--source-max-output` together.
+files raises `--max-output` and the gateway's `--source-max-output` together. Text that does
+not compress reaches that within the default request bound: a request of a mebibyte of it
+makes a file of some 770 KiB.
 
 **A deadline is when work stops being started, not a completion guarantee.** The deadline runs
 from the adapter's start. The reading of the request is inside it. It is checked before the
-file is written and once it has been, each time by the clock as well as by the timer; a
-rendering whose deadline has passed at either check is refused. The record is encoded and
-written after the second check, and that is not checked again. The gateway's own timeout for
+file is written and once the writing has ended, each time by the clock as well as by the
+timer; a rendering whose deadline has passed at either check is refused. Nothing between the
+two checks reads the deadline: reading the arguments and writing the file each run to their
+end. The record is encoded and written after the second check, and that is not checked
+again. The gateway's own timeout for
 the source, thirty seconds by default, ends the process whatever it is doing.
 
 ## What a consumer should do
@@ -360,8 +422,19 @@ adapter holds every record it writes to the check before it writes it.
 `testdata/rendering/arguments-v1.schema.json` and `testdata/rendering/render-v1.schema.json`
 describe the arguments and the record as JSON Schema. They check each value on its own. The
 rules that relate values are the adapter's and the check's: that every row of a table holds
-the same number of cells, that a text holds no refused character, that a target is a URL of
-an admitted scheme, that the size and the digest are the file's. The arguments schema is not
+the same number of cells, that the size and the digest are the file's. And a schema is looser
+than the adapter in four places, each stated in the schema's own description and held by the
+script as something the schema admits:
+
+- a schema counts a length in characters where the adapter counts bytes of UTF-8, so a title
+  of 128 characters of two bytes each passes the schemas, and neither the adapter nor the
+  check;
+- the arguments schema does not parse a target, so it admits an `http` target that names a
+  port and no host;
+- the arguments schema does not know the operator's `--max-blocks`, and neither schema knows
+  the depth or the canonical domain;
+- the record schema's pattern for an instant admits a day the month does not have, the
+  thirtieth of February, which the check refuses. The arguments schema is not
 written within the descriptor grammar of [tool-descriptors.md](tool-descriptors.md): it names
 its shared parts by reference and states lexical forms as patterns, and that grammar admits
 neither.
