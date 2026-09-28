@@ -5,7 +5,28 @@
 // program runs it under the same lifecycle, from the same code.
 //
 // It confines nothing. The program runs as the adapter does, with what the
-// adapter can reach.
+// adapter can reach: the adapter's environment, its working directory and its
+// process group are the program's, and a run has no way to give it others.
+// Its stderr is discarded.
+//
+// What a caller must know of a run that its types do not say:
+//
+//   - The context ends a run by its deadline or its cancellation, and is read
+//     before the program is started and while it runs. Resolving the name,
+//     reading the file for its digest and starting the process are not
+//     interrupted by it.
+//   - The stdin is written as the program reads it. A program that does not
+//     read all of it, or any of it, is not failed for that: its exit and its
+//     stdout are what decide.
+//   - MaxOutput is not held to any rule here. With zero, a program may write
+//     nothing; with less than zero, every run is one that wrote past the
+//     bound. A caller holds its own bound to its own rules.
+//   - On an error no stdout is returned. The digest is returned with every
+//     outcome but those of a name that did not resolve and a file that could
+//     not be read, and is "sha256:" and 64 lowercase hexadecimal characters.
+//   - A run waits for the exit of the process it started with no timer of
+//     its own. PipeWait bounds the wait for a stdout still open, and nothing
+//     else.
 package program
 
 import (
@@ -68,6 +89,15 @@ type Run struct {
 	// Read reads its stdout, or is nil for ReadStdout. A read that fails is
 	// a guard: the pipe is the adapter's own, and only a test that names
 	// another reader makes it fail.
+	//
+	// A reader is trusted. It is given a limit one byte past MaxOutput, or
+	// the largest a limit can be where MaxOutput is that, and is to read to
+	// the end of r or to the limit, whichever comes first, and return what
+	// it read: what it returns past MaxOutput is how a run knows the bound
+	// was passed, and a reader that returns before the end has made a
+	// stdout that had not ended count as ended. It runs in a goroutine of
+	// its own, which is not waited for where the wait for stdout gives up:
+	// the pipe is closed under it, and what it does after that is its own.
 	Read func(r io.Reader, limit int64) ([]byte, error)
 }
 

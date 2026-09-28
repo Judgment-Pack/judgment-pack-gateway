@@ -377,11 +377,15 @@ records `timeout`, and the adapter goes to step 7. Step 6 checks it once, after 
 is resolved and digested and immediately before it is started: if the deadline has passed, the
 program is not started, `timeout` is recorded, and the adapter goes to step 7. A program that
 was started has **finished** when it has exited and its stdout has reached its end, as the
-adapter observes both. The adapter takes the program's outcome only once it has observed both
-or ended the program; if the deadline has passed by then, the outcome is `ocr-timeout` and no
-answer is applied, even when the answer the program wrote was complete. A program still running
-at the deadline, or exited with its stdout held open by a process it left behind, is ended. A
-record carries at most one of the two.
+adapter observes both. The adapter takes the program's outcome only once it has observed the
+exit, and either the end of the program's stdout or its own closing of that pipe; ending the
+program is not enough, since the exit of a program that was ended is observed as any other is.
+If the deadline has passed by then, the outcome is `ocr-timeout` and no answer is applied, even
+when the answer the program wrote was complete. A program still running at the deadline is
+ended, and the stdout of one that has exited, held open by a process it left behind, is closed
+by the adapter two seconds after the exit. A record carries at most one of the two.
+The run is implemented in `adapters/internal/program`, which the document adapter calls from
+`runOCRProgram` (`adapters/document/ocr.go`).
 [Bounds and cancellation](#bounds-and-cancellation) says what the deadline does not interrupt.
 
 1. **Admit the request**, or refuse it ([Refusals](#the-arguments)). A refused request has no
@@ -535,9 +539,11 @@ What an exhausted arbitration refuses stays refused, and no read is taken after 
 read hands over in the meantime is not what decides. Nothing there is an elapsed time: what ends
 the wait is a reading of the clock, not an interval. At the
 deadline, an OCR program that has not finished is ended: the adapter kills the process it
-started, not that process's own children, waits up to two seconds for that process to exit and
-its stdout to reach its end, and then closes the pipe
-itself, so a process left behind holding it does not delay the record past those two seconds.
+started, not that process's own children. It then waits up to two seconds for the program's
+stdout to reach its end, and closes the pipe itself if it has not, so a process left behind
+holding it does not delay the record past those two seconds. The exit of the process the
+adapter started is waited for with no timer of its own: the two seconds bound the wait for an
+open stdout, and the outcome is not taken until the exit has been observed as well.
 The record is therefore written some time after the deadline, which is why `--timeout` sits
 under the source's timeout — thirty seconds by default — with room to spare.
 

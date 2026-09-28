@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 
 	"adapters/internal/canon"
@@ -51,12 +52,20 @@ var readOCRStdout = program.ReadStdout
 // is waited for, and what a deadline passed by then makes of what it wrote.
 // Its errors are phrased to follow "the OCR program" and carry nothing the
 // program wrote.
+//
+// The page numbers are made into arguments here, before the run, where they
+// were made after the program had been resolved and digested and the deadline
+// checked: a deadline that passes while they are made is now found by that
+// check, and the program is not started.
 func runOCRProgram(ctx context.Context, name string, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
 	args := make([]string, 0, len(pages))
 	for _, n := range pages {
 		args = append(args, strconv.Itoa(n))
 	}
-	return program.Run{Program: name, Args: args, Stdin: doc, MaxOutput: maxOutput, Read: readOCRStdout}.Do(ctx)
+	// The reader is looked up when the program's stdout is read, as it was
+	// when this function read it itself, and not when the run is begun.
+	read := func(r io.Reader, limit int64) ([]byte, error) { return readOCRStdout(r, limit) }
+	return program.Run{Program: name, Args: args, Stdin: doc, MaxOutput: maxOutput, Read: read}.Do(ctx)
 }
 
 // admitOCRAnswer holds the program's output to step 6's admission: one
