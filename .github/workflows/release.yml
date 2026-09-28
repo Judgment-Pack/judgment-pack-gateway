@@ -7,8 +7,18 @@ name: Release
 # are a person's, reviewed in the pull request that added
 # docs/releases/<tag>.md. What the workflow holds is that the tagged state
 # passes everything CI asks of a commit, that the archives are built from
-# it and run where they say they run, and that nothing is public until a
-# maintainer has approved it at the `production` gate.
+# it and run where they say they run, and that no release is published
+# until a maintainer has approved it at the `production` gate.
+#
+# What exists before that approval, and is not secret: the archives, as an
+# artifact of the run that anyone who can read the repository's runs can
+# download; their attestation, which is recorded in a public log when it is
+# made; and the draft, which those who can write to the repository can see.
+#
+# Every job works on the commit the run was started for, by its digest. The
+# tag is a name, and until a release is published nothing keeps a name from
+# being moved: so the name is held to that commit when the run begins,
+# before the draft is made, and before it is published.
 #
 # It publishes no image. The engine image is still built by CI from every
 # commit and never pushed (docs/design/engine-image.md, Provenance).
@@ -37,29 +47,45 @@ jobs:
       # Reading an environment's protection rules.
       actions: read
     steps:
+      # SemVer 2.0.0 for the three numbers and the prerelease, which has no
+      # empty identifier and no numeric one with a leading zero. Build
+      # metadata (+...) is refused: two tags that differ only in it would
+      # be one version under two names.
       - name: The tag is an exact version
         shell: bash
         run: |
-          if [[ ! "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "the tag is not an exact SemVer version: ${RELEASE_TAG}" >&2
+          number='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          version="^v${number}\.${number}\.${number}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "${RELEASE_TAG}" =~ ${version} ]]; then
+            echo "the tag is not a version this workflow releases (vX.Y.Z or vX.Y.Z-prerelease, no build metadata): ${RELEASE_TAG}" >&2
             exit 1
           fi
 
-      - name: Check out tagged source
+      - name: Check out the commit the run was started for
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ github.sha }}
+
+      - name: The tag names the commit the run was started for
+        shell: bash
+        run: |
+          # The last line is the commit an annotated tag points to, where
+          # there is one, and the tag's own line where the tag is a plain one.
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk 'END { print $1 }')"
+          [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the run was started for ${GITHUB_SHA}" >&2; exit 1; }
 
       # A tag names a reviewed state (CONTRIBUTING.md, Tags), and what is
       # reviewed is what merged: a tag on a branch's commit names a state
-      # main may never hold.
+      # main may never hold. Any commit main holds is admitted, not its
+      # newest alone, and the checks it is held to are CI's as that commit
+      # has them.
       - name: The tagged commit is on main
         shell: bash
         run: |
-          commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
-          git merge-base --is-ancestor "${commit}" origin/main || { echo "the tagged commit ${commit} is not on main" >&2; exit 1; }
+          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main || { echo "the tagged commit ${GITHUB_SHA} is not on main" >&2; exit 1; }
 
       - name: The release has notes a person wrote
         shell: bash
@@ -81,9 +107,10 @@ jobs:
             || { echo "the production environment could not be read; create it, with a required reviewer (docs/releasing.md)" >&2; exit 1; }
           [ "${reviewers}" -ge 1 ] || { echo "the production environment requires no reviewer" >&2; exit 1; }
 
-  # Everything CI asks of a commit, asked of the tagged one: the same
-  # workflow, called, so a release cannot pass a check CI has since gained
-  # by carrying an older copy of it.
+  # Everything CI asks of a commit, asked of the tagged one, as CI stands at
+  # that commit: the workflow called is the tagged commit's own ci.yml, so
+  # release.yml carries no second copy of the checks to fall behind it. A
+  # check main has gained since that commit is not asked.
   verify:
     name: CI at the tag
     needs: admit
@@ -101,12 +128,12 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Check out tagged source
+      - name: Check out the commit the run was started for
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ env.RELEASE_TAG }}
+          ref: ${{ github.sha }}
 
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -116,10 +143,15 @@ jobs:
           go-version: 1.26.5
           cache-dependency-path: adapters/go.sum
 
+      # Held by CI already, and again here, on the commit being packaged and
+      # with the toolchain that links it, whose own licence is part of them.
+      - name: The notices are what this toolchain and the linked modules say
+        run: python3 build/third_party_notices.py --check
+
       - name: Normalize archive file timestamps
         shell: bash
         run: |
-          source_date_epoch="$(git show -s --format=%ct "${RELEASE_TAG}^{commit}")"
+          source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}")"
           git ls-files -z -- LICENSE README.md SECURITY.md SPEC.md THIRD_PARTY_NOTICES catalog corpus \
             | xargs -0 touch --date="@${source_date_epoch}"
 
@@ -138,19 +170,42 @@ jobs:
         working-directory: dist
         run: sha256sum --check checksums.txt
 
-      # The corpus arbitrates, so it travels as the tag holds it: every
-      # file, byte for byte, and the catalog with it. Checked on one
-      # archive of each format; the file list is the same for all six.
-      - name: The archives carry the corpus and the catalog as tagged
+      # Held of the archives themselves, all six, and not of the
+      # configuration that was meant to make them. The corpus arbitrates,
+      # so it travels as the commit holds it, every file, byte for byte, and
+      # the catalog with it. Each program is the one built from the package
+      # of its name, as the executable's own build record says; and an
+      # archive holds no file the list below does not account for.
+      - name: Each archive holds the corpus, the catalog and the programs, and nothing else
         shell: bash
         run: |
           release_version="${RELEASE_TAG#v}"
-          mkdir -p "${RUNNER_TEMP}/unpacked/tar" "${RUNNER_TEMP}/unpacked/zip"
-          tar -xzf "dist/judgment-pack-gateway_${release_version}_linux_amd64.tar.gz" -C "${RUNNER_TEMP}/unpacked/tar"
-          unzip -q "dist/judgment-pack-gateway_${release_version}_windows_amd64.zip" -d "${RUNNER_TEMP}/unpacked/zip"
-          for format in tar zip; do
-            diff -r corpus "${RUNNER_TEMP}/unpacked/${format}/corpus"
-            diff -r catalog "${RUNNER_TEMP}/unpacked/${format}/catalog"
+          programs="$(ls adapters/cmd)"
+          for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64 windows_arm64; do
+            unpacked="${RUNNER_TEMP}/unpacked/${target}"
+            mkdir -p "${unpacked}"
+            case "${target}" in
+              windows_*) suffix=".exe"; unzip -q "dist/judgment-pack-gateway_${release_version}_${target}.zip" -d "${unpacked}" ;;
+              *) suffix=""; tar -xzf "dist/judgment-pack-gateway_${release_version}_${target}.tar.gz" -C "${unpacked}" ;;
+            esac
+
+            diff -r corpus "${unpacked}/corpus"
+            diff -r catalog "${unpacked}/catalog"
+            for file in LICENSE README.md SECURITY.md SPEC.md THIRD_PARTY_NOTICES; do
+              cmp "${file}" "${unpacked}/${file}"
+            done
+
+            built_from() { go version -m "$1" | awk '$1 == "path" { print $2 }'; }
+            [ "$(built_from "${unpacked}/gateway${suffix}")" = "gateway" ] \
+              || { echo "${target}: gateway${suffix} was not built from the core" >&2; exit 1; }
+            for program in ${programs}; do
+              [ "$(built_from "${unpacked}/${program}${suffix}")" = "adapters/cmd/${program}" ] \
+                || { echo "${target}: ${program}${suffix} was not built from adapters/cmd/${program}" >&2; exit 1; }
+            done
+
+            expected="$( { printf '%s\n' LICENSE README.md SECURITY.md SPEC.md THIRD_PARTY_NOTICES catalog corpus "gateway${suffix}"; for program in ${programs}; do echo "${program}${suffix}"; done; } | LC_ALL=C sort)"
+            found="$(ls -A "${unpacked}" | LC_ALL=C sort)"
+            [ "${expected}" = "${found}" ] || { echo "${target}: the archive does not hold what a release holds:" >&2; diff <(echo "${expected}") <(echo "${found}") >&2; exit 1; }
           done
 
       - name: Carry the release notes with the archives
@@ -304,6 +359,26 @@ jobs:
           name: release-dist
           path: dist
 
+      - name: The tag still names the commit the run was started for
+        shell: bash
+        run: |
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk 'END { print $1 }')"
+          [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the archives were built from ${GITHUB_SHA}" >&2; exit 1; }
+
+      # A release under this tag, draft or published, is never replaced or
+      # completed from here: what a failed run left is looked at by a
+      # person (docs/releasing.md, "If a run fails").
+      - name: No release exists under this tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if state="$(gh release view "${RELEASE_TAG}" --json isDraft --jq 'if .isDraft then "a draft" else "published" end' 2>/dev/null)"; then
+            echo "a release under ${RELEASE_TAG} already exists, and it is ${state}" >&2
+            exit 1
+          fi
+
       - name: Attest release archives
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
@@ -347,6 +422,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: The tag still names the commit the run was started for
+        shell: bash
+        run: |
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk 'END { print $1 }')"
+          [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the draft was built from ${GITHUB_SHA}" >&2; exit 1; }
+
       - name: Publish the reviewed draft release
         shell: bash
         env:

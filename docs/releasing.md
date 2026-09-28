@@ -1,8 +1,9 @@
 # Releasing the gateway
 
 Only maintainers release this repository. A release is a tag a person pushes on a commit already on
-`main`; [`release.yml`](../.github/workflows/release.yml) builds everything else from that tag and
-publishes nothing until a maintainer approves it.
+`main`; [`release.yml`](../.github/workflows/release.yml) builds everything else from that commit and
+publishes no release until a maintainer approves it.
+[ADR-0008](adr/0008-a-release-carries-the-programs-as-archives.md) records the decision.
 
 ## What a release is
 
@@ -11,7 +12,7 @@ release adds the built programs for that state:
 
 - six archives, for Linux, macOS and Windows on `amd64` and `arm64`. Each holds `gateway`, the nine
   programs under `adapters/cmd`, `SPEC.md`, the corpus, the catalog, `LICENSE`, `README.md`,
-  `SECURITY.md` and `THIRD_PARTY_NOTICES`;
+  `SECURITY.md` and `THIRD_PARTY_NOTICES`, and nothing else;
 - `checksums.txt`, the SHA-256 of each archive;
 - a build-provenance attestation for each archive, signed by GitHub for this workflow at the tagged
   commit;
@@ -28,6 +29,9 @@ What a release is not:
   ([design/publisher-google-oauth.md](design/publisher-google-oauth.md)); CI refuses a tree that
   holds one.
 
+Only `gateway` carries the release's version (`gateway version`, and the MCP server's
+`serverInfo.version`). The adapters are not stamped: an adapter is known by the archive it came in.
+
 Releases up to `v0.4.0` were made by hand and carry notes only.
 
 ## What is tested where
@@ -36,12 +40,13 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | --- | --- | --- | --- |
 | The gateway's tests and the corpus (CI) | yes | yes | yes |
 | The adapters' tests (CI) | yes | no | vetted, not run |
-| The released archive: `gateway version`, `gateway conform` on the corpus it carries, every program present | `amd64` and `arm64` | `arm64` | `amd64` |
-| The released archive: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
+| The released archive, run: `gateway version`, `gateway conform` on the corpus it carries, every program present | `amd64` and `arm64` | `arm64` | `amd64` |
+| The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
+| The released archive, read and not run: its files are the commit's, byte for byte; each program was built from the package of its name; it holds nothing else | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
-The `darwin/amd64` and `windows/arm64` archives are built and checksummed and are not run by
-anything. No check here reaches a platform account: an adapter that starts has not been shown to
-connect.
+The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
+by anything. Of the nine adapters, six are never started by a release check on any platform. No
+check here reaches a platform account: an adapter that starts has not been shown to connect.
 
 ## Once, before the first release
 
@@ -54,8 +59,14 @@ connect.
      -F 'reviewers[][type]=User' -F "reviewers[][id]=$(gh api user --jq .id)"
    ```
 
-2. Turn on release immutability for the repository (Settings → General → Releases), so that
-   publishing locks the tag and the assets.
+   What the workflow reads is that a reviewer rule exists. It does not read who the reviewers
+   are, and it cannot keep an administrator from changing the rule later. While the project has
+   one maintainer, the person who pushed the tag is the person who approves: the gate is then a
+   pause in which the draft is read, not a second person.
+
+2. Turn on release immutability for the repository (Settings → General → Releases). It locks the
+   tag and the assets from the moment a release is published, and not before: until then the
+   workflow itself holds the tag to the commit the run was started for.
 
 ## Prepare the release
 
@@ -73,7 +84,9 @@ connect.
    ```
 
    `gofmt -l` prints the files it would change and exits zero either way: read its output. Use the
-   GoReleaser version the workflow names. A snapshot build calls itself a snapshot
+   GoReleaser version and the Go toolchain the workflow names: `THIRD_PARTY_NOTICES` carries the
+   toolchain's own licence, so it is written and checked with the toolchain that links the
+   release. A snapshot build calls itself a snapshot
    (`gateway version` prints `gateway v<last tag>-SNAPSHOT-<commit>`); unpack one archive and run
    `./gateway conform --corpus corpus` in it.
 3. Merge the pull request.
@@ -91,45 +104,76 @@ git push origin <tag>
 If no signing key is configured, stop and settle the signing policy; do not replace a signed tag
 with an unsigned one. A tag is never moved or reused. A fix is a new version.
 
-A tag with a hyphen (`v0.5.0-rc.1`) is a prerelease: it is published as one and is never marked
-latest. The first release made by this workflow should be a release candidate, since no run of the
-workflow precedes it.
+A tag is `vX.Y.Z` or `vX.Y.Z-<prerelease>`, as SemVer 2.0.0 writes them. Build metadata
+(`+...`) is refused. A tag with a hyphen (`v0.5.0-rc.1`) is a prerelease: it is published as one
+and is never marked latest. The first release made by this workflow should be a release candidate,
+since no run of the workflow precedes it.
 
 ## What the workflow does
 
-1. **Admits the tag.** It is an exact SemVer version; its commit is on `main`; its notes exist; the
-   `production` environment requires a reviewer.
-2. **Runs CI at the tag.** The release calls [`ci.yml`](../.github/workflows/ci.yml) itself, so the
-   tagged state is held to every check a commit is held to, including the three that concern a
-   release: the third-party notices are what the linked modules say, every program under
-   `adapters/cmd` has a release build, and the tree carries no publisher registration.
+Every job works on the commit the run was started for, by its digest, and not on the tag's name.
+
+1. **Admits the tag.** It is a version as above; it names the commit the run was started for; that
+   commit is on `main`; its notes exist; the `production` environment has a reviewer rule.
+2. **Runs CI at that commit.** The release calls the commit's own
+   [`ci.yml`](../.github/workflows/ci.yml), so the release carries no second copy of the checks.
+   They include the three that concern a release: the third-party notices are what the linked
+   modules say, every program under `adapters/cmd` is named in the release build, and the tree
+   carries no publisher registration. A check `main` has gained since that commit is not asked.
 3. **Packages without publishing.** One reviewed toolchain, named exactly in the workflow; no cgo,
-   no workspace, no recorded paths. The tag is written into `gateway`, which is how
-   `gateway version` and the MCP server's `serverInfo` come to name it. File timestamps are set to
-   the tagged commit's. The archives are then opened and their corpus and catalog compared with the
-   tag's, byte for byte.
-4. **Runs each archive where it says it runs**, as the table above states.
-5. **Attests and drafts.** Only after every smoke test passes are the archives attested and a draft
-   release created, with the notes from the tag.
+   no workspace, no recorded paths. The tag is written into `gateway`. File timestamps are set to
+   the commit's. All six archives are then opened and read, as the table above states.
+4. **Runs the archives of four targets**, each on a runner of its own platform, as the table above
+   states.
+5. **Attests and drafts.** Only after every smoke test passes, and only if the tag still names the
+   commit, are the archives attested and a draft release created, with the notes from the commit.
 6. **Waits at the `production` gate.** Review the draft on the Releases page: the notes, the seven
-   assets, the checksums. Approve the pending deployment on the run, and the draft is published.
+   assets, the checksums. Approve the pending deployment on the run. The tag is held to the commit
+   once more, and the draft is published.
 
 No maintainer token and no repository secret is used.
 
-If a run fails, fix the cause on `main` and release a new version. Re-running a failed job is for a
-failure that was the runner's, not the tag's.
+### What exists before the approval
+
+The gate is on the release. Three things exist before it and are not secret:
+
+- the archives, as an artifact of the workflow run, which anyone who can read the repository's
+  runs can download for seven days;
+- the attestation of those archives, which is recorded in a public transparency log when it is
+  made. An attestation says which workflow built an archive, from which commit. It does not say a
+  maintainer approved it: only a published release says that;
+- the draft, which those who can write to the repository can see.
+
+### If a run fails
+
+Fix the cause on `main` and release a new version. Re-running is for a failure that was the
+runner's, not the commit's: re-run the failed jobs, not all jobs.
+
+The draft job refuses to run while a release under the tag exists, draft or published. If a failed
+run left a draft, read it, delete it by hand (`gh release delete <tag> --repo
+Judgment-Pack/judgment-pack-gateway`, which leaves the tag), and re-run the failed job. A published
+release is never deleted to make room for another.
 
 ## Verifying a download
 
 ```bash
 sha256sum --check --ignore-missing checksums.txt
-gh attestation verify <archive> --repo Judgment-Pack/judgment-pack-gateway
+gh attestation verify <archive> \
+  --repo Judgment-Pack/judgment-pack-gateway \
+  --signer-workflow Judgment-Pack/judgment-pack-gateway/.github/workflows/release.yml \
+  --source-ref refs/tags/<tag> \
+  --source-digest <commit>
 ```
 
-The first command holds the archive to `checksums.txt`; the second holds it to this repository's
-release workflow at the tagged commit. On macOS, `shasum -a 256 --check --ignore-missing
-checksums.txt`. `gh attestation verify` prints nothing when its output is not a terminal; add
-`--format json` in a script.
+The first command holds the archive to `checksums.txt`, which is only as good as where that file
+came from. The second holds the archive to an attestation made in this repository, by this
+workflow, in a run started for that tag, from that commit; each flag is one of those, and with
+`--repo` alone the command holds it to the repository and nothing more. `<commit>` is the full
+digest of the commit the tag names, as the release page and `git rev-parse '<tag>^{commit}'` give
+it. None of it says that a maintainer approved the release: that is what its being published
+says. On macOS, `shasum -a 256 --check --ignore-missing checksums.txt`.
+`gh attestation verify` prints nothing when its output is not a terminal; add `--format json` in a
+script.
 
 A consumer that builds from source instead pins the tag and the commit it names, and builds with
 `-trimpath -buildvcs=false`, as Desk's bundle does.

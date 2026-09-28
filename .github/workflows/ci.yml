@@ -133,24 +133,6 @@ jobs:
           go build -buildvcs=false -o "$RUNNER_TEMP/adapter-render" ./cmd/adapter-render
           "$RUNNER_TEMP/adapter-render" < ../testdata/rendering/examples/refund-decision.request.json > "$RUNNER_TEMP/render-record.json"
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/rendering/check_schema.py "$RUNNER_TEMP/render-record.json"
-      # What a release carries (docs/releasing.md), held on every commit so
-      # that a tag is never the first to learn of it: the licence of every
-      # module the released programs link, as the module cache holds them;
-      # a release build for every program under adapters/cmd; and no
-      # publisher's application registration in the connection companion
-      # (docs/design/publisher-google-oauth.md).
-      - name: The third-party notices are what the linked modules say
-        working-directory: ${{ github.workspace }}
-        run: python3 build/third_party_notices.py --check
-      - name: Every program under adapters/cmd is one a release builds
-        working-directory: ${{ github.workspace }}
-        run: |
-          want="$(ls adapters/cmd | sort)"
-          have="$(sed -n 's/^    binary: //p' .goreleaser.yml | grep -vx gateway | sort)"
-          [ "$want" = "$have" ] || { echo "adapters/cmd and .goreleaser.yml name different programs:"; diff <(echo "$want") <(echo "$have"); exit 1; }
-      - name: The tree carries no publisher registration
-        run: |
-          [ "$(tr -d '[:space:]' < cmd/gateway-connections/publisher-google.json)" = "{}" ] || { echo "publisher-google.json is not the empty registration"; exit 1; }
       # The shared descriptor vectors are what make_vectors.py writes, and
       # every schema they and the library fixtures say schema grammar 1
       # accepts is a schema under both dialects' meta-schemas
@@ -182,6 +164,48 @@ jobs:
           go list -deps -f '{{.ImportPath}} {{.Dir}}' ./... \
             | awk -v core="$core" '$2 == core || index($2, core "/") == 1 { print "resolves into the core: " $0; bad = 1 } END { exit bad }'
           go list -deps ./... | grep -qx plugin && { echo "an adapter imports plugin"; exit 1; } || true
+
+  # What a release carries (docs/releasing.md), held on every commit so that
+  # a tag is never the first to learn of it. The toolchain is the one
+  # release.yml names, exactly, and not the newest of its line as in the
+  # jobs above: the notices carry the toolchain's own licence, so they are
+  # held with the toolchain that links a release.
+  release-contents:
+    name: release contents
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: off
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: 1.26.5
+          cache-dependency-path: adapters/go.sum
+      - name: This is the toolchain the release workflow names
+        run: |
+          named="$(sed -n 's/^          go-version: \([0-9][0-9.]*\)$/\1/p' .github/workflows/release.yml)"
+          [ -n "$named" ] && [ "go$named" = "$(go env GOVERSION)" ] || { echo "release.yml names Go ${named:-nothing}, and this job runs $(go env GOVERSION)"; exit 1; }
+      # The licence of every module the released programs link, and of
+      # every linked package that carries its own, as the module cache
+      # holds them.
+      - name: The third-party notices are what the linked modules say
+        run: python3 build/third_party_notices.py --check
+      # The names in a file, compared with the directories: a first notice
+      # only. A build under the right name from the wrong package passes
+      # it, and is refused by the release workflow, which reads the
+      # archives.
+      - name: Every program under adapters/cmd is named in the release build
+        run: |
+          want="$(ls adapters/cmd | sort)"
+          have="$(sed -n 's/^    binary: //p' .goreleaser.yml | grep -vx gateway | sort)"
+          [ "$want" = "$have" ] || { echo "adapters/cmd and .goreleaser.yml name different programs:"; diff <(echo "$want") <(echo "$have"); exit 1; }
+      # No publisher's application registration in the connection companion
+      # (docs/design/publisher-google-oauth.md).
+      - name: The tree carries no publisher registration
+        run: |
+          [ "$(tr -d '[:space:]' < adapters/cmd/gateway-connections/publisher-google.json)" = "{}" ] || { echo "publisher-google.json is not the empty registration"; exit 1; }
 
   image:
     name: engine image

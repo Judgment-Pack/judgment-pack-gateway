@@ -4,11 +4,17 @@
 Usage: python3 build/third_party_notices.py [--check]
 
 A release archive carries binaries, and a binary carries the code of every
-module it was linked with. This asks the toolchain which modules those are,
-for every platform a release is built for, and copies each one's licence and
-notice files from the module cache, as downloaded and verified against
-go.sum. Nothing is fetched here that `go list` does not fetch, and no
-licence is named from memory.
+module it was linked with. This asks the toolchain which packages those are,
+for every platform a release is built for, and copies each module's licence
+and notice files from the module cache, as downloaded and verified against
+go.sum: the ones at the module's root, and the ones in a linked package's
+own directory or any directory above it, since a package taken from
+elsewhere keeps its own terms beside it. Nothing is fetched here that
+`go list` does not fetch, and no licence is named from memory.
+
+The Go toolchain's own licence is copied from the toolchain that runs this,
+so the file is written, and checked before a release is packaged, with the
+toolchain release.yml names.
 
 With --check nothing is written: the file in the tree is compared with what
 would be written, and a difference is a failure. CI runs it so, which is
@@ -42,26 +48,37 @@ def go(args, cwd, **env):
 
 
 def linked_modules():
-    """Every module but the main ones, as (path, version) -> directory."""
+    """Every module but the main ones, as (path, version) -> (root, directories of its linked packages)."""
     found = {}
-    template = '{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t{{.Dir}}{{end}}{{end}}'
+    template = '{{with .Module}}{{if not .Main}}{{.Path}}\t{{.Version}}\t{{.Dir}}\t{{$.Dir}}{{end}}{{end}}'
     for directory, packages in MODULES:
         for goos, goarch in TARGETS:
             for line in go(['list', '-deps', '-f', template, packages], ROOT / directory, GOOS=goos, GOARCH=goarch).splitlines():
                 if not line.strip():
                     continue
-                path, version, where = line.split('\t')
-                if not where:
+                path, version, where, package = line.split('\t')
+                if not where or not package:
                     raise SystemExit(f'{path} {version} is not in the module cache; run `go mod download` in {directory}/')
-                found[(path, version)] = Path(where)
+                root, linked = found.setdefault((path, version), (Path(where), set()))
+                linked.add(Path(package))
     return found
 
 
-def licence_files(directory, what):
-    files = sorted(entry for entry in directory.iterdir() if entry.is_file() and LICENCE_FILE.match(entry.name))
-    if not any(entry.name.upper().startswith(('LICENSE', 'LICENCE', 'COPYING')) for entry in files):
-        raise SystemExit(f'{what} carries no licence file in {directory}; it cannot be released until its terms are known')
-    return files
+def licence_files(root, linked, what):
+    """The licence files at the module's root, then those beside or above a linked package."""
+    directories = {root}
+    for package in linked:
+        while package != root:
+            if root not in package.parents:
+                raise SystemExit(f'{what}: the package directory {package} is not under the module root {root}')
+            directories.add(package)
+            package = package.parent
+    files = []
+    for directory in sorted(directories, key=lambda d: d.relative_to(root).as_posix()):
+        files += sorted(entry for entry in directory.iterdir() if entry.is_file() and LICENCE_FILE.match(entry.name))
+    if not any(entry.parent == root and entry.name.upper().startswith(('LICENSE', 'LICENCE', 'COPYING')) for entry in files):
+        raise SystemExit(f'{what} carries no licence file in {root}; it cannot be released until its terms are known')
+    return [(entry.relative_to(root).as_posix(), entry) for entry in files]
 
 
 def text_of(path):
@@ -77,7 +94,8 @@ def render():
         'runtime and with the Go modules listed below. The gateway itself, built',
         'from go/, links the standard library alone; every module listed is linked',
         'by an adapter, built from adapters/. Each is given below with the licence',
-        'and notice files it is distributed with, unedited.',
+        'and notice files it is distributed with, unedited: those at the module\'s',
+        'root, and those a linked package carries in its own directory.',
         '',
         'This file is written by build/third_party_notices.py from the module',
         'cache, for every platform a release is built for. Do not edit it: change',
@@ -91,11 +109,11 @@ def render():
     out += [f'- {path} {version}' for path, version in sorted(modules)]
     out.append('')
     goroot = Path(go(['env', 'GOROOT'], ROOT).strip())
-    sections = [('The Go programming language: standard library and runtime', goroot)]
-    sections += [(f'{path} {version}', modules[(path, version)]) for path, version in sorted(modules)]
-    for name, directory in sections:
-        for entry in licence_files(directory, name):
-            out += [RULE, name, entry.name, THIN, '', text_of(entry)]
+    sections = [('The Go programming language: standard library and runtime', goroot, set())]
+    sections += [(f'{path} {version}', *modules[(path, version)]) for path, version in sorted(modules)]
+    for name, root, linked in sections:
+        for shown, entry in licence_files(root, linked, name):
+            out += [RULE, name, shown, THIN, '', text_of(entry)]
     return '\n'.join(out)
 
 

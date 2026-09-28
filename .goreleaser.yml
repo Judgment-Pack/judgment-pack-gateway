@@ -3,10 +3,12 @@ version: 2
 
 project_name: judgment-pack-gateway
 
-# Both modules are built as CI and the image build them: no cgo, no
-# workspace, no recorded paths and no version-control stamp. The core and
-# the adapters stay two modules and ten executables; an archive puts them
-# side by side and links none of them to another (docs/adr/0001).
+# Both modules are built as the image builds them (Dockerfile): no cgo, no
+# workspace, no recorded paths and no version-control stamp. A release
+# build also drops the symbol table (-s -w), which neither the image nor
+# CI does. The core and the adapters stay two modules and ten executables;
+# an archive puts them side by side and links none of them to another
+# (docs/adr/0001).
 builds:
   # The core. The tag is written into it, because the module lives below
   # the repository's root and the toolchain reads no repository tag as its
@@ -34,8 +36,11 @@ builds:
       - v1
     mod_timestamp: "{{ .CommitTimestamp }}"
 
-  # The adapters, every program under adapters/cmd. The release workflow
-  # refuses a tag whose adapters/cmd names a program this list does not.
+  # The adapters, every program under adapters/cmd, and none of them
+  # stamped with the version: an adapter is known by the archive it came
+  # in. CI compares the names here with the directories under adapters/cmd,
+  # which is a first notice and not the check: the release workflow reads
+  # each archive and holds every program to the package of its name.
   - &adapter
     id: adapter-airbyte
     dir: adapters
