@@ -1,7 +1,8 @@
 # Response to the cloud-source roadmap review
 
-Status: implementation response, pending independent review. This is not a
-maintainer approval or a claim that the source reviewer approved the new code.
+Status: shipped in v0.3.0 (#149). It was written as an implementation response
+pending independent review, and is not a maintainer approval or a claim that the
+source reviewer approved the new code.
 
 The supplied Anthropic review evaluates the September 21 cloud-source proposal
 and reads gateway f62de27 / Desk 88009f9. It explicitly says no tests/build were

@@ -1,6 +1,6 @@
 # Personal storage file management
 
-Status: implemented locally; material review is required before merge.
+Status: shipped in v0.4.0 (#166).
 
 The `gateway-connections` private pipe supports browsing and explicitly requested
 file changes for Google Drive, Amazon S3 and the existing local Obsidian connection.

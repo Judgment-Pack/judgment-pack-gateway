@@ -1,8 +1,9 @@
 # Connection capability catalog
 
-Status: proposed; companion discovery contract, version 2. This change is separate
-from Notion/Obsidian connection review in PR #143 and requires its own material-
-decision review. It does not change the normative gateway receipt contract.
+Status: shipped in v0.3.0 (#144, amended in #148); companion discovery contract,
+version 2. It was proposed separately from the Notion/Obsidian connection review in
+PR #143 and flagged for its own material-decision review. It does not change the
+normative gateway receipt contract.
 
 ## Problem and behavior
 

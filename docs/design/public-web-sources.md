@@ -1,7 +1,6 @@
 # Selected public web sources
 
-Status: candidate, dependent on the connection catalog work. Different-vendor
-material-decision review is required before merge.
+Status: shipped in v0.3.0 (#148), building on the connection catalog.
 
 `adapter-web` consumes exactly `{"url":"https://example.com/policy"}` on stdin
 and returns an HTTP acquisition envelope containing an attachment-v1 record. It

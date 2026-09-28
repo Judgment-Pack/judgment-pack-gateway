@@ -1,8 +1,10 @@
 # S3 file source
 
-Status: implementation for review. Scope: read-only files in one explicitly
+Status: shipped in v0.3.0 (#151). Scope: read-only files in one explicitly
 configured general-purpose S3 bucket/prefix, in commercial AWS regions. This is
 not pack/chat storage, cloud deployment, account inventory or account-wide search.
+Changing files is the separate storage file management surface in
+[storage-files.md](storage-files.md), shipped in v0.4.0 (#166).
 
 ## Authentication and dependency decision
 
