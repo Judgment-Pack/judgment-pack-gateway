@@ -1,12 +1,13 @@
 package render
 
 import (
-	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"time"
 
@@ -98,9 +99,10 @@ const (
 // the record's members and no others, that each is of its form, and that the
 // file is what the record says of it -- the base64 is the one standard padded
 // encoding of bytes of the stated size whose SHA-256 is the stated digest,
-// and those bytes are an archive whose parts, read out of it, hold no more
-// than the bound the record states for the file. It says nothing of whether
-// the file is a correct rendering of any content, nor of what the parts are.
+// and those bytes are the archive the module's writer writes, of seven parts
+// that, read out of it, hold no more than the bound the record states for
+// the file. It says nothing of whether the file is a correct rendering of any
+// content, nor of what the parts hold.
 func Check(raw []byte) error {
 	if !nestedWithin(raw, recordNesting) {
 		return errors.New("the record nests deeper than a record does")
@@ -249,36 +251,70 @@ func Check(raw []byte) error {
 	return nil
 }
 
-// partsWithin holds a Word file to the bound on what its parts hold: it is
-// a ZIP archive, the sizes its entries state come to no more than the bound,
-// and each entry read out of the archive holds what it states. No more is
-// read of an entry than it states and one byte, so that what is read of the
-// whole file is within the bound and one byte an entry.
+// localHeaderLength is the length of the header an entry of a ZIP archive
+// begins with, before its name.
+const localHeaderLength = 30
+
+// partsWithin holds a Word file to being the archive this module's writer
+// writes, and to the bound on what its parts hold.
+//
+// The seven parts are taken out of the file from where the writer puts them:
+// one after another from the first byte, each a header, its name and its
+// data. The archive of those parts is then written again by the writer's own
+// code and compared with the file. A file that is that archive, byte for
+// byte, holds nothing the writer does not write: no other entry, no comment,
+// no byte before, between or after, and no header that says other than the
+// directory does. So no byte of the file belongs to two parts, and what is
+// read of the file to check it is the file.
+//
+// The sizes the parts state come to no more than the bound, and each part,
+// inflated, holds what it states under the checksum it states, and its data
+// holds that and nothing after it.
+//
+// It says what the archive is. It does not read the parts as XML, and says
+// nothing of what they hold.
 func partsWithin(file []byte, most int64) error {
-	archive, err := zip.NewReader(bytes.NewReader(file), int64(len(file)))
-	if err != nil {
-		return errors.New("file.bytes is not a ZIP archive")
+	notTheWriters := errors.New("file.bytes is not an archive of the seven parts as the adapter writes one")
+	parts := make([]packed, 0, len(partNames))
+	var stated int64
+	at := 0
+	for _, name := range partNames {
+		data := at + localHeaderLength + len(name)
+		if data > len(file) {
+			return notTheWriters
+		}
+		header := file[at:data]
+		long := func(i int) uint32 {
+			return uint32(header[i]) | uint32(header[i+1])<<8 | uint32(header[i+2])<<16 | uint32(header[i+3])<<24
+		}
+		p := packed{name: name, sum: long(14), unpacked: long(22)}
+		// The compressed size is the archive's own 32 bits, held to the
+		// file's length before it is added to anything.
+		compressed := int64(long(18))
+		if compressed > int64(len(file)-data) {
+			return notTheWriters
+		}
+		at = data + int(compressed)
+		p.data = file[data:at]
+		parts = append(parts, p)
+		stated += int64(p.unpacked)
 	}
-	var stated uint64
-	for _, entry := range archive.File {
-		if entry.UncompressedSize64 > uint64(most) {
-			return errors.New("the parts of the file hold more than rendering.bounds.maxFileBytes")
-		}
-		if stated += entry.UncompressedSize64; stated > uint64(most) {
-			return errors.New("the parts of the file hold more than rendering.bounds.maxFileBytes")
-		}
+	again, err := archiveOf(parts)
+	if err != nil || !bytes.Equal(again, file) {
+		return notTheWriters
 	}
-	for _, entry := range archive.File {
-		part, err := entry.Open()
-		if err != nil {
-			return errors.New("a part of the file cannot be read out of it")
-		}
-		held, err := io.Copy(io.Discard, io.LimitReader(part, int64(entry.UncompressedSize64)+1))
+	// Seven sizes of 32 bits each do not pass what 64 bits count.
+	if stated > most {
+		return errors.New("the parts of the file hold more than rendering.bounds.maxFileBytes")
+	}
+	for _, p := range parts {
+		data := bytes.NewReader(p.data)
+		part := flate.NewReader(data)
+		sum := crc32.NewIEEE()
+		// No more is read of a part than it states and one byte.
+		held, err := io.Copy(sum, io.LimitReader(part, int64(p.unpacked)+1))
 		part.Close()
-		// The archive's reader fails a part that holds more or less than
-		// it states, or whose checksum is not its own. The length is
-		// compared here as well, so that the bound does not rest on that.
-		if err != nil || uint64(held) != entry.UncompressedSize64 {
+		if err != nil || held != int64(p.unpacked) || sum.Sum32() != p.sum || data.Len() != 0 {
 			return errors.New("a part of the file does not hold what the archive states of it")
 		}
 	}

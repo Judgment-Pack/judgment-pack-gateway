@@ -1217,17 +1217,21 @@ func TestTheCheckRefusesARecordThatIsNotOne(t *testing.T) {
 		"blocks that is a string":           {func() { member("request")["blocks"] = "1" }, "request.blocks is not a positive integer"},
 		"textBytes that is a string":        {func() { member("request")["textBytes"] = "1" }, "request.textBytes is not a non-negative integer"},
 		"textBytes that is negative":        {func() { member("request")["textBytes"] = json.Number("-1") }, "request.textBytes is not a non-negative integer"},
-		"cites that is a string":            {func() { member("request")["cites"] = "x" }, "request.cites: not a JSON object"},
-		"cites with another member":         {func() { member("request", "cites")["receipt"] = "x" }, "request.cites: a member the contract does not define"},
-		"cites that is not a digest":        {func() { member("request", "cites")["decision"] = "x" }, "request.cites.decision is not a digest"},
-		"a file that is a string":           {func() { rec["file"] = "x" }, "file: not a JSON object"},
-		"a file with a name":                {func() { member("file")["name"] = "a.docx" }, "file: a member the contract does not define"},
-		"a media type of another format":    {func() { member("file")["mediaType"] = "application/pdf" }, "file.mediaType is not the media type of the format"},
-		"a size that is not the file's":     {func() { member("file")["size"] = json.Number(fmt.Sprint(len(file) + 1)) }, "file.size is not the size of the file"},
-		"a size that is a string":           {func() { member("file")["size"] = fmt.Sprint(len(file)) }, "file.size is not a positive integer"},
-		"a digest that is not the file's":   {func() { member("file")["sha256"] = "sha256:" + strings.Repeat("0", 64) }, "file.sha256 is not the digest of the file"},
-		"a digest that is not one":          {func() { member("file")["sha256"] = "sha256:0" }, "file.sha256 is not a digest"},
-		"bytes that are another file's":     {func() { member("file")["bytes"] = base64.StdEncoding.EncodeToString(other) }, "file.sha256 is not the digest of the file"},
+		// An integer is read as it is written: nothing written with a sign
+		// is one, though what it comes to is nothing.
+		"textBytes written as -0":         {func() { member("request")["textBytes"] = json.Number("-0") }, "request.textBytes is not a non-negative integer"},
+		"a duration written as -0":        {func() { member("rendering")["durationMs"] = json.Number("-0") }, "rendering.durationMs is not a non-negative integer"},
+		"cites that is a string":          {func() { member("request")["cites"] = "x" }, "request.cites: not a JSON object"},
+		"cites with another member":       {func() { member("request", "cites")["receipt"] = "x" }, "request.cites: a member the contract does not define"},
+		"cites that is not a digest":      {func() { member("request", "cites")["decision"] = "x" }, "request.cites.decision is not a digest"},
+		"a file that is a string":         {func() { rec["file"] = "x" }, "file: not a JSON object"},
+		"a file with a name":              {func() { member("file")["name"] = "a.docx" }, "file: a member the contract does not define"},
+		"a media type of another format":  {func() { member("file")["mediaType"] = "application/pdf" }, "file.mediaType is not the media type of the format"},
+		"a size that is not the file's":   {func() { member("file")["size"] = json.Number(fmt.Sprint(len(file) + 1)) }, "file.size is not the size of the file"},
+		"a size that is a string":         {func() { member("file")["size"] = fmt.Sprint(len(file)) }, "file.size is not a positive integer"},
+		"a digest that is not the file's": {func() { member("file")["sha256"] = "sha256:" + strings.Repeat("0", 64) }, "file.sha256 is not the digest of the file"},
+		"a digest that is not one":        {func() { member("file")["sha256"] = "sha256:0" }, "file.sha256 is not a digest"},
+		"bytes that are another file's":   {func() { member("file")["bytes"] = base64.StdEncoding.EncodeToString(other) }, "file.sha256 is not the digest of the file"},
 		"bytes without their padding": {func() {
 			member("file")["bytes"] = strings.TrimRight(base64.StdEncoding.EncodeToString(file[:len(file)-len(file)%3-1]), "=")
 		}, "file.bytes is not the one standard padded base64 encoding"},
@@ -1296,11 +1300,140 @@ func TestTheCheckRefusesARecordThatIsNotOne(t *testing.T) {
 	}
 }
 
-// The check holds the file to the bound on what its parts hold, by reading
-// them: a record whose file is within the bound as an archive and past it as
-// parts is refused, and so is one whose file is no archive, or an archive
-// that holds more than it states.
-func TestTheCheckHoldsThePartsToTheBound(t *testing.T) {
+// stored is one part of an archive as a test lays it out: what the entry's
+// own header says, what the directory says, and the bytes between them.
+type stored struct {
+	name                   string
+	version, flags, method uint16
+	time, date             uint16
+	sum, packed, unpacked  uint32
+	beside                 []byte
+	data                   []byte
+	// own is what the entry's own header says where that is to differ from
+	// the directory, or nil.
+	own *stored
+	// at is where the directory says the entry's header is, where that is to
+	// differ from where it is, or -1.
+	at int64
+}
+
+// layout is an archive: data before it, its parts, how many the record that
+// ends it says there are, a comment, and data after it.
+type layout struct {
+	before, comment, after []byte
+	parts                  []stored
+	count                  int
+}
+
+// laidOut reads a file the adapter wrote into the layout that writes it
+// again, each part compressed as the writer compresses it.
+func laidOut(t *testing.T, file []byte) layout {
+	t.Helper()
+	archive, err := zip.NewReader(bytes.NewReader(file), int64(len(file)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var l layout
+	for _, entry := range archive.File {
+		plain := docxPart(t, file, entry.Name)
+		var packed bytes.Buffer
+		deflate, err := flate.NewWriter(&packed, flate.BestCompression)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deflate.Write(plain)
+		deflate.Close()
+		l.parts = append(l.parts, stored{
+			name: entry.Name, version: 20, method: zip.Deflate, date: 0x21,
+			sum: crc32.ChecksumIEEE(plain), packed: uint32(packed.Len()), unpacked: uint32(len(plain)),
+			data: packed.Bytes(), at: -1,
+		})
+	}
+	l.count = len(l.parts)
+	return l
+}
+
+// bytes writes the archive, byte by byte as the format has it.
+func (l layout) bytes() []byte {
+	var out bytes.Buffer
+	short := func(b *bytes.Buffer, v uint16) { b.Write([]byte{byte(v), byte(v >> 8)}) }
+	long := func(b *bytes.Buffer, v uint32) { short(b, uint16(v)); short(b, uint16(v>>16)) }
+	out.Write(l.before)
+	var directory bytes.Buffer
+	for _, p := range l.parts {
+		at := int64(out.Len())
+		own := p
+		if p.own != nil {
+			own = *p.own
+		}
+		out.WriteString("PK\x03\x04")
+		short(&out, own.version)
+		short(&out, own.flags)
+		short(&out, own.method)
+		short(&out, own.time)
+		short(&out, own.date)
+		long(&out, own.sum)
+		long(&out, own.packed)
+		long(&out, own.unpacked)
+		short(&out, uint16(len(own.name)))
+		short(&out, uint16(len(own.beside)))
+		out.WriteString(own.name)
+		out.Write(own.beside)
+		out.Write(p.data)
+		if p.at >= 0 {
+			at = p.at
+		}
+		directory.WriteString("PK\x01\x02")
+		short(&directory, p.version)
+		short(&directory, p.version)
+		short(&directory, p.flags)
+		short(&directory, p.method)
+		short(&directory, p.time)
+		short(&directory, p.date)
+		long(&directory, p.sum)
+		long(&directory, p.packed)
+		long(&directory, p.unpacked)
+		short(&directory, uint16(len(p.name)))
+		short(&directory, uint16(len(p.beside)))
+		short(&directory, 0)
+		short(&directory, 0)
+		short(&directory, 0)
+		long(&directory, 0)
+		long(&directory, uint32(at))
+		directory.WriteString(p.name)
+		directory.Write(p.beside)
+	}
+	begins := out.Len()
+	out.Write(directory.Bytes())
+	out.WriteString("PK\x05\x06")
+	short(&out, 0)
+	short(&out, 0)
+	short(&out, uint16(l.count))
+	short(&out, uint16(l.count))
+	long(&out, uint32(directory.Len()))
+	long(&out, uint32(begins))
+	short(&out, uint16(len(l.comment)))
+	out.Write(l.comment)
+	out.Write(l.after)
+	return out.Bytes()
+}
+
+// The archive is what the contract says the writer writes, and nothing the
+// contract does not say: written again from its parts by the rules of the
+// format, one part after another with the directory after the last, it is
+// the file, byte for byte.
+func TestTheArchiveIsLaidOutAsTheContractSays(t *testing.T) {
+	_, file, _ := render(t, arguments("docx", sampleDocument), DefaultConfig())
+	if again := laidOut(t, file).bytes(); !bytes.Equal(again, file) {
+		t.Fatalf("the archive written again from its parts is %d bytes and the file is %d, or they differ", len(again), len(file))
+	}
+}
+
+// The check holds the file to being the archive the writer writes and to the
+// bound on what its parts hold. Each row is the writer's archive with one
+// thing about it changed, and what the check says of it. A file cut short
+// anywhere is refused as well, and the check reads nothing past its end.
+func TestTheCheckHoldsTheFileToTheWritersArchive(t *testing.T) {
 	_, file, out := render(t, arguments("docx", sampleDocument), DefaultConfig())
 	held := unpacked(t, file)
 	with := func(file []byte, maxFile int64) []byte {
@@ -1323,83 +1456,123 @@ func TestTheCheckHoldsThePartsToTheBound(t *testing.T) {
 	if err := Check(with(file, held)); err != nil {
 		t.Fatalf("a file whose parts are at the bound: %v", err)
 	}
+	const (
+		notTheWriters = "file.bytes is not an archive of the seven parts as the adapter writes one"
+		overBound     = "the parts of the file hold more than rendering.bounds.maxFileBytes"
+		notAsStated   = "a part of the file does not hold what the archive states of it"
+	)
+	within := func(bound int64, change func(l *layout)) []byte {
+		l := laidOut(t, file)
+		change(&l)
+		return with(l.bytes(), bound)
+	}
+	changed := func(change func(l *layout)) []byte { return within(1<<20, change) }
+	// Another part for the rows that need one: the document part, as it is.
+	document := laidOut(t, file).parts[3]
+	plain := docxPart(t, file, document.name)
+	for cut := 0; cut < len(file); cut += 7 {
+		if err := Check(with(file[:cut+1], 1<<20)); cut+1 < len(file) && (err == nil || !strings.Contains(err.Error(), notTheWriters)) {
+			t.Fatalf("the file cut to %d bytes: the check says %v", cut+1, err)
+		}
+	}
 	for name, c := range map[string]struct {
 		record []byte
 		says   string
 	}{
-		"parts a byte past the bound":      {with(file, held-1), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
-		"a bound that is the archive's":    {with(file, int64(len(file))), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
-		"a file that is no archive":        {with([]byte("not an archive"), 1<<20), "file.bytes is not a ZIP archive"},
-		"a part that holds more than said": {with(misstated(t, 10, 100000), 1<<20), "a part of the file does not hold what the archive states of it"},
-		"a part that holds less than said": {with(misstated(t, 100000, 10), 1<<20), "a part of the file does not hold what the archive states of it"},
-		"a part that says it is past all":  {with(misstated(t, 1<<40, 10), 1<<20), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
-		// Two parts whose stated sizes come to nothing when they are added
-		// as the archive holds them, in 64 bits: each is held to the bound
-		// before it is added, so the second is refused for its own size.
-		"parts that overflow their sum":    {with(archiveOf(t, entryOf("a.xml", 10, 10, zip.Deflate, true), entryOf("b.xml", 1<<64-10, 10, zip.Deflate, true)), 1<<20), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
-		"a part compressed another way":    {with(archiveOf(t, entryOf("a.xml", 10, 10, 99, true)), 1<<20), "a part of the file cannot be read out of it"},
-		"a part whose checksum is not its": {with(archiveOf(t, entryOf("a.xml", 10, 10, zip.Deflate, false)), 1<<20), "a part of the file does not hold what the archive states of it"},
+		"parts a byte past the bound":   {with(file, held-1), overBound},
+		"a bound that is the archive's": {with(file, int64(len(file))), overBound},
+		"a file that is no archive":     {with([]byte("not an archive, and long enough to hold the record that would end one: "+strings.Repeat("x", 600)), 1<<20), notTheWriters},
+		"a file too short to be one":    {with([]byte("PK\x05\x06"), 1<<20), notTheWriters},
+		"six parts":                     {changed(func(l *layout) { l.parts, l.count = l.parts[:6], 6 }), notTheWriters},
+		"eight parts":                   {changed(func(l *layout) { l.parts, l.count = append(l.parts, document), 8 }), notTheWriters},
+		"eight parts, said to be seven": {changed(func(l *layout) { l.parts = append(l.parts, document) }), notTheWriters},
+		// Four thousand entries over one stream, each said to hold nothing:
+		// refused for their number, by the record that ends the archive,
+		// before any of them is read.
+		"four thousand parts over one stream": {within(64<<20, func(l *layout) {
+			empty := document
+			empty.unpacked, empty.at = 0, 0
+			for len(l.parts) < 4000 {
+				l.parts = append(l.parts, empty)
+			}
+			l.count = len(l.parts)
+		}), notTheWriters},
+		"parts in another order":    {changed(func(l *layout) { l.parts[5], l.parts[6] = l.parts[6], l.parts[5] }), notTheWriters},
+		"a part under another name": {changed(func(l *layout) { l.parts[3].name = "word/document.XML" }), notTheWriters},
+		"a part twice, for another": {changed(func(l *layout) { l.parts[4] = l.parts[3] }), notTheWriters},
+		"a part that is not compressed": {changed(func(l *layout) {
+			l.parts[3].method, l.parts[3].data, l.parts[3].packed = zip.Store, plain, uint32(len(plain))
+		}), notTheWriters},
+		"a part compressed another way":   {changed(func(l *layout) { l.parts[3].method = 99 }), notTheWriters},
+		"a part with a flag":              {changed(func(l *layout) { l.parts[3].flags = 0x800 }), notTheWriters},
+		"a part of another day":           {changed(func(l *layout) { l.parts[3].date = 0x5b3c }), notTheWriters},
+		"a part of another hour":          {changed(func(l *layout) { l.parts[3].time = 0x6000 }), notTheWriters},
+		"a part of another version":       {changed(func(l *layout) { l.parts[3].version = 45 }), notTheWriters},
+		"a part with something beside it": {changed(func(l *layout) { l.parts[3].beside = []byte{0x99, 0x99, 0, 0} }), notTheWriters},
+		"a comment on the archive":        {changed(func(l *layout) { l.comment = []byte("a comment") }), notTheWriters},
+		"data before the archive":         {changed(func(l *layout) { l.before = []byte("before") }), notTheWriters},
+		"data after the archive":          {changed(func(l *layout) { l.after = []byte("after") }), notTheWriters},
+		"a header with another checksum": {changed(func(l *layout) {
+			own := l.parts[3]
+			own.sum++
+			l.parts[3].own = &own
+		}), notTheWriters},
+		"a header with another size": {changed(func(l *layout) {
+			own := l.parts[3]
+			own.unpacked++
+			l.parts[3].own = &own
+		}), notTheWriters},
+		"a header with another name": {changed(func(l *layout) {
+			own := l.parts[3]
+			own.name = "word/document.xmL"
+			l.parts[3].own = &own
+		}), notTheWriters},
+		"a header with something beside the name": {changed(func(l *layout) {
+			own := l.parts[3]
+			own.beside = []byte{0x99, 0x99, 0, 0}
+			l.parts[3].own = &own
+		}), notTheWriters},
+		// The directory says two parts begin where one does, so that the
+		// bytes of one would be read for both.
+		"two parts over the same bytes":    {changed(func(l *layout) { l.parts[4].at = 0 }), notTheWriters},
+		"a part that holds more than said": {changed(func(l *layout) { l.parts[3].unpacked-- }), notAsStated},
+		"a part that holds less than said": {changed(func(l *layout) { l.parts[3].unpacked++ }), notAsStated},
+		"a part whose checksum is not its": {changed(func(l *layout) { l.parts[3].sum++ }), notAsStated},
+		// A checksum of nothing is one the archive's reader does not
+		// compare. The check compares it.
+		"a part whose checksum is said to be nothing": {changed(func(l *layout) { l.parts[3].sum = 0 }), notAsStated},
+		"a part that says it is past the bound":       {changed(func(l *layout) { l.parts[3].unpacked = 1<<20 + 1 }), overBound},
+		// The archive is the writer's in every byte, and one part's data
+		// holds three bytes after what it holds.
+		"a part with bytes after what it holds": {changed(func(l *layout) {
+			l.parts[3].data = append(append([]byte{}, l.parts[3].data...), 0, 0, 0)
+			l.parts[3].packed += 3
+		}), notAsStated},
+		// The archive is the writer's in every byte, and one part's data is
+		// all of what it holds with no end to it: a reader that stopped at
+		// the length stated would not find that out.
+		"a part whose data does not end": {changed(func(l *layout) {
+			var open bytes.Buffer
+			deflate, _ := flate.NewWriter(&open, flate.BestCompression)
+			deflate.Write(plain)
+			deflate.Flush()
+			l.parts[3].data, l.parts[3].packed = open.Bytes(), uint32(open.Len())
+		}), notAsStated},
+		"a part said to be longer than the file": {changed(func(l *layout) {
+			own := l.parts[0]
+			own.packed = 1 << 30
+			l.parts[0].own = &own
+		}), notTheWriters},
+		"a part said to be as long as can be said": {changed(func(l *layout) {
+			own := l.parts[0]
+			own.packed = 1<<32 - 1
+			l.parts[0].own = &own
+		}), notTheWriters},
 	} {
 		if err := Check(c.record); err == nil || !strings.Contains(err.Error(), c.says) {
 			t.Errorf("%s: the check says %v, want it to say %q", name, err, c.says)
 		}
 	}
-}
-
-// entry is one part of an archive made for a test: the size it states, the
-// bytes it holds, how it says it is compressed, and whether the checksum it
-// states is its own.
-type entry struct {
-	name   string
-	states uint64
-	holds  int
-	method uint16
-	summed bool
-}
-
-func entryOf(name string, states uint64, holds int, method uint16, summed bool) entry {
-	return entry{name: name, states: states, holds: holds, method: method, summed: summed}
-}
-
-// archiveOf is an archive of the parts given, each deflated whatever it
-// says of itself.
-func archiveOf(t *testing.T, entries ...entry) []byte {
-	t.Helper()
-	var out bytes.Buffer
-	archive := zip.NewWriter(&out)
-	for _, e := range entries {
-		data := bytes.Repeat([]byte("x"), e.holds)
-		var compressed bytes.Buffer
-		deflate, err := flate.NewWriter(&compressed, flate.BestCompression)
-		if err != nil {
-			t.Fatal(err)
-		}
-		deflate.Write(data)
-		deflate.Close()
-		sum := crc32.ChecksumIEEE(data)
-		if !e.summed {
-			sum++
-		}
-		part, err := archive.CreateRaw(&zip.FileHeader{
-			Name: e.name, Method: e.method, CreatorVersion: 45, ReaderVersion: 45,
-			CRC32: sum, CompressedSize64: uint64(compressed.Len()), UncompressedSize64: e.states,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		part.Write(compressed.Bytes())
-	}
-	if err := archive.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return out.Bytes()
-}
-
-// misstated is an archive of one part that states one size and holds
-// another.
-func misstated(t *testing.T, states uint64, holds int) []byte {
-	t.Helper()
-	return archiveOf(t, entryOf("word/document.xml", states, holds, zip.Deflate, true))
 }
 
 // The readers of single values take a value of their own kind, written as

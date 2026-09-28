@@ -206,8 +206,10 @@ record of part of a rendering: a record exists only where there is a file.
 **An output that fails is the one case with something on stdout.** Everything above is
 decided before the adapter writes anything. Writing the record can itself fail, and can fail
 after stdout has taken part of it: the adapter then exits 1 with `adapter-failed`, and what
-stdout took is not a record. The gateway reads none of the output of a source that exited
-with a failure (`runSource`, `go/serve.go`), so nothing is retained and nothing is minted.
+stdout took is not a record. That holds where stdout is a pipe whose reader has gone: the
+adapter ignores the signal such a write raises, so that the write fails and is reported. The
+gateway reads none of the output of a source that exited with a failure (`runSource`,
+`go/serve.go`), so nothing is retained and nothing is minted.
 
 **Retrying is a new acquisition.** `/acquire` is not idempotent: the same arguments sent twice
 mint two receipts over two records, which hold the same file.
@@ -217,8 +219,9 @@ mint two receipts over two records, which hold the same file.
 One JSON object, written in the canonical form of SPEC.md §1.1: member names in code-point
 order, integers only. Every member below is present in every version 1 record; a member
 without a value is `null`, never absent. This is the record of the request under
-[How it is wired](#how-it-is-wired), as one build of the adapter wrote it, laid out here for
-reading and with the file's base64 left out:
+[How it is wired](#how-it-is-wired), as one build of the adapter wrote it with every bound at
+its default, laid out here for reading and with the file's base64 left out. The command line
+shown there raises `--max-output`, and its record states that bound as `6291456`:
 
 ```json
 {
@@ -230,8 +233,8 @@ reading and with the file's base64 left out:
     "size": 2895
   },
   "provenance": {
-    "adapter": {"digest": "sha256:195523c8ade7a0b848ecdf575d8e00e5ac6c72aafdacf69c733c50d0e0b99edc", "name": "adapter-render", "version": "0"},
-    "observedAt": "2026-09-28T20:58:03Z"
+    "adapter": {"digest": "sha256:a23bf45390e53956555deb55198cf93673a7e36001c8b3bf4cd6661fd5f4568e", "name": "adapter-render", "version": "0"},
+    "observedAt": "2026-09-28T21:40:58Z"
   },
   "renderVersion": "1",
   "rendering": {
@@ -279,6 +282,17 @@ reading and with the file's base64 left out:
 
 The file is a ZIP archive of seven XML parts: the content types, the package's relationships,
 the properties, the document, the document's relationships, the styles and the numbering.
+
+**How the archive is laid out.** The seven parts are its entries, by these names and in this
+order: `[Content_Types].xml`, `_rels/.rels`, `docProps/core.xml`, `word/document.xml`,
+`word/_rels/document.xml.rels`, `word/styles.xml`, `word/numbering.xml`. Each is deflated, and
+is stated by its own header and by the directory in the same words: version 2.0, no flag, the
+one timestamp, its checksum and its two sizes, its name and nothing beside the name. The
+entries lie one after another from the first byte of the file. The directory follows the
+last of them, the record that ends the archive follows the directory, and nothing follows
+that: no comment, and no byte before, between or after. A test writes the archive again from
+its parts by these rules, in code of its own and not the writer's, and holds it to be the
+file, byte for byte.
 
 **What it holds.** Every block in the order given, as the heading, the paragraph, the list or
 the table it was; every run with the emphasis it had; every character of every text. A link
@@ -357,10 +371,23 @@ as a reader of the file is given them, and the bytes of the archive. The parts h
 longer of the two in every file the adapter has been seen to write, so they are what the
 bound meets, and the archive is held to it as a second guard.
 
-The adapter refuses a file past either. `render.Check` holds a record to both as well: it
-reads the parts out of the file, no further than each states and one byte, and refuses a
-record whose parts hold more than `rendering.bounds.maxFileBytes`, or other than the archive
-states of them. A consumer that runs the check can take that member as a bound on what
+The adapter refuses a file past either. `render.Check` holds a record to both as well, and
+to the layout of the archive. It takes the seven parts out of the file from where the writer
+puts them, writes the archive of those parts again with the writer's own code, and refuses a
+file that is not that archive byte for byte: one with other entries, or with thousands of
+them, with entries that share their bytes, with a comment, or with any byte the writer does
+not write. It then inflates each part, no further than the part states and one byte, and
+refuses a record whose parts together hold more than `rendering.bounds.maxFileBytes`, or a
+part that holds other than it states, whose checksum is not the one stated, or whose data
+holds anything after what it holds. What the check reads of a file is the file, and what it
+inflates is within the bound and a byte for each part.
+
+The check writes the archive with the writer's code, so what it holds a file to is what the
+writer writes. That what the writer writes is the layout stated under
+[The Word file](#the-word-file) is held by the tests, which read and write the archive by the
+format's rules in code of their own.
+
+A consumer that runs the check can take `rendering.bounds.maxFileBytes` as a bound on what
 opening the file unpacks. One that does not enforces a limit of its own as it extracts, as
 it would for any archive.
 
@@ -370,8 +397,8 @@ past the bound. That saves work. It is not a bound on what the adapter holds, wh
 the arguments as read, one block past the point where the writing stops, and the parts
 before they are compressed. One block can carry the whole text of a request, and the XML is
 longer than the request that carried it: about fifteen times the request's bytes at the worst
-found, which is twenty-two times the text's, for text that alternates an ampersand and a
-tab. An operator who raises `--max-request` raises that with it.
+found, which is twenty-two and a half times the text's, for text that alternates an
+ampersand and a tab. An operator who raises `--max-request` raises that with it.
 
 A record past `--max-output` is not cut, and a file past `--max-file` is not cut: the adapter
 refuses. With the defaults as they stand, a file of more than about 766 KiB is refused with
@@ -434,17 +461,18 @@ Changelog:
 `render.Check` in `adapters/render` is the reference check of the record: it takes a record's
 bytes and says whether they are a version 1 record — the members closed, each of its form, and
 the file what the record says of it, its base64 the one encoding of bytes of the stated size
-and digest, and those bytes an archive whose parts hold no more than the record's bound on
-the file. It says nothing of whether the file is a correct rendering of any content, nor of
-what its parts are. The adapter holds every record it writes to the check before it writes
-it.
+and digest, and those bytes the archive the writer writes, of seven parts that hold no more
+than the record's bound on the file. It says nothing of whether the file is a correct
+rendering of any content, nor of what its parts hold: it does not read them as XML. The
+adapter holds every record it writes to the check before it writes it.
 
 `testdata/rendering/arguments-v1.schema.json` and `testdata/rendering/render-v1.schema.json`
 describe the arguments and the record as JSON Schema. They check each value on its own. The
 rules that relate values are the adapter's and the check's: that every row of a table holds
 the same number of cells, that the size and the digest are the file's, that the file's parts
-are within the bound. And a schema is looser than the adapter in five places, each stated in
-the schema's own description and held by the script as something the schema admits:
+are within the bound, that the file is laid out as the writer lays it out. And a schema is
+looser than the adapter in five places, each stated in the schema's own description and,
+where a parsed value can show it, held by the script as something the schema admits:
 
 - a schema counts a length in characters where the adapter counts bytes of UTF-8, so a title
   of 128 characters of two bytes each passes the schemas, and neither the adapter nor the
@@ -452,9 +480,10 @@ the schema's own description and held by the script as something the schema admi
 - the arguments schema does not parse a target, so it admits an `http` target that names a
   port and no host;
 - the arguments schema does not know the operator's `--max-blocks`;
-- neither schema knows the canonical domain. A schema reads JSON that has been parsed, where
-  a member named twice is one member and `7.0` is the integer 7, and both are outside the
-  domain;
+- neither schema knows how a value was written. A schema reads JSON that has been parsed,
+  where a member named twice is one member, `7.0` is the integer 7 and `-0` is 0. The first
+  two are outside the canonical domain. The third is inside it, and the adapter and the check
+  refuse it all the same: they read an integer as digits, with no sign;
 - the record schema's pattern for an instant admits a day the month does not have, the
   thirtieth of February, which the check refuses.
 

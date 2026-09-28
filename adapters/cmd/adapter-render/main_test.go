@@ -191,12 +191,40 @@ func TestARefusalReachesStderrAsItsLine(t *testing.T) {
 // with asCommand set, it is the command and runs no test.
 func TestMain(m *testing.M) {
 	if os.Getenv(asCommand) == "1" {
-		os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+		main()
 	}
 	os.Exit(m.Run())
 }
 
 const asCommand = "ADAPTER_RENDER_TEST_AS_COMMAND"
+
+// A stdout that is a pipe whose reader has gone is a record that cannot be
+// written, and the adapter says so and exits 1: it is not ended by the
+// signal such a write raises.
+func TestAStdoutWhoseReaderHasGoneIsAFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a pipe whose reader has gone raises no signal on Windows")
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader.Close()
+	defer writer.Close()
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), asCommand+"=1")
+	cmd.Stdin = strings.NewReader(request)
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = writer, &stderr
+	err = cmd.Run()
+	if exit := cmd.ProcessState.ExitCode(); exit != 1 || stderr.String() != "adapter-failed: stdout could not be written\n" {
+		t.Fatalf("exit %d (%v): %q", exit, err, stderr.String())
+	}
+}
 
 // An adapter that cannot read its own executable cannot say what it is, and
 // refuses: nothing is rendered by an adapter the record could not identify.

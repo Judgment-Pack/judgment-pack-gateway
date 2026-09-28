@@ -67,6 +67,20 @@ const (
 	tableWidth = 9000
 )
 
+// partNames are the parts of a Word file as this writer writes one, in the
+// order it writes them: the content types, the package's relationships, the
+// properties, the document, the document's relationships, the styles and the
+// numbering.
+var partNames = [7]string{
+	"[Content_Types].xml",
+	"_rels/.rels",
+	"docProps/core.xml",
+	"word/document.xml",
+	"word/_rels/document.xml.rels",
+	"word/styles.xml",
+	"word/numbering.xml",
+}
+
 // errPartsOverBound is a file whose parts would hold more than the bound.
 var errPartsOverBound = errors.New("the parts of the file hold more than the bound")
 
@@ -86,13 +100,13 @@ func writeDocx(doc Document, most int64) ([]byte, error) {
 		return nil, errPartsOverBound
 	}
 	parts := []part{
-		{"[Content_Types].xml", contentTypes},
-		{"_rels/.rels", packageRelationships},
-		{"docProps/core.xml", coreProperties(doc)},
-		{"word/document.xml", body},
-		{"word/_rels/document.xml.rels", w.relationships()},
-		{"word/styles.xml", styles(doc.Language)},
-		{"word/numbering.xml", w.numbering()},
+		{partNames[0], contentTypes},
+		{partNames[1], packageRelationships},
+		{partNames[2], coreProperties(doc)},
+		{partNames[3], body},
+		{partNames[4], w.relationships()},
+		{partNames[5], styles(doc.Language)},
+		{partNames[6], w.numbering()},
 	}
 	var held int64
 	for _, p := range parts {
@@ -101,10 +115,72 @@ func writeDocx(doc Document, most int64) ([]byte, error) {
 	if held > most {
 		return nil, errPartsOverBound
 	}
+	stored := make([]packed, 0, len(parts))
+	for _, p := range parts {
+		entry, err := deflated(p)
+		if err != nil {
+			return nil, err
+		}
+		stored = append(stored, entry)
+	}
+	return archiveOf(stored)
+}
+
+// packed is one part as the archive holds it: its name, the checksum and the
+// length of what it holds, and that, deflated.
+type packed struct {
+	name     string
+	sum      uint32
+	unpacked uint32
+	data     []byte
+}
+
+// deflated compresses a part.
+func deflated(p part) (packed, error) {
+	var compressed bytes.Buffer
+	deflate, err := flate.NewWriter(&compressed, flate.BestCompression)
+	if err != nil {
+		return packed{}, err
+	}
+	if _, err := deflate.Write([]byte(p.data)); err != nil {
+		return packed{}, err
+	}
+	if err := deflate.Close(); err != nil {
+		return packed{}, err
+	}
+	return packed{name: p.name, sum: crc32.ChecksumIEEE([]byte(p.data)), unpacked: uint32(len(p.data)), data: compressed.Bytes()}, nil
+}
+
+// archiveOf writes the archive of the parts given, in the order given: each
+// with its sizes and its checksum in its own header, which is what keeps the
+// archive free of the trailing descriptors a streamed entry carries, then the
+// directory, then the record that ends the archive. It is the one place an
+// archive is written, so that the check of a record, which writes the archive
+// of a file's parts again to compare it with the file, writes it as the
+// writer does.
+func archiveOf(parts []packed) ([]byte, error) {
 	var out bytes.Buffer
 	archive := zip.NewWriter(&out)
 	for _, p := range parts {
-		if err := store(archive, p); err != nil {
+		header := &zip.FileHeader{
+			Name: p.name,
+			// An entry written raw states its own versions: 2.0, the
+			// version of the archive format that a deflated entry needs to
+			// be read.
+			CreatorVersion:     archiveVersion,
+			ReaderVersion:      archiveVersion,
+			Method:             zip.Deflate,
+			ModifiedDate:       archiveDate,
+			ModifiedTime:       archiveTime,
+			CRC32:              p.sum,
+			CompressedSize64:   uint64(len(p.data)),
+			UncompressedSize64: uint64(p.unpacked),
+		}
+		entry, err := archive.CreateRaw(header)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := entry.Write(p.data); err != nil {
 			return nil, err
 		}
 	}
@@ -112,42 +188,6 @@ func writeDocx(doc Document, most int64) ([]byte, error) {
 		return nil, err
 	}
 	return out.Bytes(), nil
-}
-
-// store compresses a part and writes it with its sizes and its checksum in
-// its header, which is what keeps the archive free of the trailing
-// descriptors a streamed entry carries.
-func store(archive *zip.Writer, p part) error {
-	var compressed bytes.Buffer
-	deflate, err := flate.NewWriter(&compressed, flate.BestCompression)
-	if err != nil {
-		return err
-	}
-	if _, err := deflate.Write([]byte(p.data)); err != nil {
-		return err
-	}
-	if err := deflate.Close(); err != nil {
-		return err
-	}
-	header := &zip.FileHeader{
-		Name: p.name,
-		// An entry written raw states its own versions: 2.0, the version
-		// of the archive format that a deflated entry needs to be read.
-		CreatorVersion:     archiveVersion,
-		ReaderVersion:      archiveVersion,
-		Method:             zip.Deflate,
-		ModifiedDate:       archiveDate,
-		ModifiedTime:       archiveTime,
-		CRC32:              crc32.ChecksumIEEE([]byte(p.data)),
-		CompressedSize64:   uint64(compressed.Len()),
-		UncompressedSize64: uint64(len(p.data)),
-	}
-	entry, err := archive.CreateRaw(header)
-	if err != nil {
-		return err
-	}
-	_, err = entry.Write(compressed.Bytes())
-	return err
 }
 
 const contentTypes = xmlHeader +

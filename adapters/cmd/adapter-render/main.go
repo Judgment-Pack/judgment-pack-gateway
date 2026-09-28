@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"adapters/internal/redact"
@@ -21,6 +23,11 @@ import (
 )
 
 func main() {
+	// A write to a pipe whose reader has gone ends a program by a signal,
+	// where the pipe is its stdout, before the program can say anything.
+	// The signal is ignored, so that the write fails as any other does and
+	// the adapter reports it.
+	signal.Ignore(syscall.SIGPIPE)
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 

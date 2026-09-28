@@ -994,7 +994,8 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   `renderer-not-configured`, `timeout`, `file-over-bound`, `record-over-bound`,
   `adapter-failed`. A rendering is whole or it is refused: the adapter writes no record of
   part of one. A write of the record that fails part-way exits 1, and may leave the
-  beginning of a record on stdout, which the gateway does not read.
+  beginning of a record on stdout, which the gateway does not read. The adapter ignores
+  the signal a write to a closed pipe raises, so that such a write is reported too.
 - **The Word writer** ([render/docx.go](render/docx.go)) is written in this module against
   the standard library. It writes seven parts in one order, each under one fixed timestamp and
   compressed before it is stored, and takes nothing from the clock or the environment, so the
@@ -1007,7 +1008,8 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   and never follows it.
 - **The record** is held to `render.Check`, the contract's reference check, before the
   adapter writes it: the members closed, the size and the digest those of the file the
-  base64 holds, and the file's parts within the bound the record states. `cites.decision` is copied into it as the caller's assertion and checked for
+  base64 holds, the file the seven parts laid out as the writer lays them out, and the
+  parts within the bound the record states. `cites.decision` is copied into it as the caller's assertion and checked for
   its form only.
 - **The bounds** are `--max-request` (1 MiB), `--max-blocks` (2,000), `--max-file` (4 MiB),
   `--max-output` (1 MiB) and `--timeout` (25 s). `--max-file` bounds the archive and what its
