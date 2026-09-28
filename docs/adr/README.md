@@ -98,4 +98,4 @@ no conformance status on anything.
 | [0002](0002-adapters-report-in-the-envelope.md)     | Adapters report their acquisition inside the result envelope; the gateway keeps shape, statement commitment and page items its own | accepted |
 | [0003](0003-a-fifth-process-speaks-mcp.md)          | A fifth process speaks MCP, as a client of the signer and nothing more: receipts for an MCP gateway without a witness | accepted |
 | [0004](0004-documents-are-an-adapter-under-the-command-shape.md) | A document attached to a desk is processed by an adapter in the second module, and attested under the command shape; the record it writes is versioned | accepted |
-| [0005](0005-personal-storage-controls.md) | Personal storage browsing and reviewed file changes use the connection host control plane, without action receipts | proposed |
+| [0005](0005-personal-storage-controls.md) | Personal storage browsing and reviewed file changes use the connection host control plane, without action receipts | accepted |

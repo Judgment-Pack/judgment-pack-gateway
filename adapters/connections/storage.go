@@ -137,7 +137,11 @@ func (s *Store) readStorageIntent() (storageIntent, error) {
 	f, e := s.root.OpenFile("storage-intent.json", os.O_RDONLY|noFollow|nonBlock, 0)
 	if e != nil {
 		if errors.Is(e, os.ErrNotExist) {
-			return out, ErrGrant
+			// os.Root may report ENOENT for a dangling link. Only an absent
+			// directory entry is proof that no prior record exists.
+			if _, statErr := s.root.Lstat("storage-intent.json"); errors.Is(statErr, os.ErrNotExist) {
+				return out, ErrGrant
+			}
 		}
 		return out, ErrStorage
 	}
@@ -366,6 +370,9 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 			}
 			held, e := b.store.readStorageIntent()
 			if e != nil || held.Plan.ID != q.ID || held.Plan.State != "prepared" {
+				return ErrGrant
+			}
+			if !time.Now().Before(deadline) {
 				return ErrGrant
 			}
 			intent.Plan.State = "executing"
