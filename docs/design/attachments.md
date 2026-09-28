@@ -396,7 +396,8 @@ record carries at most one of the two.
    step 7.
 4. **A PDF is opened and its pages counted.** The adapter reads the cross-reference, the trailer
    and the encryption dictionary the trailer names, and then walks the page tree in document
-   order, the deadline checked before each page-tree node. The walk ends in one of four ways:
+   order, the deadline checked before each page-tree node and as the walk passes over kids that
+   name a node it stands under. The walk ends in one of four ways:
    - **it completes**: the tree ended, having named at least one page. `pageCount` is the
      number of pages found, and the adapter goes on to step 5;
    - **at the page bound**: a page past `maxPages` was found. `pageCount` is `maxPages`,
