@@ -1,6 +1,6 @@
 # Personal Gmail connections through the gateway
 
-Status: in progress; separate from the reviewed Drive implementation.
+Status: shipped in v0.3.0 (#140), separately from the Drive implementation (#139).
 
 Gmail shares the gateway-owned OAuth lifecycle, private storage safeguards and
 selected-resource grants. Consent, tokens, refresh, revocation and provider API

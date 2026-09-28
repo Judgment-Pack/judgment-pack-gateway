@@ -1,6 +1,6 @@
 # Personal Drive connections through gateway companions
 
-Status: implementation in progress; requires material security/public-surface review.
+Status: shipped in v0.3.0 (#139).
 
 Provider authorization and retrieval live in the gateway's adapters module, in
 separate executables from the signer. Desk provides controls and previews, and

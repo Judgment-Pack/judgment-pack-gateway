@@ -1,6 +1,6 @@
 # Connections independent of host provider releases
 
-Status: proposed. This extends the connection companion and attachment contracts;
+Status: shipped in v0.3.0 (#149). This extends the connection companion and attachment contracts;
 it does not change gateway SPEC.md, receipt signing, or the frozen corpus.
 
 ## Discovery and compatibility

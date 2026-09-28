@@ -1,6 +1,6 @@
 # Connected note sources: Notion and Obsidian
 
-Status: implementation proposed; requires material-decision review before merge.
+Status: shipped in v0.3.0 (#143).
 
 This extends the personal connections companion and document attachment contract.
 It does not change `SPEC.md`, the frozen receipt corpus, or the signing module.
