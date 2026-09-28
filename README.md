@@ -120,7 +120,7 @@ argument the record does not repeat; `observedAt` is the gateway's own stamp of 
 it had read the source's output in full, since a command records nothing.
 `--receipt-version 2` keeps the version 2 form for a consumer not yet updated.
 
-A write goes through the same boundary as a read, as an action (`docs/design/executor.md`):
+An engine-governed write goes through the same boundary as a read, as an action (`docs/design/executor.md`):
 `POST /act` names a platform, a tool the platform's `write` binding offers, the arguments, the
 decision record the write relies on and the receipts that record relied on. The engine refuses
 the request before any executor runs unless the requester is authenticated, the platform sets
@@ -130,6 +130,13 @@ configured decision-record directory — and then runs `adapter-mcp` on the writ
 the target's response, and mints one action receipt in the session chain naming the requester,
 the decision, the citations and the tool. The receipt is lineage of a request and a response: it
 says who asked, never that the write was right or that anyone approved it.
+
+Personal Drive, S3 and local-vault file management is a separate authenticated
+host control surface in `gateway-connections`: bounded listing/search, selected
+file reads, and reviewed create/update/delete plans. It issues no signed action
+receipt and is not available to autonomous jobs or model tool calls. See
+[storage file management](docs/design/storage-files.md) for scope, consent,
+conditional writes and recovery limits.
 
 A source declared with `--source-shape NAME=airbyte|mcp|http` is an adapter
 ([ADR-0002](docs/adr/0002-adapters-report-in-the-envelope.md)): its stdout is an

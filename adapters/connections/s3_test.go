@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -167,7 +168,17 @@ func verifyS3Signature(r *http.Request, c s3Config) error {
 		headers.WriteString(name + ":" + strings.Join(strings.Fields(value), " ") + "\n")
 	}
 	query := strings.ReplaceAll(r.URL.Query().Encode(), "+", "%20")
-	canonical := r.Method + "\n" + r.URL.EscapedPath() + "\n" + query + "\n" + headers.String() + "\n" + strings.Join(names, ";") + "\n" + s3EmptyHash
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return err
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	bodySum := sha256.Sum256(body)
+	payload := hex.EncodeToString(bodySum[:])
+	if r.Header.Get("X-Amz-Content-Sha256") != payload {
+		return fmt.Errorf("wrong payload digest")
+	}
+	canonical := r.Method + "\n" + r.URL.EscapedPath() + "\n" + query + "\n" + headers.String() + "\n" + strings.Join(names, ";") + "\n" + payload
 	timestamp := r.Header.Get("X-Amz-Date")
 	if len(timestamp) != 16 {
 		return fmt.Errorf("missing signed date")
