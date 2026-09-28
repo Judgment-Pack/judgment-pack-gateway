@@ -7,12 +7,12 @@ current: what a project publishes later does not change what this note says was 
 
 ## What the feature needs
 
-Beyond what the catalog asks of any binding — the `mcp` shape, an image pinned by digest and a
-declared licence ([catalog/README.md](../../catalog/README.md),
+Beyond what the catalog asks of an MCP binding — the `mcp` shape, an image pinned by digest and
+a declared licence ([catalog/README.md](../../catalog/README.md),
 [engine-config.md](engine-config.md)) — rendering needs three things of a server.
 
-1. **The file in the result.** A tool that saves to disk returns a path, and a receipt over a
-   path does not cover the document.
+1. **The file in the result.** A receipt covers what a tool answers. Where the answer names a
+   path and does not hold the file, the receipt does not cover the document.
 2. **Text of any language.** The desk ships twelve locales: `de`, `en`, `es`, `fr`, `it`,
    `ja`, `ko`, `pt-BR`, `pt-PT`, `yue-Hant`, `zh-Hans` and `zh-Hant`. They are the files under
    `web/src/i18n/locales/` of the desk repository at commit
@@ -48,8 +48,12 @@ It meets need 1 and not need 2.
 - `README.md`: the server "exposes 21 tools over MCP stdio transport".
 - `README.md`: `document_save` is described as "Save document to disk (original path or new
   path)."
+- `src/DocxMcp/Tools/DocumentTools.cs`: `document_save` returns a string, and the string is
+  `"Document saved to '{target}'."` with the path in it.
+- No file under `src/DocxMcp/Tools/` encodes a file's bytes into an answer. The one use of
+  base64 in the source is in `src/DocxMcp/Persistence/WalEntry.cs`, for the server's own log.
 
-The tool that produces the file does not meet need 1.
+No tool of the release meets need 1.
 
 **`google_workspace_mcp`, for Google Docs.**
 
@@ -70,3 +74,32 @@ As configured for documents it does not meet need 3.
   note does not claim that no other server exists.
 - **Licences are as GitHub detected them** at the release, with the `LICENSE` file present in
   each of the three repositories.
+
+## Sample text for the language condition
+
+ADR-0006 names a condition for looking again at a published server: that it renders this text.
+The sample is each locale's own name for its language, which is fixed and short, and which
+puts accented Latin letters, kana and kanji, hangul, and simplified and traditional Chinese
+characters on one page.
+
+| Locale | Sample |
+|---|---|
+| `de` | Deutsch |
+| `en` | English |
+| `es` | español |
+| `fr` | français |
+| `it` | italiano |
+| `ja` | 日本語 |
+| `ko` | 한국어 |
+| `pt-BR` | português (Brasil) |
+| `pt-PT` | português (Portugal) |
+| `yue-Hant` | 粵語 |
+| `zh-Hans` | 简体中文 |
+| `zh-Hant` | 繁體中文 |
+
+**The criterion.** A PDF made from a document holding the twelve samples meets it when both of
+these hold for every sample: the text extracted from the PDF is the sample, character for
+character; and the page draws it with glyphs of a font, none of them the glyph a font shows
+for a character it lacks. The sample is a floor. It has no right-to-left script and no script
+that needs shaping, because no locale the desk ships has one; a locale added later adds its
+own name to the table.

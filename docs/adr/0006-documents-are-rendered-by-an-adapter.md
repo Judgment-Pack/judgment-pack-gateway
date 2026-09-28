@@ -15,11 +15,6 @@ this repository holds ([docs/design/rendering-survey.md](../design/rendering-sur
 question is where rendering lives, what it takes and returns, and what a receipt over it is
 worth, settled before the adapter exists so that a desk integration can be built against it.
 
-Rendering is the reverse of what
-[ADR-0004](0004-documents-are-an-adapter-under-the-command-shape.md) decided. There an adapter
-takes a document and writes a record of its text. Here an adapter takes content and writes a
-record that holds a document.
-
 ## Decision drivers
 
 - The signer renders nothing, as it parses nothing
@@ -54,6 +49,11 @@ Chosen option: "an adapter under the command shape, Word in the module and PDF b
 program", because the receipt then covers the document, the adapter's own output keeps text of
 any language, and no rendering code enters the tree that the repository does not review.
 
+It is the reverse of what
+[ADR-0004](0004-documents-are-an-adapter-under-the-command-shape.md) decided. There an adapter
+takes a document and writes a record of its text. Here an adapter takes content and writes a
+record that holds a document.
+
 The determinations this record settles:
 
 1. **The adapter.** `adapter-render`, in the adapters module, wired as a bare `--source` under
@@ -68,8 +68,10 @@ The determinations this record settles:
    - It is closed. A request carrying a block, a run or a member the contract does not define
      is refused, not rendered in part.
    - Text is literal. Nothing in it is evaluated, expanded or fetched.
-   - Nothing refers outside the request: no image, font, stylesheet or include. A link is a
-     text and a target, and the contract names the schemes a target may have.
+   - Nothing is brought in from outside the request: no image, font, stylesheet or include,
+     and nothing is fetched or run. A link is another matter. It is a text and a target, the
+     adapter writes the target into the file and never follows it, and the contract names the
+     schemes a target may have.
    - Depth, counts and sizes are bounded.
 
    The claim this supports is about the adapter's own transformation: a Word file it writes
@@ -92,13 +94,23 @@ The determinations this record settles:
    a separate process. With no program configured, a PDF request is refused by name and
    nothing is rendered.
    - **Lifecycle.** The program's lifecycle is the OCR program's, as
-     [docs/design/attachments.md](../design/attachments.md) states it. It has finished when it
-     has exited and its output has reached its end. Output past the bound, a failed exit, and
-     output that arrives after the deadline are refused and not used. A pipe that a descendant
-     holds open is closed after a bounded wait. The adapter's deadline sits under the
-     gateway's source timeout by enough to clean up and report. The deadline is when the
-     adapter stops waiting. It does not establish that every process the program started has
-     stopped.
+     [docs/design/attachments.md](../design/attachments.md) states it.
+     - The deadline is checked after the program is resolved and digested and before it is
+       started. If it has passed, the program is not started.
+     - A program that was started has finished when it has exited and its output has reached
+       its end.
+     - When the deadline passes, or the output passes its bound, the adapter ends the process
+       it started, and not that process's own children. It then waits a bounded time for the
+       exit and for the output to end, and closes the pipe itself. A program that exits and
+       leaves its output open gets the same bounded wait, and is a failure.
+     - The adapter takes the outcome only then, and checks the deadline as it does. If the
+       deadline has passed, nothing the program wrote is used, even an answer that was
+       complete. Output past the bound and a failed exit are refused as well.
+     - The adapter's deadline sits under the gateway's source timeout by enough to clean up
+       and report, and the record is written some time after the deadline.
+
+     The deadline is neither the end of the call nor proof that every process the program
+     started has stopped.
    - **No confinement.** The adapter hands the program the content and no credential, and it
      does not confine it. A program can read what the operating-system user it runs as can
      read, reach a network, and write files. Handing it no credential does not put
@@ -136,8 +148,9 @@ The determinations this record settles:
 Why the other options were not chosen:
 
 - **A published server.** Rejected for the versions, tools and unmodified bindings the survey
-  read, against what this feature needs. One renders Latin text only. One saves to disk, so
-  an acquisition of that tool returns a path. One requests scopes beyond `drive.file`. An
+  read, against what this feature needs. One renders Latin text only. One saves the file to
+  disk and answers with a message naming the path, and no tool of that release returns the
+  file's bytes. One requests scopes beyond `drive.file`. An
   operator who accepts such a limit can bind such a server today, and nothing here prevents
   it.
 - **PDF in the module.** A writer limited to the standard PDF fonts shows Latin text only. One
@@ -175,6 +188,10 @@ Why the other options were not chosen:
   different means and may lay the same content out differently.
 - Bad, because a caller holding Markdown must convert it first. Accepted over an adapter that
   parses markup.
+- Bad, because the content rides in the request. `--max-request` bounds an `/acquire` body at
+  one mebibyte by default, and under an engine configuration `/acquire` keeps that default.
+  Content that is large as text can pass it even where the Word file made from it would be
+  small.
 - Bad, because the file rides in the result. A file of 4 MiB is 5,592,408 bytes in base64,
   before the record around it. The gateway's default bound on a source's output is one
   mebibyte, which admits a file of under 768 KiB; a deployment that carries more raises
@@ -189,8 +206,8 @@ Why the other options were not chosen:
 - Revisit when a real document needs a layout the block structure cannot express; when the
   engine image ships a rendering program and fonts, each pinned by digest, for every platform
   the image is built for; or when a published server, bound unmodified, returns the file in
-  its result, requests no scope beyond `drive.file`, and renders a sample document in each of
-  the twelve locales the survey note names.
+  its result, requests no scope beyond `drive.file`, and renders the sample text the survey
+  note fixes for the twelve locales by the criterion the note states.
 
 ## More information
 
