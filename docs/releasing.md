@@ -45,8 +45,10 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | The released archive, read and not run: its files are the commit's, byte for byte; each program was built from the package of its name; it holds nothing else | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
-by anything. Of the nine adapters, six are never started by a release check on any platform. No
-check here reaches a platform account: an adapter that starts has not been shown to connect.
+by anything. Of the nine adapter executables in an archive, six are never started by the archive
+smoke tests on any platform. (CI, which the release calls, starts a fourth adapter, but in the
+image it builds and not from an archive.) No check here reaches a platform account: an adapter
+that starts has not been shown to connect.
 
 ## Once, before the first release
 
@@ -66,7 +68,9 @@ check here reaches a platform account: an adapter that starts has not been shown
 
 2. Turn on release immutability for the repository (Settings → General → Releases). It locks the
    tag and the assets from the moment a release is published, and not before: until then the
-   workflow itself holds the tag to the commit the run was started for.
+   workflow itself holds the tag to the commit the run was started for. The workflow does not read
+   this setting. Where it is off, a published release's tag and assets can still be changed by
+   whoever may write to the repository.
 
 ## Prepare the release
 
@@ -102,7 +106,8 @@ git push origin <tag>
 ```
 
 If no signing key is configured, stop and settle the signing policy; do not replace a signed tag
-with an unsigned one. A tag is never moved or reused. A fix is a new version.
+with an unsigned one. Signing is the maintainer's practice and the workflow does not check it: an
+unsigned tag is admitted like a signed one. A tag is never moved or reused. A fix is a new version.
 
 A tag is `vX.Y.Z` or `vX.Y.Z-<prerelease>`, as SemVer 2.0.0 writes them. Build metadata
 (`+...`) is refused. A tag with a hyphen (`v0.5.0-rc.1`) is a prerelease: it is published as one
@@ -149,10 +154,16 @@ The gate is on the release. Three things exist before it and are not secret:
 Fix the cause on `main` and release a new version. Re-running is for a failure that was the
 runner's, not the commit's: re-run the failed jobs, not all jobs.
 
-The draft job refuses to run while a release under the tag exists, draft or published. If a failed
-run left a draft, read it, delete it by hand (`gh release delete <tag> --repo
-Judgment-Pack/judgment-pack-gateway`, which leaves the tag), and re-run the failed job. A published
-release is never deleted to make room for another.
+What to do with a draft depends on which job failed:
+
+| The job that failed | The draft | What to do |
+| --- | --- | --- |
+| Any job before `Attest and draft release` | none was made | re-run the failed jobs |
+| `Attest and draft release` | may exist, and may lack assets | read it, delete it by hand, then re-run the failed jobs. The job refuses to run while a release under the tag exists, draft or published, and refuses when it cannot find out |
+| `Publish release` | exists and is complete | **keep it**: that job only publishes the draft that is there. Re-run the failed jobs |
+
+A draft is deleted with `gh release delete <tag> --repo Judgment-Pack/judgment-pack-gateway`,
+which leaves the tag. A published release is never deleted to make room for another.
 
 ## Verifying a download
 

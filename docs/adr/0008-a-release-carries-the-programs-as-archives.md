@@ -53,7 +53,9 @@ What is decided:
 
 1. **A release is made from a tag a person pushes on a commit `main` holds.** The workflow works on
    that commit by its digest, and holds the tag to it when the run begins, before the draft is
-   made, and before it is published.
+   made, and before it is published. A tag is `vX.Y.Z` or `vX.Y.Z-<prerelease>` as SemVer 2.0.0
+   writes them; build metadata is refused. A tag with a prerelease is published as a prerelease and
+   is never marked latest.
 2. **The tagged commit passes CI as that commit defines it.** The release workflow calls `ci.yml`
    and carries no second copy of the checks.
 3. **A release carries six archives**, for Linux, macOS and Windows on `amd64` and `arm64`: the
@@ -67,16 +69,25 @@ What is decided:
    server's `serverInfo.version`. The release build writes the tag into the executable. The
    adapters are not stamped.
 7. **`THIRD_PARTY_NOTICES` is written from the module cache** and held to it by CI.
+8. **Two things are the maintainer's practice and are checked by nothing.** A tag is signed; the
+   workflow admits an unsigned one. Release immutability is turned on for the repository; the
+   workflow does not read the setting.
 
 This is a material change to the public surface (a subcommand, and the value `initialize`
 reports for a released build), to documented claims, and to the security posture (what a consumer
 can verify, and what stands between a tag and a release). It changes nothing in `SPEC.md`, in what
 is signed, or in what the corpus accepts.
 
-**No determination of ADR-0001 is superseded.** The image remains what that record calls the
-release of the engine, and remains unpublished. This record adds a stage before it. When the image
-is published, the archives' `checksums.txt` is where its digest is to be named, as
-[design/engine-image.md](../design/engine-image.md#provenance) already says.
+**Determination 3 of ADR-0001 is superseded in one part, and in no other.** That determination
+opens "The release is the engine. One image carries the gateway binary, the adapter binaries, the
+pinned runtime binary, and the catalog." From this record on, a release of this repository is what
+is decided above: archives of the programs, without the runtime and without an image. What is
+superseded is that account of what a release is. The rest of determination 3 stands as written:
+what the image carries, the one configuration file, `connect`, and what `verify` reads. So do the
+record's other determinations. The image remains the form the engine is designed to run in, and
+remains unpublished; when it is published, the archives' `checksums.txt` is where its digest is
+to be named, as [design/engine-image.md](../design/engine-image.md#provenance) already says.
+ADR-0001 is not edited; its row in the index names this supersession.
 
 ### Consequences
 
@@ -85,13 +96,14 @@ is published, the archives' `checksums.txt` is where its digest is to be named, 
   dependency of either module, and the core's rule is untouched.
 - The release toolchain is named exactly in the workflow and is moved by hand.
 - Two of the six archives, `darwin/amd64` and `windows/arm64`, are built and read and never run.
-  The adapters' tests run on Linux only, and six of the nine adapters are started by no release
-  check.
+  The adapters' tests run on Linux only, and six of the nine adapter executables in an archive
+  are never started by the archive smoke tests.
 - The archives and their attestation exist before the approval: the archives as an artifact of the
   run, the attestation in a public log. The approval gates the release, not their existence.
 - While the project has one maintainer, the person who pushes the tag is the person who approves.
-- A tag is not protected until its release is published. The workflow's three checks of the tag
-  stand in for that, and an administrator can still change the environment's rule between them.
+- A tag is not protected until its release is published, and is protected then only where release
+  immutability is turned on. The workflow's three checks of the tag stand in for that before
+  publication, and an administrator can still change the environment's rule between them.
 - No claim is made that a build can be reproduced bit for bit by someone else.
 - A release made before this record, `v0.1.0` to `v0.4.0`, stays as it is: notes only.
 

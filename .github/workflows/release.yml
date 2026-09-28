@@ -72,9 +72,12 @@ jobs:
       - name: The tag names the commit the run was started for
         shell: bash
         run: |
-          # The last line is the commit an annotated tag points to, where
-          # there is one, and the tag's own line where the tag is a plain one.
-          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk 'END { print $1 }')"
+          # The patterns of ls-remote match the end of a name, so another ref
+          # whose name ends in this one is answered too: the lines are taken
+          # by their exact names. The peeled line is the commit an annotated
+          # tag points to; a plain tag has its own line alone.
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" \
+            | awk -v tag="refs/tags/${RELEASE_TAG}" '$2 == tag { plain = $1 } $2 == tag "^{}" { peeled = $1 } END { print (peeled != "" ? peeled : plain) }')"
           [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the run was started for ${GITHUB_SHA}" >&2; exit 1; }
 
       # A tag names a reviewed state (CONTRIBUTING.md, Tags), and what is
@@ -362,7 +365,8 @@ jobs:
       - name: The tag still names the commit the run was started for
         shell: bash
         run: |
-          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk 'END { print $1 }')"
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" \
+            | awk -v tag="refs/tags/${RELEASE_TAG}" '$2 == tag { plain = $1 } $2 == tag "^{}" { peeled = $1 } END { print (peeled != "" ? peeled : plain) }')"
           [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the archives were built from ${GITHUB_SHA}" >&2; exit 1; }
 
       # A release under this tag, draft or published, is never replaced or
@@ -374,8 +378,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          if state="$(gh release view "${RELEASE_TAG}" --json isDraft --jq 'if .isDraft then "a draft" else "published" end' 2>/dev/null)"; then
-            echo "a release under ${RELEASE_TAG} already exists, and it is ${state}" >&2
+          # Every release is listed, drafts among them, and looked for by its
+          # tag: a lookup that fails is a failure of the step, never an absence.
+          state="$(gh api "repos/${GH_REPO}/releases" --paginate --jq '.[] | select(.tag_name == env.RELEASE_TAG) | if .draft then "a draft" else "published" end')"
+          if [ -n "${state}" ]; then
+            echo "a release under ${RELEASE_TAG} already exists, and it is $(echo "${state}" | sort -u | paste -sd, -)" >&2
             exit 1
           fi
 
@@ -425,7 +432,8 @@ jobs:
       - name: The tag still names the commit the run was started for
         shell: bash
         run: |
-          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" | awk 'END { print $1 }')"
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" \
+            | awk -v tag="refs/tags/${RELEASE_TAG}" '$2 == tag { plain = $1 } $2 == tag "^{}" { peeled = $1 } END { print (peeled != "" ? peeled : plain) }')"
           [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the draft was built from ${GITHUB_SHA}" >&2; exit 1; }
 
       - name: Publish the reviewed draft release
