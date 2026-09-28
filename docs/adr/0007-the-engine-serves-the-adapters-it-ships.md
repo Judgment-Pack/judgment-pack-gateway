@@ -30,8 +30,9 @@ decision. This is that decision.
   command line (engine-config.md, "The rule").
 - An adapter the engine ships is not an outside platform. It has no credential, no pinned
   image, and no licence of an artifact the engine pulls.
-- Every source runs as a user of its own, never the signer's, and the engine refuses to start
-  under a configuration where that does not hold.
+- Every platform runs as a user of its own, which its sources share, never the signer's, and
+  the engine refuses to start under a configuration where that does not hold. A service is
+  held to the same.
 - The MCP server is a client of the signer and nothing more
   ([ADR-0003](0003-a-fifth-process-speaks-mcp.md)). It holds no key, opens no store and starts
   no adapter.
@@ -45,8 +46,10 @@ decision. This is that decision.
 - A `services` member of the configuration, naming for each service a kind the engine knows,
   the user it runs as and its bounds. The engine derives a bare source from each. The MCP
   server lists a service where its entry opens it to MCP.
-- A catalog binding with an operation of a new `command` kind, and a platform entry that
-  carries no credentials.
+- A catalog binding with an operation of a new `command` kind that has members of its own,
+  and a platform entry that carries no credentials.
+- A declaration each adapter ships beside its executable, saying what it serves, its flags,
+  their ceilings and its schema, which the engine reads.
 - `serve --config` taking `--source` beside the file.
 - The MCP server starting the adapter itself.
 - Leaving both adapters out of the configuration, for a gateway started with `--source`.
@@ -69,7 +72,7 @@ The determinations this record settles:
      "render": {
        "kind": "render",
        "user": "engine-render",
-       "timeoutSeconds": 60,
+       "timeoutSeconds": 40,
        "maxOutputBytes": 6291456,
        "maxFileBytes": 4194304,
        "renderer": "render-pdf",
@@ -87,6 +90,11 @@ The determinations this record settles:
 
    The kinds are a closed set, `render` and `documents`. A kind the engine does not know is
    refused by name, and so is a member a kind does not define.
+
+   A file of version 4 names at least one platform or one service. Its `platforms` may be an
+   empty object where `services` names a service, and `catalog` is required exactly where
+   `platforms` names a platform. A file that names neither is refused. So an engine can serve
+   rendering and nothing else, with no platform configured to make it start.
 2. **What the engine derives.** For each service one source, named by the service's name with
    no operation after it, declared with no shape, so that its receipts carry the command
    shape. It runs as the service's user. Its command line is built by the engine from the
@@ -98,12 +106,20 @@ The determinations this record settles:
    | `render` | `adapter-render` | `maxBlocks`, `maxFileBytes`, `renderer` |
    | `documents` | `adapter-document` | `maxBytes`, `maxPages`, `maxTextBytes`, `maxInflateBytes`, `ocr`, `maxOcrOutputBytes` |
 
-   Each setting is optional and is the adapter's own bound under another spelling. Absent, the
-   adapter's default applies. The engine holds each to the adapter's ceiling when it loads the
-   file, so that a configuration the adapter would refuse is refused at start and by name.
+   Each setting is optional. A numeric setting is the adapter's own bound under another
+   spelling, and absent, the adapter's default applies. `renderer` and `ocr` name a program
+   and are determination 7's. When it loads the file, the engine holds every flag it will
+   give the adapter, the ones it derives included, to the rule the adapter holds it to: its
+   type, its least value, its ceiling and its unit. A configuration the adapter would refuse
+   is refused at start and by name.
+
    What an adapter may read of a request is not a setting. The rendering adapter is given the
    engine's bound on a request, of determination 6, and the document adapter derives its own
    from `maxBytes`, as it does today.
+
+   A service's source is started as a platform's is: through the same preflight, switched to
+   its user, with an environment of that user's `HOME` and the engine's `PATH` and nothing
+   else. A service has no `environment` member.
 3. **The name.** A service's name follows the rule of a platform's name: not empty, not
    padded, with no `/`, no `=` and no character that is not graphic. A name that a platform
    also has is refused, though `<platform>/live` and the service's name would not be
@@ -112,45 +128,101 @@ The determinations this record settles:
 4. **The user.** Required, and held to every rule a platform's user is held to: it exists, and
    it is not root, not the signer's, not the MCP server's, and not the user of a platform or of
    another service. A service has no `credentials` member, and an entry that carries one is
-   refused.
+   refused. Every refusal of engine-config.md, "What the engine refuses", stands as it is:
+   the seed's checks, the signer's capabilities, the switch, and the walk of every platform's
+   credentials, which now also hold those files against a service's user. The one check that
+   has nothing to do for a service is the walk of its own credentials, since it has none.
+   Having no credential confines nothing: a service's adapter, and a program it starts, can
+   read what its user can read.
 5. **The two bounds the gateway holds for the source.** `timeoutSeconds` is the source's
-   timeout, and `maxOutputBytes` the bound on its output. Both are optional, default to what
-   every derived source has today, thirty seconds and one mebibyte, and are held to the
-   gateway's ceilings. The second is new to the core: one bound on output holds every source
-   today, and a rendered file or a document's record needs more than a platform's answer
-   does. The adapter's own deadline and its own bound on its record are not settings. The
-   engine derives them: the deadline is the source's timeout less five seconds, which is room
-   for the two-second wait on a program's output and for the record to be written, and the
-   bound on the record is the bound on the source's output. A `timeoutSeconds` of five or
-   less is refused.
-6. **The bound on a request.** `maxRequestBytes` is a new optional top-level member, the
-   `--max-request` of the command line: what `/acquire` reads of a body. It defaults to one
-   mebibyte and is held to the same ceiling. It is the engine's and not a service's, since a
-   body is read before its source is known. Content and documents ride in the request, so an
-   operator who serves either sizes it.
+   timeout, and `maxOutputBytes` the bound on its output. Both are optional and default to
+   what every derived source has today, thirty seconds and one mebibyte. The second is new to
+   the core: one bound on output holds every source today, and a rendered file or a
+   document's record needs more than a platform's answer does.
+
+   The adapter's own deadline and its own bound on its record are not settings. The engine
+   derives them. The bound on the record is the bound on the source's output: the adapter
+   writes its record in canonical form with nothing around it, so the two are the same
+   bytes. The deadline is the source's timeout less five seconds.
+
+   `timeoutSeconds` is from 6 to 605. The gateway admits a source a timeout of up to seven
+   days, and both adapters refuse a deadline over ten minutes, so the adapters' ceiling is
+   the one that holds. `maxOutputBytes` is from 1 to the gateway's ceiling, 64 MiB.
+
+   The five seconds are a margin and not a promise. The gateway's clock for a source starts
+   before it resolves, digests and starts the adapter, and the adapter's starts inside its
+   own process, so the two deadlines are further apart than five seconds by what starting
+   took. Work between two of an adapter's checks of its deadline runs to its end, and so
+   does the writing of a record. An adapter the gateway's timeout ends has written no
+   record, and no receipt is minted for it. An operator whose renderings or documents run
+   close to their timeout raises it.
+6. **The bound on a request.** `maxRequestBytes` is a new optional top-level member of a
+   version-4 file, the `--max-request` of the command line: what `/acquire` reads of a body.
+   It defaults to one mebibyte and is from 1 to the gateway's ceiling, 64 MiB. It is the
+   engine's and not a service's, since a body is read before its source is known. So it
+   holds for every source: an operator who raises it for a service raises it for the
+   platforms' sources as well. Content and documents ride in the request, so an operator who
+   serves either sizes it.
 7. **A program.** `renderer`, for `render`, and `ocr`, for `documents`, name the program the
-   adapter runs, one word, resolved on the engine's `PATH` by the adapter. The program runs as
-   the service's user. What ADR-0004 and ADR-0006 say of such a program holds unchanged: the
-   adapter does not confine it, and the record names it with the digest of its file. The
-   image ships neither.
+   adapter runs, one word, held to the adapter's own rule for it when the file is loaded.
+   The adapter resolves the name on the `PATH` it was given, when a request needs the
+   program and not before: a name that resolves to nothing, or to a file that cannot be read
+   or started, is the adapter's failure at that request, as it is today, and is not a
+   refusal to start. The program runs as the service's user. What ADR-0004 and ADR-0006 say
+   of such a program holds unchanged: the adapter does not confine it, and what a record
+   says of it is what each adapter's contract says. A render record names the program of
+   every PDF. A document's record names the OCR program whose answers it applied, and none
+   where it applied none. The image ships neither program.
 8. **Over MCP.** The MCP server lists a service whose entry sets `"mcp": true`. Absent is
    `false`. It lists one tool for it, named `<service>.<tool>`, where the tool is the kind's:
-   `render` for the kind `render`, `read` for the kind `documents`. The rows are held in the
-   same table as the platforms' rows, and a name two rows would share is a refusal to start.
+   `render` for the kind `render`, `read` for the kind `documents`.
+   - **The table.** The rows are held in the same table as the platforms' rows. Each row
+     says which of the two it is, a platform's tool or a service, and a call is routed by
+     the whole name's row and never by a part of the name: a name may hold a full stop. A
+     name two rows would share is a refusal to start.
    - **The description and the schema** of the tool are the engine's own, part of the
      executable, and the same for every engine of that release. The schema is written within
-     the grammar [tool-descriptors.md](../design/tool-descriptors.md) admits, which has no
-     reference and no pattern, so it is looser than the adapter: a call that passes it can
-     still be refused.
+     the grammar [tool-descriptors.md](../design/tool-descriptors.md) admits. It is the
+     structure of the adapter's arguments as far as that grammar can say it: every object
+     closed, every member named with its type, the required members required, every
+     enumeration stated, and the counts the contract fixes. Every request the adapter's
+     contract admits passes it. What it cannot say stays the adapter's to refuse: the form
+     of a text, a name, a digest or a target, a rule that relates two values, a bound the
+     operator set, and whether a program is there. Tests hold the schema to the adapter's
+     contract: its example requests pass, and requests broken in their structure do not.
    - **A call** becomes `POST /acquire` with the service's name as `source` and the call's
      `arguments` as the arguments, byte for byte. They are not wrapped in
      `{"tool": …, "arguments": …}`, since the adapter reads its own arguments and knows no
-     tool.
+     tool. Absent arguments are `{}`, as for a platform's tool.
    - **The answer** is what it is for any tool: `{session, result, receipt, salts}`, as text
      and as structured content. For `render` the result is the render record, which holds the
      file.
-   - **What a client binds** is what it binds for a platform's tool, with the service's name
-     as the `source` it expects.
+   - **What a client binds.** A client holds a mapping of its own from a tool's whole name to
+     what the name means: whether it is a platform's tool or a service, and the `source` it
+     expects. It does not take either from the server, and it does not read them out of the
+     name. For a service it then holds the receipt to this: `source` is the service's name;
+     the shape is the command shape; and the arguments commitment opens, under the salt it
+     was handed, to the canonical form of the arguments it sent, alone. For a platform's
+     tool the commitment opens to the canonical form of `{"tool": …, "arguments": …}`, as
+     today. The tool's name is therefore no part of what a service's receipt commits to. The
+     `source` is what says which service answered.
+   - **The tests.** The test that a call through the server and a direct `/acquire` commit to
+     the same arguments holds for a service as for a platform's tool, with absent arguments
+     and with arguments the signer refuses. The test that a forwarded call to another source
+     is caught only by the `source` holds for a service, for another service, and across the
+     two kinds of row.
+   - **The MCP server's own limits stay what they are.** It reads a message of at most one
+     mebibyte, reads a signer's answer of at most 8 MiB, and gives a forward 45 seconds
+     (`go/mcp.go`). None is derived from a service's bounds, and `maxRequestBytes` does not
+     raise the first. So over MCP a call's arguments are under a mebibyte whatever the engine
+     admits by `/acquire`. The engine refuses to open to MCP a service that could never be
+     answered within those limits: one whose `timeoutSeconds` is over 40, or whose
+     `maxOutputBytes` is over 8 MiB. Within them an answer can still be too long, since an
+     answer is longer than the record in it. The outcome is then the one mcp-server.md
+     states for every tool: `outcome: "unknown"`, with the signer free to have finished and
+     minted a receipt the client did not see. The MCP server's bound on concurrency holds
+     forwards that are outstanding, not acquisitions the signer has not finished, and a call
+     made again is a new acquisition.
 9. **What this record does not decide.** Whether the engine serves an artifact by its digest,
    so that an answer could name a file and not carry it. Saving a file, which is
    [ADR-0005](0005-personal-storage-controls.md)'s and is not a tool. `/act`, which the MCP
@@ -158,10 +230,17 @@ The determinations this record settles:
 
 Why the other options were not chosen:
 
-- **A binding of a `command` kind.** A binding says what an outside platform offers: a pinned
-  image, the tools it may call, the licence of what is pulled, and credentials for each
-  operation. None of those is true of an adapter the engine ships, and an entry with every
-  one of them empty would be a platform in name only.
+- **A binding of a `command` kind.** Such an operation could have members of its own and
+  need none of an image's. What it costs is what a platform and a catalog mean. A binding is
+  a file of the catalog, pinned by its digest so that a catalog's change is seen; a platform
+  names credentials for each operation its binding offers, and the engine walks them. An
+  adapter the engine ships changes with the engine and not with the catalog, and has no
+  credential. Each rule of a platform would gain an exception for the two built-in kinds.
+- **A declaration each adapter ships.** It would keep an adapter's flags, ceilings and
+  schema in one place, where this record has the engine repeat them. It needs the engine to
+  find the declaration, to hold it to a form, and to decide what a declaration may ask for,
+  which is a design of its own. For two adapters of the same release the repetition is the
+  smaller cost. The revisit condition names the point at which that changes.
 - **`--source` beside the file.** It puts a command line back on the command line, which is
   what the configuration exists to end, and leaves the MCP server nothing to read the source
   from.
@@ -184,9 +263,22 @@ Why the other options were not chosen:
   output for each source where there was one for all, and a bound on a request that a
   configuration can set.
 - Bad, because a rendered file rides in a tool's answer as base64, and a host that shows a
-  tool's answer to a model hands the model the file. At the defaults an answer is under a
-  mebibyte, as a platform tool's is. An operator who raises the bound and opens the service to
-  MCP accepts the larger answer. Determination 9 names what would remove the cost.
+  tool's answer to a model hands the model the file. At the defaults the record is at most a
+  mebibyte. The answer is longer: it adds the receipt and the salts, JSON may spell a byte of
+  the result as six (SECURITY.md), which the base64 of a file does not suffer and the text
+  in a document's record can, and MCP carries the whole twice, as text and as
+  structured content. An operator who opens a service to MCP accepts that, for hosts that
+  keep the file from the model. Determination 9 names what would remove the cost.
+- Bad, because a longer record costs the signer as well: it is parsed, put in canonical
+  form, and retained in the artifact store, where a rendered file stays whether or not
+  anyone saves it.
+- Bad, because the schema, the flags and the ceilings of each adapter are now stated twice,
+  in the adapter and in the engine, and the two are separate executables that the engine
+  finds by name. They ship in one release. An operator who puts an adapter of another
+  release beside the engine gets an engine that holds the adapter to rules that are not its
+  own.
+- Bad, because an operator who serves a service provides a user for it, and for a PDF or for
+  scanned pages a program and the fonts or data it needs.
 - Bad, because reading a document over MCP takes the document's bytes in the arguments, which
   a host can supply and a model cannot usefully write. Listing `documents` serves a host that
   holds a file. It does not make document reading a tool a model can use by itself.
@@ -199,10 +291,13 @@ Why the other options were not chosen:
 - Bad, because a service opened to MCP is one more tool that spends the engine's time at a
   caller's word. The bounds of the MCP server hold it as they hold every tool: sessions,
   concurrency and calls a minute.
-- Revisit when the engine serves an artifact by its digest; when a third kind is wanted, which
-  is the point at which a closed set in the core should be weighed against a declaration an
-  adapter ships with; or when the descriptor grammar admits references and patterns, so that
-  the schema listed can be the adapter's own.
+- Revisit when a host that an operator relies on cannot take a service's answer, for its
+  length or for what it does with the file; when the engine serves an artifact by its
+  digest; when a third kind is wanted, which is the point at which a closed set in the core
+  should be weighed against a declaration an adapter ships with; or when the descriptor
+  grammar admits references and patterns, so that the schema listed can say the forms as
+  well as the structure. It would still not say what relates two values or what an operator
+  configured.
 
 ## More information
 
