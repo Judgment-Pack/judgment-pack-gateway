@@ -49,6 +49,7 @@ func decodeStorage(raw []byte, out any) error {
 }
 
 type StorageFile struct {
+	Context   string `json:"context"`
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Kind      string `json:"kind"`
@@ -64,6 +65,7 @@ type StorageQuery struct {
 	PageToken string `json:"pageToken"`
 }
 type StoragePage struct {
+	Context       string        `json:"context"`
 	Items         []StorageFile `json:"items"`
 	NextPageToken string        `json:"nextPageToken,omitempty"`
 	Scope         string        `json:"scope"`
@@ -75,6 +77,7 @@ type StorageRead struct {
 	Content string      `json:"contentBase64"`
 }
 type StorageChange struct {
+	Context   string `json:"context"`
 	Action    string `json:"action"`
 	ID        string `json:"id"`
 	Folder    string `json:"folder"`
@@ -209,14 +212,22 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 			b.closeStorageBrowse()
 			return nil, e
 		}
+		page.Context = storageContext(c, epoch)
+		for i := range page.Items {
+			page.Items[i].Context = page.Context
+		}
 		return page, nil
 	case "files-read":
 		var q struct {
+			Context  string `json:"context"`
 			ID       string `json:"id"`
 			Revision string `json:"revision"`
 		}
 		if decode(raw, &q) != nil || q.Revision == "" {
 			return nil, ErrRequest
+		}
+		if q.Context != storageContext(c, epoch) {
+			return nil, ErrChanged
 		}
 		statRevision := b.provider.obsidian && strings.HasPrefix(q.Revision, "stat:")
 		if statRevision {
@@ -239,11 +250,15 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		if e = b.store.checkConnection(c, epoch); e != nil {
 			return nil, e
 		}
+		file.Context = storageContext(c, epoch)
 		return StorageRead{file, base64.StdEncoding.EncodeToString(data)}, nil
 	case "files-prepare":
 		var q StorageChange
 		if decodeStorage(raw, &q) != nil || !resourceText(q.ID, 1024, true) || !resourceText(q.Name, 1024, true) || !resourceText(q.Folder, 1024, true) || !resourceText(q.Revision, 256, true) {
 			return nil, ErrRequest
+		}
+		if q.Context != storageContext(c, epoch) {
+			return nil, ErrChanged
 		}
 		if q.Action != "create" && q.Action != "update" && q.Action != "delete" {
 			return nil, ErrRequest
@@ -380,3 +395,7 @@ func storageMatch(name, query string) bool {
 	}
 	return true
 }
+
+// A public opaque generation marker, not an authorization token. It prevents
+// an editor or caller rebinding an old file selection to a new connection.
+func storageContext(c credential, epoch string) string { return digest([]byte(c.ID + "\x00" + epoch)) }

@@ -21,7 +21,7 @@ import (
 
 func storageCall[T any](t *testing.T, b *Broker, method string, q any) T {
 	t.Helper()
-	v, e := b.Handle(context.Background(), method, mustJSON(q))
+	v, e := b.Handle(context.Background(), method, storageJSON(t, b, method, q))
 	if e != nil {
 		t.Fatalf("%s: %v", method, e)
 	}
@@ -452,7 +452,7 @@ func TestStorageDriveUploadsAndMissingVersionLock(t *testing.T) {
 		t.Fatal(done, writes)
 	}
 	etag = ""
-	if _, err := b.Handle(context.Background(), "files-prepare", mustJSON(q)); err != Error("conditional-write-unavailable") {
+	if _, err := b.Handle(context.Background(), "files-prepare", storageJSON(t, b, "files-prepare", q)); err != Error("conditional-write-unavailable") {
 		t.Fatal("unguarded update allowed", err)
 	}
 	if writes != 2 {
@@ -460,8 +460,58 @@ func TestStorageDriveUploadsAndMissingVersionLock(t *testing.T) {
 	}
 	for _, media := range []string{"text/plain\r\nX-Header: bad", "text/\tplain", "application/vnd.google-apps.document", "text/plain; charset=utf8"} {
 		q.MediaType = media
-		if _, err := b.Handle(context.Background(), "files-prepare", mustJSON(q)); err != ErrUnsupported {
+		if _, err := b.Handle(context.Background(), "files-prepare", storageJSON(t, b, "files-prepare", q)); err != ErrUnsupported {
 			t.Fatal("unsafe media", media, err)
 		}
+	}
+}
+
+func storageJSON(t *testing.T, b *Broker, method string, q any) []byte {
+	t.Helper()
+	raw := mustJSON(q)
+	if method != "files-read" && method != "files-prepare" {
+		return raw
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		t.Fatal(err)
+	}
+	if value, _ := data["context"].(string); value == "" {
+		_, c, epoch, err := b.connectedSnapshot()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data["context"] = storageContext(c, epoch)
+	}
+	return mustJSON(data)
+}
+func TestStorageSelectionCannotRebindAfterReconnect(t *testing.T) {
+	b, vault := storageVaultFixture(t)
+	os.WriteFile(filepath.Join(vault, "same.txt"), []byte("same"), 0600)
+	page := storageCall[StoragePage](t, b, "files-list", StorageQuery{})
+	selected := page.Items[0]
+	read := storageCall[StorageRead](t, b, "files-read", map[string]string{"id": selected.ID, "revision": selected.Revision, "context": selected.Context})
+	storageCall[map[string]bool](t, b, "disconnect", map[string]string{})
+	next := filepath.Join(t.TempDir(), "next")
+	os.MkdirAll(filepath.Join(next, ".obsidian"), 0700)
+	os.WriteFile(filepath.Join(next, "same.txt"), []byte("same"), 0600)
+	storageCall[map[string]bool](t, b, "configure", map[string]string{"path": next})
+	q := change("update", read.File.ID, read.File.Revision, "wrong location")
+	q.Context = read.File.Context
+	if _, err := b.Handle(context.Background(), "files-prepare", mustJSON(q)); err != ErrChanged {
+		t.Fatal("old read rebound", err)
+	}
+	q = change("create", "", "", "wrong location")
+	q.Name = "new.txt"
+	q.Context = page.Context
+	if _, err := b.Handle(context.Background(), "files-prepare", mustJSON(q)); err != ErrChanged {
+		t.Fatal("old destination rebound", err)
+	}
+	if _, err := b.Handle(context.Background(), "files-read", mustJSON(map[string]string{"id": read.File.ID, "revision": read.File.Revision, "context": read.File.Context})); err != ErrChanged {
+		t.Fatal("old selection rebound", err)
+	}
+	q.Context = ""
+	if _, err := b.Handle(context.Background(), "files-prepare", mustJSON(q)); err != ErrChanged {
+		t.Fatal("unbound destination accepted", err)
 	}
 }

@@ -25,13 +25,17 @@ method through `POST /api/connections/<provider>/<method>`.
 
 | Method | Parameters | Result |
 | --- | --- | --- |
-| `files-list` | `folder`, `query`, optional `pageToken` | `items`, opaque `nextPageToken`, `scope`, `searchMode`, `truncated` |
-| `files-read` | `id`, exact listed `revision` | `file` metadata and `contentBase64` |
+| `files-list` | `folder`, `query`, optional `pageToken` | `items`, connection `context`, opaque `nextPageToken`, `scope`, `searchMode`, `truncated` |
+| `files-read` | `id`, exact listed `revision`, listed `context` | `file` metadata and `contentBase64` |
 | `files-prepare` | `action` (`create`, `update`, `delete`), target fields below | Reviewable, expiring change plan; no file content mutation |
 | `files-commit` | plan `id`, exact `confirmation` for deletion | Durable plan status; no replay of a claimed mutation |
 | `files-status` | plan `id` | The stored status, without retrying the change |
 
-Create takes `folder`, a single-component `name`, `mediaType`, `contentBase64`.
+Every read/change must carry the opaque connection `context` from its file/list
+response. Disconnect/reconfigure invalidates it even if two locations happen to
+contain the same filename and bytes. It is a generation marker, not a credential.
+
+Create takes that `context`, `folder`, a single-component `name`, `mediaType`, `contentBase64`.
 Update takes `id`, the read `revision`, `mediaType`, `contentBase64`; renaming is
 not part of update. Delete takes `id` and `revision`, and no content or media type.
 Plan metadata includes its target, name, revision, size, effect (`write`, `trash`,
