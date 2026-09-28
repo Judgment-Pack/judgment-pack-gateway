@@ -37,6 +37,8 @@
 //	internal/canon/        §1.1 canonical form, answering to corpus/canon.json
 //	internal/pdfgen/       a PDF writer for fixtures and tests
 //	internal/containers/   a container run and ended with its absence established
+//	internal/program/      an operator's program run for an adapter, resolved,
+//	                       digested, bounded and ended: the OCR program's run
 //	internal/redact/       a connector's configuration kept out of diagnostics
 //	internal/fakeruntime/  stand-ins for the container runtime and for an MCP
 //	internal/fakemcp/      server, for tests
