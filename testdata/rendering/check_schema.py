@@ -112,6 +112,10 @@ for change, why in [
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:\\\\server\\share@x'), 'a share as an address'),
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:javascript:alert(1)@x'), 'a script as an address'),
     (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto://host/path'), 'an address that is a path'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:a@example.com#@b@example.org'), 'an address with a fragment'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:a@example.com?subject=x#y'), 'an address with a fragment after its subject'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:a@example.com%2Cb%40example.org'), 'two addresses spelt by escapes'),
+    (put('document', 'blocks', paragraph, 'runs', 0, 'link', 'mailto:%zz@example.com'), 'an address with an escape that is none'),
     (put('document', 'blocks', heading, 'level', 0), 'a heading of level 0'),
     (put('document', 'blocks', heading, 'level', 7), 'a heading of level 7'),
     (put('document', 'blocks', heading, 'level', '1'), 'a level that is a string'),
@@ -208,6 +212,8 @@ for validator, value, change, why in [
     (arguments, request, put('document', 'blocks', [{'type': 'paragraph', 'runs': []}] * 2001), '2001 blocks, past the default bound'),
     (record, written, put('request', 'title', '\u00e9' * 128), 'a recorded title of 128 characters and 256 bytes'),
     (record, written, put('provenance', 'observedAt', '2026-02-30T12:00:00Z'), 'the thirtieth of February'),
+    (record, written, put('request', 'blocks', 7.0), 'an integer written with a fraction'),
+    (arguments, request, put('document', 'blocks', heading, 'level', 2.0), 'a level written with a fraction'),
 ]:
     admitted = copy.deepcopy(value)
     change(admitted)

@@ -24,8 +24,10 @@ import (
 // The parts are XML, which says the same thing at greater length than the
 // request did, and which compresses well: a file of a few kilobytes can hold
 // parts of many megabytes. So the bound on the file is held over what the
-// parts hold as well as over the archive, and the document part stops being
-// written at the first block that begins past the bound.
+// parts hold as well as over the archive. The writing stops early, at the
+// first block that begins with the document part and the targets of its
+// links together past the bound; that is a saving of work and not a bound on
+// memory, which the request bounds.
 
 // Every entry carries one timestamp, the earliest a ZIP archive can state:
 // the first of January 1980, at midnight. An entry written raw states its
@@ -221,10 +223,13 @@ type docxWriter struct {
 	// lists is, for each list of the document in order, whether it is
 	// numbered.
 	lists []bool
-	// most is the bound on what the parts hold, and over that the document
-	// part alone has passed it, after which no further block is written.
-	most int64
-	over bool
+	// most is the bound on what the parts hold; linked is the bytes of the
+	// targets met so far, which the relationships part will hold; and over
+	// is that the document part and those targets together have passed the
+	// bound, after which no further block is written.
+	most   int64
+	linked int64
+	over   bool
 }
 
 // The relationships of the document part: the styles, the numbering, and
@@ -237,6 +242,7 @@ func (w *docxWriter) relationship(target string) string {
 		n = firstLinkRelationship + len(w.order)
 		w.targets[target] = n
 		w.order = append(w.order, target)
+		w.linked += int64(len(target))
 	}
 	return fmt.Sprintf("rId%d", n)
 }
@@ -276,7 +282,7 @@ func (w *docxWriter) body(doc Document) string {
 	b.WriteString(xmlHeader)
 	b.WriteString(`<w:document xmlns:w="` + nsWord + `" xmlns:r="` + nsRelationships + `"><w:body>`)
 	for i, block := range doc.Blocks {
-		if int64(b.Len()) > w.most {
+		if int64(b.Len())+w.linked > w.most {
 			w.over = true
 			return ""
 		}

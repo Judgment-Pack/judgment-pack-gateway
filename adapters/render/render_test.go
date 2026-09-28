@@ -3,12 +3,14 @@ package render
 import (
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"os/exec"
@@ -217,6 +219,10 @@ func TestARequestOutsideTheContractIsRefused(t *testing.T) {
 		"a link to an address with two signs":  {run(`"text":"x","link":"mailto:a@b@example.com"`), CodeContentInvalid, "names no address"},
 		"a link to a share as an address":      {run(`"text":"x","link":"mailto:\\\\server\\share@x"`), CodeContentInvalid, "names no address"},
 		"a link to a script as an address":     {run(`"text":"x","link":"mailto:javascript:alert(1)@x"`), CodeContentInvalid, "names no address"},
+		"a link to an address with a fragment": {run(`"text":"x","link":"mailto:a@example.com#@b@example.org"`), CodeContentInvalid, "an address with a fragment"},
+		"a link to an address and a bare sign": {run(`"text":"x","link":"mailto:a@example.com#"`), CodeContentInvalid, "an address with a fragment"},
+		"a link to two addresses by an escape": {run(`"text":"x","link":"mailto:a@example.com%2Cb%40example.org"`), CodeContentInvalid, "names no address"},
+		"a link to an address with an escape":  {run(`"text":"x","link":"mailto:%zz@example.com"`), CodeContentInvalid, "names no address"},
 		"a link with U+FFFE":                   {run(`"text":"x","link":"https://example.com/\ufffe"`), CodeContentInvalid, "a code point a Word file cannot carry"},
 		"a link with U+FFFF":                   {run(`"text":"x","link":"https://example.com/\uffff"`), CodeContentInvalid, "a code point a Word file cannot carry"},
 		"a link with a space":                  {run(`"text":"x","link":"https://example.com/a b"`), CodeContentInvalid, "a space or a control character"},
@@ -394,6 +400,25 @@ func TestTheBoundsOfTheRequestTheFileAndTheRecord(t *testing.T) {
 	stopped := &docxWriter{targets: map[string]int{}, most: 1000}
 	if body := stopped.body(Document{Title: "T", Blocks: lists}); !stopped.over || body != "" || len(stopped.lists) != 1 {
 		t.Fatalf("the writer came to %d lists and wrote %d bytes", len(stopped.lists), len(body))
+	}
+	// The targets of the links count towards it, since the file holds them
+	// too, in a part of their own: of a hundred paragraphs that say nothing
+	// and link to two thousand bytes each, the writer comes to one.
+	var linked []Block
+	for i := range 100 {
+		linked = append(linked, Block{Type: BlockParagraph, Runs: []Run{{Link: fmt.Sprintf("https://example.com/%04d/%s", i, strings.Repeat("a", 2000))}}})
+	}
+	stopped = &docxWriter{targets: map[string]int{}, most: 1000}
+	if body := stopped.body(Document{Title: "T", Blocks: linked}); !stopped.over || body != "" || len(stopped.order) != 1 {
+		t.Fatalf("the writer came to %d targets and wrote %d bytes", len(stopped.order), len(body))
+	}
+	// A target met twice is held once, and counted once.
+	for i := range linked {
+		linked[i].Runs[0].Link = linked[0].Runs[0].Link
+	}
+	stopped = &docxWriter{targets: map[string]int{}, most: 4000}
+	if body := stopped.body(Document{Title: "T", Blocks: linked[:10]}); stopped.over || body == "" || stopped.linked != int64(len(linked[0].Runs[0].Link)) {
+		t.Fatalf("ten links to one target of %d bytes are counted as %d bytes", len(linked[0].Runs[0].Link), stopped.linked)
 	}
 	// The record states the output bound it was held to, and its duration,
 	// so its length moves with both. The clock is held still, and the bound
@@ -786,16 +811,18 @@ func TestTheWritersDefaultsAreTheContracts(t *testing.T) {
 	_, file, _ := render(t, arguments("docx", sampleDocument), DefaultConfig())
 	styles := string(docxPart(t, file, "word/styles.xml"))
 	for what, want := range map[string]string{
-		"text at 11 points":                         `<w:rPrDefault><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/>`,
-		"8 points after a paragraph, lines at 1.08": `<w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault>`,
-		"a link in blue, underlined":                `w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:basedOn w:val="DefaultParagraphFont"/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>`,
-		"a table with cell margins":                 `<w:left w:w="108" w:type="dxa"/>`,
-		"a table with single borders":               `<w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>`,
+		"text at 11 points":                                      `<w:rPrDefault><w:rPr><w:sz w:val="22"/><w:szCs w:val="22"/>`,
+		"8 points after a paragraph, lines at 1.08":              `<w:pPrDefault><w:pPr><w:spacing w:after="160" w:line="259" w:lineRule="auto"/></w:pPr></w:pPrDefault>`,
+		"3 points after an item of a list, and none between two": `w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/><w:qFormat/><w:pPr><w:spacing w:after="60"/><w:contextualSpacing/></w:pPr>`,
+		"a link in blue, underlined":                             `w:styleId="Hyperlink"><w:name w:val="Hyperlink"/><w:basedOn w:val="DefaultParagraphFont"/><w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>`,
+		"a table with cell margins":                              `<w:left w:w="108" w:type="dxa"/>`,
+		"a table with single borders":                            `<w:insideV w:val="single" w:sz="4" w:space="0" w:color="auto"/>`,
 	} {
 		if !strings.Contains(styles, want) {
 			t.Errorf("%s: the styles do not hold %s", what, want)
 		}
 	}
+	// 12 points before a heading and 4 after it.
 	for level, points := range []int{16, 13, 12, 11, 11, 11} {
 		want := fmt.Sprintf(`w:styleId="Heading%d"><w:name w:val="heading %d"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:qFormat/><w:pPr><w:keepNext/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="%d"/></w:pPr><w:rPr><w:b/><w:bCs/><w:sz w:val="%d"/>`, level+1, level+1, level, 2*points)
 		if !strings.Contains(styles, want) {
@@ -1267,6 +1294,112 @@ func TestTheCheckRefusesARecordThatIsNotOne(t *testing.T) {
 			t.Errorf("%s: the check says %v, want it to say %q", name, err, c.says)
 		}
 	}
+}
+
+// The check holds the file to the bound on what its parts hold, by reading
+// them: a record whose file is within the bound as an archive and past it as
+// parts is refused, and so is one whose file is no archive, or an archive
+// that holds more than it states.
+func TestTheCheckHoldsThePartsToTheBound(t *testing.T) {
+	_, file, out := render(t, arguments("docx", sampleDocument), DefaultConfig())
+	held := unpacked(t, file)
+	with := func(file []byte, maxFile int64) []byte {
+		t.Helper()
+		var rec map[string]any
+		dec := json.NewDecoder(bytes.NewReader(out))
+		dec.UseNumber()
+		if err := dec.Decode(&rec); err != nil {
+			t.Fatal(err)
+		}
+		of := rec["file"].(map[string]any)
+		of["bytes"], of["size"], of["sha256"] = base64.StdEncoding.EncodeToString(file), json.Number(fmt.Sprint(len(file))), digestOf(file)
+		rec["rendering"].(map[string]any)["bounds"].(map[string]any)["maxFileBytes"] = json.Number(fmt.Sprint(maxFile))
+		changed, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return changed
+	}
+	if err := Check(with(file, held)); err != nil {
+		t.Fatalf("a file whose parts are at the bound: %v", err)
+	}
+	for name, c := range map[string]struct {
+		record []byte
+		says   string
+	}{
+		"parts a byte past the bound":      {with(file, held-1), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
+		"a bound that is the archive's":    {with(file, int64(len(file))), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
+		"a file that is no archive":        {with([]byte("not an archive"), 1<<20), "file.bytes is not a ZIP archive"},
+		"a part that holds more than said": {with(misstated(t, 10, 100000), 1<<20), "a part of the file does not hold what the archive states of it"},
+		"a part that holds less than said": {with(misstated(t, 100000, 10), 1<<20), "a part of the file does not hold what the archive states of it"},
+		"a part that says it is past all":  {with(misstated(t, 1<<40, 10), 1<<20), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
+		// Two parts whose stated sizes come to nothing when they are added
+		// as the archive holds them, in 64 bits: each is held to the bound
+		// before it is added, so the second is refused for its own size.
+		"parts that overflow their sum":    {with(archiveOf(t, entryOf("a.xml", 10, 10, zip.Deflate, true), entryOf("b.xml", 1<<64-10, 10, zip.Deflate, true)), 1<<20), "the parts of the file hold more than rendering.bounds.maxFileBytes"},
+		"a part compressed another way":    {with(archiveOf(t, entryOf("a.xml", 10, 10, 99, true)), 1<<20), "a part of the file cannot be read out of it"},
+		"a part whose checksum is not its": {with(archiveOf(t, entryOf("a.xml", 10, 10, zip.Deflate, false)), 1<<20), "a part of the file does not hold what the archive states of it"},
+	} {
+		if err := Check(c.record); err == nil || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: the check says %v, want it to say %q", name, err, c.says)
+		}
+	}
+}
+
+// entry is one part of an archive made for a test: the size it states, the
+// bytes it holds, how it says it is compressed, and whether the checksum it
+// states is its own.
+type entry struct {
+	name   string
+	states uint64
+	holds  int
+	method uint16
+	summed bool
+}
+
+func entryOf(name string, states uint64, holds int, method uint16, summed bool) entry {
+	return entry{name: name, states: states, holds: holds, method: method, summed: summed}
+}
+
+// archiveOf is an archive of the parts given, each deflated whatever it
+// says of itself.
+func archiveOf(t *testing.T, entries ...entry) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	archive := zip.NewWriter(&out)
+	for _, e := range entries {
+		data := bytes.Repeat([]byte("x"), e.holds)
+		var compressed bytes.Buffer
+		deflate, err := flate.NewWriter(&compressed, flate.BestCompression)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deflate.Write(data)
+		deflate.Close()
+		sum := crc32.ChecksumIEEE(data)
+		if !e.summed {
+			sum++
+		}
+		part, err := archive.CreateRaw(&zip.FileHeader{
+			Name: e.name, Method: e.method, CreatorVersion: 45, ReaderVersion: 45,
+			CRC32: sum, CompressedSize64: uint64(compressed.Len()), UncompressedSize64: e.states,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		part.Write(compressed.Bytes())
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return out.Bytes()
+}
+
+// misstated is an archive of one part that states one size and holds
+// another.
+func misstated(t *testing.T, states uint64, holds int) []byte {
+	t.Helper()
+	return archiveOf(t, entryOf("word/document.xml", states, holds, zip.Deflate, true))
 }
 
 // The readers of single values take a value of their own kind, written as

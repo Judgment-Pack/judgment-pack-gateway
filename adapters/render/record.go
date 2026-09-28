@@ -1,11 +1,13 @@
 package render
 
 import (
+	"archive/zip"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"adapters/attachment"
@@ -95,8 +97,10 @@ const (
 // Check is the reference check of a version 1 render record: that it has
 // the record's members and no others, that each is of its form, and that the
 // file is what the record says of it -- the base64 is the one standard padded
-// encoding of bytes of the stated size whose SHA-256 is the stated digest. It
-// says nothing of whether the file is a correct rendering of any content.
+// encoding of bytes of the stated size whose SHA-256 is the stated digest,
+// and those bytes are an archive whose parts, read out of it, hold no more
+// than the bound the record states for the file. It says nothing of whether
+// the file is a correct rendering of any content, nor of what the parts are.
 func Check(raw []byte) error {
 	if !nestedWithin(raw, recordNesting) {
 		return errors.New("the record nests deeper than a record does")
@@ -207,8 +211,12 @@ func Check(raw []byte) error {
 			return fmt.Errorf("rendering.bounds.%s is not a positive integer", member)
 		}
 	}
-	if maxFile, _ := integerOf(bounds["maxFileBytes"]); size > maxFile {
+	maxFile, _ := integerOf(bounds["maxFileBytes"])
+	if size > maxFile {
 		return errors.New("file.size is past rendering.bounds.maxFileBytes")
+	}
+	if err := partsWithin(data, maxFile); err != nil {
+		return err
 	}
 	if _, ok := integerOf(rendering["durationMs"]); !ok {
 		return errors.New("rendering.durationMs is not a non-negative integer")
@@ -237,6 +245,42 @@ func Check(raw []byte) error {
 	}
 	if at, err := time.Parse(stampLayout, observedAt); err != nil || at.Format(stampLayout) != observedAt {
 		return errors.New("provenance.observedAt is not a UTC instant to the second")
+	}
+	return nil
+}
+
+// partsWithin holds a Word file to the bound on what its parts hold: it is
+// a ZIP archive, the sizes its entries state come to no more than the bound,
+// and each entry read out of the archive holds what it states. No more is
+// read of an entry than it states and one byte, so that what is read of the
+// whole file is within the bound and one byte an entry.
+func partsWithin(file []byte, most int64) error {
+	archive, err := zip.NewReader(bytes.NewReader(file), int64(len(file)))
+	if err != nil {
+		return errors.New("file.bytes is not a ZIP archive")
+	}
+	var stated uint64
+	for _, entry := range archive.File {
+		if entry.UncompressedSize64 > uint64(most) {
+			return errors.New("the parts of the file hold more than rendering.bounds.maxFileBytes")
+		}
+		if stated += entry.UncompressedSize64; stated > uint64(most) {
+			return errors.New("the parts of the file hold more than rendering.bounds.maxFileBytes")
+		}
+	}
+	for _, entry := range archive.File {
+		part, err := entry.Open()
+		if err != nil {
+			return errors.New("a part of the file cannot be read out of it")
+		}
+		held, err := io.Copy(io.Discard, io.LimitReader(part, int64(entry.UncompressedSize64)+1))
+		part.Close()
+		// The archive's reader fails a part that holds more or less than
+		// it states, or whose checksum is not its own. The length is
+		// compared here as well, so that the bound does not rest on that.
+		if err != nil || uint64(held) != entry.UncompressedSize64 {
+			return errors.New("a part of the file does not hold what the archive states of it")
+		}
 	}
 	return nil
 }

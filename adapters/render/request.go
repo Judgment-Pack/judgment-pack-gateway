@@ -419,6 +419,11 @@ func linkTarget(target string) error {
 			return errors.New("a link's target names no host")
 		}
 	case "mailto":
+		// Parse takes a fragment off the target before the address is
+		// looked at, so it is refused here: an address has none.
+		if strings.Contains(target, "#") {
+			return errors.New("a link's target is an address with a fragment")
+		}
 		if !mailbox(u.Opaque) {
 			return errors.New("a link's target names no address")
 		}
@@ -430,15 +435,17 @@ func linkTarget(target string) error {
 
 // mailbox reports whether what follows "mailto:" and stands before any
 // question mark, which Parse has taken off it, is one address in its plainest
-// form: something, an at sign, and something, with no second at sign and none
-// of the characters that begin a path, a scheme or a list. It is a test of
-// form. Whether the address exists is nobody's to say here.
+// form: something, an at sign, and something, with no second at sign, none of
+// the characters that begin a path, a scheme or a list, and no percent sign,
+// so that the address is what it reads as and nothing is spelt in it by an
+// escape. It is a test of form. Whether the address exists is nobody's to say
+// here.
 func mailbox(address string) bool {
 	local, domain, found := strings.Cut(address, "@")
 	if !found || local == "" || domain == "" {
 		return false
 	}
-	return !strings.ContainsAny(address[len(local)+1:], "@") && !strings.ContainsAny(address, `/\:,;<>"`)
+	return !strings.ContainsAny(domain, "@") && !strings.ContainsAny(address, `/\:,;<>"%`)
 }
 
 // nestedWithin reports whether the objects and arrays of a JSON text nest no

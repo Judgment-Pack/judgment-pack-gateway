@@ -135,11 +135,15 @@ follows it**: nothing is resolved, fetched or checked for existence. A target is
   nor U+FFFF;
 - a URL whose scheme is `https`, `http` or `mailto`, in either case;
 - for `https` and `http`, one that names a host. The host is what stands before any port, so
-  `http://:80/` names none;
+  `http://:80/` names none. That there is a host is what is checked, not that it is a name
+  any host could have;
 - for `mailto`, one address in its plainest form: one or more characters, an at sign, and one
-  or more characters, with no second at sign and none of `/ \ : , ; < > "`. A question mark
-  and what a mail program is to fill in may follow it. A list of addresses is not admitted.
-  The form is what is checked. Whether the address exists is not.
+  or more characters, with no second at sign and none of `/ \ : , ; < > " %`. No percent
+  sign means nothing in the address is spelt by an escape, so the address is what it reads
+  as. A question mark and what a mail program is to fill in may follow it, and that is not
+  read. A fragment, which a `#` begins, may not. A list of addresses is not admitted, and
+  neither is an address in quotation marks. The form is what is checked. Whether the address
+  exists is not.
 
 Any other target refuses the request. The target is written as given, not normalised: a
 target the adapter admits is read back out of the file as the same string, and a test holds
@@ -226,8 +230,8 @@ reading and with the file's base64 left out:
     "size": 2895
   },
   "provenance": {
-    "adapter": {"digest": "sha256:632c39d9c847b5670a447cde08c960ad21397fe9ba8d472dc78399c32e27373a", "name": "adapter-render", "version": "0"},
-    "observedAt": "2026-09-28T20:10:07Z"
+    "adapter": {"digest": "sha256:195523c8ade7a0b848ecdf575d8e00e5ac6c72aafdacf69c733c50d0e0b99edc", "name": "adapter-render", "version": "0"},
+    "observedAt": "2026-09-28T20:58:03Z"
   },
   "renderVersion": "1",
   "rendering": {
@@ -289,7 +293,10 @@ no revision. No page size and no margins: the page is the reader's default.
 **What the writer chooses.** The request gives no sizes, colours or spacing, so the writer
 supplies them, the same for every file:
 
-- text at 11 points, with 8 points after a paragraph and lines at 1.08 of their height;
+- text at 11 points, with lines at 1.08 of their height;
+- 8 points after a paragraph of the body and after a paragraph in a cell; 12 points before a
+  heading and 4 after it; 3 points after an item of a list, and none between two items that
+  follow one another;
 - headings in bold, at 16, 13 and 12 points for levels 1 to 3 and 11 points for levels 4 to
   6, each kept with the paragraph after it and marked with its outline level;
 - a list indented half an inch, its bullet or number hanging a quarter of an inch, with a
@@ -344,17 +351,26 @@ text of a document is bounded by the request that carries it.
 
 **The file's parts are bounded as the file is.** A Word file is a compressed archive, and its
 parts are XML, which says at length what the request said briefly and compresses well. A
-request of 900 KiB has been made to yield a file of 38 KiB whose document part holds 12 MiB.
-So `--max-file` is held over two things: the bytes the seven parts hold together, as a reader
-of the file is given them, and the bytes of the archive. The parts have been the longer of
-the two in every file the adapter has been seen to write, so they are what the bound meets,
-and the archive is held to it as a second guard. A consumer can take
-`rendering.bounds.maxFileBytes` as a bound on what opening the file unpacks.
+request of 879 KiB has been made to yield a file of 37 KiB whose document part holds
+11.4 MiB. So `--max-file` is held over two things: the bytes the seven parts hold together,
+as a reader of the file is given them, and the bytes of the archive. The parts have been the
+longer of the two in every file the adapter has been seen to write, so they are what the
+bound meets, and the archive is held to it as a second guard.
 
-**What bounds the adapter's memory is the request.** The document part stops being written at
-the first block that begins past the bound, so the adapter holds at most the bound and one
-block more. One block can carry the whole text of a request, and the XML is longer than the
-text: about fifteen times at the worst found, for text that alternates an ampersand and a
+The adapter refuses a file past either. `render.Check` holds a record to both as well: it
+reads the parts out of the file, no further than each states and one byte, and refuses a
+record whose parts hold more than `rendering.bounds.maxFileBytes`, or other than the archive
+states of them. A consumer that runs the check can take that member as a bound on what
+opening the file unpacks. One that does not enforces a limit of its own as it extracts, as
+it would for any archive.
+
+**What bounds the adapter's memory is the request, not this.** The writing stops early, at
+the first block that begins with the document part and the targets of its links together
+past the bound. That saves work. It is not a bound on what the adapter holds, which includes
+the arguments as read, one block past the point where the writing stops, and the parts
+before they are compressed. One block can carry the whole text of a request, and the XML is
+longer than the request that carried it: about fifteen times the request's bytes at the worst
+found, which is twenty-two times the text's, for text that alternates an ampersand and a
 tab. An operator who raises `--max-request` raises that with it.
 
 A record past `--max-output` is not cut, and a file past `--max-file` is not cut: the adapter
@@ -367,18 +383,20 @@ makes a file of some 770 KiB.
 **A deadline is when work stops being started, not a completion guarantee.** The deadline runs
 from the adapter's start. The reading of the request is inside it. It is checked before the
 file is written and once the writing has ended, each time by the clock as well as by the
-timer; a rendering whose deadline has passed at either check is refused. Nothing between the
-two checks reads the deadline: reading the arguments and writing the file each run to their
-end. The record is encoded and written after the second check, and that is not checked
-again. The gateway's own timeout for
-the source, thirty seconds by default, ends the process whatever it is doing.
+timer; a rendering whose deadline has passed at either check is refused. Nothing else reads
+the deadline. The arguments are read and held to their rules before the first check, and the
+file is written between the two, and each runs to its end. The record is encoded and written
+after the second check, and that is not checked again. The gateway's own timeout for the
+source, thirty seconds by default, ends the process whatever it is doing.
 
 ## What a consumer should do
 
 1. Verify the receipt as for any acquisition. It covers the record, and so the file.
 2. Read `renderVersion`, and treat a version it does not know as a record it cannot read.
 3. Decode `file.bytes`, and compare the length with `file.size` and the SHA-256 with
-   `file.sha256`. The reference check does both.
+   `file.sha256`. The reference check does both, and reads the file's parts to hold them to
+   the record's bound. A consumer that opens the file without the check limits what it
+   extracts.
 4. Name the file itself. The title is a title: it may hold characters a file system refuses.
 5. Treat `request.cites` as what the caller said. Whoever relies on it checks the decision
    record it names.
@@ -416,37 +434,45 @@ Changelog:
 `render.Check` in `adapters/render` is the reference check of the record: it takes a record's
 bytes and says whether they are a version 1 record — the members closed, each of its form, and
 the file what the record says of it, its base64 the one encoding of bytes of the stated size
-and digest. It says nothing of whether the file is a correct rendering of any content. The
-adapter holds every record it writes to the check before it writes it.
+and digest, and those bytes an archive whose parts hold no more than the record's bound on
+the file. It says nothing of whether the file is a correct rendering of any content, nor of
+what its parts are. The adapter holds every record it writes to the check before it writes
+it.
 
 `testdata/rendering/arguments-v1.schema.json` and `testdata/rendering/render-v1.schema.json`
 describe the arguments and the record as JSON Schema. They check each value on its own. The
 rules that relate values are the adapter's and the check's: that every row of a table holds
-the same number of cells, that the size and the digest are the file's. And a schema is looser
-than the adapter in four places, each stated in the schema's own description and held by the
-script as something the schema admits:
+the same number of cells, that the size and the digest are the file's, that the file's parts
+are within the bound. And a schema is looser than the adapter in five places, each stated in
+the schema's own description and held by the script as something the schema admits:
 
 - a schema counts a length in characters where the adapter counts bytes of UTF-8, so a title
   of 128 characters of two bytes each passes the schemas, and neither the adapter nor the
   check;
 - the arguments schema does not parse a target, so it admits an `http` target that names a
   port and no host;
-- the arguments schema does not know the operator's `--max-blocks`, and neither schema knows
-  the depth or the canonical domain;
+- the arguments schema does not know the operator's `--max-blocks`;
+- neither schema knows the canonical domain. A schema reads JSON that has been parsed, where
+  a member named twice is one member and `7.0` is the integer 7, and both are outside the
+  domain;
 - the record schema's pattern for an instant admits a day the month does not have, the
-  thirtieth of February, which the check refuses. The arguments schema is not
-written within the descriptor grammar of [tool-descriptors.md](tool-descriptors.md): it names
-its shared parts by reference and states lexical forms as patterns, and that grammar admits
-neither.
+  thirtieth of February, which the check refuses.
+
+The depth of the arguments and of a record is not among them: each schema is closed and no
+part of it holds itself, so nothing deeper than the structure passes it.
+
+The arguments schema is not written within the descriptor grammar of
+[tool-descriptors.md](tool-descriptors.md): it names its shared parts by reference and states
+lexical forms as patterns, and that grammar admits neither.
 
 `testdata/rendering/examples/` holds a request, `refund-decision.request.json`, and the record
 one build of the adapter wrote for it, `refund-decision.record.json`. The adapter's tests hold
 the record to the check, and hold the request to yield the record's `request` member, its
 `contentDigest` included, and a file whose seven parts are the example's once each is read out
 of its archive. They do not hold it to yield the record's file byte for byte, since another
-build may write other bytes. `testdata/rendering/check_schema.py` holds both
-examples, and a record written in the run that checks it, to the schemas, and holds the
-schemas to refuse a list of broken variants of each.
+build may write other bytes. `testdata/rendering/check_schema.py` holds both examples, and a
+record written in the run that checks it, to the schemas; holds the schemas to refuse a list
+of broken variants of each; and holds them to admit the differences listed above.
 
 ## What this is not
 
