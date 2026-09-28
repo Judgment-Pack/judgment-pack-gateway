@@ -78,9 +78,10 @@ As configured for documents it does not meet need 3.
 ## Sample text for the language condition
 
 ADR-0006 names a condition for looking again at a published server: that it renders this text.
-The sample is each locale's own name for its language, which is fixed and short, and which
-puts accented Latin letters, kana and kanji, hangul, and simplified and traditional Chinese
-characters on one page.
+The sample is each locale's own name for its language, which is fixed and short. For Japanese
+the name is followed by its reading in hiragana, so that the sample holds hiragana as well as
+kanji. Together they put accented Latin letters, hiragana and kanji, hangul, and simplified and
+traditional Chinese characters on one page. No sample holds katakana.
 
 | Locale | Sample |
 |---|---|
@@ -89,7 +90,7 @@ characters on one page.
 | `es` | español |
 | `fr` | français |
 | `it` | italiano |
-| `ja` | 日本語 |
+| `ja` | 日本語 (にほんご) |
 | `ko` | 한국어 |
 | `pt-BR` | português (Brasil) |
 | `pt-PT` | português (Portugal) |
@@ -100,6 +101,6 @@ characters on one page.
 **The criterion.** A PDF made from a document holding the twelve samples meets it when both of
 these hold for every sample: the text extracted from the PDF is the sample, character for
 character; and the page draws it with glyphs of a font, none of them the glyph a font shows
-for a character it lacks. The sample is a floor. It has no right-to-left script and no script
-that needs shaping, because no locale the desk ships has one; a locale added later adds its
-own name to the table.
+for a character it lacks. The sample is a floor. It exercises no right-to-left layout and no
+complex shaping, and a PDF that meets the criterion has shown neither. A locale added to the
+desk later adds its own name to the table.

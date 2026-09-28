@@ -94,20 +94,23 @@ The determinations this record settles:
    a separate process. With no program configured, a PDF request is refused by name and
    nothing is rendered.
    - **Lifecycle.** The program's lifecycle is the OCR program's, as
-     [docs/design/attachments.md](../design/attachments.md) states it.
-     - The deadline is checked after the program is resolved and digested and before it is
-       started. If it has passed, the program is not started.
-     - A program that was started has finished when it has exited and its output has reached
-       its end.
-     - When the deadline passes, or the output passes its bound, the adapter ends the process
-       it started, and not that process's own children. It then waits a bounded time for the
-       exit and for the output to end, and closes the pipe itself. A program that exits and
-       leaves its output open gets the same bounded wait, and is a failure.
-     - The adapter takes the outcome only then, and checks the deadline as it does. If the
-       deadline has passed, nothing the program wrote is used, even an answer that was
-       complete. Output past the bound and a failed exit are refused as well.
+     [docs/design/attachments.md](../design/attachments.md) states it and
+     `adapters/document/ocr.go` implements it.
+     - The deadline is checked after the program is resolved and digested, immediately before
+       it is started. If it has passed, the program is not started.
+     - A program has finished when it has exited and its output has reached its end, in
+       either order.
+     - A program still running at the deadline is ended: the process the adapter started, not
+       that process's own children. One that writes past the output bound is ended at once.
+     - Output that has not reached its end a fixed time after the exit, or after the ending
+       at the deadline, is closed by the adapter. The contract sets that time.
+     - The outcome is taken once the adapter has observed the exit, and either the end of
+       the output or that closing. If the deadline has passed by then, nothing the program
+       wrote is used, even an answer that was complete. Otherwise output past the bound,
+       output that was closed before it ended, and a failed exit are each a failure.
      - The adapter's deadline sits under the gateway's source timeout by enough to clean up
-       and report, and the record is written some time after the deadline.
+       and report. Where a program was ended at the deadline, the record is written some
+       time after it.
 
      The deadline is neither the end of the call nor proof that every process the program
      started has stopped.
