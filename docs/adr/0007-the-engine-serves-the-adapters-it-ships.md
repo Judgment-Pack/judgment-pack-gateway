@@ -162,7 +162,9 @@ The determinations this record settles:
    Work between two of an adapter's checks of its deadline runs to its end, and so does the
    writing of a record. No receipt is minted for a source the gateway reports as timed out,
    whatever the source had written by then. An operator whose renderings or documents run
-   close to their timeout raises it.
+   close to their timeout raises it, as far as 605. A service opened to MCP is held to 30 by
+   determination 8, so a service that needs more is not opened to MCP and is reached by
+   `/acquire`.
 6. **The bound on a request.** `maxRequestBytes` is a new optional top-level member of a
    version-4 file, the `--max-request` of the command line: what `/acquire` reads of a body.
    It defaults to one mebibyte and is from 1 to the gateway's ceiling, 64 MiB. It is the
@@ -222,9 +224,11 @@ The determinations this record settles:
    - **The tests** are the ones mcp-server.md names for a platform's tool, held for a
      service as well: that a call through the server and a direct `/acquire` commit to the
      same arguments, and that a call forwarded to another source is refused by a client that
-     binds. Between two services of one kind, given the same arguments, the `source` is the
-     one member that differs. Between a service and a platform's tool the shape and the
-     commitment differ too. The design notes state the cases when the rows are built.
+     binds. A call forwarded to another service of the same kind passes the check of the
+     shape and opens to the arguments sent, each commitment under its own salt, so what
+     refuses it is the comparison of the signed `source` with the one the client expected.
+     Between a service and a platform's tool the shape and what the commitment opens to
+     differ too. The design notes state the cases when the rows are built.
    - **The MCP server's own limits stay what they are.** It reads a message of at most one
      mebibyte, reads a signer's answer of at most 8 MiB, and gives a forward 45 seconds
      (`go/mcp.go`). None is derived from a service's bounds, and `maxRequestBytes` does not
