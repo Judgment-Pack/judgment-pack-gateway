@@ -72,7 +72,7 @@ The determinations this record settles:
      "render": {
        "kind": "render",
        "user": "engine-render",
-       "timeoutSeconds": 40,
+       "timeoutSeconds": 30,
        "maxOutputBytes": 6291456,
        "maxFileBytes": 4194304,
        "renderer": "render-pdf",
@@ -91,10 +91,17 @@ The determinations this record settles:
    The kinds are a closed set, `render` and `documents`. A kind the engine does not know is
    refused by name, and so is a member a kind does not define.
 
-   A file of version 4 names at least one platform or one service. Its `platforms` may be an
-   empty object where `services` names a service, and `catalog` is required exactly where
-   `platforms` names a platform. A file that names neither is refused. So an engine can serve
-   rendering and nothing else, with no platform configured to make it start.
+   An engine serves a file of version 4 that names at least one platform or one service.
+   Its `platforms` may be an empty object where `services` names a service, and `catalog` is
+   required exactly where `platforms` names a platform. So an engine can serve rendering and
+   nothing else, with no platform configured to make it start. A file that names neither is
+   still read, as it is today, since `connect` begins from one, and is still refused for
+   serving.
+
+   `connect` stays what it is, an operation on platforms. It adds a platform to a file that
+   names a catalog, and refuses one that names none. It writes a file of version 4 as
+   version 4, with its services and its bound on a request as they were. It holds a new
+   platform's name and user against the services' as well as the platforms'.
 2. **What the engine derives.** For each service one source, named by the service's name with
    no operation after it, declared with no shape, so that its receipts carry the command
    shape. It runs as the service's user. Its command line is built by the engine from the
@@ -151,10 +158,10 @@ The determinations this record settles:
 
    The five seconds are a margin and not a promise. The gateway's clock for a source starts
    before it resolves, digests and starts the adapter, and the adapter's starts inside its
-   own process, so the two deadlines are further apart than five seconds by what starting
-   took. Work between two of an adapter's checks of its deadline runs to its end, and so
-   does the writing of a record. An adapter the gateway's timeout ends has written no
-   record, and no receipt is minted for it. An operator whose renderings or documents run
+   own process. So what starting took comes out of the five seconds, and can use them up.
+   Work between two of an adapter's checks of its deadline runs to its end, and so does the
+   writing of a record. No receipt is minted for a source the gateway reports as timed out,
+   whatever the source had written by then. An operator whose renderings or documents run
    close to their timeout raises it.
 6. **The bound on a request.** `maxRequestBytes` is a new optional top-level member of a
    version-4 file, the `--max-request` of the command line: what `/acquire` reads of a body.
@@ -200,29 +207,42 @@ The determinations this record settles:
    - **What a client binds.** A client holds a mapping of its own from a tool's whole name to
      what the name means: whether it is a platform's tool or a service, and the `source` it
      expects. It does not take either from the server, and it does not read them out of the
-     name. For a service it then holds the receipt to this: `source` is the service's name;
-     the shape is the command shape; and the arguments commitment opens, under the salt it
-     was handed, to the canonical form of the arguments it sent, alone. For a platform's
-     tool the commitment opens to the canonical form of `{"tool": …, "arguments": …}`, as
-     today. The tool's name is therefore no part of what a service's receipt commits to. The
-     `source` is what says which service answered.
-   - **The tests.** The test that a call through the server and a direct `/acquire` commit to
-     the same arguments holds for a service as for a platform's tool, with absent arguments
-     and with arguments the signer refuses. The test that a forwarded call to another source
-     is caught only by the `source` holds for a service, for another service, and across the
-     two kinds of row.
+     name. Everything mcp-server.md has a client do for a platform's tool it does for a
+     service: it verifies the store under the pinned key, reads the verdict, holds the
+     session, the caller and the call's place among the findings, and digests the result it
+     kept. For a service it holds the receipt to this besides: `source` is the service's
+     name; the signed `acquisition.shape` is `command`; and the arguments commitment opens,
+     under the salt it was handed, to the canonical form of the arguments it sent, alone.
+     For a platform's tool the commitment opens to the canonical form of
+     `{"tool": …, "arguments": …}`, as today. The tool's name is therefore no part of what a
+     service's receipt commits to, and the `source` is what says which service answered. A
+     receipt of the command shape states no endpoint, snapshot, schema, peer or statement,
+     and carries no salt for a statement. Those are what the shape does not claim, and not a
+     fault of the receipt.
+   - **The tests** are the ones mcp-server.md names for a platform's tool, held for a
+     service as well: that a call through the server and a direct `/acquire` commit to the
+     same arguments, and that a call forwarded to another source is refused by a client that
+     binds. Between two services of one kind, given the same arguments, the `source` is the
+     one member that differs. Between a service and a platform's tool the shape and the
+     commitment differ too. The design notes state the cases when the rows are built.
    - **The MCP server's own limits stay what they are.** It reads a message of at most one
      mebibyte, reads a signer's answer of at most 8 MiB, and gives a forward 45 seconds
      (`go/mcp.go`). None is derived from a service's bounds, and `maxRequestBytes` does not
      raise the first. So over MCP a call's arguments are under a mebibyte whatever the engine
-     admits by `/acquire`. The engine refuses to open to MCP a service that could never be
-     answered within those limits: one whose `timeoutSeconds` is over 40, or whose
-     `maxOutputBytes` is over 8 MiB. Within them an answer can still be too long, since an
-     answer is longer than the record in it. The outcome is then the one mcp-server.md
-     states for every tool: `outcome: "unknown"`, with the signer free to have finished and
-     minted a receipt the client did not see. The MCP server's bound on concurrency holds
-     forwards that are outstanding, not acquisitions the signer has not finished, and a call
-     made again is a new acquisition.
+     admits by `/acquire`.
+   - **What may be opened to MCP** is a matter of policy, and the policy is this. A service
+     opened to MCP has a `timeoutSeconds` of at most 30 and a `maxOutputBytes` of at most
+     6 MiB, and the engine refuses to start where an entry sets `"mcp": true` with more.
+     Thirty seconds is the timeout the forward's 45 seconds were sized for: a source's
+     thirty, the five the gateway waits for a source's output to close, and a margin
+     (`go/mcp.go`). Six mebibytes is room for the record of a file at the default bound on a
+     file, 4 MiB, and leaves two under the 8 MiB for the receipt, the salts and what JSON
+     adds. Neither is a promise that an answer arrives. Within both, a forward can run out
+     of time, and an answer can be too long for what JSON made of it. The outcome is then
+     the one mcp-server.md states for every tool: `outcome: "unknown"`, with the signer free
+     to have finished and minted a receipt the client did not see. The MCP server's bound on
+     concurrency holds forwards that are outstanding, not acquisitions the signer has not
+     finished, and a call made again is a new acquisition.
 9. **What this record does not decide.** Whether the engine serves an artifact by its digest,
    so that an answer could name a file and not carry it. Saving a file, which is
    [ADR-0005](0005-personal-storage-controls.md)'s and is not a tool. `/act`, which the MCP
