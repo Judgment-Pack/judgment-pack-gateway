@@ -208,9 +208,21 @@ func Check(raw []byte) error {
 	if err != nil {
 		return fmt.Errorf("rendering.bounds: %v", err)
 	}
-	for _, member := range []string{"maxRequestBytes", "maxBlocks", "maxFileBytes", "maxOutputBytes", "timeoutMs"} {
-		if n, ok := integerOf(bounds[member]); !ok || n < 1 {
-			return fmt.Errorf("rendering.bounds.%s is not a positive integer", member)
+	// Each bound is one the adapter can be configured with: positive, and
+	// no more than its ceiling. A record that states a bound past its
+	// ceiling is one no adapter wrote.
+	for _, bound := range []struct {
+		member  string
+		ceiling int64
+	}{
+		{"maxRequestBytes", maxRequestCeiling},
+		{"maxBlocks", maxBlocksCeiling},
+		{"maxFileBytes", maxFileCeiling},
+		{"maxOutputBytes", maxOutputCeiling},
+		{"timeoutMs", timeoutCeiling.Milliseconds()},
+	} {
+		if n, ok := integerOf(bounds[bound.member]); !ok || n < 1 || n > bound.ceiling {
+			return fmt.Errorf("rendering.bounds.%s is not a positive integer of at most %d", bound.member, bound.ceiling)
 		}
 	}
 	maxFile, _ := integerOf(bounds["maxFileBytes"])
@@ -269,7 +281,9 @@ const localHeaderLength = 30
 //
 // The sizes the parts state come to no more than the bound, and each part,
 // inflated, holds what it states under the checksum it states, and its data
-// holds that and nothing after it.
+// holds that and nothing after it. No more is asked of a part's inflater than
+// the part states and one byte; what the inflater holds inside itself beyond
+// that is its own, and is of a fixed size.
 //
 // It says what the archive is. It does not read the parts as XML, and says
 // nothing of what they hold.
@@ -299,26 +313,38 @@ func partsWithin(file []byte, most int64) error {
 		parts = append(parts, p)
 		stated += int64(p.unpacked)
 	}
+	// Seven sizes of 32 bits each do not pass what 64 bits count. The bound
+	// is held before the archive is written again: it is at most the
+	// ceiling of the bound on a file, far below the size at which an
+	// archive states a part in another way.
+	if stated > most {
+		return errors.New("the parts of the file hold more than rendering.bounds.maxFileBytes")
+	}
 	again, err := archiveOf(parts)
 	if err != nil || !bytes.Equal(again, file) {
 		return notTheWriters
 	}
-	// Seven sizes of 32 bits each do not pass what 64 bits count.
-	if stated > most {
-		return errors.New("the parts of the file hold more than rendering.bounds.maxFileBytes")
-	}
 	for _, p := range parts {
 		data := bytes.NewReader(p.data)
 		part := flate.NewReader(data)
-		sum := crc32.NewIEEE()
-		// No more is read of a part than it states and one byte.
-		held, err := io.Copy(sum, io.LimitReader(part, int64(p.unpacked)+1))
+		held, sum, err := readNoMoreThan(part, int64(p.unpacked)+1)
 		part.Close()
-		if err != nil || held != int64(p.unpacked) || sum.Sum32() != p.sum || data.Len() != 0 {
+		if err != nil || held != int64(p.unpacked) || sum != p.sum || data.Len() != 0 {
 			return errors.New("a part of the file does not hold what the archive states of it")
 		}
 	}
 	return nil
+}
+
+// readNoMoreThan reads r to its end, or until it has been given most bytes,
+// whichever comes first, and returns how many it was given and their
+// checksum. It asks r for no byte past most: a part that would inflate to far
+// more than it states is read as far as what it states and one byte, which is
+// enough to know that it holds more.
+func readNoMoreThan(r io.Reader, most int64) (int64, uint32, error) {
+	sum := crc32.NewIEEE()
+	held, err := io.Copy(sum, io.LimitReader(r, most))
+	return held, sum.Sum32(), err
 }
 
 func isNull(raw json.RawMessage) bool {

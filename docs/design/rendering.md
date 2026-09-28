@@ -233,13 +233,13 @@ shown there raises `--max-output`, and its record states that bound as `6291456`
     "size": 2895
   },
   "provenance": {
-    "adapter": {"digest": "sha256:a23bf45390e53956555deb55198cf93673a7e36001c8b3bf4cd6661fd5f4568e", "name": "adapter-render", "version": "0"},
-    "observedAt": "2026-09-28T21:40:58Z"
+    "adapter": {"digest": "sha256:6575af8d85e15d1f89b7abaf92d7c9885b4e2e796ae99a1d21febf6ce445f7ba", "name": "adapter-render", "version": "0"},
+    "observedAt": "2026-09-28T22:09:02Z"
   },
   "renderVersion": "1",
   "rendering": {
     "bounds": {"maxBlocks": 2000, "maxFileBytes": 4194304, "maxOutputBytes": 1048576, "maxRequestBytes": 1048576, "timeoutMs": 25000},
-    "durationMs": 4,
+    "durationMs": 6,
     "renderer": {"kind": "module", "name": "adapter-render/docx/1"},
     "status": "complete"
   },
@@ -273,7 +273,7 @@ shown there raises `--max-output`, and its record states that bound as `6291456`
 | `rendering.status` | string | `"complete"`. Version 1 has no other |
 | `rendering.renderer.kind` | string | `"module"`: the file was written by the adapter's own code |
 | `rendering.renderer.name` | string | which writer of the adapter wrote it: `"adapter-render/docx/1"` |
-| `rendering.bounds` | object | the bounds that applied, as configured |
+| `rendering.bounds` | object | the bounds that applied, as configured: each a positive integer of at most its ceiling ([Bounds and the deadline](#bounds-and-the-deadline)) |
 | `rendering.durationMs` | integer | the time from when the adapter began reading the request to when it built the record, in milliseconds |
 | `provenance.adapter` | object | the adapter as it describes itself: its name, its version, and the SHA-256 of the file the operating system reports as its executable. The adapter's testimony. The receipt carries the gateway's own reading of the same file |
 | `provenance.observedAt` | string | when the adapter had read the request in full, in UTC to the second |
@@ -376,11 +376,14 @@ to the layout of the archive. It takes the seven parts out of the file from wher
 puts them, writes the archive of those parts again with the writer's own code, and refuses a
 file that is not that archive byte for byte: one with other entries, or with thousands of
 them, with entries that share their bytes, with a comment, or with any byte the writer does
-not write. It then inflates each part, no further than the part states and one byte, and
-refuses a record whose parts together hold more than `rendering.bounds.maxFileBytes`, or a
-part that holds other than it states, whose checksum is not the one stated, or whose data
-holds anything after what it holds. What the check reads of a file is the file, and what it
-inflates is within the bound and a byte for each part.
+not write. It refuses a record whose parts together state more than
+`rendering.bounds.maxFileBytes`, and a record whose bounds are past the ceilings an adapter
+can be configured with. It then reads each part out of its inflater, asking for no more than
+the part states and one byte, and refuses a part that holds other than it states, whose
+checksum is not the one stated, or whose data holds anything after what it holds. What the
+check reads of a file is the file, and what it takes out of the inflaters is within the
+bound and a byte for each part. An inflater holds some of what it has inflated inside
+itself, of a fixed size, before it is asked for it.
 
 The check writes the archive with the writer's code, so what it holds a file to is what the
 writer writes. That what the writer writes is the layout stated under

@@ -1235,37 +1235,44 @@ func TestTheCheckRefusesARecordThatIsNotOne(t *testing.T) {
 		"bytes without their padding": {func() {
 			member("file")["bytes"] = strings.TrimRight(base64.StdEncoding.EncodeToString(file[:len(file)-len(file)%3-1]), "=")
 		}, "file.bytes is not the one standard padded base64 encoding"},
-		"bytes with a line break":              {func() { member("file")["bytes"] = member("file")["bytes"].(string) + "\n" }, "file.bytes is not the one standard padded base64 encoding"},
-		"bytes that are empty":                 {func() { member("file")["bytes"] = "" }, "file.bytes is not the one standard padded base64 encoding"},
-		"an encoding that is not base64":       {func() { member("file")["encoding"] = "hex" }, `file.encoding is not "base64"`},
-		"a rendering that is a string":         {func() { rec["rendering"] = "x" }, "rendering: not a JSON object"},
-		"a rendering with errors":              {func() { member("rendering")["errors"] = []any{} }, "rendering: a member the contract does not define"},
-		"a status that is not complete":        {func() { member("rendering")["status"] = "partial" }, `rendering.status is not "complete"`},
-		"a renderer that is a string":          {func() { member("rendering")["renderer"] = "module" }, "rendering.renderer: not a JSON object"},
-		"a renderer that is a program":         {func() { member("rendering", "renderer")["kind"] = "program" }, `rendering.renderer.kind is not "module"`},
-		"a renderer of another name":           {func() { member("rendering", "renderer")["name"] = "adapter-render/docx/2" }, "rendering.renderer.name is not the renderer of the format"},
-		"a renderer with a digest":             {func() { member("rendering", "renderer")["digest"] = "sha256:" + strings.Repeat("0", 64) }, "rendering.renderer: a member the contract does not define"},
-		"bounds that are a string":             {func() { member("rendering")["bounds"] = "x" }, "rendering.bounds: not a JSON object"},
-		"bounds without the file's":            {func() { delete(member("rendering", "bounds"), "maxFileBytes") }, "rendering.bounds: member maxFileBytes is missing"},
-		"a bound on blocks that is zero":       {func() { member("rendering", "bounds")["maxBlocks"] = json.Number("0") }, "rendering.bounds.maxBlocks is not a positive integer"},
-		"a bound on the request that is zero":  {func() { member("rendering", "bounds")["maxRequestBytes"] = json.Number("0") }, "rendering.bounds.maxRequestBytes is not a positive integer"},
-		"a bound on the file that is zero":     {func() { member("rendering", "bounds")["maxFileBytes"] = json.Number("0") }, "rendering.bounds.maxFileBytes is not a positive integer"},
-		"a bound on the output that is zero":   {func() { member("rendering", "bounds")["maxOutputBytes"] = json.Number("0") }, "rendering.bounds.maxOutputBytes is not a positive integer"},
-		"a timeout that is zero":               {func() { member("rendering", "bounds")["timeoutMs"] = json.Number("0") }, "rendering.bounds.timeoutMs is not a positive integer"},
-		"a file past the bound the record has": {func() { member("rendering", "bounds")["maxFileBytes"] = json.Number(fmt.Sprint(len(file) - 1)) }, "file.size is past rendering.bounds.maxFileBytes"},
-		"a duration that is negative":          {func() { member("rendering")["durationMs"] = json.Number("-1") }, "rendering.durationMs is not a non-negative integer"},
-		"a duration with a fraction":           {func() { member("rendering")["durationMs"] = json.Number("1.5") }, "the record is not JSON of the canonical domain"},
-		"a duration past the domain":           {func() { member("rendering")["durationMs"] = json.Number("9007199254740992") }, "the record is not JSON of the canonical domain"},
-		"provenance that is a string":          {func() { rec["provenance"] = "x" }, "provenance: not a JSON object"},
-		"provenance with a source":             {func() { member("provenance")["source"] = nil }, "provenance: a member the contract does not define"},
-		"an adapter that is a string":          {func() { member("provenance")["adapter"] = "adapter-render" }, "provenance.adapter: not a JSON object"},
-		"an adapter of another name":           {func() { member("provenance", "adapter")["name"] = "adapter-document" }, `provenance.adapter.name is not "adapter-render"`},
-		"an adapter with no version":           {func() { member("provenance", "adapter")["version"] = "" }, "provenance.adapter.version is not a non-empty string"},
-		"an adapter whose digest is not one":   {func() { member("provenance", "adapter")["digest"] = "abc" }, "provenance.adapter.digest is not a digest"},
-		"an instant that is a number":          {func() { member("provenance")["observedAt"] = json.Number("0") }, "provenance.observedAt is not a string"},
-		"an instant with a zone":               {func() { member("provenance")["observedAt"] = "2026-09-28T12:00:00+02:00" }, "provenance.observedAt is not a UTC instant to the second"},
-		"an instant to the millisecond":        {func() { member("provenance")["observedAt"] = "2026-09-28T12:00:00.000Z" }, "provenance.observedAt is not a UTC instant to the second"},
-		"an instant that is no day":            {func() { member("provenance")["observedAt"] = "2026-02-30T12:00:00Z" }, "provenance.observedAt is not a UTC instant to the second"},
+		"bytes with a line break":        {func() { member("file")["bytes"] = member("file")["bytes"].(string) + "\n" }, "file.bytes is not the one standard padded base64 encoding"},
+		"bytes that are empty":           {func() { member("file")["bytes"] = "" }, "file.bytes is not the one standard padded base64 encoding"},
+		"an encoding that is not base64": {func() { member("file")["encoding"] = "hex" }, `file.encoding is not "base64"`},
+		"a rendering that is a string":   {func() { rec["rendering"] = "x" }, "rendering: not a JSON object"},
+		"a rendering with errors":        {func() { member("rendering")["errors"] = []any{} }, "rendering: a member the contract does not define"},
+		"a status that is not complete":  {func() { member("rendering")["status"] = "partial" }, `rendering.status is not "complete"`},
+		"a renderer that is a string":    {func() { member("rendering")["renderer"] = "module" }, "rendering.renderer: not a JSON object"},
+		"a renderer that is a program":   {func() { member("rendering", "renderer")["kind"] = "program" }, `rendering.renderer.kind is not "module"`},
+		"a renderer of another name":     {func() { member("rendering", "renderer")["name"] = "adapter-render/docx/2" }, "rendering.renderer.name is not the renderer of the format"},
+		"a renderer with a digest":       {func() { member("rendering", "renderer")["digest"] = "sha256:" + strings.Repeat("0", 64) }, "rendering.renderer: a member the contract does not define"},
+		"bounds that are a string":       {func() { member("rendering")["bounds"] = "x" }, "rendering.bounds: not a JSON object"},
+		"bounds without the file's":      {func() { delete(member("rendering", "bounds"), "maxFileBytes") }, "rendering.bounds: member maxFileBytes is missing"},
+		"a bound on blocks that is zero": {func() { member("rendering", "bounds")["maxBlocks"] = json.Number("0") }, "rendering.bounds.maxBlocks is not a positive integer"},
+		// A bound past the ceiling an adapter can be configured with is
+		// one no adapter wrote.
+		"a bound on the request past its ceiling": {func() { member("rendering", "bounds")["maxRequestBytes"] = json.Number("67108865") }, "rendering.bounds.maxRequestBytes is not a positive integer of at most 67108864"},
+		"a bound on blocks past its ceiling":      {func() { member("rendering", "bounds")["maxBlocks"] = json.Number("100001") }, "rendering.bounds.maxBlocks is not a positive integer of at most 100000"},
+		"a bound on the file past its ceiling":    {func() { member("rendering", "bounds")["maxFileBytes"] = json.Number("67108865") }, "rendering.bounds.maxFileBytes is not a positive integer of at most 67108864"},
+		"a bound on the output past its ceiling":  {func() { member("rendering", "bounds")["maxOutputBytes"] = json.Number("1099511627777") }, "rendering.bounds.maxOutputBytes is not a positive integer of at most 1099511627776"},
+		"a timeout past its ceiling":              {func() { member("rendering", "bounds")["timeoutMs"] = json.Number("600001") }, "rendering.bounds.timeoutMs is not a positive integer of at most 600000"},
+		"a bound on the request that is zero":     {func() { member("rendering", "bounds")["maxRequestBytes"] = json.Number("0") }, "rendering.bounds.maxRequestBytes is not a positive integer"},
+		"a bound on the file that is zero":        {func() { member("rendering", "bounds")["maxFileBytes"] = json.Number("0") }, "rendering.bounds.maxFileBytes is not a positive integer"},
+		"a bound on the output that is zero":      {func() { member("rendering", "bounds")["maxOutputBytes"] = json.Number("0") }, "rendering.bounds.maxOutputBytes is not a positive integer"},
+		"a timeout that is zero":                  {func() { member("rendering", "bounds")["timeoutMs"] = json.Number("0") }, "rendering.bounds.timeoutMs is not a positive integer"},
+		"a file past the bound the record has":    {func() { member("rendering", "bounds")["maxFileBytes"] = json.Number(fmt.Sprint(len(file) - 1)) }, "file.size is past rendering.bounds.maxFileBytes"},
+		"a duration that is negative":             {func() { member("rendering")["durationMs"] = json.Number("-1") }, "rendering.durationMs is not a non-negative integer"},
+		"a duration with a fraction":              {func() { member("rendering")["durationMs"] = json.Number("1.5") }, "the record is not JSON of the canonical domain"},
+		"a duration past the domain":              {func() { member("rendering")["durationMs"] = json.Number("9007199254740992") }, "the record is not JSON of the canonical domain"},
+		"provenance that is a string":             {func() { rec["provenance"] = "x" }, "provenance: not a JSON object"},
+		"provenance with a source":                {func() { member("provenance")["source"] = nil }, "provenance: a member the contract does not define"},
+		"an adapter that is a string":             {func() { member("provenance")["adapter"] = "adapter-render" }, "provenance.adapter: not a JSON object"},
+		"an adapter of another name":              {func() { member("provenance", "adapter")["name"] = "adapter-document" }, `provenance.adapter.name is not "adapter-render"`},
+		"an adapter with no version":              {func() { member("provenance", "adapter")["version"] = "" }, "provenance.adapter.version is not a non-empty string"},
+		"an adapter whose digest is not one":      {func() { member("provenance", "adapter")["digest"] = "abc" }, "provenance.adapter.digest is not a digest"},
+		"an instant that is a number":             {func() { member("provenance")["observedAt"] = json.Number("0") }, "provenance.observedAt is not a string"},
+		"an instant with a zone":                  {func() { member("provenance")["observedAt"] = "2026-09-28T12:00:00+02:00" }, "provenance.observedAt is not a UTC instant to the second"},
+		"an instant to the millisecond":           {func() { member("provenance")["observedAt"] = "2026-09-28T12:00:00.000Z" }, "provenance.observedAt is not a UTC instant to the second"},
+		"an instant that is no day":               {func() { member("provenance")["observedAt"] = "2026-02-30T12:00:00Z" }, "provenance.observedAt is not a UTC instant to the second"},
 	} {
 		decode()
 		c.make()
@@ -1542,6 +1549,11 @@ func TestTheCheckHoldsTheFileToTheWritersArchive(t *testing.T) {
 		// compare. The check compares it.
 		"a part whose checksum is said to be nothing": {changed(func(l *layout) { l.parts[3].sum = 0 }), notAsStated},
 		"a part that says it is past the bound":       {changed(func(l *layout) { l.parts[3].unpacked = 1<<20 + 1 }), overBound},
+		// The largest a part can say it is, in the archive's 32 bits, under
+		// the largest bound a record can state: refused for the bound,
+		// before the archive is written again, which at that size would
+		// state the part in another way than the writer does.
+		"a part that says it is as long as can be said": {within(64<<20, func(l *layout) { l.parts[3].unpacked = 1<<32 - 1 }), overBound},
 		// The archive is the writer's in every byte, and one part's data
 		// holds three bytes after what it holds.
 		"a part with bytes after what it holds": {changed(func(l *layout) {
@@ -1573,6 +1585,39 @@ func TestTheCheckHoldsTheFileToTheWritersArchive(t *testing.T) {
 			t.Errorf("%s: the check says %v, want it to say %q", name, err, c.says)
 		}
 	}
+}
+
+// A record whose bounds are each at its ceiling passes, and a part is read no
+// further than it states and one byte: a reader that would give a mebibyte
+// is asked for eleven bytes where the part states ten.
+func TestTheCheckAtTheCeilingsAndTheReadOfAPart(t *testing.T) {
+	_, _, out := render(t, arguments("docx", sampleDocument), Config{MaxRequest: 64 << 20, MaxBlocks: 100_000, MaxFile: 64 << 20, MaxOutput: 1 << 40, Timeout: 10 * time.Minute})
+	if err := Check(out); err != nil {
+		t.Fatalf("a record whose bounds are at their ceilings: %v", err)
+	}
+	source := &counted{left: 1 << 20}
+	held, sum, err := readNoMoreThan(source, 11)
+	if err != nil || held != 11 || source.given != 11 || sum != crc32.ChecksumIEEE(make([]byte, 11)) {
+		t.Fatalf("a reader of a mebibyte was given %d bytes and asked for %d: %v", held, source.given, err)
+	}
+	source = &counted{left: 5}
+	if held, sum, err := readNoMoreThan(source, 11); err != nil || held != 5 || source.given != 5 || sum != crc32.ChecksumIEEE(make([]byte, 5)) {
+		t.Fatalf("a reader of five bytes was given %d bytes: %v", held, err)
+	}
+}
+
+// counted is a reader of so many zero bytes that counts the bytes it gave.
+type counted struct{ left, given int }
+
+func (c *counted) Read(p []byte) (int, error) {
+	if c.left == 0 {
+		return 0, io.EOF
+	}
+	n := min(len(p), c.left)
+	clear(p[:n])
+	c.left -= n
+	c.given += n
+	return n, nil
 }
 
 // The readers of single values take a value of their own kind, written as

@@ -157,27 +157,27 @@
             "maxRequestBytes": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 67108864
             },
             "maxBlocks": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 100000
             },
             "maxFileBytes": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 67108864
             },
             "maxOutputBytes": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 1099511627776
             },
             "timeoutMs": {
               "type": "integer",
               "minimum": 1,
-              "maximum": 9007199254740991
+              "maximum": 600000
             }
           }
         },
