@@ -439,6 +439,18 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	}
 }
 
+// ReadWithin is readWithin for another adapter of this module that reads its
+// request as this one does: at most n bytes of r, waited for no longer than
+// requestPipeWait past the deadline the context carries. It returns
+// ErrRequestNotRead for a request whose reading had not ended by then.
+func ReadWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
+	return readWithin(ctx, r, n)
+}
+
+// ErrRequestNotRead is what ReadWithin returns for a request whose reading
+// had not ended requestPipeWait past the deadline.
+var ErrRequestNotRead = errRequestNotRead
+
 // readWaiting is called once the wait for the request has been armed and
 // before either outcome is taken. It is nil in the adapter, and a test sets
 // it to hold the reader there until a read and the cutoff are both ready,

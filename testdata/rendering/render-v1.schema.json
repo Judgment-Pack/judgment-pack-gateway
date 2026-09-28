@@ -1,0 +1,228 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Render record, version 1",
+  "description": "The result adapter-render writes for one rendering (docs/design/rendering.md), each value checked on its own: member sets, types, enumerations, ranges and lexical forms. It relates no value to another: that the size and the digest are those of the file the base64 holds, and that the file is within the bound the record states, are checked by render.Check (adapters/render). This is the producer's schema, closed as the adapter writes; a consumer validates for compatibility.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "renderVersion",
+    "request",
+    "file",
+    "rendering",
+    "provenance"
+  ],
+  "properties": {
+    "renderVersion": {
+      "const": "1"
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "title",
+        "language",
+        "contentDigest",
+        "blocks",
+        "textBytes",
+        "cites"
+      ],
+      "properties": {
+        "format": {
+          "const": "docx"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^\\u0000-\\u001F\\u007F\ufffe\uffff]+(?![\\s\\S])"
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 35,
+          "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*(?![\\s\\S])"
+        },
+        "contentDigest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "blocks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "textBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cites": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "decision"
+              ],
+              "properties": {
+                "decision": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mediaType",
+        "size",
+        "sha256",
+        "encoding",
+        "bytes"
+      ],
+      "properties": {
+        "mediaType": {
+          "const": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+        },
+        "encoding": {
+          "const": "base64"
+        },
+        "bytes": {
+          "type": "string",
+          "minLength": 4,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)?(?![\\s\\S])"
+        }
+      }
+    },
+    "rendering": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "renderer",
+        "bounds",
+        "durationMs"
+      ],
+      "properties": {
+        "status": {
+          "const": "complete"
+        },
+        "renderer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "name"
+          ],
+          "properties": {
+            "kind": {
+              "const": "module"
+            },
+            "name": {
+              "const": "adapter-render/docx/1"
+            }
+          }
+        },
+        "bounds": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "maxRequestBytes",
+            "maxBlocks",
+            "maxFileBytes",
+            "maxOutputBytes",
+            "timeoutMs"
+          ],
+          "properties": {
+            "maxRequestBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "maxBlocks": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "maxFileBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "maxOutputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter",
+        "observedAt"
+      ],
+      "properties": {
+        "adapter": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version",
+            "digest"
+          ],
+          "properties": {
+            "name": {
+              "const": "adapter-render"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])"
+            }
+          }
+        },
+        "observedAt": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])"
+        }
+      }
+    }
+  }
+}

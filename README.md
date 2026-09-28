@@ -273,6 +273,10 @@ the adapter establishes the document's identity by digest, extracts what it can 
 bounds, names the pages it could not read, and writes one versioned record the gateway attests
 under the `command` shape
 ([docs/design/attachments.md](docs/design/attachments.md), [ADR-0004](docs/adr/0004-documents-are-an-adapter-under-the-command-shape.md)).
+Content a desk wants as a document goes the other way through a second bare source,
+`adapter-render`: it takes the content as a closed structure of blocks, writes a Word file, and
+writes one versioned record that holds the file, so the receipt covers the file's bytes
+([docs/design/rendering.md](docs/design/rendering.md), [ADR-0006](docs/adr/0006-documents-are-rendered-by-an-adapter.md)).
 
 ```
 go/          the core: canon, sign, seal, verify, conform, serve — standard library only
