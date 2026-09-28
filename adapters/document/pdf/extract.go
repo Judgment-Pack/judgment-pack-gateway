@@ -575,7 +575,12 @@ type walker struct {
 	// own ancestor is walked once. A node named twice by a tree that holds no
 	// cycle is two nodes, and a page named twice is two pages: that is what
 	// the tree says, and what a viewer shows.
-	path   map[ref]bool
+	path map[ref]bool
+	// passed counts the kids passed over as nodes the walk stands under.
+	// Passing over one walks no node, so no node's reading of the deadline
+	// comes with it, and a node may name itself as often as an array holds
+	// members: the deadline is read every entriesPerCheck of them.
+	passed int
 	nodes  int
 	limit  int // maxPages: a page found past it ends the walk
 	pages  []pageNode
@@ -583,7 +588,8 @@ type walker struct {
 }
 
 // node walks one page-tree node depth-first, the deadline checked before
-// it. A node under itself is not walked again. A bound met reading the tree,
+// it. A node under itself is not walked again, and the deadline is read as
+// such kids are passed over. A bound met reading the tree,
 // an object stream that could not be decoded, or a node's /Kids that is
 // present and cannot be read or is not an array, ends the walk at a defect:
 // skipping it would count the pages around it as though they were all the
@@ -656,7 +662,15 @@ func (w *walker) node(node Dict, inh inherited, depth int) walkEnding {
 		if isRef {
 			if w.path[r] {
 				// A node under itself: what lies below it is what is being
-				// walked, and walking it again would not end.
+				// walked, and walking it again would not end. The walk ends
+				// at a deadline met here as it ends at one met between two
+				// nodes: a tree of nothing but such kids would otherwise be
+				// gone through to its end and called a tree with no page.
+				w.passed++
+				if w.passed%entriesPerCheck == 0 && w.d.deadlineFor(w.ctx) != nil {
+					return walkDeadline
+				}
+				stepped("kids passed over", 1)
 				continue
 			}
 			w.path[r] = true
