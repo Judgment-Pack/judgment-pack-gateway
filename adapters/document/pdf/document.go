@@ -1262,7 +1262,8 @@ func (s *fileSearch) index(at int, keyword []byte) (int, error) {
 // does whose work grows with a structure the file declares -- the numbers a
 // cross-reference names gathered, sorted and merged, the members of a trailer
 // copied, the places of an object stream's header, the entries of a
-// cross-reference stream's /Index -- as it does them and apart from where it
+// cross-reference stream's /Index, the kids a page-tree node names that the
+// walk stands under and passes over -- as it does them and apart from where it
 // reads the deadline, so that the tests can count what lies between two
 // readings. The reader never sets it.
 var loopStepped func(loop string, n int)
