@@ -1,0 +1,132 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.17.0/www/docs/static/schema.json
+version: 2
+
+project_name: judgment-pack-gateway
+
+# Both modules are built as CI and the image build them: no cgo, no
+# workspace, no recorded paths and no version-control stamp. The core and
+# the adapters stay two modules and ten executables; an archive puts them
+# side by side and links none of them to another (docs/adr/0001).
+builds:
+  # The core. The tag is written into it, because the module lives below
+  # the repository's root and the toolchain reads no repository tag as its
+  # version (go/mcp.go, buildVersion).
+  - id: gateway
+    dir: go
+    main: .
+    binary: gateway
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w -X main.releaseVersion={{ if .IsSnapshot }}v{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goamd64:
+      - v1
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  # The adapters, every program under adapters/cmd. The release workflow
+  # refuses a tag whose adapters/cmd names a program this list does not.
+  - &adapter
+    id: adapter-airbyte
+    dir: adapters
+    main: ./cmd/adapter-airbyte
+    binary: adapter-airbyte
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goamd64:
+      - v1
+    mod_timestamp: "{{ .CommitTimestamp }}"
+  - <<: *adapter
+    id: adapter-document
+    main: ./cmd/adapter-document
+    binary: adapter-document
+  - <<: *adapter
+    id: adapter-drive
+    main: ./cmd/adapter-drive
+    binary: adapter-drive
+  - <<: *adapter
+    id: adapter-gmail
+    main: ./cmd/adapter-gmail
+    binary: adapter-gmail
+  - <<: *adapter
+    id: adapter-http
+    main: ./cmd/adapter-http
+    binary: adapter-http
+  - <<: *adapter
+    id: adapter-mcp
+    main: ./cmd/adapter-mcp
+    binary: adapter-mcp
+  - <<: *adapter
+    id: adapter-sources
+    main: ./cmd/adapter-sources
+    binary: adapter-sources
+  - <<: *adapter
+    id: adapter-web
+    main: ./cmd/adapter-web
+    binary: adapter-web
+  - <<: *adapter
+    id: gateway-connections
+    main: ./cmd/gateway-connections
+    binary: gateway-connections
+
+archives:
+  # One archive per platform: the executables, the specification, and the
+  # corpus that arbitrates between them, which is what a tag names
+  # (CONTRIBUTING.md, Tags). The corpus travels as bytes; nothing here
+  # converts a line ending.
+  - id: judgment-pack-gateway-archives
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - SECURITY.md
+      - SPEC.md
+      - THIRD_PARTY_NOTICES
+      # Named as directories: a pattern ending in **/* passes over the files
+      # at a directory's top.
+      - catalog
+      - corpus
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# The notes of a release are written by a person and reviewed with the
+# release (docs/releases/<tag>.md); none are generated.
+changelog:
+  disable: true
+
+release:
+  draft: true
+  prerelease: auto
+  name_template: "gateway {{ .Tag }}"

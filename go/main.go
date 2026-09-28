@@ -10,6 +10,7 @@ package main
 //	gateway conform [--impl CMD] [--corpus DIR]
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
+//	gateway version
 
 import (
 	"context"
@@ -33,7 +34,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | connect | keygen | mcp")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | connect | keygen | mcp | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -51,6 +52,8 @@ func main() {
 		os.Exit(cmdKeygen(os.Args[2:]))
 	case "mcp":
 		os.Exit(cmdMCP(os.Args[2:]))
+	case "version":
+		os.Exit(cmdVersion(os.Stdout))
 	default:
 		fmt.Fprintf(os.Stderr, "unknown subcommand %q\n", os.Args[1])
 		os.Exit(2)
@@ -69,6 +72,14 @@ func refuseStrayAnchorMarker() bool {
 	}
 	fmt.Fprintf(os.Stderr, "refusing to run: %s is set, and it is an internal marker this process sets only for its own anchor\n", envGroupAnchor)
 	return true
+}
+
+// cmdVersion prints what initialize names as the server's version, so a
+// released binary can be asked which release it is without a
+// configuration to start it with.
+func cmdVersion(w io.Writer) int {
+	fmt.Fprintln(w, "gateway", buildVersion())
+	return 0
 }
 
 func cmdCanon() int {

@@ -4,6 +4,9 @@ on:
   pull_request:
   push:
     branches: [main]
+  # The release workflow calls this one at a tag, so a release is held to
+  # what a commit is held to, as it stands at that tag (release.yml).
+  workflow_call:
 
 permissions:
   contents: read
@@ -130,6 +133,24 @@ jobs:
           go build -buildvcs=false -o "$RUNNER_TEMP/adapter-render" ./cmd/adapter-render
           "$RUNNER_TEMP/adapter-render" < ../testdata/rendering/examples/refund-decision.request.json > "$RUNNER_TEMP/render-record.json"
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/rendering/check_schema.py "$RUNNER_TEMP/render-record.json"
+      # What a release carries (docs/releasing.md), held on every commit so
+      # that a tag is never the first to learn of it: the licence of every
+      # module the released programs link, as the module cache holds them;
+      # a release build for every program under adapters/cmd; and no
+      # publisher's application registration in the connection companion
+      # (docs/design/publisher-google-oauth.md).
+      - name: The third-party notices are what the linked modules say
+        working-directory: ${{ github.workspace }}
+        run: python3 build/third_party_notices.py --check
+      - name: Every program under adapters/cmd is one a release builds
+        working-directory: ${{ github.workspace }}
+        run: |
+          want="$(ls adapters/cmd | sort)"
+          have="$(sed -n 's/^    binary: //p' .goreleaser.yml | grep -vx gateway | sort)"
+          [ "$want" = "$have" ] || { echo "adapters/cmd and .goreleaser.yml name different programs:"; diff <(echo "$want") <(echo "$have"); exit 1; }
+      - name: The tree carries no publisher registration
+        run: |
+          [ "$(tr -d '[:space:]' < cmd/gateway-connections/publisher-google.json)" = "{}" ] || { echo "publisher-google.json is not the empty registration"; exit 1; }
       # The shared descriptor vectors are what make_vectors.py writes, and
       # every schema they and the library fixtures say schema grammar 1
       # accepts is a schema under both dialects' meta-schemas
@@ -168,8 +189,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The image is built from this commit and never pushed here; the
-      # release workflow is what publishes a digest. What is checked is that
+      # The image is built from this commit and never pushed here, and the
+      # release workflow does not publish it yet. What is checked is that
       # it builds from the pinned bases, and that the core inside it agrees
       # with the frozen corpus it carries.
       # BuildKit, stated rather than assumed: the legacy builder copies the

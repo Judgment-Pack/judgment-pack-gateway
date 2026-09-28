@@ -797,11 +797,21 @@ func (s *mcpServer) initialize(sess *mcpSession, req mcpRequest) mcpOutcome {
 	})}
 }
 
+// releaseVersion is the tag a release was built from, written into the
+// executable by the release build and by nothing else
+// (docs/releasing.md). The module lives below the repository's root, so
+// the toolchain does not read a repository tag as this module's version;
+// the release build states it instead.
+var releaseVersion string
+
 // buildVersion is the version of this executable as its build recorded
-// it: a module version for a released build, and the words "unversioned
-// build" where the build recorded none, which is what a build from a
-// checkout says of itself.
+// it: the tag for a released build, a module version where the toolchain
+// recorded one, and the words "unversioned build" where the build
+// recorded neither, which is what a build from a checkout says of itself.
 func buildVersion() string {
+	if releaseVersion != "" {
+		return releaseVersion
+	}
 	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
 		return bi.Main.Version
 	}

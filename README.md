@@ -66,7 +66,11 @@ stores the registry-anchored verification rejects.
 
 ## Run it
 
-One Go binary, standard library only, binds localhost.
+One Go binary, standard library only, binds localhost. Build it as below, or take it
+built: a release made by the release workflow carries the gateway and the adapters for
+Linux, macOS and Windows, with checksums and a provenance attestation
+([docs/releasing.md](docs/releasing.md#verifying-a-download)). Releases up to `v0.4.0`
+carry notes only.
 
 ```
 cd go && go build -o gateway .

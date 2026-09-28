@@ -1,0 +1,362 @@
+name: Release
+
+# Publishes a release of the gateway and its adapters: six archives, their
+# checksums and a build-provenance attestation, from a tag a person pushes
+# on a commit already on main (docs/releasing.md). Nothing here decides
+# that there is to be a release, and nothing here writes its notes: both
+# are a person's, reviewed in the pull request that added
+# docs/releases/<tag>.md. What the workflow holds is that the tagged state
+# passes everything CI asks of a commit, that the archives are built from
+# it and run where they say they run, and that nothing is public until a
+# maintainer has approved it at the `production` gate.
+#
+# It publishes no image. The engine image is still built by CI from every
+# commit and never pushed (docs/design/engine-image.md, Provenance).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+env:
+  RELEASE_TAG: ${{ github.ref_name }}
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: The tag names a release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Reading an environment's protection rules.
+      actions: read
+    steps:
+      - name: The tag is an exact version
+        shell: bash
+        run: |
+          if [[ ! "${RELEASE_TAG}" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "the tag is not an exact SemVer version: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      # A tag names a reviewed state (CONTRIBUTING.md, Tags), and what is
+      # reviewed is what merged: a tag on a branch's commit names a state
+      # main may never hold.
+      - name: The tagged commit is on main
+        shell: bash
+        run: |
+          commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          git merge-base --is-ancestor "${commit}" origin/main || { echo "the tagged commit ${commit} is not on main" >&2; exit 1; }
+
+      - name: The release has notes a person wrote
+        shell: bash
+        run: |
+          notes="docs/releases/${RELEASE_TAG}.md"
+          test -s "${notes}" || { echo "${notes} is missing or empty at the tag" >&2; exit 1; }
+
+      # The publish job waits at the `production` environment, and an
+      # environment a workflow names without its existing is made on the
+      # spot with no rule at all: the gate would be a name. So the rule is
+      # read here, before anything is built, and its absence is a refusal.
+      - name: The production gate requires a reviewer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          reviewers="$(gh api "repos/${GH_REPO}/environments/production" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')" \
+            || { echo "the production environment could not be read; create it, with a required reviewer (docs/releasing.md)" >&2; exit 1; }
+          [ "${reviewers}" -ge 1 ] || { echo "the production environment requires no reviewer" >&2; exit 1; }
+
+  # Everything CI asks of a commit, asked of the tagged one: the same
+  # workflow, called, so a release cannot pass a check CI has since gained
+  # by carrying an older copy of it.
+  verify:
+    name: CI at the tag
+    needs: admit
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    name: Package
+    needs:
+      - admit
+      - verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Release binaries use one reviewed toolchain, named exactly. The
+          # go directive in each go.mod remains the floor CI tests.
+          go-version: 1.26.5
+          cache-dependency-path: adapters/go.sum
+
+      - name: Normalize archive file timestamps
+        shell: bash
+        run: |
+          source_date_epoch="$(git show -s --format=%ct "${RELEASE_TAG}^{commit}")"
+          git ls-files -z -- LICENSE README.md SECURITY.md SPEC.md THIRD_PARTY_NOTICES catalog corpus \
+            | xargs -0 touch --date="@${source_date_epoch}"
+
+      - name: Package without publishing
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.0
+          args: release --clean --skip=publish
+        env:
+          # Stated, not inferred: a commit may carry a tag of another family
+          # beside this one (n8n-nodes-judgment-pack@...).
+          GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
+
+      - name: Verify packaged checksums
+        working-directory: dist
+        run: sha256sum --check checksums.txt
+
+      # The corpus arbitrates, so it travels as the tag holds it: every
+      # file, byte for byte, and the catalog with it. Checked on one
+      # archive of each format; the file list is the same for all six.
+      - name: The archives carry the corpus and the catalog as tagged
+        shell: bash
+        run: |
+          release_version="${RELEASE_TAG#v}"
+          mkdir -p "${RUNNER_TEMP}/unpacked/tar" "${RUNNER_TEMP}/unpacked/zip"
+          tar -xzf "dist/judgment-pack-gateway_${release_version}_linux_amd64.tar.gz" -C "${RUNNER_TEMP}/unpacked/tar"
+          unzip -q "dist/judgment-pack-gateway_${release_version}_windows_amd64.zip" -d "${RUNNER_TEMP}/unpacked/zip"
+          for format in tar zip; do
+            diff -r corpus "${RUNNER_TEMP}/unpacked/${format}/corpus"
+            diff -r catalog "${RUNNER_TEMP}/unpacked/${format}/catalog"
+          done
+
+      - name: Carry the release notes with the archives
+        shell: bash
+        run: cp "docs/releases/${RELEASE_TAG}.md" dist/release-notes.md
+
+      - name: Upload release archives for native smoke tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+            dist/release-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke-unix:
+    name: ${{ matrix.os }} release archive
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          # linux/arm64 runs natively somewhere before the gate: a macOS arm
+          # runner executes the darwin binary, not this one.
+          - ubuntu-24.04-arm
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Download packaged archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      # The adapters' tests run on Linux (ci.yml). What is held of them on
+      # every platform here is that each is in the archive and that the
+      # ones with a usage line start and print it.
+      - name: Verify and smoke-test native archive
+        shell: bash
+        run: |
+          case "$(uname -s)" in
+            Darwin) release_os="darwin"; checksum_command=(shasum -a 256 --check) ;;
+            Linux) release_os="linux"; checksum_command=(sha256sum --check) ;;
+            *) echo "unsupported runner OS: $(uname -s)" >&2; exit 1 ;;
+          esac
+
+          case "$(uname -m)" in
+            arm64|aarch64) release_arch="arm64" ;;
+            x86_64) release_arch="amd64" ;;
+            *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+
+          release_version="${RELEASE_TAG#v}"
+          archive="judgment-pack-gateway_${release_version}_${release_os}_${release_arch}.tar.gz"
+          destination="${RUNNER_TEMP}/gateway-release-smoke"
+
+          (cd dist && "${checksum_command[@]}" checksums.txt)
+          mkdir -p "${destination}"
+          tar -xzf "dist/${archive}" -C "${destination}"
+
+          test "$("${destination}/gateway" version)" = "gateway ${RELEASE_TAG}"
+          "${destination}/gateway" conform --corpus "${destination}/corpus"
+
+          for program in adapter-airbyte adapter-document adapter-drive adapter-gmail adapter-http adapter-mcp adapter-sources adapter-web gateway-connections; do
+            test -x "${destination}/${program}" || { echo "${program} is not in the archive, or not executable" >&2; exit 1; }
+          done
+          for program in adapter-airbyte adapter-http adapter-mcp; do
+            # A usage line is an exit of 2, which is the answer wanted.
+            output="$("${destination}/${program}" 2>&1 < /dev/null)" && code=0 || code=$?
+            if [ "${code}" != "2" ] || [[ "${output}" != "usage: ${program} "* ]]; then
+              echo "${program} did not start as built: exit ${code}: ${output}" >&2
+              exit 1
+            fi
+          done
+
+  smoke-windows:
+    name: windows-latest release archive
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Download packaged archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Verify and smoke-test native archive
+        shell: pwsh
+        run: |
+          $releaseVersion = $env:RELEASE_TAG.Substring(1)
+          $archive = "judgment-pack-gateway_${releaseVersion}_windows_amd64.zip"
+          $archivePath = Join-Path "dist" $archive
+          $checksumLine = Get-Content "dist/checksums.txt" |
+            Where-Object { $_ -match "[ *]$([regex]::Escape($archive))$" }
+
+          if (-not $checksumLine) {
+            throw "No checksum found for $archive"
+          }
+
+          $expected = ($checksumLine -split "\s+")[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Checksum mismatch for $archive"
+          }
+
+          $destination = Join-Path $env:RUNNER_TEMP "gateway-release-smoke"
+          Expand-Archive -Path $archivePath -DestinationPath $destination
+
+          $gateway = Join-Path $destination "gateway.exe"
+          $reportedVersion = & $gateway version
+          if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne "gateway $($env:RELEASE_TAG)") {
+            throw "Unexpected version output: $reportedVersion"
+          }
+
+          & $gateway conform --corpus (Join-Path $destination "corpus")
+          if ($LASTEXITCODE -ne 0) {
+            throw "The released gateway disagrees with the corpus it carries"
+          }
+
+          foreach ($program in @("adapter-airbyte", "adapter-document", "adapter-drive", "adapter-gmail", "adapter-http", "adapter-mcp", "adapter-sources", "adapter-web", "gateway-connections")) {
+            if (-not (Test-Path (Join-Path $destination "$program.exe"))) {
+              throw "$program is not in the archive"
+            }
+          }
+
+  attest-and-draft:
+    name: Attest and draft release
+    needs:
+      - package
+      - smoke-unix
+      - smoke-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download smoke-tested archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Attest release archives
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/checksums.txt
+
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # This job has no checkout (it only consumes the packaged
+          # artifact), so `gh` cannot infer the repository from a remote.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
+          if (( ${#assets[@]} != 7 )); then
+            echo "expected six archives and checksums.txt, found ${#assets[@]} files" >&2
+            exit 1
+          fi
+
+          release_args=(
+            "${RELEASE_TAG}"
+            "${assets[@]}"
+            --draft
+            --notes-file dist/release-notes.md
+            --title "gateway ${RELEASE_TAG}"
+            --verify-tag
+          )
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          gh release create "${release_args[@]}"
+
+  publish:
+    name: Publish release
+    needs: attest-and-draft
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the reviewed draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No checkout in this job; tell gh which repository to target.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          publish_args=("${RELEASE_TAG}" --draft=false)
+          # A prerelease (the tag contains a hyphen) is never marked latest.
+          if [[ "${RELEASE_TAG}" != *-* ]]; then
+            publish_args+=(--latest)
+          fi
+          gh release edit "${publish_args[@]}"
