@@ -26,7 +26,11 @@
 //     not be read, and is "sha256:" and 64 lowercase hexadecimal characters.
 //   - A run waits for the exit of the process it started with no timer of
 //     its own. PipeWait bounds the wait for a stdout still open, and nothing
-//     else.
+//     else: it is one timer, started when the exit or the end of the context
+//     is first observed, whichever comes first, and not started again.
+//   - Only a program still running is ended, at the end of the context or
+//     where it writes past the bound. One that has exited and left its
+//     stdout open is not: its stdout is closed when the timer ends.
 package program
 
 import (

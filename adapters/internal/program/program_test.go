@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -108,14 +109,20 @@ func TestAProgramIsStartedUnderItsConfiguredName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A name is resolved on Windows by the endings a program may have, so
+	// the name there has one.
+	name := "configured-name"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
 	dir := t.TempDir()
-	if err := os.Symlink(self, filepath.Join(dir, "configured-name")); err != nil {
+	if err := os.Symlink(self, filepath.Join(dir, name)); err != nil {
 		t.Skipf("no symbolic link: %v", err)
 	}
 	t.Setenv("PATH", dir)
 	t.Setenv(asProgram, "argv0")
-	out, _, err := Run{Program: "configured-name", MaxOutput: 1 << 10}.Do(context.Background())
-	if err != nil || string(out) != "configured-name" {
+	out, _, err := Run{Program: name, MaxOutput: 1 << 10}.Do(context.Background())
+	if err != nil || string(out) != name {
 		t.Fatalf("the program was started as %q: %v", out, err)
 	}
 }
@@ -158,8 +165,11 @@ func TestARunReadsWithTheReaderItNames(t *testing.T) {
 // second is ended only once the program is known to have started, so that a
 // machine under load does not make of it a run that was not started.
 func TestTheDeadlinesOutcomes(t *testing.T) {
+	// The program marks that it started and becomes a sleep of a day, so
+	// that the process the run started is the one that sleeps, and nothing
+	// but the run's ending it brings the run back.
 	started := filepath.Join(t.TempDir(), "started")
-	path := script(t, "program", `touch '`+started+`'; sleep 30`)
+	path := script(t, "program", `touch '`+started+`'; exec sleep 86400`)
 	passed, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
 	defer cancel()
 	if out, digest, err := (Run{Program: path, MaxOutput: 10}).Do(passed); !errors.Is(err, ErrNotStarted) || out != nil || digest != digestOf(t, path) {
@@ -183,15 +193,11 @@ func TestTheDeadlinesOutcomes(t *testing.T) {
 			}
 		}
 	}()
-	began := time.Now()
+	// That the run comes back at all is what shows the program was ended:
+	// no time is asked of it here, and a run that does not come back is for
+	// the time the tests are given to find.
 	if out, _, err := (Run{Program: path, MaxOutput: 10}).Do(running); !errors.Is(err, ErrTimeout) || out != nil {
 		t.Fatalf("a program still running when its run was ended: %q %v", out, err)
-	}
-	// The program would run for thirty seconds. That the run came back
-	// well before that is what shows it was ended, with room for a machine
-	// that is slow.
-	if elapsed := time.Since(began); elapsed > 20*time.Second {
-		t.Fatalf("the run took %v", elapsed)
 	}
 	if !strings.Contains(ErrTimeout.Error(), "deadline") || !strings.Contains(ErrNotStarted.Error(), "deadline") {
 		t.Fatal("the outcomes do not say they are the deadline's")
