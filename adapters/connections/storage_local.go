@@ -256,17 +256,7 @@ func (b *Broker) localStorageApply(ctx context.Context, intent storageIntent) (s
 		if err != nil || !st.Mode().IsRegular() || localStatRevision(st) != q.Revision {
 			return "", ErrChanged
 		}
-		if e = root.Mkdir(".jpack-trash", 0700); e != nil && !errors.Is(e, os.ErrExist) {
-			return "", ErrProvider
-		}
-		st, e := root.Lstat(".jpack-trash")
-		if e != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
-			return "", ErrUnsupported
-		}
-		if e = root.Rename(filepath.FromSlash(q.ID), filepath.Join(".jpack-trash", intent.Plan.ID+"-"+q.Name)); e != nil {
-			return "", e
-		}
-		return q.ID, syncStorageDirs(root, parent, ".jpack-trash", ".")
+		return q.ID, localStorageTrash(root, q.ID, q.Name, intent.Plan.ID)
 	}
 	item, old, e := localFile(root, q.ID, true)
 	if e != nil {
@@ -279,17 +269,7 @@ func (b *Broker) localStorageApply(ctx context.Context, intent storageIntent) (s
 		return "", ErrCanceled
 	}
 	if q.Action == "delete" {
-		if e = root.Mkdir(".jpack-trash", 0700); e != nil && !errors.Is(e, os.ErrExist) {
-			return "", ErrProvider
-		}
-		st, e := root.Lstat(".jpack-trash")
-		if e != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
-			return "", ErrUnsupported
-		}
-		if e = root.Rename(filepath.FromSlash(q.ID), filepath.Join(".jpack-trash", intent.Plan.ID+"-"+q.Name)); e != nil {
-			return "", e
-		}
-		return q.ID, syncStorageDirs(root, parent, ".jpack-trash", ".")
+		return q.ID, localStorageTrash(root, q.ID, q.Name, intent.Plan.ID)
 	}
 	// Keep the previous bytes before replacing; external editors do not share
 	// this host's lock, so local updates promise a revision recheck, not POSIX CAS.
@@ -349,4 +329,24 @@ func syncStorageDirs(root *os.Root, dirs ...string) error {
 		}
 	}
 	return nil
+}
+
+// Keep the original basename in a per-plan directory. Prefixing a long filename
+// with a 64-byte plan ID would exceed the filesystem's component length limit.
+func localStorageTrash(root *os.Root, id, name, planID string) error {
+	if e := root.Mkdir(".jpack-trash", 0700); e != nil && !errors.Is(e, os.ErrExist) {
+		return ErrProvider
+	}
+	st, e := root.Lstat(".jpack-trash")
+	if e != nil || !st.IsDir() || st.Mode()&os.ModeSymlink != 0 {
+		return ErrUnsupported
+	}
+	dir := path.Join(".jpack-trash", planID)
+	if e = root.Mkdir(filepath.FromSlash(dir), 0700); e != nil {
+		return ErrProvider
+	}
+	if e = root.Rename(filepath.FromSlash(id), filepath.FromSlash(path.Join(dir, name))); e != nil {
+		return e
+	}
+	return syncStorageDirs(root, path.Dir(id), dir, ".jpack-trash", ".")
 }

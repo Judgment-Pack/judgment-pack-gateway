@@ -96,7 +96,7 @@ func TestStorageLocalRevisionConsentAndSingleUse(t *testing.T) {
 	if done.State != "completed" || done.Effect != "trash" {
 		t.Fatal(done)
 	}
-	data, e := os.ReadFile(filepath.Join(vault, ".jpack-trash", p.ID+"-policy.txt"))
+	data, e := os.ReadFile(filepath.Join(vault, ".jpack-trash", p.ID, "policy.txt"))
 	if e != nil || string(data) != "second" {
 		t.Fatal("trash not retained")
 	}
@@ -513,5 +513,24 @@ func TestStorageSelectionCannotRebindAfterReconnect(t *testing.T) {
 	q.Context = ""
 	if _, err := b.Handle(context.Background(), "files-prepare", mustJSON(q)); err != ErrChanged {
 		t.Fatal("unbound destination accepted", err)
+	}
+}
+
+func TestStorageLocalTrashPreservesLongFileName(t *testing.T) {
+	b, vault := storageVaultFixture(t)
+	name := strings.Repeat("n", 240) + ".txt"
+	if err := os.WriteFile(filepath.Join(vault, name), []byte("retain"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	page := storageCall[StoragePage](t, b, "files-list", StorageQuery{})
+	q := StorageChange{Context: page.Context, Action: "delete", ID: name, Revision: page.Items[0].Revision}
+	plan := storageCall[StoragePlan](t, b, "files-prepare", q)
+	done := storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID, "confirmation": name})
+	if done.State != "completed" {
+		t.Fatal(done)
+	}
+	data, err := os.ReadFile(filepath.Join(vault, ".jpack-trash", plan.ID, name))
+	if err != nil || string(data) != "retain" {
+		t.Fatal("trash lost name or bytes", err)
 	}
 }

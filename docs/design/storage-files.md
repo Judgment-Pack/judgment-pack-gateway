@@ -100,7 +100,7 @@ or connection-state cleanup; treat the connection-state directory as sensitive.
   `trashed=true`; they never call permanent deletion. Creates use the reserved ID.
 - **Local:** creates are exclusive. Updates recheck the content digest and retain
   the previous bytes under `.jpack-history/<plan-id>` before atomic replacement.
-  Deletes move the file to `.jpack-trash/<plan-id>-<name>`. These hidden directories
+  Deletes move the file to `.jpack-trash/<plan-id>/<name>`. These hidden directories
   are excluded from browsing. Local filesystem rechecks cannot provide atomic CAS
   against independent external editors; there remains a check/rename race. Existing
   files should not be concurrently modified outside Desk during a change. No
