@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"strings"
 	"time"
 
 	"adapters/attachment"
@@ -55,16 +56,35 @@ type File struct {
 
 // Rendering is how the file was made.
 type Rendering struct {
-	Status     string   `json:"status"`
-	Renderer   Renderer `json:"renderer"`
-	Bounds     Bounds   `json:"bounds"`
-	DurationMs int64    `json:"durationMs"`
+	Status   string   `json:"status"`
+	Renderer Renderer `json:"renderer"`
+	// Source is what the renderer was handed, where the renderer is a
+	// program, and is absent where the adapter's own writer made the file.
+	Source     *Source `json:"source,omitempty"`
+	Bounds     Bounds  `json:"bounds"`
+	DurationMs int64   `json:"durationMs"`
 }
 
-// Renderer is what made the file: this module's own writer.
+// Renderer is what made the file: this module's own writer, or a program
+// the operator configured.
 type Renderer struct {
 	Kind string `json:"kind"`
+	// Name is the writer's name, or the program as it was configured.
 	Name string `json:"name"`
+	// Digest is the SHA-256 of the file the program's name resolved to,
+	// read before the program was started, and is absent for a writer of
+	// the module, which provenance.adapter.digest identifies.
+	Digest *string `json:"digest,omitempty"`
+}
+
+// Source is the Word file a rendering program was handed: what it was, by
+// its media type, its size and its digest, and what wrote it. It does not
+// hold the file.
+type Source struct {
+	MediaType string   `json:"mediaType"`
+	Size      int64    `json:"size"`
+	SHA256    string   `json:"sha256"`
+	Renderer  Renderer `json:"renderer"`
 }
 
 // Bounds are the bounds that applied.
@@ -84,25 +104,29 @@ type Provenance struct {
 }
 
 const (
-	// recordNesting is how deep a record nests: the record, a member of it,
-	// and a member of that.
-	recordNesting = 3
+	// recordNesting is how deep a record nests at its deepest, which is the
+	// record of a PDF: the record, its rendering, what the program was
+	// handed, and what wrote that.
+	recordNesting = 4
 
 	// StatusComplete is the one status of a version 1 record: a rendering
 	// is whole, or it is refused and there is no record.
 	StatusComplete = "complete"
-	// RendererModule is the kind of a renderer that is this module's code.
-	RendererModule = "module"
+	// RendererModule is the kind of a renderer that is this module's code,
+	// and RendererProgram of one that is a program the operator configured.
+	RendererModule  = "module"
+	RendererProgram = "program"
 )
 
 // Check is the reference check of a version 1 render record: that it has
 // the record's members and no others, that each is of its form, and that the
 // file is what the record says of it -- the base64 is the one standard padded
-// encoding of bytes of the stated size whose SHA-256 is the stated digest,
-// and those bytes are the archive the module's writer writes, of seven parts
-// that, read out of it, hold no more than the bound the record states for
-// the file. It says nothing of whether the file is a correct rendering of any
-// content, nor of what the parts hold.
+// encoding of bytes of the stated size whose SHA-256 is the stated digest;
+// for a Word file, those bytes are the archive the module's writer writes, of
+// seven parts that, read out of it, hold no more than the bound the record
+// states for the file; for a PDF, they begin and end as a PDF does. It says
+// nothing of whether the file is a correct rendering of any content, nor of
+// what a Word file's parts or a PDF hold.
 func Check(raw []byte) error {
 	if !nestedWithin(raw, recordNesting) {
 		return errors.New("the record nests deeper than a record does")
@@ -124,8 +148,8 @@ func Check(raw []byte) error {
 		return fmt.Errorf("request: %v", err)
 	}
 	var format, title, contentDigest string
-	if !stringInto(request["format"], &format) || format != FormatDocx {
-		return fmt.Errorf("request.format is not %q", FormatDocx)
+	if !stringInto(request["format"], &format) || (format != FormatDocx && format != FormatPDF) {
+		return fmt.Errorf("request.format is not %q or %q", FormatDocx, FormatPDF)
 	}
 	if !stringInto(request["title"], &title) || !validTitle(title) {
 		return errors.New("request.title is not a title")
@@ -161,7 +185,7 @@ func Check(raw []byte) error {
 		return fmt.Errorf("file: %v", err)
 	}
 	var mediaType, digest, encoding, encoded string
-	if !stringInto(file["mediaType"], &mediaType) || mediaType != MediaTypeDocx {
+	if !stringInto(file["mediaType"], &mediaType) || mediaType != mediaTypeOf(format) {
 		return errors.New("file.mediaType is not the media type of the format")
 	}
 	size, ok := integerOf(file["size"])
@@ -185,7 +209,9 @@ func Check(raw []byte) error {
 		return errors.New("file.sha256 is not the digest of the file")
 	}
 
-	rendering, err := exactMembers(top["rendering"], map[string]bool{"status": true, "renderer": true, "bounds": true, "durationMs": true})
+	// A PDF is a program's, and its record says what the program was handed.
+	// A Word file is the module's, and its record has no such member.
+	rendering, err := exactMembers(top["rendering"], map[string]bool{"status": true, "renderer": true, "source": format == FormatPDF, "bounds": true, "durationMs": true})
 	if err != nil {
 		return fmt.Errorf("rendering: %v", err)
 	}
@@ -193,16 +219,45 @@ func Check(raw []byte) error {
 	if !stringInto(rendering["status"], &status) || status != StatusComplete {
 		return fmt.Errorf("rendering.status is not %q", StatusComplete)
 	}
-	renderer, err := exactMembers(rendering["renderer"], map[string]bool{"kind": true, "name": true})
-	if err != nil {
-		return fmt.Errorf("rendering.renderer: %v", err)
-	}
-	var kind, name string
-	if !stringInto(renderer["kind"], &kind) || kind != RendererModule {
-		return fmt.Errorf("rendering.renderer.kind is not %q", RendererModule)
-	}
-	if !stringInto(renderer["name"], &name) || name != RendererDocx {
-		return errors.New("rendering.renderer.name is not the renderer of the format")
+	if format == FormatDocx {
+		if _, stated := rendering["source"]; stated {
+			return errors.New("rendering.source is stated for a file the module wrote")
+		}
+		if err := moduleRenderer(rendering["renderer"], "rendering.renderer"); err != nil {
+			return err
+		}
+	} else {
+		renderer, err := exactMembers(rendering["renderer"], map[string]bool{"kind": true, "name": true, "digest": true})
+		if err != nil {
+			return fmt.Errorf("rendering.renderer: %v", err)
+		}
+		var kind, name, programDigest string
+		if !stringInto(renderer["kind"], &kind) || kind != RendererProgram {
+			return fmt.Errorf("rendering.renderer.kind is not %q", RendererProgram)
+		}
+		if !stringInto(renderer["name"], &name) || !attachment.ValidName(name) || strings.ContainsAny(name, " \t") {
+			return errors.New("rendering.renderer.name is not a program's name, one word")
+		}
+		if !stringInto(renderer["digest"], &programDigest) || !attachment.ValidDigest(programDigest) {
+			return errors.New("rendering.renderer.digest is not a digest")
+		}
+		source, err := exactMembers(rendering["source"], map[string]bool{"mediaType": true, "size": true, "sha256": true, "renderer": true})
+		if err != nil {
+			return fmt.Errorf("rendering.source: %v", err)
+		}
+		var sourceType, sourceDigest string
+		if !stringInto(source["mediaType"], &sourceType) || sourceType != MediaTypeDocx {
+			return errors.New("rendering.source.mediaType is not the media type of a Word file")
+		}
+		if n, ok := integerOf(source["size"]); !ok || n < 1 {
+			return errors.New("rendering.source.size is not a positive integer")
+		}
+		if !stringInto(source["sha256"], &sourceDigest) || !attachment.ValidDigest(sourceDigest) {
+			return errors.New("rendering.source.sha256 is not a digest")
+		}
+		if err := moduleRenderer(source["renderer"], "rendering.source.renderer"); err != nil {
+			return err
+		}
 	}
 	bounds, err := exactMembers(rendering["bounds"], map[string]bool{"maxRequestBytes": true, "maxBlocks": true, "maxFileBytes": true, "maxOutputBytes": true, "timeoutMs": true})
 	if err != nil {
@@ -229,8 +284,17 @@ func Check(raw []byte) error {
 	if size > maxFile {
 		return errors.New("file.size is past rendering.bounds.maxFileBytes")
 	}
-	if err := partsWithin(data, maxFile); err != nil {
-		return err
+	if format == FormatDocx {
+		if err := partsWithin(data, maxFile); err != nil {
+			return err
+		}
+	} else {
+		if !isPDF(data) {
+			return errors.New("file.bytes does not begin and end as a PDF does")
+		}
+		if sourceSize, _ := integerOf(memberOrNil(rendering["source"], "size")); sourceSize > maxFile {
+			return errors.New("rendering.source.size is past rendering.bounds.maxFileBytes")
+		}
 	}
 	if _, ok := integerOf(rendering["durationMs"]); !ok {
 		return errors.New("rendering.durationMs is not a non-negative integer")
@@ -261,6 +325,37 @@ func Check(raw []byte) error {
 		return errors.New("provenance.observedAt is not a UTC instant to the second")
 	}
 	return nil
+}
+
+// mediaTypeOf is the media type of a format's file.
+func mediaTypeOf(format string) string {
+	if format == FormatPDF {
+		return MediaTypePDF
+	}
+	return MediaTypeDocx
+}
+
+// moduleRenderer holds a renderer to the module's Word writer: its kind,
+// its name, and no other member.
+func moduleRenderer(raw json.RawMessage, where string) error {
+	renderer, err := exactMembers(raw, map[string]bool{"kind": true, "name": true})
+	if err != nil {
+		return fmt.Errorf("%s: %v", where, err)
+	}
+	var kind, name string
+	if !stringInto(renderer["kind"], &kind) || kind != RendererModule {
+		return fmt.Errorf("%s.kind is not %q", where, RendererModule)
+	}
+	if !stringInto(renderer["name"], &name) || name != RendererDocx {
+		return fmt.Errorf("%s.name is not the module's Word writer", where)
+	}
+	return nil
+}
+
+// memberOrNil is one member of an object already held to its form, or nil.
+func memberOrNil(raw json.RawMessage, name string) json.RawMessage {
+	members, _ := membersOf(raw)
+	return members[name]
 }
 
 // localHeaderLength is the length of the header an entry of a ZIP archive

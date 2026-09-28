@@ -32,8 +32,8 @@ func TestRunUsage(t *testing.T) {
 	for _, args := range [][]string{
 		{"positional"},
 		{"--unknown"},
-		// This release has no rendering program to be given.
-		{"--renderer", "soffice"},
+		{"--renderer", "two words"},
+		{"--renderer"},
 		{"--max-request", "0"},
 		{"--max-blocks", "0"},
 		{"--max-file", "0"},
@@ -109,6 +109,7 @@ func TestRunRefusesWithOneLine(t *testing.T) {
 		{[]string{"--max-blocks", "1"}, `{"format":"docx","document":{"title":"T","blocks":[{"type":"paragraph","runs":[]},{"type":"paragraph","runs":[]}]}}`, "content-over-bound"},
 		{[]string{"--max-request", "100"}, request, "request-over-bound"},
 		{nil, strings.Replace(request, `"docx"`, `"pdf"`, 1), "renderer-not-configured"},
+		{[]string{"--renderer", "a-program-that-is-not-there"}, strings.Replace(request, `"docx"`, `"pdf"`, 1), "renderer-failed"},
 		{[]string{"--max-file", "100"}, request, "file-over-bound"},
 		{[]string{"--max-output", "100"}, request, "record-over-bound"},
 	} {

@@ -2,10 +2,11 @@
 """Hold the rendering schemas to the examples and to a record an adapter
 wrote, and hold them to refuse what the contract refuses.
 
-usage: check_schema.py RECORD.json
+usage: check_schema.py RECORD.json [PDF-RECORD.json]
 
-RECORD.json is a record adapter-render wrote in this run. The examples are
-read from the directory beside this script."""
+RECORD.json is a record of a Word file that adapter-render wrote in this run,
+and PDF-RECORD.json one of a PDF, where there is one. The examples are read
+from the directory beside this script."""
 import copy
 import json
 from pathlib import Path
@@ -27,6 +28,12 @@ example = json.loads((here / 'examples' / 'refund-decision.record.json').read_te
 record.validate(example)
 request = json.loads((here / 'examples' / 'refund-decision.request.json').read_text())
 arguments.validate(request)
+arguments.validate(json.loads((here / 'examples' / 'refund-decision.pdf.request.json').read_text()))
+pdf = json.loads((here / 'examples' / 'refund-decision.pdf.record.json').read_text())
+record.validate(pdf)
+if len(sys.argv) > 2:
+    pdf = json.loads(Path(sys.argv[2]).read_text())
+    record.validate(pdf)
 
 refused = 0
 
@@ -141,7 +148,9 @@ for change, why in [
     (put('renderVersion', '2'), 'a version that is not 1'),
     (put('saved', True), 'a member the record does not have'),
     (drop('provenance'), 'no provenance'),
-    (put('request', 'format', 'pdf'), 'a format this release does not write'),
+    (put('request', 'format', 'pdf'), 'a Word file said to be a PDF'),
+    (put('request', 'format', 'html'), 'a format the contract does not name'),
+    (put('rendering', 'source', {'mediaType': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'size': 1, 'sha256': 'sha256:' + '0' * 64, 'renderer': {'kind': 'module', 'name': 'adapter-render/docx/1'}}), 'a source, for a file the module wrote'),
     (put('request', 'title', ''), 'an empty title'),
     (put('request', 'language', 'en us'), 'a language that is no tag'),
     (drop('request', 'language'), 'no language member'),
@@ -184,6 +193,27 @@ for change, why in [
     (put('provenance', 'source', None), 'a member of provenance the record does not have'),
 ]:
     refuse(record, written, change, why)
+
+for change, why in [
+    (put('request', 'format', 'docx'), 'a PDF said to be a Word file'),
+    (put('file', 'mediaType', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'), 'a PDF under the media type of a Word file'),
+    (drop('rendering', 'source'), 'no source'),
+    (put('rendering', 'source', None), 'a source that is null'),
+    (put('rendering', 'source', 'bytes', 'AAAA'), 'a source with the bytes of the file'),
+    (put('rendering', 'source', 'mediaType', 'application/pdf'), 'a source that is a PDF'),
+    (put('rendering', 'source', 'size', 0), 'a source of no size'),
+    (put('rendering', 'source', 'sha256', 'abc'), 'a source whose digest is not one'),
+    (put('rendering', 'source', 'renderer', 'kind', 'program'), 'a source by a program'),
+    (put('rendering', 'source', 'renderer', 'name', 'adapter-render/docx/2'), 'a source by another writer'),
+    (put('rendering', 'renderer', 'kind', 'module'), 'a PDF by the module'),
+    (drop('rendering', 'renderer', 'digest'), 'a program with no digest'),
+    (put('rendering', 'renderer', 'digest', 'sha256:0'), 'a program whose digest is not one'),
+    (put('rendering', 'renderer', 'name', ''), 'a program with no name'),
+    (put('rendering', 'renderer', 'name', 'soffice --headless'), 'a program of two words'),
+    (put('rendering', 'renderer', 'name', 'soffice\n'), 'a program with a line feed after it'),
+    (put('rendering', 'renderer', 'args', ['docx', 'pdf']), 'a program with arguments'),
+]:
+    refuse(record, pdf, change, why)
 
 # What the schemas admit at the edges of each rule.
 for change, why in [

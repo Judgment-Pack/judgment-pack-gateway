@@ -6,9 +6,11 @@
 // (docs/adr/0006-documents-are-rendered-by-an-adapter.md); it holds no
 // credential, opens no connection and imports nothing of the core module.
 //
-// This release writes Word files, in this module and against the standard
-// library. It has no way to be given a rendering program, so a request for a
-// PDF is refused by name.
+// It writes Word files itself, in this module and against the standard
+// library. A PDF is produced by a rendering program the operator configures,
+// which is handed the Word file the adapter wrote for the same content and
+// is run under the lifecycle of adapters/internal/program; with no program
+// configured, a request for a PDF is refused by name.
 package render
 
 import (
@@ -25,6 +27,7 @@ import (
 	"adapters/attachment"
 	"adapters/document"
 	"adapters/internal/canon"
+	"adapters/internal/program"
 )
 
 // Version is what the adapter reports of itself in the record's provenance.
@@ -40,8 +43,10 @@ const (
 	FormatDocx = "docx"
 	FormatPDF  = "pdf"
 
-	// MediaTypeDocx is the media type of a Word file.
+	// MediaTypeDocx is the media type of a Word file, and MediaTypePDF of
+	// a PDF.
 	MediaTypeDocx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	MediaTypePDF  = "application/pdf"
 
 	// RendererDocx names the module's own Word writer in a record.
 	RendererDocx = "adapter-render/docx/1"
@@ -71,6 +76,8 @@ type Config struct {
 	// MaxOutput bounds the record.
 	MaxOutput int64
 	Timeout   time.Duration
+	// Renderer is the rendering program, one word, or empty for none.
+	Renderer string
 }
 
 // DefaultConfig is the configuration the flags default to. The request and
@@ -96,6 +103,8 @@ func (c Config) Check() error {
 		return fmt.Errorf("max-output must be positive and at most %d bytes", int64(maxOutputCeiling))
 	case c.Timeout < time.Millisecond || c.Timeout > timeoutCeiling || c.Timeout%time.Millisecond != 0:
 		return fmt.Errorf("timeout must be a positive whole number of milliseconds, at most %v", timeoutCeiling)
+	case c.Renderer != "" && (strings.ContainsAny(c.Renderer, " \t\r\n\x00") || !attachment.ValidName(c.Renderer)):
+		return errors.New("renderer must name one program, one word of at most 255 bytes")
 	}
 	return nil
 }
@@ -134,6 +143,7 @@ const (
 	CodeContentInvalid        = "content-invalid"
 	CodeContentOverBound      = "content-over-bound"
 	CodeRendererNotConfigured = "renderer-not-configured"
+	CodeRendererFailed        = "renderer-failed"
 	CodeFileOverBound         = "file-over-bound"
 	CodeRecordOverBound       = "record-over-bound"
 	CodeTimeout               = "timeout"
@@ -178,6 +188,18 @@ func ParseRequest(ctx context.Context, r io.Reader, cfg Config, now func() time.
 	return req, nil
 }
 
+// Runner runs the rendering program: its stdout and the digest of the file
+// its name resolved to, or an error -- program.ErrNotStarted or
+// program.ErrTimeout where the deadline ended it, any other for
+// renderer-failed. Tests replace it.
+type Runner func(ctx context.Context, name string, args []string, stdin []byte, maxOutput int64) (stdout []byte, digest string, err error)
+
+// runProgram is the Runner of the adapter: the program under the lifecycle
+// of adapters/internal/program.
+func runProgram(ctx context.Context, name string, args []string, stdin []byte, maxOutput int64) ([]byte, string, error) {
+	return program.Run{Program: name, Args: args, Stdin: stdin, MaxOutput: maxOutput}.Do(ctx)
+}
+
 // Process renders one admitted request and builds its record. reading is the
 // instant the adapter began reading the request, which durationMs is measured
 // from. It returns the record, or a refusal and no record: a rendering is
@@ -186,13 +208,21 @@ func Process(ctx context.Context, cfg Config, req Request, identity attachment.I
 	return process(ctx, cfg, req, identity, reading, time.Now)
 }
 
+// process is Process by a clock the caller gives.
 func process(ctx context.Context, cfg Config, req Request, identity attachment.Identity, reading time.Time, now func() time.Time) ([]byte, error) {
-	if req.Format == FormatPDF {
+	return processWith(ctx, cfg, req, identity, reading, now, runProgram)
+}
+
+// processWith is process with the runner of the rendering program given.
+func processWith(ctx context.Context, cfg Config, req Request, identity attachment.Identity, reading time.Time, now func() time.Time, run Runner) ([]byte, error) {
+	if req.Format == FormatPDF && cfg.Renderer == "" {
 		return nil, refuse(CodeRendererNotConfigured, "a PDF is produced by a rendering program, and this adapter is configured with none")
 	}
 	if deadlinePassed(ctx, now) {
 		return nil, refuse(CodeTimeout, "the deadline had passed before the file was written")
 	}
+	// The Word file is written for either format: it is the file of one,
+	// and what the rendering program is handed for the other.
 	file, err := writeDocx(req.Document, cfg.MaxFile)
 	// The deadline is read before anything is said of the file: a rendering
 	// whose deadline passed while it was written is refused for that,
@@ -209,6 +239,24 @@ func process(ctx context.Context, cfg Config, req Request, identity attachment.I
 	if int64(len(file)) > cfg.MaxFile {
 		return nil, refuse(CodeFileOverBound, "the file is %d bytes, past --max-file %d", len(file), cfg.MaxFile)
 	}
+	rendering := Rendering{
+		Status:   StatusComplete,
+		Renderer: Renderer{Kind: RendererModule, Name: RendererDocx},
+		Bounds: Bounds{
+			MaxRequestBytes: cfg.MaxRequest, MaxBlocks: int64(cfg.MaxBlocks), MaxFileBytes: cfg.MaxFile,
+			MaxOutputBytes: cfg.MaxOutput, TimeoutMs: cfg.Timeout.Milliseconds(),
+		},
+	}
+	mediaType := MediaTypeDocx
+	if req.Format == FormatPDF {
+		pdf, digest, refusal := renderPDF(ctx, cfg, file, run)
+		if refusal != nil {
+			return nil, refusal
+		}
+		rendering.Source = &Source{MediaType: MediaTypeDocx, Size: int64(len(file)), SHA256: digestOf(file), Renderer: rendering.Renderer}
+		rendering.Renderer = Renderer{Kind: RendererProgram, Name: cfg.Renderer, Digest: &digest}
+		file, mediaType = pdf, MediaTypePDF
+	}
 	rec := Record{
 		RenderVersion: RecordVersion,
 		Request: RequestSummary{
@@ -216,17 +264,10 @@ func process(ctx context.Context, cfg Config, req Request, identity attachment.I
 			ContentDigest: req.ContentDigest, Blocks: int64(len(req.Document.Blocks)), TextBytes: req.TextBytes,
 		},
 		File: File{
-			MediaType: MediaTypeDocx, Size: int64(len(file)), SHA256: digestOf(file),
+			MediaType: mediaType, Size: int64(len(file)), SHA256: digestOf(file),
 			Encoding: "base64", Bytes: base64.StdEncoding.EncodeToString(file),
 		},
-		Rendering: Rendering{
-			Status:   StatusComplete,
-			Renderer: Renderer{Kind: RendererModule, Name: RendererDocx},
-			Bounds: Bounds{
-				MaxRequestBytes: cfg.MaxRequest, MaxBlocks: int64(cfg.MaxBlocks), MaxFileBytes: cfg.MaxFile,
-				MaxOutputBytes: cfg.MaxOutput, TimeoutMs: cfg.Timeout.Milliseconds(),
-			},
-		},
+		Rendering:  rendering,
 		Provenance: Provenance{Adapter: identity, ObservedAt: req.ReceivedAt.UTC().Format(stampLayout)},
 	}
 	if req.Decision != "" {
@@ -250,6 +291,56 @@ func process(ctx context.Context, cfg Config, req Request, identity attachment.I
 		return nil, refuse(CodeRecordOverBound, "the record is %d bytes, past --max-output %d", len(out), cfg.MaxOutput)
 	}
 	return out, nil
+}
+
+// The arguments the rendering program is run with: what it is handed on its
+// stdin, and what is asked of it on its stdout.
+var rendererArgs = []string{FormatDocx, FormatPDF}
+
+// renderPDF hands the Word file to the rendering program and admits its
+// answer. What the program wrote is used only where it had finished before
+// the deadline, within the bound on the file, with a successful exit, and
+// where what it wrote begins and ends as a PDF does. The refusals carry
+// nothing the program wrote.
+func renderPDF(ctx context.Context, cfg Config, docx []byte, run Runner) ([]byte, string, *Refusal) {
+	out, digest, err := run(ctx, cfg.Renderer, rendererArgs, docx, cfg.MaxFile)
+	switch {
+	case errors.Is(err, program.ErrNotStarted):
+		return nil, "", refuse(CodeTimeout, "the deadline had passed after the rendering program was resolved and before it was started")
+	case errors.Is(err, program.ErrTimeout):
+		return nil, "", refuse(CodeTimeout, "the rendering program had not finished at the deadline and was ended; nothing it wrote was used")
+	case err != nil:
+		return nil, "", refuse(CodeRendererFailed, "the rendering program %s", err.Error())
+	case !isPDF(out):
+		return nil, "", refuse(CodeRendererFailed, "the rendering program's answer does not begin and end as a PDF does")
+	case !attachment.ValidDigest(digest):
+		return nil, "", refuse(CodeAdapterFailed, "the rendering program was run and no digest of it was taken")
+	}
+	return out, digest, nil
+}
+
+// pdfTail is how far from its end a PDF is looked at for the marker of its
+// end.
+const pdfTail = 1024
+
+// isPDF reports whether data begins and ends as a PDF does: the header
+// "%PDF-", a digit, a full stop and a digit, and the marker "%%EOF" within
+// the last 1,024 bytes. It is a test of form. It does not read the PDF, and
+// says nothing of what it holds.
+func isPDF(data []byte) bool {
+	const header = "%PDF-"
+	if len(data) < len(header)+3 || string(data[:len(header)]) != header {
+		return false
+	}
+	version := data[len(header) : len(header)+3]
+	if version[0] < '0' || version[0] > '9' || version[1] != '.' || version[2] < '0' || version[2] > '9' {
+		return false
+	}
+	tail := data
+	if len(tail) > pdfTail {
+		tail = tail[len(tail)-pdfTail:]
+	}
+	return strings.Contains(string(tail), "%%EOF")
 }
 
 // deadlinePassed reads the deadline as the document adapter does: the
