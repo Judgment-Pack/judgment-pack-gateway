@@ -71,6 +71,11 @@ func ConnectionCatalogV3() CatalogV3 {
 		out.Providers = append(out.Providers, d)
 	}
 	out.Providers = append(out.Providers, s3Catalog(presentation))
+	for i := range out.Providers {
+		if storageProvider(out.Providers[i].ID) {
+			out.Providers[i].Operations = append(out.Providers[i].Operations, storageMethods...)
+		}
+	}
 	return out
 }
 

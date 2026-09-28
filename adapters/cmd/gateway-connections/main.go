@@ -89,7 +89,7 @@ func run() int {
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
-	scan.Buffer(make([]byte, 4096), connections.ControlLineBytes)
+	scan.Buffer(make([]byte, 4096), connections.StorageLineBytes)
 	for scan.Scan() {
 		var r struct {
 			ID     string          `json:"id"`
@@ -100,10 +100,16 @@ func run() int {
 			return 2
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
-		result, err := b.Handle(ctx, r.Method, r.Params)
+		var result any
+		var err error
+		if r.Method != "files-prepare" && len(scan.Bytes()) > connections.ControlLineBytes {
+			err = connections.ErrRequest
+		} else {
+			result, err = b.Handle(ctx, r.Method, r.Params)
+		}
 		cancel()
 		out := response(r.ID, result, err)
-		if writeResponse(os.Stdout, out, r.ID) != nil {
+		if writeResponseLimit(os.Stdout, out, r.ID, r.Method) != nil {
 			return 1
 		}
 	}
@@ -126,8 +132,15 @@ func response(id string, result any, err error) map[string]any {
 
 // Refuse a page that does not fit; never emit an incomplete JSON control line.
 func writeResponse(w io.Writer, out map[string]any, id string) error {
+	return writeResponseLimit(w, out, id, "")
+}
+func writeResponseLimit(w io.Writer, out map[string]any, id, method string) error {
+	limit := connections.ControlLineBytes
+	if method == "files-read" {
+		limit = connections.StorageLineBytes
+	}
 	raw, err := json.Marshal(out)
-	if err != nil || len(raw)+1 > connections.ControlLineBytes {
+	if err != nil || len(raw)+1 > limit {
 		raw, err = json.Marshal(response(id, nil, connections.Error("response-too-large")))
 		if err != nil {
 			return err

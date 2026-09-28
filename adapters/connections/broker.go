@@ -44,11 +44,12 @@ type flow struct {
 	consumed                  bool
 }
 type Broker struct {
-	mu       sync.Mutex
-	store    *Store
-	provider provider
-	disabled bool
-	active   *flow
+	storageBrowse *storageBrowse
+	mu            sync.Mutex
+	store         *Store
+	provider      provider
+	disabled      bool
+	active        *flow
 }
 
 func New(s *Store, disabled bool) *Broker {
@@ -60,7 +61,7 @@ func NewGmail(s *Store, disabled bool) *Broker {
 func NewNotion(s *Store, disabled bool) *Broker {
 	return &Broker{store: s, provider: notion(), disabled: disabled}
 }
-func (b *Broker) Close() { b.mu.Lock(); defer b.mu.Unlock(); b.cancel() }
+func (b *Broker) Close() { b.mu.Lock(); defer b.mu.Unlock(); b.cancel(); b.closeStorageBrowse() }
 func (b *Broker) cancel() {
 	if b.active != nil {
 		b.active.cancel()
@@ -95,6 +96,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	// Preserve operator-policy persistence even for an unsupported request.
 	// Catalog validation must not delay disabling an existing connection.
 	descriptor, ok := LookupProvider(b.provider.kind())
+	if ok && storageProvider(descriptor.ID) && StorageMethod(method) {
+		return b.storageOperation(ctx, method, raw)
+	}
 	if !ok || !descriptor.supports(method) {
 		return nil, ErrRequest
 	}
