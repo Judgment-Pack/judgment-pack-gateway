@@ -32,3 +32,25 @@ func TestControlReplyRefusesOversizeWithoutLeakingPartialResult(t *testing.T) {
 		t.Fatal("valid response lost", err)
 	}
 }
+
+func TestStorageMetadataPageAllowsEscapedLongKeysOnlyForList(t *testing.T) {
+	items := make([]connections.StorageFile, 24)
+	for i := range items {
+		items[i] = connections.StorageFile{ID: strings.Repeat("&", 1024), Name: strings.Repeat("&", 1024), Kind: "file"}
+	}
+	result := response("request", connections.StoragePage{Items: items}, nil)
+	var output bytes.Buffer
+	if err := writeResponseLimit(&output, result, "request", "files-list"); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() <= connections.ControlLineBytes || output.Len() > connections.StorageMetadataBytes || strings.Contains(output.String(), "response-too-large") {
+		t.Fatal("legal metadata page refused", output.Len())
+	}
+	output.Reset()
+	if err := writeResponseLimit(&output, result, "request", "files-status"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "response-too-large") {
+		t.Fatal("ordinary bound relaxed")
+	}
+}

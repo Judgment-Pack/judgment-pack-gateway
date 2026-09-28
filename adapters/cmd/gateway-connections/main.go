@@ -138,6 +138,8 @@ func writeResponseLimit(w io.Writer, out map[string]any, id, method string) erro
 	limit := connections.ControlLineBytes
 	if method == "files-read" {
 		limit = connections.StorageLineBytes
+	} else if method == "files-list" {
+		limit = connections.StorageMetadataBytes
 	}
 	raw, err := json.Marshal(out)
 	if err != nil || len(raw)+1 > limit {

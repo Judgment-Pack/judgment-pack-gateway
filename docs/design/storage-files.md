@@ -43,8 +43,9 @@ Plan metadata includes its target, name, revision, size, effect (`write`, `trash
 `refused`, `needs-attention`. Plans expire after five minutes before commitment.
 
 A browse returns at most 24 entries. File reads/uploads are limited to 4 MiB.
-Ordinary pipe replies remain at most 64 KiB; only file-read replies may reach
-6 MiB to carry base64. Only file-prepare requests need the larger request bound.
+Ordinary pipe replies remain at most 64 KiB. File-list replies allow 512 KiB
+for JSON escaping of bounded names and keys; file-read replies allow 6 MiB
+to carry base64. Only file-prepare requests need the larger request bound.
 Metadata and payload validation reject unknown fields and duplicate JSON keys.
 
 ## Discovery budgets
@@ -126,3 +127,15 @@ References: [Drive search](https://developers.google.com/workspace/drive/api/gui
 [Drive scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth),
 [S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html),
 [S3 conditional deletes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-deletes.html).
+
+### Review hardening
+
+Local changes, including deletion, require a content digest obtained by reading
+at most 4 MiB; a browse-only metadata revision cannot authorize a mutation.
+Larger local files remain browseable but are changed in the source application.
+Unreadable or malformed prior operation records block preparation. Executing or
+uncertain records block new changes in the same connection generation even if
+the host loses its recovery hint. Repair of corrupt local state requires explicit
+operator inspection; it is never treated as proof that no write happened.
+Stored status and settled commit replay do not contact the provider or refresh
+its credentials. They still require the original local connection generation.

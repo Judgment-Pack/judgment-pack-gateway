@@ -20,6 +20,9 @@ import (
 const StorageLineBytes = 6 << 20
 const StoragePageItems = 24
 
+// Includes worst-case JSON escaping of 24 bounded IDs and names.
+const StorageMetadataBytes = 512 << 10
+
 var storageMethods = []string{"files-list", "files-read", "files-prepare", "files-commit", "files-status"}
 
 func StorageMethod(method string) bool {
@@ -133,7 +136,10 @@ func (s *Store) readStorageIntent() (storageIntent, error) {
 	var out storageIntent
 	f, e := s.root.OpenFile("storage-intent.json", os.O_RDONLY|noFollow|nonBlock, 0)
 	if e != nil {
-		return out, ErrGrant
+		if errors.Is(e, os.ErrNotExist) {
+			return out, ErrGrant
+		}
+		return out, ErrStorage
 	}
 	defer f.Close()
 	st, e := f.Stat()
@@ -141,7 +147,12 @@ func (s *Store) readStorageIntent() (storageIntent, error) {
 		return out, ErrStorage
 	}
 	raw, e := io.ReadAll(io.LimitReader(f, StorageLineBytes+1))
-	if e != nil || decodeStorage(raw, &out) != nil {
+	if e != nil || decodeStorage(raw, &out) != nil || !opaque.MatchString(out.Plan.ID) || out.Connection == "" || out.Epoch == "" {
+		return out, ErrStorage
+	}
+	switch out.Plan.State {
+	case "prepared", "executing", "completed", "refused", "needs-attention":
+	default:
 		return out, ErrStorage
 	}
 	return out, nil
@@ -192,7 +203,7 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		return nil, e
 	}
 	token := ""
-	if b.provider.kind() == "google-drive" {
+	if b.provider.kind() == "google-drive" && method != "files-status" && method != "files-commit" {
 		token, e = b.provider.access(ctx, b.store, client, c, epoch)
 		if e != nil {
 			return nil, e
@@ -291,7 +302,11 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 			if e := currentStorage(v, c, epoch); e != nil {
 				return e
 			}
-			if prior, e := b.store.readStorageIntent(); e == nil && prior.Plan.State == "executing" && prior.Connection == c.ID && prior.Epoch == epoch {
+			prior, err := b.store.readStorageIntent()
+			if err != nil && !errors.Is(err, ErrGrant) {
+				return err
+			}
+			if err == nil && (prior.Plan.State == "executing" || prior.Plan.State == "needs-attention") && prior.Connection == c.ID && prior.Epoch == epoch {
 				return Error("operation-uncertain")
 			}
 			return b.store.writeStorageIntent(intent)
@@ -336,6 +351,13 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		}
 		if intent.Change.Action == "delete" && q.Confirmation != intent.Plan.Confirmation {
 			return nil, Error("confirmation-required")
+		}
+		// Status and settled replay are local, even when provider credentials expire.
+		if b.provider.kind() == "google-drive" {
+			token, e = b.provider.access(ctx, b.store, client, c, epoch)
+			if e != nil {
+				return nil, e
+			}
 		}
 		// The claim survives process loss. Reusing its ID never repeats a mutation.
 		e = b.store.locked(func(v *state) error {

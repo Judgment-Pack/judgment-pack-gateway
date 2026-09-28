@@ -31,7 +31,7 @@ type driveStorageMeta struct {
 }
 
 func (m driveStorageMeta) file() (StorageFile, error) {
-	if !identifier.MatchString(m.ID) || !resourceText(m.Name, 250, false) || !resourceText(m.Version, 64, false) || m.Trashed {
+	if !identifier.MatchString(m.ID) || !resourceText(m.Name, 250, false) || !resourceText(m.Version, 64, false) || m.Trashed || len(m.MediaType) > 120 || !storageMedia.MatchString(m.MediaType) {
 		return StorageFile{}, ErrUnsupported
 	}
 	size := int64(0)

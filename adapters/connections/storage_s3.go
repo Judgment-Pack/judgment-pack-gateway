@@ -60,7 +60,7 @@ func (b *Broker) s3StorageInspect(ctx context.Context, id string, read bool) (St
 	}
 	etag := h.Get("ETag")
 	size, e := strconv.ParseInt(h.Get("Content-Length"), 10, 64)
-	if e != nil || size < 0 || !validS3ETag(etag) {
+	if e != nil || size < 0 || !validS3ETag(etag) || cfg.leaks([]byte(etag)) || cfg.leaks([]byte(h.Get("Content-Type"))) {
 		return file, "", nil, ErrProvider
 	}
 	media := strings.Split(h.Get("Content-Type"), ";")[0]

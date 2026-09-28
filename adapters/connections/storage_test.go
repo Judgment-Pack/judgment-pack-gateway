@@ -523,7 +523,8 @@ func TestStorageLocalTrashPreservesLongFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 	page := storageCall[StoragePage](t, b, "files-list", StorageQuery{})
-	q := StorageChange{Context: page.Context, Action: "delete", ID: name, Revision: page.Items[0].Revision}
+	read := storageCall[StorageRead](t, b, "files-read", map[string]string{"id": name, "revision": page.Items[0].Revision})
+	q := StorageChange{Context: page.Context, Action: "delete", ID: name, Revision: read.File.Revision}
 	plan := storageCall[StoragePlan](t, b, "files-prepare", q)
 	done := storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID, "confirmation": name})
 	if done.State != "completed" {

@@ -48,12 +48,10 @@ func (b *Broker) storagePreflight(ctx context.Context, q *StorageChange, token s
 		if q.ID == "" || q.Folder != "" || q.Revision == "" {
 			return file, "", ErrRequest
 		}
-		if b.provider.obsidian && q.Action == "delete" && strings.HasPrefix(q.Revision, "stat:") {
-			if e := b.checkLocalStat(q.ID, q.Revision); e != nil {
-				return file, "", e
-			}
-			q.Name = path.Base(q.ID)
-			return StorageFile{ID: q.ID, Name: q.Name, Revision: q.Revision, Kind: "file", Deletable: true}, "", nil
+		// Metadata revisions are only for browsing/reading. Every local mutation
+		// needs a content digest from the bounded read, including deletion.
+		if b.provider.obsidian && strings.HasPrefix(q.Revision, "stat:") {
+			return file, "", ErrChanged
 		}
 		current, etag, _, e := b.storageInspect(ctx, q.ID, token, false)
 		if e != nil {

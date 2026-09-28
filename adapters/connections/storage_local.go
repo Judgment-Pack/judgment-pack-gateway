@@ -77,7 +77,7 @@ func localFile(root *os.Root, id string, read bool) (StorageFile, []byte, error)
 		media = "application/octet-stream"
 	}
 	media = strings.Split(media, ";")[0]
-	item = StorageFile{ID: id, Name: path.Base(id), Kind: "file", Size: st.Size(), MediaType: media, Editable: st.Size() <= MaxFileBytes, Deletable: true}
+	item = StorageFile{ID: id, Name: path.Base(id), Kind: "file", Size: st.Size(), MediaType: media, Editable: st.Size() <= MaxFileBytes, Deletable: st.Size() <= MaxFileBytes}
 	// Read at most the supported file bound to obtain a content revision. Large
 	// files remain browseable but cannot be mutated without a bounded revision.
 	if st.Size() > MaxFileBytes {
@@ -211,7 +211,7 @@ func (b *Broker) localStorageList(ctx context.Context, q StorageQuery) (StorageP
 		// Browsing never opens file content. The edit/read request obtains a fresh
 		// digest, which is then required for an update or delete proposal.
 		revision := localStatRevision(st)
-		out.Items = append(out.Items, StorageFile{ID: id, Name: names[0], Kind: "file", Size: st.Size(), Revision: revision, MediaType: media, Editable: st.Size() <= MaxFileBytes, Deletable: true})
+		out.Items = append(out.Items, StorageFile{ID: id, Name: names[0], Kind: "file", Size: st.Size(), Revision: revision, MediaType: media, Editable: st.Size() <= MaxFileBytes, Deletable: st.Size() <= MaxFileBytes})
 	}
 	return b.finishStoragePage(out, true)
 }
@@ -251,13 +251,7 @@ func (b *Broker) localStorageApply(ctx context.Context, intent storageIntent) (s
 		}
 		return q.ID, syncStorageDirs(root, parent)
 	}
-	if q.Action == "delete" && strings.HasPrefix(q.Revision, "stat:") {
-		st, err := root.Lstat(filepath.FromSlash(q.ID))
-		if err != nil || !st.Mode().IsRegular() || localStatRevision(st) != q.Revision {
-			return "", ErrChanged
-		}
-		return q.ID, localStorageTrash(root, q.ID, q.Name, intent.Plan.ID)
-	}
+
 	item, old, e := localFile(root, q.ID, true)
 	if e != nil {
 		return "", e
