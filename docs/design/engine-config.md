@@ -312,8 +312,9 @@ and its check calls no tool. What each answered
 is printed, one line per operation; the first that cannot answer ends the connect with the
 adapter's reason. Nothing is acquired and no receipt is minted. An image the runtime does not
 hold yet is pulled during the check, which is why a check is given five minutes. An
-acquisition has the adapter's own deadline, which is its default of twenty seconds since the
-engine gives it no other, inside the thirty seconds after which the gateway cancels the source.
+acquisition has less: the adapter gives its work twenty seconds, its default, since the engine
+gives it no other, and the gateway cancels the source thirty seconds after it began to start
+it ([engine-image.md](engine-image.md) has the two clocks).
 
 The live operation's check, and no other, also captures the allowed tools' descriptions and
 input schemas and the server's identity ([tool-descriptors.md](tool-descriptors.md)), unless

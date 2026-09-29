@@ -59,10 +59,10 @@ type connectOutcome struct {
 const (
 	// checkTimeout is the time an adapter's check is given: an image the
 	// runtime does not hold yet is pulled first, which the twenty seconds
-	// an adapter gives an acquisition by default would not cover, nor the
-	// thirty after which the gateway cancels a source. The adapter is told
-	// the same figure, and this process waits a little longer for it to
-	// stop what it ran.
+	// an adapter gives an acquisition by default may not cover, nor the
+	// thirty after which the gateway cancels a source. The adapter is given
+	// these five minutes as its timeout, and this process allows checkGrace
+	// more for it to stop what it ran.
 	checkTimeout = 5 * time.Minute
 	checkGrace   = 30 * time.Second
 	// checkMaxOutput bounds an adapter's report: a report is a few lines.

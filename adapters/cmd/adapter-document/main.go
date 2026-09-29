@@ -50,7 +50,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	maxInflate := fs.Int64("max-inflate", def.MaxInflate, "bound on what a document's streams may inflate to in total, in bytes")
 	ocrMaxOutput := fs.Int64("ocr-max-output", def.OCRMaxOutput, "bound on the OCR program's stdout in bytes")
 	maxOutput := fs.Int64("max-output", def.MaxOutput, "bound on the record in bytes; keep it at or below the gateway's --source-max-output")
-	timeout := fs.Duration("timeout", def.Timeout, "the deadline, from the adapter's start; keep it under the gateway's thirty seconds")
+	timeout := fs.Duration("timeout", def.Timeout, "the deadline, from the adapter's start; keep it under the gateway's timeout for the source, thirty seconds by default, with room to spare")
 	ocr := fs.String("ocr", "", "the OCR program, one word, run for pages that need OCR; none when empty")
 	if err := fs.Parse(args); err != nil {
 		return 2
