@@ -38,6 +38,9 @@ func ConnectionCatalog() Catalog {
 }
 
 func LookupProvider(id string) (Descriptor, bool) {
+	if id == "web-search" {
+		return searchDescriptor(), true
+	}
 	if id == "aws-s3" {
 		return s3Descriptor(), true
 	}

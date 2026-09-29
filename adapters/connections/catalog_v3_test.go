@@ -10,12 +10,12 @@ import (
 
 func TestV3CatalogIsCompleteLocalizedAndMatchesLocalPlan(t *testing.T) {
 	catalog := ConnectionCatalogV3()
-	if catalog.Version != 3 || len(catalog.Providers) != 5 {
+	if catalog.Version != 3 || len(catalog.Providers) != 6 {
 		t.Fatal("wrong catalog")
 	}
 	plan := ConnectionLocalPlan()
 	for _, descriptor := range catalog.Providers {
-		if descriptor.Protocol != "connection-v1" || descriptor.Presentation.Name == "" {
+		if (descriptor.Protocol != "connection-v1" && descriptor.Protocol != "web-search-v1") || descriptor.Presentation.Name == "" {
 			t.Fatal(descriptor.ID)
 		}
 		for _, locale := range []string{"en", "fr", "es", "de", "it", "pt-PT", "pt-BR", "ko", "ja", "zh-Hans", "zh-Hant", "yue-Hant"} {

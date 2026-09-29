@@ -66,7 +66,7 @@ func testGmail(t *testing.T) (*Broker, *atomic.Int32) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	b.provider = provider{server.URL + "/auth", server.URL + "/token", server.URL + "/revoke", server.URL, server.Client(), true, false, false, false}
+	b.provider = provider{auth: server.URL + "/auth", token: server.URL + "/token", revoke: server.URL + "/revoke", api: server.URL, client: server.Client(), gmail: true}
 	f := start(t, b, "connect")
 	u, _ := url.Parse(f.URL)
 	if u.Query().Get("scope") != gmailScope || u.Query().Get("trigger_onepick") != "" || u.Query().Get("code_challenge_method") != "S256" {

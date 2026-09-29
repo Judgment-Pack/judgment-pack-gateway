@@ -22,6 +22,8 @@ const MaxOutputBytes = 16 << 20
 
 // Endpoints are fixed in production. Tests supply an isolated TLS server.
 type provider struct {
+	search                   bool
+	searchEndpoint           string
 	auth, token, revoke, api string
 	client                   *http.Client
 	gmail                    bool
@@ -183,6 +185,9 @@ func (p provider) scope() string {
 	return driveScope
 }
 func (p provider) kind() string {
+	if p.search {
+		return "web-search"
+	}
 	if p.s3 {
 		return "aws-s3"
 	}

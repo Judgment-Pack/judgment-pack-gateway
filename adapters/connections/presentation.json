@@ -297,5 +297,37 @@
       "zh-Hant": "到期時間（臨時憑證）",
       "yue-Hant": "到期時間（臨時憑證）"
     }
+  },
+  "web-search": {
+    "icon": "",
+    "name": "Web search",
+    "description": {
+      "en": "Web search",
+      "de": "Websuche",
+      "fr": "Recherche web",
+      "es": "Búsqueda web",
+      "it": "Ricerca web",
+      "pt-PT": "Pesquisa web",
+      "pt-BR": "Pesquisa na web",
+      "ja": "ウェブ検索",
+      "ko": "웹 검색",
+      "zh-Hans": "网页搜索",
+      "zh-Hant": "網頁搜尋",
+      "yue-Hant": "網頁搜尋"
+    },
+    "instructions": {
+      "en": "Manage named search connections. Credentials stay in the gateway.",
+      "de": "Benannte Suchverbindungen verwalten. Zugangsdaten bleiben im Gateway.",
+      "fr": "Gérez les connexions de recherche. Les identifiants restent dans la passerelle.",
+      "es": "Gestiona las conexiones de búsqueda. Las credenciales permanecen en la pasarela.",
+      "it": "Gestisci le connessioni di ricerca. Le credenziali restano nel gateway.",
+      "pt-PT": "Gira as ligações de pesquisa. As credenciais ficam no gateway.",
+      "pt-BR": "Gerencie conexões de pesquisa. As credenciais ficam no gateway.",
+      "ja": "検索接続を管理します。認証情報はゲートウェイに保存されます。",
+      "ko": "검색 연결을 관리합니다. 인증 정보는 게이트웨이에 보관됩니다.",
+      "zh-Hans": "管理搜索连接。凭据保存在网关中。",
+      "zh-Hant": "管理搜尋連線。憑證保存在閘道中。",
+      "yue-Hant": "管理搜尋連線。憑證保留喺閘道。"
+    }
   }
 }

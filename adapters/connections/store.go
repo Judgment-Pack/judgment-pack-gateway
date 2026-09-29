@@ -81,13 +81,14 @@ type credential struct {
 	Expires int64   `json:"expires"`
 }
 type state struct {
-	Epoch      string      `json:"epoch"`
-	Client     Client      `json:"client"`
-	Connection *credential `json:"connection"`
-	Disabled   bool        `json:"disabled"`
-	Redirect   string      `json:"redirect,omitempty"`
-	Vault      string      `json:"vault,omitempty"`
-	S3         *s3Config   `json:"s3,omitempty"`
+	Search     *searchState `json:"search,omitempty"`
+	Epoch      string       `json:"epoch"`
+	Client     Client       `json:"client"`
+	Connection *credential  `json:"connection"`
+	Disabled   bool         `json:"disabled"`
+	Redirect   string       `json:"redirect,omitempty"`
+	Vault      string       `json:"vault,omitempty"`
+	S3         *s3Config    `json:"s3,omitempty"`
 }
 type Store struct{ root *os.Root }
 
