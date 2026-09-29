@@ -266,7 +266,9 @@ func TestSearchConnectionIsHeldToItsBounds(t *testing.T) {
 			t.Fatalf("Google, %s: accepted", name)
 		}
 	}
-	if short := serviceAccount(t, true, nil); short != "" {
+	if short := serviceAccount(t, true, nil); short == "" {
+		t.Log("no key of 1024 bits can be made here; that a connection with such a key is refused is not tested")
+	} else {
 		c := grounding
 		c.Credential = short
 		if searchValid(c) {
