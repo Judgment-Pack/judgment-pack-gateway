@@ -349,7 +349,7 @@ rule above and the step that meets each code:
 | `ocr-not-run` | partial | pages need OCR and no program was started: none is configured, or the caller asked `"never"`. The message says which |
 | `ocr-failed` | partial | the OCR program was not resolved, digested or started, exited with a non-zero status, wrote past `maxOcrOutputBytes`, or wrote an answer that [step 6](#how-a-document-is-processed) refuses. **No answer of it is applied** |
 | `ocr-incomplete` | partial | the OCR program's answer was admitted and left out pages it was asked for; the message counts them, and they stay `"needs-ocr"` |
-| `ocr-timeout` | partial | the OCR program was started, and the deadline had passed when the adapter took its outcome: a program not yet finished was ended, one that had finished was not, and in either case no answer of it is applied |
+| `ocr-timeout` | partial | the OCR program was started, and the deadline had passed when the adapter took its outcome: a program still running at the deadline was ended, one that had exited was not, and in either case no answer of it is applied |
 
 A consumer treats a code it does not know as an error whose class it does not know: the
 status still says what the record is good for.
@@ -377,11 +377,18 @@ records `timeout`, and the adapter goes to step 7. Step 6 checks it once, after 
 is resolved and digested and immediately before it is started: if the deadline has passed, the
 program is not started, `timeout` is recorded, and the adapter goes to step 7. A program that
 was started has **finished** when it has exited and its stdout has reached its end, as the
-adapter observes both. The adapter takes the program's outcome only once it has observed both
-or ended the program; if the deadline has passed by then, the outcome is `ocr-timeout` and no
-answer is applied, even when the answer the program wrote was complete. A program still running
-at the deadline, or exited with its stdout held open by a process it left behind, is ended. A
-record carries at most one of the two.
+adapter observes both. The adapter takes the program's outcome only once it has observed the
+exit, and either the end of the program's stdout or its own closing of that pipe; ending the
+program is not enough, since the exit of a program that was ended is observed as any other is.
+If the deadline has passed by then, the outcome is `ocr-timeout` and no answer is applied, even
+when the answer the program wrote was complete. A program still running at the deadline is
+ended. One that has exited is not ended, whether or not its stdout has reached its end: a
+process it left behind may hold that open. A stdout still open is waited for by one timer of
+two seconds, which the adapter starts when it first observes the exit or the deadline,
+whichever comes first, and does not start again; when the timer ends, the adapter closes the
+pipe. A record carries at most one of the two.
+The run is implemented in `adapters/internal/program`, which the document adapter calls from
+`runOCRProgram` (`adapters/document/ocr.go`).
 [Bounds and cancellation](#bounds-and-cancellation) says what the deadline does not interrupt.
 
 1. **Admit the request**, or refuse it ([Refusals](#the-arguments)). A refused request has no
@@ -452,8 +459,8 @@ record carries at most one of the two.
      program that cannot be started is `ocr-failed`;
    - its stdout is read up to `maxOcrOutputBytes`; a byte more ends it and is `ocr-failed`. A
      non-zero exit is `ocr-failed`, and so is a program that exits and whose stdout has not
-     reached its end two seconds later, its pipe then closed, unless the deadline has passed by
-     then. A deadline passed before the adapter has taken the outcome makes it `ocr-timeout`, as
+     reached its end two seconds after the adapter observed the exit, its pipe then closed,
+     unless the deadline has passed by then. A deadline passed before the adapter has taken the outcome makes it `ocr-timeout`, as
      "The deadline" says;
    - its output is **admitted** only if all of these hold, or it is `ocr-failed`: it is one JSON
      value in the domain the gateway's canonicalizer admits (`adapters/internal/canon`: valid
@@ -534,10 +541,14 @@ exception a clock that did not arrive, for a read that never ended, would be wai
 What an exhausted arbitration refuses stays refused, and no read is taken after it: a result the
 read hands over in the meantime is not what decides. Nothing there is an elapsed time: what ends
 the wait is a reading of the clock, not an interval. At the
-deadline, an OCR program that has not finished is ended: the adapter kills the process it
-started, not that process's own children, waits up to two seconds for that process to exit and
-its stdout to reach its end, and then closes the pipe
-itself, so a process left behind holding it does not delay the record past those two seconds.
+deadline, an OCR program that is still running is ended: the adapter kills the process it
+started, not that process's own children. One that has exited is not ended. In either case a
+stdout that has not reached its end is waited for by the one timer of two seconds, started
+when the adapter first observed the exit or the deadline, and the adapter closes the pipe
+itself when that timer ends, so a process left behind holding the pipe does not delay the
+record more than two seconds past whichever of the two came first. The exit of the process
+the adapter started is waited for with no timer of its own: the two seconds bound the wait
+for an open stdout, and the outcome is not taken until the exit has been observed as well.
 The record is therefore written some time after the deadline, which is why `--timeout` sits
 under the source's timeout — thirty seconds by default — with room to spare.
 
