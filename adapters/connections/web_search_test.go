@@ -152,15 +152,6 @@ func TestSearchErrorsNeverEchoProviderContent(t *testing.T) {
 		})
 	}
 }
-func TestGoogleGroundingRetainsGeneratedContentAndAttributionSeparately(t *testing.T) {
-	c := SearchConnection{ID: "google", Provider: "google-grounding", Revision: strings.Repeat("a", 64)}
-	q := SearchRequest{c.ID, c.Revision, "query", 5}
-	raw := []byte(`{"candidates":[{"content":{"parts":[{"text":"Generated claim"}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.org","title":"Source"}}],"searchEntryPoint":{"renderedContent":"<div>Google Search</div>"},"webSearchQueries":["query"]}}]}`)
-	r, err := normalizeSearch(raw, c, q)
-	if err != nil || r.Kind != "grounded-answer" || r.GeneratedAnswer != "Generated claim" || r.Hits[0].Snippet != "" || r.AttributionHTML == "" {
-		t.Fatal("grounding merged with evidence", err)
-	}
-}
 func TestSearchConfigurationRejectsUntrustedEndpointsAndProviders(t *testing.T) {
 	_, b, c := searchFixture(t)
 	for _, raw := range []string{`{"id":"bad","provider":"other","name":"Bad","dailyLimit":1,"credential":"secret"}`, `{"id":"bad","provider":"tavily","name":"Bad","dailyLimit":1,"credential":"secret","endpoint":"https://attacker.invalid"}`} {

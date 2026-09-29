@@ -2,34 +2,43 @@
 
 package connections
 
-// Each test here holds one refusal or one bound of the search connections.
-// Each was checked by taking the condition out of web_search.go and seeing
-// the test fail.
+// Tests of the search connections that need the custody store, a listener or
+// the stand-in transport. Those that need none are in
+// web_search_portable_test.go.
 //
-// Four conditions cannot be told apart from their absence by any test,
-// because another condition refuses the same input first:
+// Each test holds a refusal or a bound of web_search.go, and each was checked
+// by taking the condition out and seeing a test fail. The conditions taken
+// out, and what failed for each, are in the review record of the pull request
+// that added these files.
+//
+// Eight conditions no test here tells from their absence:
 //
 //   - a saved credential is kept on an update only for the same provider: a
-//     credential of the other provider is refused by that provider's form;
-//   - the credential's type is a service account: the library that reads the
-//     credential refuses any other;
+//     row saved through configure holds a credential of its provider's form,
+//     and the other provider's form refuses it;
+//   - the credential is a JSON value: the library that reads it after
+//     refuses one that is not;
+//   - the credential's type is a service account: the same library refuses
+//     any other;
 //   - the token endpoint the library derives is Google's: the member it is
 //     derived from is held to the same value first;
-//   - the credential has a key: no key is a key that does not parse.
+//   - the credential has a key: no key is a key that is not PEM;
+//   - a saved credential is read again before a request: the row was held to
+//     its form a moment before, under the same lock that read it;
+//   - a link has no control character: one that has does not parse;
+//   - the adapter can read its own executable: a test binary always can.
 
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
+	"crypto/tls"
 	"encoding/json"
-	"encoding/pem"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -64,49 +73,6 @@ func searchRows(t *testing.T, b *Broker) []SearchConnection {
 		t.Fatal(err)
 	}
 	return out.(map[string]any)["connections"].([]SearchConnection)
-}
-
-var searchKeys struct {
-	once         sync.Once
-	strong, weak []byte
-}
-
-// serviceAccount is a service account credential as Google writes one, with
-// the members a case changes or, given an empty value, leaves out.
-func serviceAccount(t *testing.T, weak bool, change map[string]string) string {
-	t.Helper()
-	searchKeys.once.Do(func() {
-		for _, bits := range []int{2048, 1024} {
-			key, err := rsa.GenerateKey(rand.Reader, bits)
-			if err != nil {
-				t.Fatal(err)
-			}
-			der, err := x509.MarshalPKCS8PrivateKey(key)
-			if err != nil {
-				t.Fatal(err)
-			}
-			encoded := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})
-			if bits == 2048 {
-				searchKeys.strong = encoded
-			} else {
-				searchKeys.weak = encoded
-			}
-		}
-	})
-	key := searchKeys.strong
-	if weak {
-		key = searchKeys.weak
-	}
-	members := map[string]string{"type": "service_account", "client_email": "reader@demo-project.iam.gserviceaccount.com", "private_key": string(key), "token_uri": "https://oauth2.googleapis.com/token"}
-	for name, value := range change {
-		if value == "" {
-			delete(members, name)
-		} else {
-			members[name] = value
-		}
-	}
-	raw, _ := json.Marshal(members)
-	return string(raw)
 }
 
 func TestSearchConfigureTakesNoCounterFromTheCaller(t *testing.T) {
@@ -238,60 +204,6 @@ func TestSearchNamesWhyTheProviderRefused(t *testing.T) {
 	}
 }
 
-func TestSearchHitsAreLinksOverHTTPSAlone(t *testing.T) {
-	c := SearchConnection{ID: "demo", Provider: "tavily", Revision: strings.Repeat("a", 64)}
-	for _, refused := range []string{"http://example.org/plain", "https://reader@example.org/named", "https://example.org:8443/port", "https:///nowhere"} {
-		body, _ := json.Marshal(map[string]any{"results": []map[string]string{{"title": "Refused", "url": refused}, {"title": "Kept", "url": "https://example.org:443/kept"}}})
-		r, err := normalizeSearch(body, c, SearchRequest{c.ID, c.Revision, "query", 5})
-		if err != nil || len(r.Hits) != 1 || r.Hits[0].URL != "https://example.org:443/kept" {
-			t.Fatalf("%s: %v, %v", refused, r.Hits, err)
-		}
-	}
-}
-
-func TestSearchGivesNoMoreHitsThanAsked(t *testing.T) {
-	c := SearchConnection{ID: "demo", Provider: "tavily", Revision: strings.Repeat("a", 64)}
-	body := []byte(`{"results":[{"url":"https://example.org/1"},{"url":"https://example.org/2"},{"url":"https://example.org/3"}]}`)
-	r, err := normalizeSearch(body, c, SearchRequest{c.ID, c.Revision, "query", 2})
-	if err != nil || len(r.Hits) != 2 || r.Hits[1].URL != "https://example.org/2" {
-		t.Fatal(r.Hits, err)
-	}
-}
-
-func TestSearchHitIsHeldToItsLength(t *testing.T) {
-	c := SearchConnection{ID: "demo", Provider: "tavily", Revision: strings.Repeat("a", 64)}
-	atBound := "https://example.org/" + strings.Repeat("a", 4096-len("https://example.org/"))
-	body, _ := json.Marshal(map[string]any{"results": []map[string]string{
-		{"title": strings.Repeat("t", 511) + "é", "url": atBound + "a", "content": "over the bound by one"},
-		{"title": strings.Repeat("t", 511) + "é", "url": atBound, "content": strings.Repeat("s", 1999) + "é"},
-	}})
-	r, err := normalizeSearch(body, c, SearchRequest{c.ID, c.Revision, "query", 5})
-	if err != nil || len(r.Hits) != 1 || r.Hits[0].URL != atBound {
-		t.Fatal("a link over its bound was kept, or one at its bound refused", len(r.Hits), err)
-	}
-	// The last character of each is two bytes and crosses the bound, so it
-	// goes whole: what is kept is one byte short and still UTF-8.
-	if r.Hits[0].Title != strings.Repeat("t", 511) || r.Hits[0].Snippet != strings.Repeat("s", 1999) {
-		t.Fatalf("title of %d bytes, snippet of %d", len(r.Hits[0].Title), len(r.Hits[0].Snippet))
-	}
-}
-
-func TestGoogleAnswerIsCutAtItsBound(t *testing.T) {
-	c := SearchConnection{ID: "google", Provider: "google-grounding", Revision: strings.Repeat("a", 64)}
-	body, _ := json.Marshal(map[string]any{"candidates": []any{map[string]any{
-		"content": map[string]any{"parts": []map[string]string{{"text": strings.Repeat("a", 11999)}, {"text": "é and more"}}},
-		"groundingMetadata": map[string]any{
-			"groundingChunks":  []any{map[string]any{"web": map[string]string{"uri": "https://example.org", "title": "Source"}}},
-			"searchEntryPoint": map[string]string{"renderedContent": "<div>Google Search</div>"},
-			"webSearchQueries": []string{strings.Repeat("q", 1999) + "é"},
-		},
-	}}})
-	r, err := normalizeSearch(body, c, SearchRequest{c.ID, c.Revision, "query", 5})
-	if err != nil || r.GeneratedAnswer != strings.Repeat("a", 11999) || len(r.Queries) != 1 || r.Queries[0] != strings.Repeat("q", 1999) {
-		t.Fatalf("answer of %d bytes, %d queries: %v", len(r.GeneratedAnswer), len(r.Queries), err)
-	}
-}
-
 func TestSearchBudgetIsOfTheDay(t *testing.T) {
 	s, b, c := searchFixture(t)
 	s.locked(func(v *state) error {
@@ -311,117 +223,6 @@ func TestSearchBudgetIsOfTheDay(t *testing.T) {
 		}
 		return nil
 	})
-}
-
-func TestGoogleAnswerIsRefusedWithoutItsGrounding(t *testing.T) {
-	c := SearchConnection{ID: "google", Provider: "google-grounding", Revision: strings.Repeat("a", 64)}
-	q := SearchRequest{c.ID, c.Revision, "query", 5}
-	answer := func(chunks, entry, queries string) []byte {
-		return []byte(`{"candidates":[{"content":{"parts":[{"text":"Generated"}]},"groundingMetadata":{"groundingChunks":` + chunks + `,"searchEntryPoint":` + entry + `,"webSearchQueries":` + queries + `}}]}`)
-	}
-	chunk := `[{"web":{"uri":"https://example.org","title":"Source"}}]`
-	entry := `{"renderedContent":"<div>Google Search</div>"}`
-	long, _ := json.Marshal(map[string]string{"renderedContent": strings.Repeat("a", 32001)})
-	atBound, _ := json.Marshal(map[string]string{"renderedContent": strings.Repeat("a", 32000)})
-	many, _ := json.Marshal(make([]string, 21))
-	twenty, _ := json.Marshal(make([]string, 20))
-	for name, test := range map[string]struct {
-		body []byte
-		want error
-	}{
-		"as it should be":               {answer(chunk, entry, `["query"]`), nil},
-		"no sources":                    {answer(`[]`, entry, `["query"]`), Error("search-not-grounded")},
-		"sources that are not links":    {answer(`[{"web":{"uri":"http://example.org","title":"Source"}}]`, entry, `["query"]`), Error("search-not-grounded")},
-		"no attribution":                {answer(chunk, `{}`, `["query"]`), Error("search-not-grounded")},
-		"attribution at its bound":      {answer(chunk, string(atBound), `["query"]`), nil},
-		"attribution over its bound":    {answer(chunk, string(long), `["query"]`), ErrProvider},
-		"as many queries as are kept":   {answer(chunk, entry, string(twenty)), nil},
-		"more queries than are kept":    {answer(chunk, entry, string(many)), ErrProvider},
-		"an answer that is not a value": {[]byte(`{"candidates":`), ErrProvider},
-		"no candidate":                  {[]byte(`{"candidates":[]}`), ErrProvider},
-	} {
-		if _, err := normalizeSearch(test.body, c, q); err != test.want {
-			t.Fatalf("%s: %v", name, err)
-		}
-	}
-}
-
-func TestGoogleCredentialIsHeldToItsForm(t *testing.T) {
-	if err := validateGoogleCredential(serviceAccount(t, false, nil)); err != nil {
-		t.Fatal("a credential as Google writes one was refused", err)
-	}
-	for name, credential := range map[string]string{
-		"no token endpoint":      serviceAccount(t, false, map[string]string{"token_uri": ""}),
-		"another token endpoint": serviceAccount(t, false, map[string]string{"token_uri": "https://evil.example/token"}),
-		"not a service account":  serviceAccount(t, false, map[string]string{"client_email": "reader@example.org"}),
-		"a key of 1024 bits":     serviceAccount(t, true, nil),
-		"no key":                 serviceAccount(t, false, map[string]string{"private_key": ""}),
-		"a key that is no key":   serviceAccount(t, false, map[string]string{"private_key": "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"}),
-		// Refused by the library that reads the credential as well as by the
-		// check of the type here, so this case holds the two together.
-		"a user's credential": serviceAccount(t, false, map[string]string{"type": "authorized_user"}),
-		"not a value":         "{",
-	} {
-		if validateGoogleCredential(credential) != ErrRequest {
-			t.Fatalf("%s: accepted", name)
-		}
-	}
-}
-
-func TestSearchConnectionIsHeldToItsBounds(t *testing.T) {
-	tavily := SearchConnection{ID: "demo", Name: "Demo", Provider: "tavily", DailyLimit: 10, Credential: "tvly-key"}
-	grounding := SearchConnection{ID: "demo", Name: "Demo", Provider: "google-grounding", DailyLimit: 10, Credential: serviceAccount(t, false, nil), Project: "demo-project", Location: "us-central1", Model: "gemini-2.5-flash"}
-	if !searchValid(tavily) || !searchValid(grounding) {
-		t.Fatal("the cases start from a connection that is refused")
-	}
-	for name, change := range map[string]func(*SearchConnection){
-		"identifier":              func(c *SearchConnection) { c.ID = "Demo" },
-		"no name":                 func(c *SearchConnection) { c.Name = "" },
-		"no requests a day":       func(c *SearchConnection) { c.DailyLimit = 0 },
-		"over the daily bound":    func(c *SearchConnection) { c.DailyLimit = 10001 },
-		"a key with a space":      func(c *SearchConnection) { c.Credential = "tvly key" },
-		"a key with a line end":   func(c *SearchConnection) { c.Credential = "tvly-key\n" },
-		"no key":                  func(c *SearchConnection) { c.Credential = "" },
-		"a project for Tavily":    func(c *SearchConnection) { c.Project = "demo-project" },
-		"a location for Tavily":   func(c *SearchConnection) { c.Location = "global" },
-		"a model for Tavily":      func(c *SearchConnection) { c.Model = "gemini-2.5-flash" },
-		"a provider of no name":   func(c *SearchConnection) { c.Provider = "" },
-		"a provider not known":    func(c *SearchConnection) { c.Provider = "other" },
-		"a credential over 8192":  func(c *SearchConnection) { c.Credential = strings.Repeat("a", 8193) },
-		"a name over eighty":      func(c *SearchConnection) { c.Name = strings.Repeat("a", 81) },
-		"an identifier over 48":   func(c *SearchConnection) { c.ID = strings.Repeat("a", 49) },
-		"an identifier of a path": func(c *SearchConnection) { c.ID = "a/b" },
-	} {
-		c := tavily
-		change(&c)
-		if searchValid(c) {
-			t.Fatalf("Tavily, %s: accepted", name)
-		}
-	}
-	for name, change := range map[string]func(*SearchConnection){
-		"a project that is a path":   func(c *SearchConnection) { c.Project = "demo/../other" },
-		"a project in capitals":      func(c *SearchConnection) { c.Project = "Demo-Project" },
-		"a location that is a host":  func(c *SearchConnection) { c.Location = "evil.example" },
-		"a location with a path":     func(c *SearchConnection) { c.Location = "us-central1/x" },
-		"a model that is not Gemini": func(c *SearchConnection) { c.Model = "other-model" },
-		"a model with a path":        func(c *SearchConnection) { c.Model = "gemini-2.5-flash/../x" },
-		"a model with a verb":        func(c *SearchConnection) { c.Model = "gemini-2.5-flash:predict" },
-		"no project":                 func(c *SearchConnection) { c.Project = "" },
-		"no location":                func(c *SearchConnection) { c.Location = "" },
-		"no model":                   func(c *SearchConnection) { c.Model = "" },
-		"a key of 1024 bits":         func(c *SearchConnection) { c.Credential = serviceAccount(t, true, nil) },
-		// A credential of the right form, and too long only by a member
-		// that nothing reads.
-		"a credential over 8192": func(c *SearchConnection) {
-			c.Credential = serviceAccount(t, false, map[string]string{"note": strings.Repeat("a", 8192)})
-		},
-	} {
-		c := grounding
-		change(&c)
-		if searchValid(c) {
-			t.Fatalf("Google, %s: accepted", name)
-		}
-	}
 }
 
 func TestSearchRecordNamesWhatWasAskedAndWhatWasAnswered(t *testing.T) {
@@ -476,9 +277,14 @@ func TestSearchTestSaysOnlyWhetherItWorkedAndIsCounted(t *testing.T) {
 	if said, _ := json.Marshal(out); string(said) != `{"ok":true}` {
 		t.Fatalf("the test said %s", said)
 	}
-	if rows := searchRows(t, b); len(rows) != 1 || rows[0].Requests != 1 {
-		t.Fatalf("the test was not counted: %+v", rows)
-	}
+	// Read from the store: the status counts a request of the day before as
+	// none, and a day may end between the request and the reading.
+	b.store.locked(func(v *state) error {
+		if v.Search.Connections[0].Requests != 1 {
+			t.Errorf("the test was not counted: %+v", v.Search.Connections[0])
+		}
+		return nil
+	})
 }
 
 func TestTavilyIsAskedForResultsAndNothingWritten(t *testing.T) {
@@ -506,5 +312,310 @@ func TestTavilyIsAskedForResultsAndNothingWritten(t *testing.T) {
 		if asked[name] != value {
 			t.Fatalf("asked %s: %v", name, asked[name])
 		}
+	}
+}
+
+// searchThrough is a provider whose every request goes to a function, so
+// that nothing reaches a network whatever the program under test does.
+func searchThrough(answer func(*http.Request) (*http.Response, error)) provider {
+	p := google()
+	p.search = true
+	p.client = &http.Client{Transport: testTransportFunc(answer)}
+	return p
+}
+
+func searchReply(status int, body io.Reader) *http.Response {
+	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(body)}
+}
+
+// groundingFixture is a store holding one Google connection.
+func groundingFixture(t *testing.T, location string) (*Store, SearchConnection) {
+	t.Helper()
+	s, b, _ := searchFixture(t)
+	err := configureSearch(b, map[string]any{"id": "grounded", "name": "Grounded", "provider": "google-grounding", "dailyLimit": 10, "credential": serviceAccount(t, false, nil), "project": "demo-project", "location": location, "model": "gemini-2.5-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c SearchConnection
+	s.locked(func(v *state) error { c = v.Search.Connections[1]; return nil })
+	return s, c
+}
+
+func searchSpent(t *testing.T, s *Store, id string) int {
+	t.Helper()
+	spent := -1
+	s.locked(func(v *state) error {
+		for _, c := range v.Search.Connections {
+			if c.ID == id {
+				spent = c.Requests
+			}
+		}
+		return nil
+	})
+	return spent
+}
+
+type failingAfter struct{ whole io.Reader }
+
+func (f *failingAfter) Read(p []byte) (int, error) {
+	n, err := f.whole.Read(p)
+	if err == io.EOF {
+		return n, errors.New("the connection was cut")
+	}
+	return n, err
+}
+
+func TestSearchStoreNeedsARootItCanHold(t *testing.T) {
+	if s, err := OpenSearchStore("relative", "test"); err != ErrRequest || s != nil {
+		t.Fatal("a store was opened under a path that is not absolute", err)
+	}
+}
+
+func TestSearchStatusTakesNoMember(t *testing.T) {
+	_, b, _ := searchFixture(t)
+	if _, err := b.Handle(context.Background(), "status", []byte(`{"extra":1}`)); err != ErrRequest {
+		t.Fatal("a status request with a member was answered", err)
+	}
+}
+
+func TestSearchCredentialIsReplacedOnlyByAnother(t *testing.T) {
+	s, b, c := searchFixture(t)
+	var sent string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent = r.Header.Get("Authorization")
+		w.Write([]byte(`{"results":[{"url":"https://example.org"}]}`))
+	}))
+	defer server.Close()
+	p := google()
+	p.client = server.Client()
+	p.searchEndpoint = server.URL
+	for _, step := range []struct{ given, want string }{{"", c.Credential}, {"tvly-replacement", "tvly-replacement"}} {
+		if err := configureSearch(b, map[string]any{"id": c.ID, "revision": c.Revision, "name": c.Name, "provider": c.Provider, "dailyLimit": c.DailyLimit, "credential": step.given}); err != nil {
+			t.Fatal(err)
+		}
+		s.locked(func(v *state) error { c = v.Search.Connections[0]; return nil })
+		if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, p); err != nil {
+			t.Fatal(err)
+		}
+		if sent != "Bearer "+step.want {
+			t.Fatalf("given %q, the provider was sent %q", step.given, sent)
+		}
+	}
+}
+
+func TestSearchDisconnectIsHeldToItsForm(t *testing.T) {
+	_, b, c := searchFixture(t)
+	for name, test := range map[string]struct {
+		request string
+		want    error
+	}{
+		"a member too many":           {`{"id":"` + c.ID + `","revision":"` + c.Revision + `","extra":1}`, ErrRequest},
+		"an identifier in capitals":   {`{"id":"Demo","revision":"` + c.Revision + `"}`, ErrRequest},
+		"a revision that is not one":  {`{"id":"` + c.ID + `","revision":"bad"}`, ErrRequest},
+		"another connection's name":   {`{"id":"other","revision":"` + c.Revision + `"}`, ErrChanged},
+		"a revision that is not this": {`{"id":"` + c.ID + `","revision":"` + strings.Repeat("0", 64) + `"}`, ErrChanged},
+	} {
+		if _, err := b.Handle(context.Background(), "disconnect", []byte(test.request)); err != test.want {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if rows := searchRows(t, b); len(rows) != 1 {
+			t.Fatalf("%s: the connection is gone", name)
+		}
+	}
+}
+
+func TestSearchWithNoConnectionSaved(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	s, err := OpenSearchStore(dir, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	b := NewSearch(s, false)
+	defer b.Close()
+	request := `{"id":"demo","revision":"` + strings.Repeat("a", 64) + `"}`
+	if _, err = b.Handle(context.Background(), "disconnect", []byte(request)); err != ErrChanged {
+		t.Fatal("disconnect:", err)
+	}
+	if _, err = searchSnapshot(s, SearchRequest{"demo", strings.Repeat("a", 64), "query", 1}); err != ErrConnect {
+		t.Fatal("request:", err)
+	}
+	if err = searchCurrent(s, SearchConnection{ID: "demo", Revision: strings.Repeat("a", 64)}); err != ErrChanged {
+		t.Fatal("after the answer:", err)
+	}
+}
+
+func TestSearchTestIsHeldToItsForm(t *testing.T) {
+	s, b, c := searchFixture(t)
+	b.provider = searchAnswering(t, 200, []byte(`{"results":[{"url":"https://example.org"}]}`))
+	if _, err := b.Handle(context.Background(), "test", []byte(`{"id":"`+c.ID+`","revision":"`+c.Revision+`","extra":1}`)); err != ErrRequest {
+		t.Fatal("a test with a member too many was run", err)
+	}
+	if spent := searchSpent(t, s, c.ID); spent != 0 {
+		t.Fatalf("a refused test was counted: %d", spent)
+	}
+}
+
+func TestSearchRequestIsHeldToItsForm(t *testing.T) {
+	s, _, c := searchFixture(t)
+	for name, q := range map[string]SearchRequest{
+		"a connection in capitals":   {"Demo", c.Revision, "query", 1},
+		"a revision that is not one": {c.ID, "bad", "query", 1},
+		"no query":                   {c.ID, c.Revision, "", 1},
+		"a query with a line end":    {c.ID, c.Revision, "one\ntwo", 1},
+		"a query over its bound":     {c.ID, c.Revision, strings.Repeat("q", 2001), 1},
+		"no results asked":           {c.ID, c.Revision, "query", 0},
+		"fewer than none":            {c.ID, c.Revision, "query", -1},
+		"more than ten":              {c.ID, c.Revision, "query", 11},
+	} {
+		if _, err := searchSnapshot(s, q); err != ErrRequest {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if _, err := searchSnapshot(s, SearchRequest{"absent", c.Revision, "query", 1}); err != ErrConnect {
+		t.Fatal("a connection that is not saved:", err)
+	}
+	if spent := searchSpent(t, s, c.ID); spent != 0 {
+		t.Fatalf("a refused request was counted: %d", spent)
+	}
+	// As the program reads one: a member too many, naming no saved
+	// connection, so that nothing is asked of a provider however it is read.
+	raw := `{"connection":"absent","revision":"` + c.Revision + `","query":"query","maxResults":1,"extra":1}`
+	if out, err := ReadSearch(context.Background(), s, []byte(raw)); err != ErrRequest || len(out) != 0 {
+		t.Fatal("a request with a member too many was read", err)
+	}
+}
+
+func TestSearchRefusesASavedConnectionThatIsNotInItsForm(t *testing.T) {
+	s, _, c := searchFixture(t)
+	s.locked(func(v *state) error { v.Search.Connections[0].Name = ""; return s.write("state.json", v) })
+	if _, err := searchSnapshot(s, SearchRequest{c.ID, c.Revision, "query", 1}); err != ErrSetup {
+		t.Fatal("a saved connection with no name was used", err)
+	}
+	if spent := searchSpent(t, s, c.ID); spent != 0 {
+		t.Fatalf("a refused request was counted: %d", spent)
+	}
+}
+
+func TestSearchRefusesAnAnswerWhenAnotherConnectionHasItsRevision(t *testing.T) {
+	s, _, c := searchFixture(t)
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.locked(func(v *state) error {
+			v.Search.Connections[0].ID = "other"
+			return s.write("state.json", v)
+		})
+		w.Write([]byte(`{"results":[{"url":"https://example.org"}]}`))
+	}))
+	defer server.Close()
+	p := google()
+	p.client = server.Client()
+	p.searchEndpoint = server.URL
+	if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, p); err != ErrChanged {
+		t.Fatal("an answer was kept for a connection that is gone", err)
+	}
+}
+
+func TestSearchAnswerWithoutResultsIsNoRecord(t *testing.T) {
+	s, _, c := searchFixture(t)
+	raw, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, searchAnswering(t, 200, []byte(`{}`)))
+	if err != ErrProvider || len(raw) != 0 {
+		t.Fatal("an answer that names no results made a record", err)
+	}
+}
+
+func TestSearchFailsAsTheProviderWhenNothingIsAnswered(t *testing.T) {
+	answer := `{"results":[{"url":"https://example.org"}]}`
+	for name, reply := range map[string]func(*http.Request) (*http.Response, error){
+		"no connection": func(*http.Request) (*http.Response, error) { return nil, errors.New("no route") },
+		"an answer cut short": func(*http.Request) (*http.Response, error) {
+			return searchReply(200, &failingAfter{strings.NewReader(answer)}), nil
+		},
+	} {
+		s, _, c := searchFixture(t)
+		raw, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, searchThrough(reply))
+		if err != ErrProvider || len(raw) != 0 {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if spent := searchSpent(t, s, c.ID); spent != 1 {
+			t.Fatalf("%s: a failed request was not counted: %d", name, spent)
+		}
+	}
+}
+
+func TestSearchEndpointThatIsNoAddressAsksNothing(t *testing.T) {
+	s, _, c := searchFixture(t)
+	p := searchThrough(func(r *http.Request) (*http.Response, error) {
+		t.Error("a request was sent")
+		return nil, errors.New("not reached")
+	})
+	p.searchEndpoint = "://nowhere"
+	if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, p); err != ErrRequest {
+		t.Fatal(err)
+	}
+}
+
+func TestSearchRecordsNoPeerWhereNoneWasSeen(t *testing.T) {
+	answer := `{"results":[{"url":"https://example.org"}]}`
+	for name, state := range map[string]*tls.ConnectionState{"no TLS reported": nil, "TLS with no certificate": {}} {
+		s, _, c := searchFixture(t)
+		raw, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, searchThrough(func(*http.Request) (*http.Response, error) {
+			reply := searchReply(200, strings.NewReader(answer))
+			reply.TLS = state
+			return reply, nil
+		}))
+		if err != nil || !bytes.Contains(raw, []byte(`"peerIdentity":null`)) {
+			t.Fatalf("%s: %v, %s", name, err, raw)
+		}
+	}
+}
+
+func TestGoogleIsAskedAtTheRegionOfTheConnection(t *testing.T) {
+	grounded := `{"candidates":[{"content":{"parts":[{"text":"Generated"}]},"groundingMetadata":{"groundingChunks":[{"web":{"uri":"https://example.org","title":"Example"}}],"searchEntryPoint":{"renderedContent":"<div>Google</div>"}}}]}`
+	for location, host := range map[string]string{"global": "aiplatform.googleapis.com", "us-central1": "us-central1-aiplatform.googleapis.com"} {
+		s, c := groundingFixture(t, location)
+		var asked []string
+		var sent map[string]any
+		raw, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "public sources", 5}, searchThrough(func(r *http.Request) (*http.Response, error) {
+			asked = append(asked, r.URL.String())
+			if r.URL.Host == "oauth2.googleapis.com" {
+				return searchReply(200, strings.NewReader(`{"access_token":"isolated-token","token_type":"Bearer","expires_in":3600}`)), nil
+			}
+			body, _ := io.ReadAll(r.Body)
+			json.Unmarshal(body, &sent)
+			return searchReply(200, strings.NewReader(grounded)), nil
+		}))
+		want := "https://" + host + "/v1/projects/demo-project/locations/" + location + "/publishers/google/models/gemini-2.5-flash:generateContent"
+		if err != nil || len(asked) != 2 || asked[0] != "https://oauth2.googleapis.com/token" || asked[1] != want {
+			t.Fatalf("%s: %v, asked %v", location, err, asked)
+		}
+		if !bytes.Contains(raw, []byte(`"endpoint":"`+want+`"`)) {
+			t.Fatalf("%s: the record names another endpoint: %s", location, raw)
+		}
+		// What is sent holds the query, after the instruction that is the
+		// adapter's own, and asks for the search tool and nothing else.
+		text := sent["contents"].([]any)[0].(map[string]any)["parts"].([]any)[0].(map[string]any)["text"].(string)
+		tools, _ := json.Marshal(sent["tools"])
+		if !strings.HasSuffix(text, " Query: public sources") || string(tools) != `[{"googleSearch":{}}]` {
+			t.Fatalf("%s: sent %q with tools %s", location, text, tools)
+		}
+	}
+}
+
+func TestGoogleTokenRefusedIsACredentialToGiveAgain(t *testing.T) {
+	s, c := groundingFixture(t, "global")
+	asked := 0
+	raw, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "public sources", 5}, searchThrough(func(r *http.Request) (*http.Response, error) {
+		asked++
+		if r.URL.Host != "oauth2.googleapis.com" {
+			t.Errorf("asked %s without a token", r.URL)
+		}
+		return searchReply(400, strings.NewReader(`{"error":"invalid_grant"}`)), nil
+	}))
+	if err != Error("credentials-required") || len(raw) != 0 || asked != 1 {
+		t.Fatalf("%v after %d requests", err, asked)
+	}
+	if spent := searchSpent(t, s, c.ID); spent != 1 {
+		t.Fatalf("a failed request was not counted: %d", spent)
 	}
 }

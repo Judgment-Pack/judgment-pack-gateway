@@ -63,10 +63,12 @@ adapter, and the acquisition records the adapter's digest. The acquisition also
 records the endpoint, the digest of the provider's response as received and the
 observed TLS peer. It attests acquisition, not truth.
 
-A hit's `url` is the provider's link as given, held only to being an HTTPS link
-without credentials on the default port. It may name any host, and need not be
-the address of the page it leads to. Whoever reads it applies the reader's own
-admission of public addresses and of each redirect.
+A hit's `url` is the provider's link as given. A link is kept only if it parses
+as an HTTPS URL of at most 4,096 bytes that names a host, carries no user
+information, and names no port or the port written `443`; any other is left
+out. It may name any host, and need not be the address of the page it leads to.
+Whoever reads it applies the reader's own admission of public addresses and of
+each redirect.
 
 Connections are checked before and after the request. Changing or removing a
 connection invalidates an in-flight response. A durable per-connection daily
