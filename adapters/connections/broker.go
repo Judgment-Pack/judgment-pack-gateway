@@ -102,6 +102,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if !ok || !descriptor.supports(method) {
 		return nil, ErrRequest
 	}
+	if b.provider.search {
+		return b.searchOperation(ctx, method, raw)
+	}
 	if b.provider.obsidian {
 		return b.vaultOperation(ctx, method, raw)
 	}

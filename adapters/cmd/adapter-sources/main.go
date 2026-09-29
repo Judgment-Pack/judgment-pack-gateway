@@ -24,6 +24,8 @@ func run() int {
 	open, read := connections.OpenNotionStore, connections.ReadNotion
 	switch *provider {
 	case "notion":
+	case "web-search":
+		open, read = connections.OpenSearchStore, connections.ReadSearch
 	case "obsidian":
 		open, read = connections.OpenObsidianStore, connections.ReadObsidian
 	case "aws-s3":
@@ -38,7 +40,7 @@ func run() int {
 	}
 	defer s.Close()
 	limit := 4096
-	if *provider == "aws-s3" {
+	if *provider == "aws-s3" || *provider == "web-search" {
 		limit = 16 << 10
 	} // a 1024-byte key may be JSON-escaped up to sixfold
 	raw, err := io.ReadAll(io.LimitReader(os.Stdin, int64(limit+1)))

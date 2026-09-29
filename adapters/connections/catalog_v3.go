@@ -70,7 +70,8 @@ func ConnectionCatalogV3() CatalogV3 {
 		}
 		out.Providers = append(out.Providers, d)
 	}
-	out.Providers = append(out.Providers, s3Catalog(presentation))
+	out.Providers = append(out.Providers, s3Catalog(presentation), searchCatalog(presentation))
+	out.Sources = append(out.Sources, SourceDescriptor{"web-search", "query", []string{"application/vnd.jpack.web-search+json"}, 1 << 20})
 	for i := range out.Providers {
 		if storageProvider(out.Providers[i].ID) {
 			out.Providers[i].Operations = append(out.Providers[i].Operations, storageMethods...)
@@ -103,6 +104,7 @@ func ConnectionLocalPlan() LocalPlan {
 		{"obsidian", "adapter-sources", []string{"--provider", "obsidian", "--principal", "desk-local"}, "command", 60, true},
 		{"web", "adapter-web", []string{}, "http", 60, false},
 		{"web-discovery", "adapter-web", []string{"--discover"}, "http", 60, false},
+		{"web-search", "adapter-sources", []string{"--provider", "web-search", "--principal", "desk-local"}, "http", 60, true},
 		{"aws-s3", "adapter-sources", []string{"--provider", "aws-s3", "--principal", "desk-local"}, "command", 60, true},
 	}}
 }

@@ -64,6 +64,14 @@ because both need an anchor *outside* the store. The gateway is that anchor. See
 contrast that per-receipt verification *passes* the same replayed and truncated
 stores the registry-anchored verification rejects.
 
+## Configurable web search
+
+Named Tavily and Google Cloud Search grounding connections are available through
+Gateway's private connection service and the `web-search` acquisition source.
+Desk can switch providers without changing its assistant model. Credentials stay
+in Gateway; search hits remain distinct from fetched page evidence. See
+[configuration, limits and the provider contract](docs/web-search.md).
+
 ## Run it
 
 One Go binary, standard library only, binds localhost. Build it as below, or take it

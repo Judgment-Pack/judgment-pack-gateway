@@ -64,6 +64,9 @@ func run() int {
 	if *provider == "aws-s3" {
 		open = connections.OpenS3Store
 	}
+	if *provider == "web-search" {
+		open = connections.OpenSearchStore
+	}
 	s, err := open(*dir, *principal)
 	if err != nil {
 		return 1
@@ -86,6 +89,9 @@ func run() int {
 	}
 	if *provider == "aws-s3" {
 		b = connections.NewS3(s, *disabled)
+	}
+	if *provider == "web-search" {
+		b = connections.NewSearch(s, *disabled)
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
