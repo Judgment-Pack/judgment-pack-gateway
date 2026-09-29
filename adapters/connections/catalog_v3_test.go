@@ -56,7 +56,7 @@ func TestTheLocalPlanNamesEachSourceOnceAndTheRenderingAdapter(t *testing.T) {
 			t.Errorf("the plan names %q %d times", id, times)
 		}
 	}
-	if plan.Version != 1 || len(plan.Sources) != 9 {
+	if plan.Version != 1 || len(plan.Sources) != 10 {
 		t.Fatalf("version %d, %d sources", plan.Version, len(plan.Sources))
 	}
 	for _, source := range plan.Sources {
