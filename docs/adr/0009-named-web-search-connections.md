@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-09-29
 ---
 
@@ -28,5 +28,6 @@ selection and conversation ownership belong to Desk. The search configuration
 contains no arbitrary HTTP endpoints or user-defined shell commands.
 
 Material-decision categories: public-surface, documented-claim, security,
-dependency. Cross-vendor review is required on the merging PR by the repository's
-review policy; this proposed record does not claim that review has occurred.
+dependency. The cross-vendor review is recorded on the pull request that carries
+this record. No provider was called with an account before the record was
+accepted; [the document](../web-search.md) says what was tested.
