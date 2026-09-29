@@ -97,8 +97,8 @@ ADR-0001 is not edited; its row in the index names this supersession.
   dependency of either module, and the core's rule is untouched.
 - The release toolchain is named exactly in the workflow and is moved by hand.
 - Two of the six archives, `darwin/amd64` and `windows/arm64`, are built and read and never run.
-  The adapters' tests run on Linux only, and six of the nine adapter executables in an archive
-  are never started by the archive smoke tests.
+  The adapters' tests run on Linux only, and of the adapter executables in an archive, three are
+  started by the archive smoke tests and the rest by none.
 - The archives and their attestation exist before the approval: the archives as an artifact of the
   run, the attestation in a public log. The approval gates the release, not their existence.
 - While the project has one maintainer, the person who pushes the tag is the person who approves.

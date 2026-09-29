@@ -6,8 +6,8 @@ project_name: judgment-pack-gateway
 # Both modules are built as the image builds them (Dockerfile): no cgo, no
 # workspace, no recorded paths and no version-control stamp. A release
 # build also drops the symbol table (-s -w), which neither the image nor
-# CI does. The core and the adapters stay two modules and ten executables;
-# an archive puts them side by side and links none of them to another
+# CI does. The core and the adapters stay two modules, and each program its
+# own executable; an archive puts them side by side and links none to another
 # (docs/adr/0001). Each architecture is built at its lowest level, stated
 # and not left to a default: an archive named for an architecture runs on
 # every processor of it.
@@ -90,6 +90,10 @@ builds:
     id: adapter-mcp
     main: ./cmd/adapter-mcp
     binary: adapter-mcp
+  - <<: *adapter
+    id: adapter-render
+    main: ./cmd/adapter-render
+    binary: adapter-render
   - <<: *adapter
     id: adapter-sources
     main: ./cmd/adapter-sources

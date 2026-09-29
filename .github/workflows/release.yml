@@ -229,9 +229,10 @@ jobs:
           name: release-dist
           path: dist
 
-      # The adapters' tests run on Linux (ci.yml). What is held of them on
-      # every platform here is that each is in the archive and that the
-      # ones with a usage line start and print it.
+      # The adapters' tests run on Linux (ci.yml), and the package job has
+      # held every program of the archive to the commit. What is held of
+      # the adapters here, where the archive runs, is that three of them
+      # start and print their usage line.
       - name: Verify and smoke-test native archive
         shell: bash
         run: |
@@ -261,9 +262,6 @@ jobs:
           [ "${reported}" = "gateway ${RELEASE_TAG}" ] || { echo "gateway reports ${reported}" >&2; exit 1; }
           "${destination}/gateway" conform --corpus "${destination}/corpus"
 
-          for program in adapter-airbyte adapter-document adapter-drive adapter-gmail adapter-http adapter-mcp adapter-sources adapter-web gateway-connections; do
-            test -x "${destination}/${program}" || { echo "${program} is not in the archive, or not executable" >&2; exit 1; }
-          done
           for program in adapter-airbyte adapter-http adapter-mcp; do
             # A usage line is an exit of 2, which is the answer wanted.
             output="$("${destination}/${program}" 2>&1 < /dev/null)" && code=0 || code=$?
@@ -317,12 +315,6 @@ jobs:
           & $gateway conform --corpus (Join-Path $destination "corpus")
           if ($LASTEXITCODE -ne 0) {
             throw "The released gateway disagrees with the corpus it carries"
-          }
-
-          foreach ($program in @("adapter-airbyte", "adapter-document", "adapter-drive", "adapter-gmail", "adapter-http", "adapter-mcp", "adapter-sources", "adapter-web", "gateway-connections")) {
-            if (-not (Test-Path (Join-Path $destination "$program.exe"))) {
-              throw "$program is not in the archive"
-            }
           }
 
   attest-and-draft:

@@ -10,8 +10,8 @@ publishes no release until a maintainer approves it.
 A tag names a reviewed state of the repository ([CONTRIBUTING.md](../CONTRIBUTING.md#tags)). A
 release adds the built programs for that state:
 
-- six archives, for Linux, macOS and Windows on `amd64` and `arm64`. Each holds `gateway`, the nine
-  programs under `adapters/cmd`, `SPEC.md`, the corpus, the catalog, `LICENSE`, `README.md`,
+- six archives, for Linux, macOS and Windows on `amd64` and `arm64`. Each holds `gateway`, every
+  program under `adapters/cmd`, `SPEC.md`, the corpus, the catalog, `LICENSE`, `README.md`,
   `SECURITY.md` and `THIRD_PARTY_NOTICES`, and nothing else;
 - `checksums.txt`, the SHA-256 of each archive;
 - a build-provenance attestation for each archive, signed by GitHub for this workflow at the tagged
@@ -40,15 +40,16 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | --- | --- | --- | --- |
 | The gateway's tests and the corpus (CI) | yes | yes | yes |
 | The adapters' tests (CI) | yes | no | vetted, not run |
-| The released archive, run: `gateway version`, `gateway conform` on the corpus it carries, every program present | `amd64` and `arm64` | `arm64` | `amd64` |
+| The released archive, run: `gateway version`, `gateway conform` on the corpus it carries | `amd64` and `arm64` | `arm64` | `amd64` |
 | The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
 | The released archive, read and not run: it holds files and nothing else, each under its plain name and once; its documents, corpus and catalog are the commit's, byte for byte; each program is one program, built from the package of its name, for the archive's platform, at the lowest level of its architecture; no file is there that a release does not hold | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
-by anything. Of the nine adapter executables in an archive, six are never started by the archive
-smoke tests on any platform. (CI, which the release calls, starts a fourth adapter, but in the
-image it builds and not from an archive.) No check here reaches a platform account: an adapter
-that starts has not been shown to connect.
+by anything. Of the adapter executables in an archive, three are started by the archive smoke
+tests (`adapter-airbyte`, `adapter-http`, `adapter-mcp`) and the rest by none, on any platform.
+(CI, which the release calls, starts others, but built from source or in the image it builds, and
+not from an archive.) No check here reaches a platform account: an adapter that starts has not
+been shown to connect.
 
 ## Once, before the first release
 
