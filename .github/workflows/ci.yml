@@ -136,6 +136,15 @@ jobs:
           "$RUNNER_TEMP/adapter-render" < ../testdata/rendering/examples/refund-decision.request.json > "$RUNNER_TEMP/render-record.json"
           "$RUNNER_TEMP/adapter-render" --renderer ../testdata/rendering/standin-renderer < ../testdata/rendering/examples/refund-decision.pdf.request.json > "$RUNNER_TEMP/render-pdf-record.json"
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/rendering/check_schema.py "$RUNNER_TEMP/render-record.json" "$RUNNER_TEMP/render-pdf-record.json"
+      # A result of each kind the search source writes in this run, and the
+      # examples beside the schemas, are what the schemas describe, and the
+      # schemas refuse a list of broken variants of each (docs/web-search.md).
+      # No provider is asked: the answers are the test's own. The validator
+      # is the one installed above.
+      - name: A search result agrees with its published schema
+        run: |
+          JPACK_TEST_SEARCH_RESULT="$RUNNER_TEMP/search-result.json" JPACK_TEST_GROUNDED_RESULT="$RUNNER_TEMP/grounded-result.json" go test ./connections -run '^TestSearchResultsForPublishedSchema$' -count=1
+          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/search/check_schema.py "$RUNNER_TEMP/search-result.json" "$RUNNER_TEMP/grounded-result.json"
       # The shared descriptor vectors are what make_vectors.py writes, and
       # every schema they and the library fixtures say schema grammar 1
       # accepts is a schema under both dialects' meta-schemas

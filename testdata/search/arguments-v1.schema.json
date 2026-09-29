@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Web search arguments, version 1",
+  "description": "The canonical arguments a caller hands /acquire for the source web-search, and adapter-sources --provider web-search reads on stdin (docs/web-search.md). Each value is checked on its own: member sets, types and lexical forms, with patterns written to mean the same under a JavaScript and a Python regular-expression engine. The schema is looser than the adapter in these places, and a value it admits may be one the adapter refuses: the length of a query is counted here in characters and by the adapter in bytes of UTF-8; whether the connection exists, and whether the revision is its present one, is not known here; and the canonical domain of SPEC.md section 1.1 is not known here, since a schema reads JSON that has been parsed, where a member named twice is one member and 5.0 is the integer 5.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "connection",
+    "revision",
+    "query",
+    "maxResults"
+  ],
+  "properties": {
+    "connection": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,47}(?![\\s\\S])",
+      "description": "the name of a saved connection"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}(?![\\s\\S])",
+      "description": "the revision of the connection the caller read from its status; a request that names another than the present one is refused as source-changed"
+    },
+    "query": {
+      "type": "string",
+      "maxLength": 2000,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+(?![\\s\\S])",
+      "description": "what to search for, 1 to 2000 bytes of UTF-8 with no control character"
+    },
+    "maxResults": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10,
+      "description": "the most hits the result may hold"
+    }
+  }
+}

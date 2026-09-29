@@ -79,6 +79,32 @@ billing account's total usage. A Google request may itself perform several
 searches. Every call is capped at 45 seconds, a 2 MiB provider response and ten
 normalized hits. No retry silently spends more requests.
 
+## The published form
+
+The arguments and the result are published as JSON Schemas, with an example of
+each kind of result beside them:
+
+| File | What it describes |
+| --- | --- |
+| [`testdata/search/arguments-v1.schema.json`](../testdata/search/arguments-v1.schema.json) | what `adapter-sources --provider web-search` reads |
+| [`testdata/search/result-v1.schema.json`](../testdata/search/result-v1.schema.json) | the `result` of what it answers |
+| [`testdata/search/examples/`](../testdata/search/examples) | a request, the results of a search engine, a grounded answer |
+
+CI holds a result of each kind, written by the source in the same run, to the
+schema, and holds the schema to refuse a list of broken variants
+(`testdata/search/check_schema.py`). The answers behind those results are the
+test's own; no provider is asked.
+
+A schema checks each value on its own, and says in its description where it is
+looser than the adapter. Three things a consumer should not read into it:
+
+- A title, an excerpt, a generated answer and a query the provider names are the
+  provider's text, cut to length and otherwise as given. They may hold any
+  character, a control character among them.
+- `attributionHtml` is markup the adapter neither wrote nor read.
+- A link that the schema admits is not thereby one that is safe to read. The
+  reader's admission of public addresses is what decides that.
+
 ## What was tested
 
 The tests answer from local TLS servers and a stand-in transport. No provider
