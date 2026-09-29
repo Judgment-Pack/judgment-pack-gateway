@@ -1011,8 +1011,8 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   passed when its outcome was taken. The program is one written for this: a converter named
   by itself is handed `docx` and `pdf` as arguments.
 - **A link** is a text and a target of scheme `https`, `http` or `mailto` that names a host
-  or one address in its plainest form. The adapter writes the target into the file as given
-  and never follows it.
+  or one address in its plainest form. The adapter writes the target into the Word file as
+  given and never follows it.
 - **The record** is held to `render.Check`, the contract's reference check, before the
   adapter writes it: the members closed, and the size and the digest those of the file the
   base64 holds. For a Word file the check also holds the file to be the seven parts laid out

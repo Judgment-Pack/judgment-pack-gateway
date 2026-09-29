@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash/crc32"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -493,12 +494,16 @@ func TestAProgramsAnswerIsHeldToTheRecordsBoundBeforeItIsEncoded(t *testing.T) {
 	}
 }
 
-// The record around a file is under three kibibytes, which is what the
-// contract says of it and what the room for a file is reckoned with. The
-// record here has every value at its longest: a title and a program's name of
-// 255 bytes that are each written as two, the longest language, a citation,
-// every bound at its ceiling, and every count at the most its bound admits.
-func TestTheRecordAroundAFileIsUnderThreeKibibytes(t *testing.T) {
+// The record around a file is under three kibibytes where the adapter's
+// version is 32 bytes or fewer, which is what the contract says of it and what
+// the room for a file is reckoned with. A version has no bound of its own, so
+// the record has none either. Every other value of the record here is at its
+// longest: a title and a program's name of 255 bytes that are each written as
+// two, a version of 32 bytes that are each written as six, the longest
+// language, a citation, every bound at its ceiling, every count at the most
+// its bound admits, and the longest time a duration can state.
+func TestTheRecordAroundAFileIsUnderThreeKibibytesForAVersionOf32Bytes(t *testing.T) {
+	version := strings.Repeat("\x01", 32)
 	language := "zh-" + strings.Repeat("abcdefgh-", 3) + "abcde"
 	digest := "sha256:" + strings.Repeat("f", 64)
 	programDigest := digest
@@ -518,10 +523,10 @@ func TestTheRecordAroundAFileIsUnderThreeKibibytes(t *testing.T) {
 				MaxRequestBytes: maxRequestCeiling, MaxBlocks: maxBlocksCeiling, MaxFileBytes: maxFileCeiling,
 				MaxOutputBytes: maxOutputCeiling, TimeoutMs: timeoutCeiling.Milliseconds(),
 			},
-			DurationMs: 2 * timeoutCeiling.Milliseconds(),
+			DurationMs: time.Duration(math.MaxInt64).Milliseconds(),
 		},
 		Provenance: Provenance{
-			Adapter:    attachment.Identity{Name: adapterName, Version: "0.00.000-rc.0+0123456789abcdef", Digest: digest},
+			Adapter:    attachment.Identity{Name: adapterName, Version: version, Digest: digest},
 			ObservedAt: "2026-09-28T22:09:02Z",
 		},
 	}
@@ -545,6 +550,16 @@ func TestTheRecordAroundAFileIsUnderThreeKibibytes(t *testing.T) {
 	around += len("67108864") - len(fmt.Sprint(len(file)))
 	if around >= 3<<10 || around < 2<<10 {
 		t.Fatalf("the record around a file is %d bytes at its longest", around)
+	}
+	// A longer version makes a longer record, by what the version is
+	// written in, and the check admits it.
+	rec.Provenance.Adapter.Version = strings.Repeat("\x01", 255)
+	longer, err := canon.EncodeJSON(rec)
+	if err == nil {
+		longer, err = canon.Canonicalize(longer, canon.RefuseNumbers)
+	}
+	if err != nil || Check(longer) != nil || len(longer)-len(out) != 6*(255-32) {
+		t.Fatalf("a version of 255 bytes makes a record %d bytes longer: %v", len(longer)-len(out), err)
 	}
 }
 
@@ -853,44 +868,52 @@ func TestTheCheckHoldsARecordOfAPDF(t *testing.T) {
 		says string
 	}
 	for name, c := range map[string]change{
-		"a format that is a Word file's":       {func() { member("request")["format"] = "docx" }, "file.mediaType is not the media type of the format"},
-		"a media type that is a Word file's":   {func() { member("file")["mediaType"] = MediaTypeDocx }, "file.mediaType is not the media type of the format"},
-		"a file that is no PDF":                {func() { file("not a PDF") }, "file.bytes does not begin and end as a PDF does"},
-		"a file that does not end as one":      {func() { file("%PDF-1.7\n") }, "file.bytes does not begin and end as a PDF does"},
-		"a file whose end is far from its end": {func() { file("%PDF-1.7\n%%EOF\n" + strings.Repeat(" ", 1024)) }, "file.bytes does not begin and end as a PDF does"},
-		"no source":                            {func() { delete(member("rendering"), "source") }, "rendering: member source is missing"},
-		"a source that is null":                {func() { member("rendering")["source"] = nil }, "rendering.source: not a JSON object"},
-		"a source with the file's bytes":       {func() { member("rendering", "source")["bytes"] = "AAAA" }, "rendering.source: a member the contract does not define"},
-		"a source that is a PDF":               {func() { member("rendering", "source")["mediaType"] = "application/pdf" }, "rendering.source.mediaType is not the media type of a Word file"},
-		"a source of no size":                  {func() { member("rendering", "source")["size"] = json.Number("0") }, "rendering.source.size is not a positive integer"},
-		"a source past the bound on the file":  {func() { member("rendering", "source")["size"] = json.Number(fmt.Sprint(cfg.MaxFile + 1)) }, "rendering.source.size is past rendering.bounds.maxFileBytes"},
-		"a source whose digest is not one":     {func() { member("rendering", "source")["sha256"] = "abc" }, "rendering.source.sha256 is not a digest"},
-		"a source by a program":                {func() { member("rendering", "source", "renderer")["kind"] = "program" }, `rendering.source.renderer.kind is not "module"`},
-		"a source by another writer":           {func() { member("rendering", "source", "renderer")["name"] = "adapter-render/docx/2" }, "rendering.source.renderer.name is not the module's Word writer"},
-		"a source by a writer with a digest":   {func() { member("rendering", "source", "renderer")["digest"] = "sha256:" + strings.Repeat("0", 64) }, "rendering.source.renderer: a member the contract does not define"},
-		"a renderer that is the module":        {func() { member("rendering", "renderer")["kind"] = "module" }, `rendering.renderer.kind is not "program"`},
-		"a renderer with no digest":            {func() { delete(member("rendering", "renderer"), "digest") }, "rendering.renderer: member digest is missing"},
-		"a renderer whose digest is not one":   {func() { member("rendering", "renderer")["digest"] = "sha256:0" }, "rendering.renderer.digest is not a digest"},
-		"a renderer with no name":              {func() { member("rendering", "renderer")["name"] = "" }, "rendering.renderer.name is not a program's name, one word"},
-		"a renderer of two words":              {func() { member("rendering", "renderer")["name"] = "word-to-pdf --headless" }, "rendering.renderer.name is not a program's name, one word"},
-		"a renderer with a line feed":          {func() { member("rendering", "renderer")["name"] = "word-to-pdf\n" }, "rendering.renderer.name is not a program's name, one word"},
-		"a renderer with arguments":            {func() { member("rendering", "renderer")["args"] = []any{"docx", "pdf"} }, "rendering.renderer: a member the contract does not define"},
-		"a renderer of 256 bytes":              {func() { member("rendering", "renderer")["name"] = strings.Repeat("é", 128) }, "rendering.renderer.name is not a program's name, one word"},
-		"a renderer with a tab":                {func() { member("rendering", "renderer")["name"] = "a-rendering\tprogram" }, "rendering.renderer.name is not a program's name, one word"},
-		"a renderer that is a string":          {func() { member("rendering")["renderer"] = "a-rendering-program" }, "rendering.renderer: not a JSON object"},
-		"a renderer with no kind":              {func() { delete(member("rendering", "renderer"), "kind") }, "rendering.renderer: member kind is missing"},
-		"a renderer with no member name":       {func() { delete(member("rendering", "renderer"), "name") }, "rendering.renderer: member name is missing"},
-		"a renderer whose name is a number":    {func() { member("rendering", "renderer")["name"] = json.Number("7") }, "rendering.renderer.name is not a program's name, one word"},
-		"a source with no media type":          {func() { delete(member("rendering", "source"), "mediaType") }, "rendering.source: member mediaType is missing"},
-		"a source with no member size":         {func() { delete(member("rendering", "source"), "size") }, "rendering.source: member size is missing"},
-		"a source with no digest":              {func() { delete(member("rendering", "source"), "sha256") }, "rendering.source: member sha256 is missing"},
-		"a source with no renderer":            {func() { delete(member("rendering", "source"), "renderer") }, "rendering.source: member renderer is missing"},
-		"a source whose size is a string":      {func() { member("rendering", "source")["size"] = "2895" }, "rendering.source.size is not a positive integer"},
-		"a source whose size is negative":      {func() { member("rendering", "source")["size"] = json.Number("-1") }, "rendering.source.size is not a positive integer"},
-		"a source by a writer of no kind":      {func() { delete(member("rendering", "source", "renderer"), "kind") }, "rendering.source.renderer: member kind is missing"},
-		"a source by a writer of no name":      {func() { delete(member("rendering", "source", "renderer"), "name") }, "rendering.source.renderer: member name is missing"},
-		"a source at the bound on the file":    {func() { member("rendering", "source")["size"] = json.Number(fmt.Sprint(cfg.MaxFile)) }, ""},
-		"a renderer of 255 bytes":              {func() { member("rendering", "renderer")["name"] = strings.Repeat("é", 127) + "e" }, ""},
+		"a format that is a Word file's":              {func() { member("request")["format"] = "docx" }, "file.mediaType is not the media type of the format"},
+		"a media type that is a Word file's":          {func() { member("file")["mediaType"] = MediaTypeDocx }, "file.mediaType is not the media type of the format"},
+		"a file that is no PDF":                       {func() { file("not a PDF") }, "file.bytes does not begin and end as a PDF does"},
+		"a file that does not end as one":             {func() { file("%PDF-1.7\n") }, "file.bytes does not begin and end as a PDF does"},
+		"a file whose end is far from its end":        {func() { file("%PDF-1.7\n%%EOF\n" + strings.Repeat(" ", 1024)) }, "file.bytes does not begin and end as a PDF does"},
+		"no source":                                   {func() { delete(member("rendering"), "source") }, "rendering: member source is missing"},
+		"a source that is null":                       {func() { member("rendering")["source"] = nil }, "rendering.source: not a JSON object"},
+		"a source with the file's bytes":              {func() { member("rendering", "source")["bytes"] = "AAAA" }, "rendering.source: a member the contract does not define"},
+		"a source that is a PDF":                      {func() { member("rendering", "source")["mediaType"] = "application/pdf" }, "rendering.source.mediaType is not the media type of a Word file"},
+		"a source of no size":                         {func() { member("rendering", "source")["size"] = json.Number("0") }, "rendering.source.size is not a positive integer"},
+		"a source past the bound on the file":         {func() { member("rendering", "source")["size"] = json.Number(fmt.Sprint(cfg.MaxFile + 1)) }, "rendering.source.size is past rendering.bounds.maxFileBytes"},
+		"a source whose digest is not one":            {func() { member("rendering", "source")["sha256"] = "abc" }, "rendering.source.sha256 is not a digest"},
+		"a source by a program":                       {func() { member("rendering", "source", "renderer")["kind"] = "program" }, `rendering.source.renderer.kind is not "module"`},
+		"a source by another writer":                  {func() { member("rendering", "source", "renderer")["name"] = "adapter-render/docx/2" }, "rendering.source.renderer.name is not the module's Word writer"},
+		"a source by a writer with a digest":          {func() { member("rendering", "source", "renderer")["digest"] = "sha256:" + strings.Repeat("0", 64) }, "rendering.source.renderer: a member the contract does not define"},
+		"a renderer that is the module":               {func() { member("rendering", "renderer")["kind"] = "module" }, `rendering.renderer.kind is not "program"`},
+		"a renderer with no digest":                   {func() { delete(member("rendering", "renderer"), "digest") }, "rendering.renderer: member digest is missing"},
+		"a renderer whose digest is not one":          {func() { member("rendering", "renderer")["digest"] = "sha256:0" }, "rendering.renderer.digest is not a digest"},
+		"a renderer with no name":                     {func() { member("rendering", "renderer")["name"] = "" }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer of two words":                     {func() { member("rendering", "renderer")["name"] = "word-to-pdf --headless" }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer with a line feed":                 {func() { member("rendering", "renderer")["name"] = "word-to-pdf\n" }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer with arguments":                   {func() { member("rendering", "renderer")["args"] = []any{"docx", "pdf"} }, "rendering.renderer: a member the contract does not define"},
+		"a renderer of 256 bytes":                     {func() { member("rendering", "renderer")["name"] = strings.Repeat("é", 128) }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer with a tab":                       {func() { member("rendering", "renderer")["name"] = "a-rendering\tprogram" }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer that is a string":                 {func() { member("rendering")["renderer"] = "a-rendering-program" }, "rendering.renderer: not a JSON object"},
+		"a renderer with no kind":                     {func() { delete(member("rendering", "renderer"), "kind") }, "rendering.renderer: member kind is missing"},
+		"a renderer with no member name":              {func() { delete(member("rendering", "renderer"), "name") }, "rendering.renderer: member name is missing"},
+		"a renderer whose name is a number":           {func() { member("rendering", "renderer")["name"] = json.Number("7") }, "rendering.renderer.name is not a program's name, one word"},
+		"a source with no media type":                 {func() { delete(member("rendering", "source"), "mediaType") }, "rendering.source: member mediaType is missing"},
+		"a source with no member size":                {func() { delete(member("rendering", "source"), "size") }, "rendering.source: member size is missing"},
+		"a source with no digest":                     {func() { delete(member("rendering", "source"), "sha256") }, "rendering.source: member sha256 is missing"},
+		"a source with no renderer":                   {func() { delete(member("rendering", "source"), "renderer") }, "rendering.source: member renderer is missing"},
+		"a source whose size is a string":             {func() { member("rendering", "source")["size"] = "2895" }, "rendering.source.size is not a positive integer"},
+		"a source whose size is negative":             {func() { member("rendering", "source")["size"] = json.Number("-1") }, "rendering.source.size is not a positive integer"},
+		"a source by a writer of no kind":             {func() { delete(member("rendering", "source", "renderer"), "kind") }, "rendering.source.renderer: member kind is missing"},
+		"a source by a writer of no name":             {func() { delete(member("rendering", "source", "renderer"), "name") }, "rendering.source.renderer: member name is missing"},
+		"a source at the bound on the file":           {func() { member("rendering", "source")["size"] = json.Number(fmt.Sprint(cfg.MaxFile)) }, ""},
+		"a renderer of 255 bytes":                     {func() { member("rendering", "renderer")["name"] = strings.Repeat("é", 127) + "e" }, ""},
+		"a renderer whose kind is a number":           {func() { member("rendering", "renderer")["kind"] = json.Number("7") }, "rendering.renderer.kind"},
+		"a renderer whose digest is a number":         {func() { member("rendering", "renderer")["digest"] = json.Number("7") }, "rendering.renderer.digest is not a digest"},
+		"a renderer with a delete":                    {func() { member("rendering", "renderer")["name"] = "a-rendering-program\x7f" }, "rendering.renderer.name is not a program's name, one word"},
+		"a source whose media type is a number":       {func() { member("rendering", "source")["mediaType"] = json.Number("7") }, "rendering.source.mediaType is not the media type of a Word file"},
+		"a source whose digest is a number":           {func() { member("rendering", "source")["sha256"] = json.Number("7") }, "rendering.source.sha256 is not a digest"},
+		"a source by a string":                        {func() { member("rendering", "source")["renderer"] = RendererDocx }, "rendering.source.renderer: not a JSON object"},
+		"a source by a writer whose kind is a number": {func() { member("rendering", "source", "renderer")["kind"] = json.Number("7") }, "rendering.source.renderer.kind"},
+		"a source by a writer whose name is a number": {func() { member("rendering", "source", "renderer")["name"] = json.Number("7") }, "rendering.source.renderer.name is not the module's Word writer"},
 	} {
 		decode()
 		c.make()

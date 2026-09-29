@@ -65,9 +65,11 @@ The answer is `{result, receipt, salts}` as for any acquisition; `result` is the
 travels in the result. `/acquire` reads at most 1 MiB of body by default, and counts the JSON
 values of the arguments, refusing past 524,288 of them whatever the body bound
 (`maxArgumentValues`, `go/serve.go`). The gateway reads at most 1 MiB of a source's output by
-default. A file of *n* bytes is 4 × ⌈*n* / 3⌉ bytes of base64, and the record around it is
-under three kibibytes at its longest and nearer one for a short title, so at the defaults the
-largest file that fits is about 766 KiB. An
+default. A file of *n* bytes is 4 × ⌈*n* / 3⌉ bytes of base64. The record around it is about
+one kibibyte for a short title, and grows with the title, with the name of a rendering
+program, and with the version the adapter was built with, which has no bound. For an adapter
+whose version is 32 bytes or fewer it is under three kibibytes, so at the defaults the largest
+file that fits is about 766 KiB. An
 operator raises the two byte bounds with `--max-request` and `--source-max-output`, each up
 to 64 MiB, on the command line only: under an engine configuration both keep their defaults.
 The example above carries a file of 4 MiB, the adapter's default bound on the file.
@@ -391,8 +393,10 @@ states for the OCR program, from the same code, `adapters/internal/program`:
 
 - The program's name is resolved and its file is read for its digest. A name with no path
   separator is looked for on the adapter's `PATH`, and one found through an entry of `PATH`
-  that is not an absolute path is not used. A name with a path separator is a path, from the
-  adapter's working directory where it is a relative one. The deadline is then checked, and
+  that is not an absolute path is not used. That last is the Go library's rule and not the
+  adapter's own: an adapter started with `GODEBUG=execerrdot=0` in its environment uses such
+  a program. A name with a path separator is a path, from the adapter's working directory
+  where it is a relative one. The deadline is then checked, and
   a program whose deadline has passed is not started: `timeout`.
 - Resolving the name, reading the file and starting the program are not interrupted by the
   deadline. A name that resolves to something that does not end when it is read, a pipe for
@@ -529,8 +533,9 @@ A consumer that runs the check on a record of a Word file can take
 `rendering.bounds.maxFileBytes` as a bound on what opening that file unpacks. One that does
 not enforces a limit of its own as it extracts, as it would for any archive.
 
-**None of this is so of a PDF.** The check reads the first bytes of a PDF and its last 1,024,
-and nothing between. A PDF holds compressed streams of its own, and the bound on the file
+**None of this is so of a PDF.** The check reads every byte of a PDF for its digest and
+parses none. Of what makes a file a PDF it holds the file to its first bytes and its last
+1,024, and to nothing between. A PDF holds compressed streams of its own, and the bound on the file
 says nothing of what they hold once they are read: a PDF of 8,603 bytes has been made that
 passes the check under a bound of 4 MiB and holds a stream of 8 MiB. A consumer that opens a
 PDF limits what its reader may use, whatever the check said.
@@ -550,8 +555,9 @@ its base64, then the record, and the record again while it checks it. On one mac
 request of under a hundred bytes whose program answered 4 MiB took the adapter to 66 MiB of
 memory, and one whose program answered 64 MiB to 990 MiB. A file whose base64 alone is past
 `--max-output` is refused before any of that is made of it: the same 64 MiB under a bound on
-the record of 6 MiB was refused at 134 MiB. An operator who raises `--max-file` for PDFs
-raises what the adapter may hold with it.
+the record of 6 MiB was refused at 134 MiB when the maintainer measured it and at 263 MiB
+when the reviewer did. These are measurements and not bounds. An operator who raises
+`--max-file` for PDFs raises what the adapter may hold with it.
 
 A record past `--max-output` is not cut, and a file past `--max-file` is not cut: the adapter
 refuses. With the defaults as they stand, a file of more than about 766 KiB is refused with
@@ -632,7 +638,8 @@ writes to the check before it writes it.
 
 The check is of a record's form. It does not show that an adapter could have written the
 record. It does not relate the counts of the request to the bounds the record states, so it
-admits a record of seven blocks under a bound of one. And it cannot know what a program was
+admits a record of seven blocks under a bound of one. It does not hold the record's own
+length to `maxOutputBytes` either: a consumer bounds what it reads by a limit of its own. And it cannot know what a program was
 handed: of `rendering.source` it holds the form, and that the size is within the bound on
 the file. What makes a record an adapter's is the receipt over it.
 

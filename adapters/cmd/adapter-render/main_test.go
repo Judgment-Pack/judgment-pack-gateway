@@ -128,6 +128,57 @@ func TestRunRefusesWithOneLine(t *testing.T) {
 	}
 }
 
+// Help that is asked for is written whole: it names every flag and says of
+// each what the contract says. It is a usage
+// error like any other: exit 2, nothing read and nothing on stdout.
+func TestRunWritesItsHelpWhole(t *testing.T) {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"--renderer", "a-rendering-program", "--help"}} {
+		var stdout, stderr bytes.Buffer
+		stdin := &readCounter{}
+		if code := run(args, stdin, &stdout, &stderr); code != 2 || stdout.Len() != 0 || stdin.reads != 0 {
+			t.Fatalf("%v: exit %d with %d reads and %d bytes on stdout", args, code, stdin.reads, stdout.Len())
+		}
+		help := stderr.String()
+		if !strings.HasPrefix(help, usage+"\n") || strings.Count(help, usage) != 1 {
+			t.Errorf("%v: the help does not begin with the usage, once:\n%s", args, help)
+		}
+		for _, says := range []string{
+			"-max-request", "-max-blocks", "-max-file", "-max-output", "-timeout", "-renderer",
+			"keep it under the gateway's timeout for the source, thirty seconds by default",
+			"the rendering program for a PDF",
+			"none by default, and a PDF is then refused\n",
+		} {
+			if !strings.Contains(help, says) {
+				t.Errorf("%v: the help does not say %q:\n%s", args, says, help)
+			}
+		}
+		if strings.Contains(help, "a-rendering-program") {
+			t.Errorf("%v: the help quotes the command line:\n%s", args, help)
+		}
+		// It is written once, and not again in part. The flags are in the
+		// order of their names, so the deadline's is the last.
+		if strings.Count(help, "  -max-blocks int") != 1 || !strings.HasSuffix(help, "with room to spare (default 25s)\n") {
+			t.Errorf("%v: the help is not written once and whole:\n%s", args, help)
+		}
+	}
+}
+
+// A diagnostic names the fault, and is not the help in its place.
+func TestRunNamesTheFaultOfACommandLine(t *testing.T) {
+	for says, args := range map[string][]string{
+		"flag provided but not defined: -unknown":  {"--unknown"},
+		"flag needs an argument: -renderer":        {"--renderer"},
+		"invalid value \"soon\" for flag -timeout": {"--timeout", "soon"},
+		usage + "\n": {"positional"},
+		"adapter-render: max-blocks must be positive and at most 100000\n": {"--max-blocks", "0"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, strings.NewReader(""), &stdout, &stderr); code != 2 || !strings.HasPrefix(stderr.String(), says) {
+			t.Errorf("%v: exit %d: %s", args, code, stderr.String())
+		}
+	}
+}
+
 func TestRunBoundsTheUsageDiagnostic(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"--" + strings.Repeat("z", 5000)}, strings.NewReader(""), &stdout, &stderr); code != 2 || stderr.Len() > 1100 {

@@ -59,6 +59,15 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	timeout := fs.Duration("timeout", def.Timeout, "the deadline, from the adapter's start; keep it under the gateway's timeout for the source, thirty seconds by default, with room to spare")
 	renderer := fs.String("renderer", "", "the rendering program for a PDF, one word, resolved on the adapter's PATH; none by default, and a PDF is then refused")
 	if err := fs.Parse(args); err != nil {
+		// Help that was asked for is the adapter's own words and quotes
+		// nothing of the command line, so it is written whole. Every other
+		// diagnostic keeps its bound.
+		if errors.Is(err, flag.ErrHelp) {
+			flagOut = boundedWriter{}
+			fmt.Fprintln(stderr, usage)
+			fs.SetOutput(stderr)
+			fs.PrintDefaults()
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
