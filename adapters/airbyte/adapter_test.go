@@ -548,6 +548,14 @@ func TestParseRequest(t *testing.T) {
 		`{"stream":"decisions","state":""}`:    `"state" is the previous snapshot text`,
 		`{"stream":"decisions"} {}`:            "trailing content",
 		`[]`:                                   "cannot unmarshal",
+		// The decoder alone takes each of these, and reads the last member.
+		`{"STREAM":"decisions"}`:                      "not named as the contract names it",
+		`{"stream":"decisions","Stream":"others"}`:    "not named as the contract names it",
+		`{"stream":"decisions","LIMIT":3}`:            "not named as the contract names it",
+		`{"stream":"decisions","State":"{}"}`:         "not named as the contract names it",
+		`{"stream":"decisions","NAMESPACE":"public"}`: "not named as the contract names it",
+		`{"stream":"decisions","stream":"others"}`:    "named twice",
+		`{"stream":"decisions","limit":1,"limit":2}`:  "named twice",
 	} {
 		_, err := ParseRequest(strings.NewReader(in), 10000)
 		if want == "" {
@@ -559,6 +567,14 @@ func TestParseRequest(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: got %v, want %q", in, err, want)
 		}
+	}
+}
+
+// What was read of a request refused for a name is not given back.
+func TestParseRequestKeepsNothingOfARequestRefusedForAName(t *testing.T) {
+	r, err := ParseRequest(strings.NewReader(`{"stream":"decisions","STREAM":"others","limit":7}`), 10000)
+	if err == nil || r.Stream != "" || r.Limit != 0 || strings.Contains(err.Error(), "others") {
+		t.Fatalf("%+v, %v", r, err)
 	}
 }
 

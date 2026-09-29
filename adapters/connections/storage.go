@@ -48,6 +48,10 @@ func decodeStorage(raw []byte, out any) error {
 	if d.Decode(out) != nil {
 		return ErrRequest
 	}
+	if canon.ExactNames(raw, out) != nil {
+		forget(out)
+		return ErrRequest
+	}
 	return nil
 }
 

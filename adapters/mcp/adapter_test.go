@@ -578,6 +578,14 @@ func TestParseRequest(t *testing.T) {
 		`{"tool":"query","arguments":null}`: "",
 		`{"tool":"query"} {}`:               "trailing content",
 		`[]`:                                "cannot unmarshal",
+		// The decoder alone takes each of these, and reads the last member.
+		`{"TOOL":"query"}`:                                    "not named as the contract names it",
+		`{"tool":"query","Tool":"other"}`:                     "not named as the contract names it",
+		`{"tool":"query","ARGUMENTS":{"sql":"x"}}`:            "not named as the contract names it",
+		`{"tool":"query","tool":"other"}`:                     "named twice",
+		`{"tool":"query","arguments":{},"arguments":{"a":1}}`: "named twice",
+		// The arguments are the tool's: their names are held to nothing.
+		`{"tool":"query","arguments":{"TOOL":"x","Tool":"y"}}`: "",
 	} {
 		_, err := ParseRequest(strings.NewReader(in))
 		if want == "" {
@@ -589,6 +597,16 @@ func TestParseRequest(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: got %v, want %q", in, err, want)
 		}
+	}
+}
+
+// What was read of a request refused for a name is not given back, and the
+// refusal repeats no value of it. (A member the contract does not know is
+// refused by the decoder, whose own words name the member.)
+func TestParseRequestKeepsNothingOfARequestRefusedForAName(t *testing.T) {
+	r, err := ParseRequest(strings.NewReader(`{"tool":"query","TOOL":"other","arguments":{"sql":"x"}}`))
+	if err == nil || r.Tool != "" || len(r.Arguments) != 0 || strings.Contains(err.Error(), "other") || strings.Contains(err.Error(), "TOOL") {
+		t.Fatalf("%+v, %v", r, err)
 	}
 }
 
