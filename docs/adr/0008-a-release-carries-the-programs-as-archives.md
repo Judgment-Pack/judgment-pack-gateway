@@ -106,9 +106,12 @@ ADR-0001 is not edited; its row in the index names this supersession.
   immutability is turned on. The workflow's three checks of the tag stand in for that before
   publication, and an administrator can still change the environment's rule between them.
 - The checks lock nothing. A draft can be changed while it waits, by whoever may write to the
-  repository, so the workflow holds the draft's files to the ones the run packaged after the
-  approval and before it publishes. A moment remains between the two. What a consumer verifies
-  does not depend on it: an archive the workflow did not build has no attestation.
+  repository, so the workflow holds the draft's title, notes and files to the ones the run
+  packaged after the approval and before it publishes. A moment remains between the two. What a
+  consumer verifies does not depend on it: an archive the workflow did not build has no
+  attestation.
+- The reading of the archives is a check of the workflow's own packaging. It is not a defence
+  against an archive made to be read differently by different programs.
 - No claim is made that a build can be reproduced bit for bit by someone else.
 - A release made before this record, `v0.1.0` to `v0.4.0`, stays as it is: notes only.
 

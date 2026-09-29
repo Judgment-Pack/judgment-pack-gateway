@@ -10,21 +10,21 @@ are real ones, built by the toolchain, since what the check reads is the
 record the toolchain writes. Archives of that commit pass; then each is
 spoiled in one way, and the check must refuse it and say why.
 
-The cases are not a proof that nothing else gets through. When they were
-written, each condition of the script was removed in turn, and at least
-one case failed for each.
+The cases are not a proof that nothing else gets through.
 """
 import io
 import os
 from pathlib import Path
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
 import tempfile
 import unittest
 import zipfile
+import zlib
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -51,7 +51,7 @@ class ArchiveChecks(unittest.TestCase):
         tree = cls.tree = cls.scratch / 'tree'
         tree.mkdir()
         for name in checked.DOCUMENTS:
-            (tree / name).write_text(f'{name}\n')
+            (tree / name).write_bytes(f'{name}\n'.encode())
         (tree / 'corpus' / 'stores').mkdir(parents=True)
         (tree / 'corpus' / 'canon.json').write_bytes(b'{"a":1}\r\n')
         (tree / 'corpus' / 'stores' / 'one.json').write_bytes(b'{}\n')
@@ -83,6 +83,7 @@ class ArchiveChecks(unittest.TestCase):
             cls.built[target] = where
         go_build(tree / 'go', '.', cls.scratch / 'built' / 'gateway-amd64-v3', 'linux', 'amd64', GOAMD64='v3')
         go_build(tree / 'go', '.', cls.scratch / 'built' / 'gateway-arm64-v8.1', 'windows', 'arm64', GOARM64='v8.1')
+        go_build(tree / 'go', '.', cls.scratch / 'built' / 'gateway-darwin-arm64', 'darwin', 'arm64')
 
     def contents(self, target):
         """What a sound archive of the target holds: name -> (mode, bytes)."""
@@ -99,9 +100,7 @@ class ArchiveChecks(unittest.TestCase):
             path = dist / f'{checked.PROJECT}_1.0.0_{target}.zip'
             with zipfile.ZipFile(path, 'w') as opened:
                 for name, (mode, data) in held.items():
-                    info = zipfile.ZipInfo(name)
-                    info.external_attr = (stat.S_IFREG | mode) << 16
-                    opened.writestr(info, data)
+                    opened.writestr(self.zip_entry(name, stat.S_IFREG, mode), data)
                 for info, data in extra:
                     opened.writestr(info, data)
             return dist
@@ -128,9 +127,12 @@ class ArchiveChecks(unittest.TestCase):
         info.type, info.mode, info.linkname = kind, mode, link
         return info
 
-    def zip_entry(self, name, form, mode=0o644):
+    def zip_entry(self, name, form, mode=0o644, system=3, low=0, extra=b'', written=None):
+        """A zip entry as a Unix system records a member, unless told otherwise; written is the name as the header has it."""
         info = zipfile.ZipInfo(name)
-        info.external_attr = (form | mode) << 16
+        info.create_system, info.external_attr, info.extra = system, ((form | mode) << 16) | low, extra
+        if written is not None:
+            info.filename = written
         return info
 
     # Sound archives.
@@ -139,11 +141,11 @@ class ArchiveChecks(unittest.TestCase):
         for target in TARGETS:
             self.assertEqual(self.faults(target, self.contents(target)), [], target)
 
-    def test_a_zip_written_by_a_system_without_modes_passes(self):
+    def test_a_zip_entry_with_a_time_beside_its_name_passes(self):
+        # As the packer writes every entry: one field, a time.
+        time = struct.pack('<HHBI', 0x5455, 5, 1, 1790000000)
         held = self.contents('windows_arm64')
-        entries = []
-        for name, (_, data) in held.items():
-            entries.append((zipfile.ZipInfo(name), data))
+        entries = [(self.zip_entry(name, stat.S_IFREG, mode, extra=time), data) for name, (mode, data) in held.items()]
         self.assertEqual(self.faults('windows_arm64', {}, extra=entries), [])
 
     def test_the_commit_is_what_is_compared_and_not_the_tree(self):
@@ -191,21 +193,38 @@ class ArchiveChecks(unittest.TestCase):
         self.refused('linux_amd64', held, 'license: a file a release does not hold')
 
     def test_a_member_twice(self):
+        # With other bytes the second time: neither is read, so nothing is said of bytes.
         held = self.contents('linux_amd64')
         again = tarfile.TarInfo('LICENSE')
-        again.size = len(held['LICENSE'][1])
-        faults = self.faults('linux_amd64', held, extra=[(again, held['LICENSE'][1])])
+        again.size = 5
+        faults = self.faults('linux_amd64', held, extra=[(again, b'other')])
         self.assertEqual(faults, ['LICENSE: in the archive twice'])
 
     def test_a_member_larger_than_any_of_a_release(self):
         kept = checked.LIMIT
+        size = len(self.files['LICENSE'])
         try:
-            checked.LIMIT = 4
+            checked.LIMIT = size - 1
             faults = self.faults('linux_amd64', self.contents('linux_amd64'))
         finally:
             checked.LIMIT = kept
-        self.assertIn('LICENSE: 8 bytes, more than any file of a release', faults)
+        self.assertIn(f'LICENSE: {size} bytes, more than any file of a release', faults)
         self.assertFalse(any('not the bytes' in fault or 'build record' in fault for fault in faults), faults)
+
+    def test_a_commit_without_a_directory_a_release_holds(self):
+        bare = self.scratch / 'bare'
+        bare.mkdir()
+        for name in checked.DOCUMENTS:
+            (bare / name).write_bytes(b'x\n')
+        (bare / 'corpus').mkdir()
+        (bare / 'corpus' / 'canon.json').write_bytes(b'{}\n')
+        git = ['git', '-C', str(bare), '-c', 'user.name=test', '-c', 'user.email=test@invalid', '-c', 'commit.gpgsign=false']
+        subprocess.run(['git', 'init', '-q', str(bare)], check=True)
+        subprocess.run(git + ['add', '.'], check=True)
+        subprocess.run(git + ['commit', '-q', '-m', 'no catalog'], check=True)
+        with self.assertRaises(SystemExit) as refused:
+            checked.committed(bare, 'HEAD')
+        self.assertEqual(str(refused.exception), 'the commit holds no file under catalog/')
 
     # Bytes.
 
@@ -243,7 +262,83 @@ class ArchiveChecks(unittest.TestCase):
     def test_a_name_with_a_backslash(self):
         held = self.contents('windows_arm64')
         held['corpus\\canon.json'] = held.pop('corpus/canon.json')
-        self.refused('windows_arm64', held, 'corpus\\canon.json: a name not written the plain way')
+        faults = self.faults('windows_arm64', held)
+        self.assertIn('corpus\\\\canon.json: a name not written the plain way', faults)
+        self.assertIn('corpus/canon.json: not in the archive', faults)
+
+    def test_a_member_with_no_name(self):
+        faults = self.faults('windows_arm64', self.contents('windows_arm64'), extra=[(self.zip_entry('x', stat.S_IFREG, written=''), b'x')])
+        self.assertEqual(faults, [': a name not written the plain way'])
+
+    def test_a_zip_name_that_a_reader_would_cut_short(self):
+        # The reader ends a name at its first zero byte; another program need not.
+        held = self.contents('windows_arm64')
+        data = held.pop('LICENSE')[1]
+        faults = self.faults('windows_arm64', held, extra=[(self.zip_entry('LICENSE', stat.S_IFREG, written='LICENSE\0x'), data)])
+        self.assertEqual(sorted(faults), ['LICENSE: not in the archive', 'LICENSE\\x00x: a name not written the plain way'])
+
+    def test_a_zip_entry_that_gives_its_name_a_second_time(self):
+        # The field for a name in Unicode, which some programs take in place of the name.
+        other = 'not-a-release-file.txt'.encode()
+        field = struct.pack('<BI', 1, zlib.crc32(b'LICENSE')) + other
+        held = self.contents('windows_arm64')
+        data = held.pop('LICENSE')[1]
+        faults = self.faults('windows_arm64', held, extra=[(self.zip_entry('LICENSE', stat.S_IFREG, extra=struct.pack('<HH', 0x7075, len(field)) + field), data)])
+        self.assertEqual(faults, ['LICENSE: a member whose header says more than a name, a mode and a time, and a release holds files'])
+
+    def test_a_zip_entry_that_says_more_than_the_packer_writes(self):
+        time = struct.pack('<HHBI', 0x5455, 5, 1, 1790000000)
+        said = {
+            'a field that is not a time': dict(extra=struct.pack('<HH', 0x7875, 0)),
+            'a time twice': dict(extra=time + time),
+            'an attribute of another system': dict(low=0x20),
+        }
+        for what, how in said.items():
+            held = self.contents('windows_arm64')
+            data = held.pop('SPEC.md')[1]
+            faults = self.faults('windows_arm64', held, extra=[(self.zip_entry('SPEC.md', stat.S_IFREG, **how), data)])
+            self.assertEqual(faults, ['SPEC.md: a member whose header says more than a name, a mode and a time, and a release holds files'], what)
+        held = self.contents('windows_arm64')
+        data = held.pop('SPEC.md')[1]
+        entry = self.zip_entry('SPEC.md', stat.S_IFREG)
+        entry.comment = b'x'
+        faults = self.faults('windows_arm64', held, extra=[(entry, data)])
+        self.assertEqual(faults, ['SPEC.md: a member whose header says more than a name, a mode and a time, and a release holds files'], 'a comment')
+
+    def test_the_flags_of_a_zip_entry(self):
+        # Read from the entry and not from an archive: the writer at hand keeps no flag it is given.
+        for flags, kind in ((0, 'file'), (0x8, 'file'), (0x800, 'file'), (0x808, 'file'), (0x1, None), (0x2000, None), (0x809, None)):
+            entry = self.zip_entry('SPEC.md', stat.S_IFREG)
+            entry.flag_bits = flags
+            self.assertEqual(checked.zip_kind(entry), kind or 'member whose header says more than a name, a mode and a time', hex(flags))
+
+    def test_a_zip_entry_with_a_field_cut_short(self):
+        held = self.contents('windows_arm64')
+        data = held.pop('SPEC.md')[1]
+        time = struct.pack('<HHBI', 0x5455, 5, 1, 1790000000)
+        faults = self.faults('windows_arm64', held, extra=[(self.zip_entry('SPEC.md', stat.S_IFREG, extra=time[:6]), data)])
+        self.assertEqual(len(faults), 1, faults)
+        self.assertTrue(faults[0].startswith('the archive cannot be read through: '), faults)
+
+    def test_the_fields_of_a_zip_entry(self):
+        time = struct.pack('<HHBI', 0x5455, 5, 1, 1790000000)
+        self.assertEqual(checked.zip_fields(b''), [])
+        self.assertEqual(checked.zip_fields(time), [0x5455])
+        self.assertEqual(checked.zip_fields(time + struct.pack('<HH', 0x7075, 0)), [0x5455, 0x7075])
+        self.assertIsNone(checked.zip_fields(time[:3]))
+        self.assertIsNone(checked.zip_fields(time[:6]))
+        self.assertIsNone(checked.zip_fields(time + b'\0'))
+
+    def test_a_zip_whose_two_namings_of_a_member_differ(self):
+        dist = self.archive('windows_arm64', self.contents('windows_arm64'))
+        archive = next(dist.iterdir())
+        raw = archive.read_bytes()
+        first = raw.index(b'SECURITY.md')
+        self.assertNotEqual(raw.index(b'SECURITY.md', first + 1), -1)
+        archive.write_bytes(raw[:first] + b'SECURITY.mx' + raw[first + 11:])
+        faults = checked.check(archive, 'windows_arm64', self.files, self.programs, dist)
+        self.assertEqual(len(faults), 1, faults)
+        self.assertTrue(faults[0].startswith('the archive cannot be read through: '), faults)
 
     # Kinds.
 
@@ -279,11 +374,40 @@ class ArchiveChecks(unittest.TestCase):
         self.refused('linux_amd64', held, 'adapter-two: a link, and a release holds files',
                      extra=[(self.tar_member('adapter-two', tarfile.LNKTYPE, 0o755, link='adapter-one'), None)])
 
-    def test_a_pipe_in_place_of_a_file(self):
-        held = self.contents('linux_amd64')
-        del held['gateway']
-        self.refused('linux_amd64', held, 'gateway: a special file, and a release holds files',
-                     extra=[(self.tar_member('gateway', tarfile.FIFOTYPE, 0o755), None)])
+    def test_a_tar_member_of_no_kind_the_packer_writes(self):
+        for kind in (tarfile.FIFOTYPE, tarfile.CHRTYPE, tarfile.BLKTYPE, tarfile.CONTTYPE, tarfile.AREGTYPE):
+            held = self.contents('linux_amd64')
+            data = held.pop('gateway')[1]
+            member = self.tar_member('gateway', kind, 0o755)
+            carried = data if kind in (tarfile.CONTTYPE, tarfile.AREGTYPE) else None
+            member.size = len(data) if carried else 0
+            self.assertEqual(self.faults('linux_amd64', held, extra=[(member, carried)]),
+                             ['gateway: a member of no kind the packer writes, and a release holds files'], kind)
+
+    def pax_archive(self, held, name, headers):
+        """The archive of linux_amd64 in the format of extended headers, one member carrying the given ones."""
+        dist = Path(tempfile.mkdtemp(dir=self.scratch))
+        with tarfile.open(dist / f'{checked.PROJECT}_1.0.0_linux_amd64.tar.gz', 'w:gz', format=tarfile.PAX_FORMAT) as opened:
+            for member, (mode, data) in held.items():
+                info = tarfile.TarInfo(member)
+                info.mode, info.size = mode, len(data)
+                if member == name:
+                    info.pax_headers = dict(headers)
+                opened.addfile(info, io.BytesIO(data))
+        return dist
+
+    def test_a_tar_member_named_by_an_extended_header(self):
+        # The reader drops a trailing slash from such a name; unpacked, it makes a directory and no program.
+        for written in ('gateway/', 'gateway//', 'other'):
+            dist = self.pax_archive(self.contents('linux_amd64'), 'gateway', {'path': written})
+            faults = checked.check(next(dist.iterdir()), 'linux_amd64', self.files, self.programs, dist)
+            self.assertIn('gateway: not in the archive', faults, written)
+            self.assertIn(f'{written}: a member whose header says more than a name, a mode and a time, and a release holds files', faults, written)
+
+    def test_a_tar_member_with_any_extended_header(self):
+        dist = self.pax_archive(self.contents('linux_amd64'), 'LICENSE', {'comment': 'x'})
+        faults = checked.check(next(dist.iterdir()), 'linux_amd64', self.files, self.programs, dist)
+        self.assertEqual(faults, ['LICENSE: a member whose header says more than a name, a mode and a time, and a release holds files'])
 
     def test_a_zip_entry_that_says_it_is_a_link(self):
         held = self.contents('windows_arm64')
@@ -293,11 +417,26 @@ class ArchiveChecks(unittest.TestCase):
 
     def test_a_zip_entry_that_says_it_is_not_a_file(self):
         program = (self.built['windows_arm64'] / 'gateway').read_bytes()
-        for form, kind in ((stat.S_IFIFO, 'special file'), (stat.S_IFCHR, 'special file'), (stat.S_IFBLK, 'special file'), (stat.S_IFSOCK, 'special file'), (stat.S_IFDIR, 'directory')):
+        kinds = {
+            'a pipe': (dict(form=stat.S_IFIFO), 'member of no kind the packer writes'),
+            'a device': (dict(form=stat.S_IFCHR), 'member of no kind the packer writes'),
+            'a socket': (dict(form=stat.S_IFSOCK), 'member of no kind the packer writes'),
+            'no form at all': (dict(form=0), 'member of no kind the packer writes'),
+            'a file of another system': (dict(form=stat.S_IFREG, system=0), 'member of no kind the packer writes'),
+            'a directory by its form': (dict(form=stat.S_IFDIR), 'directory'),
+            'a directory by the attribute of another system': (dict(form=stat.S_IFREG, low=0x10), 'directory'),
+            'a directory by that attribute alone': (dict(form=0, system=0, low=0x10), 'directory'),
+        }
+        for what, (how, kind) in kinds.items():
             held = self.contents('windows_arm64')
             del held['gateway.exe']
-            self.refused('windows_arm64', held, f'gateway.exe: a {kind}, and a release holds files',
-                         extra=[(self.zip_entry('gateway.exe', form, 0o755), program)])
+            how = dict(how)
+            faults = self.faults('windows_arm64', held, extra=[(self.zip_entry('gateway.exe', how.pop('form'), 0o755, **how), program)])
+            self.assertEqual(faults, [f'gateway.exe: a {kind}, and a release holds files'], what)
+
+    def test_a_zip_directory_by_its_name(self):
+        faults = self.faults('windows_arm64', self.contents('windows_arm64'), extra=[(self.zip_entry('corpus/', stat.S_IFREG, 0o755), b'')])
+        self.assertEqual(faults, ['corpus/: a directory, and a release holds files'])
 
     # Programs.
 
@@ -330,15 +469,66 @@ class ArchiveChecks(unittest.TestCase):
         self.refused('linux_amd64', held, 'adapter-one: it carries no build record')
 
     def test_a_program_not_everyone_can_run(self):
-        for mode in (0o644, 0o641, 0o700, 0o751, 0o311):
+        # Each of the six bits by itself, then some modes as they are met.
+        for mode in (0o355, 0o655, 0o715, 0o745, 0o751, 0o754, 0o644, 0o641, 0o700, 0o311):
             held = self.contents('linux_amd64')
             held['adapter-two'] = (mode, held['adapter-two'][1])
-            self.refused('linux_amd64', held, f'adapter-two: mode {mode:04o}, which not everyone can read and execute')
+            self.assertEqual(self.faults('linux_amd64', held), [f'adapter-two: mode {mode:04o}, which not everyone can read and execute'])
+        # The packer records the mode of a program for Windows as of any other.
+        held = self.contents('windows_arm64')
+        held['gateway.exe'] = (0o644, held['gateway.exe'][1])
+        self.assertEqual(self.faults('windows_arm64', held), ['gateway.exe: mode 0644, which not everyone can read and execute'])
+
+    def test_a_universal_program(self):
+        # A true one: two programs for macOS, of two architectures, in the container that holds both.
+        parts = [(0x01000007, 3, (self.built['darwin_amd64'] / 'gateway').read_bytes()),
+                 (0x0100000c, 0, (self.scratch / 'built' / 'gateway-darwin-arm64').read_bytes())]
+        step, place, table, body = 1 << 14, 1 << 14, b'', b''
+        for kind, sub, data in parts:
+            table += struct.pack('>iiIII', kind, sub, place, len(data), 14)
+            padded = data + b'\0' * (-len(data) % step)
+            body += padded
+            place += len(padded)
+        whole = struct.pack('>II', 0xcafebabe, len(parts)) + table
+        whole += b'\0' * (step - len(whole)) + body
+        ran = subprocess.run(['go', 'version', '-m', '/dev/stdin'], input=whole, capture_output=True)
+        held = self.contents('linux_amd64')
+        held['gateway'] = (0o755, whole)
+        self.assertEqual(self.faults('linux_amd64', held), ['gateway: it holds several programs, and a release holds one under each name'], ran)
+
+    def test_a_name_of_a_document_and_of_a_program(self):
+        dist = self.archive('linux_amd64', self.contents('linux_amd64'))
+        faults = checked.check(next(dist.iterdir()), 'linux_amd64', self.files, dict(self.programs, LICENSE='adapters/cmd/LICENSE'), dist)
+        self.assertEqual(faults, ['LICENSE: the name of a document and of a program'])
+
+    def with_toolchain(self, script, data=b'#!/bin/sh\n'):
+        """What is said of a file's build record when `go` is the given script."""
+        tool = Path(tempfile.mkdtemp(dir=self.scratch))
+        (tool / 'go').write_text(script)
+        (tool / 'go').chmod(0o755)
+        kept = os.environ['PATH']
+        try:
+            os.environ['PATH'] = f'{tool}{os.pathsep}{kept}'
+            return checked.build_record(data, self.scratch)
+        finally:
+            os.environ['PATH'] = kept
+
+    def test_a_toolchain_that_says_nothing_of_a_file_and_does_not_fail(self):
+        self.assertEqual(self.with_toolchain('#!/bin/sh\nexit 0\n'), (None, 'it carries no build record: go version -m said nothing'))
+
+    def test_a_toolchain_that_gives_a_record_and_fails(self):
+        script = "#!/bin/sh\nprintf '%s' '" + RECORD + "'\necho 'could not read the whole file' >&2\nexit 1\n"
+        self.assertEqual(self.with_toolchain(script), (None, 'it carries no build record: could not read the whole file'))
+
+    def test_a_toolchain_that_gives_a_record(self):
+        script = "#!/bin/sh\nprintf '%s' '" + RECORD + "'\n"
+        self.assertEqual(self.with_toolchain(script), (('gateway', 'linux', 'amd64', 'v1'), ''))
 
     def test_a_file_that_holds_several_programs(self):
-        # As a universal Mach-O begins; the toolchain would read the first program in it.
+        # As a universal Mach-O begins, in either byte order and either width;
+        # the toolchain would read the first program in it.
         program = (self.built['darwin_amd64'] / 'gateway').read_bytes()
-        for start in checked.SEVERAL:
+        for start in (b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'):
             held = self.contents('linux_amd64')
             held['gateway'] = (0o755, start + program)
             self.refused('linux_amd64', held, 'gateway: it holds several programs')
@@ -381,6 +571,12 @@ class ArchiveChecks(unittest.TestCase):
 
     def test_a_record_without_its_level(self):
         self.assertEqual(checked.parse_record(RECORD.replace('\tbuild\tGOAMD64=v1\n', '')), (None, 'its build record states GOAMD64 0 times'))
+
+    def test_a_record_with_lines_of_one_word(self):
+        self.assertEqual(checked.parse_record(RECORD + '\tpath\n\tbuild\n\n'), (('gateway', 'linux', 'amd64', 'v1'), ''))
+
+    def test_a_record_with_a_setting_on_a_line_that_is_not_a_build_line(self):
+        self.assertEqual(checked.parse_record(RECORD + '\tdep\tGOOS=plan9\n'), (('gateway', 'linux', 'amd64', 'v1'), ''))
 
     def test_a_record_for_an_architecture_no_release_is_built_for(self):
         self.assertEqual(checked.parse_record(RECORD.replace('GOARCH=amd64', 'GOARCH=riscv64')), (None, 'its build record states an architecture no release is built for: riscv64'))

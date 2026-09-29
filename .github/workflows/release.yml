@@ -179,10 +179,11 @@ jobs:
           cat checksums.txt
 
       # Held of the archives themselves, all six, and not of the
-      # configuration that was meant to make them: the files are the
-      # commit's, byte for byte; each program is a file built from the
-      # package of its name, for the archive's platform, at the level a
-      # release promises; and an archive holds nothing else
+      # configuration that was meant to make them: an archive holds files
+      # and nothing else, each in the form the packer writes, under its
+      # plain name and once; the files are the commit's, byte for byte;
+      # each program is one program built from the package of its name,
+      # for the archive's platform, at the level a release promises
       # (build/release_archives.py, which CI runs against sound archives
       # and against archives spoiled one way at a time).
       - name: Each archive holds the corpus, the catalog and the programs, and nothing else
@@ -420,11 +421,10 @@ jobs:
       # The draft has waited at the gate, and whoever may write to the
       # repository could have changed it there. What is about to be
       # published is taken from the draft as it now stands and held to what
-      # this run packaged: the same files by name, the same list of
-      # checksums, and every archive the bytes that list names. The notes
-      # and the title are not compared: those are what the approver read.
-      # A moment remains between this and the publishing, and nothing here
-      # closes it.
+      # this run packaged: the title the workflow gave it, the notes the
+      # commit holds, the same files by name, the same list of checksums,
+      # and every archive the bytes that list names. A moment remains
+      # between this and the publishing, and nothing here closes it.
       - name: The draft holds what this run packaged
         shell: bash
         env:
@@ -433,6 +433,14 @@ jobs:
         run: |
           state="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
           [ "${state}" = "true" ] || { echo "the release under ${RELEASE_TAG} is not a draft" >&2; exit 1; }
+
+          drafted_title="$(gh release view "${RELEASE_TAG}" --json name --jq .name)"
+          [ "${drafted_title}" = "gateway ${RELEASE_TAG}" ] || { echo "the draft is titled ${drafted_title}, and the workflow titled it gateway ${RELEASE_TAG}" >&2; exit 1; }
+          # Both are taken without the newlines they end in, which the two
+          # ways of reading them do not agree on.
+          drafted_notes="$(gh release view "${RELEASE_TAG}" --json body --jq .body)"
+          packaged_notes="$(cat run/release-notes.md)"
+          [ "${drafted_notes}" = "${packaged_notes}" ] || { echo "the draft's notes are not the notes the commit holds:" >&2; diff <(echo "${packaged_notes}") <(echo "${drafted_notes}") >&2; exit 1; }
 
           mkdir draft
           gh release download "${RELEASE_TAG}" --dir draft

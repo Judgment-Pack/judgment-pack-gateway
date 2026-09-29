@@ -44,6 +44,12 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
 | The released archive, read and not run: it holds files and nothing else, each under its plain name and once; its documents, corpus and catalog are the commit's, byte for byte; each program is one program, built from the package of its name, for the archive's platform, at the lowest level of its architecture; no file is there that a release does not hold | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
+What the reading of the archives is for: a mistake in the packaging, such as a pattern that
+passes a file over or a program built from the wrong package. It accepts a member only in the
+form the packer writes one, and reads an archive as Python's standard library does. It is not a
+defence against an archive made to be read differently by different programs: whoever could put
+one where the check looks could change the check.
+
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
 by anything. Of the adapter executables in an archive, three are started by the archive smoke
 tests (`adapter-airbyte`, `adapter-http`, `adapter-mcp`) and the rest by none, on any platform.
@@ -140,10 +146,9 @@ Every job works on the commit the run was started for, by its digest, and not on
 7. **Holds the draft to the run, and publishes.** A draft can be changed while it waits, by
    whoever may write to the repository. So on the far side of the gate the tag is held to the
    commit once more, and the draft as it then stands is downloaded and held to what the run
-   packaged: the same files by name, the same `checksums.txt`, and every archive the bytes that
-   list names. The notes and the title are not compared: those are what the approver read. Then
-   it is published. A moment remains between that check and the publishing, and nothing closes
-   it. An approval given more than thirty days after the run finds the run's
+   packaged: the title the workflow gave it, the notes the commit holds, the same files by name,
+   the same `checksums.txt`, and every archive the bytes that list names. Then it is published.
+   A moment remains between that check and the publishing, and nothing closes it. An approval given more than thirty days after the run finds the run's
    archives gone, and the job fails: release a new version.
 
 No maintainer token and no repository secret is used.
@@ -170,7 +175,7 @@ What to do with a draft depends on which job failed:
 | --- | --- | --- |
 | Any job before `Attest and draft release` | none was made | re-run the failed jobs |
 | `Attest and draft release` | may exist, and may lack assets | read it, delete it by hand, then re-run the failed jobs. The job refuses to run while a release under the tag exists, draft or published, and refuses when it cannot find out |
-| `Publish release` | exists, and may have been changed or be incomplete | **keep it**: that job only publishes the draft that is there. Read why it failed first: if it found the draft changed or incomplete, the draft is not to be published. Otherwise re-run the failed jobs |
+| `Publish release` | to be looked at: it may be as it was made, changed, incomplete, gone, or already published | read why the job failed, and look at the Releases page. A draft as it was made is **kept**, and the failed jobs re-run: that job only publishes the draft that is there. A draft that was changed or is incomplete is not to be published. If it is gone or the release is already published, there is nothing to re-run. Where the draft cannot be published, release a new version |
 
 A draft is deleted with `gh release delete <tag> --repo Judgment-Pack/judgment-pack-gateway`,
 which leaves the tag. A published release is never deleted to make room for another.
