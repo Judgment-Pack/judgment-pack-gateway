@@ -98,6 +98,13 @@ type LocalSource struct {
 func ConnectionLocalPlan() LocalPlan {
 	return LocalPlan{1, []LocalSource{
 		{"documents", "adapter-document", []string{"--max-bytes", "16777216", "--max-output", "8388608", "--timeout", "30s"}, "command", 40, false},
+		// The record's bound is the one docs/design/rendering.md gives for a
+		// file of the adapter's default bound, 4 MiB. The adapter keeps its
+		// default deadline, five seconds under the timeout here. No rendering
+		// program is named, so a request for a PDF is refused by name. A desk
+		// refuses a plan that names a program its bundle does not carry, so
+		// a desk that takes this plan carries adapter-render.
+		{"render", "adapter-render", []string{"--max-output", "6291456"}, "command", 30, false},
 		{"drive", "adapter-drive", []string{"--principal", "desk-local"}, "http", 60, true},
 		{"gmail", "adapter-gmail", []string{"--principal", "desk-local"}, "http", 60, true},
 		{"notion", "adapter-sources", []string{"--provider", "notion", "--principal", "desk-local"}, "mcp", 60, true},

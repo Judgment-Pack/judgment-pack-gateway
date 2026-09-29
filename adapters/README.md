@@ -980,8 +980,9 @@ as a Word file and attested as one versioned record that holds the file. The con
 [ADR-0006](../docs/adr/0006-documents-are-rendered-by-an-adapter.md); this section says how the
 adapter meets it. It is wired as a **bare** source, as `adapter-document` is, so the receipt
 carries the `command` shape. It holds no credential and opens no connection, and starts no
-process but the rendering program an operator configured, for a PDF. No engine configuration, image or desk plan names it in this release: an operator
-adds the source.
+process but the rendering program an operator configured, for a PDF. The desk's local plan
+names it as the source `render`, with no rendering program. No engine configuration and no image
+names it: an operator adds the source.
 
 ```
 gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-version 3 \

@@ -41,6 +41,35 @@ func TestV3CatalogIsCompleteLocalizedAndMatchesLocalPlan(t *testing.T) {
 	}
 }
 
+// A desk refuses a plan that names a source twice, and reaches the rendering
+// adapter by the one entry named render: a bare source that holds no
+// connection.
+func TestTheLocalPlanNamesEachSourceOnceAndTheRenderingAdapter(t *testing.T) {
+	plan := ConnectionLocalPlan()
+	seen := map[string]int{}
+	for _, source := range plan.Sources {
+		seen[source.ID]++
+	}
+	for id, times := range seen {
+		if times != 1 {
+			t.Errorf("the plan names %q %d times", id, times)
+		}
+	}
+	if plan.Version != 1 || len(plan.Sources) != 9 {
+		t.Fatalf("version %d, %d sources", plan.Version, len(plan.Sources))
+	}
+	for _, source := range plan.Sources {
+		if source.ID != "render" {
+			continue
+		}
+		if source.Executable != "adapter-render" || source.Shape != "command" || source.Connections || source.Timeout != 30 {
+			t.Fatalf("render = %+v", source)
+		}
+		return
+	}
+	t.Fatal("the plan names no source render")
+}
+
 func TestResourceProducerSupportsUnknownProviderAndBindsRetainedBytes(t *testing.T) {
 	for _, provider := range []string{"fixture-files", "fixture-objects"} {
 		raw, err := ResourceDocument(context.Background(), provider, "bucket/policy.txt", "Policy.txt", "text/plain", "https://example.com/policy", []byte("Fixture policy.\n"))

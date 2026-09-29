@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"adapters/attachment"
+	"adapters/connections"
 	"adapters/render"
 )
 
@@ -392,5 +393,63 @@ func TestRunRefusesWithoutItsOwnIdentity(t *testing.T) {
 	stdin := &readCounter{}
 	if code := run(nil, stdin, &stdout, &stderr); code != 1 || stdout.Len() != 0 || stdin.reads != 0 || !strings.HasPrefix(stderr.String(), "adapter-failed: ") {
 		t.Fatalf("exit %d with %d reads: %s", code, stdin.reads, stderr.String())
+	}
+}
+
+// The desk's local plan starts the adapter with arguments of its own. They are
+// ones the adapter takes; under them a request is rendered; the record's bound
+// is the plan's and holds a file of the adapter's bound on the file; and the
+// adapter's deadline ends before the gateway's timeout for the source does,
+// by the five seconds the contract asks for.
+func TestTheDesksPlanIsOneTheAdapterTakes(t *testing.T) {
+	var planned *connections.LocalSource
+	for _, source := range connections.ConnectionLocalPlan().Sources {
+		if source.Executable == "adapter-render" {
+			if planned != nil {
+				t.Fatal("the plan starts the adapter twice")
+			}
+			planned = &source
+		}
+	}
+	if planned == nil {
+		t.Fatal("the plan does not start the adapter")
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run(planned.Args, strings.NewReader(request), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if err := render.Check(stdout.Bytes()); err != nil {
+		t.Fatalf("the record does not pass its check: %v", err)
+	}
+	var record struct {
+		Rendering struct {
+			Bounds struct {
+				MaxFileBytes   int64 `json:"maxFileBytes"`
+				MaxOutputBytes int64 `json:"maxOutputBytes"`
+				TimeoutMs      int64 `json:"timeoutMs"`
+			} `json:"bounds"`
+		} `json:"rendering"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &record); err != nil {
+		t.Fatal(err)
+	}
+	bounds := record.Rendering.Bounds
+	if bounds.MaxOutputBytes != 6291456 {
+		t.Errorf("the record's bound is %d", bounds.MaxOutputBytes)
+	}
+	// A file of n bytes is 4 × ⌈n / 3⌉ bytes of base64, and the record around
+	// it is under three kibibytes.
+	if largest := 4*((bounds.MaxFileBytes+2)/3) + 3072; largest > bounds.MaxOutputBytes {
+		t.Errorf("a file of %d bytes needs a record of %d, and the plan admits %d", bounds.MaxFileBytes, largest, bounds.MaxOutputBytes)
+	}
+	if margin := int64(planned.Timeout)*1000 - bounds.TimeoutMs; margin != 5000 {
+		t.Errorf("the deadline is %d ms and the source's timeout %d s: a margin of %d ms", bounds.TimeoutMs, planned.Timeout, margin)
+	}
+
+	// No rendering program is named, so a PDF is refused by name.
+	stdout.Reset()
+	pdf := strings.Replace(request, `"format":"docx"`, `"format":"pdf"`, 1)
+	if code := run(planned.Args, strings.NewReader(pdf), &stdout, &stderr); code != 1 || stdout.Len() != 0 || !strings.HasPrefix(stderr.String(), "renderer-not-configured: ") {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, stdout.String(), stderr.String())
 	}
 }
