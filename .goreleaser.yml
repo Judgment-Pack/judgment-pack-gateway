@@ -1,0 +1,147 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/goreleaser/goreleaser/v2.17.0/www/docs/static/schema.json
+version: 2
+
+project_name: judgment-pack-gateway
+
+# Both modules are built as the image builds them (Dockerfile): no cgo, no
+# workspace, no recorded paths and no version-control stamp. A release
+# build also drops the symbol table (-s -w), which neither the image nor
+# CI does. The core and the adapters stay two modules, and each program its
+# own executable; an archive puts them side by side and links none to another
+# (docs/adr/0001). Each architecture is built at its lowest level, stated
+# and not left to a default: an archive named for an architecture runs on
+# every processor of it.
+builds:
+  # The core. The tag is written into it, because the module lives below
+  # the repository's root and the toolchain reads no repository tag as its
+  # version (go/mcp.go, buildVersion).
+  - id: gateway
+    dir: go
+    main: .
+    binary: gateway
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w -X main.releaseVersion={{ if .IsSnapshot }}v{{ .Version }}{{ else }}{{ .Tag }}{{ end }}
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goamd64:
+      - v1
+    goarm64:
+      - v8.0
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  # The adapters, every program under adapters/cmd, and none of them
+  # stamped with the version: an adapter is known by the archive it came
+  # in. CI compares the names here with the directories under adapters/cmd,
+  # which is a first notice and not the check: the release workflow reads
+  # each archive and holds every program to the package of its name.
+  - &adapter
+    id: adapter-airbyte
+    dir: adapters
+    main: ./cmd/adapter-airbyte
+    binary: adapter-airbyte
+    env:
+      - CGO_ENABLED=0
+      - GOWORK=off
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    goamd64:
+      - v1
+    goarm64:
+      - v8.0
+    mod_timestamp: "{{ .CommitTimestamp }}"
+  - <<: *adapter
+    id: adapter-document
+    main: ./cmd/adapter-document
+    binary: adapter-document
+  - <<: *adapter
+    id: adapter-drive
+    main: ./cmd/adapter-drive
+    binary: adapter-drive
+  - <<: *adapter
+    id: adapter-gmail
+    main: ./cmd/adapter-gmail
+    binary: adapter-gmail
+  - <<: *adapter
+    id: adapter-http
+    main: ./cmd/adapter-http
+    binary: adapter-http
+  - <<: *adapter
+    id: adapter-mcp
+    main: ./cmd/adapter-mcp
+    binary: adapter-mcp
+  - <<: *adapter
+    id: adapter-render
+    main: ./cmd/adapter-render
+    binary: adapter-render
+  - <<: *adapter
+    id: adapter-sources
+    main: ./cmd/adapter-sources
+    binary: adapter-sources
+  - <<: *adapter
+    id: adapter-web
+    main: ./cmd/adapter-web
+    binary: adapter-web
+  - <<: *adapter
+    id: gateway-connections
+    main: ./cmd/gateway-connections
+    binary: gateway-connections
+
+archives:
+  # One archive per platform: the executables, the specification, and the
+  # corpus that arbitrates between them, which is what a tag names
+  # (CONTRIBUTING.md, Tags). The corpus travels as bytes; nothing here
+  # converts a line ending.
+  - id: judgment-pack-gateway-archives
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - SECURITY.md
+      - SPEC.md
+      - THIRD_PARTY_NOTICES
+      # Named as directories: a pattern ending in **/* passes over the files
+      # at a directory's top.
+      - catalog
+      - corpus
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+# The notes of a release are written by a person and reviewed with the
+# release (docs/releases/<tag>.md); none are generated.
+changelog:
+  disable: true
+
+release:
+  draft: true
+  prerelease: auto
+  name_template: "gateway {{ .Tag }}"

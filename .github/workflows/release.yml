@@ -1,0 +1,478 @@
+name: Release
+
+# Publishes a release of the gateway and its adapters: six archives, their
+# checksums and a build-provenance attestation, from a tag a person pushes
+# on a commit already on main (docs/releasing.md). Nothing here decides
+# that there is to be a release, and nothing here writes its notes: both
+# are a person's, reviewed in the pull request that added
+# docs/releases/<tag>.md. What the workflow holds is that the tagged state
+# passes everything CI asks of a commit, that the archives are built from
+# it and run where they say they run, and that no release is published
+# until a maintainer has approved it at the `production` gate.
+#
+# What exists before that approval, and is not secret: the archives, as an
+# artifact of the run that anyone who can read the repository's runs can
+# download; their attestation, which is recorded in a public log when it is
+# made; and the draft, which those who can write to the repository can see.
+#
+# Every job works on the commit the run was started for, by its digest. The
+# tag is a name, and until a release is published nothing keeps a name from
+# being moved: so the name is held to that commit when the run begins,
+# before the draft is made, and before it is published.
+#
+# It publishes no image. The engine image is still built by CI from every
+# commit and never pushed (docs/design/engine-image.md, Provenance).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+env:
+  RELEASE_TAG: ${{ github.ref_name }}
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  admit:
+    name: The tag names a release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      # Reading an environment's protection rules.
+      actions: read
+    steps:
+      # SemVer 2.0.0 for the three numbers and the prerelease, which has no
+      # empty identifier and no numeric one with a leading zero. Build
+      # metadata (+...) is refused: two tags that differ only in it would
+      # be one version under two names.
+      - name: The tag is an exact version
+        shell: bash
+        run: |
+          number='(0|[1-9][0-9]*)'
+          identifier='(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)'
+          version="^v${number}\.${number}\.${number}(-${identifier}(\.${identifier})*)?$"
+          if [[ ! "${RELEASE_TAG}" =~ ${version} ]]; then
+            echo "the tag is not a version this workflow releases (vX.Y.Z or vX.Y.Z-prerelease, no build metadata): ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+      - name: Check out the commit the run was started for
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: The tag names the commit the run was started for
+        shell: bash
+        run: |
+          # The patterns of ls-remote match the end of a name, so another ref
+          # whose name ends in this one is answered too: the lines are taken
+          # by their exact names. The peeled line is the commit an annotated
+          # tag points to; a plain tag has its own line alone.
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" \
+            | awk -v tag="refs/tags/${RELEASE_TAG}" '$2 == tag { plain = $1 } $2 == tag "^{}" { peeled = $1 } END { print (peeled != "" ? peeled : plain) }')"
+          [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the run was started for ${GITHUB_SHA}" >&2; exit 1; }
+
+      # A tag names a reviewed state (CONTRIBUTING.md, Tags), and what is
+      # reviewed is what merged: a tag on a branch's commit names a state
+      # main may never hold. Any commit main holds is admitted, not its
+      # newest alone, and the checks it is held to are CI's as that commit
+      # has them. Main is named in full: the short name would be answered
+      # by a tag called origin/main before the branch.
+      - name: The tagged commit is on main
+        shell: bash
+        run: |
+          git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main || { echo "the tagged commit ${GITHUB_SHA} is not on main" >&2; exit 1; }
+
+      - name: The release has notes a person wrote
+        shell: bash
+        run: |
+          notes="docs/releases/${RELEASE_TAG}.md"
+          test -s "${notes}" || { echo "${notes} is missing or empty at the tag" >&2; exit 1; }
+
+      # The publish job waits at the `production` environment, and an
+      # environment a workflow names without its existing is made on the
+      # spot with no rule at all: the gate would be a name. So the rule is
+      # read here, before anything is built, and its absence is a refusal.
+      - name: The production gate requires a reviewer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          reviewers="$(gh api "repos/${GH_REPO}/environments/production" --jq '[.protection_rules[]? | select(.type == "required_reviewers")] | length')" \
+            || { echo "the production environment could not be read; create it, with a required reviewer (docs/releasing.md)" >&2; exit 1; }
+          [ "${reviewers}" -ge 1 ] || { echo "the production environment requires no reviewer" >&2; exit 1; }
+
+  # Everything CI asks of a commit, asked of the tagged one, as CI stands at
+  # that commit: the workflow called is the tagged commit's own ci.yml, so
+  # release.yml carries no second copy of the checks to fall behind it. A
+  # check main has gained since that commit is not asked.
+  verify:
+    name: CI at the tag
+    needs: admit
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  package:
+    name: Package
+    needs:
+      - admit
+      - verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the commit the run was started for
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Release binaries use one reviewed toolchain, named exactly. The
+          # go directive in each go.mod remains the floor CI tests.
+          go-version: 1.26.5
+          cache-dependency-path: adapters/go.sum
+
+      # Held by CI already, and again here, on the commit being packaged and
+      # with the toolchain that links it, whose own licence is part of them.
+      - name: The notices are what this toolchain and the linked modules say
+        run: python3 build/third_party_notices.py --check
+
+      - name: Normalize archive file timestamps
+        shell: bash
+        run: |
+          source_date_epoch="$(git show -s --format=%ct "${GITHUB_SHA}")"
+          git ls-files -z -- LICENSE README.md SECURITY.md SPEC.md THIRD_PARTY_NOTICES catalog corpus \
+            | xargs -0 touch --date="@${source_date_epoch}"
+
+      - name: Package without publishing
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: v2.17.0
+          args: release --clean --skip=publish
+        env:
+          # Stated, not inferred: a commit may carry a tag of another family
+          # beside this one (n8n-nodes-judgment-pack@...).
+          GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
+
+      # Printed, so that the run's own record says what it packaged. The
+      # publish job holds the draft to these again before it publishes.
+      - name: Verify packaged checksums
+        working-directory: dist
+        run: |
+          sha256sum --check checksums.txt
+          cat checksums.txt
+
+      # Held of the archives themselves, all six, and not of the
+      # configuration that was meant to make them: an archive holds files
+      # and nothing else, each in the form the packer writes, under its
+      # plain name and once; the files are the commit's, byte for byte;
+      # each program is one program built from the package of its name,
+      # for the archive's platform, at the level a release promises, and
+      # is the bytes the packer built; the archive reads to its end
+      # (build/release_archives.py, which CI runs against sound archives
+      # and against archives spoiled one way at a time).
+      - name: Each archive holds the corpus, the catalog and the programs, and nothing else
+        shell: bash
+        run: python3 build/release_archives.py --dist dist --version "${RELEASE_TAG#v}" --commit "${GITHUB_SHA}"
+
+      - name: Carry the release notes with the archives
+        shell: bash
+        run: cp "docs/releases/${RELEASE_TAG}.md" dist/release-notes.md
+
+      - name: Upload release archives for native smoke tests
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-dist
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+            dist/release-notes.md
+          if-no-files-found: error
+          # As long as an approval may be waited for: the publish job reads
+          # it again on the far side of the gate.
+          retention-days: 30
+
+  smoke-unix:
+    name: ${{ matrix.os }} release archive
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          # linux/arm64 runs natively somewhere before the gate: a macOS arm
+          # runner executes the darwin binary, not this one.
+          - ubuntu-24.04-arm
+          - macos-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Download packaged archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      # The adapters' tests run on Linux (ci.yml), and the package job has
+      # held every program of the archive to the commit. What is held of
+      # the adapters here, where the archive runs, is that three of them
+      # start and print their usage line.
+      - name: Verify and smoke-test native archive
+        shell: bash
+        run: |
+          case "$(uname -s)" in
+            Darwin) release_os="darwin"; checksum_command=(shasum -a 256 --check) ;;
+            Linux) release_os="linux"; checksum_command=(sha256sum --check) ;;
+            *) echo "unsupported runner OS: $(uname -s)" >&2; exit 1 ;;
+          esac
+
+          case "$(uname -m)" in
+            arm64|aarch64) release_arch="arm64" ;;
+            x86_64) release_arch="amd64" ;;
+            *) echo "unsupported runner architecture: $(uname -m)" >&2; exit 1 ;;
+          esac
+
+          release_version="${RELEASE_TAG#v}"
+          archive="judgment-pack-gateway_${release_version}_${release_os}_${release_arch}.tar.gz"
+          destination="${RUNNER_TEMP}/gateway-release-smoke"
+
+          (cd dist && "${checksum_command[@]}" checksums.txt)
+          mkdir -p "${destination}"
+          tar -xzf "dist/${archive}" -C "${destination}"
+
+          # Taken first and compared after, so that a program that prints the
+          # right words and fails is a failure.
+          reported="$("${destination}/gateway" version)"
+          [ "${reported}" = "gateway ${RELEASE_TAG}" ] || { echo "gateway reports ${reported}" >&2; exit 1; }
+          "${destination}/gateway" conform --corpus "${destination}/corpus"
+
+          for program in adapter-airbyte adapter-http adapter-mcp; do
+            # A usage line is an exit of 2, which is the answer wanted.
+            output="$("${destination}/${program}" 2>&1 < /dev/null)" && code=0 || code=$?
+            if [ "${code}" != "2" ] || [[ "${output}" != "usage: ${program} "* ]]; then
+              echo "${program} did not start as built: exit ${code}: ${output}" >&2
+              exit 1
+            fi
+          done
+
+  smoke-windows:
+    name: windows-latest release archive
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions: {}
+    steps:
+      - name: Download packaged archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      - name: Verify and smoke-test native archive
+        shell: pwsh
+        run: |
+          $releaseVersion = $env:RELEASE_TAG.Substring(1)
+          $archive = "judgment-pack-gateway_${releaseVersion}_windows_amd64.zip"
+          $archivePath = Join-Path "dist" $archive
+          $checksumLine = Get-Content "dist/checksums.txt" |
+            Where-Object { $_ -match "[ *]$([regex]::Escape($archive))$" }
+
+          if (-not $checksumLine) {
+            throw "No checksum found for $archive"
+          }
+
+          $expected = ($checksumLine -split "\s+")[0].ToLowerInvariant()
+          $actual = (Get-FileHash $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) {
+            throw "Checksum mismatch for $archive"
+          }
+
+          $destination = Join-Path $env:RUNNER_TEMP "gateway-release-smoke"
+          Expand-Archive -Path $archivePath -DestinationPath $destination
+
+          $gateway = Join-Path $destination "gateway.exe"
+          $reportedVersion = & $gateway version
+          if ($LASTEXITCODE -ne 0 -or $reportedVersion -ne "gateway $($env:RELEASE_TAG)") {
+            throw "Unexpected version output: $reportedVersion"
+          }
+
+          & $gateway conform --corpus (Join-Path $destination "corpus")
+          if ($LASTEXITCODE -ne 0) {
+            throw "The released gateway disagrees with the corpus it carries"
+          }
+
+  attest-and-draft:
+    name: Attest and draft release
+    needs:
+      - package
+      - smoke-unix
+      - smoke-windows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - name: Download smoke-tested archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: dist
+
+      - name: The tag still names the commit the run was started for
+        shell: bash
+        run: |
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" \
+            | awk -v tag="refs/tags/${RELEASE_TAG}" '$2 == tag { plain = $1 } $2 == tag "^{}" { peeled = $1 } END { print (peeled != "" ? peeled : plain) }')"
+          [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the archives were built from ${GITHUB_SHA}" >&2; exit 1; }
+
+      # A release under this tag, draft or published, is never replaced or
+      # completed from here: what a failed run left is looked at by a
+      # person (docs/releasing.md, "If a run fails").
+      - name: No release exists under this tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          # Every release is listed, drafts among them, and looked for by its
+          # tag: a lookup that fails is a failure of the step, never an absence.
+          state="$(gh api "repos/${GH_REPO}/releases" --paginate --jq '.[] | select(.tag_name == env.RELEASE_TAG) | if .draft then "a draft" else "published" end')"
+          if [ -n "${state}" ]; then
+            echo "a release under ${RELEASE_TAG} already exists, and it is $(echo "${state}" | sort -u | paste -sd, -)" >&2
+            exit 1
+          fi
+
+      - name: Attest release archives
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/checksums.txt
+
+      - name: Create draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # This job has no checkout (it only consumes the packaged
+          # artifact), so `gh` cannot infer the repository from a remote.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          shopt -s nullglob
+          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
+          if (( ${#assets[@]} != 7 )); then
+            echo "expected six archives and checksums.txt, found ${#assets[@]} files" >&2
+            exit 1
+          fi
+
+          release_args=(
+            "${RELEASE_TAG}"
+            "${assets[@]}"
+            --draft
+            --notes-file dist/release-notes.md
+            --title "gateway ${RELEASE_TAG}"
+            --verify-tag
+          )
+          if [[ "${RELEASE_TAG}" == *-* ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          gh release create "${release_args[@]}"
+
+  publish:
+    name: Publish release
+    needs: attest-and-draft
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: The tag still names the commit the run was started for
+        shell: bash
+        run: |
+          named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" \
+            | awk -v tag="refs/tags/${RELEASE_TAG}" '$2 == tag { plain = $1 } $2 == tag "^{}" { peeled = $1 } END { print (peeled != "" ? peeled : plain) }')"
+          [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the draft was built from ${GITHUB_SHA}" >&2; exit 1; }
+
+      - name: Download the archives this run packaged
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: run
+
+      # The draft has waited at the gate, and whoever may write to the
+      # repository could have changed it there. What is about to be
+      # published is taken from the draft as it now stands and held to what
+      # this run packaged: the title the workflow gave it, the notes the
+      # commit holds, the same files by name, the same list of checksums,
+      # and every archive the bytes that list names. A moment remains
+      # between this and the publishing, and nothing here closes it.
+      - name: The draft holds what this run packaged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          state="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
+          [ "${state}" = "true" ] || { echo "the release under ${RELEASE_TAG} is not a draft" >&2; exit 1; }
+
+          drafted_title="$(gh release view "${RELEASE_TAG}" --json name --jq .name)"
+          [ "${drafted_title}" = "gateway ${RELEASE_TAG}" ] || { echo "the draft is titled ${drafted_title}, and the workflow titled it gateway ${RELEASE_TAG}" >&2; exit 1; }
+          # Both are taken without the newlines they end in, which the two
+          # ways of reading them do not agree on.
+          drafted_notes="$(gh release view "${RELEASE_TAG}" --json body --jq .body)"
+          packaged_notes="$(cat run/release-notes.md)"
+          [ "${drafted_notes}" = "${packaged_notes}" ] || { echo "the draft's notes are not the notes the commit holds:" >&2; diff <(echo "${packaged_notes}") <(echo "${drafted_notes}") >&2; exit 1; }
+
+          mkdir draft
+          gh release download "${RELEASE_TAG}" --dir draft
+
+          packaged="$(cd run && find . -type f ! -name release-notes.md | LC_ALL=C sort)"
+          drafted="$(cd draft && find . -type f | LC_ALL=C sort)"
+          [ "${packaged}" = "${drafted}" ] || { echo "the draft does not hold the files this run packaged:" >&2; diff <(echo "${packaged}") <(echo "${drafted}") >&2; exit 1; }
+
+          cmp run/checksums.txt draft/checksums.txt
+          # The list is read in the one form this workflow writes it: a
+          # digest, two spaces, and a name of plain characters. Any other
+          # line is refused, though a checksum program would read it.
+          if grep -q -v -E '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' draft/checksums.txt; then
+            echo "checksums.txt holds a line that is not a digest, two spaces and a plain name" >&2
+            exit 1
+          fi
+          named="$(awk '{ print "./" $2 }' draft/checksums.txt | LC_ALL=C sort)"
+          archives="$(cd draft && find . -type f ! -name checksums.txt | LC_ALL=C sort)"
+          [ "${named}" = "${archives}" ] || { echo "checksums.txt does not name the draft's archives, each once:" >&2; diff <(echo "${named}") <(echo "${archives}") >&2; exit 1; }
+          (cd draft && sha256sum --check --strict checksums.txt)
+
+      - name: Publish the reviewed draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No checkout in this job; tell gh which repository to target.
+          GH_REPO: ${{ github.repository }}
+        run: |
+          publish_args=("${RELEASE_TAG}" --draft=false)
+          # A prerelease (the tag contains a hyphen) is never marked latest.
+          if [[ "${RELEASE_TAG}" != *-* ]]; then
+            publish_args+=(--latest)
+          fi
+          gh release edit "${publish_args[@]}"

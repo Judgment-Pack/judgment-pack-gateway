@@ -14,3 +14,6 @@ plugins/**/*.tsbuildinfo
 
 # the second implementation installs its typecheck into node_modules/
 verify-ts/node_modules/
+
+# release archives, built by goreleaser (docs/releasing.md)
+/dist/

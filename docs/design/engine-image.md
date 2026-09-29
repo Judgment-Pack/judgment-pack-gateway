@@ -225,8 +225,9 @@ digest-shaped filename satisfies nothing. The verdict is the JSON, never the exi
 
 ## Provenance
 
-No release workflow publishes the image yet: CI builds it from every commit and never pushes it.
-When one does, it is to publish the image digest, a software bill of materials for both modules,
+The release workflow publishes the binaries ([releasing.md](../releasing.md)) and does not yet
+publish the image: CI builds it from every commit and never pushes it. When the workflow does, it
+is to publish the image digest, a software bill of materials for both modules,
 and the runtime pin the `Dockerfile` names, in the same `checksums.txt` that names the binaries, so that an operator pins
 the image by digest and can name the tagged state it was built from, as
 [CONTRIBUTING.md](../../CONTRIBUTING.md#tags) already says of the binary. Until then the digest of
