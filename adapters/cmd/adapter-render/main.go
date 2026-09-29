@@ -35,7 +35,7 @@ func main() {
 // replace it.
 var ownIdentity = render.OwnIdentity
 
-const usage = "usage: adapter-render [--max-request N] [--max-blocks N] [--max-file N] [--max-output N] [--timeout D]"
+const usage = "usage: adapter-render [--max-request N] [--max-blocks N] [--max-file N] [--max-output N] [--timeout D] [--renderer PROGRAM]"
 
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	started := time.Now()
@@ -54,17 +54,27 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	def := render.DefaultConfig()
 	maxRequest := fs.Int64("max-request", def.MaxRequest, "bound on the request read from stdin, in bytes; keep it at or below the gateway's --max-request")
 	maxBlocks := fs.Int("max-blocks", def.MaxBlocks, "bound on the blocks of one document")
-	maxFile := fs.Int64("max-file", def.MaxFile, "bound on the rendered file, and on what its parts hold uncompressed, in bytes")
+	maxFile := fs.Int64("max-file", def.MaxFile, "bound on the rendered file, on what a Word file's parts hold uncompressed, and on what the rendering program may write, in bytes")
 	maxOutput := fs.Int64("max-output", def.MaxOutput, "bound on the record in bytes; keep it at or below the gateway's --source-max-output")
-	timeout := fs.Duration("timeout", def.Timeout, "the deadline, from the adapter's start; keep it under the gateway's thirty seconds")
+	timeout := fs.Duration("timeout", def.Timeout, "the deadline, from the adapter's start; keep it under the gateway's timeout for the source, thirty seconds by default, with room to spare")
+	renderer := fs.String("renderer", "", "the rendering program for a PDF, one word, resolved on the adapter's PATH; none by default, and a PDF is then refused")
 	if err := fs.Parse(args); err != nil {
+		// Help that was asked for is the adapter's own words and quotes
+		// nothing of the command line, so it is written whole. Every other
+		// diagnostic keeps its bound.
+		if errors.Is(err, flag.ErrHelp) {
+			flagOut = boundedWriter{}
+			fmt.Fprintln(stderr, usage)
+			fs.SetOutput(stderr)
+			fs.PrintDefaults()
+		}
 		return 2
 	}
 	if fs.NArg() != 0 {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	cfg := render.Config{MaxRequest: *maxRequest, MaxBlocks: *maxBlocks, MaxFile: *maxFile, MaxOutput: *maxOutput, Timeout: *timeout}
+	cfg := render.Config{MaxRequest: *maxRequest, MaxBlocks: *maxBlocks, MaxFile: *maxFile, MaxOutput: *maxOutput, Timeout: *timeout, Renderer: *renderer}
 	if err := cfg.Check(); err != nil {
 		fmt.Fprintln(stderr, "adapter-render:", err)
 		return 2

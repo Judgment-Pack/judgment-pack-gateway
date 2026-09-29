@@ -32,7 +32,8 @@
 //	                       document read for its text into a versioned record
 //	document/pdf/          its PDF reader, standard library only
 //	render/                the rendering adapter, a bare source: content given
-//	                       as blocks, written as a Word file into the render
+//	                       as blocks, written as a Word file, or as a PDF by
+//	                       a program the operator configured, into the render
 //	                       record, version 1 (docs/design/rendering.md), with
 //	                       Check, the reference check of the record
 //	cmd/adapter-airbyte/   their commands
@@ -44,7 +45,8 @@
 //	internal/pdfgen/       a PDF writer for fixtures and tests
 //	internal/containers/   a container run and ended with its absence established
 //	internal/program/      an operator's program run for an adapter, resolved,
-//	                       digested, bounded and ended: the OCR program's run
+//	                       digested, bounded and ended: the OCR program's run,
+//	                       and the rendering program's
 //	internal/redact/       a connector's configuration kept out of diagnostics
 //	internal/fakeruntime/  stand-ins for the container runtime and for an MCP
 //	internal/fakemcp/      server, for tests

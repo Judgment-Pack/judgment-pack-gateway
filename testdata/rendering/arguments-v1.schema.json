@@ -14,7 +14,7 @@
         "docx",
         "pdf"
       ],
-      "description": "the format asked for; this release writes docx and refuses pdf as renderer-not-configured"
+      "description": "the format asked for; a pdf is refused as renderer-not-configured where the operator configured no rendering program"
     },
     "document": {
       "type": "object",
