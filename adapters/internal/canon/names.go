@@ -7,6 +7,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"unicode"
 )
 
 // ErrName is what ExactNames refuses with. It names no member: a member's
@@ -27,8 +28,9 @@ var unmarshaler = reflect.TypeOf((*json.Unmarshaler)(nil)).Elem()
 // object decoded into a struct unless its name is a field's name as written,
 // and refuses a name given twice in such an object.
 //
-// It follows the type: into a struct's fields, the elements of a slice or an
-// array and the values of a map. Where the type says nothing of a value's
+// It chooses a member's field as the decoder does (fieldNames), and follows
+// the type: into a struct's fields, the elements of a slice or an array and
+// the values of a map. Where the type says nothing of a value's
 // members -- an interface, a json.RawMessage, a type that decodes itself --
 // it holds that value to nothing, and whoever reads the value later holds it
 // to what they read. It decodes nothing and changes nothing: a caller
@@ -48,46 +50,125 @@ func ExactNames(raw []byte, into any) error {
 	return nil
 }
 
+// named is one field a member's name could mean: the name it is decoded
+// by, how many structs in it lies, and whether a tag gave it the name.
+type named struct {
+	name   string
+	of     reflect.Type
+	depth  int
+	tagged bool
+}
+
 // fieldNames is the names a struct is decoded by, each with its field's
-// type: the name of the tag where there is one, the field's own where there
-// is none, and the names of an embedded struct's fields as if they were the
-// struct's own, where a nearer field of the same name does not hide them.
-func fieldNames(t reflect.Type, into map[string]reflect.Type, depth int) {
-	var embedded []reflect.Type
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		tag, tagged := f.Tag.Lookup("json")
-		name, _, _ := strings.Cut(tag, ",")
-		if tagged && tag == "-" {
-			continue
-		}
-		if f.Anonymous && name == "" {
-			inner := f.Type
-			for inner.Kind() == reflect.Pointer {
-				inner = inner.Elem()
-			}
-			if inner.Kind() == reflect.Struct {
-				embedded = append(embedded, inner)
+// type, by the rules encoding/json states for choosing a field:
+//
+//   - a field is named by its tag where the tag has a name the package takes
+//     (letters, digits and the punctuation it lists), and by its own name
+//     otherwise; a tag of "-" alone gives the field up;
+//   - a field that is not exported has no name, unless it is an embedded
+//     struct;
+//   - an embedded struct with no name in its tag gives its fields' names as
+//     if they were the outer struct's, a struct embedded in it likewise, and
+//     one with a name in its tag is a member of that name;
+//   - of several fields of one name the least deep is meant; of several at
+//     that depth, the one a tag named, if it is the only one so named; and
+//     where that leaves more than one, none of them is meant.
+//
+// A struct embedded at two places of one depth gives each of its names
+// twice, so that none of them is meant. A struct is followed once: one that
+// embeds itself comes to an end.
+func fieldNames(t reflect.Type) map[string]reflect.Type {
+	var found []named
+	visited := map[reflect.Type]bool{}
+	level, times := []reflect.Type{t}, map[reflect.Type]int{t: 1}
+	for depth := 0; len(level) > 0; depth++ {
+		var next []reflect.Type
+		nextTimes := map[reflect.Type]int{}
+		for _, in := range level {
+			if visited[in] {
 				continue
 			}
+			visited[in] = true
+			for i := 0; i < in.NumField(); i++ {
+				f := in.Field(i)
+				inner := f.Type
+				if inner.Kind() == reflect.Pointer {
+					inner = inner.Elem()
+				}
+				if f.Anonymous {
+					if !f.IsExported() && inner.Kind() != reflect.Struct {
+						continue
+					}
+				} else if !f.IsExported() {
+					continue
+				}
+				tag := f.Tag.Get("json")
+				if tag == "-" {
+					continue
+				}
+				name, _, _ := strings.Cut(tag, ",")
+				if !tagName(name) {
+					name = ""
+				}
+				if name == "" && f.Anonymous && inner.Kind() == reflect.Struct {
+					if nextTimes[inner]++; nextTimes[inner] == 1 {
+						next = append(next, inner)
+					}
+					continue
+				}
+				one := named{name, f.Type, depth, name != ""}
+				if name == "" {
+					one.name = f.Name
+				}
+				found = append(found, one)
+				if times[in] > 1 {
+					found = append(found, one)
+				}
+			}
 		}
-		if !f.IsExported() {
-			continue
+		level, times = next, nextTimes
+	}
+	byName := map[string][]named{}
+	for _, one := range found {
+		byName[one.name] = append(byName[one.name], one)
+	}
+	names := map[string]reflect.Type{}
+	for name, all := range byName {
+		// The structs were gone through a depth at a time, so the first
+		// field found of a name is of the least depth it is found at.
+		least := all[0].depth
+		var nearest, tagged []named
+		for _, one := range all {
+			if one.depth == least {
+				nearest = append(nearest, one)
+				if one.tagged {
+					tagged = append(tagged, one)
+				}
+			}
 		}
-		if name == "" {
-			name = f.Name
+		if len(tagged) > 0 {
+			nearest = tagged
 		}
-		if _, nearer := into[name]; !nearer {
-			into[name] = f.Type
+		if len(nearest) == 1 {
+			names[name] = nearest[0].of
 		}
 	}
-	// A struct may embed a pointer to itself, and would be followed without
-	// end. No request is a struct within a struct eight times over.
-	if depth < 8 {
-		for _, inner := range embedded {
-			fieldNames(inner, into, depth+1)
+	return names
+}
+
+// tagName reports whether the package takes name, from a tag, for a name.
+func tagName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, c := range name {
+		switch {
+		case strings.ContainsRune("!#$%&()*+-./:;<=>?@[]^_{|}~ ", c):
+		case !unicode.IsLetter(c) && !unicode.IsDigit(c):
+			return false
 		}
 	}
+	return true
 }
 
 func selfDecoding(t reflect.Type) bool {
@@ -121,8 +202,7 @@ func walkNames(dec *json.Decoder, t reflect.Type, depth int) error {
 		var names map[string]reflect.Type
 		var values reflect.Type
 		if t != nil && t.Kind() == reflect.Struct {
-			names = map[string]reflect.Type{}
-			fieldNames(t, names, 0)
+			names = fieldNames(t)
 		} else if t != nil && t.Kind() == reflect.Map {
 			values = t.Elem()
 		}

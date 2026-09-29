@@ -7,7 +7,8 @@ import (
 
 // The two readers of a request take a member by its name as written. Each
 // request here is one the decoder alone takes, reading the member that
-// comes last; it is refused, and nothing of it is kept.
+// comes last; it is refused, and nothing that was read of it is left in
+// what it was read into.
 func TestARequestIsReadByItsNamesAsWritten(t *testing.T) {
 	revision := strings.Repeat("a", 64)
 	for name, raw := range map[string]string{
@@ -17,7 +18,7 @@ func TestARequestIsReadByItsNamesAsWritten(t *testing.T) {
 		"a name with a long s":             `{"connection":"absent","revision":"` + revision + `","query":"first","maxRe` + "ſ" + `ults":1}`,
 	} {
 		var q SearchRequest
-		if err := decode([]byte(raw), &q); err != ErrRequest {
+		if err := decode([]byte(raw), &q); err != ErrRequest || q != (SearchRequest{}) {
 			t.Errorf("%s: %v, read as %+v", name, err, q)
 		}
 	}
@@ -34,7 +35,7 @@ func TestAStorageRequestIsReadByItsNamesAsWritten(t *testing.T) {
 		"a name with a Kelvin sign":        `{"folder":"","query":"notes","pageTo` + "K" + `en":""}`,
 	} {
 		var q StorageQuery
-		if err := decodeStorage([]byte(raw), &q); err != ErrRequest {
+		if err := decodeStorage([]byte(raw), &q); err != ErrRequest || q != (StorageQuery{}) {
 			t.Errorf("%s: %v, read as %+v", name, err, q)
 		}
 	}
@@ -43,7 +44,7 @@ func TestAStorageRequestIsReadByItsNamesAsWritten(t *testing.T) {
 		"an identifier beside itself, folded": `{"context":"c","action":"rename","id":"kept","ID":"replaced","folder":"","name":"n","revision":"r","mediaType":"text/plain","contentBase64":""}`,
 	} {
 		var q StorageChange
-		if err := decodeStorage([]byte(raw), &q); err != ErrRequest {
+		if err := decodeStorage([]byte(raw), &q); err != ErrRequest || q != (StorageChange{}) {
 			t.Errorf("%s: %v, read as %+v", name, err, q)
 		}
 	}

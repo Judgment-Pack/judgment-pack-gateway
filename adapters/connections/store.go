@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -64,9 +65,17 @@ func decode(raw []byte, out any) error {
 	// The decoder takes a name written in another case for the name, and
 	// reads the last of the two where a request holds both.
 	if canon.ExactNames(raw, out) != nil {
+		forget(out)
 		return ErrRequest
 	}
 	return nil
+}
+
+// forget leaves nothing in out of a request that was read and then refused.
+func forget(out any) {
+	if v := reflect.ValueOf(out); v.Kind() == reflect.Pointer && !v.IsNil() {
+		v.Elem().SetZero()
+	}
 }
 
 type Client struct {

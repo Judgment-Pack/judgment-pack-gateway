@@ -49,6 +49,7 @@ func decodeStorage(raw []byte, out any) error {
 		return ErrRequest
 	}
 	if canon.ExactNames(raw, out) != nil {
+		forget(out)
 		return ErrRequest
 	}
 	return nil

@@ -1058,11 +1058,22 @@ and what the check does not establish are in
 
 ## How the connection programs read a request
 
-`gateway-connections`, `adapter-drive`, `adapter-gmail` and `adapter-sources` read every
-request, of every provider, by its members' names as written, each once. A member the
-operation does not name is refused, and so is one named in another case: Go's struct
-decoding would take `QUERY` for `query`, and where a request held both would read the one
-that comes last. The refusal is `invalid-request`, and says nothing of the request.
+`gateway-connections`, `adapter-drive`, `adapter-gmail` and `adapter-sources` read the
+body of a request, of whatever provider, by its members' names as written, each once. A
+member the operation does not name is refused, and so is one named in another case: Go's
+struct decoding would take `QUERY` for `query`, and where a request held both would read
+the one that comes last. The refusal is `invalid-request`, and says nothing of the request.
+
+Three things this does not say:
+
+- An operation that answers without reading its body holds the body to nothing. A
+  connection service the operator has blocked answers every request so, `status` with its
+  blocked state and the rest with `blocked-by-policy`.
+- The line `gateway-connections` reads from its parent (`id`, `method`, `params`) is the
+  host's and is read as it was, a member it does not know included.
+- A document within a request is read by whoever uses it. A Google service account
+  credential is JSON within the text of `credential`, and is read by the library that signs
+  with it, which takes a name in another case.
 
 ## Personal Google Drive connections
 
