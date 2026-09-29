@@ -104,6 +104,9 @@ ADR-0001 is not edited; its row in the index names this supersession.
 - A tag is not protected until its release is published, and is protected then only where release
   immutability is turned on. The workflow's three checks of the tag stand in for that before
   publication, and an administrator can still change the environment's rule between them.
+- The checks lock nothing. Publishing selects the release by its tag, and whoever may write to the
+  repository could change a draft between the last check and the approval: the approver reads the
+  draft's checksums against the run's.
 - No claim is made that a build can be reproduced bit for bit by someone else.
 - A release made before this record, `v0.1.0` to `v0.4.0`, stays as it is: notes only.
 

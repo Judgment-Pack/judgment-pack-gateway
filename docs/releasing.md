@@ -42,7 +42,7 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | The adapters' tests (CI) | yes | no | vetted, not run |
 | The released archive, run: `gateway version`, `gateway conform` on the corpus it carries, every program present | `amd64` and `arm64` | `arm64` | `amd64` |
 | The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
-| The released archive, read and not run: its files are the commit's, byte for byte; each program was built from the package of its name; it holds nothing else | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
+| The released archive, read and not run: its files are the commit's, byte for byte; each program was built from the package of its name, for the archive's platform; it holds nothing else | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
 by anything. Of the nine adapter executables in an archive, six are never started by the archive
@@ -133,8 +133,10 @@ Every job works on the commit the run was started for, by its digest, and not on
 5. **Attests and drafts.** Only after every smoke test passes, and only if the tag still names the
    commit, are the archives attested and a draft release created, with the notes from the commit.
 6. **Waits at the `production` gate.** Review the draft on the Releases page: the notes, the seven
-   assets, the checksums. Approve the pending deployment on the run. The tag is held to the commit
-   once more, and the draft is published.
+   assets, the checksums. Hold the draft's `checksums.txt` to the one the `Package` job printed in
+   the run: the checks lock nothing, and whoever may write to the repository could have changed a
+   draft since it was made. Approve the pending deployment on the run. The tag is held to the
+   commit once more, and the draft is published.
 
 No maintainer token and no repository secret is used.
 
