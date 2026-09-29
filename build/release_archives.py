@@ -1,32 +1,39 @@
 #!/usr/bin/env python3
 """Hold the archives of a release to the commit they were built from.
 
-Usage: python3 build/release_archives.py --dist dist --version 0.5.0 [--tree .]
+Usage: python3 build/release_archives.py --dist dist --version 0.5.0 [--tree .] [--commit HEAD]
 
 The release workflow runs this on what GoReleaser wrote, before anything is
 attested: it is held of the archives themselves, and not of the
 configuration that was meant to make them. For every platform a release is
 built for, the archive of that name must hold exactly:
 
-  - the documents, each a file, byte for byte the tree's;
-  - the corpus and the catalog, every file the tree tracks and no other,
+  - the documents, byte for byte the commit's;
+  - the corpus and the catalog, every file the commit holds and no other,
     byte for byte: the corpus arbitrates, so it travels as it is;
-  - the programs, each a file and nothing but a file, built from the
-    package of its name, for the archive's operating system and
+  - the programs, each one program and not a file of several, built from
+    the package of its name, for the archive's operating system and
     architecture and at the processor level a release promises, as the
-    executable's own build record says, and executable where the system
-    has the bit.
+    executable's own build record says, and readable and executable by
+    everyone where the system has the bits.
 
-Nothing else may be in it: no other file, no link, no device. Every fault
-found is reported, and any fault is a failure.
+An archive holds files and nothing else: no directory of its own, no link,
+no device, no name twice, and no name written any way but the plain one
+(no "./", no trailing slash, no backslash). The members' headers are read
+first and their contents after, one at a time, and only of members a
+release holds; a member larger than any a release has is refused unread.
+Every fault found is reported, and any fault is a failure.
+
+What is compared is the commit, not the working tree: a file changed or
+removed in the tree after the commit changes nothing here.
 
 What this does not establish: that a program behaves. A build record says
-what an executable was built from and for; it is read here and not run.
+what an executable was built from and for; it is read here, by whatever
+`go` is first on the path, and the program is not run. The release workflow
+and CI run this with the toolchain a release is built with.
 """
 import argparse
-import io
-import os
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 import stat
 import subprocess
 import sys
@@ -42,58 +49,93 @@ DIRECTORIES = ['catalog', 'corpus']
 # The level of each architecture a release is built at, which is the lowest:
 # an archive named for an architecture runs on every processor of it.
 LEVELS = {'amd64': ('GOAMD64', 'v1'), 'arm64': ('GOARM64', 'v8.0')}
+# No member of a release is a tenth of this.
+LIMIT = 512 << 20
+# How a file that holds several programs begins (a universal Mach-O, in either
+# byte order and either width). The toolchain reads the first program in one
+# and says nothing of the rest.
+SEVERAL = (b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca')
 
 
-def programs(tree):
-    """Name -> the package it is built from: the core, and every program under adapters/cmd."""
+def git(tree, *args):
+    return subprocess.run(['git', '-C', str(tree), *args], check=True, capture_output=True).stdout
+
+
+def programs(tree, commit):
+    """Name -> the package it is built from: the core, and every program the commit holds under adapters/cmd."""
     found = {'gateway': 'gateway'}
-    for entry in sorted((tree / 'adapters' / 'cmd').iterdir()):
-        if entry.is_dir():
-            found[entry.name] = f'adapters/cmd/{entry.name}'
+    listed = git(tree, 'ls-tree', '-d', '-z', '--name-only', commit, 'adapters/cmd/').decode('utf-8')
+    for name in sorted(path.rsplit('/', 1)[1] for path in listed.split('\0') if path):
+        found[name] = f'adapters/cmd/{name}'
     return found
 
 
-def tracked(tree, directory):
-    """Relative path -> bytes, for every file the tree tracks under the directory."""
-    listed = subprocess.run(['git', '-C', str(tree), 'ls-files', '-z', '--', directory], check=True, capture_output=True).stdout
-    names = [name for name in listed.decode('utf-8').split('\0') if name]
-    if not names:
-        raise SystemExit(f'the tree tracks no file under {directory}/')
-    return {name: (tree / name).read_bytes() for name in names}
+def committed(tree, commit):
+    """Path -> bytes, as the commit holds them: the documents, and every file under the directories."""
+    paths = list(DOCUMENTS)
+    for directory in DIRECTORIES:
+        listed = git(tree, 'ls-tree', '-r', '-z', '--name-only', commit, '--', directory).decode('utf-8')
+        under = [path for path in listed.split('\0') if path]
+        if not under:
+            raise SystemExit(f'the commit holds no file under {directory}/')
+        paths += under
+    return {path: git(tree, 'cat-file', 'blob', f'{commit}:{path}') for path in paths}
 
 
-def members(archive):
-    """Every member of an archive as (name, kind, mode, bytes); kind is 'file', 'dir' or what else it is."""
+def headers(archive):
+    """Every member's header as (name, kind, mode, size), the name as the archive writes it. Nothing is read."""
     if archive.suffix == '.zip':
         with zipfile.ZipFile(archive) as opened:
             for info in opened.infolist():
                 mode = info.external_attr >> 16
-                if info.is_dir():
-                    yield info.filename, 'dir', mode, b''
-                elif stat.S_ISLNK(mode):
-                    yield info.filename, 'link', mode, b''
+                form = stat.S_IFMT(mode)
+                if info.filename.endswith('/') or form == stat.S_IFDIR:
+                    kind = 'directory'
+                elif form == stat.S_IFLNK:
+                    kind = 'link'
+                elif form in (0, stat.S_IFREG):
+                    # No form at all is what a system without them writes.
+                    kind = 'file'
                 else:
-                    yield info.filename, 'file', mode, opened.read(info)
+                    kind = 'special file'
+                yield info.filename, kind, mode & 0o7777, info.file_size
         return
     with tarfile.open(archive, 'r:gz') as opened:
-        for info in opened.getmembers():
-            if info.isdir():
-                yield info.name, 'dir', info.mode, b''
-            elif info.isreg():
-                yield info.name, 'file', info.mode, opened.extractfile(info).read()
+        for info in opened:
+            if info.isreg():
+                kind = 'file'
+            elif info.isdir():
+                kind = 'directory'
+            elif info.issym() or info.islnk():
+                kind = 'link'
             else:
-                yield info.name, 'link' if info.issym() or info.islnk() else 'special', info.mode, b''
+                kind = 'special file'
+            yield info.name, kind, info.mode & 0o7777, info.size
 
 
-def build_record(data, scratch):
-    """What `go version -m` says of an executable: (package, os, architecture, level), or why it says nothing usable."""
-    held = scratch / 'program'
-    held.write_bytes(data)
-    ran = subprocess.run(['go', 'version', '-m', str(held)], capture_output=True, text=True)
-    if ran.returncode != 0:
-        return None, 'it carries no build record: ' + (ran.stderr.strip().splitlines() or ['go version -m failed'])[-1]
+def contents(archive, names):
+    """(name, bytes) for the named members, one at a time, in the archive's order."""
+    if archive.suffix == '.zip':
+        with zipfile.ZipFile(archive) as opened:
+            for info in opened.infolist():
+                if info.filename in names:
+                    yield info.filename, opened.read(info)
+        return
+    with tarfile.open(archive, 'r:gz') as opened:
+        for info in opened:
+            if info.name in names and info.isreg():
+                yield info.name, opened.extractfile(info).read()
+
+
+def plain(name):
+    """Whether a name is written the one plain way: parts joined by single slashes, none empty, none a dot."""
+    return bool(name) and '\\' not in name and all(part not in ('', '.', '..') for part in name.split('/'))
+
+
+def parse_record(text):
+    """What a build record says: (package, os, architecture, level), or why it says nothing usable."""
     packages, settings = [], {}
-    for line in ran.stdout.splitlines():
+    for line in text.splitlines():
         fields = line.split()
         if len(fields) >= 2 and fields[0] == 'path':
             packages.append(fields[1])
@@ -106,67 +148,73 @@ def build_record(data, scratch):
         if len(settings.get(key, [])) != 1:
             return None, f'its build record states {key} {len(settings.get(key, []))} times'
     arch = settings['GOARCH'][0]
-    key = LEVELS.get(arch, ('', ''))[0]
-    level = settings.get(key, [])
-    if len(level) != 1:
-        return None, f'its build record states {key or "a level"} {len(level)} times'
-    return (packages[0], settings['GOOS'][0], arch, level[0]), ''
+    if arch not in LEVELS:
+        return None, f'its build record states an architecture no release is built for: {arch}'
+    key = LEVELS[arch][0]
+    if len(settings.get(key, [])) != 1:
+        return None, f'its build record states {key} {len(settings.get(key, []))} times'
+    return (packages[0], settings['GOOS'][0], arch, settings[key][0]), ''
 
 
-def check(archive, target, tree, scratch):
+def build_record(data, scratch):
+    """What `go version -m` says of an executable's bytes."""
+    if data[:4] in SEVERAL:
+        return None, 'it holds several programs, and a release holds one under each name'
+    held = scratch / 'program'
+    held.write_bytes(data)
+    try:
+        ran = subprocess.run(['go', 'version', '-m', str(held)], capture_output=True, text=True)
+    finally:
+        held.unlink()
+    if ran.returncode != 0:
+        return None, 'it carries no build record: ' + (ran.stderr.strip().splitlines() or ['go version -m failed'])[-1]
+    return parse_record(ran.stdout)
+
+
+def check(archive, target, wanted_files, wanted_programs, scratch):
     """Every fault of one archive, as sentences; none is a pass."""
     faults = []
     goos, _, goarch = target.partition('_')
     suffix = '.exe' if goos == 'windows' else ''
-    wanted_programs = {name + suffix: package for name, package in programs(tree).items()}
-    wanted_files = {name: (tree / name).read_bytes() for name in DOCUMENTS}
-    for directory in DIRECTORIES:
-        wanted_files.update(tracked(tree, directory))
+    wanted_programs = {name + suffix: package for name, package in wanted_programs.items()}
+    wanted = set(wanted_files) | set(wanted_programs)
 
-    seen = {}
-    for name, kind, mode, data in members(archive):
-        path = PurePosixPath(name)
-        clean = path.as_posix()
-        if clean in ('.', ''):
+    sound = {}
+    seen = set()
+    for name, kind, mode, size in headers(archive):
+        shown = name if name else '(a member with no name)'
+        if name in seen:
+            faults.append(f'{shown}: in the archive twice')
+            sound.pop(name, None)
             continue
-        if path.is_absolute() or '..' in path.parts:
-            faults.append(f'{name}: a path that leaves the archive')
-            continue
-        if kind == 'dir':
-            if clean not in DIRECTORIES and not any(clean.startswith(directory + '/') for directory in DIRECTORIES):
-                faults.append(f'{clean}/: a directory a release does not hold')
-            continue
+        seen.add(name)
         if kind != 'file':
-            faults.append(f'{clean}: a {kind}, and a release holds files')
-            continue
-        if clean in seen:
-            faults.append(f'{clean}: in the archive twice')
-            continue
-        seen[clean] = (mode, data)
-
-    for name in sorted(set(wanted_files) | set(wanted_programs)):
-        if name not in seen:
-            faults.append(f'{name}: not in the archive')
-    for name in sorted(set(seen) - set(wanted_files) - set(wanted_programs)):
-        faults.append(f'{name}: a file a release does not hold')
-
-    for name, wanted in sorted(wanted_files.items()):
-        if name in seen and seen[name][1] != wanted:
-            faults.append(f'{name}: not the bytes the tree holds')
+            faults.append(f'{shown}: a {kind}, and a release holds files')
+        elif not plain(name):
+            faults.append(f'{shown}: a name not written the plain way')
+        elif name not in wanted:
+            faults.append(f'{shown}: a file a release does not hold')
+        elif size > LIMIT:
+            faults.append(f'{shown}: {size} bytes, more than any file of a release')
+        else:
+            sound[name] = mode
+    for name in sorted(wanted - seen):
+        faults.append(f'{name}: not in the archive')
 
     level_key, level = LEVELS[goarch]
-    for name, package in sorted(wanted_programs.items()):
-        if name not in seen:
+    for name, data in contents(archive, set(sound)):
+        if name in wanted_files:
+            if data != wanted_files[name]:
+                faults.append(f'{name}: not the bytes the commit holds')
             continue
-        mode, data = seen[name]
+        package = wanted_programs[name]
         record, why = build_record(data, scratch)
         if record is None:
             faults.append(f'{name}: {why}')
-            continue
-        if record != (package, goos, goarch, level):
+        elif record != (package, goos, goarch, level):
             faults.append(f'{name}: built from {record[0]} for {record[1]}_{record[2]} at {record[3]}, and not from {package} for {target} at {level_key}={level}')
-        if not suffix and not mode & 0o111:
-            faults.append(f'{name}: not executable')
+        if not suffix and sound[name] & 0o555 != 0o555:
+            faults.append(f'{name}: mode {sound[name]:04o}, which not everyone can read and execute')
     return faults
 
 
@@ -174,10 +222,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     parser.add_argument('--dist', type=Path, required=True, help='the directory GoReleaser wrote')
     parser.add_argument('--version', required=True, help='the version in the archive names, without the leading v')
-    parser.add_argument('--tree', type=Path, default=ROOT, help='the tree the archives were built from')
+    parser.add_argument('--tree', type=Path, default=ROOT, help='the repository the archives were built from')
+    parser.add_argument('--commit', default='HEAD', help='the commit the archives were built from')
     parser.add_argument('--target', action='append', help='check these targets only (for the tests of this script)')
     args = parser.parse_args()
     tree = args.tree.resolve()
+    commit = git(tree, 'rev-parse', '--verify', f'{args.commit}^{{commit}}').decode('ascii').strip()
+    wanted_files, wanted_programs = committed(tree, commit), programs(tree, commit)
     failed = False
     with tempfile.TemporaryDirectory(prefix='release-archives-') as scratch:
         for target in args.target or TARGETS:
@@ -187,13 +238,13 @@ def main():
                 print(f'{target}: {archive.name} is not there', file=sys.stderr)
                 failed = True
                 continue
-            faults = check(archive, target, tree, Path(scratch))
+            faults = check(archive, target, wanted_files, wanted_programs, Path(scratch))
             for fault in faults:
                 print(f'{target}: {fault}', file=sys.stderr)
             if faults:
                 failed = True
             else:
-                print(f'{target}: {archive.name} holds what a release holds')
+                print(f'{target}: {archive.name} holds what commit {commit[:12]} says a release holds')
     return 1 if failed else 0
 
 

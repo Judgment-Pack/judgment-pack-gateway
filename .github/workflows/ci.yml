@@ -201,9 +201,9 @@ jobs:
           want="$(ls adapters/cmd | sort)"
           have="$(sed -n 's/^    binary: //p' .goreleaser.yml | grep -vx gateway | sort)"
           [ "$want" = "$have" ] || { echo "adapters/cmd and .goreleaser.yml name different programs:"; diff <(echo "$want") <(echo "$have"); exit 1; }
-      # What the release workflow holds of its archives, held here to a
-      # negative case for each thing it says: real programs, built for two
-      # platforms, archived, and spoiled one way at a time.
+      # What the release workflow holds of its archives, run here against
+      # sound archives and against archives spoiled one way at a time: real
+      # programs, built by this toolchain and archived.
       - name: The archive check refuses each fault it names
         run: python3 build/test_release_archives.py
       # No publisher's application registration in the connection companion

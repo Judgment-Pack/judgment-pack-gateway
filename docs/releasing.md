@@ -42,7 +42,7 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | The adapters' tests (CI) | yes | no | vetted, not run |
 | The released archive, run: `gateway version`, `gateway conform` on the corpus it carries, every program present | `amd64` and `arm64` | `arm64` | `amd64` |
 | The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
-| The released archive, read and not run: its files are the commit's, byte for byte; each program is a file built from the package of its name, for the archive's platform, at the lowest level of its architecture; it holds nothing else | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
+| The released archive, read and not run: it holds files and nothing else, each under its plain name and once; its documents, corpus and catalog are the commit's, byte for byte; each program is one program, built from the package of its name, for the archive's platform, at the lowest level of its architecture; no file is there that a release does not hold | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
 by anything. Of the nine adapter executables in an archive, six are never started by the archive
@@ -128,8 +128,8 @@ Every job works on the commit the run was started for, by its digest, and not on
 3. **Packages without publishing.** One reviewed toolchain, named exactly in the workflow; no cgo,
    no workspace, no recorded paths; `amd64` at `v1` and `arm64` at `v8.0`. The tag is written into
    `gateway`. File timestamps are set to the commit's. All six archives are then opened and read
-   by `build/release_archives.py`, as the table above states. CI holds that script to a negative
-   case for each thing it checks.
+   by `build/release_archives.py`, as the table above states. CI runs that script against sound
+   archives and against archives spoiled one way at a time.
 4. **Runs the archives of four targets**, each on a runner of its own platform, as the table above
    states.
 5. **Attests and drafts.** Only after every smoke test passes, and only if the tag still names the
@@ -140,8 +140,9 @@ Every job works on the commit the run was started for, by its digest, and not on
    whoever may write to the repository. So on the far side of the gate the tag is held to the
    commit once more, and the draft as it then stands is downloaded and held to what the run
    packaged: the same files by name, the same `checksums.txt`, and every archive the bytes that
-   list names. Then it is published. A moment remains between that check and the publishing, and
-   nothing closes it. An approval given more than thirty days after the run finds the run's
+   list names. The notes and the title are not compared: those are what the approver read. Then
+   it is published. A moment remains between that check and the publishing, and nothing closes
+   it. An approval given more than thirty days after the run finds the run's
    archives gone, and the job fails: release a new version.
 
 No maintainer token and no repository secret is used.
@@ -168,7 +169,7 @@ What to do with a draft depends on which job failed:
 | --- | --- | --- |
 | Any job before `Attest and draft release` | none was made | re-run the failed jobs |
 | `Attest and draft release` | may exist, and may lack assets | read it, delete it by hand, then re-run the failed jobs. The job refuses to run while a release under the tag exists, draft or published, and refuses when it cannot find out |
-| `Publish release` | exists and is complete | **keep it**: that job only publishes the draft that is there. Read why it failed first: if it found the draft changed, the draft is not to be published. Otherwise re-run the failed jobs |
+| `Publish release` | exists, and may have been changed or be incomplete | **keep it**: that job only publishes the draft that is there. Read why it failed first: if it found the draft changed or incomplete, the draft is not to be published. Otherwise re-run the failed jobs |
 
 A draft is deleted with `gh release delete <tag> --repo Judgment-Pack/judgment-pack-gateway`,
 which leaves the tag. A published release is never deleted to make room for another.
