@@ -34,6 +34,9 @@ type driveConversionFake struct {
 	answer    string
 	status    int
 	dropReply bool
+	// token is the connection's token, where it is not the one the
+	// stand-in gives out.
+	token string
 	// refreshing runs while Drive's token endpoint is answering, which is
 	// after a commit has read its plan and before it claims it.
 	refreshing func()
@@ -111,7 +114,7 @@ func (f *driveConversionFake) serve(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"access_token":"private-token","expires_in":3600,"token_type":"Bearer"}`)
 		return
 	}
-	if r.Header.Get("Authorization") != "Bearer private-token" {
+	if token := r.Header.Get("Authorization"); token != "Bearer private-token" && token != "Bearer "+f.token {
 		f.t.Error("a request without the access token")
 	}
 	if r.Method == "GET" {
@@ -353,33 +356,50 @@ func TestWhatDriveMadeIsHeldToBeAGoogleDocByItsOwnWord(t *testing.T) {
 		state, reason, target string
 		answered              string
 	}{
-		"ok":                             {made, 200, "completed", "", "made-document", ""},
-		"created":                        {made, 201, "completed", "", "made-document", ""},
-		"the Word file, kept as it was":  {`{"id":"made-file","mimeType":"` + wordMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"no media type":                  {`{"id":"made-file"}`, 201, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"another Google type":            {`{"id":"made-file","mimeType":"application/vnd.google-apps.spreadsheet"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"a media type that is no string": {`{"id":"made-file","mimeType":5}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"a media type that is null":      {`{"id":"made-file","mimeType":null}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"no ID":                          {`{"mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an ID that is none":             {`{"id":"../made","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an ID that is no string":        {`{"id":5,"mimeType":"` + googleDocumentMedia + `"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
-		"an answer that is not JSON":     {`made-document`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer that is a list":       {`["made-document"]`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"no answer":                      {``, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"the ID of another status":       {made, 202, "needs-attention", "operation-uncertain", "", "202"},
-		"elsewhere":                      {made, 307, "needs-attention", "operation-uncertain", "", "307"},
-		"a request Drive does not take":  {made, 400, "needs-attention", "operation-uncertain", "", "400"},
-		"a token Drive does not take":    {made, 401, "needs-attention", "operation-uncertain", "", "401"},
-		"a folder that has gone":         {made, 404, "needs-attention", "operation-uncertain", "", "404"},
-		"too many requests":              {made, 429, "needs-attention", "operation-uncertain", "", "429"},
-		"a failure of Drive's":           {made, 500, "needs-attention", "operation-uncertain", "", "500"},
-		"an answer that holds the token": {`{"id":"private-token","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a token beside the ID":          {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"private-token"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
-		"an answer longer than is read":  {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"` + strings.Repeat("n", 64<<10) + `"}`, 200, "needs-attention", "operation-uncertain", "", ""},
-		"a refusal of Drive's":           {made, 403, "refused", "permission-required", "", ""},
-		"a conflict":                     {made, 409, "refused", "source-changed", "", ""},
-		"a condition that failed":        {made, 412, "refused", "source-changed", "", ""},
-		"a refusal longer than is read":  {strings.Repeat("n", 64<<10+1), 403, "needs-attention", "operation-uncertain", "", ""},
+		"ok":                                           {made, 200, "completed", "", "made-document", ""},
+		"created":                                      {made, 201, "completed", "", "made-document", ""},
+		"the Word file, kept as it was":                {`{"id":"made-file","mimeType":"` + wordMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"no media type":                                {`{"id":"made-file"}`, 201, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"another Google type":                          {`{"id":"made-file","mimeType":"application/vnd.google-apps.spreadsheet"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"a media type that is no string":               {`{"id":"made-file","mimeType":5}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"a media type that is null":                    {`{"id":"made-file","mimeType":null}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"no ID":                                        {`{"mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID that is none":                           {`{"id":"../made","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID that is no string":                      {`{"id":5,"mimeType":"` + googleDocumentMedia + `"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
+		"an answer that is not JSON":                   {`made-document`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is a list":                     {`["made-document"]`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is null":                       {`null`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is a string":                   {`"made-document"`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer after a byte order mark":            {"\xef\xbb\xbf" + made, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer after a space":                      {" \n" + made + "\n", 200, "completed", "", "made-document", ""},
+		"no answer":                                    {``, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"the ID of another status":                     {made, 202, "needs-attention", "operation-uncertain", "", "202"},
+		"elsewhere":                                    {made, 307, "needs-attention", "operation-uncertain", "", "307"},
+		"a request Drive does not take":                {made, 400, "needs-attention", "operation-uncertain", "", "400"},
+		"a token Drive does not take":                  {made, 401, "needs-attention", "operation-uncertain", "", "401"},
+		"a folder that has gone":                       {made, 404, "needs-attention", "operation-uncertain", "", "404"},
+		"too many requests":                            {made, 429, "needs-attention", "operation-uncertain", "", "429"},
+		"a failure of Drive's":                         {made, 500, "needs-attention", "operation-uncertain", "", "500"},
+		"an answer that holds the token":               {`{"id":"private-token","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token beside the ID":                        {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"private-token"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
+		"a token written with an escape":               {`{"id":"private\u002dtoken","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, beside the ID":        {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"a private\u002dtoken"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, in a name":            {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","private\u002dtoken":true}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, deep in the answer":   {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","owners":[{"names":["private\u002dtoken"]}]}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, in an ID given twice": {`{"id":"private\u002dtoken","id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer with more than the two":             {`{"kind":"drive#file","id":"made-document","owners":[{"names":["a person"]}],"mimeType":"` + googleDocumentMedia + `","version":7}`, 200, "completed", "", "made-document", ""},
+		"an ID given twice":                            {`{"id":"made-document","id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a media type given twice":                     {`{"id":"made-file","mimeType":"` + googleDocumentMedia + `","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"an ID under another name":                     {`{"ID":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a media type under another name":              {`{"id":"made-file","MIMETYPE":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"an answer and more":                           {made + ` {}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer cut short":                          {made[:len(made)-1], 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID with no value":                          {`{"id":,"mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer longer than is read":                {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"` + strings.Repeat("n", 64<<10) + `"}`, 200, "needs-attention", "operation-uncertain", "", ""},
+		"a refusal of Drive's":                         {made, 403, "refused", "permission-required", "", ""},
+		"a conflict":                                   {made, 409, "refused", "source-changed", "", ""},
+		"a condition that failed":                      {made, 412, "refused", "source-changed", "", ""},
+		"a refusal longer than is read":                {strings.Repeat("n", 64<<10+1), 403, "needs-attention", "operation-uncertain", "", ""},
 	} {
 		f, b := newDriveConversionFake(t)
 		f.answer, f.status = row.answer, row.status
@@ -533,6 +553,12 @@ func TestAConversionIsOfAWordFileAndOfNothingElse(t *testing.T) {
 		"another connection":                     {change(func(m map[string]any) { m["context"] = "another" }), ErrChanged},
 		"no context":                             {change(func(m map[string]any) { delete(m, "context") }), ErrRequest},
 		"no name":                                {change(func(m map[string]any) { delete(m, "name") }), ErrRequest},
+		"no name, and text":                      {change(func(m map[string]any) { delete(m, "name"); m["mediaType"] = "text/plain" }), ErrRequest},
+		"no content, and text":                   {change(func(m map[string]any) { delete(m, "contentBase64"); m["mediaType"] = "text/plain" }), ErrRequest},
+		"a name of 251 bytes":                    {conversion(strings.Repeat("n", 251), file), ErrRequest},
+		"a name that is a dot":                   {conversion(".", file), ErrRequest},
+		"a name with a control":                  {conversion("n\x01", file), ErrRequest},
+		"a folder of 201 bytes":                  {StorageConversion{Name: "n", Folder: strings.Repeat("f", 201), MediaType: wordMedia, Content: text}, ErrRequest},
 		"no media type":                          {change(func(m map[string]any) { delete(m, "mediaType") }), ErrRequest},
 		"no content":                             {change(func(m map[string]any) { delete(m, "contentBase64") }), ErrRequest},
 		"a folder that is null":                  {change(func(m map[string]any) { m["folder"] = nil }), ErrRequest},
@@ -637,7 +663,7 @@ func TestAnOrdinaryChangeCannotAskForAConversion(t *testing.T) {
 	for name, answer := range map[string]struct {
 		body   string
 		status int
-	}{"another ID": {`{"id":"another-file"}`, 200}, "an ID that is no string": {`{"id":5}`, 200}, "no answer": {``, 200}, "another status": {`{"id":"reserved-file"}`, 202}, "a failure": {`{"id":"reserved-file"}`, 500}} {
+	}{"another ID": {`{"id":"another-file"}`, 200}, "an ID that is no string": {`{"id":5}`, 200}, "an ID that is no string, and the ID": {`{"id":5,"id":"reserved-file"}`, 200}, "no answer": {``, 200}, "another status": {`{"id":"reserved-file"}`, 202}, "a failure": {`{"id":"reserved-file"}`, 500}} {
 		f, b := newDriveConversionFake(t)
 		f.answer, f.status = answer.body, answer.status
 		plan = storageCall[StoragePlan](t, b, "files-prepare", q)
@@ -647,13 +673,69 @@ func TestAnOrdinaryChangeCannotAskForAConversion(t *testing.T) {
 			t.Fatalf("%s: %+v", name, done)
 		}
 	}
-	// An answer to an ordinary create that holds the token is taken as
-	// before: its ID is the reserved one, which the answer did not choose.
-	f, b = newDriveConversionFake(t)
-	f.answer = `{"id":"reserved-file","name":"private-token"}`
-	plan = storageCall[StoragePlan](t, b, "files-prepare", q)
-	if done = storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID}); done.State != "completed" {
-		t.Fatalf("%+v", done)
+	// These answers to an ordinary create are taken, as before. One holds
+	// the token: the ID is the reserved one, which the answer did not choose.
+	for name, answer := range map[string]string{
+		"an answer that holds the token":            `{"id":"reserved-file","name":"private-token"}`,
+		"the ID, and an ID that is null":            `{"id":"reserved-file","id":null}`,
+		"the ID under another name":                 `{"ID":"reserved-file"}`,
+		"the ID and a number beside it":             `{"id":"reserved-file","version":7}`,
+		"the ID and a media type that is no string": `{"id":"reserved-file","mimeType":5}`,
+	} {
+		f, b := newDriveConversionFake(t)
+		f.answer = answer
+		plan = storageCall[StoragePlan](t, b, "files-prepare", q)
+		if done = storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID}); done.State != "completed" || done.Target != "reserved-file" {
+			t.Fatalf("%s: %+v", name, done)
+		}
+	}
+}
+
+// A token is looked for in the answer as the answer is written, too, and so
+// where it stands as something other than a string.
+func TestATokenIsLookedForInTheAnswerAsItIsWritten(t *testing.T) {
+	for token, row := range map[string]struct{ state, target string }{"12345": {"needs-attention", ""}, "12346": {"completed", "made-document"}} {
+		f, b := newDriveConversionFake(t)
+		f.token = token
+		f.answer = `{"id":"made-document","mimeType":"` + googleDocumentMedia + `","version":12345}`
+		if err := b.store.locked(func(v *state) error {
+			v.Connection.Access = token
+			return b.store.write("state.json", v)
+		}); err != nil {
+			t.Fatal(err)
+		}
+		plan, err := prepareConversion(t, b, conversion("Notes", wordFile(t)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done := storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID}); done.State != row.state || done.Target != row.target {
+			t.Fatalf("a token of %s: %+v", token, done)
+		}
+	}
+}
+
+// answering is a provider that answers every request with one status and
+// nothing else, which no server of the tests can be made to do for a status
+// that is not three digits.
+type answering int
+
+func (status answering) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: int(status), Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{}`))}, nil
+}
+
+func TestTheStatusOfDrivesAnswerIsThreeDigitsOrIsNotKept(t *testing.T) {
+	for status, kept := range map[int]string{0: "", 9: "", 99: "", 100: "100", 204: "204", 599: "599", 999: "999", 1000: "", -404: ""} {
+		_, b := newDriveConversionFake(t)
+		plan, err := prepareConversion(t, b, conversion("Notes", wordFile(t)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b.provider.client = &http.Client{Transport: answering(status)}
+		done := storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID})
+		plan.State, plan.Error, plan.ProviderStatus = "needs-attention", "operation-uncertain", kept
+		if done != plan {
+			t.Fatalf("%d: %+v", status, done)
+		}
 	}
 }
 
@@ -753,5 +835,37 @@ func TestARecordOfAConversionIsNotOneAnEarlierReleaseReads(t *testing.T) {
 	stored, err = b.store.root.ReadFile("storage-intent.json")
 	if err != nil || decodeStorage(stored, &earlier) != ErrRequest {
 		t.Fatalf("the record of a conversion is one an earlier release reads: %v", err)
+	}
+
+	// The way out the contract gives. A conversion that was completed, or
+	// one that needs attention and was looked at, leaves its record until
+	// an ordinary change is prepared, after a reconnection where the plan
+	// needed attention. That change's record is one an earlier release reads.
+	for name, answer := range map[string]string{"completed": `{"id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, "needs-attention": `{"id":"made-file"}`} {
+		f, b := newDriveConversionFake(t)
+		f.answer = answer
+		plan, err := prepareConversion(t, b, conversion("Notes", wordFile(t)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if done := storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID}); done.State != name {
+			t.Fatalf("%s: %+v", name, done)
+		}
+		storageCall[StoragePlan](t, b, "files-status", map[string]string{"id": plan.ID})
+		if stored, err = b.store.root.ReadFile("storage-intent.json"); err != nil || decodeStorage(stored, &earlier) != ErrRequest {
+			t.Fatalf("%s: reading the status changed the record: %v", name, err)
+		}
+		if name == "needs-attention" {
+			if err = b.store.locked(func(v *state) error {
+				v.Epoch = "another epoch"
+				return b.store.write("state.json", v)
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		storageCall[StoragePlan](t, b, "files-prepare", ordinary)
+		if stored, err = b.store.root.ReadFile("storage-intent.json"); err != nil || decodeStorage(stored, &earlier) != nil || earlier.Change.Name != "notes.txt" {
+			t.Fatalf("%s: the record of the ordinary plan prepared afterwards is not one an earlier release reads: %v", name, err)
+		}
 	}
 }

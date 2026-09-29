@@ -160,8 +160,9 @@ func exactStrings(raw []byte, required, optional []string) bool {
 // as an archive's first entry does; it ends with an archive's end record,
 // whose comment runs to the end of the file; and it holds the name of the part
 // every package of this kind has. No entry is read and nothing is
-// decompressed, so this keeps out what cannot be a Word file and says nothing
-// of whether what it admits is one.
+// decompressed: this is a test of three signatures and not of an archive. It
+// keeps out some of what is no Word file and says nothing of whether what it
+// admits is one.
 func wordFraming(data []byte) bool {
 	if !bytes.HasPrefix(data, []byte("PK\x03\x04")) || !bytes.Contains(data, []byte("[Content_Types].xml")) {
 		return false
@@ -444,9 +445,8 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		}
 		// A conversion is of a Word file and of nothing else. The media type is
 		// the caller's word for it, and the file is held to be framed as a Word
-		// file is. A file that is not cannot be converted, and refusing it here
-		// spends no upload on it. Whether Drive can convert a file that is
-		// framed so is Drive's to say.
+		// file is. One that is not is refused here, and no upload is spent on
+		// it. What Drive makes of any file is Drive's to say, and was not tried.
 		if q.ConvertTo != "" && (q.MediaType != storageWordMedia || !wordFraming(data)) {
 			return nil, ErrUnsupported
 		}
@@ -567,8 +567,9 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 			}
 			// Drive answered in full and the outcome is still not known. What
 			// it answered is kept, for the person who looks.
+			// A status is three digits, and one that is not is not kept.
 			var answered storageAnswered
-			if errors.As(err, &answered) {
+			if errors.As(err, &answered) && answered >= 100 && answered <= 999 {
 				intent.Plan.ProviderStatus = strconv.Itoa(int(answered))
 			}
 			if errors.Is(err, ErrChanged) || errors.Is(err, ErrUnsupported) || errors.Is(err, ErrRequest) || errors.Is(err, ErrCanceled) || errors.Is(err, ErrPolicy) || err == Error("permission-required") {

@@ -234,23 +234,12 @@ func (b *Broker) driveStorageApply(ctx context.Context, intent storageIntent, to
 	if res.StatusCode == 403 {
 		return "", Error("permission-required")
 	}
-	// The members are read each on its own, so that one that cannot be read
-	// does not lose the other. One that cannot be read is left empty, and no
-	// rule below takes an empty one.
-	var reply struct {
-		ID        json.RawMessage `json:"id"`
-		MediaType json.RawMessage `json:"mimeType"`
-	}
-	var id, media string
-	json.Unmarshal(raw, &reply)
-	json.Unmarshal(reply.ID, &id)
-	json.Unmarshal(reply.MediaType, &media)
 	if q.ConvertTo != "" {
 		// Drive answered in full, and the answer does not say that a file
 		// was made or names none that is taken. Its status is kept for the
-		// person. An answer that holds the access token is not one to take
-		// an ID from: the ID of a conversion is whatever the answer says.
-		if res.StatusCode != 200 && res.StatusCode != 201 || !identifier.MatchString(id) || bytes.Contains(raw, []byte(token)) {
+		// person.
+		id, media := conversionAnswer(raw, token)
+		if res.StatusCode != 200 && res.StatusCode != 201 || !identifier.MatchString(id) {
 			return "", storageAnswered(res.StatusCode)
 		}
 		// The ID is Drive's to give. What was made is held to be a Google
@@ -261,8 +250,62 @@ func (b *Broker) driveStorageApply(ctx context.Context, intent storageIntent, to
 		}
 		return id, nil
 	}
-	if res.StatusCode != 200 && res.StatusCode != 201 || id != q.ID {
+	// An ordinary change's answer is read as it always was, and held to the
+	// ID that was reserved for it.
+	if res.StatusCode != 200 && res.StatusCode != 201 {
 		return "", Error("operation-uncertain")
 	}
-	return id, nil
+	var reply struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(raw, &reply) != nil || reply.ID != q.ID {
+		return "", Error("operation-uncertain")
+	}
+	return reply.ID, nil
+}
+
+// conversionAnswer reads the ID and the media type out of Drive's answer to a
+// conversion. Each is read on its own and by its exact name, and is empty
+// where the answer does not give it once and as a string. An answer that is no
+// JSON object gives neither, and neither does one in which the access token
+// can be read: the ID of a conversion is whatever the answer says it is, and
+// an answer that holds the token is not one to take an ID from.
+func conversionAnswer(raw []byte, token string) (id, media string) {
+	// The token is looked for as the answer is written, and in every string
+	// of it as the string reads once it is decoded, names included.
+	if bytes.Contains(raw, []byte(token)) {
+		return "", ""
+	}
+	for d := json.NewDecoder(bytes.NewReader(raw)); ; {
+		t, err := d.Token()
+		if err != nil {
+			break
+		}
+		if text, is := t.(string); is && strings.Contains(text, token) {
+			return "", ""
+		}
+	}
+	// What is not an object has no members. What is one is read again for
+	// how often it gives each, since a member given twice is given by
+	// neither.
+	var members map[string]json.RawMessage
+	if json.Unmarshal(raw, &members) != nil {
+		return "", ""
+	}
+	given := map[string]int{}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.Token()
+	for d.More() {
+		name, _ := d.Token()
+		var value json.RawMessage
+		d.Decode(&value)
+		given[name.(string)]++
+	}
+	if given["id"] == 1 {
+		json.Unmarshal(members["id"], &id)
+	}
+	if given["mimeType"] == 1 {
+		json.Unmarshal(members["mimeType"], &media)
+	}
+	return id, media
 }

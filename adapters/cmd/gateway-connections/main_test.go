@@ -204,4 +204,44 @@ func TestTheLineOfARequestThatCarriesAFileMayBeAsLongAsAFile(t *testing.T) {
 			t.Fatalf("%s: the pipe ended with %v after the answers %v", method, err, answers)
 		}
 	}
+
+	// A last line may have no ending. The pipe reads 6 MiB and two bytes of
+	// it, which is one fewer than of a line with its ending.
+	for method, bound := range methods {
+		short, err := pipe(t, line(t, "last", method, 200))
+		if err != nil || short["last"] == "" || short["last"] == "invalid-request" {
+			t.Fatalf("%s: a short last line: %v, %v", method, short, err)
+		}
+		at, err := pipe(t, line(t, "last", method, bound))
+		if err != nil || at["last"] != short["last"] {
+			t.Errorf("%s: a last line at its bound: %v, %v", method, at, err)
+		}
+		over, err := pipe(t, line(t, "last", method, bound+1))
+		if err != nil || over["last"] != "invalid-request" {
+			t.Errorf("%s: a last line a byte past its bound: %v, %v", method, over, err)
+		}
+		most, err := pipe(t, line(t, "last", method, connections.StorageLineBytes+2))
+		if err != nil || most["last"] != "invalid-request" {
+			t.Errorf("%s: the longest last line the pipe reads: %v, %v", method, most, err)
+		}
+		none, err := pipe(t, line(t, "last", method, connections.StorageLineBytes+3))
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(none) != 0 {
+			t.Errorf("%s: a last line longer than the pipe reads: %v, %v", method, none, err)
+		}
+	}
+
+	// A line that is no request ends the pipe before its length is looked
+	// at, and the pipe says so by another exit.
+	for name, request := range map[string]string{
+		"no JSON":           "files-status",
+		"an ID too long":    `{"id":"` + strings.Repeat("i", 65) + `","method":"files-status","params":{}}`,
+		"no JSON, and long": strings.Repeat("x", connections.ControlLineBytes+1),
+	} {
+		answers, err := pipe(t, []byte(request+"\n"))
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(answers) != 0 {
+			t.Errorf("%s: the pipe ended with %v after the answers %v", name, err, answers)
+		}
+	}
 }
