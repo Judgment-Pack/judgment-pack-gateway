@@ -13,7 +13,11 @@ implementation ships. Fixtures are never added to production discovery.
 Version 3 retains provider id, auth, registration, selection, queryRequired and
 operations. It adds:
 
-- `protocol`: `connection-v1`.
+- `protocol`: `connection-v1`, or `web-search-v1` for the search connections
+  added later ([configurable web search](../web-search.md)), which have
+  operations and a status of their own and none of the consent flow below.
+  A host that does not know the second protocol shows the provider as an
+  unsupported combination, as stated under this list.
 - `queryMode`: `text` for a provider search, or `prefix` for listing names whose
   path starts with the supplied query. Neither implies searching file contents.
 - `presentation`: brand name, optional PNG data URI as `icon` (empty means host

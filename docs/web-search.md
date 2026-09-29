@@ -54,9 +54,19 @@ credential. There is no implicit fallback to a different provider.
 `JPACK_CONNECTIONS_DIR` names the private custody root. The local plan exposes
 this adapter as source `web-search`, using the existing HTTP acquisition shape.
 Results contain version, connection and revision, provider, query, retrieval
-time, kind and bounded HTTPS hits. The receipt commits to the exact request and
-normalized result. The acquisition records endpoint, adapter digest, provider
-response digest and observed TLS peer. It attests acquisition, not truth.
+time, kind and bounded HTTPS hits. The receipt commits to the arguments, to a
+statement of the request and to the normalized result. The statement names the
+connection, revision, provider, query, maximum results, method and endpoint. It
+is not the bytes sent: what the adapter adds to a query, which for Google is a
+fixed instruction before it and fixed generation settings, is part of the
+adapter, and the acquisition records the adapter's digest. The acquisition also
+records the endpoint, the digest of the provider's response as received and the
+observed TLS peer. It attests acquisition, not truth.
+
+A hit's `url` is the provider's link as given, held only to being an HTTPS link
+without credentials on the default port. It may name any host, and need not be
+the address of the page it leads to. Whoever reads it applies the reader's own
+admission of public addresses and of each redirect.
 
 Connections are checked before and after the request. Changing or removing a
 connection invalidates an in-flight response. A durable per-connection daily
@@ -66,6 +76,16 @@ counter resets at midnight UTC. It limits requests, not currency or a cloud
 billing account's total usage. A Google request may itself perform several
 searches. Every call is capped at 45 seconds, a 2 MiB provider response and ten
 normalized hits. No retry silently spends more requests.
+
+## What was tested
+
+The tests answer from local TLS servers and a stand-in transport. No provider
+was called with an account, so nothing here is a claim that a live Tavily or
+Google Cloud account is accepted, or of what a live answer holds: the form of
+Google's source links, the size of its attribution markup and the models that
+support grounding are as its documentation states them, not as observed.
+
+## Adding a provider
 
 Add future providers in the adapter registry with an explicit request builder,
 credential validator and result normalizer. Desk consumes the provider's declared

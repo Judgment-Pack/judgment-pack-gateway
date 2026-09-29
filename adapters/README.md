@@ -1195,6 +1195,18 @@ pinned in `go.mod`, with license/notice files under `third_party/github.com/aws/
 See [the design and acceptance boundary](../docs/design/s3-file-source.md).
 Synthetic TLS and Desk tests are not a claim of live AWS account acceptance.
 
+### Web search connections
+
+`gateway-connections --provider web-search` holds up to six named search
+connections, to Tavily or to Google Cloud Search grounding, and
+`adapter-sources --provider web-search` reads one of them: a query in, links out,
+under the HTTP shape. A daily request budget for each connection is reserved
+before the network is reached. Hits are leads to read through `web`, not
+documents. Catalog v3 advertises the provider under the protocol `web-search-v1`
+and the local source plan names the source. See
+[configuration, limits and the provider contract](../docs/web-search.md).
+Tests with local servers are not a claim that a live account is accepted.
+
 ### Bounded website exploration
 
 `adapter-web --discover` accepts exactly `{"url":"https://example.com/"}`.
