@@ -11,6 +11,7 @@ import (
 	"adapters/internal/containers"
 	"adapters/internal/redact"
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -87,17 +88,26 @@ const defaultLimit = 1000
 const stampLayout = "2006-01-02T15:04:05Z"
 
 // ParseRequest reads the request strictly: an object with the known members
-// only, a non-empty stream, a limit within the adapter's cap, a state that
-// is the snapshot text or absent.
+// only, each by its name as written and once, a non-empty stream, a limit
+// within the adapter's cap, a state that is the snapshot text or absent.
 func ParseRequest(r io.Reader, maxRecords int) (Request, error) {
-	dec := json.NewDecoder(io.LimitReader(r, 1<<20))
-	dec.DisallowUnknownFields()
 	var req Request
+	raw, err := io.ReadAll(io.LimitReader(r, 1<<20))
+	if err != nil {
+		return req, fmt.Errorf("request: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return req, fmt.Errorf("request: %w", err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return req, errors.New("request: trailing content after the object")
+	}
+	// The decoder takes "STREAM" for stream, and the last of the two where
+	// a request holds both.
+	if err := canon.ExactNames(raw, &req); err != nil {
+		return Request{}, fmt.Errorf("request: %w", err)
 	}
 	if req.Stream == "" {
 		return req, errors.New(`request: "stream" is required`)

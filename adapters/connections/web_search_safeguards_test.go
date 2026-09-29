@@ -680,3 +680,30 @@ func TestSearchMakesNoRecordWhenItsOwnProgramCannotBeRead(t *testing.T) {
 		t.Fatal("a record was made that cannot name the program that made it", err)
 	}
 }
+
+// A request for a search is read by its names as written, through the
+// program's own entry point. The request names no saved connection, so that
+// nothing is asked of a provider however it is read.
+func TestSearchRequestInAnotherCaseIsRefused(t *testing.T) {
+	s, b, c := searchFixture(t)
+	for name, raw := range map[string]string{
+		"every name in capitals": `{"CONNECTION":"absent","REVISION":"` + c.Revision + `","QUERY":"query","MAXRESULTS":1}`,
+		"a query beside itself":  `{"connection":"absent","revision":"` + c.Revision + `","query":"first","QUERY":"second","maxResults":1}`,
+	} {
+		if out, err := ReadSearch(context.Background(), s, []byte(raw)); err != ErrRequest || len(out) != 0 {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	for name, test := range map[string]struct{ method, request string }{
+		"configure, a name in capitals":    {"configure", `{"ID":"second","name":"Second","provider":"tavily","dailyLimit":5,"credential":"tvly-second"}`},
+		"configure, a limit beside itself": {"configure", `{"id":"second","name":"Second","provider":"tavily","dailyLimit":5,"DAILYLIMIT":10000,"credential":"tvly-second"}`},
+		"disconnect, a name in capitals":   {"disconnect", `{"id":"` + c.ID + `","REVISION":"` + c.Revision + `"}`},
+	} {
+		if _, err := b.Handle(context.Background(), test.method, []byte(test.request)); err != ErrRequest {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+	if rows := searchRows(t, b); len(rows) != 1 || rows[0].ID != c.ID || rows[0].DailyLimit != c.DailyLimit {
+		t.Fatalf("a refused request changed what is saved: %+v", rows)
+	}
+}

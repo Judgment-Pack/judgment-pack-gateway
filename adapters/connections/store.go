@@ -61,6 +61,11 @@ func decode(raw []byte, out any) error {
 	if d.Decode(out) != nil {
 		return ErrRequest
 	}
+	// The decoder takes a name written in another case for the name, and
+	// reads the last of the two where a request holds both.
+	if canon.ExactNames(raw, out) != nil {
+		return ErrRequest
+	}
 	return nil
 }
 

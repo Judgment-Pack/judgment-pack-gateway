@@ -96,16 +96,27 @@ const (
 var supportedVersions = map[string]bool{"2025-06-18": true, "2025-03-26": true, "2024-11-05": true}
 
 // ParseRequest reads the request strictly: an object with the known members
-// only, a non-empty tool, arguments that are an object when given.
+// only, each by its name as written and once, a non-empty tool, arguments
+// that are an object when given. The arguments are the tool's, and are held
+// to nothing here.
 func ParseRequest(r io.Reader) (Request, error) {
-	dec := json.NewDecoder(io.LimitReader(r, 1<<20))
-	dec.DisallowUnknownFields()
 	var req Request
+	raw, err := io.ReadAll(io.LimitReader(r, 1<<20))
+	if err != nil {
+		return req, fmt.Errorf("request: %w", err)
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return req, fmt.Errorf("request: %w", err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
 		return req, errors.New("request: trailing content after the object")
+	}
+	// The decoder takes "TOOL" for tool, and the last of the two where a
+	// request holds both.
+	if err := canon.ExactNames(raw, &req); err != nil {
+		return Request{}, fmt.Errorf("request: %w", err)
 	}
 	if req.Tool == "" {
 		return req, errors.New(`request: "tool" is required`)

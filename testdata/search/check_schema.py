@@ -74,6 +74,8 @@ for change, why in [
     (put('endpoint', 'https://example.org/search'), 'an endpoint from the caller'),
     (put('provider', 'tavily'), 'a provider from the caller'),
     (put('credential', 'secret'), 'a credential from the caller'),
+    (put('QUERY', 'public policy guidance'), 'a member named in capitals, beside the member'),
+    (lambda v: v.__setitem__('Query', v.pop('query')), 'a member named with a capital'),
     (put('connection', 'Research'), 'a connection in capitals'),
     (put('connection', '1research'), 'a connection that begins with a digit'),
     (put('connection', 'a/b'), 'a connection that is a path'),

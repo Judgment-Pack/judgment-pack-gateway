@@ -58,6 +58,9 @@ The request, as canonical arguments on stdin:
 {"stream": "decisions", "namespace": "public", "limit": 1000, "state": "<the previous receipt's snapshot>"}
 ```
 
+The members are read by their names as written, each once: `STREAM` is not `stream`, and a
+request that names a member twice, in one spelling or in two, is refused.
+
 A stream is named by `stream` and, when the connector offers that name in more than one
 namespace, by `namespace` — a null namespace and an empty one are distinct, as the
 protocol has them, and `"namespace": null` names the stream without one; a name that is
@@ -226,6 +229,9 @@ The request, as canonical arguments on stdin:
 ```json
 {"tool": "query", "arguments": {"sql": "select id, status from decisions where id > 100"}}
 ```
+
+`tool` and `arguments` are read by their names as written, each once: `TOOL` is not `tool`.
+What `arguments` holds is the tool's, and its names are held to nothing here.
 
 What the envelope carries, and so what the receipt records:
 
@@ -1049,6 +1055,14 @@ refused, fetches the counterexamples again, reads the stream in the connector's 
 holds the fresh facts to the fixtures'; the CI job "both paths agree" runs it. The rule, what the first capture found,
 and what the check does not establish are in
 [docs/design/both-paths-agreement.md](../docs/design/both-paths-agreement.md).
+
+## How the connection programs read a request
+
+`gateway-connections`, `adapter-drive`, `adapter-gmail` and `adapter-sources` read every
+request, of every provider, by its members' names as written, each once. A member the
+operation does not name is refused, and so is one named in another case: Go's struct
+decoding would take `QUERY` for `query`, and where a request held both would read the one
+that comes last. The refusal is `invalid-request`, and says nothing of the request.
 
 ## Personal Google Drive connections
 
