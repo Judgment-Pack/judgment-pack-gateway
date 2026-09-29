@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"adapters/attachment"
+	"adapters/internal/canon"
 	"adapters/internal/program"
 )
 
@@ -442,8 +443,108 @@ func TestTheBoundsOfTheRequestTheFileAndTheRecord(t *testing.T) {
 		t.Fatalf("a record at the output bound is refused, or is %d bytes and not %d: %v", len(at), len(record), err)
 	}
 	cfg.MaxOutput--
-	if _, err := bounded(cfg); codeOf(err) != CodeRecordOverBound {
-		t.Fatalf("a record a byte past the output bound: %s, want %s", codeOf(err), CodeRecordOverBound)
+	if _, err := bounded(cfg); codeOf(err) != CodeRecordOverBound || !strings.HasPrefix(err.Error(), "record-over-bound: the record is ") {
+		t.Fatalf("a record a byte past the output bound: %v", err)
+	}
+	// A file whose base64 alone is past the bound is refused before it is
+	// encoded, and the refusal says so. At the bound of its base64 the file
+	// is encoded, and the record around it is what is past the bound.
+	var rec Record
+	if err := json.Unmarshal(record, &rec); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxOutput = int64(len(rec.File.Bytes))
+	if _, err := bounded(cfg); codeOf(err) != CodeRecordOverBound || !strings.HasPrefix(err.Error(), "record-over-bound: the record is ") {
+		t.Fatalf("a file whose base64 is at the output bound: %v", err)
+	}
+	cfg.MaxOutput--
+	early := fmt.Sprintf("record-over-bound: the file is %d bytes and its base64 alone %d, past --max-output %d", rec.File.Size, len(rec.File.Bytes), cfg.MaxOutput)
+	if _, err := bounded(cfg); err == nil || err.Error() != early {
+		t.Fatalf("a file whose base64 is a byte past the output bound: %v, want %s", err, early)
+	}
+}
+
+// A rendering program's answer is held to the bound on the record before it
+// is encoded, whatever the request's size: an answer within the bound on the
+// file whose base64 is past the bound on the record is refused for the
+// record, and nothing is encoded.
+func TestAProgramsAnswerIsHeldToTheRecordsBoundBeforeItIsEncoded(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Renderer = "a-rendering-program"
+	req, err := parse(t, arguments("pdf", sampleDocument), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer := []byte("%PDF-1.7\n" + strings.Repeat("x", 900_000) + "\n%%EOF\n")
+	runner := func(context.Context, string, []string, []byte, int64) ([]byte, string, error) {
+		return answer, "sha256:" + strings.Repeat("c", 64), nil
+	}
+	want := fmt.Sprintf("record-over-bound: the file is %d bytes and its base64 alone %d, past --max-output %d", len(answer), base64.StdEncoding.EncodedLen(len(answer)), cfg.MaxOutput)
+	if int64(len(answer)) > cfg.MaxFile || int64(base64.StdEncoding.EncodedLen(len(answer))) <= cfg.MaxOutput {
+		t.Fatal("the answer of this test is to be within the bound on the file and past the bound on the record")
+	}
+	if out, err := processWith(context.Background(), cfg, req, testIdentity, time.Now(), time.Now, runner); out != nil || err == nil || err.Error() != want {
+		t.Fatalf("the answer is refused as %v, want %s", err, want)
+	}
+	cfg.MaxOutput = 2 << 20
+	out, err := processWith(context.Background(), cfg, req, testIdentity, time.Now(), time.Now, runner)
+	if err != nil || Check(out) != nil {
+		t.Fatalf("the same answer under a bound that holds it: %v", err)
+	}
+}
+
+// The record around a file is under three kibibytes, which is what the
+// contract says of it and what the room for a file is reckoned with. The
+// record here has every value at its longest: a title and a program's name of
+// 255 bytes that are each written as two, the longest language, a citation,
+// every bound at its ceiling, and every count at the most its bound admits.
+func TestTheRecordAroundAFileIsUnderThreeKibibytes(t *testing.T) {
+	language := "zh-" + strings.Repeat("abcdefgh-", 3) + "abcde"
+	digest := "sha256:" + strings.Repeat("f", 64)
+	programDigest := digest
+	file := []byte(aPDF)
+	rec := Record{
+		RenderVersion: RecordVersion,
+		Request: RequestSummary{
+			Format: FormatPDF, Title: strings.Repeat(`"`, 255), Language: &language, ContentDigest: digest,
+			Blocks: maxBlocksCeiling, TextBytes: maxRequestCeiling, Cites: &Cites{Decision: digest},
+		},
+		File: File{MediaType: MediaTypePDF, Size: int64(len(file)), SHA256: digestOf(file), Encoding: "base64", Bytes: base64.StdEncoding.EncodeToString(file)},
+		Rendering: Rendering{
+			Status:   StatusComplete,
+			Renderer: Renderer{Kind: RendererProgram, Name: strings.Repeat("\\", 255), Digest: &programDigest},
+			Source:   &Source{MediaType: MediaTypeDocx, Size: maxFileCeiling, SHA256: digest, Renderer: Renderer{Kind: RendererModule, Name: RendererDocx}},
+			Bounds: Bounds{
+				MaxRequestBytes: maxRequestCeiling, MaxBlocks: maxBlocksCeiling, MaxFileBytes: maxFileCeiling,
+				MaxOutputBytes: maxOutputCeiling, TimeoutMs: timeoutCeiling.Milliseconds(),
+			},
+			DurationMs: 2 * timeoutCeiling.Milliseconds(),
+		},
+		Provenance: Provenance{
+			Adapter:    attachment.Identity{Name: adapterName, Version: "0.00.000-rc.0+0123456789abcdef", Digest: digest},
+			ObservedAt: "2026-09-28T22:09:02Z",
+		},
+	}
+	if len(language) != 35 {
+		t.Fatalf("the language of this test is %d bytes", len(language))
+	}
+	out, err := canon.EncodeJSON(rec)
+	if err == nil {
+		out, err = canon.Canonicalize(out, canon.RefuseNumbers)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Check(out); err != nil {
+		t.Fatalf("the record does not pass its check: %v", err)
+	}
+	around := len(out) - len(rec.File.Bytes)
+	// The file of this record is a short one. The size and the digest of a
+	// file are of a fixed length but for the digits of the size, and the
+	// largest file's size has eight digits.
+	around += len("67108864") - len(fmt.Sprint(len(file)))
+	if around >= 3<<10 || around < 2<<10 {
+		t.Fatalf("the record around a file is %d bytes at its longest", around)
 	}
 }
 
@@ -609,7 +710,7 @@ func TestTheDeadlineEndsTheProgram(t *testing.T) {
 	defer cancel()
 	started := time.Now()
 	out, err := Process(soon, cfg, req, testIdentity, time.Now())
-	if codeOf(err) != CodeTimeout || out != nil || !strings.Contains(err.Error(), "had not finished at the deadline and was ended") {
+	if codeOf(err) != CodeTimeout || out != nil || !strings.Contains(err.Error(), "the deadline had passed when the rendering program's outcome was taken") {
 		t.Fatalf("a program still running at the deadline: %v", err)
 	}
 	if elapsed := time.Since(started); elapsed > 4*time.Second {
@@ -622,7 +723,7 @@ func TestTheDeadlineEndsTheProgram(t *testing.T) {
 		code, says string
 	}{
 		"not started":  {program.ErrNotStarted, CodeTimeout, "the deadline had passed after the rendering program was resolved and before it was started"},
-		"not finished": {program.ErrTimeout, CodeTimeout, "the rendering program had not finished at the deadline and was ended; nothing it wrote was used"},
+		"not finished": {program.ErrTimeout, CodeTimeout, "the deadline had passed when the rendering program's outcome was taken; nothing it wrote was used"},
 		"any other":    {errors.New("could not be started"), CodeRendererFailed, "the rendering program could not be started"},
 	} {
 		runner := func(context.Context, string, []string, []byte, int64) ([]byte, string, error) {
@@ -715,7 +816,7 @@ func TestWhatBeginsAndEndsAsAPDFDoes(t *testing.T) {
 // digest, what it was handed, and a file that begins and ends as a PDF does.
 func TestTheCheckHoldsARecordOfAPDF(t *testing.T) {
 	cfg := DefaultConfig()
-	cfg.Renderer = "soffice-wrapper"
+	cfg.Renderer = "word-to-pdf"
 	req, err := parse(t, arguments("pdf", sampleDocument), cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -771,9 +872,25 @@ func TestTheCheckHoldsARecordOfAPDF(t *testing.T) {
 		"a renderer with no digest":            {func() { delete(member("rendering", "renderer"), "digest") }, "rendering.renderer: member digest is missing"},
 		"a renderer whose digest is not one":   {func() { member("rendering", "renderer")["digest"] = "sha256:0" }, "rendering.renderer.digest is not a digest"},
 		"a renderer with no name":              {func() { member("rendering", "renderer")["name"] = "" }, "rendering.renderer.name is not a program's name, one word"},
-		"a renderer of two words":              {func() { member("rendering", "renderer")["name"] = "soffice --headless" }, "rendering.renderer.name is not a program's name, one word"},
-		"a renderer with a line feed":          {func() { member("rendering", "renderer")["name"] = "soffice\n" }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer of two words":              {func() { member("rendering", "renderer")["name"] = "word-to-pdf --headless" }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer with a line feed":          {func() { member("rendering", "renderer")["name"] = "word-to-pdf\n" }, "rendering.renderer.name is not a program's name, one word"},
 		"a renderer with arguments":            {func() { member("rendering", "renderer")["args"] = []any{"docx", "pdf"} }, "rendering.renderer: a member the contract does not define"},
+		"a renderer of 256 bytes":              {func() { member("rendering", "renderer")["name"] = strings.Repeat("é", 128) }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer with a tab":                {func() { member("rendering", "renderer")["name"] = "a-rendering\tprogram" }, "rendering.renderer.name is not a program's name, one word"},
+		"a renderer that is a string":          {func() { member("rendering")["renderer"] = "a-rendering-program" }, "rendering.renderer: not a JSON object"},
+		"a renderer with no kind":              {func() { delete(member("rendering", "renderer"), "kind") }, "rendering.renderer: member kind is missing"},
+		"a renderer with no member name":       {func() { delete(member("rendering", "renderer"), "name") }, "rendering.renderer: member name is missing"},
+		"a renderer whose name is a number":    {func() { member("rendering", "renderer")["name"] = json.Number("7") }, "rendering.renderer.name is not a program's name, one word"},
+		"a source with no media type":          {func() { delete(member("rendering", "source"), "mediaType") }, "rendering.source: member mediaType is missing"},
+		"a source with no member size":         {func() { delete(member("rendering", "source"), "size") }, "rendering.source: member size is missing"},
+		"a source with no digest":              {func() { delete(member("rendering", "source"), "sha256") }, "rendering.source: member sha256 is missing"},
+		"a source with no renderer":            {func() { delete(member("rendering", "source"), "renderer") }, "rendering.source: member renderer is missing"},
+		"a source whose size is a string":      {func() { member("rendering", "source")["size"] = "2895" }, "rendering.source.size is not a positive integer"},
+		"a source whose size is negative":      {func() { member("rendering", "source")["size"] = json.Number("-1") }, "rendering.source.size is not a positive integer"},
+		"a source by a writer of no kind":      {func() { delete(member("rendering", "source", "renderer"), "kind") }, "rendering.source.renderer: member kind is missing"},
+		"a source by a writer of no name":      {func() { delete(member("rendering", "source", "renderer"), "name") }, "rendering.source.renderer: member name is missing"},
+		"a source at the bound on the file":    {func() { member("rendering", "source")["size"] = json.Number(fmt.Sprint(cfg.MaxFile)) }, ""},
+		"a renderer of 255 bytes":              {func() { member("rendering", "renderer")["name"] = strings.Repeat("é", 127) + "e" }, ""},
 	} {
 		decode()
 		c.make()
@@ -781,7 +898,11 @@ func TestTheCheckHoldsARecordOfAPDF(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := Check(changed); err == nil || !strings.Contains(err.Error(), c.says) {
+		// A row that says nothing is one the check admits: a value at the
+		// edge of its rule.
+		if err := Check(changed); c.says == "" && err != nil {
+			t.Errorf("%s: the check says %v, and the record is one it admits", name, err)
+		} else if c.says != "" && (err == nil || !strings.Contains(err.Error(), c.says)) {
 			t.Errorf("%s: the check says %v, want it to say %q", name, err, c.says)
 		}
 	}
@@ -2125,9 +2246,10 @@ func TestTheExamplesAreWhatTheAdapterWrites(t *testing.T) {
 // The example of a PDF's record is what the adapter writes with the stand-in
 // for a rendering program that lies beside the examples: the record passes
 // the check, the request yields the record's account of it, and the file is
-// what the stand-in answers. What the program was handed is held to be the
-// Word file of the same content, by its parts, since the archive of another
-// build may differ.
+// what the stand-in answers. What the record says the program was handed is
+// held to the Word file this build writes for the same content, by its size
+// and its digest. The saved example's account of it is held to the saved
+// example of the Word file, which the same build wrote for the same content.
 func TestTheExampleOfAPDFIsWhatTheAdapterWrites(t *testing.T) {
 	if _, err := os.Stat("/bin/sh"); err != nil {
 		t.Skip("no /bin/sh")
@@ -2176,6 +2298,23 @@ func TestTheExampleOfAPDFIsWhatTheAdapterWrites(t *testing.T) {
 	if got.Rendering.Source.Size != int64(len(docx)) || got.Rendering.Source.SHA256 != digestOf(docx) {
 		t.Errorf("the source is recorded as %+v, and the Word file of the same content is %d bytes, %s", got.Rendering.Source, len(docx), digestOf(docx))
 	}
+	// The two saved examples are of one content, so the Word file one holds
+	// is the Word file the other says its program was handed.
+	word, err := os.ReadFile(beside + "examples/refund-decision.record.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved Record
+	if err := json.Unmarshal(word, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Request.ContentDigest != want.Request.ContentDigest {
+		t.Fatalf("the two examples are of two contents: %s and %s", saved.Request.ContentDigest, want.Request.ContentDigest)
+	}
+	if want.Rendering.Source.Size != saved.File.Size || want.Rendering.Source.SHA256 != saved.File.SHA256 {
+		t.Errorf("the example of a PDF says its program was handed %d bytes, %s, and the example of the Word file holds %d bytes, %s",
+			want.Rendering.Source.Size, want.Rendering.Source.SHA256, saved.File.Size, saved.File.SHA256)
+	}
 }
 
 // Where pandoc is installed, it reads the file and finds the text: a reader
@@ -2218,10 +2357,10 @@ func TestTheConfigurationIsHeldToItsCeilings(t *testing.T) {
 		"a time to the microsecond": func(c *Config) {
 			c.Timeout = 1500 * time.Microsecond
 		},
-		"a renderer of two words":   func(c *Config) { c.Renderer = "soffice --headless" },
-		"a renderer with a tab":     func(c *Config) { c.Renderer = "soffice\t" },
+		"a renderer of two words":   func(c *Config) { c.Renderer = "word-to-pdf --headless" },
+		"a renderer with a tab":     func(c *Config) { c.Renderer = "word-to-pdf\t" },
 		"a renderer past 255 bytes": func(c *Config) { c.Renderer = strings.Repeat("r", 256) },
-		"a renderer with a control": func(c *Config) { c.Renderer = "soffice\x01" },
+		"a renderer with a control": func(c *Config) { c.Renderer = "word-to-pdf\x01" },
 	} {
 		cfg := DefaultConfig()
 		change(&cfg)

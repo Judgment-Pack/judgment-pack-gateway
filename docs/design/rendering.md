@@ -66,7 +66,8 @@ travels in the result. `/acquire` reads at most 1 MiB of body by default, and co
 values of the arguments, refusing past 524,288 of them whatever the body bound
 (`maxArgumentValues`, `go/serve.go`). The gateway reads at most 1 MiB of a source's output by
 default. A file of *n* bytes is 4 × ⌈*n* / 3⌉ bytes of base64, and the record around it is
-under two kibibytes, so at the defaults the largest file that fits is about 766 KiB. An
+under three kibibytes at its longest and nearer one for a short title, so at the defaults the
+largest file that fits is about 766 KiB. An
 operator raises the two byte bounds with `--max-request` and `--source-max-output`, each up
 to 64 MiB, on the command line only: under an engine configuration both keep their defaults.
 The example above carries a file of 4 MiB, the adapter's default bound on the file.
@@ -91,8 +92,8 @@ in case is another member.
 |---|---|---|
 | `format` | string | required. `"docx"`, or `"pdf"` where the operator configured a rendering program |
 | `document` | object | required. The content |
-| `document.title` | string | required. The title of the document: 1 to 255 bytes of UTF-8, with no character from U+0000 to U+001F, no U+007F, and neither U+FFFE nor U+FFFF. It is written into the file's properties. It is not a file name, and the adapter derives none |
-| `document.language` | string — optional | a language tag: two or three letters, then any number of parts of two to eight letters or digits, each after a hyphen, at most 35 bytes in all (`en`, `pt-BR`, `zh-Hant-HK`). The form is checked and the tag is not looked up in any registry. It is written into the file as given, as the language of the document |
+| `document.title` | string | required. The title of the document: 1 to 255 bytes of UTF-8, with no character from U+0000 to U+001F, no U+007F, and neither U+FFFE nor U+FFFF. It is written into the Word file's properties. It is not a file name, and the adapter derives none |
+| `document.language` | string — optional | a language tag: two or three letters, then any number of parts of two to eight letters or digits, each after a hyphen, at most 35 bytes in all (`en`, `pt-BR`, `zh-Hant-HK`). The form is checked and the tag is not looked up in any registry. It is written into the Word file as given, as the language of the document |
 | `document.blocks` | array | required. 1 to `--max-blocks` blocks, in the order they are to appear |
 | `cites` | object — optional | what the caller says the document reports |
 | `cites.decision` | string | required in `cites`. The digest of a decision record, `"sha256:"` and 64 lowercase hexadecimal characters. **The caller's assertion**: the adapter copies it into the record and checks nothing about it, not that such a record exists and not that the content reports it |
@@ -119,9 +120,13 @@ another: a list is not nested in a list, and a table's cell holds runs and nothi
 
 ### Text is literal
 
-A run's text is written into the file as the characters it holds. Nothing in it is evaluated,
-expanded or fetched: no markup, no field, no formula, no include. It is not normalised and not
-trimmed.
+What this section and the two after it say is said of the Word file, which the adapter writes
+for either format. Of a PDF the adapter promises none of it: a PDF holds what the rendering
+program made of that Word file, and the adapter does not read it ([The PDF](#the-pdf)).
+
+A run's text is written into the Word file as the characters it holds. Nothing in it is
+evaluated, expanded or fetched: no markup, no field, no formula, no include. It is not
+normalised and not trimmed.
 
 - U+000A, a line feed, is a line break inside the paragraph, and U+0009 is a tab.
 - Every other character from U+0000 to U+001F, and U+007F, refuses the request. A carriage
@@ -136,7 +141,7 @@ request is refused.
 
 ### Links
 
-A link is a text and a target. The adapter writes the target into the file and **never
+A link is a text and a target. The adapter writes the target into the Word file and **never
 follows it**: nothing is resolved, fetched or checked for existence. A target is:
 
 - 1 to 2,048 bytes, with no character from U+0000 to U+0020, no U+007F, and neither U+FFFE
@@ -159,9 +164,9 @@ that. What a reader does when a person follows a link is the reader's.
 
 ### Nothing is brought in
 
-The request is everything the file is made from. There is no member for an image, a font, a
-style sheet, a template or an include, and the adapter reads nothing from disk or network to
-make the file.
+The request is everything the Word file is made from. There is no member for an image, a
+font, a style sheet, a template or an include, and the adapter reads nothing from disk or
+network to make the file. What a rendering program reads to make a PDF is its own.
 
 ## Refusals
 
@@ -203,9 +208,10 @@ checks in this order and refuses at the first check that fails:
    ([Bounds and the deadline](#bounds-and-the-deadline)). For a PDF this is before the
    program is run;
 8. for a PDF, what the rendering program did ([The PDF](#the-pdf)). The deadline had passed
-   when the program was to be started, or the program had not finished at the deadline:
-   `timeout`. Anything else that is not an answer: `renderer-failed`;
-9. the record is longer than `--max-output`: `record-over-bound`.
+   when the program was to be started, or when its outcome was taken: `timeout`. Anything
+   else that is not an answer: `renderer-failed`;
+9. the file's base64 alone is longer than `--max-output`, which is found before the file is
+   encoded, or the record is longer than that: `record-over-bound`.
 
 A failure of the adapter itself is `adapter-failed`: an executable of its own it cannot read, a
 request whose reading has not ended two seconds past the deadline
@@ -225,12 +231,14 @@ gateway reads none of the output of a source that exited with a failure (`runSou
 `go/serve.go`), so nothing is retained and nothing is minted.
 
 **Retrying is a new acquisition.** `/acquire` is not idempotent: the same arguments sent twice
-mint two receipts over two records, which hold the same file.
+mint two receipts over two records. For a Word file the two hold the same file, from the same
+build. For a PDF they need not.
 
 ## The record
 
 One JSON object, written in the canonical form of SPEC.md §1.1: member names in code-point
-order, integers only. Every member below is present in every version 1 record; a member
+order, integers only. Every member below is present in every version 1 record, but for the two
+the table says are for a PDF only, which a record of a Word file does not have. A member
 without a value is `null`, never absent. This is the record of the request under
 [How it is wired](#how-it-is-wired), as one build of the adapter wrote it with every bound at
 its default, laid out here for reading and with the file's base64 left out. The command line
@@ -285,9 +293,9 @@ shown there raises `--max-output`, and its record states that bound as `6291456`
 | `file.bytes` | string | the file, in standard base64 (RFC 4648 §4), padded, with no line break: the one encoding of its bytes |
 | `rendering.status` | string | `"complete"`. Version 1 has no other |
 | `rendering.renderer.kind` | string | `"module"`: the file was written by the adapter's own code. `"program"`: it was written by the rendering program |
-| `rendering.renderer.name` | string | for a module, which writer of the adapter wrote the file: `"adapter-render/docx/1"`. For a program, the program as the operator configured it, one word |
+| `rendering.renderer.name` | string | for a module, which writer of the adapter wrote the file: `"adapter-render/docx/1"`. For a program, the program as the operator configured it: 1 to 255 bytes of UTF-8 with no character from U+0000 to U+0020 and no U+007F |
 | `rendering.renderer.digest` | string | for a program only, and absent for a module: the SHA-256 of the file the program's name resolved to, read before the program was started |
-| `rendering.source` | object | for a PDF only, and absent for a Word file: what the program was handed. `mediaType`, `size` and `sha256` of the Word file, and `renderer`, the module's writer that wrote it. It does not hold the file |
+| `rendering.source` | object | for a PDF only, and absent for a Word file: what the program was offered on its stdin. `mediaType`, `size` and `sha256` of the Word file, and `renderer`, the module's writer that wrote it. It does not hold the file, and it does not say that the program read it |
 | `rendering.bounds` | object | the bounds that applied, as configured: each a positive integer of at most its ceiling ([Bounds and the deadline](#bounds-and-the-deadline)) |
 | `rendering.durationMs` | integer | the time from when the adapter began reading the request to when it built the record, in milliseconds |
 | `provenance.adapter` | object | the adapter as it describes itself: its name, its version, and the SHA-256 of the file the operating system reports as its executable. The adapter's testimony. The receipt carries the gateway's own reading of the same file |
@@ -363,9 +371,15 @@ A PDF is what the rendering program wrote. The adapter's part is the Word file i
 program, which is the file a request for `"docx"` yields for the same content, byte for byte.
 
 **What the program is given.** It is run once for a request, with two arguments, `docx` and
-`pdf`: what it is handed and what is asked of it. The Word file is on its stdin. Its
-environment, its working directory and its process group are the adapter's own. Its stderr
-is discarded.
+`pdf`: what it is handed and what is asked of it. The Word file is on its stdin, and the
+adapter does not know whether the program read it. Its environment, its working directory
+and its process group are the adapter's own. Its stderr is discarded.
+
+**The program is one written for this.** A converter named by itself is handed `docx` and
+`pdf` as its arguments and makes of them what it will. LibreOffice, named as `soffice`,
+takes them for the names of two files to open, and opens a window to say that it cannot find
+them. The operator names a program that reads its stdin and writes its stdout, as the
+example below does.
 
 **What it answers.** The PDF on its stdout, within `--max-file`, and a successful exit. The
 adapter admits what it wrote only where it begins as a PDF does, with `%PDF-`, a digit, a
@@ -375,18 +389,26 @@ of form. The adapter does not open the PDF, and says nothing of what it holds.
 **How it is run.** Under the lifecycle [attachments.md](attachments.md#how-a-document-is-processed)
 states for the OCR program, from the same code, `adapters/internal/program`:
 
-- The program's name is resolved on the adapter's `PATH` and its file is read for its
-  digest. The deadline is then checked, and a program whose deadline has passed is not
-  started: `timeout`.
+- The program's name is resolved and its file is read for its digest. A name with no path
+  separator is looked for on the adapter's `PATH`, and one found through an entry of `PATH`
+  that is not an absolute path is not used. A name with a path separator is a path, from the
+  adapter's working directory where it is a relative one. The deadline is then checked, and
+  a program whose deadline has passed is not started: `timeout`.
+- Resolving the name, reading the file and starting the program are not interrupted by the
+  deadline. A name that resolves to something that does not end when it is read, a pipe for
+  one, holds the adapter until the gateway ends it. The operator names a regular file.
 - A program has finished when it has exited and its stdout has reached its end, in either
   order. One still running at the deadline is ended: the process the adapter started, not
-  that process's own children. One that writes past `--max-file` is ended at once.
+  that process's own children. It is ended at once, by a signal it cannot catch, so it
+  clears nothing up. One that writes past `--max-file` is ended at once in the same way.
 - A stdout still open is waited for by one timer of two seconds, started when the adapter
   first observes the exit or the deadline. When the timer ends the adapter closes the pipe.
   The exit of the process the adapter started is waited for with no timer of its own.
 - The outcome is taken once the adapter has observed the exit, and either the end of stdout
   or its own closing of the pipe. If the deadline has passed by then the rendering is
   refused with `timeout`, and nothing the program wrote is used, even a PDF that was whole.
+  That is so of a program the adapter ended, and of one that had exited and left its stdout
+  open in a process of its own: the refusal does not say which.
 - Otherwise each of these is `renderer-failed`: a name that does not resolve, a file that
   cannot be read for its digest, a program that cannot be started, a failed exit, output
   past the bound, a stdout closed by the adapter before it ended, and an answer that is not
@@ -440,7 +462,14 @@ cat "$dir/in.pdf"
 ```
 
 What such a script reads, writes and starts is its own and the operator's. The record names
-the script.
+the script. Two things follow from how a program is ended:
+
+- The script's `trap` runs when the script exits of itself. It does not run when the adapter
+  ends the script at the deadline, and the directory then stays, with the Word file in it.
+  An operator clears such directories by other means.
+- The word processor is the script's child and not the adapter's. When the adapter ends the
+  script, the word processor goes on until it ends of itself. An operator who needs it ended
+  bounds it in the script, or runs the source under a supervisor that ends the whole group.
 
 ## Bounds and the deadline
 
@@ -454,12 +483,13 @@ Every bound is the operator's, on the adapter's command line, and the record rep
 | `--max-output` | 1 MiB | 1 TiB | the record on stdout; at or below the gateway's `--source-max-output` |
 | `--timeout` | 25 s | 10 min | the adapter's deadline, from its start, a whole number of milliseconds |
 
-`--renderer PROGRAM` names the rendering program, one word of at most 255 bytes, and is
-absent by default. The name is resolved when a PDF is asked for, not when the adapter
-starts.
+`--renderer PROGRAM` names the rendering program and is absent by default. An empty name is
+no program. Any other is 1 to 255 bytes of UTF-8 with no character from U+0000 to U+0020 and
+no U+007F: one word, with no space in it. The name is resolved when a PDF is asked for, not
+when the adapter starts.
 
-Each bound is a positive integer at most its ceiling; any other value, a renderer of more
-than one word, an unknown flag or a positional argument is a usage error, and the adapter
+Each bound is a positive integer at most its ceiling; any other value, a renderer's name
+outside its rule, an unknown flag or a positional argument is a usage error, and the adapter
 exits 2 without reading the request.
 
 The structure's own bounds are the contract's and not the operator's: 6 heading levels, 512
@@ -495,18 +525,33 @@ writer writes. That what the writer writes is the layout stated under
 [The Word file](#the-word-file) is held by the tests, which read and write the archive by the
 format's rules in code of their own.
 
-A consumer that runs the check can take `rendering.bounds.maxFileBytes` as a bound on what
-opening the file unpacks. One that does not enforces a limit of its own as it extracts, as
-it would for any archive.
+A consumer that runs the check on a record of a Word file can take
+`rendering.bounds.maxFileBytes` as a bound on what opening that file unpacks. One that does
+not enforces a limit of its own as it extracts, as it would for any archive.
 
-**What bounds the adapter's memory is the request, not this.** The writing stops early, at
-the first block that begins with the document part and the targets of its links together
-past the bound. That saves work. It is not a bound on what the adapter holds, which includes
-the arguments as read, one block past the point where the writing stops, and the parts
+**None of this is so of a PDF.** The check reads the first bytes of a PDF and its last 1,024,
+and nothing between. A PDF holds compressed streams of its own, and the bound on the file
+says nothing of what they hold once they are read: a PDF of 8,603 bytes has been made that
+passes the check under a bound of 4 MiB and holds a stream of 8 MiB. A consumer that opens a
+PDF limits what its reader may use, whatever the check said.
+
+**What bounds the adapter's memory for a Word file is the request, not this.** The writing
+stops early, at the first block that begins with the document part and the targets of its links
+together past the bound. That saves work. It is not a bound on what the adapter holds, which
+includes the arguments as read, one block past the point where the writing stops, and the parts
 before they are compressed. One block can carry the whole text of a request, and the XML is
 longer than the request that carried it: about fifteen times the request's bytes at the worst
-found, which is twenty-two and a half times the text's, for text that alternates an
-ampersand and a tab. An operator who raises `--max-request` raises that with it.
+found, which is twenty-two and a half times the text's, for text that alternates an ampersand
+and a tab. An operator who raises `--max-request` raises that with it.
+
+**For a PDF it is the bound on the file as well.** A rendering program can answer with as
+much as `--max-file` admits whatever the request's size. The adapter holds that answer, then
+its base64, then the record, and the record again while it checks it. On one machine, a
+request of under a hundred bytes whose program answered 4 MiB took the adapter to 66 MiB of
+memory, and one whose program answered 64 MiB to 990 MiB. A file whose base64 alone is past
+`--max-output` is refused before any of that is made of it: the same 64 MiB under a bound on
+the record of 6 MiB was refused at 134 MiB. An operator who raises `--max-file` for PDFs
+raises what the adapter may hold with it.
 
 A record past `--max-output` is not cut, and a file past `--max-file` is not cut: the adapter
 refuses. With the defaults as they stand, a file of more than about 766 KiB is refused with
@@ -521,7 +566,8 @@ Word file is written and once the writing has ended, each time by the clock as w
 the timer; a rendering whose deadline has passed at either check is refused. For a PDF it is
 read twice more, as [The PDF](#the-pdf) says: before the program is started, and when its
 outcome is taken. Nothing else reads
-the deadline. The arguments are read and held to their rules before the first check, and the
+the deadline, and what is done between resolving the program and starting it is not
+interrupted by it. The arguments are read and held to their rules before the first check, and the
 file is written between the two, and each runs to its end. The record is encoded and written
 after the second check, and that is not checked again. The gateway's own timeout for the
 source, thirty seconds by default, ends the process whatever it is doing.
@@ -531,9 +577,10 @@ source, thirty seconds by default, ends the process whatever it is doing.
 1. Verify the receipt as for any acquisition. It covers the record, and so the file.
 2. Read `renderVersion`, and treat a version it does not know as a record it cannot read.
 3. Decode `file.bytes`, and compare the length with `file.size` and the SHA-256 with
-   `file.sha256`. The reference check does both, and reads the file's parts to hold them to
-   the record's bound. A consumer that opens the file without the check limits what it
-   extracts.
+   `file.sha256`. The reference check does both. For a Word file it also reads the file's
+   parts to hold them to the record's bound, and a consumer that opens a Word file without
+   the check limits what it extracts. For a PDF the check bounds nothing of what the PDF
+   holds: a consumer limits what its reader may use.
 4. Name the file itself. The title is a title: it may hold characters a file system refuses.
 5. Treat `request.cites` as what the caller said. Whoever relies on it checks the decision
    record it names.
@@ -544,8 +591,9 @@ source, thirty seconds by default, ends the process whatever it is doing.
 ## Versioning
 
 `renderVersion` names this contract. The members this note lists are the version 1 set: every
-one is present in every version 1 record, and none is removed, renamed, retyped or given
-another meaning. Within version `"1"`:
+one that is not optional is present in every version 1 record, and none is removed, renamed,
+retyped or given another meaning. The optional ones are the two the record's table says are
+for a PDF only. Within version `"1"`:
 
 - a member may be added to the record only as an optional one, read as "not stated" when
   absent;
@@ -582,17 +630,25 @@ The check says nothing of whether the file is a correct rendering of any content
 what a Word file's parts or a PDF hold: it reads neither. The adapter holds every record it
 writes to the check before it writes it.
 
+The check is of a record's form. It does not show that an adapter could have written the
+record. It does not relate the counts of the request to the bounds the record states, so it
+admits a record of seven blocks under a bound of one. And it cannot know what a program was
+handed: of `rendering.source` it holds the form, and that the size is within the bound on
+the file. What makes a record an adapter's is the receipt over it.
+
 `testdata/rendering/arguments-v1.schema.json` and `testdata/rendering/render-v1.schema.json`
 describe the arguments and the record as JSON Schema. They check each value on its own. The
-rules that relate values are the adapter's and the check's: that every row of a table holds
-the same number of cells, that the size and the digest are the file's, that the file's parts
-are within the bound, that the file is laid out as the writer lays it out. And a schema is
-looser than the adapter in five places, each stated in the schema's own description and,
+rules that relate values are the adapter's and the check's, with one exception: that every
+row of a table holds the same number of cells, that the size and the digest are the file's,
+that the file's parts are within the bound, that the file is laid out as the writer lays it
+out. The exception is the format: the record schema holds the media type, the kind of the
+renderer and the presence of `rendering.source` to the format the record states. And a schema
+is looser than the adapter in five places, each stated in the schema's own description and,
 where a parsed value can show it, held by the script as something the schema admits:
 
 - a schema counts a length in characters where the adapter counts bytes of UTF-8, so a title
   of 128 characters of two bytes each passes the schemas, and neither the adapter nor the
-  check;
+  check. The same is so of a rendering program's name in the record;
 - the arguments schema does not parse a target, so it admits an `http` target that names a
   port and no host;
 - the arguments schema does not know the operator's `--max-blocks`;
@@ -612,15 +668,15 @@ lexical forms as patterns, and that grammar admits neither.
 
 `testdata/rendering/examples/` holds a request, `refund-decision.request.json`, and the record
 one build of the adapter wrote for it, `refund-decision.record.json`. It holds the record of
-the same request for a PDF as well, `refund-decision.pdf.record.json`, made with a stand-in
-for a rendering program that answers one small PDF whatever it is handed: the record shows
-the members of a PDF's record, and its file is not a rendering of the content. The adapter's tests hold
-the record to the check, and hold the request to yield the record's `request` member, its
+the same request for a PDF as well, `refund-decision.pdf.record.json`, made with a stand-in for
+a rendering program that answers one small PDF whatever it is handed: the record shows the
+members of a PDF's record, and its file is not a rendering of the content. The adapter's tests
+hold the record to the check, and hold the request to yield the record's `request` member, its
 `contentDigest` included, and a file whose seven parts are the example's once each is read out
 of its archive. They do not hold it to yield the record's file byte for byte, since another
 build may write other bytes. `testdata/rendering/check_schema.py` holds both examples, and a
-record written in the run that checks it, to the schemas; holds the schemas to refuse a list
-of broken variants of each; and holds them to admit the differences listed above.
+record written in the run that checks it, to the schemas; holds the schemas to refuse a list of
+broken variants of each; and holds them to admit the differences listed above.
 
 ## What this is not
 
@@ -632,8 +688,10 @@ of broken variants of each; and holds them to admit the differences listed above
   converts it to blocks first.
 - **Not a layout.** No page size, column, image, footnote, header or footer, and no position
   on a page. Content that needs one is not content this contract renders.
-- **Not a save.** Nothing is written to disk or to any storage. Saving is a separate act,
-  under [ADR-0005](../adr/0005-personal-storage-controls.md).
+- **Not a save.** The adapter writes nothing to disk or to any storage. A rendering program
+  may: the example under [The PDF](#the-pdf) writes the Word file and the PDF to a directory
+  of its own. Saving is a separate act, under
+  [ADR-0005](../adr/0005-personal-storage-controls.md).
 - **Not evidence.** A rendering is an output. It is not evidence for the decision it reports.
 - **Not reachable through the engine's MCP server.** The server serves the live tools of
   platforms bound in an engine configuration, and no binding serves a bare command

@@ -189,9 +189,10 @@ func ParseRequest(ctx context.Context, r io.Reader, cfg Config, now func() time.
 }
 
 // Runner runs the rendering program: its stdout and the digest of the file
-// its name resolved to, or an error -- program.ErrNotStarted or
-// program.ErrTimeout where the deadline ended it, any other for
-// renderer-failed. Tests replace it.
+// its name resolved to, or an error -- program.ErrNotStarted where the
+// deadline kept it from starting, program.ErrTimeout where the deadline had
+// passed when its outcome was taken, any other for renderer-failed. Tests
+// replace it.
 type Runner func(ctx context.Context, name string, args []string, stdin []byte, maxOutput int64) (stdout []byte, digest string, err error)
 
 // runProgram is the Runner of the adapter: the program under the lifecycle
@@ -257,6 +258,13 @@ func processWith(ctx context.Context, cfg Config, req Request, identity attachme
 		rendering.Renderer = Renderer{Kind: RendererProgram, Name: cfg.Renderer, Digest: &digest}
 		file, mediaType = pdf, MediaTypePDF
 	}
+	// The record holds the file in base64, so a file whose base64 alone is
+	// past the bound on the record cannot be written. It is refused here,
+	// before the file is encoded, put in canonical form and checked, each of
+	// which holds a copy of it.
+	if encoded := int64(base64.StdEncoding.EncodedLen(len(file))); encoded > cfg.MaxOutput {
+		return nil, refuse(CodeRecordOverBound, "the file is %d bytes and its base64 alone %d, past --max-output %d", len(file), encoded, cfg.MaxOutput)
+	}
 	rec := Record{
 		RenderVersion: RecordVersion,
 		Request: RequestSummary{
@@ -308,7 +316,9 @@ func renderPDF(ctx context.Context, cfg Config, docx []byte, run Runner) ([]byte
 	case errors.Is(err, program.ErrNotStarted):
 		return nil, "", refuse(CodeTimeout, "the deadline had passed after the rendering program was resolved and before it was started")
 	case errors.Is(err, program.ErrTimeout):
-		return nil, "", refuse(CodeTimeout, "the rendering program had not finished at the deadline and was ended; nothing it wrote was used")
+		// The run does not say whether the program was ended at the deadline
+		// or had exited and left its stdout open, so neither does this.
+		return nil, "", refuse(CodeTimeout, "the deadline had passed when the rendering program's outcome was taken; nothing it wrote was used")
 	case err != nil:
 		return nil, "", refuse(CodeRendererFailed, "the rendering program %s", err.Error())
 	case !isPDF(out):

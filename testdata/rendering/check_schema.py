@@ -209,8 +209,8 @@ for change, why in [
     (drop('rendering', 'renderer', 'digest'), 'a program with no digest'),
     (put('rendering', 'renderer', 'digest', 'sha256:0'), 'a program whose digest is not one'),
     (put('rendering', 'renderer', 'name', ''), 'a program with no name'),
-    (put('rendering', 'renderer', 'name', 'soffice --headless'), 'a program of two words'),
-    (put('rendering', 'renderer', 'name', 'soffice\n'), 'a program with a line feed after it'),
+    (put('rendering', 'renderer', 'name', 'word-to-pdf --headless'), 'a program of two words'),
+    (put('rendering', 'renderer', 'name', 'word-to-pdf\n'), 'a program with a line feed after it'),
     (put('rendering', 'renderer', 'args', ['docx', 'pdf']), 'a program with arguments'),
 ]:
     refuse(record, pdf, change, why)
@@ -249,6 +249,7 @@ for validator, value, change, why in [
     (record, written, put('provenance', 'observedAt', '2026-02-30T12:00:00Z'), 'the thirtieth of February'),
     (record, written, put('request', 'blocks', 7.0), 'an integer written with a fraction'),
     (arguments, request, put('document', 'blocks', heading, 'level', 2.0), 'a level written with a fraction'),
+    (record, pdf, put('rendering', 'renderer', 'name', '\u00e9' * 128), 'a program\'s name of 128 characters and 256 bytes'),
 ]:
     admitted = copy.deepcopy(value)
     change(admitted)

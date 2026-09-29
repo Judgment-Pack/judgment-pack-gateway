@@ -1005,21 +1005,25 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   adapter hands it the Word file it wrote for the same content, on stdin, and takes the PDF
   from its stdout, under the lifecycle of [internal/program/](internal/program/), which is
   the OCR program's. The record names the program as configured with the digest of its
-  file, and says what it was handed. The adapter does not confine the program and does not
+  file, and says what it was offered. The adapter does not confine the program and does not
   read the PDF. With no program configured a PDF is refused with `renderer-not-configured`;
-  a program that did not answer is `renderer-failed`, or `timeout` where the deadline ended
-  it.
+  a program that did not answer is `renderer-failed`, or `timeout` where the deadline had
+  passed when its outcome was taken. The program is one written for this: a converter named
+  by itself is handed `docx` and `pdf` as arguments.
 - **A link** is a text and a target of scheme `https`, `http` or `mailto` that names a host
   or one address in its plainest form. The adapter writes the target into the file as given
   and never follows it.
 - **The record** is held to `render.Check`, the contract's reference check, before the
-  adapter writes it: the members closed, the size and the digest those of the file the
-  base64 holds, the file the seven parts laid out as the writer lays them out, and the
-  parts within the bound the record states. `cites.decision` is copied into it as the caller's assertion and checked for
-  its form only.
+  adapter writes it: the members closed, and the size and the digest those of the file the
+  base64 holds. For a Word file the check also holds the file to be the seven parts laid out
+  as the writer lays them out, and the parts to be within the bound the record states. For a
+  PDF it holds the file to begin and end as a PDF does, and bounds nothing of what the PDF
+  holds. `cites.decision` is copied into the record as the caller's assertion and checked
+  for its form only.
 - **The bounds** are `--max-request` (1 MiB), `--max-blocks` (2,000), `--max-file` (4 MiB),
-  `--max-output` (1 MiB) and `--timeout` (25 s). `--max-file` bounds the archive and what its
-  parts hold uncompressed, since a small archive can hold long parts. The file travels in the
+  `--max-output` (1 MiB) and `--timeout` (25 s). `--max-file` bounds a Word file's archive
+  and what its parts hold uncompressed, since a small archive can hold long parts, and what a
+  rendering program may write. The file travels in the
   record as base64, so with every default the largest file that fits is about 766 KiB; the
   example above raises the record's bound, and the gateway's, to carry a file of 4 MiB.
   Arguments that nest deeper than the structure does are refused by one pass over their
