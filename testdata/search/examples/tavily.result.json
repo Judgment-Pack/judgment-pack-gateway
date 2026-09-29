@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "connection": "research",
+  "revision": "5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f5b1f",
+  "provider": "tavily",
+  "query": "public policy guidance",
+  "retrievedAt": "2026-09-29T12:00:00Z",
+  "kind": "search-results",
+  "hits": [
+    {
+      "title": "Guidance on public policy",
+      "url": "https://example.org/guidance",
+      "snippet": "An excerpt the provider gave for the first link."
+    },
+    {
+      "title": "",
+      "url": "https://example.org/archive/2026",
+      "snippet": ""
+    }
+  ]
+}

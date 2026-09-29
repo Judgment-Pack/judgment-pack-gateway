@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "connection": "grounded",
+  "revision": "9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e9c2e",
+  "provider": "google-grounding",
+  "query": "public policy guidance",
+  "retrievedAt": "2026-09-29T12:00:05Z",
+  "kind": "grounded-answer",
+  "hits": [
+    {
+      "title": "example.org",
+      "url": "https://example.org/guidance",
+      "snippet": ""
+    }
+  ],
+  "generatedAnswer": "A short answer the model generated.",
+  "attributionHtml": "<div class=\"container\">Search suggestions as the provider wrote them</div>",
+  "queries": [
+    "public policy guidance"
+  ]
+}
