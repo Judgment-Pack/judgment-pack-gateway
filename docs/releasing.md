@@ -42,7 +42,7 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | The adapters' tests (CI) | yes | no | vetted, not run |
 | The released archive, run: `gateway version`, `gateway conform` on the corpus it carries, every program present | `amd64` and `arm64` | `arm64` | `amd64` |
 | The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
-| The released archive, read and not run: its files are the commit's, byte for byte; each program was built from the package of its name, for the archive's platform; it holds nothing else | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
+| The released archive, read and not run: its files are the commit's, byte for byte; each program is a file built from the package of its name, for the archive's platform, at the lowest level of its architecture; it holds nothing else | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
 by anything. Of the nine adapter executables in an archive, six are never started by the archive
@@ -126,17 +126,23 @@ Every job works on the commit the run was started for, by its digest, and not on
    modules say, every program under `adapters/cmd` is named in the release build, and the tree
    carries no publisher registration. A check `main` has gained since that commit is not asked.
 3. **Packages without publishing.** One reviewed toolchain, named exactly in the workflow; no cgo,
-   no workspace, no recorded paths. The tag is written into `gateway`. File timestamps are set to
-   the commit's. All six archives are then opened and read, as the table above states.
+   no workspace, no recorded paths; `amd64` at `v1` and `arm64` at `v8.0`. The tag is written into
+   `gateway`. File timestamps are set to the commit's. All six archives are then opened and read
+   by `build/release_archives.py`, as the table above states. CI holds that script to a negative
+   case for each thing it checks.
 4. **Runs the archives of four targets**, each on a runner of its own platform, as the table above
    states.
 5. **Attests and drafts.** Only after every smoke test passes, and only if the tag still names the
    commit, are the archives attested and a draft release created, with the notes from the commit.
-6. **Waits at the `production` gate.** Review the draft on the Releases page: the notes, the seven
-   assets, the checksums. Hold the draft's `checksums.txt` to the one the `Package` job printed in
-   the run: the checks lock nothing, and whoever may write to the repository could have changed a
-   draft since it was made. Approve the pending deployment on the run. The tag is held to the
-   commit once more, and the draft is published.
+6. **Waits at the `production` gate.** Review the draft on the Releases page: the notes and the
+   seven assets. Approve the pending deployment on the run.
+7. **Holds the draft to the run, and publishes.** A draft can be changed while it waits, by
+   whoever may write to the repository. So on the far side of the gate the tag is held to the
+   commit once more, and the draft as it then stands is downloaded and held to what the run
+   packaged: the same files by name, the same `checksums.txt`, and every archive the bytes that
+   list names. Then it is published. A moment remains between that check and the publishing, and
+   nothing closes it. An approval given more than thirty days after the run finds the run's
+   archives gone, and the job fails: release a new version.
 
 No maintainer token and no repository secret is used.
 
@@ -145,7 +151,7 @@ No maintainer token and no repository secret is used.
 The gate is on the release. Three things exist before it and are not secret:
 
 - the archives, as an artifact of the workflow run, which anyone who can read the repository's
-  runs can download for seven days;
+  runs can download for thirty days;
 - the attestation of those archives, which is recorded in a public transparency log when it is
   made. An attestation says which workflow built an archive, from which commit. It does not say a
   maintainer approved it: only a published release says that;
@@ -162,7 +168,7 @@ What to do with a draft depends on which job failed:
 | --- | --- | --- |
 | Any job before `Attest and draft release` | none was made | re-run the failed jobs |
 | `Attest and draft release` | may exist, and may lack assets | read it, delete it by hand, then re-run the failed jobs. The job refuses to run while a release under the tag exists, draft or published, and refuses when it cannot find out |
-| `Publish release` | exists and is complete | **keep it**: that job only publishes the draft that is there. Re-run the failed jobs |
+| `Publish release` | exists and is complete | **keep it**: that job only publishes the draft that is there. Read why it failed first: if it found the draft changed, the draft is not to be published. Otherwise re-run the failed jobs |
 
 A draft is deleted with `gh release delete <tag> --repo Judgment-Pack/judgment-pack-gateway`,
 which leaves the tag. A published release is never deleted to make room for another.

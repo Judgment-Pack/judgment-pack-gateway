@@ -84,11 +84,12 @@ jobs:
       # reviewed is what merged: a tag on a branch's commit names a state
       # main may never hold. Any commit main holds is admitted, not its
       # newest alone, and the checks it is held to are CI's as that commit
-      # has them.
+      # has them. Main is named in full: the short name would be answered
+      # by a tag called origin/main before the branch.
       - name: The tagged commit is on main
         shell: bash
         run: |
-          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main || { echo "the tagged commit ${GITHUB_SHA} is not on main" >&2; exit 1; }
+          git merge-base --is-ancestor "${GITHUB_SHA}" refs/remotes/origin/main || { echo "the tagged commit ${GITHUB_SHA} is not on main" >&2; exit 1; }
 
       - name: The release has notes a person wrote
         shell: bash
@@ -169,8 +170,8 @@ jobs:
           # beside this one (n8n-nodes-judgment-pack@...).
           GORELEASER_CURRENT_TAG: ${{ env.RELEASE_TAG }}
 
-      # Printed, so that whoever approves the release can hold the draft's
-      # checksums to the ones this run made.
+      # Printed, so that the run's own record says what it packaged. The
+      # publish job holds the draft to these again before it publishes.
       - name: Verify packaged checksums
         working-directory: dist
         run: |
@@ -178,57 +179,15 @@ jobs:
           cat checksums.txt
 
       # Held of the archives themselves, all six, and not of the
-      # configuration that was meant to make them. The corpus arbitrates,
-      # so it travels as the commit holds it, every file, byte for byte, and
-      # the catalog with it. Each program is the one built from the package
-      # of its name, for the platform the archive is named for, as the
-      # executable's own build record says; and an archive holds no file
-      # the list below does not account for.
+      # configuration that was meant to make them: the files are the
+      # commit's, byte for byte; each program is a file built from the
+      # package of its name, for the archive's platform, at the level a
+      # release promises; and an archive holds nothing else
+      # (build/release_archives.py, which CI holds to a negative case for
+      # each of these).
       - name: Each archive holds the corpus, the catalog and the programs, and nothing else
         shell: bash
-        run: |
-          release_version="${RELEASE_TAG#v}"
-          programs="$(ls adapters/cmd)"
-          for target in darwin_amd64 darwin_arm64 linux_amd64 linux_arm64 windows_amd64 windows_arm64; do
-            unpacked="${RUNNER_TEMP}/unpacked/${target}"
-            mkdir -p "${unpacked}"
-            case "${target}" in
-              windows_*) suffix=".exe"; unzip -q "dist/judgment-pack-gateway_${release_version}_${target}.zip" -d "${unpacked}" ;;
-              *) suffix=""; tar -xzf "dist/judgment-pack-gateway_${release_version}_${target}.tar.gz" -C "${unpacked}" ;;
-            esac
-
-            diff -r corpus "${unpacked}/corpus"
-            diff -r catalog "${unpacked}/catalog"
-            for file in LICENSE README.md SECURITY.md SPEC.md THIRD_PARTY_NOTICES; do
-              cmp "${file}" "${unpacked}/${file}"
-            done
-
-            # What the executable's build record says it was built from, and
-            # for which platform: "<package> <os>_<arch>".
-            built() {
-              go version -m "$1" | awk '
-                $1 == "path" { package = $2 }
-                $1 == "build" && index($2, "GOOS=") == 1 { os = substr($2, 6) }
-                $1 == "build" && index($2, "GOARCH=") == 1 { arch = substr($2, 8) }
-                END { print package " " os "_" arch }'
-            }
-            [ "$(built "${unpacked}/gateway${suffix}")" = "gateway ${target}" ] \
-              || { echo "${target}: gateway${suffix} is not the core built for ${target}: $(built "${unpacked}/gateway${suffix}")" >&2; exit 1; }
-            for program in ${programs}; do
-              [ "$(built "${unpacked}/${program}${suffix}")" = "adapters/cmd/${program} ${target}" ] \
-                || { echo "${target}: ${program}${suffix} is not adapters/cmd/${program} built for ${target}: $(built "${unpacked}/${program}${suffix}")" >&2; exit 1; }
-            done
-            # An archive made for a system that has the bit carries it.
-            if [ -z "${suffix}" ]; then
-              for program in gateway ${programs}; do
-                [ -x "${unpacked}/${program}" ] || { echo "${target}: ${program} is not executable" >&2; exit 1; }
-              done
-            fi
-
-            expected="$( { printf '%s\n' LICENSE README.md SECURITY.md SPEC.md THIRD_PARTY_NOTICES catalog corpus "gateway${suffix}"; for program in ${programs}; do echo "${program}${suffix}"; done; } | LC_ALL=C sort)"
-            found="$(ls -A "${unpacked}" | LC_ALL=C sort)"
-            [ "${expected}" = "${found}" ] || { echo "${target}: the archive does not hold what a release holds:" >&2; diff <(echo "${expected}") <(echo "${found}") >&2; exit 1; }
-          done
+        run: python3 build/release_archives.py --dist dist --version "${RELEASE_TAG#v}"
 
       - name: Carry the release notes with the archives
         shell: bash
@@ -244,7 +203,9 @@ jobs:
             dist/checksums.txt
             dist/release-notes.md
           if-no-files-found: error
-          retention-days: 7
+          # As long as an approval may be waited for: the publish job reads
+          # it again on the far side of the gate.
+          retention-days: 30
 
   smoke-unix:
     name: ${{ matrix.os }} release archive
@@ -294,7 +255,10 @@ jobs:
           mkdir -p "${destination}"
           tar -xzf "dist/${archive}" -C "${destination}"
 
-          test "$("${destination}/gateway" version)" = "gateway ${RELEASE_TAG}"
+          # Taken first and compared after, so that a program that prints the
+          # right words and fails is a failure.
+          reported="$("${destination}/gateway" version)"
+          [ "${reported}" = "gateway ${RELEASE_TAG}" ] || { echo "gateway reports ${reported}" >&2; exit 1; }
           "${destination}/gateway" conform --corpus "${destination}/corpus"
 
           for program in adapter-airbyte adapter-document adapter-drive adapter-gmail adapter-http adapter-mcp adapter-sources adapter-web gateway-connections; do
@@ -454,6 +418,40 @@ jobs:
           named="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" "refs/tags/${RELEASE_TAG}" "refs/tags/${RELEASE_TAG}^{}" \
             | awk -v tag="refs/tags/${RELEASE_TAG}" '$2 == tag { plain = $1 } $2 == tag "^{}" { peeled = $1 } END { print (peeled != "" ? peeled : plain) }')"
           [ -n "${named}" ] && [ "${named}" = "${GITHUB_SHA}" ] || { echo "refs/tags/${RELEASE_TAG} names ${named:-nothing}, and the draft was built from ${GITHUB_SHA}" >&2; exit 1; }
+
+      - name: Download the archives this run packaged
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-dist
+          path: run
+
+      # The draft has waited at the gate, and whoever may write to the
+      # repository could have changed it there. What is about to be
+      # published is taken from the draft as it now stands and held to what
+      # this run packaged: the same files by name, the same list of
+      # checksums, and every archive the bytes that list names. A moment
+      # remains between this and the publishing, and nothing here closes it.
+      - name: The draft holds what this run packaged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          state="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
+          [ "${state}" = "true" ] || { echo "the release under ${RELEASE_TAG} is not a draft" >&2; exit 1; }
+
+          mkdir draft
+          gh release download "${RELEASE_TAG}" --dir draft
+
+          packaged="$(cd run && find . -type f ! -name release-notes.md | LC_ALL=C sort)"
+          drafted="$(cd draft && find . -type f | LC_ALL=C sort)"
+          [ "${packaged}" = "${drafted}" ] || { echo "the draft does not hold the files this run packaged:" >&2; diff <(echo "${packaged}") <(echo "${drafted}") >&2; exit 1; }
+
+          cmp run/checksums.txt draft/checksums.txt
+          named="$(awk '{ print "./" $2 }' draft/checksums.txt | LC_ALL=C sort)"
+          archives="$(cd draft && find . -type f ! -name checksums.txt | LC_ALL=C sort)"
+          [ "${named}" = "${archives}" ] || { echo "checksums.txt does not name the draft's archives, each once:" >&2; diff <(echo "${named}") <(echo "${archives}") >&2; exit 1; }
+          (cd draft && sha256sum --check --strict checksums.txt)
 
       - name: Publish the reviewed draft release
         shell: bash

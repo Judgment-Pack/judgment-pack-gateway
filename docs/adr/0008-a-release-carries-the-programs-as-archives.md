@@ -58,9 +58,10 @@ What is decided:
    is never marked latest.
 2. **The tagged commit passes CI as that commit defines it.** The release workflow calls `ci.yml`
    and carries no second copy of the checks.
-3. **A release carries six archives**, for Linux, macOS and Windows on `amd64` and `arm64`: the
-   gateway, every program under `adapters/cmd`, `SPEC.md`, the corpus, the catalog, and the
-   licences. It carries their checksums and a build-provenance attestation for each.
+3. **A release carries six archives**, for Linux, macOS and Windows on `amd64` and `arm64`, each
+   architecture at its lowest level: the gateway, every program under `adapters/cmd`, `SPEC.md`,
+   the corpus, the catalog, and the licences. It carries their checksums and a build-provenance
+   attestation for each.
 4. **Nothing is a release until a maintainer approves it** at the `production` environment. The
    workflow refuses to run in a repository where that environment has no reviewer rule.
 5. **Notes are written by a person**, in `docs/releases/<tag>.md`, and reviewed in the pull request
@@ -104,9 +105,10 @@ ADR-0001 is not edited; its row in the index names this supersession.
 - A tag is not protected until its release is published, and is protected then only where release
   immutability is turned on. The workflow's three checks of the tag stand in for that before
   publication, and an administrator can still change the environment's rule between them.
-- The checks lock nothing. Publishing selects the release by its tag, and whoever may write to the
-  repository could change a draft between the last check and the approval: the approver reads the
-  draft's checksums against the run's.
+- The checks lock nothing. A draft can be changed while it waits, by whoever may write to the
+  repository, so the workflow holds the draft's files to the ones the run packaged after the
+  approval and before it publishes. A moment remains between the two. What a consumer verifies
+  does not depend on it: an archive the workflow did not build has no attestation.
 - No claim is made that a build can be reproduced bit for bit by someone else.
 - A release made before this record, `v0.1.0` to `v0.4.0`, stays as it is: notes only.
 

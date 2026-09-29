@@ -185,7 +185,7 @@ jobs:
           cache-dependency-path: adapters/go.sum
       - name: This is the toolchain the release workflow names
         run: |
-          named="$(sed -n 's/^          go-version: \([0-9][0-9.]*\)$/\1/p' .github/workflows/release.yml)"
+          named="$(sed -n "s/^ *go-version: *['\"]\{0,1\}\([0-9][0-9.]*\)['\"]\{0,1\} *\$/\1/p" .github/workflows/release.yml)"
           [ -n "$named" ] && [ "go$named" = "$(go env GOVERSION)" ] || { echo "release.yml names Go ${named:-nothing}, and this job runs $(go env GOVERSION)"; exit 1; }
       # The licence of every module the released programs link, and of
       # every linked package that carries its own, as the module cache
@@ -201,6 +201,11 @@ jobs:
           want="$(ls adapters/cmd | sort)"
           have="$(sed -n 's/^    binary: //p' .goreleaser.yml | grep -vx gateway | sort)"
           [ "$want" = "$have" ] || { echo "adapters/cmd and .goreleaser.yml name different programs:"; diff <(echo "$want") <(echo "$have"); exit 1; }
+      # What the release workflow holds of its archives, held here to a
+      # negative case for each thing it says: real programs, built for two
+      # platforms, archived, and spoiled one way at a time.
+      - name: The archive check refuses each fault it names
+        run: python3 build/test_release_archives.py
       # No publisher's application registration in the connection companion
       # (docs/design/publisher-google-oauth.md).
       - name: The tree carries no publisher registration
