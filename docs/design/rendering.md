@@ -74,10 +74,31 @@ operator raises the two byte bounds with `--max-request` and `--source-max-outpu
 to 64 MiB, on the command line only: under an engine configuration both keep their defaults.
 The example above carries a file of 4 MiB, the adapter's default bound on the file.
 
-**What this change wires.** Nothing. No engine configuration, no image and no desk plan names
-the adapter in this release; an operator who wants it adds the `--source` above. No image
-carries a rendering program either: an operator who wants PDFs installs one, and the fonts it
-needs, and names it with `--renderer` ([The PDF](#the-pdf) has a command line for that).
+**What names the adapter.** The desk's local plan does, as the source `render`
+(`gateway-connections --local-plan`,
+[host-independent-connections.md](host-independent-connections.md#local-source-launch-plan)).
+It starts `adapter-render --max-output 6291456` as a bare source with a timeout of thirty
+seconds, and leaves the adapter's other bounds and its deadline at their defaults. The plan
+names no rendering program, so a desk's request for a PDF is refused as
+`renderer-not-configured`.
+
+Two things follow for a desk that takes this plan. The desk holds itself to the first, and
+nothing holds it to the second:
+
+- **Its bundle carries `adapter-render`.** A desk takes a plan only where every program the
+  plan names is in its verified bundle
+  ([host-independent-connections.md](host-independent-connections.md#local-source-launch-plan)).
+  One whose bundle has no `adapter-render` refuses the plan whole, and has no local source
+  at all, the document adapter's included.
+- **It runs the gateway with a `--source-max-output` of 6,291,456 or more.** Under a smaller
+  one the gateway ends the adapter where its record is longer than that, and the acquisition
+  fails, though the adapter was allowed the record.
+
+No engine
+configuration and no image names the adapter; an operator who wants it there adds the
+`--source` above. No image carries a rendering program either: an operator who wants PDFs
+installs one, and the fonts it needs, and names it with `--renderer`
+([The PDF](#the-pdf) has a command line for that).
 
 **The adapter's identity, and the seed.** As for every source, `--source-user` is what keeps
 the adapter away from the seed, and a deployment that runs the gateway and the adapter as one

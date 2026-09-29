@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -39,6 +40,38 @@ func TestV3CatalogIsCompleteLocalizedAndMatchesLocalPlan(t *testing.T) {
 	if ConnectionCatalogV3().Providers[0].Presentation.Description["en"] == "changed" {
 		t.Fatal("shared descriptor state")
 	}
+}
+
+// A desk refuses a plan that names a source twice, and reaches the rendering
+// adapter by the one entry named render: a bare source that holds no
+// connection.
+func TestTheLocalPlanNamesEachSourceOnceAndTheRenderingAdapter(t *testing.T) {
+	plan := ConnectionLocalPlan()
+	seen := map[string]int{}
+	for _, source := range plan.Sources {
+		seen[source.ID]++
+	}
+	for id, times := range seen {
+		if times != 1 {
+			t.Errorf("the plan names %q %d times", id, times)
+		}
+	}
+	if plan.Version != 1 || len(plan.Sources) != 10 {
+		t.Fatalf("version %d, %d sources", plan.Version, len(plan.Sources))
+	}
+	for _, source := range plan.Sources {
+		if source.ID != "render" {
+			continue
+		}
+		// The arguments are these and no others, so that every bound the
+		// plan does not name is the adapter's default.
+		if source.Executable != "adapter-render" || strings.Join(source.Args, " ") != "--max-output 6291456" || len(source.Args) != 2 ||
+			source.Shape != "command" || source.Connections || source.Timeout != 30 {
+			t.Fatalf("render = %+v", source)
+		}
+		return
+	}
+	t.Fatal("the plan names no source render")
 }
 
 func TestResourceProducerSupportsUnknownProviderAndBindsRetainedBytes(t *testing.T) {
