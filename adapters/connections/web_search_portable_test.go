@@ -40,6 +40,11 @@ func serviceAccount(t *testing.T, weak bool, change map[string]string) string {
 	searchKeys.once.Do(func() {
 		for _, bits := range []int{2048, 1024} {
 			key, err := rsa.GenerateKey(rand.Reader, bits)
+			if err != nil && bits == 1024 {
+				// Where a key this short may not be made, the cases that
+				// need one are not run, and say so.
+				continue
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -70,6 +75,9 @@ func serviceAccount(t *testing.T, weak bool, change map[string]string) string {
 	if weak {
 		key = searchKeys.weak
 	}
+	if key == nil {
+		return ""
+	}
 	members := map[string]string{"type": "service_account", "client_email": "reader@demo-project.iam.gserviceaccount.com", "private_key": string(key), "token_uri": "https://oauth2.googleapis.com/token"}
 	for name, value := range change {
 		if value == "" {
@@ -84,7 +92,9 @@ func serviceAccount(t *testing.T, weak bool, change map[string]string) string {
 
 func TestSearchHitsAreLinksOverHTTPSAlone(t *testing.T) {
 	c := SearchConnection{ID: "demo", Provider: "tavily", Revision: strings.Repeat("a", 64)}
-	for _, refused := range []string{"http://example.org/plain", "https://reader@example.org/named", "https://example.org:8443/port", "https:///nowhere"} {
+	// The last three parse: a control character after the # is read as part
+	// of the fragment, so only the check for one refuses them.
+	for _, refused := range []string{"http://example.org/plain", "https://reader@example.org/named", "https://example.org:8443/port", "https:///nowhere", "https://example.org/#\n", "https://example.org/#\r", "https://example.org/#\x00"} {
 		body, _ := json.Marshal(map[string]any{"results": []map[string]string{{"title": "Refused", "url": refused}, {"title": "Kept", "url": "https://example.org:443/kept"}}})
 		r, err := normalizeSearch(body, c, SearchRequest{c.ID, c.Revision, "query", 5})
 		if err != nil || len(r.Hits) != 1 || r.Hits[0].URL != "https://example.org:443/kept" {
@@ -182,7 +192,6 @@ func TestGoogleCredentialIsHeldToItsForm(t *testing.T) {
 		"no token endpoint":      serviceAccount(t, false, map[string]string{"token_uri": ""}),
 		"another token endpoint": serviceAccount(t, false, map[string]string{"token_uri": "https://evil.example/token"}),
 		"not a service account":  serviceAccount(t, false, map[string]string{"client_email": "reader@example.org"}),
-		"a key of 1024 bits":     serviceAccount(t, true, nil),
 		"no key":                 serviceAccount(t, false, map[string]string{"private_key": ""}),
 		"a key that is no key":   serviceAccount(t, false, map[string]string{"private_key": "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n"}),
 		"a key that is not PEM":  serviceAccount(t, false, map[string]string{"private_key": "not PEM"}),
@@ -196,6 +205,11 @@ func TestGoogleCredentialIsHeldToItsForm(t *testing.T) {
 		if validateGoogleCredential(credential) != ErrRequest {
 			t.Fatalf("%s: accepted", name)
 		}
+	}
+	if short := serviceAccount(t, true, nil); short == "" {
+		t.Log("no key of 1024 bits can be made here; that such a key is refused is not tested")
+	} else if validateGoogleCredential(short) != ErrRequest {
+		t.Fatal("a key of 1024 bits: accepted")
 	}
 }
 
@@ -240,7 +254,6 @@ func TestSearchConnectionIsHeldToItsBounds(t *testing.T) {
 		"no project":                 func(c *SearchConnection) { c.Project = "" },
 		"no location":                func(c *SearchConnection) { c.Location = "" },
 		"no model":                   func(c *SearchConnection) { c.Model = "" },
-		"a key of 1024 bits":         func(c *SearchConnection) { c.Credential = serviceAccount(t, true, nil) },
 		// A credential of the right form, and too long only by a member
 		// that nothing reads.
 		"a credential over 8192": func(c *SearchConnection) {
@@ -251,6 +264,13 @@ func TestSearchConnectionIsHeldToItsBounds(t *testing.T) {
 		change(&c)
 		if searchValid(c) {
 			t.Fatalf("Google, %s: accepted", name)
+		}
+	}
+	if short := serviceAccount(t, true, nil); short != "" {
+		c := grounding
+		c.Credential = short
+		if searchValid(c) {
+			t.Fatal("Google, a key of 1024 bits: accepted")
 		}
 	}
 }

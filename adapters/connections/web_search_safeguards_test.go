@@ -11,7 +11,7 @@ package connections
 // out, and what failed for each, are in the review record of the pull request
 // that added these files.
 //
-// Eight conditions no test here tells from their absence:
+// Six conditions no test here tells from their absence:
 //
 //   - a saved credential is kept on an update only for the same provider: a
 //     row saved through configure holds a credential of its provider's form,
@@ -24,9 +24,11 @@ package connections
 //     derived from is held to the same value first;
 //   - the credential has a key: no key is a key that is not PEM;
 //   - a saved credential is read again before a request: the row was held to
-//     its form a moment before, under the same lock that read it;
-//   - a link has no control character: one that has does not parse;
-//   - the adapter can read its own executable: a test binary always can.
+//     its form a moment before, under the same lock that read it.
+//
+// No test here reaches a network, whatever the program under test does: a
+// client either answers from a function or connects to the test's own server
+// and to nothing else, whichever address it is asked for.
 
 import (
 	"bytes"
@@ -35,9 +37,11 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -54,10 +58,21 @@ func searchAnswering(t *testing.T, status int, body []byte) provider {
 	t.Cleanup(server.Close)
 	p := google()
 	p.search = true
-	p.client = server.Client()
-	p.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	p.client = searchClient(server)
 	p.searchEndpoint = server.URL
 	return p
+}
+
+// searchClient is a client that trusts the server's certificate and connects
+// to that server whatever address a request names, so that a program that
+// chose another endpoint would fail here and reach nothing.
+func searchClient(server *httptest.Server) *http.Client {
+	transport := server.Client().Transport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	return &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 }
 
 func configureSearch(b *Broker, fields map[string]any) error {
@@ -153,7 +168,7 @@ func TestSearchRefusesAnAnswerThatArrivesUnderABlock(t *testing.T) {
 	}))
 	defer server.Close()
 	p := google()
-	p.client = server.Client()
+	p.client = searchClient(server)
 	p.searchEndpoint = server.URL
 	if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, p); err != ErrPolicy {
 		t.Fatal("an answer was kept though the connection was blocked meanwhile", err)
@@ -299,7 +314,7 @@ func TestTavilyIsAskedForResultsAndNothingWritten(t *testing.T) {
 	}))
 	defer server.Close()
 	p := google()
-	p.client = server.Client()
+	p.client = searchClient(server)
 	p.searchEndpoint = server.URL
 	if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "find policies", 4}, p); err != nil {
 		t.Fatal(err)
@@ -387,7 +402,7 @@ func TestSearchCredentialIsReplacedOnlyByAnother(t *testing.T) {
 	}))
 	defer server.Close()
 	p := google()
-	p.client = server.Client()
+	p.client = searchClient(server)
 	p.searchEndpoint = server.URL
 	for _, step := range []struct{ given, want string }{{"", c.Credential}, {"tvly-replacement", "tvly-replacement"}} {
 		if err := configureSearch(b, map[string]any{"id": c.ID, "revision": c.Revision, "name": c.Name, "provider": c.Provider, "dailyLimit": c.DailyLimit, "credential": step.given}); err != nil {
@@ -509,7 +524,7 @@ func TestSearchRefusesAnAnswerWhenAnotherConnectionHasItsRevision(t *testing.T) 
 	}))
 	defer server.Close()
 	p := google()
-	p.client = server.Client()
+	p.client = searchClient(server)
 	p.searchEndpoint = server.URL
 	if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, p); err != ErrChanged {
 		t.Fatal("an answer was kept for a connection that is gone", err)
@@ -617,5 +632,51 @@ func TestGoogleTokenRefusedIsACredentialToGiveAgain(t *testing.T) {
 	}
 	if spent := searchSpent(t, s, c.ID); spent != 1 {
 		t.Fatalf("a failed request was not counted: %d", spent)
+	}
+}
+
+func TestSearchClientReachesItsOwnServerAlone(t *testing.T) {
+	reached := 0
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached++ }))
+	defer server.Close()
+	// A name that is not the server's: the connection is made to the server
+	// all the same, and fails there, since its certificate is for other names.
+	if response, err := searchClient(server).Get("https://api.tavily.com/search"); err == nil {
+		response.Body.Close()
+		t.Fatal("a request for another host was answered")
+	}
+	if reached != 0 {
+		t.Fatal("a request for another host was served")
+	}
+	response, err := searchClient(server).Get(server.URL)
+	if err != nil || reached != 1 {
+		t.Fatal("the server's own address was not reached", err)
+	}
+	response.Body.Close()
+}
+
+func TestSearchMakesNoRecordWhenItsOwnProgramCannotBeRead(t *testing.T) {
+	program, err := os.Executable()
+	if err == nil {
+		program, err = filepath.EvalSymlinks(program)
+	}
+	if err != nil {
+		t.Skip("the test's own program cannot be located here")
+	}
+	before, err := os.Stat(program)
+	if err != nil || os.Chmod(program, 0111) != nil {
+		t.Skip("the mode of the test's own program cannot be changed here")
+	}
+	defer os.Chmod(program, before.Mode().Perm())
+	if file, err := os.Open(program); err == nil {
+		file.Close()
+		t.Skip("this account reads a file whatever its mode")
+	}
+	s, _, c := searchFixture(t)
+	raw, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, searchThrough(func(*http.Request) (*http.Response, error) {
+		return searchReply(200, strings.NewReader(`{"results":[{"url":"https://example.org"}]}`)), nil
+	}))
+	if err != ErrProvider || len(raw) != 0 {
+		t.Fatal("a record was made that cannot name the program that made it", err)
 	}
 }

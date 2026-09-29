@@ -71,7 +71,7 @@ func TestSearchAcquisitionIsBoundedAttestedAndPinned(t *testing.T) {
 	}))
 	defer server.Close()
 	p := google()
-	p.client = server.Client()
+	p.client = searchClient(server)
 	p.searchEndpoint = server.URL
 	q := SearchRequest{c.ID, c.Revision, "find policies", 5}
 	raw, err := searchAcquire(context.Background(), s, q, p)
@@ -125,7 +125,7 @@ func TestSearchRefusesLateResultsAfterCredentialsChange(t *testing.T) {
 	}))
 	defer server.Close()
 	p := google()
-	p.client = server.Client()
+	p.client = searchClient(server)
 	p.searchEndpoint = server.URL
 	if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, p); err != ErrChanged {
 		t.Fatal("late result accepted", err)
@@ -142,7 +142,7 @@ func TestSearchErrorsNeverEchoProviderContent(t *testing.T) {
 			}))
 			defer server.Close()
 			p := google()
-			p.client = server.Client()
+			p.client = searchClient(server)
 			p.client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 			p.searchEndpoint = server.URL
 			raw, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "query", 1}, p)
