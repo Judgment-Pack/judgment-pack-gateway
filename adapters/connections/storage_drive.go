@@ -234,30 +234,35 @@ func (b *Broker) driveStorageApply(ctx context.Context, intent storageIntent, to
 	if res.StatusCode == 403 {
 		return "", Error("permission-required")
 	}
-	if res.StatusCode != 200 && res.StatusCode != 201 {
-		return "", Error("operation-uncertain")
-	}
+	// The members are read each on its own, so that one that cannot be read
+	// does not lose the other. One that cannot be read is left empty, and no
+	// rule below takes an empty one.
 	var reply struct {
-		ID        string `json:"id"`
-		MediaType string `json:"mimeType"`
+		ID        json.RawMessage `json:"id"`
+		MediaType json.RawMessage `json:"mimeType"`
 	}
-	if json.Unmarshal(raw, &reply) != nil {
-		return "", Error("operation-uncertain")
-	}
+	var id, media string
+	json.Unmarshal(raw, &reply)
+	json.Unmarshal(reply.ID, &id)
+	json.Unmarshal(reply.MediaType, &media)
 	if q.ConvertTo != "" {
+		// Drive answered in full, and the answer does not say that a file
+		// was made or names none that is taken. Its status is kept for the
+		// person. An answer that holds the access token is not one to take
+		// an ID from: the ID of a conversion is whatever the answer says.
+		if res.StatusCode != 200 && res.StatusCode != 201 || !identifier.MatchString(id) || bytes.Contains(raw, []byte(token)) {
+			return "", storageAnswered(res.StatusCode)
+		}
 		// The ID is Drive's to give. What was made is held to be a Google
 		// Doc by Drive's own word, and where it is not, the file that was
 		// made is named so that a person can find it.
-		if !identifier.MatchString(reply.ID) {
-			return "", Error("operation-uncertain")
+		if media != storageGoogleDocumentMedia {
+			return id, errConversionUnconfirmed
 		}
-		if reply.MediaType != storageGoogleDocumentMedia {
-			return reply.ID, errConversionUnconfirmed
-		}
-		return reply.ID, nil
+		return id, nil
 	}
-	if reply.ID != q.ID {
+	if res.StatusCode != 200 && res.StatusCode != 201 || id != q.ID {
 		return "", Error("operation-uncertain")
 	}
-	return reply.ID, nil
+	return id, nil
 }

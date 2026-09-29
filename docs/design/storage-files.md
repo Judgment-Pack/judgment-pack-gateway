@@ -37,9 +37,11 @@ method through `POST /api/connections/<provider>/<method>`.
 | `files-commit` | plan `id`, exact `confirmation` for deletion | Durable plan status; no replay of a claimed mutation |
 | `files-status` | plan `id` | The stored status, without retrying the change |
 
-Every read/change must carry the opaque connection `context` from its file/list
-response. Disconnect/reconfigure invalidates it even if two locations happen to
-contain the same filename and bytes. It is a generation marker, not a credential.
+Every read and every prepared change must carry the opaque connection `context`
+from its file/list response. Disconnect/reconfigure invalidates it even if two
+locations happen to contain the same filename and bytes. It is a generation
+marker, not a credential. `files-commit` and `files-status` take a plan's `id`
+and no `context`: the plan is held to the connection it was prepared under.
 
 Create takes that `context`, `folder`, a single-component `name`, `mediaType`, `contentBase64`.
 Update takes `id`, the read `revision`, `mediaType`, `contentBase64`; renaming is
@@ -52,8 +54,16 @@ A browse returns at most 24 entries. File reads/uploads are limited to 4 MiB.
 Ordinary pipe replies remain at most 64 KiB. File-list replies allow 512 KiB
 for JSON escaping of bounded names and keys; file-read replies allow 6 MiB
 to carry base64. Only the two requests that carry a file, `files-prepare` and
-`files-prepare-google-document`, have the larger request bound.
-Metadata and payload validation reject unknown fields and duplicate JSON keys.
+`files-prepare-google-document`, have the larger request bound: the line of one
+is at most 6 MiB, and the line of any other request at most 64 KiB, counted
+without the line's ending. A longer line is refused as `invalid-request`. A line
+longer than 6 MiB and three bytes, its ending counted, is not read to its end:
+the pipe ends and that request has no answer.
+Validation of a method's parameters rejects unknown fields and duplicate JSON
+keys. It takes a member's name whatever its case and takes `null` for a value
+left out, except in `files-prepare-google-document`, whose members are taken by
+their exact names and are strings. The envelope around the parameters is held to
+neither rule.
 
 ## Discovery budgets
 
@@ -89,13 +99,17 @@ Preparation stores the exact target, base revision, payload and connection
 generation in a private atomic file. Only one pending/recent plan is retained per
 connection: this is recovery state, **not a historical audit log**. A new plan
 invalidates an earlier uncommitted plan. Preparation of Drive creates reserves a
-file ID but does not create a file.
+file ID but does not create a file. A create by conversion reserves none
+([below](#a-google-doc-made-of-a-word-file)).
 
 Commit requires the same connection generation and, for deletion, the exact
 filename (Drive/local) or full object key (S3). A host must collect this in a
 user confirmation dialog; an assistant's proposed text or a standing job setting
 is not consent. The claim is durably recorded before sending a mutation. A second
-commit for that ID returns its state; it never sends the operation again. Provider
+commit for that ID returns its state; it never sends the operation again. That
+holds of a commit that finds its plan claimed by another process in the moment
+before its own claim: it answers with what is stored of the plan, and not that
+the plan expired. Provider
 requests are not automatically retried. Completed/refused/uncertain records drop
 the uploaded payload. A crash may retain the prepared payload until replacement
 or connection-state cleanup; treat the connection-state directory as sensitive.
@@ -110,7 +124,8 @@ or connection-state cleanup; treat the connection-state directory as sensitive.
 - **Drive:** updates/trash require a strong ETag and send `If-Match`; a missing
   version lock refuses the change (`conditional-write-unavailable`). Version,
   filename and capability changes are checked again before mutation. Deletes set
-  `trashed=true`; they never call permanent deletion. Creates use the reserved ID.
+  `trashed=true`; they never call permanent deletion. Creates use the reserved ID,
+  except a create by conversion, which has none.
 - **Local:** creates are exclusive. Updates recheck the content digest and retain
   the previous bytes under `.jpack-history/<plan-id>` before atomic replacement.
   Deletes move the file to `.jpack-trash/<plan-id>/<name>`. These hidden directories
@@ -126,6 +141,22 @@ If the process crashed with an executing claim, new plans are refused for that
 connection generation; after inspecting the source, reconnect to reset custody.
 Never reconnect automatically to bypass an uncertain claim.
 
+**Let a commit end before anyone looks.** `files-status` reports a plan that was
+claimed and has not settled as `needs-attention`, and it reports it so whether
+the process that claimed it has ended or is still sending. A look at the source
+while a request is outstanding shows what is there at that moment, and not what
+the request will leave. So a host
+
+- knows of every commit it started, and lets each end before it tells a person
+  to look. The pipe gives a request fifty seconds;
+- does not take the end of its own process, or a cancelled request, for the end
+  of the provider's work on what was sent;
+- keeps what it needs to look by, the account, the folder, the name and the
+  plan's ID, before it reconnects. Reconnecting puts the plan's status out of
+  reach, and the next plan replaces its record. A commit that ends after that
+  cannot record what it made: its answer is `operation-uncertain`, and the ID
+  the provider gave it is lost.
+
 ## A Google Doc made of a Word file
 
 `files-prepare-google-document` prepares the creation of a Google Doc from a Word
@@ -135,28 +166,45 @@ refuse the method, and the catalog lists it for Drive only. A host that does not
 know the method never calls it. `files-commit` and `files-status` are the same
 calls as for any plan.
 
-**The request** has five members and no others: the `context`, a `folder` that may
-be empty, a single-component `name`, a `mediaType` and `contentBase64`. It has no
-`action`, no `id` and no `revision`, since it creates and nothing else. It is
-refused
+**The request** has four members that are required, `context`, `name`,
+`mediaType` and `contentBase64`, and one that may be left out, `folder`. It has
+no others: no `action`, no `id` and no `revision`, since it creates and nothing
+else. Each member is a JSON string and is named exactly, so `Name` is not
+`name` and `null` is not a folder. The `name` is a single component. The request
+is refused
 
+- as `invalid-request` where a required member is missing, where it has any
+  other member, or where a value is not a string;
 - as `unsupported-file` unless the media type is exactly
   `application/vnd.openxmlformats-officedocument.wordprocessingml.document` and the
-  file begins with the four bytes an archive begins with, `PK`, 0x03, 0x04. Nothing
-  more of the file is read. Whether it is a Word file Drive can convert is Drive's
-  to say, at the commit;
+  file is framed as a Word file is, which the next paragraph states;
 - by the rules every create has: the 4 MiB bound on the file (`file-too-large`),
   the name (`invalid-request`), a folder that is a folder and takes children
-  (`unsupported-file`), and the connection the `context` names (`source-changed`);
-- as `invalid-request` where it has any other member.
+  (`unsupported-file`), and the connection the `context` names (`source-changed`).
 
-`files-prepare` takes no such request. Its plan and its stored record have a member
-`convertTo` only where the plan is of a conversion, and a `files-prepare` that
-carries the member is refused.
+**What is checked of the file** is its framing, and no more. The file begins with
+the four bytes an archive's first entry begins with, `PK`, 0x03, 0x04. It ends
+with an archive's end record, whose comment runs to the last byte of the file. And
+it holds the name `[Content_Types].xml`, which every package of this kind has. No
+entry is read and nothing is decompressed. This keeps out what cannot be a Word
+file, so that no upload is spent on it: text, a file that was cut short, an
+archive that is no package. It admits what is framed so and is no Word file: a
+spreadsheet sent under a Word file's media type, and a package whose entries are
+damaged. Whether Drive can convert what is admitted is Drive's to say, at the
+commit.
+
+`files-prepare` takes no such request. Its plan and its stored record have the
+members `convertTo`, `folder` and `providerStatus` only where the plan is of a
+conversion, and a `files-prepare` that carries a member `convertTo`, whatever its
+value, is refused.
 
 **The plan** is a create whose `convertTo` is `"google-document"`, so that a person
-sees what the file becomes before they confirm. Its `target` is empty. Preparing it
-asks Drive for no ID, and with no folder it asks Drive nothing at all.
+sees what the file becomes before they confirm. Its `target` is empty. Its
+`folder` is the folder the request named, and is absent where the request named
+none: Drive's reference says that a file created with no parent "is placed
+directly in the user's My Drive folder". Preparing the plan asks Drive for no
+ID, and with no folder it asks Drive's files nothing. A token that is about to
+expire is renewed first, as for any call.
 
 **No ID is reserved, because Drive takes none.** Every other Drive create sends an
 ID reserved beforehand, which is what makes a lost answer safe to reason about.
@@ -168,46 +216,91 @@ What that costs is under *What is not known*, below.
 **The commit** is one upload. Its metadata names the document, its folder if it has
 one, and the media type `application/vnd.google-apps.document`, which is how Drive
 is asked for the conversion. It carries no ID. The file is sent under the Word
-media type. The answer is asked for its `id` and its `mimeType`, and
+media type. The answer is asked for its `id` and its `mimeType`, and each is read
+on its own, so that one that cannot be read does not lose the other.
+
+The table is of a commit that sent the upload and recorded what came of it.
 
 | Drive answers | The plan |
 | --- | --- |
 | 200 or 201, an ID, and the media type of a Google Doc | `completed`; `target` is the ID |
-| 200 or 201, an ID, and any other media type or none | `needs-attention`, `conversion-unconfirmed`; `target` is the ID |
+| 200 or 201, an ID, and any other media type, one that is no string, or none | `needs-attention`, `conversion-unconfirmed`; `target` is the ID |
 | 403 | `refused`, `permission-required` |
 | 409 or 412 | `refused`, `source-changed` |
-| anything else, an answer that cannot be read, or no answer | `needs-attention`, `operation-uncertain`; `target` is empty |
+| any other status; or 200 or 201 with no ID that can be read, or with an answer that holds the access token | `needs-attention`, `operation-uncertain`; `target` is empty; `providerStatus` is the status |
+| an answer longer than 64 KiB, one that cannot be read to its end, or none | `needs-attention`, `operation-uncertain`; `target` is empty |
+
+The last row comes first: an answer that cannot be read whole is that row
+whatever its status, a 403 included. An answer that holds the access token is
+one no ID is taken from, since the ID of a conversion is whatever the answer
+says it is. Three things are outside the table:
+
+- A commit can end before it sends. Then it answers with an error and no plan,
+  as any call does, or the plan is `refused` under `canceled` or
+  `blocked-by-policy`: the connection changed, or policy did, after the claim.
+- A commit that sent the upload and cannot record what came of it answers with
+  the error `operation-uncertain` and no plan. The plan's status is then
+  `needs-attention`, and the ID Drive answered with, if it answered, is lost.
+- That 403, 409 and 412 mean that nothing was made is read from what those
+  statuses mean. It was not tried.
+
+`providerStatus` is what Drive said, as three digits, and not what the controls
+know. It is there so that a person can tell a folder that has gone (404) from a
+token Drive did not take (401), a request Drive did not take (400), too many
+requests (429) and a failure of Drive's (a status from 500). The plan is
+`needs-attention` for each: that a status of 400 to 499 means nothing was made
+is likely, and is not something the controls have seen Drive keep to.
 
 `conversion-unconfirmed` says that Drive made a file and did not say it is a Google
 Doc. The file exists and is named by the plan's target. A person looks at it and
-decides what to do with it; the controls do not remove it.
+decides what to do with it. The controls do not remove it, and while the plan
+stands they refuse every new plan for the connection, the trashing of that file
+included: it is removed in Drive, or through the controls after the person has
+looked and reconnected. That is more than the outcome needs, since what was made
+is known. It is the one rule the controls have for a plan that needs a person.
 
 **What is not known.** Where the answer is lost, the controls do not know whether a
 document was made, and have no ID to look for. The plan is `needs-attention` like
 any uncertain outcome, the commit is never sent again, and new plans are refused
 for the connection until a person has looked and reconnected. Here the person has
-less to go on than for any other change: they look in the folder for a document of
-that name. Preparing the same document again after that makes a second document if
-the first was made.
+less to go on than for any other change. The plan's status gives the `name` and
+the `folder`, and the person looks there for a document of that name, after the
+commit has ended ([above](#changes-consent-and-uncertain-outcomes)). A name is
+not an ID: Drive's reference says of a name that it "isn't necessarily unique
+within a folder". So a document of that name may be an earlier one, and none
+may mean that Drive has not shown it yet. Preparing the same document again
+after that makes a second document if the first was made.
 
-**What is made** is a native Google document. The controls then treat it as they
-treat any: it can be listed and moved to trash where Drive permits, and it is read
-and edited in Google Docs, not here. Its name is the name given; whether Drive
-keeps an extension written in the name was not tried. The scope stays `drive.file`,
+**What is made.** What is asked for is a native Google document of the name given,
+in the folder given. What is checked is that Drive answered with an ID and with
+the media type of a Google Doc. Nothing checks the name Drive gave the document,
+where Drive put it, or what it holds, and whether Drive keeps an extension
+written in the name was not tried. The controls then treat the document as they
+treat any native one: it can be listed and moved to trash where Drive permits,
+and it is read and edited in Google Docs, not here. The scope stays `drive.file`,
 under which an application creates files and sees the ones it created.
 
 **An earlier release does not read the plan.** A stored record is decoded
-strictly, so a release that does not know `convertTo` takes the record of a
-conversion for one it cannot read, and refuses new plans until an operator has
-looked, as for any such record. That matters only where a gateway is put back to an
-earlier release while the record of a conversion is the one stored.
+strictly, so a release that does not know the members of a conversion's plan
+takes its record for one it cannot read. It answers neither `files-status` nor
+`files-commit` for it and refuses new plans, and reconnecting does not help,
+since the record is read before it is replaced. That matters only where a
+gateway is put back to an earlier release while the record of a conversion is
+the one stored. The way out is to put the later release back, read the plan's
+status with it, and look at Drive, before the earlier release is used.
+
+**What a desk does with the method is not established here.** The relay named
+under [Operations](#operations) is another program. That it passes this method,
+shows the plan's new members to a person, and takes a request of this size is
+for that program to show.
 
 **None of this was tried against a Google account.** The tests use a stand-in for
 Drive. That Drive converts a Word file this way, that it answers with the media
-type of what it made, and what it does with a file it cannot convert are read from
-Drive's documentation and are assumptions until someone tries them. Drive's own
-limits on what it converts are not stated on the page read, and are not checked
-here.
+type of what it made, what it does with a file it cannot convert, where it puts
+a file with no parent, and what its statuses mean for whether a file was made
+are read from Drive's documentation and are assumptions until someone tries
+them. Drive's own limits on what it converts are not stated on the page read,
+and are not checked here.
 
 ## Verification and limits
 
@@ -238,6 +331,7 @@ It was one account and one day, and establishes nothing of another.
 References: [Drive search](https://developers.google.com/workspace/drive/api/guides/search-files),
 [Drive upload](https://developers.google.com/workspace/drive/api/guides/manage-uploads),
 [Drive scopes](https://developers.google.com/workspace/drive/api/guides/api-specific-auth),
+[Drive files reference](https://developers.google.com/workspace/drive/api/reference/rest/v3/files),
 [S3 conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html),
 [S3 conditional deletes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-deletes.html).
 

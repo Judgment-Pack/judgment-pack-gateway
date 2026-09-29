@@ -88,56 +88,120 @@ func TestPipeHelper(t *testing.T) {
 	os.Exit(run())
 }
 
-// The pipe is run as a host runs it, over a store that has no connection, so
-// every request is refused: by its length where the line is too long for its
-// method, and otherwise by the broker, in the broker's word.
-func TestTheLineOfARequestThatCarriesAFileMayBeAsLongAsAFile(t *testing.T) {
+// line is a request of a method whose JSON is of a length, to the byte.
+func line(t *testing.T, id, method string, length int) []byte {
+	t.Helper()
+	request := func(content string) []byte {
+		raw, err := json.Marshal(map[string]any{"id": id, "method": method, "params": map[string]string{"contentBase64": content}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	short := len(request(""))
+	if length < short {
+		t.Fatalf("a request of %s is %d bytes at the least", method, short)
+	}
+	raw := request(strings.Repeat("A", length-short))
+	if len(raw) != length {
+		t.Fatalf("the line is %d bytes and not %d", len(raw), length)
+	}
+	return raw
+}
+
+// pipe runs the program as a host runs it, over a store that has no
+// connection, and gives what it answered, by the request's ID.
+func pipe(t *testing.T, input []byte) (map[string]string, error) {
+	t.Helper()
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
 	}
-	content := map[bool]string{false: "AAAA", true: strings.Repeat("A", connections.ControlLineBytes)}
-	methods := []string{"files-prepare", "files-prepare-google-document", "files-commit", "files-read", "files-list", "files-status"}
-	var input strings.Builder
-	for _, method := range methods {
-		for _, long := range []bool{false, true} {
-			line, err := json.Marshal(map[string]any{"id": method, "method": method, "params": map[string]string{"contentBase64": content[long]}})
-			if err != nil || long != (len(line) > connections.ControlLineBytes) {
-				t.Fatal("the line is not the length the row is of", err)
-			}
-			input.Write(line)
-			input.WriteByte('\n')
-		}
-	}
 	cmd := exec.Command(os.Args[0], "-test.run=^TestPipeHelper$", "--", "--state-dir", dir, "--principal", "owner")
 	cmd.Env = append(os.Environ(), "GATEWAY_PIPE_HELPER=1")
-	cmd.Stdin = strings.NewReader(input.String())
+	cmd.Stdin = bytes.NewReader(input)
 	raw, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("the pipe ended with %v", err)
-	}
-	var answers []string
+	answers := map[string]string{}
 	lines := bufio.NewScanner(bytes.NewReader(raw))
 	for lines.Scan() {
 		var answer struct {
 			ID    string `json:"id"`
 			Error string `json:"error"`
 		}
-		if json.Unmarshal(lines.Bytes(), &answer) != nil || answer.ID != methods[len(answers)/2] || answer.Error == "" {
-			t.Fatalf("answer %d was %s", len(answers), lines.Bytes())
+		if json.Unmarshal(lines.Bytes(), &answer) != nil || answer.ID == "" || answer.Error == "" || answers[answer.ID] != "" {
+			t.Fatalf("an answer was %s", lines.Bytes())
 		}
-		answers = append(answers, answer.Error)
+		answers[answer.ID] = answer.Error
 	}
-	if len(answers) != 2*len(methods) {
-		t.Fatalf("%d answers to %d requests", len(answers), 2*len(methods))
+	return answers, err
+}
+
+// No store of this test has a connection, so every request is refused: by its
+// length where its line is too long for its method, and otherwise by the
+// broker, in the broker's word. A line's length is that of its JSON, without
+// the line's ending.
+func TestTheLineOfARequestThatCarriesAFileMayBeAsLongAsAFile(t *testing.T) {
+	methods := map[string]int{
+		"files-prepare":                 connections.StorageLineBytes,
+		"files-prepare-google-document": connections.StorageLineBytes,
+		"files-commit":                  connections.ControlLineBytes,
+		"files-read":                    connections.ControlLineBytes,
+		"files-list":                    connections.ControlLineBytes,
+		"files-status":                  connections.ControlLineBytes,
 	}
-	for i, method := range methods {
-		short, long := answers[2*i], answers[2*i+1]
+	var input bytes.Buffer
+	for method, bound := range methods {
+		for id, request := range map[string][]byte{
+			"short":      line(t, method+" short", method, 200),
+			"at":         line(t, method+" at", method, bound),
+			"at, CRLF":   append(line(t, method+" at, CRLF", method, bound), '\r'),
+			"over":       line(t, method+" over", method, bound+1),
+			"over, CRLF": append(line(t, method+" over, CRLF", method, bound+1), '\r'),
+		} {
+			_ = id
+			input.Write(request)
+			input.WriteByte('\n')
+		}
+	}
+	answers, err := pipe(t, input.Bytes())
+	if err != nil || len(answers) != 5*len(methods) {
+		t.Fatalf("%d answers to %d requests: %v", len(answers), 5*len(methods), err)
+	}
+	for method := range methods {
+		short := answers[method+" short"]
 		if short == "invalid-request" {
 			t.Fatalf("%s: a short request is refused in the word of a long one, so the row tells nothing", method)
 		}
-		if carries := connections.StorageUpload(method); carries && long != short || !carries && long != "invalid-request" {
-			t.Fatalf("%s: a short line was answered %q and a long one %q", method, short, long)
+		for _, row := range []string{" at", " at, CRLF"} {
+			if answers[method+row] != short {
+				t.Errorf("%s%s: answered %q, and a short one %q", method, row, answers[method+row], short)
+			}
+		}
+		for _, row := range []string{" over", " over, CRLF"} {
+			if answers[method+row] != "invalid-request" {
+				t.Errorf("%s%s: answered %q", method, row, answers[method+row])
+			}
+		}
+	}
+
+	// A line that is longer than 6 MiB and three bytes with its ending is
+	// not read to its end. The pipe ends, and the requests before that line
+	// were answered. One byte shorter, the line is refused by name and the
+	// pipe goes on.
+	for _, method := range []string{"files-prepare", "files-status"} {
+		input.Reset()
+		input.Write(line(t, "before", method, 200))
+		input.WriteByte('\n')
+		input.Write(line(t, "long", method, connections.StorageLineBytes+2))
+		input.WriteByte('\n')
+		input.Write(line(t, "too long", method, connections.StorageLineBytes+3))
+		input.WriteByte('\n')
+		input.Write(line(t, "after", method, 200))
+		input.WriteByte('\n')
+		answers, err = pipe(t, input.Bytes())
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 || len(answers) != 2 || answers["before"] == "" || answers["long"] != "invalid-request" {
+			t.Fatalf("%s: the pipe ended with %v after the answers %v", method, err, answers)
 		}
 	}
 }

@@ -95,7 +95,10 @@ func run() int {
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
-	scan.Buffer(make([]byte, 4096), connections.StorageLineBytes)
+	// The scanner's bound counts the line's ending, which is one byte or two,
+	// and one byte more, so that a line a byte past its method's bound is
+	// read and refused by name. A longer line ends the pipe.
+	scan.Buffer(make([]byte, 4096), connections.StorageLineBytes+3)
 	for scan.Scan() {
 		var r struct {
 			ID     string          `json:"id"`
