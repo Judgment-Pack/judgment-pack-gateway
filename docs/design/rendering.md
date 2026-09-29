@@ -82,8 +82,8 @@ seconds, and leaves the adapter's other bounds and its deadline at their default
 names no rendering program, so a desk's request for a PDF is refused as
 `renderer-not-configured`.
 
-Two things are asked of a desk that takes this plan, and the plan cannot hold a desk to
-either:
+Two things follow for a desk that takes this plan. The desk holds itself to the first, and
+nothing holds it to the second:
 
 - **Its bundle carries `adapter-render`.** A desk takes a plan only where every program the
   plan names is in its verified bundle

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -62,7 +63,10 @@ func TestTheLocalPlanNamesEachSourceOnceAndTheRenderingAdapter(t *testing.T) {
 		if source.ID != "render" {
 			continue
 		}
-		if source.Executable != "adapter-render" || source.Shape != "command" || source.Connections || source.Timeout != 30 {
+		// The arguments are these and no others, so that every bound the
+		// plan does not name is the adapter's default.
+		if source.Executable != "adapter-render" || strings.Join(source.Args, " ") != "--max-output 6291456" || len(source.Args) != 2 ||
+			source.Shape != "command" || source.Connections || source.Timeout != 30 {
 			t.Fatalf("render = %+v", source)
 		}
 		return

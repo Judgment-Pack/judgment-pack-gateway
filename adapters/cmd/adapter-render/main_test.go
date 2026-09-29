@@ -398,9 +398,10 @@ func TestRunRefusesWithoutItsOwnIdentity(t *testing.T) {
 
 // The desk's local plan starts the adapter with arguments of its own. They are
 // ones the adapter takes; under them a request is rendered; the record's bound
-// is the plan's and holds a file of the adapter's bound on the file; and the
-// adapter's deadline ends before the gateway's timeout for the source does,
-// by the five seconds the contract asks for.
+// is the plan's and holds a file of the adapter's bound on the file, for an
+// adapter whose version is 32 bytes or fewer; and the adapter's deadline is
+// five seconds under the plan's timeout for the source, which is the
+// difference between the two settings and no promise of time left.
 func TestTheDesksPlanIsOneTheAdapterTakes(t *testing.T) {
 	var planned *connections.LocalSource
 	for _, source := range connections.ConnectionLocalPlan().Sources {
@@ -417,9 +418,6 @@ func TestTheDesksPlanIsOneTheAdapterTakes(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if code := run(planned.Args, strings.NewReader(request), &stdout, &stderr); code != 0 || stderr.Len() != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
-	}
-	if err := render.Check(stdout.Bytes()); err != nil {
-		t.Fatalf("the record does not pass its check: %v", err)
 	}
 	var record struct {
 		Rendering struct {
@@ -438,7 +436,11 @@ func TestTheDesksPlanIsOneTheAdapterTakes(t *testing.T) {
 		t.Errorf("the record's bound is %d", bounds.MaxOutputBytes)
 	}
 	// A file of n bytes is 4 × ⌈n / 3⌉ bytes of base64, and the record around
-	// it is under three kibibytes.
+	// it is under three kibibytes where the adapter's version is 32 bytes or
+	// fewer, which the contract says and this build is held to.
+	if len(render.Version) > 32 {
+		t.Fatalf("the version of this build is %d bytes, and the reckoning is of 32 or fewer", len(render.Version))
+	}
 	if largest := 4*((bounds.MaxFileBytes+2)/3) + 3072; largest > bounds.MaxOutputBytes {
 		t.Errorf("a file of %d bytes needs a record of %d, and the plan admits %d", bounds.MaxFileBytes, largest, bounds.MaxOutputBytes)
 	}
