@@ -261,7 +261,9 @@ a part of the token. That is all this holds. An ID that holds a part of the
 token and something else is taken, and so is one that holds the token in other
 letters. It is a guard against an answer that repeats the token, and no defence
 against a provider that means to pass it on: an ID is up to 200 characters of
-the provider's choosing.
+the provider's choosing. It has a cost. A file's ID that happens to be a part
+of the token is refused with the rest, and the plan of a document that was made
+then needs attention and names no target.
 
 Three things are outside the table:
 
@@ -270,13 +272,18 @@ Three things are outside the table:
   `blocked-by-policy`: the connection changed, or policy did, after the claim.
 - A commit that sent the upload and cannot record what came of it answers with
   the error `operation-uncertain` and no plan. What `files-status` says after
-  that goes by what is stored and by the connection, and is one of four. Where
-  the record of the claim is still the one stored, `needs-attention`, and the
-  ID Drive answered with is lost. Where the record of the outcome was written
-  and the failure came after, in making it durable, the plan as it settled,
-  with its target. Where the record was replaced while the upload ran,
-  `selection-expired`. And where the connection has gone, the error any call
-  has without one, `connect-required`.
+  that goes by the connection first and then by what is stored.
+  - A call that cannot be answered at all has the error any call has:
+    `connect-required` where there is no connection, `blocked-by-policy`,
+    `private-storage-unavailable`.
+  - Where the connection is not the one the plan was prepared under, because
+    it was made again, or where the record was replaced by another plan's:
+    `selection-expired`, whatever came of the upload.
+  - Where the connection is the same and the record of the claim is still the
+    one stored: `needs-attention`. The ID Drive answered with is lost.
+  - Where the connection is the same and the record of the outcome was
+    written, the failure having come after, in making it durable: the plan as
+    it settled, with its target.
 - That 403, 409 and 412 mean that nothing was made is read from what those
   statuses mean. It was not tried.
 
