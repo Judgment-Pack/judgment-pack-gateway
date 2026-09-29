@@ -91,16 +91,23 @@ func fieldNames(t reflect.Type) map[string]reflect.Type {
 			visited[in] = true
 			for i := 0; i < in.NumField(); i++ {
 				f := in.Field(i)
-				inner := f.Type
-				if inner.Kind() == reflect.Pointer {
-					inner = inner.Elem()
-				}
 				if f.Anonymous {
-					if !f.IsExported() && inner.Kind() != reflect.Struct {
+					bare := f.Type
+					if bare.Kind() == reflect.Pointer {
+						bare = bare.Elem()
+					}
+					if !f.IsExported() && bare.Kind() != reflect.Struct {
 						continue
 					}
 				} else if !f.IsExported() {
 					continue
+				}
+				// What gives its names is a struct, or a pointer to one that
+				// has no name of its own as a type: a pointer type that has a
+				// name is a member of that name.
+				inner := f.Type
+				if inner.Name() == "" && inner.Kind() == reflect.Pointer {
+					inner = inner.Elem()
 				}
 				tag := f.Tag.Get("json")
 				if tag == "-" {

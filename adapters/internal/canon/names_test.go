@@ -2,6 +2,7 @@ package canon
 
 import (
 	"encoding/json"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -62,7 +63,7 @@ func strictly(raw string, into any) error {
 	if err := dec.Decode(into); err != nil {
 		return err
 	}
-	if dec.More() {
+	if _, err := dec.Token(); err != io.EOF {
 		return ErrName
 	}
 	return nil
@@ -111,6 +112,8 @@ func TestExactNamesRefusesWhatTheDecoderRefuses(t *testing.T) {
 		"a name a field gives up with a dash": `{"Skipped":"a"}`,
 		"a dash, which names no field":        `{"-":"a"}`,
 		"an unexported field's name":          `{"hidden":"a"}`,
+		"a bracket after the value":           `{"query":"a"}]`,
+		"a brace after the value":             `{"query":"a"}}`,
 		"a value after the value":             `{"query":"a"} {"query":"b"}`,
 		"a value cut short":                   `{"query":"a"`,
 		"a value cut short within a struct":   `{"inner":{"text":"a"`,
@@ -300,6 +303,25 @@ type chosenQuiet struct {
 	Kept  string `json:"kept"`
 }
 
+// ChosenPointer is a pointer type that has a name. chosenByPointer embeds
+// it, which only a struct made as the program runs can: it is a member of
+// its type's name, and gives none of the names of what it points to.
+type ChosenPointer *namedInner
+
+var chosenByPointer = reflect.StructOf([]reflect.StructField{
+	{Name: "ChosenPointer", Type: reflect.TypeOf(ChosenPointer(nil)), Anonymous: true},
+})
+
+// chosenVia embeds a pointer to a struct that is not exported. Its names
+// are names of chosenVia, and the check takes them. The decoder does not
+// read a member of one: it cannot make what the pointer is to point to. So
+// chosenVia is no part of the comparison with the decoder, and a reader
+// that decodes before it checks refuses such a request by the decoder.
+type chosenVia struct {
+	*chosenPrivate
+	Kept string `json:"kept"`
+}
+
 type chosenD0 struct {
 	Value string `json:"value"`
 }
@@ -315,26 +337,34 @@ type chosenD8 struct{ chosenD7 }
 // chosenD9 has its one name nine structs in.
 type chosenD9 struct{ chosenD8 }
 
-// The check is held to the decoder itself. A name is a field's name as
-// written where the decoder takes a member of that name and, writing out
-// what it read, writes the member under the same name: what it folded, it
-// writes under the field's name and not the member's. For every type and
-// every name a type has, in the case it has and in others, the check takes
-// the name where that is so and refuses it where it is not.
+// The check is held to the decoder itself, for names. A name is taken to be
+// a field's name as written where the decoder takes a member of that name
+// and, writing out what it read, writes a member of the same name: what it
+// folded, it writes under the field's name and not the member's. Over every
+// pair of a type and a name below, the check takes the name where that is
+// so and refuses it where it is not.
+//
+// What this does not establish, and other tests do: which field's type the
+// check goes on into, which the cases of members held within a member are
+// for; and anything of a type that writes itself out, which could write a
+// name it did not read. A name is tried with seven values, and one that no
+// field of a type takes with any of them is taken for a name the decoder
+// refuses: the types here have no field that takes none.
 func TestExactNamesChoosesAFieldAsTheDecoderDoes(t *testing.T) {
 	values := []string{`"v"`, `1`, `true`, `{"text":"v"}`, `[{"text":"v"}]`, `{"k":{"text":"v"}}`, `"AAAA"`}
 	names := []string{"x", "X", "a", "A", "b", "B", "upper", "Upper", "UPPER", "kept", "Kept", "KEPT", "chosen", "Chosen", "text", "Text", "TEXT", "inner", "Inner",
 		"field", "Field", "FIELD", "bad\\name", "comma", "Comma", "dash", "Dash", "-", "two words", "Two Words", "space", "Space", "value", "Value", "VALUE",
-		"chosenPrivate", "chosenDeep", "chosenD8", "chosenLower", "chosenlower", "Plain", "plain", "query", "Query", "maxResults", "maxresults", "Max", "Untagged", "untagged", "shared", "Shared", "NamedLabel", "namedLabel",
+		"chosenPrivate", "chosenDeep", "chosenD8", "chosenLower", "chosenlower", "Plain", "plain", "name", "Name", "NAME", "ChosenPointer", "chosenPointer", "query", "Query", "maxResults", "maxresults", "Max", "Untagged", "untagged", "shared", "Shared", "NamedLabel", "namedLabel",
 		"bold", "token", "to\u212aen", "Token", "list", "pair", "byName", "any", "raw", "self", "bytes", "Bytes", "pointer", "Skipped", "hidden"}
 	taken, refused := 0, 0
 	for _, kind := range []reflect.Type{reflect.TypeOf(chosenNearest{}), reflect.TypeOf(chosenTagged{}), chosenOfNone, reflect.TypeOf(chosenTwice{}), reflect.TypeOf(chosenHeld{}), reflect.TypeOf(chosenGiven{}),
-		reflect.TypeOf(chosenBadTag{}), reflect.TypeOf(chosenD9{}), reflect.TypeOf(chosenQuiet{}), reflect.TypeOf(namedRequest{}), reflect.TypeOf(namedInner{}), reflect.TypeOf(namedLoop{})} {
+		reflect.TypeOf(chosenBadTag{}), reflect.TypeOf(chosenD9{}), reflect.TypeOf(chosenQuiet{}), chosenByPointer, reflect.TypeOf(namedRequest{}), reflect.TypeOf(namedInner{}), reflect.TypeOf(namedLoop{})} {
 		for _, name := range names {
 			asWritten := false
 			raw := ""
 			for _, value := range values {
-				raw = `{"` + name + `":` + value + `}`
+				member, _ := json.Marshal(name)
+				raw = `{` + string(member) + `:` + value + `}`
 				fresh := reflect.New(kind).Interface()
 				if strictly(raw, fresh) != nil {
 					continue
@@ -347,9 +377,7 @@ func TestExactNamesChoosesAFieldAsTheDecoderDoes(t *testing.T) {
 				if err = json.Unmarshal(written, &members); err != nil {
 					t.Fatal(err)
 				}
-				var member string
-				json.Unmarshal([]byte(`"`+name+`"`), &member)
-				_, asWritten = members[member]
+				_, asWritten = members[name]
 				break
 			}
 			err := ExactNames([]byte(raw), reflect.New(kind).Interface())
@@ -381,30 +409,35 @@ func TestExactNamesOfFieldsThatAreChosenAmongSeveral(t *testing.T) {
 		raw   string
 		taken bool
 	}{
-		"the nearer of two depths, its members held":        {&chosenNearest{}, `{"x":{"TEXT":"a"}}`, false},
-		"the nearer of two depths, as written":              {&chosenNearest{}, `{"x":{"text":"a"}}`, true},
-		"the one a tag names, its members held":             {&chosenTagged{}, `{"X":{"TEXT":"a"}}`, false},
-		"the one a tag names, as written":                   {&chosenTagged{}, `{"X":{"text":"a"}}`, true},
-		"a name two tags give, which means neither":         {reflect.New(chosenOfNone).Interface(), `{"x":"a"}`, false},
-		"beside them, the name one tag gives":               {reflect.New(chosenOfNone).Interface(), `{"X":"a"}`, true},
-		"a name of a struct embedded at two places":         {&chosenTwice{}, `{"x":"a"}`, false},
-		"beside it, a name of the struct's own":             {&chosenTwice{}, `{"kept":"a"}`, true},
-		"a struct not exported, embedded under a name":      {&chosenHeld{}, `{"inner":{"text":"a"}}`, true},
-		"the same, its members held":                        {&chosenHeld{}, `{"inner":{"TEXT":"a"}}`, false},
-		"the same, by a name it does not give":              {&chosenHeld{}, `{"text":"a"}`, false},
-		"a struct not exported, embedded under no name":     {&chosenGiven{}, `{"text":"a"}`, true},
-		"a tag's name the package does not take":            {&chosenBadTag{}, `{"bad\\name":"a"}`, false},
-		"the field of that tag, by its own name":            {&chosenBadTag{}, `{"Field":"a"}`, true},
-		"a tag that names nothing before its comma":         {&chosenBadTag{}, `{"Comma":"a"}`, true},
-		"a tag that names a dash":                           {&chosenBadTag{}, `{"-":"a"}`, true},
-		"a tag that names two words":                        {&chosenBadTag{}, `{"two words":"a"}`, true},
-		"an embedded text that is not exported":             {&chosenQuiet{}, `{"chosenLower":"a"}`, false},
-		"a struct that is a member, by its own name":        {&chosenQuiet{}, `{"Plain":{"text":"a"}}`, true},
-		"the same, by a name of its own members":            {&chosenQuiet{}, `{"text":"a"}`, false},
-		"a name nine structs in":                            {&chosenD9{}, `{"value":"a"}`, true},
-		"the same in capitals":                              {&chosenD9{}, `{"VALUE":"a"}`, false},
-		"a struct that embeds itself, a name of its own":    {&namedLoop{}, `{"name":"a"}`, true},
-		"a struct that embeds itself, the name in capitals": {&namedLoop{}, `{"NAME":"a"}`, false},
+		"the nearer of two depths, its members held":               {&chosenNearest{}, `{"x":{"TEXT":"a"}}`, false},
+		"the nearer of two depths, as written":                     {&chosenNearest{}, `{"x":{"text":"a"}}`, true},
+		"the one a tag names, its members held":                    {&chosenTagged{}, `{"X":{"TEXT":"a"}}`, false},
+		"the one a tag names, as written":                          {&chosenTagged{}, `{"X":{"text":"a"}}`, true},
+		"a name two tags give, which means neither":                {reflect.New(chosenOfNone).Interface(), `{"x":"a"}`, false},
+		"beside them, the name one tag gives":                      {reflect.New(chosenOfNone).Interface(), `{"X":"a"}`, true},
+		"a name of a struct embedded at two places":                {&chosenTwice{}, `{"x":"a"}`, false},
+		"beside it, a name of the struct's own":                    {&chosenTwice{}, `{"kept":"a"}`, true},
+		"a struct not exported, embedded under a name":             {&chosenHeld{}, `{"inner":{"text":"a"}}`, true},
+		"the same, its members held":                               {&chosenHeld{}, `{"inner":{"TEXT":"a"}}`, false},
+		"the same, by a name it does not give":                     {&chosenHeld{}, `{"text":"a"}`, false},
+		"a struct not exported, embedded under no name":            {&chosenGiven{}, `{"text":"a"}`, true},
+		"a tag's name the package does not take":                   {&chosenBadTag{}, `{"bad\\name":"a"}`, false},
+		"the field of that tag, by its own name":                   {&chosenBadTag{}, `{"Field":"a"}`, true},
+		"a tag that names nothing before its comma":                {&chosenBadTag{}, `{"Comma":"a"}`, true},
+		"a tag that names a dash":                                  {&chosenBadTag{}, `{"-":"a"}`, true},
+		"a tag that names two words":                               {&chosenBadTag{}, `{"two words":"a"}`, true},
+		"an embedded text that is not exported":                    {&chosenQuiet{}, `{"chosenLower":"a"}`, false},
+		"a struct that is a member, by its own name":               {&chosenQuiet{}, `{"Plain":{"text":"a"}}`, true},
+		"the same, by a name of its own members":                   {&chosenQuiet{}, `{"text":"a"}`, false},
+		"an embedded pointer type that has a name":                 {reflect.New(chosenByPointer).Interface(), `{"ChosenPointer":{"text":"a"}}`, true},
+		"an embedded pointer type, its members held":               {reflect.New(chosenByPointer).Interface(), `{"ChosenPointer":{"TEXT":"a"}}`, false},
+		"an embedded pointer type, by a name of what it points to": {reflect.New(chosenByPointer).Interface(), `{"text":"a"}`, false},
+		"a name by way of a pointer to a struct not exported":      {&chosenVia{}, `{"text":"a"}`, true},
+		"a name by that way, in capitals":                          {&chosenVia{}, `{"TEXT":"a"}`, false},
+		"a name nine structs in":                                   {&chosenD9{}, `{"value":"a"}`, true},
+		"the same in capitals":                                     {&chosenD9{}, `{"VALUE":"a"}`, false},
+		"a struct that embeds itself, a name of its own":           {&namedLoop{}, `{"name":"a"}`, true},
+		"a struct that embeds itself, the name in capitals":        {&namedLoop{}, `{"NAME":"a"}`, false},
 	} {
 		err := ExactNames([]byte(test.raw), test.into)
 		if test.taken && err != nil || !test.taken && err != ErrName {
