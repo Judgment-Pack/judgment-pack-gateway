@@ -63,10 +63,10 @@ is not read to its end: the pipe ends, and that request has no answer. All of
 this is of a line that is a request. A line that is no JSON, or whose `id` is
 longer than 64 bytes, ends the pipe whatever its length.
 Validation of a method's parameters rejects unknown fields and duplicate JSON
-keys. It takes a member's name whatever its case and takes `null` for a value
-left out, except in `files-prepare-google-document`, whose members are taken by
-their exact names and are strings. The envelope around the parameters is held to
-neither rule.
+keys, and takes a member by its name as written: one named in another case is
+refused, as of #185. It takes `null` for a value left out, except in
+`files-prepare-google-document`, whose members are strings. The envelope around
+the parameters is held to none of these rules.
 
 ## Discovery budgets
 

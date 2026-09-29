@@ -127,8 +127,9 @@ type StorageChange struct {
 
 // exactStrings holds a request to its members by their exact names: each
 // required one is present, none is present that is neither required nor
-// optional, and every value is a JSON string. The decoder alone takes a name
-// whatever its case, and takes null for a string.
+// optional, and every value is a JSON string. decodeStorage holds the names
+// too, and says nothing of a member left out or of one that is null, which
+// the decoder takes for a string.
 func exactStrings(raw []byte, required, optional []string) bool {
 	// What is no JSON object has no members, and so none that is required.
 	var members map[string]json.RawMessage
