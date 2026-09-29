@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Rendering arguments, version 1",
+  "description": "The canonical arguments a caller hands /acquire for a rendering source, and adapter-render reads on stdin (docs/design/rendering.md). Each value is checked on its own: member sets, types, enumerations, counts and lexical forms, with patterns written to mean the same under a JavaScript and a Python regular-expression engine. The schema is looser than the adapter in these places, and a value it admits may be one the adapter refuses: a length is counted here in characters and by the adapter in bytes of UTF-8 (a title, a language, a target); an https or http target is not parsed, so one that names a port and no host is admitted here; the operator's bound on the number of blocks is not known here; and the canonical domain of SPEC.md section 1.1 is not known here, since a schema reads JSON that has been parsed, where a member named twice is one member and 7.0 is the integer 7; and an integer written with a sign, -0, is 0 here and is refused by the adapter, which reads an integer as digits. That every row of a table holds the same number of cells is a rule that relates values, and is the adapter's. It is not written within the descriptor grammar of docs/design/tool-descriptors.md, which admits no reference and no pattern.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "format",
+    "document"
+  ],
+  "properties": {
+    "format": {
+      "enum": [
+        "docx",
+        "pdf"
+      ],
+      "description": "the format asked for; this release writes docx and refuses pdf as renderer-not-configured"
+    },
+    "document": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "title",
+        "blocks"
+      ],
+      "properties": {
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^\\u0000-\\u001F\\u007F\ufffe\uffff]+(?![\\s\\S])",
+          "description": "the title of the document, 1 to 255 bytes of UTF-8; not a file name"
+        },
+        "language": {
+          "type": "string",
+          "maxLength": 35,
+          "pattern": "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*(?![\\s\\S])",
+          "description": "a language tag, checked for its form only"
+        },
+        "blocks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/block"
+          },
+          "description": "the blocks in the order they are to appear; at most the operator's --max-blocks, 2000 by default"
+        }
+      }
+    },
+    "cites": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision"
+      ],
+      "properties": {
+        "decision": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}(?![\\s\\S])",
+          "description": "the digest of the decision record the caller says the document reports; the caller's assertion, which the adapter does not check"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "block": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "level",
+            "runs"
+          ],
+          "properties": {
+            "type": {
+              "const": "heading"
+            },
+            "level": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 6
+            },
+            "runs": {
+              "$ref": "#/$defs/runs"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "runs"
+          ],
+          "properties": {
+            "type": {
+              "const": "paragraph"
+            },
+            "runs": {
+              "$ref": "#/$defs/runs"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "ordered",
+            "items"
+          ],
+          "properties": {
+            "type": {
+              "const": "list"
+            },
+            "ordered": {
+              "type": "boolean"
+            },
+            "items": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1000,
+              "items": {
+                "$ref": "#/$defs/cell"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "rows"
+          ],
+          "properties": {
+            "type": {
+              "const": "table"
+            },
+            "header": {
+              "$ref": "#/$defs/row"
+            },
+            "rows": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1000,
+              "items": {
+                "$ref": "#/$defs/row"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "row": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/cell"
+      }
+    },
+    "cell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "runs"
+      ],
+      "properties": {
+        "runs": {
+          "$ref": "#/$defs/runs"
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "$ref": "#/$defs/run"
+      }
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "pattern": "^[^\\u0000-\\u0008\\u000B-\\u001F\\u007F\ufffe\uffff]*(?![\\s\\S])",
+          "description": "literal text; a line feed is a line break and a tab is a tab"
+        },
+        "bold": {
+          "type": "boolean"
+        },
+        "italic": {
+          "type": "boolean"
+        },
+        "code": {
+          "type": "boolean"
+        },
+        "link": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^(?:[Hh][Tt][Tt][Pp][Ss]?://[^\\u0000-\\u0020\\u007F\\uFFFE\\uFFFF]+|[Mm][Aa][Ii][Ll][Tt][Oo]:[^\\u0000-\\u0020\\u007F\\uFFFE\\uFFFF@/\\\\:,;<>\"%?#]+@[^\\u0000-\\u0020\\u007F\\uFFFE\\uFFFF@/\\\\:,;<>\"%?#]+(?:\\?[^\\u0000-\\u0020\\u007F\\uFFFE\\uFFFF#]*)?)(?![\\s\\S])",
+          "description": "the target of a link, 1 to 2048 bytes: an https or http URL that names a host, or mailto and one address with no escape in it, optionally followed by a question mark and what a mail program is to fill in, and by no fragment; written into the file as given and never followed"
+        }
+      }
+    }
+  }
+}

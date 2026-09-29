@@ -1,0 +1,31 @@
+{
+  "format": "docx",
+  "document": {
+    "title": "Refund decision",
+    "language": "en",
+    "blocks": [
+      {"type": "heading", "level": 1, "runs": [{"text": "Refund decision"}]},
+      {"type": "paragraph", "runs": [
+        {"text": "The refund of "},
+        {"text": "149.50 CAD", "bold": true},
+        {"text": " is approved under "},
+        {"text": "the refund policy", "link": "https://example.com/policies/refunds"},
+        {"text": "."}
+      ]},
+      {"type": "heading", "level": 2, "runs": [{"text": "Reasons"}]},
+      {"type": "list", "ordered": true, "items": [
+        {"runs": [{"text": "The order was returned within 30 days."}]},
+        {"runs": [{"text": "The amount is under the limit of "}, {"text": "500.00", "code": true}, {"text": "."}]}
+      ]},
+      {"type": "heading", "level": 2, "runs": [{"text": "Amounts"}]},
+      {"type": "table",
+       "header": [{"runs": [{"text": "Item"}]}, {"runs": [{"text": "Amount"}]}],
+       "rows": [
+         [{"runs": [{"text": "Refund"}]}, {"runs": [{"text": "149.50", "code": true}]}],
+         [{"runs": [{"text": "Fee"}]}, {"runs": [{"text": "0.00", "code": true}]}]
+       ]},
+      {"type": "paragraph", "runs": [{"text": "払い戻しは承認されました。", "italic": true}, {"text": "\nQuestions: "}, {"text": "refunds@example.com", "link": "mailto:refunds@example.com"}]}
+    ]
+  },
+  "cites": {"decision": "sha256:4f0c1d6a7b8e9f00112233445566778899aabbccddeeff00112233445566778a"}
+}

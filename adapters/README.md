@@ -966,6 +966,63 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   built adapter as a bare source, acquires a fixture, has a refusal reach the caller, and
   verifies the store.
 
+## adapter-render
+
+Content a desk wants as a document — the report of a decision, a letter, a summary — written
+as a Word file and attested as one versioned record that holds the file. The contract is
+[docs/design/rendering.md](../docs/design/rendering.md) and
+[ADR-0006](../docs/adr/0006-documents-are-rendered-by-an-adapter.md); this section says how the
+adapter meets it. It is wired as a **bare** source, as `adapter-document` is, so the receipt
+carries the `command` shape. It holds no credential, opens no connection and starts no
+process. No engine configuration, image or desk plan names it in this release: an operator
+adds the source.
+
+```
+gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-version 3 \
+  --source render='adapter-render --max-output 6291456' \
+  --source-user render=engine-render \
+  --source-max-output 6291456
+```
+
+- **The request** is the canonical arguments on stdin: `{"format": "docx" | "pdf",
+  "document": {"title", "language"?, "blocks"}, "cites"?: {"decision"}}`. A block is a
+  heading, a paragraph, a list or a table, and holds runs of literal text that may be bold,
+  italic, in a fixed-width typeface, or linked. Every object is closed, nothing nests, and
+  nothing is brought in from outside the request. The adapter refuses at the first check that
+  fails, by exiting 1 with one ASCII line of at most 160 bytes, code first:
+  `request-over-bound`, `arguments-invalid`, `content-invalid`, `content-over-bound`,
+  `renderer-not-configured`, `timeout`, `file-over-bound`, `record-over-bound`,
+  `adapter-failed`. A rendering is whole or it is refused: the adapter writes no record of
+  part of one. A write of the record that fails part-way exits 1, and may leave the
+  beginning of a record on stdout, which the gateway does not read. The adapter ignores
+  the signal a write to a closed pipe raises, so that such a write is reported too.
+- **The Word writer** ([render/docx.go](render/docx.go)) is written in this module against
+  the standard library. It writes seven parts in one order, each under one fixed timestamp and
+  compressed before it is stored, and takes nothing from the clock or the environment, so the
+  same content gives the same bytes from the same build. The text of any language is stored
+  as text; the file embeds no typeface, and how a reader lays the text out is the reader's.
+- **A PDF** is refused with `renderer-not-configured`. ADR-0006 has a PDF produced by a
+  program the operator configures, and this release has no flag to configure one.
+- **A link** is a text and a target of scheme `https`, `http` or `mailto` that names a host
+  or one address in its plainest form. The adapter writes the target into the file as given
+  and never follows it.
+- **The record** is held to `render.Check`, the contract's reference check, before the
+  adapter writes it: the members closed, the size and the digest those of the file the
+  base64 holds, the file the seven parts laid out as the writer lays them out, and the
+  parts within the bound the record states. `cites.decision` is copied into it as the caller's assertion and checked for
+  its form only.
+- **The bounds** are `--max-request` (1 MiB), `--max-blocks` (2,000), `--max-file` (4 MiB),
+  `--max-output` (1 MiB) and `--timeout` (25 s). `--max-file` bounds the archive and what its
+  parts hold uncompressed, since a small archive can hold long parts. The file travels in the
+  record as base64, so with every default the largest file that fits is about 766 KiB; the
+  example above raises the record's bound, and the gateway's, to carry a file of 4 MiB.
+  Arguments that nest deeper than the structure does are refused by one pass over their
+  bytes, before anything else is read of them.
+- **What the tests hold.** The file's parts are read back with the standard library's ZIP and
+  XML readers and held to the text and the structure of the request. Where `pandoc` is
+  installed, one test reads the file with it as well, and is skipped where it is not. No test
+  here opens the file in Microsoft Word or LibreOffice.
+
 ## The both-paths agreement
 
 [ADR-0001](../docs/adr/0001-one-engine-four-processes.md) point 4 promises that a record reached

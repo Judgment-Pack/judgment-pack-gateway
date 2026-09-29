@@ -439,6 +439,31 @@ func readWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
 	}
 }
 
+// ReadWithin is readWithin for another adapter of this module that reads its
+// request as this one does, as a process that reads one request and exits. It
+// reads at most n bytes of r. What it waits for is settled by the deadline
+// the context carries and by nothing else of the context:
+//
+//   - The read is waited for until a cutoff two seconds past the deadline
+//     (requestPipeWait), and never one nearer than fifty milliseconds from
+//     when the read began (requestReadFloor), so that a request that is
+//     already there is read even where the deadline is long past.
+//   - A read that ended at or before the cutoff is the request, and is
+//     returned with whatever error the read gave. One that had not ended by
+//     then is ErrRequestNotRead.
+//   - A context that carries no deadline is waited on until the read ends,
+//     whether or not the context is cancelled.
+//   - The read itself is not interrupted. One the wait gave up on goes on in
+//     its own goroutine until r returns, which for a process about to exit
+//     is until it exits.
+func ReadWithin(ctx context.Context, r io.Reader, n int64) ([]byte, error) {
+	return readWithin(ctx, r, n)
+}
+
+// ErrRequestNotRead is what ReadWithin returns for a request whose reading
+// had not ended by the cutoff.
+var ErrRequestNotRead = errRequestNotRead
+
 // readWaiting is called once the wait for the request has been armed and
 // before either outcome is taken. It is nil in the adapter, and a test sets
 // it to hold the reader there until a read and the cutoff are both ready,
