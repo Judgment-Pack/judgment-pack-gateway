@@ -56,6 +56,9 @@ Metadata and payload validation reject unknown fields and duplicate JSON keys.
   whole-account search, and no broad scope is silently requested. Native Google
   documents may be listed and moved to trash when permitted; their editor is the
   source application. This API edits ordinary uploaded files, not Docs/Sheets.
+  A listing without search words is in order of name, folders first. A search by
+  words asks for no order, because Drive refuses one for it, and comes in Drive's
+  order of relevance.
 - **S3:** one bounded ListObjectsV2 page within the configured bucket/prefix.
   The folder field is a literal prefix; use a trailing slash for directory-like
   selection. Name terms filter the returned page; an empty page with a cursor
@@ -121,6 +124,22 @@ SigV4 verification of S3 payloads and conditional headers, Drive multipart bodie
 wrong delete confirmations, stale revisions, reconnects, crash/replay and bounds.
 They do not establish live Google/AWS account behavior. In particular, retain the
 Drive missing-ETag refusal until a real connection supports conditional updates.
+
+One try against a live Drive account, on 2026-09-29 and under a `drive.file`
+grant, found three things that no fake had shown:
+
+- Drive refused a search by words that asked for an order (status 403, "Sorting
+  is not supported for queries with fullText terms"). Every search by words was
+  answered `provider-unavailable` until the order was left out of it.
+- A file's metadata came with no ETag. Every update and every move to trash was
+  therefore refused with `conditional-write-unavailable`, for a file that the
+  listing called editable and deletable. On that account the controls could make
+  a file and read one, and could change none.
+- A file's version moved in the seconds after the file was made. A read and a
+  change prepared at once were refused with `source-changed`; the same read
+  twenty seconds later was answered.
+
+It was one account and one day, and establishes nothing of another.
 
 References: [Drive search](https://developers.google.com/workspace/drive/api/guides/search-files),
 [Drive upload](https://developers.google.com/workspace/drive/api/guides/manage-uploads),
