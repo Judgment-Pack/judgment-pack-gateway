@@ -24,12 +24,13 @@ no device, no name twice, and no name written any way but the plain one
 one form the packer writes, and any other is refused, though it may be a
 lawful archive: in a tar archive a plain regular file with no extended
 header; in a zip archive a regular file as a Unix system records one, its
-name given once and whole, with no field beside it but a time. The
-members' headers are read first and their contents after, one at a time,
+name given once and whole, with no field beside it but a time. An
+archive is first read to its end, a piece at a time and keeping none, since
+its checksum is there: one cut short or changed in passing is refused whole.
+Then the members' headers are read, and their contents after, one at a time
 and only of members a release holds; a member larger than any a release has
-is refused unread. An archive is first read to its end, where its checksum
-is: one cut short or changed in passing is refused whole. Every fault found
-is reported, and any fault is a failure.
+is not read into memory. Every fault found is reported, and any fault is a
+failure.
 
 The form is the packer's for what this repository gives it today: short
 names in plain letters, files of ordinary size, modes as the checkout has
@@ -165,11 +166,14 @@ def built(dist, target):
     for artifact in json.loads(account.read_text(encoding='utf-8')):
         if (artifact.get('type'), artifact.get('goos'), artifact.get('goarch')) != ('Binary', goos, goarch):
             continue
-        name = artifact['name']
+        name, path = artifact.get('name'), artifact.get('path')
+        if not name or not path:
+            raise SystemExit(f'{target}: the packer names a program it built without a name or a path: {artifact}')
         if name in found:
             raise SystemExit(f'{target}: the packer built {name} twice')
-        # The account names a path from where the packer ran, which begins with its directory of outputs.
-        found[name] = (dist / Path(*Path(artifact['path']).parts[1:])).read_bytes()
+        # The account names a path from where the packer ran: its directory of outputs, one name deep as the
+        # workflow leaves it, and the file below. The file is looked for below the directory this was given.
+        found[name] = (dist / Path(*Path(path).parts[1:])).read_bytes()
     return found
 
 
@@ -274,7 +278,9 @@ def check(archive, target, wanted_files, wanted_programs, outputs, scratch):
         return [f'{name}: the name of a document and of a program' for name in shared]
     wanted = set(wanted_files) | set(wanted_programs)
 
-    unread = (tarfile.TarError, zipfile.BadZipFile, zlib.error, OSError, EOFError)
+    # The last is what the reader of zip archives says of a member under a password, and of a way of compressing
+    # it does not know.
+    unread = (tarfile.TarError, zipfile.BadZipFile, zlib.error, OSError, EOFError, RuntimeError)
     try:
         damaged = damage(archive)
         listed = list(headers(archive))

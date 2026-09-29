@@ -75,7 +75,7 @@ class ArchiveChecks(unittest.TestCase):
         cls.programs = checked.programs(tree, 'HEAD')
 
         cls.built = {}
-        for target in TARGETS + ['linux_arm64', 'darwin_amd64']:
+        for target in ['darwin_amd64', 'darwin_arm64', 'linux_amd64', 'linux_arm64', 'windows_amd64', 'windows_arm64']:
             goos, _, goarch = target.partition('_')
             where = cls.scratch / 'built' / target
             where.mkdir(parents=True)
@@ -85,7 +85,6 @@ class ArchiveChecks(unittest.TestCase):
             cls.built[target] = where
         go_build(tree / 'go', '.', cls.scratch / 'built' / 'gateway-amd64-v3', 'linux', 'amd64', GOAMD64='v3')
         go_build(tree / 'go', '.', cls.scratch / 'built' / 'gateway-arm64-v8.1', 'windows', 'arm64', GOARM64='v8.1')
-        go_build(tree / 'go', '.', cls.scratch / 'built' / 'gateway-darwin-arm64', 'darwin', 'arm64')
 
     def contents(self, target):
         """What a sound archive of the target holds: name -> (mode, bytes)."""
@@ -541,6 +540,19 @@ class ArchiveChecks(unittest.TestCase):
         with self.assertRaises(SystemExit) as refused:
             checked.built(dist, 'linux_amd64')
         self.assertEqual(str(refused.exception), 'linux_amd64: the packer built one twice')
+        for lacking in ('name', 'path'):
+            entry = dict(account[0])
+            del entry[lacking]
+            (dist / 'artifacts.json').write_text(json.dumps([entry]))
+            with self.assertRaises(SystemExit) as refused:
+                checked.built(dist, 'linux_amd64')
+            self.assertIn('without a name or a path', str(refused.exception))
+        # Given by another name, or whole: the file is looked for below what was given.
+        (dist / 'artifacts.json').write_text(json.dumps(account[:2]))
+        moved = dist.parent / (dist.name + '-moved')
+        dist.rename(moved)
+        self.assertEqual(checked.built(moved, 'linux_amd64'), {'one': b'built for linux'})
+        self.assertEqual(checked.built(moved.resolve(), 'darwin_amd64'), {'one': b'built for macOS'})
 
     def test_a_program_that_is_not_a_program(self):
         held = self.contents('linux_amd64')
@@ -561,7 +573,7 @@ class ArchiveChecks(unittest.TestCase):
     def test_a_universal_program(self):
         # A true one: two programs for macOS, of two architectures, in the container that holds both.
         parts = [(0x01000007, 3, (self.built['darwin_amd64'] / 'gateway').read_bytes()),
-                 (0x0100000c, 0, (self.scratch / 'built' / 'gateway-darwin-arm64').read_bytes())]
+                 (0x0100000c, 0, (self.built['darwin_arm64'] / 'gateway').read_bytes())]
         step, place, table, body = 1 << 14, 1 << 14, b'', b''
         for kind, sub, data in parts:
             table += struct.pack('>iiIII', kind, sub, place, len(data), 14)
@@ -717,6 +729,22 @@ class ArchiveChecks(unittest.TestCase):
         archive.write_bytes(raw[:place] + b'X' + raw[place + 1:])
         self.assertEqual(self.unreadable(archive, 'windows_arm64'), 'the archive cannot be read through: SPEC.md is not the bytes its checksum is of')
 
+    def test_a_zip_member_the_reader_cannot_open(self):
+        # One bit of what the archive's directory says of a member: its way of compressing made one the reader
+        # does not know, or the member marked as under a password.
+        held = self.contents('windows_arm64')
+        for what, place, bit in (('a way of compressing', 10, 0x01), ('a password', 8, 0x01)):
+            dist = Path(tempfile.mkdtemp(dir=self.scratch))
+            archive = dist / f'{checked.PROJECT}_1.0.0_windows_arm64.zip'
+            with zipfile.ZipFile(archive, 'w') as opened:
+                for name, (mode, data) in held.items():
+                    opened.writestr(self.zip_entry(name, stat.S_IFREG, mode), data, compress_type=zipfile.ZIP_DEFLATED)
+            self.assertEqual(self.check(archive, 'windows_arm64', self.files, self.programs, dist), [], what)
+            raw = archive.read_bytes()
+            entry = raw.index(b'PK\x01\x02')
+            archive.write_bytes(raw[:entry + place] + bytes([raw[entry + place] ^ bit]) + raw[entry + place + 1:])
+            self.unreadable(archive, 'windows_arm64')
+
     def test_a_zip_entry_with_a_field_of_one_byte(self):
         held = self.contents('windows_arm64')
         data = held.pop('SPEC.md')[1]
@@ -770,8 +798,9 @@ class ArchiveChecks(unittest.TestCase):
                 account.append({'type': 'Binary', 'name': name, 'goos': goos, 'goarch': goarch, 'path': f'dist/{name}_{target}/{name}'})
         (dist / 'artifacts.json').write_text(json.dumps(account))
 
-    def run_script(self, dist, *targets, commit='HEAD'):
-        self.with_account(dist)
+    def run_script(self, dist, *targets, commit='HEAD', account=True):
+        if account:
+            self.with_account(dist)
         arguments = [sys.executable, str(Path(checked.__file__)), '--dist', str(dist), '--version', '1.0.0', '--tree', str(self.tree), '--commit', commit]
         for target in targets:
             arguments += ['--target', target]
@@ -794,6 +823,27 @@ class ArchiveChecks(unittest.TestCase):
         self.assertEqual(len(said), len(checked.TARGETS), said)
         for target in checked.TARGETS:
             self.assertTrue(any(line.startswith(f'{target}: ') and line.endswith(' is not there') for line in said), (target, said))
+
+    def test_the_script_as_the_workflow_runs_it(self):
+        # Every platform, none named. The packer's account and outputs are made first, and an archive changed after.
+        dist = Path(tempfile.mkdtemp(dir=self.scratch))
+        for target in checked.TARGETS:
+            made = self.archive(target, self.contents(target))
+            archive = next(made.iterdir())
+            archive.rename(dist / archive.name)
+        self.with_account(dist)
+        ran = self.run_script(dist, account=False)
+        self.assertEqual(ran.returncode, 0, ran.stderr)
+        self.assertEqual(len(ran.stdout.splitlines()), len(checked.TARGETS), ran.stdout)
+        held = self.contents('darwin_amd64')
+        built = held['gateway'][1]
+        held['gateway'] = (0o755, built[:-1] + bytes([built[-1] ^ 1]))
+        made = self.archive('darwin_amd64', held)
+        next(made.iterdir()).replace(dist / f'{checked.PROJECT}_1.0.0_darwin_amd64.tar.gz')
+        ran = self.run_script(dist, account=False)
+        self.assertEqual(ran.returncode, 1, ran.stdout)
+        self.assertEqual(ran.stderr.splitlines(), ['darwin_amd64: gateway: not the bytes the packer built'])
+        self.assertEqual(len(ran.stdout.splitlines()), len(checked.TARGETS) - 1, ran.stdout)
 
     def test_a_fault_is_a_failure_of_the_script(self):
         held = self.contents('linux_amd64')
