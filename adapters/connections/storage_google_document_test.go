@@ -356,50 +356,62 @@ func TestWhatDriveMadeIsHeldToBeAGoogleDocByItsOwnWord(t *testing.T) {
 		state, reason, target string
 		answered              string
 	}{
-		"ok":                                           {made, 200, "completed", "", "made-document", ""},
-		"created":                                      {made, 201, "completed", "", "made-document", ""},
-		"the Word file, kept as it was":                {`{"id":"made-file","mimeType":"` + wordMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"no media type":                                {`{"id":"made-file"}`, 201, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"another Google type":                          {`{"id":"made-file","mimeType":"application/vnd.google-apps.spreadsheet"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"a media type that is no string":               {`{"id":"made-file","mimeType":5}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"a media type that is null":                    {`{"id":"made-file","mimeType":null}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"no ID":                                        {`{"mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an ID that is none":                           {`{"id":"../made","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an ID that is no string":                      {`{"id":5,"mimeType":"` + googleDocumentMedia + `"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
-		"an answer that is not JSON":                   {`made-document`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer that is a list":                     {`["made-document"]`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer that is null":                       {`null`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer that is a string":                   {`"made-document"`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer after a byte order mark":            {"\xef\xbb\xbf" + made, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer after a space":                      {" \n" + made + "\n", 200, "completed", "", "made-document", ""},
-		"no answer":                                    {``, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"the ID of another status":                     {made, 202, "needs-attention", "operation-uncertain", "", "202"},
-		"elsewhere":                                    {made, 307, "needs-attention", "operation-uncertain", "", "307"},
-		"a request Drive does not take":                {made, 400, "needs-attention", "operation-uncertain", "", "400"},
-		"a token Drive does not take":                  {made, 401, "needs-attention", "operation-uncertain", "", "401"},
-		"a folder that has gone":                       {made, 404, "needs-attention", "operation-uncertain", "", "404"},
-		"too many requests":                            {made, 429, "needs-attention", "operation-uncertain", "", "429"},
-		"a failure of Drive's":                         {made, 500, "needs-attention", "operation-uncertain", "", "500"},
-		"an answer that holds the token":               {`{"id":"private-token","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a token beside the ID":                        {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"private-token"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
-		"a token written with an escape":               {`{"id":"private\u002dtoken","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a token with an escape, beside the ID":        {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"a private\u002dtoken"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a token with an escape, in a name":            {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","private\u002dtoken":true}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a token with an escape, deep in the answer":   {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","owners":[{"names":["private\u002dtoken"]}]}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a token with an escape, in an ID given twice": {`{"id":"private\u002dtoken","id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer with more than the two":             {`{"kind":"drive#file","id":"made-document","owners":[{"names":["a person"]}],"mimeType":"` + googleDocumentMedia + `","version":7}`, 200, "completed", "", "made-document", ""},
-		"an ID given twice":                            {`{"id":"made-document","id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a media type given twice":                     {`{"id":"made-file","mimeType":"` + googleDocumentMedia + `","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"an ID under another name":                     {`{"ID":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"a media type under another name":              {`{"id":"made-file","MIMETYPE":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
-		"an answer and more":                           {made + ` {}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer cut short":                          {made[:len(made)-1], 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an ID with no value":                          {`{"id":,"mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
-		"an answer longer than is read":                {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"` + strings.Repeat("n", 64<<10) + `"}`, 200, "needs-attention", "operation-uncertain", "", ""},
-		"a refusal of Drive's":                         {made, 403, "refused", "permission-required", "", ""},
-		"a conflict":                                   {made, 409, "refused", "source-changed", "", ""},
-		"a condition that failed":                      {made, 412, "refused", "source-changed", "", ""},
-		"a refusal longer than is read":                {strings.Repeat("n", 64<<10+1), 403, "needs-attention", "operation-uncertain", "", ""},
+		"ok":                                                         {made, 200, "completed", "", "made-document", ""},
+		"created":                                                    {made, 201, "completed", "", "made-document", ""},
+		"the Word file, kept as it was":                              {`{"id":"made-file","mimeType":"` + wordMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"no media type":                                              {`{"id":"made-file"}`, 201, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"another Google type":                                        {`{"id":"made-file","mimeType":"application/vnd.google-apps.spreadsheet"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"a media type that is no string":                             {`{"id":"made-file","mimeType":5}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"a media type that is null":                                  {`{"id":"made-file","mimeType":null}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"no ID":                                                      {`{"mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID that is none":                                         {`{"id":"../made","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID that is no string":                                    {`{"id":5,"mimeType":"` + googleDocumentMedia + `"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
+		"an answer that is not JSON":                                 {`made-document`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is a list":                                   {`["made-document"]`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is a list of numbers":                        {`[7,8]`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is a list of answers":                        {`[` + made + `]`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is null":                                     {`null`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer that is a string":                                 {`"made-document"`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer after a byte order mark":                          {"\xef\xbb\xbf" + made, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer after a space":                                    {" \n" + made + "\n", 200, "completed", "", "made-document", ""},
+		"no answer":                                                  {``, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"the ID of another status":                                   {made, 202, "needs-attention", "operation-uncertain", "", "202"},
+		"elsewhere":                                                  {made, 307, "needs-attention", "operation-uncertain", "", "307"},
+		"a request Drive does not take":                              {made, 400, "needs-attention", "operation-uncertain", "", "400"},
+		"a token Drive does not take":                                {made, 401, "needs-attention", "operation-uncertain", "", "401"},
+		"a folder that has gone":                                     {made, 404, "needs-attention", "operation-uncertain", "", "404"},
+		"too many requests":                                          {made, 429, "needs-attention", "operation-uncertain", "", "429"},
+		"a failure of Drive's":                                       {made, 500, "needs-attention", "operation-uncertain", "", "500"},
+		"an answer that holds the token":                             {`{"id":"private-token","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token beside the ID":                                      {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"private-token"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
+		"a token written with an escape":                             {`{"id":"private\u002dtoken","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, beside the ID":                      {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"a private\u002dtoken"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, in a name":                          {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","private\u002dtoken":true}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, deep in the answer":                 {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","owners":[{"names":["private\u002dtoken"]}]}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, in an ID given twice":               {`{"id":"private\u002dtoken","id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, after a number":                     {`{"version":7,"id":"private\u002dtoken","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, beside the ID and after a number":   {`{"version":7,"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"private\u002dtoken"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a token with an escape, after a number no float holds":      {`{"version":1e1000,"id":"private\u002dtoken","mimeType":"` + googleDocumentMedia + `"}`, 201, "needs-attention", "operation-uncertain", "", "201"},
+		"an answer with a number no float holds":                     {`{"version":1e1000,"id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "completed", "", "made-document", ""},
+		"an ID that is the token but for its end":                    {`{"id":"private-toke","tail":"n","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID that is the middle of the token":                      {`{"id":"rivate-toke","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID that is one letter of the token":                      {`{"id":"v","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID that is the token in capitals":                        {`{"id":"PRIVATE-TOKEN","mimeType":"` + googleDocumentMedia + `"}`, 200, "completed", "", "PRIVATE-TOKEN", ""},
+		"an ID that is no string, and an ID under another name":      {`{"id":5,"ID":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a media type that is no string, and one under another name": {`{"id":"made-file","mimeType":5,"MIMETYPE":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"an answer with more than the two":                           {`{"kind":"drive#file","id":"made-document","owners":[{"names":["a person"]}],"mimeType":"` + googleDocumentMedia + `","version":7}`, 200, "completed", "", "made-document", ""},
+		"an ID given twice":                                          {`{"id":"made-document","id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a media type given twice":                                   {`{"id":"made-file","mimeType":"` + googleDocumentMedia + `","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"an ID under another name":                                   {`{"ID":"made-document","mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"a media type under another name":                            {`{"id":"made-file","MIMETYPE":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "conversion-unconfirmed", "made-file", ""},
+		"an answer and more":                                         {made + ` {}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer cut short":                                        {made[:len(made)-1], 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an ID with no value":                                        {`{"id":,"mimeType":"` + googleDocumentMedia + `"}`, 200, "needs-attention", "operation-uncertain", "", "200"},
+		"an answer longer than is read":                              {`{"id":"made-document","mimeType":"` + googleDocumentMedia + `","name":"` + strings.Repeat("n", 64<<10) + `"}`, 200, "needs-attention", "operation-uncertain", "", ""},
+		"a refusal of Drive's":                                       {made, 403, "refused", "permission-required", "", ""},
+		"a conflict":                                                 {made, 409, "refused", "source-changed", "", ""},
+		"a condition that failed":                                    {made, 412, "refused", "source-changed", "", ""},
+		"a refusal longer than is read":                              {strings.Repeat("n", 64<<10+1), 403, "needs-attention", "operation-uncertain", "", ""},
 	} {
 		f, b := newDriveConversionFake(t)
 		f.answer, f.status = row.answer, row.status
@@ -680,13 +692,68 @@ func TestAnOrdinaryChangeCannotAskForAConversion(t *testing.T) {
 		"the ID, and an ID that is null":            `{"id":"reserved-file","id":null}`,
 		"the ID under another name":                 `{"ID":"reserved-file"}`,
 		"the ID and a number beside it":             `{"id":"reserved-file","version":7}`,
+		"the ID and a number no float holds":        `{"version":1e1000,"id":"reserved-file"}`,
 		"the ID and a media type that is no string": `{"id":"reserved-file","mimeType":5}`,
 	} {
-		f, b := newDriveConversionFake(t)
-		f.answer = answer
-		plan = storageCall[StoragePlan](t, b, "files-prepare", q)
-		if done = storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID}); done.State != "completed" || done.Target != "reserved-file" {
-			t.Fatalf("%s: %+v", name, done)
+		for _, status := range []int{200, 201} {
+			f, b := newDriveConversionFake(t)
+			f.answer, f.status = answer, status
+			plan = storageCall[StoragePlan](t, b, "files-prepare", q)
+			if done = storageCall[StoragePlan](t, b, "files-commit", map[string]string{"id": plan.ID}); done.State != "completed" || done.Target != "reserved-file" {
+				t.Fatalf("%s, %d: %+v", name, status, done)
+			}
+		}
+	}
+}
+
+// What the commit takes from Drive's answer to a conversion, by itself. The
+// media type is given with an ID that is taken and with no other.
+func TestWhatIsReadOfDrivesAnswerToAConversion(t *testing.T) {
+	const token = "abcdEFGH01234567qrstUVWX89012345"
+	for name, row := range map[string]struct{ answer, id, media string }{
+		"both":                                    {`{"id":"a-file","mimeType":"a/type"}`, "a-file", "a/type"},
+		"both, in the other order":                {`{"mimeType":"a/type","id":"a-file"}`, "a-file", "a/type"},
+		"an ID alone":                             {`{"id":"a-file"}`, "a-file", ""},
+		"a media type alone":                      {`{"mimeType":"a/type"}`, "", ""},
+		"an ID that is no identifier":             {`{"id":"a file","mimeType":"a/type"}`, "a file", "a/type"},
+		"an ID that is empty":                     {`{"id":"","mimeType":"a/type"}`, "", ""},
+		"an ID that is a number":                  {`{"id":7,"mimeType":"a/type"}`, "", ""},
+		"an ID that is null":                      {`{"id":null,"mimeType":"a/type"}`, "", ""},
+		"a media type that is a number":           {`{"id":"a-file","mimeType":7}`, "a-file", ""},
+		"a media type that is a list":             {`{"id":"a-file","mimeType":["a/type"]}`, "a-file", ""},
+		"an ID given twice":                       {`{"id":"a-file","mimeType":"a/type","id":"a-file"}`, "", ""},
+		"an ID given twice, by an escape":         {`{"id":"a-file","mimeType":"a/type","\u0069d":"a-file"}`, "", ""},
+		"an ID given by an escape":                {`{"\u0069d":"a-file","mimeType":"a/type"}`, "a-file", "a/type"},
+		"a media type given twice":                {`{"id":"a-file","mimeType":"a/type","mimeType":"a/type"}`, "a-file", ""},
+		"an ID in an inner object":                {`{"file":{"id":"a-file","mimeType":"a/type"}}`, "", ""},
+		"an inner ID beside the ID":               {`{"file":{"id":"another","mimeType":"b/type"},"id":"a-file","mimeType":"a/type"}`, "a-file", "a/type"},
+		"names in capitals":                       {`{"ID":"a-file","MIMETYPE":"a/type"}`, "", ""},
+		"numbers of every kind":                   {`{"a":0,"b":-1.5e-300,"c":1e1000,"d":123456789012345678901234567890,"id":"a-file","mimeType":"a/type"}`, "a-file", "a/type"},
+		"no object":                               {`["a-file"]`, "", ""},
+		"a list of numbers":                       {`[7,8]`, "", ""},
+		"a list of objects":                       {`[{"id":"a-file","mimeType":"a/type"}]`, "", ""},
+		"a number":                                {`7`, "", ""},
+		"a string":                                {`"a-file"`, "", ""},
+		"null":                                    {`null`, "", ""},
+		"nothing":                                 {``, "", ""},
+		"an object and more":                      {`{"id":"a-file","mimeType":"a/type"}{}`, "", ""},
+		"an object cut short":                     {`{"id":"a-file","mimeType":"a/type"`, "", ""},
+		"the token":                               {`{"id":"` + token + `","mimeType":"a/type"}`, "", ""},
+		"the token in an ID":                      {`{"id":"a-` + token + `-b","mimeType":"a/type"}`, "", ""},
+		"the token with an escape":                {`{"id":"abcd\u0045FGH01234567qrstUVWX89012345","mimeType":"a/type"}`, "", ""},
+		"the token after a number":                {`{"n":1e1000,"id":"abcd\u0045FGH01234567qrstUVWX89012345","mimeType":"a/type"}`, "", ""},
+		"the token beside the ID":                 {`{"id":"a-file","mimeType":"a/type","x":["abcd\u0045FGH01234567qrstUVWX89012345"]}`, "", ""},
+		"the token beside the ID, after a number": {`{"n":7,"id":"a-file","mimeType":"a/type","x":"abcd\u0045FGH01234567qrstUVWX89012345"}`, "", ""},
+		"the token beside the ID, after a number no float holds": {`{"n":-1e-1000,"id":"a-file","mimeType":"a/type","x":"abcd\u0045FGH01234567qrstUVWX89012345"}`, "", ""},
+		"the token as a name":          {`{"id":"a-file","mimeType":"a/type","abcd\u0045FGH01234567qrstUVWX89012345":1}`, "", ""},
+		"the token in two":             {`{"id":"a-file","mimeType":"a/type","x":"abcdEFGH01234567","y":"qrstUVWX89012345"}`, "a-file", "a/type"},
+		"the token but for its end":    {`{"id":"abcdEFGH01234567qrstUVWX8901234","tail":"5","mimeType":"a/type"}`, "", ""},
+		"the token but for its start":  {`{"id":"bcdEFGH01234567qrstUVWX89012345","mimeType":"a/type"}`, "", ""},
+		"a part of the token and more": {`{"id":"abcdEFGH01234567qrstUVWX8901234-","mimeType":"a/type"}`, "abcdEFGH01234567qrstUVWX8901234-", "a/type"},
+		"the token in other letters":   {`{"id":"ABCDefgh01234567QRSTuvwx89012345","mimeType":"a/type"}`, "ABCDefgh01234567QRSTuvwx89012345", "a/type"},
+	} {
+		if id, media := conversionAnswer([]byte(row.answer), token); id != row.id || media != row.media {
+			t.Errorf("%s: an ID of %q and a media type of %q", name, id, media)
 		}
 	}
 }

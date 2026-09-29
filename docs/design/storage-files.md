@@ -179,7 +179,9 @@ else. Each member is a JSON string and is named exactly, so `Name` is not
   control character, no `/` and no `\`, and neither `.` nor `..`.
 - `folder` is a Drive ID and not a folder's name: 1 to 200 of the letters, the
   digits, `_` and `-`. It may be empty, which is the same as leaving it out.
-- `contentBase64` is the file in base64 with its padding, and nothing else.
+- `contentBase64` is the file in base64 with its padding. A carriage return or
+  a line feed within it is passed over, and any other character that is not
+  of base64 refuses the request.
 
 The request is refused
 
@@ -243,46 +245,58 @@ The table is of a commit that sent the upload and recorded what came of it.
 | 200 or 201, an ID, and any other media type, one that is no string, one given twice, or none | `needs-attention`, `conversion-unconfirmed`; `target` is the ID |
 | 403 | `refused`, `permission-required` |
 | 409 or 412 | `refused`, `source-changed` |
-| any other status; or 200 or 201 with no ID that can be read, with an ID given twice, or with an answer in which the access token can be read | `needs-attention`, `operation-uncertain`; `target` is empty; `providerStatus` is the status, where it is three digits |
+| any other status; or 200 or 201 with no ID that can be read, with an ID given twice, with an ID that is a part of the access token, or with an answer in which the token can be read | `needs-attention`, `operation-uncertain`; `target` is empty; `providerStatus` is the status, where it is three digits |
 | an answer longer than 64 KiB, one that cannot be read to its end, or none | `needs-attention`, `operation-uncertain`; `target` is empty |
 
 The last row comes first: an answer that cannot be read whole is that row
 whatever its status, a 403 included. The two members are read by their exact
 names, `id` and `mimeType`, and whatever else the answer holds is not read for
-them. An answer in which the access token can be read is one no ID is taken
-from, since the ID of a conversion is whatever the answer says it is: the token
-is looked for in the answer as it is written, and in every string and every
-name of it as they read once decoded. Three things are outside the table:
+them.
+
+**The token and the ID.** The ID of a conversion is whatever the answer says it
+is, so an answer that repeated the access token could put it in a plan. No ID is
+taken from an answer in which the whole token can be read, as the answer is
+written or in any string or name of it once decoded, nor where the ID is itself
+a part of the token. That is all this holds. An ID that holds a part of the
+token and something else is taken, and so is one that holds the token in other
+letters. It is a guard against an answer that repeats the token, and no defence
+against a provider that means to pass it on: an ID is up to 200 characters of
+the provider's choosing.
+
+Three things are outside the table:
 
 - A commit can end before it sends. Then it answers with an error and no plan,
   as any call does, or the plan is `refused` under `canceled` or
   `blocked-by-policy`: the connection changed, or policy did, after the claim.
 - A commit that sent the upload and cannot record what came of it answers with
-  the error `operation-uncertain` and no plan, and the ID Drive answered with,
-  if it answered, is lost. Where the plan's record is still the one stored and
-  the connection is the one it was prepared under, its status is
-  `needs-attention`. Where the record was replaced or the connection changed
-  while the upload ran, the plan has no status that can be read:
-  `files-status` answers `selection-expired`.
+  the error `operation-uncertain` and no plan. What `files-status` says after
+  that goes by what is stored and by the connection, and is one of four. Where
+  the record of the claim is still the one stored, `needs-attention`, and the
+  ID Drive answered with is lost. Where the record of the outcome was written
+  and the failure came after, in making it durable, the plan as it settled,
+  with its target. Where the record was replaced while the upload ran,
+  `selection-expired`. And where the connection has gone, the error any call
+  has without one, `connect-required`.
 - That 403, 409 and 412 mean that nothing was made is read from what those
   statuses mean. It was not tried.
 
-`providerStatus` is what Drive said, as three digits, and not what the controls
-know. It is a hint for the person who looks and not a cause that was
-established: the controls read no reason out of the answer, and a 404 may be of
-a folder that has gone or of one the connection may not see. A status that is
-not three digits is not kept. The plan is `needs-attention` for every status of
-this row, 4xx and 5xx alike: that a 4xx means nothing was made is likely, and is
-not something the controls have seen Drive keep to.
+`providerStatus` is what Drive said and not what the controls know. It is a hint
+for the person who looks and not a cause that was established: the controls read
+no reason out of the answer, and a 404 may be of a folder that has gone or of
+one the connection may not see. The plan is `needs-attention` for every status
+of this row, 4xx and 5xx alike: that a 4xx means nothing was made is likely, and
+is not something the controls have seen Drive keep to.
 
-`conversion-unconfirmed` says that Drive answered with the ID of a file and did
-not say that the file is a Google Doc. The plan's target is that ID. That the
-file is there, and where, is Drive's word and was not looked at. A person looks at it and
+`conversion-unconfirmed` says that Drive's answer gave an ID the controls take,
+and did not give the media type of a Google Doc once and as a string, which is
+the table's rule. The plan's target is that ID. The answer is asked for an ID
+and a media type and for nothing else: that a file of that ID is there, and
+where, is taken on trust and was not looked at. A person looks at it and
 decides what to do with it. The controls do not remove it, and while the plan
 stands they refuse every new plan for the connection, the trashing of that file
 included: it is removed in Drive, or through the controls after the person has
-looked and reconnected. That is more than the outcome needs, since what was made
-is known. It is the one rule the controls have for a plan that needs a person.
+looked and reconnected. That is more than the outcome needs, since the ID is
+known. It is the one rule the controls have for a plan that needs a person.
 
 **What is not known.** Where the answer is lost, the controls do not know whether a
 document was made, and have no ID to look for. The plan is `needs-attention` like

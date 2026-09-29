@@ -266,34 +266,44 @@ func (b *Broker) driveStorageApply(ctx context.Context, intent storageIntent, to
 
 // conversionAnswer reads the ID and the media type out of Drive's answer to a
 // conversion. Each is read on its own and by its exact name, and is empty
-// where the answer does not give it once and as a string. An answer that is no
-// JSON object gives neither, and neither does one in which the access token
-// can be read: the ID of a conversion is whatever the answer says it is, and
-// an answer that holds the token is not one to take an ID from.
+// where the answer does not give it once and as a string. An answer from which
+// no ID is taken gives no media type either.
+//
+// No ID is taken from an answer that is not one JSON object, from one in which
+// the access token can be read, or where the ID is itself a part of the token.
+// The ID of a conversion is whatever the answer says it is, and this keeps an
+// answer that repeats the token from putting it in a plan. It is no defence
+// against a provider that means to pass the token on: an ID is 200 characters
+// of the provider's choosing.
 func conversionAnswer(raw []byte, token string) (id, media string) {
-	// The token is looked for as the answer is written, and in every string
-	// of it as the string reads once it is decoded, names included.
+	var members map[string]json.RawMessage
+	if json.Unmarshal(raw, &members) != nil {
+		return "", ""
+	}
+	// The token is looked for in the answer as it is written, and in every
+	// string of it as the string reads once it is decoded, names included.
+	// A number is left as it is written, so that none ends the reading.
 	if bytes.Contains(raw, []byte(token)) {
 		return "", ""
 	}
-	for d := json.NewDecoder(bytes.NewReader(raw)); ; {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	for {
 		t, err := d.Token()
-		if err != nil {
+		if err == io.EOF {
 			break
+		}
+		if err != nil {
+			return "", ""
 		}
 		if text, is := t.(string); is && strings.Contains(text, token) {
 			return "", ""
 		}
 	}
-	// What is not an object has no members. What is one is read again for
-	// how often it gives each, since a member given twice is given by
-	// neither.
-	var members map[string]json.RawMessage
-	if json.Unmarshal(raw, &members) != nil {
-		return "", ""
-	}
+	// The answer is read again for how often it gives each member, since a
+	// member given twice is given by neither.
 	given := map[string]int{}
-	d := json.NewDecoder(bytes.NewReader(raw))
+	d = json.NewDecoder(bytes.NewReader(raw))
 	d.Token()
 	for d.More() {
 		name, _ := d.Token()
@@ -303,6 +313,9 @@ func conversionAnswer(raw []byte, token string) (id, media string) {
 	}
 	if given["id"] == 1 {
 		json.Unmarshal(members["id"], &id)
+	}
+	if strings.Contains(token, id) {
+		return "", ""
 	}
 	if given["mimeType"] == 1 {
 		json.Unmarshal(members["mimeType"], &media)
