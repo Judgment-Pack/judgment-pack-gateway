@@ -183,7 +183,8 @@ jobs:
       # and nothing else, each in the form the packer writes, under its
       # plain name and once; the files are the commit's, byte for byte;
       # each program is one program built from the package of its name,
-      # for the archive's platform, at the level a release promises
+      # for the archive's platform, at the level a release promises, and
+      # is the bytes the packer built; the archive reads to its end
       # (build/release_archives.py, which CI runs against sound archives
       # and against archives spoiled one way at a time).
       - name: Each archive holds the corpus, the catalog and the programs, and nothing else

@@ -42,13 +42,22 @@ Releases up to `v0.4.0` were made by hand and carry notes only.
 | The adapters' tests (CI) | yes | no | vetted, not run |
 | The released archive, run: `gateway version`, `gateway conform` on the corpus it carries | `amd64` and `arm64` | `arm64` | `amd64` |
 | The released archive, run: three adapters start and print their usage line | `amd64` and `arm64` | `arm64` | no |
-| The released archive, read and not run: it holds files and nothing else, each under its plain name and once; its documents, corpus and catalog are the commit's, byte for byte; each program is one program, built from the package of its name, for the archive's platform, at the lowest level of its architecture; no file is there that a release does not hold | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
+| The released archive, read and not run: it holds files and nothing else, each under its plain name and once; its documents, corpus and catalog are the commit's, byte for byte; each program is one program, built from the package of its name, for the archive's platform, at the lowest level of its architecture, and is the bytes the packer built; no file is there that a release does not hold; the archive reads to its end | `amd64` and `arm64` | `amd64` and `arm64` | `amd64` and `arm64` |
 
 What the reading of the archives is for: a mistake in the packaging, such as a pattern that
-passes a file over or a program built from the wrong package. It accepts a member only in the
-form the packer writes one, and reads an archive as Python's standard library does. It is not a
-defence against an archive made to be read differently by different programs: whoever could put
-one where the check looks could change the check.
+passes a file over, a program built from the wrong package, or an archive cut short. It accepts
+a member only in the form the packer writes one, and reads an archive as Python's standard
+library does. It is not a defence against an archive made to be read differently by different
+programs: whoever could put one where the check looks could change the check.
+
+A program is held to the bytes the packer wrote when it built it, by the packer's own account
+(`dist/artifacts.json`). Those bytes are held to nothing but their build record: the check does
+not say the packer built a program well.
+
+The form is the packer's for what this repository gives it today: short names in plain letters,
+files of ordinary size, modes as the checkout has them. A file added under a long name or one
+not in plain letters, a mode changed, or an upgrade of the packer may be written in a form the
+check refuses. Such a refusal is looked into: it may be the check that has to follow.
 
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
 by anything. Of the adapter executables in an archive, three are started by the archive smoke
@@ -146,8 +155,9 @@ Every job works on the commit the run was started for, by its digest, and not on
 7. **Holds the draft to the run, and publishes.** A draft can be changed while it waits, by
    whoever may write to the repository. So on the far side of the gate the tag is held to the
    commit once more, and the draft as it then stands is downloaded and held to what the run
-   packaged: the title the workflow gave it, the notes the commit holds, the same files by name,
-   the same `checksums.txt`, and every archive the bytes that list names. Then it is published.
+   packaged: the title the workflow gave it, the notes the commit holds (compared without the
+   newlines either ends in), the same files by name, the same `checksums.txt`, and every archive
+   the bytes that list names. Then it is published.
    A moment remains between that check and the publishing, and nothing closes it. An approval given more than thirty days after the run finds the run's
    archives gone, and the job fails: release a new version.
 

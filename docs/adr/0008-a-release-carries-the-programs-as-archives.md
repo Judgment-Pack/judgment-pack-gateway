@@ -111,7 +111,9 @@ ADR-0001 is not edited; its row in the index names this supersession.
   consumer verifies does not depend on it: an archive the workflow did not build has no
   attestation.
 - The reading of the archives is a check of the workflow's own packaging. It is not a defence
-  against an archive made to be read differently by different programs.
+  against an archive made to be read differently by different programs. It accepts the form the
+  packer writes for what the repository gives it today, and may have to follow when a file is
+  added under another kind of name or the packer is upgraded.
 - No claim is made that a build can be reproduced bit for bit by someone else.
 - A release made before this record, `v0.1.0` to `v0.4.0`, stays as it is: notes only.
 

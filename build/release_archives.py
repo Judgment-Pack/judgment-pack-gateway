@@ -14,7 +14,8 @@ built for, the archive of that name must hold exactly:
   - the programs, each one program and not a file of several, built from
     the package of its name, for the archive's operating system and
     architecture and at the processor level a release promises, as the
-    executable's own build record says, and readable and executable by
+    executable's own build record says, the very bytes the packer built
+    by its own account of what it built, and readable and executable by
     everyone, which the packer records of a program for Windows too.
 
 An archive holds files and nothing else: no directory of its own, no link,
@@ -26,8 +27,15 @@ header; in a zip archive a regular file as a Unix system records one, its
 name given once and whole, with no field beside it but a time. The
 members' headers are read first and their contents after, one at a time,
 and only of members a release holds; a member larger than any a release has
-is refused unread. Every fault found is reported, and any fault is a
-failure.
+is refused unread. An archive is first read to its end, where its checksum
+is: one cut short or changed in passing is refused whole. Every fault found
+is reported, and any fault is a failure.
+
+The form is the packer's for what this repository gives it today: short
+names in plain letters, files of ordinary size, modes as the checkout has
+them. A name too long or not in plain letters, a file of many gigabytes, or
+another version of the packer may be written in a form this refuses. That
+is a refusal to look into, and not by itself a fault of the archive.
 
 What is compared is the commit, not the working tree: a file changed or
 removed in the tree after the commit changes nothing here.
@@ -39,12 +47,16 @@ Python's standard library reads one. It is not a defence against an archive
 made to be read one way by one program and another way by the next: whoever
 could put such an archive where this looks could change this script too.
 
-What this does not establish: that a program behaves. A build record says
+What this does not establish: that a program behaves, or that the packer
+built it well. A program is held to the bytes the packer wrote when it built
+it, and those to nothing. A build record says
 what an executable was built from and for; it is read here, by whatever
 `go` is first on the path, and the program is not run. The release workflow
 and CI run this with the toolchain a release is built with.
 """
 import argparse
+import gzip
+import json
 from pathlib import Path
 import stat
 import struct
@@ -52,6 +64,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zlib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -142,6 +155,36 @@ def tar_kind(info):
     return 'file'
 
 
+def built(dist, target):
+    """Name -> bytes of each program the packer built for the target, by the account it leaves of what it built."""
+    account = dist / 'artifacts.json'
+    if not account.is_file():
+        raise SystemExit(f'{account} is not there: the packer leaves it, and the programs are held to what it names')
+    goos, _, goarch = target.partition('_')
+    found = {}
+    for artifact in json.loads(account.read_text(encoding='utf-8')):
+        if (artifact.get('type'), artifact.get('goos'), artifact.get('goarch')) != ('Binary', goos, goarch):
+            continue
+        name = artifact['name']
+        if name in found:
+            raise SystemExit(f'{target}: the packer built {name} twice')
+        # The account names a path from where the packer ran, which begins with its directory of outputs.
+        found[name] = (dist / Path(*Path(artifact['path']).parts[1:])).read_bytes()
+    return found
+
+
+def damage(archive):
+    """Why an archive cannot be read to its end, or nothing. Its checksums are there, and a reader of members stops short of them."""
+    if archive.suffix == '.zip':
+        with zipfile.ZipFile(archive) as opened:
+            bad = opened.testzip()
+        return f'{bad} is not the bytes its checksum is of' if bad is not None else ''
+    with gzip.open(archive, 'rb') as opened:
+        while opened.read(1 << 20):
+            pass
+    return ''
+
+
 def headers(archive):
     """Every member's header as (name, kind, mode, size), the name as the archive writes it. Nothing is read."""
     if archive.suffix == '.zip':
@@ -219,7 +262,7 @@ def build_record(data, scratch):
     return parse_record(ran.stdout)
 
 
-def check(archive, target, wanted_files, wanted_programs, scratch):
+def check(archive, target, wanted_files, wanted_programs, outputs, scratch):
     """Every fault of one archive, as sentences; none is a pass."""
     faults = []
     goos, _, goarch = target.partition('_')
@@ -231,11 +274,14 @@ def check(archive, target, wanted_files, wanted_programs, scratch):
         return [f'{name}: the name of a document and of a program' for name in shared]
     wanted = set(wanted_files) | set(wanted_programs)
 
-    unread = (tarfile.TarError, zipfile.BadZipFile, OSError, EOFError)
+    unread = (tarfile.TarError, zipfile.BadZipFile, zlib.error, OSError, EOFError)
     try:
+        damaged = damage(archive)
         listed = list(headers(archive))
     except unread as refused:
         return [f'the archive cannot be read through: {refused}']
+    if damaged:
+        return [f'the archive cannot be read through: {damaged}']
     sound = {}
     seen = set()
     for name, kind, mode, size in listed:
@@ -262,14 +308,14 @@ def check(archive, target, wanted_files, wanted_programs, scratch):
     try:
         # One member at a time; a fault in reading ends the reading.
         for name, data in contents(archive, set(sound)):
-            faults += member_faults(name, data, sound[name], wanted_files, wanted_programs, target, scratch)
+            faults += member_faults(name, data, sound[name], wanted_files, wanted_programs, outputs, target, scratch)
     except unread as refused:
         # As when the two places a zip archive names a member in disagree.
         faults.append(f'the archive cannot be read through: {refused}')
     return faults
 
 
-def member_faults(name, data, mode, wanted_files, wanted_programs, target, scratch):
+def member_faults(name, data, mode, wanted_files, wanted_programs, outputs, target, scratch):
     """The faults of one sound member's contents and mode."""
     if name in wanted_files:
         return [] if data == wanted_files[name] else [f'{name}: not the bytes the commit holds']
@@ -282,6 +328,10 @@ def member_faults(name, data, mode, wanted_files, wanted_programs, target, scrat
         faults.append(f'{name}: {why}')
     elif record != (package, goos, goarch, level):
         faults.append(f'{name}: built from {record[0]} for {record[1]}_{record[2]} at {record[3]}, and not from {package} for {target} at {level_key}={level}')
+    if name not in outputs:
+        faults.append(f'{name}: the packer has no record of building it')
+    elif data != outputs[name]:
+        faults.append(f'{name}: not the bytes the packer built')
     if mode & 0o555 != 0o555:
         faults.append(f'{name}: mode {mode:04o}, which not everyone can read and execute')
     return faults
@@ -307,7 +357,7 @@ def main():
                 print(f'{target}: {archive.name} is not there', file=sys.stderr)
                 failed = True
                 continue
-            faults = check(archive, target, wanted_files, wanted_programs, Path(scratch))
+            faults = check(archive, target, wanted_files, wanted_programs, built(args.dist, target), Path(scratch))
             for fault in faults:
                 print(f'{target}: {fault}', file=sys.stderr)
             if faults:
