@@ -169,7 +169,13 @@ func (b *Broker) driveStorageApply(ctx context.Context, intent storageIntent, to
 		}
 		metadata := map[string]any{"name": q.Name, "mimeType": q.MediaType}
 		if q.Action == "create" {
-			metadata["id"] = q.ID
+			// A conversion is asked for by the media type of what is to be
+			// made, and carries no ID: Drive takes none for a file it converts.
+			if q.ConvertTo == storageGoogleDocument {
+				metadata["mimeType"] = storageGoogleDocumentMedia
+			} else {
+				metadata["id"] = q.ID
+			}
 			if q.Folder != "" {
 				metadata["parents"] = []string{q.Folder}
 			}
@@ -197,6 +203,9 @@ func (b *Broker) driveStorageApply(ctx context.Context, intent storageIntent, to
 			path += "/" + q.ID
 		}
 		path += "?uploadType=multipart&supportsAllDrives=true&fields=id"
+		if q.ConvertTo != "" {
+			path += ",mimeType"
+		}
 	}
 	req, e := http.NewRequestWithContext(ctx, method, path, bytes.NewReader(body))
 	if e != nil {
@@ -229,9 +238,25 @@ func (b *Broker) driveStorageApply(ctx context.Context, intent storageIntent, to
 		return "", Error("operation-uncertain")
 	}
 	var reply struct {
-		ID string `json:"id"`
+		ID        string `json:"id"`
+		MediaType string `json:"mimeType"`
 	}
-	if json.Unmarshal(raw, &reply) != nil || reply.ID != q.ID {
+	if json.Unmarshal(raw, &reply) != nil {
+		return "", Error("operation-uncertain")
+	}
+	if q.ConvertTo != "" {
+		// The ID is Drive's to give. What was made is held to be a Google
+		// Doc by Drive's own word, and where it is not, the file that was
+		// made is named so that a person can find it.
+		if !identifier.MatchString(reply.ID) {
+			return "", Error("operation-uncertain")
+		}
+		if reply.MediaType != storageGoogleDocumentMedia {
+			return reply.ID, errConversionUnconfirmed
+		}
+		return reply.ID, nil
+	}
+	if reply.ID != q.ID {
 		return "", Error("operation-uncertain")
 	}
 	return reply.ID, nil

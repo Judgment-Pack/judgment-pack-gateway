@@ -118,6 +118,12 @@ func (b *Broker) storagePreflight(ctx context.Context, q *StorageChange, token s
 				return file, "", ErrUnsupported
 			}
 		}
+		// Drive takes no reserved ID for a file it converts, so a create by
+		// conversion has no target until Drive has answered it. The plan is
+		// still sent once: a commit that was claimed is never sent again.
+		if q.ConvertTo != "" {
+			return StorageFile{Name: q.Name, Kind: "file"}, "", nil
+		}
 		// Reserve a Drive ID before the review; a later ambiguous create cannot be
 		// turned into a second file by resubmitting the same reviewed plan.
 		raw, _, e := b.provider.request(ctx, "GET", b.provider.api+"/files/generateIds?"+url.Values{"count": {"1"}, "space": {"drive"}, "type": {"files"}}.Encode(), token, nil, 4096)

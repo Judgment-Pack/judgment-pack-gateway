@@ -108,7 +108,7 @@ func run() int {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 		var result any
 		var err error
-		if r.Method != "files-prepare" && len(scan.Bytes()) > connections.ControlLineBytes {
+		if len(scan.Bytes()) > requestBound(r.Method) {
 			err = connections.ErrRequest
 		} else {
 			result, err = b.Handle(ctx, r.Method, r.Params)
@@ -123,6 +123,15 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// requestBound is the most a request's line may hold. Only a request that
+// carries a file's content has the larger bound.
+func requestBound(method string) int {
+	if connections.StorageUpload(method) {
+		return connections.StorageLineBytes
+	}
+	return connections.ControlLineBytes
 }
 
 // Failed operations must never include partial metadata or grants.

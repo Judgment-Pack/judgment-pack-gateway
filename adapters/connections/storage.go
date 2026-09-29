@@ -25,6 +25,20 @@ const StorageMetadataBytes = 512 << 10
 
 var storageMethods = []string{"files-list", "files-read", "files-prepare", "files-commit", "files-status"}
 
+// StorageConvertMethod prepares the creation of a Google Doc from a Word file,
+// by Drive's own conversion. It is Drive's alone, and a method of its own so
+// that the catalog's operations stay what they are, the methods a provider
+// answers: a host that does not know the method never calls it, and a
+// provider that does not list it refuses it (docs/design/storage-files.md).
+const StorageConvertMethod = "files-prepare-google-document"
+
+// The one conversion: what is uploaded, and what Drive is asked to make of it.
+const (
+	storageWordMedia           = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	storageGoogleDocumentMedia = "application/vnd.google-apps.document"
+	storageGoogleDocument      = "google-document"
+)
+
 func StorageMethod(method string) bool {
 	for _, m := range storageMethods {
 		if m == method {
@@ -32,6 +46,18 @@ func StorageMethod(method string) bool {
 		}
 	}
 	return false
+}
+
+// storageMethodOf reports whether a provider answers a storage method: the
+// five every storage provider has, and the conversion, which is Drive's.
+func storageMethodOf(provider, method string) bool {
+	return storageProvider(provider) && (StorageMethod(method) || provider == "google-drive" && method == StorageConvertMethod)
+}
+
+// StorageUpload reports whether a method's request carries a file's content,
+// and so whether its line may be as long as a file allows.
+func StorageUpload(method string) bool {
+	return method == "files-prepare" || method == StorageConvertMethod
 }
 func storageProvider(id string) bool {
 	return id == "google-drive" || id == "obsidian" || id == "aws-s3"
@@ -92,6 +118,19 @@ type StorageChange struct {
 	Revision  string `json:"revision"`
 	MediaType string `json:"mediaType"`
 	Content   string `json:"contentBase64"`
+	// ConvertTo is set by the conversion's own method and by nothing a
+	// caller writes: files-prepare refuses a request that carries it.
+	ConvertTo string `json:"convertTo,omitempty"`
+}
+
+// StorageConversion is what files-prepare-google-document takes: where the
+// document is to be, its name, and the Word file it is made from.
+type StorageConversion struct {
+	Context   string `json:"context"`
+	Folder    string `json:"folder"`
+	Name      string `json:"name"`
+	MediaType string `json:"mediaType"`
+	Content   string `json:"contentBase64"`
 }
 type StoragePlan struct {
 	ID           string `json:"id"`
@@ -105,6 +144,9 @@ type StoragePlan struct {
 	Confirmation string `json:"confirmation"`
 	Effect       string `json:"effect"`
 	Error        string `json:"error,omitempty"`
+	// ConvertTo says what the file becomes, where it becomes something other
+	// than the file uploaded, so that a person sees it before they confirm.
+	ConvertTo string `json:"convertTo,omitempty"`
 }
 type storageIntent struct {
 	Plan       StoragePlan   `json:"plan"`
@@ -271,9 +313,21 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		}
 		file.Context = storageContext(c, epoch)
 		return StorageRead{file, base64.StdEncoding.EncodeToString(data)}, nil
-	case "files-prepare":
+	case "files-prepare", StorageConvertMethod:
 		var q StorageChange
-		if decodeStorage(raw, &q) != nil || !resourceText(q.ID, 1024, true) || !resourceText(q.Name, 1024, true) || !resourceText(q.Folder, 1024, true) || !resourceText(q.Revision, 256, true) {
+		if method == StorageConvertMethod {
+			// The conversion has a request of its own, with no action, no
+			// target and no revision: it creates, and what it creates has no
+			// name in Drive until Drive has made it.
+			var conversion StorageConversion
+			if decodeStorage(raw, &conversion) != nil {
+				return nil, ErrRequest
+			}
+			q = StorageChange{Context: conversion.Context, Action: "create", Folder: conversion.Folder, Name: conversion.Name, MediaType: conversion.MediaType, Content: conversion.Content, ConvertTo: storageGoogleDocument}
+		} else if decodeStorage(raw, &q) != nil || q.ConvertTo != "" {
+			return nil, ErrRequest
+		}
+		if !resourceText(q.ID, 1024, true) || !resourceText(q.Name, 1024, true) || !resourceText(q.Folder, 1024, true) || !resourceText(q.Revision, 256, true) {
 			return nil, ErrRequest
 		}
 		if q.Context != storageContext(c, epoch) {
@@ -293,11 +347,18 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		} else if !validStorageMedia(q.MediaType) {
 			return nil, ErrUnsupported
 		}
+		// A conversion is of a Word file and of nothing else. The media type is
+		// the caller's word for it, and the first bytes are held to be those an
+		// archive begins with, which a Word file is. Nothing more of the file
+		// is read: whether Drive can convert it is Drive's to say.
+		if q.ConvertTo != "" && (q.MediaType != storageWordMedia || !bytes.HasPrefix(data, []byte("PK\x03\x04"))) {
+			return nil, ErrUnsupported
+		}
 		file, etag, e := b.storagePreflight(ctx, &q, token)
 		if e != nil {
 			return nil, e
 		}
-		plan := StoragePlan{ID: randomID(), Action: q.Action, Target: file.ID, Name: file.Name, Revision: q.Revision, Size: len(data), State: "prepared", Expires: time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339), Effect: "write"}
+		plan := StoragePlan{ID: randomID(), Action: q.Action, Target: file.ID, Name: file.Name, Revision: q.Revision, Size: len(data), State: "prepared", Expires: time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339), Effect: "write", ConvertTo: q.ConvertTo}
 		if q.Action == "delete" {
 			plan.Confirmation = file.Name
 			plan.Effect = "delete"
@@ -393,6 +454,11 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 		if err != nil {
 			intent.Plan.State = "needs-attention"
 			intent.Plan.Error = "operation-uncertain"
+			// Drive made a file and did not say it is a Google Doc. The file is
+			// named in the plan's target, and a person looks at it.
+			if err == errConversionUnconfirmed {
+				intent.Plan.Error = err.Error()
+			}
 			if errors.Is(err, ErrChanged) || errors.Is(err, ErrUnsupported) || errors.Is(err, ErrRequest) || errors.Is(err, ErrCanceled) || errors.Is(err, ErrPolicy) || err == Error("permission-required") {
 				intent.Plan.State = "refused"
 				intent.Plan.Error = err.Error()
@@ -414,6 +480,10 @@ func (b *Broker) storageOperation(ctx context.Context, method string, raw []byte
 	}
 	return nil, ErrRequest
 }
+
+// errConversionUnconfirmed is a create by conversion that Drive answered with
+// a file that is not a Google Doc.
+const errConversionUnconfirmed = Error("conversion-unconfirmed")
 
 var storageMedia = regexp.MustCompile(`^[a-zA-Z0-9!#$&^_.+-]+/[a-zA-Z0-9!#$&^_.+-]+$`)
 

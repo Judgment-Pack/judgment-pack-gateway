@@ -76,6 +76,9 @@ func ConnectionCatalogV3() CatalogV3 {
 		if storageProvider(out.Providers[i].ID) {
 			out.Providers[i].Operations = append(out.Providers[i].Operations, storageMethods...)
 		}
+		if storageMethodOf(out.Providers[i].ID, StorageConvertMethod) {
+			out.Providers[i].Operations = append(out.Providers[i].Operations, StorageConvertMethod)
+		}
 	}
 	return out
 }
