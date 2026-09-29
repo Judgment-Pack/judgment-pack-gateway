@@ -175,9 +175,11 @@ any set-user-id file — grants it nothing; and the engine refuses to start when
 file capabilities and is executable by anyone but its owner. A process stripped of the capability to switch passes the startup
 check only where capabilities cannot be read, and fails at its first acquisition, where the
 operating system's reason is reported. **A
-source's run is bounded in time** (thirty seconds, or its own `--source-timeout`, at most ten
-minutes), **a request body in size** (one mebibyte; `/acquire`'s set by `--max-request`, from 1 byte
-to 64 MiB), and **a source's stdout** (`--source-max-output`, one mebibyte by default, from 1 byte
+source's run is bounded in time** (thirty seconds, or its own `--source-timeout`, from one second
+to seven days; an adapter may hold itself to less by a deadline of its own, and the document
+and rendering adapters take none past ten minutes), **a request body in size** (one mebibyte;
+`/acquire`'s set by `--max-request`, from 1 byte to 64 MiB), and **a source's stdout**
+(`--source-max-output`, one mebibyte by default, from 1 byte
 to 64 MiB as well — a source's output is parsed under no value budget, so its bytes are the whole
 of what bounds that parse); its stderr is bounded and truncated: a source that crosses the stdout
 bound is killed, its

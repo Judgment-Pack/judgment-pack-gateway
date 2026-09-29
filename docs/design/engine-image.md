@@ -124,7 +124,11 @@ denied to it.
 
 Adapters are **spawned, never linked**. When a request names a platform, the gateway resolves
 its binding to an adapter binary and starts it over the source contract of SPEC.md §6:
-canonical arguments on stdin, one JSON result on stdout, twenty seconds for an acquisition.
+canonical arguments on stdin, one JSON result on stdout. Two clocks run on an acquisition, and
+they start apart. The adapter gives its work twenty seconds, its default, since the engine
+gives it no other. The gateway cancels the source thirty seconds after it began to start it,
+which is before the adapter's clock. Starting the adapter, what it clears up after its deadline
+and its report all come out of the ten seconds between the two.
 `serve` bounds the incoming HTTP body at one mebibyte and a source's output at one mebibyte
 (`--source-max-output`; the engine's default), killing a source that crosses it. The spawn
 differs from a plain `serve` in three ways that the isolation claim depends on: the environment
