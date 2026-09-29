@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Web search result, version 1",
-  "description": "The result member of what the source web-search answers (docs/web-search.md): links to read, and for a grounded answer the text the provider generated, kept apart from them. A result is a lead and not a document. Each value is checked on its own, with patterns written to mean the same under a JavaScript and a Python regular-expression engine. The schema is looser than the adapter in these places, and a value it admits may be one the adapter never writes: a length is counted here in characters and by the adapter in bytes of UTF-8; a link is not parsed here, so one with user information or another port is admitted; that the hits are no more than the request's maxResults, and that no link is there twice, are rules that relate values and are the adapter's; that retrievedAt is a day of the calendar is not checked; and 1.0 is the integer 1 here.",
+  "description": "The result member of what the source web-search answers (docs/web-search.md): links to read, and for a grounded answer the text the provider generated, kept apart from them. A result is a lead and not a document. Each value is checked on its own, with patterns written to mean the same under a JavaScript and a Python regular-expression engine. The schema is looser than the adapter in these places, and a value it admits may be one the adapter never writes: a length is counted here in characters and by the adapter in bytes of UTF-8; a link is not parsed here, so one with user information or another port is admitted; that the hits are no more than the request's maxResults, and that no link is there twice, are rules that relate values and are the adapter's; that retrievedAt is a day of the calendar is not checked, only that its month, day, hour, minute and second are each within their range; a text is not held to the canonical domain of SPEC.md section 1.1, so one with half of a surrogate pair is admitted, which the adapter cannot write; and 1.0 is the integer 1 here.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -44,7 +44,7 @@
     },
     "retrievedAt": {
       "type": "string",
-      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z(?![\\s\\S])",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z(?![\\s\\S])",
       "description": "when the answer had been read, to the second, in UTC"
     },
     "kind": {
@@ -110,7 +110,14 @@
             "const": "grounded-answer"
           },
           "hits": {
-            "minItems": 1
+            "minItems": 1,
+            "items": {
+              "properties": {
+                "snippet": {
+                  "const": ""
+                }
+              }
+            }
           }
         },
         "required": [
@@ -143,7 +150,7 @@
         "snippet": {
           "type": "string",
           "maxLength": 2000,
-          "description": "the provider's excerpt, cut at 2000 bytes of UTF-8 and at a whole character; empty for a grounded answer; the provider's text, not text read from the page"
+          "description": "the provider's excerpt, cut at 2000 bytes of UTF-8 and at a whole character; the provider's text, not text read from the page; empty for a grounded answer, which has none"
         }
       }
     }
