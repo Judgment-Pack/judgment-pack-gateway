@@ -41,6 +41,7 @@ func everyUse(t *testing.T, b *Broker) map[string]error {
 	var epoch string
 	b.store.locked(func(v *state) error { c, epoch = *v.Connection, v.Epoch; return nil })
 	_, out["files-prepare"] = b.Handle(context.Background(), "files-prepare", mustJSON(StorageChange{Context: storageContext(c, epoch), Action: "create", Name: "a.txt", MediaType: "text/plain", Content: "YQ=="}))
+	_, out["files-read"] = b.Handle(context.Background(), "files-read", mustJSON(map[string]string{"id": "file-A", "revision": "7", "context": storageContext(c, epoch)}))
 	picked, e := b.Handle(context.Background(), "select", mustJSON(map[string]any{"resourceIds": []string{"file-A"}, "selectionContext": epoch}))
 	if e != nil {
 		t.Fatal(e)
@@ -58,7 +59,7 @@ func TestConsentIsRecordedBesideTheState(t *testing.T) {
 	}
 	raw, e := b.store.read("consent.json")
 	var kept map[string]string
-	if e != nil || json.Unmarshal(raw, &kept) != nil || len(kept) != 3 || kept["scope"] != "https://www.googleapis.com/auth/drive" || kept["grant"] != digest([]byte("google-refresh-private")) {
+	if e != nil || json.Unmarshal(raw, &kept) != nil || len(kept) != 4 || kept["scope"] != "https://www.googleapis.com/auth/drive" || kept["grant"] != digest([]byte("google-refresh-private")) || kept["token"] != digest([]byte("google-access-private")) {
 		t.Fatalf("the record is %v, %v", len(kept), e)
 	}
 	b.store.locked(func(v *state) error {
@@ -96,26 +97,32 @@ func TestConnectionWithoutARecordedConsentIsAskedForAgain(t *testing.T) {
 			b.store.locked(func(v *state) error { return b.store.recordConsent(v.Connection, "") })
 		},
 		"a record of another connection": func(b *Broker) {
-			b.store.write("consent.json", consent{"another", digest([]byte("google-refresh-private")), driveScope})
+			b.store.write("consent.json", consent{"another", digest([]byte("google-refresh-private")), digest([]byte("google-access-private")), driveScope})
 		},
 		"a record of another consent of this connection": func(b *Broker) {
 			b.store.locked(func(v *state) error {
-				return b.store.write("consent.json", consent{v.Connection.ID, digest([]byte("an-earlier-refresh-token")), driveScope})
+				return b.store.write("consent.json", consent{v.Connection.ID, digest([]byte("an-earlier-refresh-token")), digest([]byte(v.Connection.Access)), driveScope})
 			})
 		},
 		"a record that is no JSON": func(b *Broker) { b.store.write("consent.json", "drive") },
 		"a record of this consent with a member not known": func(b *Broker) {
 			b.store.locked(func(v *state) error {
-				return b.store.write("consent.json", map[string]string{"connection": v.Connection.ID, "grant": digest([]byte(v.Connection.Refresh)), "scope": driveScope, "more": "x"})
+				return b.store.write("consent.json", map[string]string{"connection": v.Connection.ID, "grant": digest([]byte(v.Connection.Refresh)), "token": digest([]byte(v.Connection.Access)), "scope": driveScope, "more": "x"})
 			})
 		},
 		"a record of this consent with a member named in another case": func(b *Broker) {
 			b.store.locked(func(v *state) error {
-				return b.store.write("consent.json", map[string]string{"connection": v.Connection.ID, "grant": digest([]byte(v.Connection.Refresh)), "Scope": driveScope})
+				return b.store.write("consent.json", map[string]string{"connection": v.Connection.ID, "grant": digest([]byte(v.Connection.Refresh)), "token": digest([]byte(v.Connection.Access)), "Scope": driveScope})
 			})
 		},
 		"a token that a consent gave since": func(b *Broker) {
 			b.store.locked(func(v *state) error { v.Connection.Refresh = "narrow-refresh"; return b.store.write("state.json", v) })
+		},
+		"an access token another put in its place, the refresh token kept": func(b *Broker) {
+			b.store.locked(func(v *state) error {
+				v.Connection.Access = "of-another-consent"
+				return b.store.write("state.json", v)
+			})
 		},
 	} {
 		for _, expired := range []bool{false, true} {
@@ -187,7 +194,7 @@ func TestRenewalKeepsTheRecordInStep(t *testing.T) {
 			t.Errorf("%s: Drive was asked under %v", name, tokens)
 		}
 		b.store.locked(func(v *state) error {
-			if b.store.consentedScope(*v.Connection) != driveScope || v.Connection.Expires < time.Now().Unix() {
+			if b.store.consentedScope(*v.Connection) != driveScope || v.Connection.Expires < time.Now().Unix() || v.Connection.Access != "renewed" {
 				t.Errorf("%s: the record is not of the connection as it is kept", name)
 			}
 			return nil
@@ -256,5 +263,145 @@ func TestSnapshotOfAnEarlierConsentTakesWhatIsHeldNow(t *testing.T) {
 	b.store.locked(func(v *state) error { v.Connection = nil; v.Epoch = randomID(); return b.store.write("state.json", v) })
 	if _, e := b.provider.access(context.Background(), b.store, client, stale, epoch); e != ErrCanceled {
 		t.Errorf("under a stale snapshot of a connection that is gone: %v", e)
+	}
+}
+
+// A consent that gives no refresh token of its own keeps the earlier one only
+// where that one is recorded as of the whole Drive. A connection made before
+// the record, consenting again, is refused where Google gives no refresh
+// token, and connects where it does.
+func TestReconnectKeepsAnEarlierRefreshTokenOnlyWhereItIsRecorded(t *testing.T) {
+	for name, example := range map[string]struct {
+		recorded bool
+		refresh  string
+		state    string
+	}{
+		"recorded, and no refresh token given":     {true, "", "complete"},
+		"not recorded, and no refresh token given": {false, "", "failed"},
+		"not recorded, and a refresh token given":  {false, "a-new-refresh", "complete"},
+	} {
+		b, _ := counted(t)
+		if r := finish(t, b, start(t, b, "connect"), nil); r.State != "complete" {
+			t.Fatal(r)
+		}
+		if !example.recorded {
+			b.store.root.Remove("consent.json")
+		}
+		inner := b.provider.client.Transport
+		reply := map[string]any{"access_token": "again", "expires_in": 3600, "token_type": "Bearer", "scope": driveScope}
+		if example.refresh != "" {
+			reply["refresh_token"] = example.refresh
+		}
+		raw, _ := json.Marshal(reply)
+		// Drive answers under the new token what the other tests' Drive
+		// answers under the first.
+		b.provider.client = &http.Client{Transport: pausedTransport(func(r *http.Request) (*http.Response, error) {
+			switch {
+			case r.URL.Path == "/token":
+				return fakeResponse(r, raw), nil
+			case r.URL.Path == "/about":
+				return fakeResponse(r, []byte(`{"user":{"permissionId":"account-A","emailAddress":"person@example.test","displayName":"Person"}}`)), nil
+			case r.URL.Path == "/files/file-A" && r.URL.Query().Get("alt") == "media":
+				return fakeResponse(r, []byte("A test policy document.")), nil
+			case r.URL.Path == "/files/file-A":
+				return fakeResponse(r, []byte(`{"id":"file-A","name":"policy.txt","mimeType":"text/plain","version":"7","size":"23","capabilities":{"canDownload":true}}`)), nil
+			}
+			return inner.RoundTrip(r)
+		})}
+		r := finish(t, b, start(t, b, "connect"), nil)
+		if r.State != example.state || (r.State == "failed" && r.Error != "reconnect-required") {
+			t.Errorf("%s: %+v", name, r)
+		}
+		b.store.locked(func(v *state) error {
+			switch {
+			case r.State == "complete" && (v.Connection.Access != "again" || b.store.consentedScope(*v.Connection) != driveScope):
+				t.Errorf("%s: the connection is not as the consent gave it, or is not recorded", name)
+			case r.State == "complete" && example.refresh != "" && v.Connection.Refresh != example.refresh:
+				t.Errorf("%s: the refresh token given was not kept", name)
+			case r.State == "complete" && example.refresh == "" && v.Connection.Refresh != "google-refresh-private":
+				t.Errorf("%s: the earlier refresh token was not kept", name)
+			case r.State == "failed" && v.Connection.Access != "google-access-private":
+				t.Errorf("%s: a refused consent changed the connection", name)
+			}
+			return nil
+		})
+		for use, e := range everyUse(t, b) {
+			if r.State == "complete" && e != nil || r.State == "failed" && e != ErrRevoked {
+				t.Errorf("%s: %s afterwards: %v", name, use, e)
+			}
+		}
+	}
+}
+
+// A renewal that finds another process's newer token in place uses it only
+// where that token's consent is recorded: one written without its record, as
+// by a process that ended between the two writes, is refused.
+func TestRenewalTakesAnotherProcessTokenOnlyWhereItIsRecorded(t *testing.T) {
+	for name, recorded := range map[string]bool{"the other process recorded its token": true, "the other process ended before recording it": false} {
+		b, _ := counted(t)
+		if r := finish(t, b, start(t, b, "connect"), nil); r.State != "complete" {
+			t.Fatal(r)
+		}
+		b.store.locked(func(v *state) error { v.Connection.Expires = 1; return b.store.write("state.json", v) })
+		inner := b.provider.client.Transport
+		b.provider.client = &http.Client{Transport: pausedTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/token" {
+				// While this renewal is with Google, another process renews.
+				b.store.locked(func(v *state) error {
+					v.Connection.Access, v.Connection.Expires = "of-the-other", time.Now().Add(time.Hour).Unix()
+					if e := b.store.write("state.json", v); e != nil {
+						return e
+					}
+					if recorded {
+						return b.store.recordConsent(v.Connection, driveScope)
+					}
+					return nil
+				})
+				return fakeResponse(r, []byte(`{"access_token":"of-this-one","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/drive"}`)), nil
+			}
+			return inner.RoundTrip(r)
+		})}
+		var c credential
+		var client Client
+		var epoch string
+		b.store.locked(func(v *state) error { c, client, epoch = *v.Connection, v.Client, v.Epoch; return nil })
+		token, e := b.provider.access(context.Background(), b.store, client, c, epoch)
+		if recorded && (e != nil || token != "of-the-other") || !recorded && (e != ErrRevoked || token != "") {
+			t.Errorf("%s: %q, %v", name, token, e)
+		}
+		b.store.locked(func(v *state) error {
+			if v.Connection.Access != "of-the-other" {
+				t.Errorf("%s: the other process's token was written over", name)
+			}
+			return nil
+		})
+	}
+}
+
+// A commit that finds the connection without a record of its consent asks
+// Drive nothing, and leaves the plan prepared for a commit after the person
+// connects again.
+func TestCommitWithoutARecordedConsentLeavesThePlanPrepared(t *testing.T) {
+	b, asked := counted(t)
+	if r := finish(t, b, start(t, b, "connect"), nil); r.State != "complete" {
+		t.Fatal(r)
+	}
+	var c credential
+	var epoch string
+	b.store.locked(func(v *state) error { c, epoch = *v.Connection, v.Epoch; return nil })
+	plan, e := b.Handle(context.Background(), "files-prepare", mustJSON(StorageChange{Context: storageContext(c, epoch), Action: "create", Name: "a.txt", MediaType: "text/plain", Content: "YQ=="}))
+	if e != nil {
+		t.Fatal(e)
+	}
+	b.store.root.Remove("consent.json")
+	before := *asked
+	if _, e := b.Handle(context.Background(), "files-commit", mustJSON(map[string]string{"id": plan.(StoragePlan).ID})); e != ErrRevoked {
+		t.Errorf("the commit was answered %v", e)
+	}
+	if *asked != before {
+		t.Error("the commit asked Drive")
+	}
+	if status, e := b.Handle(context.Background(), "files-status", mustJSON(map[string]string{"id": plan.(StoragePlan).ID})); e != nil || status.(StoragePlan).State != "prepared" {
+		t.Errorf("the plan is %+v, %v", status, e)
 	}
 }

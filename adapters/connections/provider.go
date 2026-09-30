@@ -185,6 +185,11 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 			if current.Expires <= time.Now().Add(time.Minute).Unix() {
 				return ErrRevoked
 			}
+			// The newer token is another's doing, and is used where its
+			// consent is recorded, as any token is.
+			if p.kind() == "google-drive" && s.consentedScope(*current) != driveScope {
+				return ErrRevoked
+			}
 			access = current.Access
 			return nil
 		}
@@ -196,8 +201,9 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 		if err := s.write("state.json", v); err != nil {
 			return err
 		}
-		// A renewal that gives another refresh token is of the same consent.
-		if p.kind() == "google-drive" && t.Refresh != "" {
+		// The record is of the tokens as they are held, so a renewal
+		// writes it again.
+		if p.kind() == "google-drive" {
 			if err := s.recordConsent(current, driveScope); err != nil {
 				return err
 			}

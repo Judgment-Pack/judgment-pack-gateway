@@ -353,6 +353,13 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 			if previous != nil {
 				c.ID = previous.ID
 				if c.Refresh == "" {
+					// A consent that gives no refresh token of its own keeps
+					// the earlier one only where that one is recorded as of
+					// the scope asked: a refresh token of a narrower consent
+					// renews to tokens of that consent, whatever this one is.
+					if b.provider.kind() == "google-drive" && b.store.consentedScope(*previous) != b.provider.scope() {
+						return ErrRevoked
+					}
 					c.Refresh = previous.Refresh
 				}
 			}

@@ -108,26 +108,31 @@ type Store struct{ root *os.Root }
 
 // consent is the record of what a connection's consent was for. It is kept
 // beside the state and not in it: an earlier release reads the state, and
-// refuses one that has a member it does not know. The record is of one
-// consent, which it knows by the refresh token that consent gave.
+// refuses one that has a member it does not know. The record is of the
+// tokens as they are held, the refresh token and the access token, each by
+// a digest: a token that another put in their place, an earlier release's
+// consent or renewal among them, is one the record says nothing of.
 type consent struct {
 	Connection string `json:"connection"`
 	Grant      string `json:"grant"`
+	Token      string `json:"token"`
 	Scope      string `json:"scope"`
 }
 
-// recordConsent is called under the store's lock, once the state is written.
-// Where it fails the connection is without a record, and is asked for again.
+// recordConsent is called under the store's lock, once the state is written:
+// at a consent, and at every renewal. Where it fails the connection is
+// without a record, and is asked for again.
 func (s *Store) recordConsent(c *credential, scope string) error {
-	return s.write("consent.json", consent{c.ID, digest([]byte(c.Refresh)), scope})
+	return s.write("consent.json", consent{c.ID, digest([]byte(c.Refresh)), digest([]byte(c.Access)), scope})
 }
 
 // consentedScope is the scope the consent of this credential was for, and
-// nothing where no record says. A connection made before ADR-0010 has none.
+// nothing where no record says of the tokens as this credential holds them.
+// A connection made before ADR-0010 has no record.
 func (s *Store) consentedScope(c credential) string {
 	raw, err := s.read("consent.json")
 	var v consent
-	if err != nil || decode(raw, &v) != nil || v.Connection != c.ID || v.Grant != digest([]byte(c.Refresh)) {
+	if err != nil || decode(raw, &v) != nil || v.Connection != c.ID || v.Grant != digest([]byte(c.Refresh)) || v.Token != digest([]byte(c.Access)) {
 		return ""
 	}
 	return v.Scope

@@ -29,16 +29,33 @@ nothing; the changes the scope permits are the
 [storage controls'](storage-files.md), each on a person's confirmation.
 
 What a consent was for is recorded when it is given, in `consent.json` beside
-the state: the connection, a digest of the refresh token the consent gave, and
-the scope. The state itself is not changed, so that an earlier release reads
-it. Every request that needs Drive is held to that record, and not to what a
-renewal of the token says, which need not name a scope. A connection without a
-record of a consent for `drive`, which is every connection made under the
-scope `drive.file` that earlier releases asked for, is answered
-`reconnect-required` from its first such request, and Drive is asked nothing
-under its token. The person connects again. `status` does not say so: it says
-`connected` of any connection that is held, as it did, and `select` needs
-nothing of Drive and answers as before. To disconnect removes the record.
+the state: the connection, a digest of the refresh token, a digest of the
+access token, and the scope. It is written again at every renewal, under the
+lock the state is written under. The state itself is not changed, so that an
+earlier release reads it. Every request that needs Drive is held to that
+record, and not to what a renewal of the token says, which need not name a
+scope. A connection without a record of a consent for `drive` for the tokens
+it holds is answered `reconnect-required` from its first such request, and
+Drive is asked nothing under its token. That is every connection made under
+the scope `drive.file` that earlier releases asked for; a connection whose
+tokens another put in place of what the record names, an earlier release's
+consent or renewal after a rollback of the desk's managed install among them;
+and a connection that a process renewed and ended before it wrote the record.
+The person connects again. A consent that gives no refresh token of its own
+keeps the earlier one only where that one is recorded as of `drive`, since a
+refresh token renews to tokens of the consent that gave it; otherwise the
+consent is refused with `reconnect-required` and the person consents again.
+A process that holds a snapshot of the connection from before another process
+renewed or remade it is not refused for that: it looks again at what is held.
+
+An earlier release, run against this custody after a rollback, ignores the
+record. It uses a token of the whole Drive for as long as the token lasts and
+takes a renewal that names no scope; it cannot narrow or revoke what the
+person consented to, and only Google's account page or `disconnect` does. It
+refuses a renewal that names `drive`, and its `connect` asks for `drive.file`
+again. `status` does not say any of this: it says `connected` of any
+connection that is held, as it did, and `select` needs nothing of Drive and
+answers as before. To disconnect removes the record.
 
 A persisted authorization epoch survives the disconnected state. Disconnect and
 configuration changes invalidate callbacks from every companion for that principal.
