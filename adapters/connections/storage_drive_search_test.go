@@ -47,6 +47,7 @@ func driveSearchBroker(t *testing.T, server *httptest.Server) *Broker {
 		v.Connection = &credential{ID: "connection", Access: "private-token", Expires: time.Now().Add(time.Hour).Unix()}
 		return s.write("state.json", v)
 	})
+	consented(t, s)
 	b := New(s, false)
 	b.provider.api = server.URL
 	b.provider.client = server.Client()

@@ -62,7 +62,8 @@ Metadata and payload validation reject unknown fields and duplicate JSON keys.
   source application. This API edits ordinary uploaded files, not Docs/Sheets.
   A listing without search words asks Drive for its order `folder,name`, and
   gives the items as Drive gave them. A search by words asks for no order,
-  because Drive refuses one for it, and comes in Drive's order of relevance.
+  because Drive refuses one for it, and comes in the order Drive gives it,
+  which Drive's refusal says is of relevance.
 - **S3:** one bounded ListObjectsV2 page within the configured bucket/prefix.
   The folder field is a literal prefix; use a trailing slash for directory-like
   selection. Name terms filter the returned page; an empty page with a cursor
