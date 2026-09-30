@@ -104,6 +104,7 @@ function isAction(v: Value | undefined): boolean {
   const decision = member(v, "decision");
   const cites = member(v, "cites");
   const tool = member(v, "tool");
+  const policy = member(v, "policy");
   return (
     isIdentity(member(v, "requester")) &&
     decision?.type === "object" &&
@@ -116,6 +117,8 @@ function isAction(v: Value | undefined): boolean {
     nullableString(member(tool, "endpoint")) &&
     isString(member(tool, "name")) &&
     isDigest(member(v, "request")) &&
+    // the policy the write was held to: optional, and a digest when present
+    (policy === undefined || isDigest(policy)) &&
     isAdapter(member(v, "adapter")) &&
     isString(member(v, "observedAt"))
   );
