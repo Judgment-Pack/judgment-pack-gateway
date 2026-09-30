@@ -55,15 +55,53 @@ duplicate member names refused, integers only, unknown members refused by name. 
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity` and `mcp` are optional; within a
-platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`
-and `descriptors` optional. Every path is absolute.
+platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
+`descriptors` and `decisionPolicy` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"`, `"2"` and `"3"`: version 2 added `mcp`, and version 3 a platform's `descriptors`. A
-  file of an earlier version still loads without the member and is refused by name with it.
-  `connect` writes version 3 exactly when an entry it writes carries a pin, and otherwise
-  leaves the version as it found it, so a signer older than version 3 goes on reading every
-  file `connect` has not pinned.
+  `"1"`, `"2"`, `"3"` and `"4"`: version 2 added `mcp`, version 3 a platform's `descriptors`,
+  and version 4 a platform's `decisionPolicy`. A file of an earlier version still loads without
+  the member and is refused by name with it. `connect` raises a file to version 3 exactly when
+  an entry it writes carries a pin, and otherwise leaves the version as it found it — it never
+  lowers one — so a signer older than version 3 goes on reading every file `connect` has not
+  pinned. (ADR-0007 named version 4 for its `services` member, which is not built; ADR-0011
+  gave 4 to `decisionPolicy`, and `services` takes the next version when it is built.)
+- `decisionPolicy`, in a version-4 file, holds the platform's write tools to their decisions
+  ([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md), [executor.md](executor.md)): an
+  object keyed by write tool name, each value a policy —
+
+  ```json
+  "decisionPolicy": {
+    "update_ticket": {
+      "outcomes": ["approve"],
+      "packs": ["sha256:…"],
+      "reviewed": true,
+      "bind": [
+        { "argument": "/id", "fact": "/ticket/id" },
+        { "argument": "/revision", "fact": "/ticket/revision" }
+      ]
+    }
+  }
+  ```
+
+  `outcomes` is required, a non-empty array of outcome ids: the record's disposition must be of
+  kind `outcome` with one of them, and its handoff state `none`. `packs` is optional, a
+  non-empty array of digests the record's pack digest must be among. `reviewed` is optional, a
+  boolean; `true` requires the record to carry `"reviewed": true`. `bind` is optional, an array
+  of `{argument, fact}`, each an RFC 6901 JSON pointer, the first into the request's
+  `arguments` and the second into the record's `inputs.facts`, whose two values must be equal
+  as JSON values with their types. Each policy is a closed object, read by the same strict
+  parser: an unknown member, a member of another type, an entry named twice in a list, or a
+  pointer that is not one is refused. So is a policy for a tool the platform's write binding
+  does not name, and a `decisionPolicy` on a platform that does not set `write: true`. A tool
+  the member does not name is held to nothing, and its writes read nothing in their decision
+  record. An action receipt for a tool with a policy carries `action.policy`, `"sha256:"` and
+  the SHA-256 of the canonical form of that policy object as written here (SPEC.md §1.2a): the
+  same policy spelled another way has the same digest, and a policy that writes
+  `"reviewed": false` has another digest than one that leaves the member out, though the two
+  make the same checks. `connect` has no flag for it: the entry it replaces keeps its policy, and
+  a replacement the policy would not fit — one without `--write`, or a binding whose write
+  operation does not name a tool the policy holds — is refused before any check runs.
 - `descriptors`, in a version-3 file, pins the snapshot of the platform's tool descriptors
   that `connect` captured from its live operation, `sha256:<64 hex>`, kept beside the file in
   `<file>.descriptors/` ([tool-descriptors.md](tool-descriptors.md)). A platform whose binding
@@ -357,11 +395,13 @@ parses, and `serve` refuses to start on it.
 
 ## What the file is not
 
-- **Not a policy.** It says which systems may be reached, never what a pack means or which
-  pack decides what. Selection stays the application's.
+- **Not a selection of packs.** It says which systems may be reached, never what a pack means or
+  which pack decides what. Selection stays the application's. A `decisionPolicy` says what a
+  record must state before a write relies on it, not which pack is to be asked.
 - **Not an authorization.** `write: true` says an executor may be pointed at the platform; a
   write still happens only on an authenticated request that cites a decision record and receipts
-  the engine finds where it looks ([executor.md](executor.md)). That a person approved the write
-  is not established by anything here: the receipt says who asked.
+  the engine finds where it looks ([executor.md](executor.md)), and, for a tool held to a
+  `decisionPolicy`, whose record meets it. That a person approved the write is not established
+  by anything here: the receipt says who asked.
 - **Not portable across engines.** It names local paths and local secrets; the receipts are
   what travel.

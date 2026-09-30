@@ -121,8 +121,8 @@ acquire/response vector class.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 20 vectors for receipt version 3 (`SPEC.md` §1.2a,
-§4 steps 5 and 6), in the same shape as `stores/` plus an optional
+**`v3/stores/*.json`** — 25 vectors for receipt version 3 (`SPEC.md` §1.2a,
+§4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
 citation and decision record both resolve; `citation-unresolved` for a wrong
@@ -131,10 +131,18 @@ cited signature has the form §1.2a gives it; `decision-record-mismatch`,
 with the directory present and with it absent;
 `malformed` for a `kind` outside its values, for a `null` requester, for a
 version 2 receipt relabelled `"3"`, for an `argumentsDigest` carried into
-version 3, and for a session id that is not a flat token; `signature-mismatch` for a member appended
+version 3, for a session id that is not a flat token, and for an
+`action.policy` that is not a digest; `signature-mismatch` for a member appended
 inside `acquisition` after signing and for a version 3 receipt signed under the
 version 2 prefix; a store holding one session of each version; and a session
-that mixes versions, which is `chain-broken`.
+that mixes versions, which is `chain-broken`. For §4 step 8: an action receipt
+carrying `action.policy` whose record is a runtime evaluation record bearing it
+out, its citations given twice where the receipt gives them once;
+`decision-pack-mismatch`; `decision-cites-mismatch` for a record that cites
+nothing; and a graph composite, which is not compared, so the receipt that
+names it is `ok` whatever it claims. The records of the earlier action vectors
+carry no pack digest, so they are not runtime evaluation records and are not
+compared either.
 
 They are as frozen as the rest and were written against the specification, not
 against an implementation: no implementation answered them when they were
@@ -152,8 +160,9 @@ this one:
   refused.
 - `CMD verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
   — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
-  stdout: `{"ok": bool, "findings": [...]}`. Exit 0 whenever a verdict was
-  produced; a *failing* verdict is still exit 0. The fourth argument is the
+  stdout: `{"ok": bool, "findings": [...]}`, and optionally the
+  `observations` member of `SPEC.md` §4, which the runner does not read. Exit 0
+  whenever a verdict was produced; a *failing* verdict is still exit 0. The fourth argument is the
   decision-record directory of `SPEC.md` §4 step 6; the runner passes it
   exactly when the vector carries a `decisionRecords` map, materialized with
   each key as a path under a fresh directory, and passes nothing when the map

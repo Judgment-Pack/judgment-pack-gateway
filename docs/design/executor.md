@@ -13,9 +13,18 @@ and the receipt says who asked ([ADR-0001](../adr/0001-one-engine-four-processes
 executor refuses any write that cites no verifying judgment: before anything is sent to a
 target system, the engine holds, in its own store and under its own decision-record
 directory, the judgment the requester says the write relies on. What "verifying" means is
-exactly what `verify` means by it and nothing more — the cited receipts are there, under the
-engine's own key, and a decision record with the stated digest is there — because a stricter
-reading would have the engine interpret a record, which nothing in this design does.
+what `verify` means by it — the cited receipts are there, under the engine's own key, and a
+decision record with the stated digest is there.
+
+For a tool the operator holds to a **decision policy**
+([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md)), the engine holds one thing more
+before anything is sent: it reads the record, which must be the runtime's evaluation record;
+the request's claims about it must be the record's; and the record must meet the policy — an
+outcome the policy allows, no handoff requested, a pack it names, reviewed law when it asks for
+that, and the write's arguments equal to the record's facts where it binds them. The policy is
+the operator's, in the engine's configuration ([engine-config.md](engine-config.md)), and
+never the request's. For a tool the operator holds to none, nothing in the record is read, and
+the executor behaves exactly as it did before policies existed.
 
 ## The request
 
@@ -34,8 +43,9 @@ refused before anything else is read, since an action receipt's `requester` is n
 }
 ```
 
-`decision` and `cites` are the requester's assertions, recorded as given; the engine checks
-that what they name exists and compares nothing inside it, which is §4's standard too.
+`decision` and `cites` are the requester's claims, recorded as given. For a tool with no
+policy the engine checks that what they name exists and compares nothing inside it; for a tool
+with one it also compares them with the record they name (step 9).
 
 ## What refuses it, in order, before any executor runs
 
@@ -91,15 +101,49 @@ that what they name exists and compares nothing inside it, which is §4's standa
    more than its three members is refused rather than trimmed.)
 7. `decision.recordDigest` must equal the SHA-256 of some candidate under the configured
    `decisionRecords` directory by §4 step 6's rule — every regular file as its whole bytes,
-   and every line of a `.jsonl` file — or the request is refused. `packDigest` is recorded as
-   given and checked against nothing: the record's contents are the runtime's, and the engine
-   reads none of them. Symbolic links are not followed. The walk is `verify`'s own, and like
+   and every line of a `.jsonl` file — or the request is refused. For a tool with no decision
+   policy, `packDigest` is recorded as given and checked against nothing: the record's
+   contents are the runtime's, and the engine reads none of them; for a tool with one, step 9
+   checks it. Symbolic links are not followed. The walk is `verify`'s own, and like
    it is not bounded in bytes, entries or time: availability is a stated limit of this
    reference ([SECURITY.md](../../SECURITY.md)), and an operator who mounts an archive as the
    decision-record directory has made the walk as long as the archive. A directory that cannot
    be read refuses the action without saying where it is.
 
-A refused request executes nothing and mints nothing. The refusal names which step refused.
+For a tool with no decision policy the ladder ends here, and nothing in the record is read. For
+a tool with one, three steps follow, on the bytes step 7 hashed — a regular file whole or a
+line of a `.jsonl` file, never a `.jsonl` file whole — so the record judged is the record
+named:
+
+8. **`record`**: the record must be a runtime evaluation record (SPEC.md §4 step 8): one JSON
+   object, read by the canonical parser with a number of any form admitted — a name twice at
+   any depth, a string that is not UTF-8 or a lone surrogate refused — whose `recordVersion` is
+   `"1"`, whose `kind` is `"evaluation"` and whose `pack` carries a digest. Anything else is
+   refused: an opaque file, another record version, a record without a pack digest, and a
+   graph composite, which carries no pack and no inputs to hold a write to (whether a write can
+   be held to a composite is a later decision).
+9. **`consistency`**: the request's claims must be the record's. The record's `pack.digest`
+   must be `decision.packDigest`, and the record's `cites` must be the request's `cites` as a
+   set of (sessionId, callIndex, signature). A record with no `cites` matches no action, since
+   every action cites; one whose `cites` is not of the shape an action's takes matches none.
+10. **The policy**, in this order, each its own step: **`policy-outcome`**, the disposition is
+    of kind `outcome` and its `outcomeId` is one the policy's `outcomes` lists;
+    **`policy-handoff`**, its `handoff.state` is `none` — a requested handoff never passes;
+    **`policy-packs`**, when the policy lists `packs`, the record's pack digest is one of them;
+    **`policy-reviewed`**, when the policy sets `reviewed: true`, the record carries
+    `"reviewed": true`; **`policy-bind`**, for each binding, the argument pointer resolves in
+    the request's arguments, the fact pointer in the record's `inputs.facts`, and the two values
+    are equal as JSON values with their types: the same bytes in the canonical form of SPEC.md
+    §1.1, so the string `"4"` never equals the number `4`, the members of an object may come in
+    any order, and a fact outside the canonical domain — a fraction, an exponent, an integer
+    past 2⁵³−1 — equals no argument, since arguments are held to the domain. This is what
+    refuses a decision about revision 3 cited for a write to revision 4, or an approval of one
+    order used for another.
+
+A refused request executes nothing and mints nothing. The refusal names which step refused, in
+`refusedAt`. A refusal at steps 8 to 10 names the check and never a value of the record's —
+not its outcome, not a fact — since the requester may know a record by its digest and not by
+its contents.
 
 ## The executor
 
@@ -124,6 +168,7 @@ and `resultDigest` names them. The engine then mints one receipt in the session 
 | `argumentsCommitment` | a salted commitment over the canonical request body's `arguments`, salt returned |
 | `action.requester` | the token identity again — the one who asked, named where the action is |
 | `action.decision`, `action.cites` | as given |
+| `action.policy` | for a tool with a decision policy, `"sha256:"` and the SHA-256 of the canonical form of the policy object as configured; absent for a tool with none |
 | `action.tool` | `{"shape": "mcp", "endpoint": <binding endpoint or null>, "name": <tool>}` |
 | `action.request` | a salted commitment over the canonical request sent to the executor, salt returned |
 | `action.adapter` | from the envelope, as `acquisition.adapter` is |
@@ -138,6 +183,16 @@ as it does under `gateway verify --decision-records`.
 The receipt is lineage of a request and a response. It does not say the write was right, and
 it does not say the requester approved it: a token proves who asked. Evidence that a person
 approved this specific action is an open question the plan names, and nothing here answers it.
+
+Without a policy, the engine establishes only that the record exists with the stated digest and
+that the cited receipts verify. It does not establish that the record permitted the write, that
+its outcome is the one the write assumes, that its inputs are the object written, or that the
+target was unchanged since. With a policy, it establishes exactly the policy's checks, at the
+moment it made them, and no more; `action.policy` says which policy, and the configuration says
+what that policy is — the receipt carries its digest, not its text. A precondition on the
+target — a revision or an ETag compared on write — is still the only thing that closes the
+interval between the check and the commit, and that is the target's or the adapter's to supply:
+`bind` stops a substituted object, not a concurrent edit of the same one.
 A target that refuses the write is a response like any other — the receipt records the
 refusal bytes: the executor is started with `--error-results`, under which `adapter-mcp`
 envelopes a tool result that reports an error as the result of the call, where for a read the
@@ -147,13 +202,19 @@ nothing.
 ## How it is held
 
 - The refusal ladder above, each step with a test that reaches it and a mutation that
-  removes it; the interleavings the session step cannot see — a session another process puts
+  removes it — the policy's steps included, and a tool with no policy shown to read nothing
+  in its record, not even a record that is not JSON; the interleavings the session step cannot see — a session another process puts
   in the store while a read into it is admitted and running, or in the last moment before the
   read's stamp, and a seal landing between the evidence checks and admission — each held to a
   session refusal with nothing run.
-- An end-to-end test: an acquisition, a decision record written beside it citing the
+- Two end-to-end tests: an acquisition, a decision record written beside it citing the
   receipt, an `/act` that cites both, then `gateway verify` over the store, the registry and
   the decision-record directory reporting every receipt `ok` — the vector
   `v3-action-valid` is what a minted store must look like, and the verifier the corpus tests
-  is what judges it.
-- No new vectors: the receipt shape is the one the corpus already freezes.
+  is what judges it; and the same with the write tool held to a policy, a record in the
+  runtime's own form, a write to another revision refused before the executor starts, and the
+  receipt naming the policy by the digest the configuration gives it.
+- The receipt's one new member, `action.policy`, is held by the vectors `v3-action-policy`
+  and `v3-action-policy-malformed`; what the verifier compares of a record, by
+  `v3-decision-pack-mismatch`, `v3-decision-cites-mismatch` and
+  `v3-decision-record-not-compared`.
