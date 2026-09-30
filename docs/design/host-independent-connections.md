@@ -44,8 +44,9 @@ may only be inline PNG data, at most 22,000 encoded characters and dimensions
 Malformed discovery is refused as a whole. Desk's envelope limit is 128 KiB,
 32 providers, 32 explicit sources, 16 distinct operations per provider.
 
-The existing Google desktop-registration and native picker protocols remain
-specialized host controls. A new interaction protocol requires a host update.
+The existing Google desktop-registration protocol remains
+a specialized host control. Drive's native picker protocol is withdrawn by
+ADR-0010, and Drive is searched and selected as the other sources are. A new interaction protocol requires a host update.
 Additional provider names within an implemented protocol do not.
 
 ## Common source operations

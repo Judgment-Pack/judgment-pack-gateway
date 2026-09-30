@@ -6,7 +6,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +21,7 @@ func fakeResponse(r *http.Request, data []byte) *http.Response {
 
 func TestDisconnectInvalidatesOtherCompanionsPendingAuthorization(t *testing.T) {
 	b, _, _ := testBroker(t)
-	f := start(t, b, "pick")
+	f := start(t, b, "connect")
 	entered, release := make(chan struct{}), make(chan struct{})
 	original := b.provider.client.Transport
 	b.provider.client = &http.Client{Transport: pausedTransport(func(r *http.Request) (*http.Response, error) {
@@ -33,7 +32,7 @@ func TestDisconnectInvalidatesOtherCompanionsPendingAuthorization(t *testing.T) 
 		return original.RoundTrip(r)
 	})}
 	completed := make(chan FlowResult, 1)
-	go func() { completed <- finish(t, b, f, url.Values{"picked_file_ids": {"file-A"}}) }()
+	go func() { completed <- finish(t, b, f, nil) }()
 	<-entered
 	other := New(b.store, false)
 	other.provider = b.provider
@@ -49,13 +48,13 @@ func TestDisconnectInvalidatesOtherCompanionsPendingAuthorization(t *testing.T) 
 		t.Fatal(err)
 	}
 	if finished.State == "complete" || status.(Status).State == "connected" {
-		t.Fatalf("disconnect reported %v, but earlier flow completed as %s, minted %d grants, and status became %s", result, finished.State, len(finished.Selections), status.(Status).State)
+		t.Fatalf("disconnect reported %v, but earlier flow completed as %s, and status became %s", result, finished.State, status.(Status).State)
 	}
 }
 
 func TestDisconnectRemainsAvailableDuringRefresh(t *testing.T) {
 	b, _, _ := testBroker(t)
-	f := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	f := choose(t, b, "file-A")
 	if err := b.store.locked(func(v *state) error { v.Connection.Expires = 1; return b.store.write("state.json", v) }); err != nil {
 		t.Fatal(err)
 	}

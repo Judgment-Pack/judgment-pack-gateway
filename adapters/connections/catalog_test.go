@@ -31,7 +31,7 @@ func TestCatalogDoesNotAdvertiseUnsupportedOperations(t *testing.T) {
 		provider string
 		method   string
 	}{
-		{"google-drive", "search"}, {"google-drive", "delete"},
+		{"google-drive", "pick"}, {"google-drive", "delete"},
 		{"gmail", "pick"}, {"gmail", "send"},
 		{"notion", "configure"}, {"notion", "pick"},
 		{"obsidian", "connect"}, {"obsidian", "poll"},

@@ -13,9 +13,12 @@ same OS principal are inside this trust boundary; a typed string is not a signed
 human-consent proof against such programs.
 
 Catalog v3 advertises five additive operations for these three providers. The
-legacy catalog, attachment operations, signed acquisition formats and frozen
-conformance corpus remain unchanged. No credentials or upstream cursors reach
-the browser. Existing provider scope restrictions remain in force.
+storage controls left the legacy catalog, attachment operations, signed
+acquisition formats and frozen conformance corpus unchanged. ADR-0010 has
+since changed Drive's entry in the catalog and how a Drive file is chosen. No credentials or upstream cursors reach
+the browser. S3's and the vault's scope restrictions remain in force. Drive's
+scope is the whole of the connected Drive, as
+[ADR-0010](../adr/0010-a-drive-connection-is-of-the-whole-drive.md) decides.
 
 ## Operations
 
@@ -51,14 +54,16 @@ Metadata and payload validation reject unknown fields and duplicate JSON keys.
 ## Discovery budgets
 
 - **Drive:** one indexed `files.list` request per page, with a partial field mask,
-  24 items and escaped `fullText contains`/parent predicates. Only files already
-  authorized through the existing `drive.file` grant are visible. This is not
-  whole-account search, and no broad scope is silently requested. Native Google
+  24 items and escaped `fullText contains`/parent predicates. The listing is of
+  the whole of the connected Drive, under the scope `drive` that the person
+  consented to at connection, and answers with the `scope` `account-files`. No
+  scope is asked for that ADR-0010 does not name. Native Google
   documents may be listed and moved to trash when permitted; their editor is the
   source application. This API edits ordinary uploaded files, not Docs/Sheets.
   A listing without search words asks Drive for its order `folder,name`, and
   gives the items as Drive gave them. A search by words asks for no order,
-  because Drive refuses one for it, and comes in Drive's order of relevance.
+  because Drive refuses one for it, and comes in the order Drive gives it,
+  which Drive's refusal says is of relevance.
 - **S3:** one bounded ListObjectsV2 page within the configured bucket/prefix.
   The folder field is a literal prefix; use a trailing slash for directory-like
   selection. Name terms filter the returned page; an empty page with a cursor
@@ -122,8 +127,9 @@ Never reconnect automatically to bypass an uncertain claim.
 Tests use temporary local vaults and TLS provider fakes, including independent
 SigV4 verification of S3 payloads and conditional headers, Drive multipart bodies,
 wrong delete confirmations, stale revisions, reconnects, crash/replay and bounds.
-They do not establish live Google/AWS account behavior. In particular, retain the
-Drive missing-ETag refusal until a real connection supports conditional updates.
+They do not establish live Google/AWS account behavior. The Drive missing-ETag
+refusal is retained until determination 4 of ADR-0010 is built, which holds a
+change of a Drive file to the file's version in its place.
 
 One try against a live Drive account, on 2026-09-29 and under a `drive.file`
 grant, recorded these three observations:

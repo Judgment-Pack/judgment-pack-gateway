@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"sync"
 	"time"
 )
@@ -26,18 +25,16 @@ type Status struct {
 	Resource     *ResourceScope `json:"resource,omitempty"`
 }
 type FlowResult struct {
-	ID         string      `json:"id"`
-	State      string      `json:"state"`
-	URL        string      `json:"url,omitempty"`
-	Error      string      `json:"error,omitempty"`
-	Selections []Selection `json:"selections,omitempty"`
+	ID    string `json:"id"`
+	State string `json:"state"`
+	URL   string `json:"url,omitempty"`
+	Error string `json:"error,omitempty"`
 }
 type flow struct {
 	FlowResult
 	state, verifier, redirect string
 	client                    Client
 	connection, epoch         string
-	pick                      bool
 	until                     time.Time
 	cancel                    context.CancelFunc
 	listener                  net.Listener
@@ -152,13 +149,10 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			return b.notionOperation(ctx, method, raw)
 		}
 		if !b.provider.gmail {
-			return nil, ErrRequest
+			return b.driveOperation(ctx, method, raw)
 		}
 		return b.mailOperation(ctx, method, raw)
-	case "connect", "pick":
-		if method == "pick" && (b.provider.gmail || b.provider.notion) {
-			return nil, ErrRequest
-		}
+	case "connect":
 		var empty struct{}
 		if decode(raw, &empty) != nil {
 			return nil, ErrRequest
@@ -166,7 +160,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		if b.provider.notion {
 			return b.startNotion(ctx)
 		}
-		return b.start(method == "pick")
+		return b.start()
 	case "poll", "cancel":
 		var q struct {
 			ID string `json:"id"`
@@ -200,7 +194,13 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			}
 			v.Connection = nil
 			v.Epoch = randomID()
-			return b.store.write("state.json", v)
+			if err := b.store.write("state.json", v); err != nil {
+				return err
+			}
+			// The record is of a connection that is gone. One that stays
+			// behind says nothing of another: it names the consent it is of.
+			_ = b.store.root.Remove("consent.json")
+			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -218,7 +218,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 		return nil, ErrRequest
 	}
 }
-func (b *Broker) start(pick bool) (FlowResult, error) {
+func (b *Broker) start() (FlowResult, error) {
 	if b.active != nil && b.active.State == "pending" && time.Now().Before(b.active.until) {
 		return FlowResult{}, Error("authorization-in-progress")
 	}
@@ -252,16 +252,11 @@ func (b *Broker) start(pick bool) (FlowResult, error) {
 		return FlowResult{}, ErrProvider
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-	f := &flow{FlowResult: FlowResult{ID: randomID(), State: "pending"}, state: randomID(), verifier: randomID(), client: client, connection: connection, epoch: epoch, pick: pick, until: time.Now().Add(5 * time.Minute), cancel: cancel, listener: listener}
+	f := &flow{FlowResult: FlowResult{ID: randomID(), State: "pending"}, state: randomID(), verifier: randomID(), client: client, connection: connection, epoch: epoch, until: time.Now().Add(5 * time.Minute), cancel: cancel, listener: listener}
 	f.redirect = "http://" + listener.Addr().String() + "/oauth/callback"
 	q := url.Values{"client_id": {client.ID}, "redirect_uri": {f.redirect}, "response_type": {"code"}, "scope": {b.provider.scope()}, "access_type": {"offline"}, "include_granted_scopes": {"false"}, "prompt": {"consent"}, "state": {f.state}, "code_challenge": {challenge(f.verifier)}, "code_challenge_method": {"S256"}}
 	if login != "" {
 		q.Set("login_hint", login)
-	}
-	if pick {
-		q.Set("trigger_onepick", "true")
-		q.Set("allow_multiple", "true")
-		q.Set("mimetypes", "application/pdf,text/plain,text/markdown,text/csv,application/json,application/vnd.google-apps.document,application/vnd.google-apps.spreadsheet,application/vnd.google-apps.presentation")
 	}
 	f.URL = b.provider.auth + "?" + q.Encode()
 	b.active = f
@@ -294,25 +289,11 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 	}
 	f.consumed = true
 	b.mu.Unlock()
-	var ids []string
 	resultErr := error(nil)
 	if q.Get("error") != "" {
 		resultErr = ErrCanceled
 	} else if q.Get("code") == "" || len(q.Get("code")) > 4096 {
 		resultErr = ErrRequest
-	}
-	if f.pick && resultErr == nil {
-		ids = strings.Split(q.Get("picked_file_ids"), ",")
-		if len(ids) > 4 {
-			resultErr = Error("too-many-files")
-		}
-		seen := map[string]bool{}
-		for _, id := range ids {
-			if !identifier.MatchString(id) || seen[id] {
-				resultErr = ErrRequest
-			}
-			seen[id] = true
-		}
 	}
 	var t tokenReply
 	var a account
@@ -372,6 +353,13 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 			if previous != nil {
 				c.ID = previous.ID
 				if c.Refresh == "" {
+					// A consent that gives no refresh token of its own keeps
+					// the earlier one only where that one is recorded as of
+					// the scope asked: a refresh token of a narrower consent
+					// renews to tokens of that consent, whatever this one is.
+					if b.provider.kind() == "google-drive" && b.store.consentedScope(*previous) != b.provider.scope() {
+						return ErrRevoked
+					}
 					c.Refresh = previous.Refresh
 				}
 			}
@@ -382,11 +370,10 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 			if err := b.store.write("state.json", v); err != nil {
 				return err
 			}
-			var err error
-			if f.pick {
-				f.Selections, err = b.store.makeGrants(c.ID, ids)
+			if b.provider.kind() == "google-drive" {
+				return b.store.recordConsent(c, b.provider.scope())
 			}
-			return err
+			return nil
 		})
 	}
 	f.URL = ""

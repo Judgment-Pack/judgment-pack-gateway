@@ -16,7 +16,9 @@ import (
 
 const gmailScope = "https://www.googleapis.com/auth/gmail.readonly"
 
-const driveScope = "https://www.googleapis.com/auth/drive.file"
+// driveScope is the whole of a person's Drive, to read and to change
+// (ADR-0010). It is the one scope asked for, and a token of another is refused.
+const driveScope = "https://www.googleapis.com/auth/drive"
 const MaxFileBytes = 4 << 20
 const MaxOutputBytes = 16 << 20
 
@@ -135,6 +137,30 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	if p.notion {
 		return p.notionAccess(ctx, s, client, c, epoch)
 	}
+	// A renewal need not say what scope its token is of, so what a Drive
+	// connection may do is held to the record of its consent, and not to
+	// what a renewal says. One without a record is asked for again.
+	if p.kind() == "google-drive" && s.consentedScope(c) != driveScope {
+		// The record may be of a consent or a renewal newer than this
+		// snapshot, given by another process since. What is held now is
+		// looked at once more, under the lock.
+		err := s.locked(func(v *state) error {
+			if v.Disabled {
+				return ErrPolicy
+			}
+			if v.Epoch != epoch || v.Connection == nil || v.Connection.ID != c.ID {
+				return ErrCanceled
+			}
+			if s.consentedScope(*v.Connection) != driveScope {
+				return ErrRevoked
+			}
+			c = *v.Connection
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
+	}
 	if c.Expires > time.Now().Add(time.Minute).Unix() {
 		return c.Access, nil
 	}
@@ -143,7 +169,24 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	}
 	t, err := p.exchange(ctx, client, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {c.Refresh}})
 	if err != nil {
-		return "", ErrRevoked
+		// The refresh token may have been spent by another process's
+		// renewal that was given another in its place. What that process
+		// holds now is used where it is good, and recorded for Drive.
+		var access string
+		if s.locked(func(v *state) error {
+			if v.Disabled || v.Epoch != epoch || v.Client != client || v.Connection == nil || v.Connection.ID != c.ID {
+				return ErrCanceled
+			}
+			current := v.Connection
+			if current.Expires <= time.Now().Add(time.Minute).Unix() || p.kind() == "google-drive" && s.consentedScope(*current) != driveScope {
+				return ErrRevoked
+			}
+			access = current.Access
+			return nil
+		}) != nil {
+			return "", ErrRevoked
+		}
+		return access, nil
 	}
 	var access string
 	err = s.locked(func(v *state) error {
@@ -159,6 +202,11 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 			if current.Expires <= time.Now().Add(time.Minute).Unix() {
 				return ErrRevoked
 			}
+			// The newer token is another's doing, and is used where its
+			// consent is recorded, as any token is.
+			if p.kind() == "google-drive" && s.consentedScope(*current) != driveScope {
+				return ErrRevoked
+			}
 			access = current.Access
 			return nil
 		}
@@ -169,6 +217,13 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 		}
 		if err := s.write("state.json", v); err != nil {
 			return err
+		}
+		// The record is of the tokens as they are held, so a renewal
+		// writes it again.
+		if p.kind() == "google-drive" {
+			if err := s.recordConsent(current, driveScope); err != nil {
+				return err
+			}
 		}
 		access = current.Access
 		return nil

@@ -35,8 +35,9 @@ Example descriptor, within `{ "version": 2, "providers": [...], "sources": [...]
 - `id`: stable provider identifier, not a user-supplied module name.
 - `auth`: `oauth` or `local-folder` describes the existing consent flow.
 - `registration`: `google-desktop`, `automatic` (Notion DCR), or `none`.
-- `selection`: `browser-picker`, `mail-search`, or `source-search` names an existing
+- `selection`: `mail-search` or `source-search` names an existing
   wire contract. It is not a component name, URL, or executable to load.
+  `browser-picker` was Drive's until ADR-0010, and no provider has it.
 - `queryRequired`: search needs nonempty input. False permits initial bounded
   browsing; it does not imply unbounded account search.
 - `operations`: companion control methods, also used by the broker to refuse
@@ -51,7 +52,8 @@ callers cannot mutate the broker's allowlist through a prior catalog value.
 This is **implementation support**, not account availability. An operator may
 still block a provider; app registration may be missing; consent may have expired;
 provider service may be down. Clients must obtain live `status`, complete normal
-consent, and use existing user-selection grants. Existing gateway checks still
+consent, and use read grants that the host asked for. A grant says that the
+host asked to read a resource; it does not say that a person chose it. Existing gateway checks still
 apply on every operation. `--catalog` is not a tool listing, a signed receipt, a
 health check, or a grant to enable account-wide assistant search.
 

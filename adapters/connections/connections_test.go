@@ -71,7 +71,7 @@ func testBroker(t *testing.T) (*Broker, *atomic.Int32, *string) {
 					t.Error("missing code/PKCE")
 				}
 			}
-			io.WriteString(w, `{"access_token":"google-access-private","refresh_token":"google-refresh-private","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/drive.file"}`)
+			io.WriteString(w, `{"access_token":"google-access-private","refresh_token":"google-refresh-private","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/drive"}`)
 		case "/about":
 			if r.Header.Get("Authorization") != "Bearer google-access-private" {
 				t.Error("token not sent correctly")
@@ -131,14 +131,49 @@ func finish(t *testing.T, b *Broker, f FlowResult, extra url.Values) FlowResult 
 	}
 	return v.(FlowResult)
 }
-func TestPickerRetrievesSelectedFileAndRetainsOriginal(t *testing.T) {
-	b, count, _ := testBroker(t)
-	f := start(t, b, "pick")
-	u, _ := url.Parse(f.URL)
-	if u.Query().Get("trigger_onepick") != "true" {
-		t.Fatal("not native picker")
+
+// consented records, of a connection that a test wrote into the state, that
+// its consent was for the whole Drive, as a connection made through the
+// consent has it recorded.
+func consented(t *testing.T, s *Store) {
+	t.Helper()
+	if e := s.locked(func(v *state) error { return s.recordConsent(v.Connection, driveScope) }); e != nil {
+		t.Fatal(e)
 	}
-	result := finish(t, b, f, url.Values{"picked_file_ids": {"file-A"}})
+}
+
+// chosen is what a connection and a selection of files give: the flow's
+// result, and a grant for each file.
+type chosen struct {
+	FlowResult
+	Selections []Selection
+}
+
+// choose connects, as a person who consents does, and selects the files by
+// their IDs under the connection's own context. It asks for no search: a
+// test that is of the search asks for one itself.
+func choose(t *testing.T, b *Broker, ids ...string) chosen {
+	t.Helper()
+	out := chosen{FlowResult: finish(t, b, start(t, b, "connect"), nil)}
+	if out.State != "complete" {
+		return out
+	}
+	var epoch string
+	if e := b.store.locked(func(v *state) error { epoch = v.Epoch; return nil }); e != nil {
+		t.Fatal(e)
+	}
+	v, e := b.Handle(context.Background(), "select", mustJSON(map[string]any{"resourceIds": ids, "selectionContext": epoch}))
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, s := range v.([]SourceSelection) {
+		out.Selections = append(out.Selections, Selection{s.ResourceID, s.Grant})
+	}
+	return out
+}
+func TestSelectionRetrievesChosenFileAndRetainsOriginal(t *testing.T) {
+	b, count, _ := testBroker(t)
+	result := choose(t, b, "file-A")
 	if result.State != "complete" || len(result.Selections) != 1 {
 		t.Fatalf("%+v", result)
 	}
@@ -178,7 +213,7 @@ func TestPickerRetrievesSelectedFileAndRetainsOriginal(t *testing.T) {
 }
 func TestPrincipalAndFileCannotBeSubstituted(t *testing.T) {
 	b, count, _ := testBroker(t)
-	r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	r := choose(t, b, "file-A")
 	g := r.Selections[0].Grant
 	if _, e := b.provider.read(context.Background(), b.store, mustJSON(ReadRequest{g, "file-B"})); e != ErrGrant {
 		t.Fatalf("file substitution reached provider: %v", e)
@@ -223,11 +258,11 @@ func TestCancelAndWrongAccountCannotReplaceConnection(t *testing.T) {
 		t.Fatal(r)
 	}
 	*accountID = "account-B"
-	r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	r := choose(t, b, "file-A")
 	if r.Error != "wrong-account" || len(r.Selections) != 0 {
 		t.Fatal(r)
 	}
-	f = start(t, b, "pick")
+	f = start(t, b, "connect")
 	if _, e := b.Handle(context.Background(), "cancel", mustJSON(map[string]string{"id": f.ID})); e != nil {
 		t.Fatal(e)
 	}
@@ -241,7 +276,7 @@ func TestCancelAndWrongAccountCannotReplaceConnection(t *testing.T) {
 }
 func TestDisconnectInvalidatesOutstandingSelection(t *testing.T) {
 	b, count, _ := testBroker(t)
-	r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	r := choose(t, b, "file-A")
 	v, e := b.Handle(context.Background(), "disconnect", nil)
 	if e != nil || !v.(map[string]bool)["revoked"] {
 		t.Fatal(v, e)
@@ -256,7 +291,7 @@ func TestDisconnectInvalidatesOutstandingSelection(t *testing.T) {
 func TestPolicyAndMalformedRequests(t *testing.T) {
 	b, _, _ := testBroker(t)
 	b.disabled = true
-	for _, method := range []string{"configure", "connect", "pick", "disconnect"} {
+	for _, method := range []string{"configure", "connect", "search", "select", "disconnect"} {
 		if _, e := b.Handle(context.Background(), method, []byte(`{}`)); e != ErrPolicy {
 			t.Fatal(e)
 		}
@@ -289,7 +324,7 @@ func TestStorageRefusesSymlinksAndPublicPermissions(t *testing.T) {
 }
 func TestExpiredGrantRefusedBeforeNetwork(t *testing.T) {
 	b, count, _ := testBroker(t)
-	r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	r := choose(t, b, "file-A")
 	var id string
 	b.store.locked(func(v *state) error { id = v.Connection.ID; return nil })
 	b.store.write("grant-"+r.Selections[0].Grant, grant{Connection: id, File: "file-A", Expires: time.Now().Add(-time.Second).Unix()})
@@ -305,7 +340,7 @@ func TestDownloadRefusalsNeverBecomeDocuments(t *testing.T) {
 	for _, scenario := range []string{"changed", "oversize", "redirect", "echo", "revoked", "unsupported"} {
 		t.Run(scenario, func(t *testing.T) {
 			b, _, _ := testBroker(t)
-			r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+			r := choose(t, b, "file-A")
 			calls := 0
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				if req.URL.Query().Get("alt") == "media" {
@@ -359,7 +394,7 @@ func TestPublicStatusDoesNotExposeTokensOrClientSecret(t *testing.T) {
 }
 func TestRestartUsesStoredConnectionAndRefreshesExpiredToken(t *testing.T) {
 	b, _, _ := testBroker(t)
-	r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	r := choose(t, b, "file-A")
 	if e := b.store.locked(func(v *state) error { v.Connection.Expires = 1; return b.store.write("state.json", v) }); e != nil {
 		t.Fatal(e)
 	}
@@ -373,7 +408,7 @@ func TestDisabledConnectionAndGenerationInvalidateGrants(t *testing.T) {
 	for _, scenario := range []string{"disabled", "generation"} {
 		t.Run(scenario, func(t *testing.T) {
 			b, count, _ := testBroker(t)
-			r := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+			r := choose(t, b, "file-A")
 			if scenario == "disabled" {
 				b.disabled = true
 				b.Handle(context.Background(), "status", nil)
@@ -390,15 +425,57 @@ func TestDisabledConnectionAndGenerationInvalidateGrants(t *testing.T) {
 	}
 }
 
-func TestTokenWithBroaderScopeIsRefused(t *testing.T) {
-	b, _, _ := testBroker(t)
+// A token is taken for the scope that was asked for and for no other: not
+// for less, which is what a connection made before ADR-0010 has, and not for
+// more.
+func TestTokenOfAnotherScopeIsRefused(t *testing.T) {
+	for scope, want := range map[string]error{
+		"https://www.googleapis.com/auth/drive":                                                nil,
+		"https://www.googleapis.com/auth/drive.file":                                           ErrProvider,
+		"https://www.googleapis.com/auth/drive.readonly":                                       ErrProvider,
+		"https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/gmail.readonly": ErrProvider,
+		"https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive":     ErrProvider,
+	} {
+		b, _, _ := testBroker(t)
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "private", "refresh_token": "private-refresh", "expires_in": 3600, "token_type": "Bearer", "scope": scope})
+		}))
+		b.provider.token = server.URL
+		b.provider.client = server.Client()
+		if _, e := b.provider.exchange(context.Background(), Client{"id", "secret"}, url.Values{}); e != want {
+			t.Errorf("a token of the scope %q: %v, and not %v", scope, e, want)
+		}
+		server.Close()
+	}
+}
+
+// A renewal that says its token is of another scope is refused, and the
+// token is neither kept nor used.
+func TestRenewalThatSaysAnotherScopeIsRefused(t *testing.T) {
+	b, count, _ := testBroker(t)
+	r := choose(t, b, "file-A")
+	if err := b.store.locked(func(v *state) error { v.Connection.Expires = 1; return b.store.write("state.json", v) }); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, `{"access_token":"private","refresh_token":"private-refresh","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/drive"}`)
+		io.WriteString(w, `{"access_token":"narrow","expires_in":3600,"token_type":"Bearer","scope":"https://www.googleapis.com/auth/drive.file"}`)
 	}))
 	defer server.Close()
-	b.provider.token = server.URL
-	b.provider.client = server.Client()
-	if _, e := b.provider.exchange(context.Background(), Client{"id", "secret"}, url.Values{}); e != ErrProvider {
-		t.Fatalf("broader scope accepted: %v", e)
+	p := b.provider
+	p.token = server.URL
+	p.client = server.Client()
+	if _, e := p.read(context.Background(), b.store, mustJSON(ReadRequest{r.Selections[0].Grant, "file-A"})); e != ErrRevoked {
+		t.Fatalf("a read under a token of the narrower scope: %v", e)
+	}
+	if count.Load() != 0 {
+		t.Fatal("the file was asked for under the narrower token")
+	}
+	if e := b.store.locked(func(v *state) error {
+		if v.Connection.Access == "narrow" {
+			t.Error("the narrower token was kept")
+		}
+		return nil
+	}); e != nil {
+		t.Fatal(e)
 	}
 }
