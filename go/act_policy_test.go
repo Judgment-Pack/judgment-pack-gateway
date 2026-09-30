@@ -129,6 +129,8 @@ func TestActHoldsAWriteToItsDecisionPolicy(t *testing.T) {
 		// step 10: the policy, in its order
 		{"a handoff requested on an unresolved record", runtimeLine(t, signature, `{"handoff":{"state":"none"},"kind":"outcome","outcomeId":"approve","reasons":[]}`, `{"handoff":{"state":"requested","triggeredBy":["unknown"]},"kind":"unresolved","reasons":["unknown"]}`), "", "", "policy-outcome", "not an outcome the tool's decision policy allows"},
 		{"an outcome the policy does not allow", runtimeLine(t, signature, `"outcomeId":"approve"`, `"outcomeId":"deny"`), "", "", "policy-outcome", "not an outcome"},
+		{"an allowed outcome id on a disposition of another kind", runtimeLine(t, signature, `"kind":"outcome"`, `"kind":"unresolved"`), "", "", "policy-outcome", "not an outcome"},
+		{"no disposition", runtimeLine(t, signature, `,"disposition":{"handoff":{"state":"none"},"kind":"outcome","outcomeId":"approve","reasons":[]}`, ``), "", "", "policy-outcome", "not an outcome"},
 		{"an allowed outcome with a handoff requested", runtimeLine(t, signature, `"handoff":{"state":"none"}`, `"handoff":{"state":"requested","triggeredBy":["exception-escalation"]}`), "", "", "policy-handoff", "requested handoff"},
 		{"a pack the policy does not name", runtimeLine(t, signature, `"digest":"`+packA+`"`, `"digest":"`+packB+`"`), packB, "", "policy-packs", "does not name"},
 		{"a record judged under draft law", runtimeLine(t, signature, `"reviewed":true`, `"reviewed":false`), "", "", "policy-reviewed", `"reviewed": true`},
