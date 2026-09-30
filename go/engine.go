@@ -26,15 +26,24 @@ import (
 
 // engineVersion is the newest version this engine reads; engineVersions are
 // all it reads. Version 2 adds the optional `mcp` member (docs/design/
-// mcp-server.md), and version 3 a platform's optional `descriptors` pin
-// (docs/design/tool-descriptors.md): a file of an earlier version without
-// the member still loads, and one with it is refused by name, as any member
-// a version does not have. connect writes version 3 into a file exactly
-// when the entry it writes carries a pin, and otherwise leaves the version
-// as it found it.
-const engineVersion = "3"
+// mcp-server.md), version 3 a platform's optional `descriptors` pin
+// (docs/design/tool-descriptors.md), and version 4 a platform's optional
+// `decisionPolicy` (docs/adr/0011-hold-a-write-to-its-decision.md): a file
+// of an earlier version without the member still loads, and one with it is
+// refused by name, as any member a version does not have. connect raises a
+// file to version 3 exactly when the entry it writes carries a pin, and
+// otherwise leaves the version as it found it; it never lowers one.
+const engineVersion = "4"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true}
+
+// versionAtLeast reports whether a version this engine reads is the given
+// one or later.
+func versionAtLeast(version, least string) bool {
+	v, _ := strconv.Atoi(version)
+	l, _ := strconv.Atoi(least)
+	return v >= l
+}
 
 // The frontend's user (docs/design/mcp-server.md): the MCP server runs as
 // it, so no platform may, or a credentials file could belong to the user
@@ -109,6 +118,9 @@ type platformConfig struct {
 	// descriptors that connect captured, sha256:<64 hex>; "" when none. The
 	// signer never reads it; the frontend does (tool-descriptors.md).
 	descriptors string
+	// policies are the decision policies the operator holds write tools
+	// to (ADR-0011), by tool; nil when the platform carries none.
+	policies map[string]*decisionPolicy
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -193,6 +205,7 @@ var engineMembers = map[string]bool{
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false,
+	"decisionPolicy": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -211,7 +224,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q or %q", version, "1", "2", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q or %q", version, "1", "2", "3", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
@@ -392,7 +405,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			pc.write = bool(b)
 		}
 		if _, present := p.get("descriptors"); present {
-			if version != "3" {
+			if !versionAtLeast(version, "3") {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: descriptors is a version-3 member; engineVersion %s has no descriptors", name, version)
 			}
 			pin, ok := memberString(p, "descriptors")
@@ -400,6 +413,19 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: descriptors must be sha256:<64 lowercase hex>, the digest of a snapshot", name)
 			}
 			pc.descriptors = pin
+		}
+		if policiesValue, present := p.get("decisionPolicy"); present {
+			if !versionAtLeast(version, "4") {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: decisionPolicy is a version-4 member; engineVersion %s has no decisionPolicy", name, version)
+			}
+			// A policy holds a write; a platform that allows none has
+			// nothing to hold, and a policy on it would read as a hold.
+			if !pc.write {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: decisionPolicy holds write tools to a decision, and the platform does not set write: true", name)
+			}
+			if pc.policies, err = parseDecisionPolicies(policiesValue, name); err != nil {
+				return engineConfig{}, err
+			}
 		}
 		cfg.platforms = append(cfg.platforms, pc)
 	}
@@ -871,7 +897,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			if len(b.write.args) > 0 {
 				argv = append(append(argv, "--"), b.write.args...)
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: p.endpoint}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: p.endpoint, policies: p.policies}
 		}
 	}
 	return sources
@@ -1372,9 +1398,32 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if p.descriptors != "" && b.live == nil {
 			return nil, fmt.Errorf("platform %s: descriptors pins a snapshot of a live MCP operation, and binding %s has none", p.name, p.binding)
 		}
+		if err := policiesMatch(*p, b); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
 		bindings[p.name] = b
 	}
 	return bindings, nil
+}
+
+// policiesMatch holds a platform's decision policies to its binding: each
+// names a tool the binding's write operation names, since a policy for a
+// tool no write can reach would read as a hold on nothing.
+func policiesMatch(p platformConfig, b binding) error {
+	tools := make([]string, 0, len(p.policies))
+	for tool := range p.policies {
+		tools = append(tools, tool)
+	}
+	sort.Strings(tools)
+	for _, tool := range tools {
+		if b.write == nil {
+			return fmt.Errorf("decisionPolicy names tool %q, and binding %s states no write operation", requestText(tool), p.binding)
+		}
+		if !contains(b.write.tools, tool) {
+			return fmt.Errorf("decisionPolicy names tool %q, which the binding's write operation does not name", requestText(tool))
+		}
+	}
+	return nil
 }
 
 // bindingOperations are the operations a binding derives sources for, in

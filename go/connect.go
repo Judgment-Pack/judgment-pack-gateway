@@ -276,6 +276,20 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err != nil {
 		return out, err
 	}
+	// A decision policy is the operator's own writing, and connect has no
+	// flag for it: the entry replaced keeps it (ADR-0011), and a
+	// replacement it would no longer fit -- no write, or a write binding
+	// that does not name its tools -- is refused before anything is run,
+	// never written without it.
+	if previous != nil && previous.policies != nil {
+		if !entry.write {
+			return out, fmt.Errorf("platform %s carries a decisionPolicy, which --replace keeps, and the entry replacing it does not set --write; remove decisionPolicy from the file first, or give --write", req.platform)
+		}
+		entry.policies = previous.policies
+		if err := policiesMatch(entry, b); err != nil {
+			return out, fmt.Errorf("platform %s carries a decisionPolicy, which --replace keeps: %v", req.platform, err)
+		}
+	}
 	// The entry as it is written, kept apart: judging the configuration
 	// below replaces each credentials path in the entry with the path it
 	// resolves to, which is not what the file will say.
@@ -643,9 +657,11 @@ func describeCheck(shape string, report []byte) (string, error) {
 // engine writes its own form: the file re-read as a value, the platform
 // set under platforms, the whole rendered with members in canonical order.
 //
-// An entry that pins a snapshot is a version-3 member, so the file is
-// written as version 3 exactly when the entry carries a pin; otherwise its
-// version stays as it was found.
+// An entry that pins a snapshot is a version-3 member, so a file of an
+// earlier version is raised to version 3 exactly when the entry carries a
+// pin; otherwise its version stays as it was found, and a later one is
+// never lowered. The entry replaced keeps its decisionPolicy as written,
+// which connect has no flag for (ADR-0011).
 func renderPlatformEntry(data []byte, req connectRequest, ref, pin string) ([]byte, error) {
 	v, err := parseJSON(data)
 	if err != nil {
@@ -691,7 +707,16 @@ func renderPlatformEntry(data []byte, req connectRequest, ref, pin string) ([]by
 	}
 	if pin != "" {
 		entry.set("descriptors", vString(pin))
-		obj.set("engineVersion", vString("3"))
+		if version, _ := memberString(obj, "engineVersion"); !versionAtLeast(version, "3") {
+			obj.set("engineVersion", vString("3"))
+		}
+	}
+	if replaced, ok := platforms.get(req.platform); ok {
+		if replacedObj, ok := replaced.(*vObject); ok {
+			if policy, ok := replacedObj.get("decisionPolicy"); ok {
+				entry.set("decisionPolicy", policy)
+			}
+		}
 	}
 	platforms.set(req.platform, entry)
 	var sb strings.Builder

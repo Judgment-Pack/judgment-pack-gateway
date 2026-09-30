@@ -78,6 +78,10 @@ type sourceSpec struct {
 	// endpoint an action receipt names; /acquire reads neither.
 	tools    []string
 	endpoint string
+	// policies are the decision policies the operator holds the write
+	// binding's tools to (ADR-0011), by tool, for a write source only; a
+	// tool with none has its writes read nothing in their decision record.
+	policies map[string]*decisionPolicy
 	// timeout is how long the source may run before its context is
 	// cancelled, from --source-timeout; zero is defaultSourceTimeout.
 	timeout time.Duration

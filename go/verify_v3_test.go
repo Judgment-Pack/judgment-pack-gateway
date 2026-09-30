@@ -136,6 +136,7 @@ func TestVersion3StructuralConstraints(t *testing.T) {
 		{"tool.endpoint a string", "action", func(o *vObject) { sub(sub(o, "action"), "tool").set("endpoint", vString("https://x/")) }},
 		{"cites empty", "action", func(o *vObject) { sub(o, "action").set("cites", vArray{}) }},
 		{"an unknown extra member", "acquisition", func(o *vObject) { o.set("vendorNote", vString("kept under the signature")) }},
+		{"policy a digest", "action", func(o *vObject) { sub(o, "action").set("policy", vString(testDigest("policy"))) }},
 	}
 	for _, tc := range accepted {
 		t.Run("accepts "+tc.name, func(t *testing.T) {
@@ -194,6 +195,9 @@ func TestVersion3StructuralConstraints(t *testing.T) {
 			a.names = remove(a.names, "request")
 			delete(a.byName, "request")
 		}},
+		{"policy not a digest", "action", func(o *vObject) { sub(o, "action").set("policy", vString("sha256:"+strings.Repeat("A", 64))) }},
+		{"policy null", "action", func(o *vObject) { sub(o, "action").set("policy", vNull{}) }},
+		{"policy an object", "action", func(o *vObject) { sub(o, "action").set("policy", newObject()) }},
 	}
 	for _, tc := range refused {
 		t.Run("refuses "+tc.name, func(t *testing.T) {

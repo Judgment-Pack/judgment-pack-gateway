@@ -41,6 +41,10 @@ type finding map[string]any
 type report struct {
 	OK       bool      `json:"ok"`
 	Findings []finding `json:"findings"`
+	// Observations are what the verifier says of a receipt without failing
+	// it (SPEC.md §4 step 8): absent when there are none, and never a
+	// part of ok.
+	Observations []finding `json:"observations,omitempty"`
 }
 
 func (r *report) marshal() ([]byte, error) {
@@ -75,6 +79,7 @@ type receipt struct {
 	kind         string
 	cites        []citation
 	recordDigest string
+	packDigest   string
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {
@@ -605,7 +610,7 @@ func verifyWithRegistry(storeRoot, registryPath, authority string, publicKey []b
 
 // verifyWithRegistryAndRecords is the whole of SPEC.md §4: the per-receipt and
 // per-session findings, the registry anchor, and for version 3 action receipts
-// the citation and decision-record checks of steps 5 and 6.
+// the citation and decision-record checks of steps 5 to 8.
 func verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (*report, error) {
 	return verifyAgainst(storeRoot, registryPath, authority, decisionRecords, publicKey, false)
 }
@@ -699,11 +704,12 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		}
 	}
 
-	// SPEC.md §4 steps 5 and 6: for each version 3 action receipt that passed
-	// the ladder, its citations resolve against what was enumerated -- never
-	// against the filesystem, which may fold case -- and its decision record
-	// exists as some candidate's bytes. Both are reported beside the receipt's
-	// ok, once each, and independently.
+	// SPEC.md §4 steps 5, 6 and 8: for each version 3 action receipt that
+	// passed the ladder, its citations resolve against what was enumerated --
+	// never against the filesystem, which may fold case -- its decision record
+	// exists as some candidate's bytes, and a record found is compared with
+	// what the receipt claims of it. Each is reported beside the receipt's ok,
+	// once, and independently.
 	wanted := map[string]bool{}
 	for _, r := range actions {
 		wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
@@ -729,7 +735,13 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 			}
 		}
 	}
-	candidates, recordsPresent, err := decisionCandidates(decisionRecords, wanted, onRecord)
+	// SPEC.md §4 step 8: a record an action receipt names is read, when it is
+	// found, for what it states of the pack and the citations -- once per
+	// record, and of each only those, so the archive is still retained no
+	// more than its findings.
+	named := map[string]recordClaims{}
+	onNamed := func(digestHex string, data []byte) { named[digestHex] = recordClaimsOf(data) }
+	candidates, recordsPresent, err := decisionCandidatesReading(decisionRecords, wanted, onRecord, onNamed)
 	if err != nil {
 		return nil, err
 	}
@@ -743,9 +755,32 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 				break
 			}
 		}
-		if !recordsPresent || !candidates[strings.TrimPrefix(r.recordDigest, "sha256:")] {
+		recordHex := strings.TrimPrefix(r.recordDigest, "sha256:")
+		if !recordsPresent || !candidates[recordHex] {
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-record-mismatch",
+			})
+			continue
+		}
+		// SPEC.md §4 step 8: the record is found. A runtime evaluation record
+		// is compared with what the receipt claims of it, each claim its own
+		// finding; any other record is not compared, and the report says so
+		// without failing the receipt.
+		claims := named[recordHex]
+		if !claims.understood {
+			rep.Observations = append(rep.Observations, finding{
+				"sessionId": r.sessionID, "callIndex": r.callIndex, "observation": "decision-record-not-compared",
+			})
+			continue
+		}
+		if claims.packDigest != r.packDigest {
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-pack-mismatch",
+			})
+		}
+		if !claims.citesRead || !sameCitations(claims.cites, r.cites) {
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-cites-mismatch",
 			})
 		}
 	}

@@ -18,7 +18,11 @@ import (
 // judgment the requester says the write relies on exists -- the cited
 // receipts in this engine's own store under its own key, the decision record
 // under its own decision-record directory -- before anything is sent to a
-// target, and that the receipt names who asked.
+// target, and that the receipt names who asked. For a tool the operator holds
+// to a decision policy (ADR-0011) it holds one thing more, still before
+// anything is sent: that the record is the runtime's, that the request's
+// claims are the record's, and that the record meets the policy
+// (holdToPolicy). For a tool with none, nothing in the record is read.
 
 // actRefusal is why an action was refused before any executor ran, and at
 // which step of the ladder; it is answered as a bad request naming the step.
@@ -69,6 +73,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	// The executor is started for this tool alone (executor.md): a binding
 	// naming several write tools offers each request one of them.
 	spec = narrowTools(spec, tool)
+	policy := spec.policies[tool]
 	arguments := value(newObject())
 	if len(argumentsRaw) > 0 {
 		// The same value budget an /acquire body's arguments are held to
@@ -128,7 +133,14 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		return nil, actRefusal{"decision", "this engine was started without a decision-record directory, so no record can be found for an action to rely on"}
 	}
 	recordHex := strings.TrimPrefix(decision.recordDigest, "sha256:")
-	found, present, err := decisionCandidates(g.decisionRecords, map[string]bool{recordHex: true}, nil)
+	// The record's bytes are kept only for a tool held to a policy: the
+	// bytes that hashed to the digest, which are then the bytes judged.
+	var recorded []byte
+	var keep func(string, []byte)
+	if policy != nil {
+		keep = func(_ string, data []byte) { recorded = append([]byte(nil), data...) }
+	}
+	found, present, err := decisionCandidatesReading(g.decisionRecords, map[string]bool{recordHex: true}, nil, keep)
 	if err != nil {
 		// What went wrong is the operator's to read in the log; the
 		// requester learns that the directory could not be read, not where
@@ -137,6 +149,11 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	}
 	if !present || !found[recordHex] {
 		return nil, actRefusal{"decision", fmt.Sprintf("no candidate under the decision-record directory has the digest %s", decision.recordDigest)}
+	}
+	if policy != nil {
+		if err := holdToPolicy(recorded, decision, cites, arguments, policy); err != nil {
+			return nil, err
+		}
 	}
 
 	// The judgment is there. What follows is the acquisition path with an
@@ -217,6 +234,11 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		cited = append(cited, entry)
 	}
 	action.set("cites", cited)
+	// The policy the write was held to, by digest, signed with the rest:
+	// absent for a tool the operator holds to none.
+	if policy != nil {
+		action.set("policy", vString(policy.digest))
+	}
 	called := newObject()
 	called.set("shape", vString("mcp"))
 	if spec.endpoint == "" {

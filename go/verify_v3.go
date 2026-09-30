@@ -1,6 +1,6 @@
 package main
 
-// Receipt version 3 (SPEC.md §1.2a, §4 steps 5 and 6): the structural checks
+// Receipt version 3 (SPEC.md §1.2a, §4 steps 5 to 8): the structural checks
 // order 1 applies to a version 3 receipt, and the candidates a decision-record
 // directory yields for the decision-record check. The citation and
 // decision-record findings themselves are produced in verifyWithRegistry,
@@ -95,11 +95,9 @@ func validateVersion3(obj *vObject, r *receipt) error {
 		if !hasAction || hasAcquisition {
 			return errors.New(`kind "action" requires "action" and forbids "acquisition"`)
 		}
-		cites, recordDigest, err := validateAction(actionV)
-		if err != nil {
+		if err := validateAction(actionV, r); err != nil {
 			return err
 		}
-		r.cites, r.recordDigest = cites, recordDigest
 	default:
 		return fmt.Errorf("kind %q is neither acquisition nor action", kind)
 	}
@@ -242,73 +240,85 @@ func validateAcquisition(v value) error {
 	return nil
 }
 
-func validateAction(v value) ([]citation, string, error) {
+// validateAction holds an action object to §1.2a and fills in what the
+// later steps compare: the citations, and the decision's two digests.
+func validateAction(v value, r *receipt) error {
 	obj, err := requireObject(v, "action")
 	if err != nil {
-		return nil, "", err
+		return err
 	}
 	requester, ok := obj.get("requester")
 	if !ok {
-		return nil, "", errors.New(`action: missing member "requester"`)
+		return errors.New(`action: missing member "requester"`)
 	}
 	if _, isNull := requester.(vNull); isNull {
-		return nil, "", errors.New("action: requester is null")
+		return errors.New("action: requester is null")
 	}
 	if err := validateIdentity(requester, "action.requester"); err != nil {
-		return nil, "", err
+		return err
 	}
 	decisionV, ok := obj.get("decision")
 	if !ok {
-		return nil, "", errors.New(`action: missing member "decision"`)
+		return errors.New(`action: missing member "decision"`)
 	}
 	decision, err := requireObject(decisionV, "action.decision")
 	if err != nil {
-		return nil, "", err
+		return err
 	}
 	for _, member := range []string{"recordDigest", "packDigest"} {
 		if err := requireDigest(decision, member); err != nil {
-			return nil, "", fmt.Errorf("action.decision: %w", err)
+			return fmt.Errorf("action.decision: %w", err)
 		}
 	}
-	recordDigest, _ := memberString(decision, "recordDigest")
 	citesV, ok := obj.get("cites")
 	if !ok {
-		return nil, "", errors.New(`action: missing member "cites"`)
+		return errors.New(`action: missing member "cites"`)
 	}
 	cites, err := parseCitations(citesV, "action")
 	if err != nil {
-		return nil, "", err
+		return err
 	}
 	toolV, ok := obj.get("tool")
 	if !ok {
-		return nil, "", errors.New(`action: missing member "tool"`)
+		return errors.New(`action: missing member "tool"`)
 	}
 	tool, err := requireObject(toolV, "action.tool")
 	if err != nil {
-		return nil, "", err
+		return err
 	}
 	for _, member := range []string{"shape", "name"} {
 		if _, err := requireString(tool, member); err != nil {
-			return nil, "", fmt.Errorf("action.tool: %w", err)
+			return fmt.Errorf("action.tool: %w", err)
 		}
 	}
 	if err := nullableString(tool, "endpoint", nil); err != nil {
-		return nil, "", fmt.Errorf("action.tool: %w", err)
+		return fmt.Errorf("action.tool: %w", err)
 	}
 	if err := requireDigest(obj, "request"); err != nil {
-		return nil, "", fmt.Errorf("action: %w", err)
+		return fmt.Errorf("action: %w", err)
+	}
+	// The policy the write was held to (ADR-0011) is optional; present, it
+	// is a digest, and nothing else about it is checked: a verifier holds
+	// no configuration to recompute it against.
+	if _, present := obj.get("policy"); present {
+		if err := requireDigest(obj, "policy"); err != nil {
+			return fmt.Errorf("action: %w", err)
+		}
 	}
 	adapter, ok := obj.get("adapter")
 	if !ok {
-		return nil, "", errors.New(`action: missing member "adapter"`)
+		return errors.New(`action: missing member "adapter"`)
 	}
 	if err := validateAdapter(adapter, "action.adapter"); err != nil {
-		return nil, "", err
+		return err
 	}
 	if _, err := requireString(obj, "observedAt"); err != nil {
-		return nil, "", fmt.Errorf("action: %w", err)
+		return fmt.Errorf("action: %w", err)
 	}
-	return cites, recordDigest, nil
+	r.cites = cites
+	r.recordDigest, _ = memberString(decision, "recordDigest")
+	r.packDigest, _ = memberString(decision, "packDigest")
+	return nil
 }
 
 // decisionCandidates walks the decision-record directory of SPEC.md §4 step 6
@@ -322,6 +332,18 @@ func validateAction(v value) ([]citation, string, error) {
 // its bytes once and its digests never; a candidate that cites (step 7) is
 // handed to onRecord as it is found and retained no more than the rest.
 func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citingRecord)) (map[string]bool, bool, error) {
+	return decisionCandidatesReading(dir, wanted, onRecord, nil)
+}
+
+// decisionCandidatesReading is decisionCandidates that also hands onWanted
+// the bytes of a candidate found for each wanted digest, once, with the
+// digest's hex -- the record an action names, for the executor's policy
+// (ADR-0011) and for §4 step 8. A record is a regular file whole or a line
+// of a .jsonl file, never a .jsonl file whole, which is a candidate for
+// step 6 and is handed to nobody, as step 7 reads it for nothing. The bytes
+// handed over are the bytes that hashed to the digest; a line is a slice of
+// the file's buffer, for onWanted to copy if it keeps it.
+func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func(citingRecord), onWanted func(digestHex string, data []byte)) (map[string]bool, bool, error) {
 	if dir == "" {
 		return nil, false, nil
 	}
@@ -345,21 +367,26 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 	if !info.IsDir() {
 		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
 	}
-	found := map[string]bool{}
-	// note hashes a candidate for step 6; read reads it for step 7 as well,
-	// which a .jsonl file's lines get and the file whole does not, so that a
-	// record is judged once and not also as the file it is the only line of.
-	note := func(data []byte) {
+	found, handed := map[string]bool{}, map[string]bool{}
+	// note hashes a candidate for step 6; read reads it for step 7 and hands
+	// it to onWanted as well, which a .jsonl file's lines get and the file
+	// whole does not, so that a record is judged once and not also as the
+	// file it is the only line of.
+	note := func(data []byte, record bool) {
 		if len(wanted) == 0 {
 			return
 		}
 		sum := sha256.Sum256(data)
 		if h := hex.EncodeToString(sum[:]); wanted[h] {
 			found[h] = true
+			if record && onWanted != nil && !handed[h] {
+				handed[h] = true
+				onWanted(h, data)
+			}
 		}
 	}
 	read := func(data []byte) {
-		note(data)
+		note(data, true)
 		if onRecord == nil {
 			return
 		}
@@ -390,7 +417,7 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 		if !strings.HasSuffix(d.Name(), ".jsonl") {
 			read(data)
 		} else {
-			note(data)
+			note(data, false)
 			// One candidate per line: split on 0x0A, one trailing 0x0D removed,
 			// empty pieces skipped, the unterminated final piece kept. Walked by
 			// index so a file of newlines allocates nothing per line.

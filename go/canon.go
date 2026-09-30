@@ -53,6 +53,15 @@ type vBool bool
 
 type vNull struct{}
 
+// vNumber is a number outside the canonical domain -- a fraction, an
+// exponent, an integer past the safe range -- kept as it was spelled. Only
+// parseRecordJSON makes one: a decision record's facts may carry what its
+// writer chose, and a reading of the record must not refuse what the
+// runtime wrote. Nothing signed ever holds one; canonicalValue says whether
+// a value holds none, and nothing compares a value by its canonical bytes
+// before asking it.
+type vNumber string
+
 func newObject() *vObject {
 	return &vObject{byName: map[string]value{}}
 }
@@ -116,6 +125,32 @@ func (b vBool) canonWrite(sb *strings.Builder) {
 }
 
 func (vNull) canonWrite(sb *strings.Builder) { sb.WriteString("null") }
+
+// canonWrite writes the number as it was spelled, which is no canonical
+// form: a value holding one is outside the domain (canonicalValue).
+func (n vNumber) canonWrite(sb *strings.Builder) { sb.WriteString(string(n)) }
+
+// canonicalValue reports whether v is inside the canonical domain: whether
+// it holds no number parseRecordJSON kept as spelled.
+func canonicalValue(v value) bool {
+	switch c := v.(type) {
+	case vNumber:
+		return false
+	case *vObject:
+		for _, member := range c.byName {
+			if !canonicalValue(member) {
+				return false
+			}
+		}
+	case vArray:
+		for _, item := range c {
+			if !canonicalValue(item) {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 func writeCanonicalString(sb *strings.Builder, s string) {
 	sb.WriteByte('"')
@@ -181,6 +216,9 @@ type parser struct {
 	// values is how many it has made so far.
 	maxValues int
 	values    int
+	// anyNumber admits a number of any form JSON gives one (parseRecordJSON),
+	// keeping one outside the canonical domain as a vNumber.
+	anyNumber bool
 }
 
 // descend enters a nested value, refusing the level past maxNesting before
@@ -205,6 +243,16 @@ func parseJSON(data []byte) (value, error) {
 // parseJSON refuses it.
 func parseJSONWithin(data []byte, maxValues int) (value, error) {
 	return (&parser{data: data, maxValues: maxValues}).document()
+}
+
+// parseRecordJSON is parseJSON for a document this engine reads and never
+// signs, a decision record (SPEC.md §4 step 8): the same parser, a member
+// name given twice, a string that is not UTF-8 and a lone surrogate refused
+// as they are there, the nesting bounded alike -- but a number of any form
+// RFC 8259 gives one is admitted, and one outside the canonical domain is
+// kept as spelled (vNumber).
+func parseRecordJSON(data []byte) (value, error) {
+	return (&parser{data: data, anyNumber: true}).document()
 }
 
 // document parses the whole of p.data as one JSON text.
@@ -499,6 +547,9 @@ func (p *parser) parseNumber() (value, error) {
 	if p.data[digitsStart] == '0' && p.pos-digitsStart > 1 {
 		return nil, fmt.Errorf("leading zero in number at %d", digitsStart)
 	}
+	if p.anyNumber {
+		return p.parseAnyNumber(start)
+	}
 	// A fraction or an exponent makes this a float literal, which is outside
 	// the canonical domain even when its value happens to be integral.
 	if p.pos < len(p.data) {
@@ -518,4 +569,43 @@ func (p *parser) parseNumber() (value, error) {
 		return nil, fmt.Errorf("integer %s is outside the safe-integer range", requestText(lit))
 	}
 	return vInt(n), nil
+}
+
+// parseAnyNumber finishes a number whose integer part parseNumber has read
+// from start, in the form RFC 8259 §6 gives any number: a fraction and an
+// exponent each optional. An integer literal inside the safe range is the
+// vInt the canonical parser makes of it; anything else is kept as spelled.
+func (p *parser) parseAnyNumber(start int) (value, error) {
+	digits := func() bool {
+		from := p.pos
+		for p.pos < len(p.data) && p.data[p.pos] >= '0' && p.data[p.pos] <= '9' {
+			p.pos++
+		}
+		return p.pos > from
+	}
+	integer := true
+	if p.pos < len(p.data) && p.data[p.pos] == '.' {
+		p.pos++
+		if !digits() {
+			return nil, fmt.Errorf("expected digits after the decimal point at %d", p.pos)
+		}
+		integer = false
+	}
+	if p.pos < len(p.data) && (p.data[p.pos] == 'e' || p.data[p.pos] == 'E') {
+		p.pos++
+		if p.pos < len(p.data) && (p.data[p.pos] == '+' || p.data[p.pos] == '-') {
+			p.pos++
+		}
+		if !digits() {
+			return nil, fmt.Errorf("expected digits in the exponent at %d", p.pos)
+		}
+		integer = false
+	}
+	lit := string(p.data[start:p.pos])
+	if integer {
+		if n, err := strconv.ParseInt(lit, 10, 64); err == nil && n <= maxSafeInteger && n >= minSafeInteger {
+			return vInt(n), nil
+		}
+	}
+	return vNumber(lit), nil
 }
