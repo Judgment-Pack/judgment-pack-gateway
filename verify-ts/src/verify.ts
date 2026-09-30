@@ -682,7 +682,11 @@ function hasLoneSurrogate(v: Value): boolean {
       return true;
     }
     if (w.type === "array") {
-      work.push(...w.items);
+      // one at a time: an array's items spread as arguments would pass the
+      // engine's limit on arguments for a wide array
+      for (const item of w.items) {
+        work.push(item);
+      }
     } else if (w.type === "object") {
       for (const m of w.members) {
         if (!m.name.isWellFormed()) {

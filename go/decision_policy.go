@@ -121,6 +121,11 @@ func parseDecisionPolicy(v value, where string) (*decisionPolicy, error) {
 				}
 				*into = s
 			}
+			for _, prior := range policy.bind {
+				if prior == b {
+					return nil, fmt.Errorf("%s: bind names one pair twice", where)
+				}
+			}
 			policy.bind = append(policy.bind, b)
 		}
 	}
@@ -250,11 +255,17 @@ func readRuntimeRecord(data []byte) (*runtimeRecord, string) {
 }
 
 // citations are the record's cites, read as an action receipt's are: none
-// when the member is absent, an error when it is not of the shape.
+// when the member is absent, an error when it is not of the shape. The
+// record was read with numbers of any form, so the member is held to the
+// canonical domain here, as an action's citations are by being signed: a
+// member beside the three, at any depth, may hold a number outside it.
 func (r *runtimeRecord) citations() ([]citation, error) {
 	citesV, present := r.obj.get("cites")
 	if !present {
 		return nil, nil
+	}
+	if !canonicalValue(citesV) {
+		return nil, fmt.Errorf("record: cites holds a number outside the canonical domain")
 	}
 	return parseCitations(citesV, "record")
 }

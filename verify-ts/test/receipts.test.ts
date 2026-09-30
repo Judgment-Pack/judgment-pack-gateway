@@ -571,6 +571,7 @@ test("an action is held to the runtime evaluation record it names", () => {
     ["a record that cites nothing", evaluation({ cites: undefined }), ["decision-cites-mismatch"], false],
     ["a record citing another receipt", evaluation({ cites: [{ ...cite, callIndex: 1 }] }), ["decision-cites-mismatch"], false],
     ["cites not of the shape", evaluation({ cites: [{ ...cite, callIndex: "0" }] }), ["decision-cites-mismatch"], false],
+    ["a citation with a fraction beside its three members", evaluation({ cites: [{ ...cite, extra: { fraction: 0.5 } }] }), ["decision-cites-mismatch"], false],
     ["both", evaluation({ pack: { digest: "sha256:" + "4".repeat(64) }, cites: [] }), ["decision-pack-mismatch", "decision-cites-mismatch"], false],
     ["a graph composite", evaluation({ kind: "graph-composite", pack: undefined, cites: [] }), [], true],
     ["another record version", evaluation({ recordVersion: "2", cites: [] }), [], true],
@@ -594,6 +595,13 @@ test("an action is held to the runtime evaluation record it names", () => {
   assert.deepEqual(v.observations, [notCompared], "a .jsonl file whole");
   const file = recordStore(line + "\n");
   assert.deepEqual(multiset(verdict(file.store, file.seals, withRecords({ "r.json": line + "\n" })).findings), multiset([...bothPass.map((f) => JSON.parse(f)), { sessionId: "s1", callIndex: 1, status: "decision-cites-mismatch" }]), "a file whole");
+  // A wide array in the facts is read like any other: a record of 200,000
+  // values is within every bound, and bears the action out.
+  const wide = evaluation({ inputs: { facts: { amount: 12.5, zeros: new Array(200000).fill(0) }, evidence: null, evidenceSupplied: false } });
+  const w = recordStore(wide);
+  const verdictWide = verdict(w.store, w.seals, withRecords({ "r.json": wide })) as { ok: boolean; observations?: unknown };
+  assert.equal(verdictWide.ok, true, "a wide array in the facts");
+  assert.equal(verdictWide.observations, undefined, "a wide array in the facts");
 });
 
 // action.policy is optional; present, it is a digest (§1.2a).

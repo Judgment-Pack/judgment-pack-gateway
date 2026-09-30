@@ -2805,6 +2805,7 @@ func TestAnActionIsHeldToTheRecordItNames(t *testing.T) {
 		{"a record that cites nothing", strings.Replace(record(`[]`), `"cites":[],`, ``, 1), packA, `[` + cite(0) + `]`, []string{"decision-cites-mismatch"}, false},
 		{"both", record(`[` + cite(1) + `]`), packB, `[` + cite(0) + `]`, []string{"decision-pack-mismatch", "decision-cites-mismatch"}, false},
 		{"a record whose cites is not of the shape", record(`[{"sessionId":"v-1","callIndex":"0","signature":"` + signatures[0] + `"}]`), packA, `[` + cite(0) + `]`, []string{"decision-cites-mismatch"}, false},
+		{"a record whose citation carries a fraction beside its three members", record(`[{"sessionId":"v-1","callIndex":0,"signature":"` + signatures[0] + `","extra":{"fraction":0.5}}]`), packA, `[` + cite(0) + `]`, []string{"decision-cites-mismatch"}, false},
 		{"an opaque record", "an opaque record", packB, `[` + cite(0) + `]`, nil, true},
 		{"a graph composite", composite, packB, `[` + cite(1) + `]`, nil, true},
 		{"a record of another version", record(`[`+cite(1)+`]`, `"recordVersion":"1"`, `"recordVersion":"2"`), packB, `[` + cite(0) + `]`, nil, true},

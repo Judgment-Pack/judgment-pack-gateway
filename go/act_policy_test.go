@@ -126,6 +126,7 @@ func TestActHoldsAWriteToItsDecisionPolicy(t *testing.T) {
 		{"a record citing another receipt", runtimeLine(t, signature, signature, strings.Repeat("e", 128)), "", "", "consistency", "as a set"},
 		{"a record citing nothing", runtimeLine(t, signature, `"cites":[{"sessionId":"act-p","callIndex":0,"signature":"`+signature+`"}],`, ``), "", "", "consistency", "cites none"},
 		{"a record whose cites is not of the shape", runtimeLine(t, signature, `"callIndex":0`, `"callIndex":"0"`), "", "", "consistency", "not of the shape"},
+		{"a record whose citation carries a fraction beside its three members", runtimeLine(t, signature, `"callIndex":0,`, `"callIndex":0,"extra":{"fraction":0.5},`), "", "", "consistency", "not of the shape"},
 		// step 10: the policy, in its order
 		{"a handoff requested on an unresolved record", runtimeLine(t, signature, `{"handoff":{"state":"none"},"kind":"outcome","outcomeId":"approve","reasons":[]}`, `{"handoff":{"state":"requested","triggeredBy":["unknown"]},"kind":"unresolved","reasons":["unknown"]}`), "", "", "policy-outcome", "not an outcome the tool's decision policy allows"},
 		{"an outcome the policy does not allow", runtimeLine(t, signature, `"outcomeId":"approve"`, `"outcomeId":"deny"`), "", "", "policy-outcome", "not an outcome"},
@@ -317,6 +318,7 @@ func TestDecisionPolicyConfiguration(t *testing.T) {
 		{"a pointer with a bad escape", with(`{"outcomes":["approve"],"bind":[{"argument":"/a","fact":"/a~2b"}]}`), "JSON pointer"},
 		{"a pointer ending in a tilde", with(`{"outcomes":["approve"],"bind":[{"argument":"/a~","fact":"/a"}]}`), "JSON pointer"},
 		{"a pointer that is not a string", with(`{"outcomes":["approve"],"bind":[{"argument":1,"fact":"/a"}]}`), "JSON pointer"},
+		{"a binding twice", with(`{"outcomes":["approve"],"bind":[{"argument":"/id","fact":"/id"},{"fact":"/id","argument":"/id"}]}`), "bind names one pair twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseEngineConfig([]byte(tc.text)); err == nil || !strings.Contains(err.Error(), tc.want) {
