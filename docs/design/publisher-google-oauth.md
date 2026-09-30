@@ -15,15 +15,16 @@ implement a hosted multi-user OAuth service.
 
 In a downstream distribution that explicitly supplies its own app registration,
 users can grant access through Google consent without registering another app.
-Drive then opens Google's file picker; Gmail returns to the host's email selection
+Drive and Gmail then return to the host's selection
 interface. Account consent is still required for every user.
 
-The publisher enables Drive API, Google Picker API and Gmail API in a controlled
+The publisher enables Drive API and Gmail API in a controlled
 Google Cloud project, sets Google Auth Platform branding/audience/data access,
 and creates a **Desktop app** OAuth client. Separate testing and production
 registrations are recommended by Google. External testing uses designated test
 users; a production distribution must satisfy Google's applicable verification
-requirements, including the restricted `gmail.readonly` scope. If selected email
+requirements, including the restricted scopes `gmail.readonly` and, since
+ADR-0010, `drive`. If selected email
 content is sent to an external AI provider, its data use must also be reviewed
 against Google's user-data requirements; local token custody does not settle that.
 
@@ -57,6 +58,5 @@ local registrations and accounts remain valid across public application updates.
 
 References checked 2026-09-19:
 - https://developers.google.com/identity/protocols/oauth2/native-app
-- https://developers.google.com/workspace/drive/picker/guides/desktop-mobile-picker
 - https://developers.google.com/workspace/gmail/api/auth/scopes
 - https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification

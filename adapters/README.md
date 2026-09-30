@@ -1096,7 +1096,12 @@ its account first. Operator-disabled connections remain blocked.
 
 `gateway-connections --state-dir /private/connections --principal desktop-owner`
 is a bounded JSON-lines control companion over private parent pipes. It implements
-`status`, `configure`, `connect`, `pick`, `poll`, `cancel`, and `disconnect`.
+`status`, `configure`, `connect`, `poll`, `cancel`, `disconnect`, `search` and
+`select`. `connect` asks for the whole of the person's Drive, the scope `drive`,
+and for no chooser of Google's. `search` takes `{ "query": "words" }` and returns
+at most twenty files of the kinds `adapter-drive` reads, with a `selectionContext`;
+`select` takes `{ "resourceIds": ["id"], "selectionContext": "context-from-search" }`
+of at most four files and returns a grant for each.
 `configure` takes a registered Google Desktop application's `clientId` and
 `clientSecret`. No reply contains provider access or refresh tokens. The parent
 must authenticate its UI before relaying controls. This pipe is not an HTTP API
@@ -1106,8 +1111,8 @@ personal companion.
 
 `adapter-drive --state-dir /private/connections --principal desktop-owner` is a
 separate source with `--source-shape drive=http`. It accepts
-`{"fileId":"selected-file","grant":"64-lowercase-hex"}`. The grant comes from the
-picker, is scoped to that file and connection, expires after five minutes, and is
+`{"fileId":"selected-file","grant":"64-lowercase-hex"}`. The grant comes from
+`select`, is scoped to that file and connection, expires after five minutes, and is
 consumed once. `JPACK_CONNECTIONS_DIR` can supply the operator's state path when a
 source command cannot contain spaces; a request cannot override it. Give this
 source a 60-second timeout and 16 MiB output bound. Files are limited to 4 MiB;

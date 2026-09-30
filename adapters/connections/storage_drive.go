@@ -49,7 +49,7 @@ func (m driveStorageMeta) file() (StorageFile, error) {
 	return StorageFile{ID: m.ID, Name: m.Name, Kind: kind, Size: size, Revision: m.Version, MediaType: m.MediaType, Editable: kind == "file" && m.Capabilities.Edit && size <= MaxFileBytes && !strings.HasPrefix(m.MediaType, "application/vnd.google-apps."), Deletable: kind == "file" && m.Capabilities.Trash}, nil
 }
 func (b *Broker) driveStorageList(ctx context.Context, q StorageQuery, token string) (StoragePage, error) {
-	out := StoragePage{Items: []StorageFile{}, Scope: "app-authorized-files", SearchMode: "provider-index"}
+	out := StoragePage{Items: []StorageFile{}, Scope: "account-files", SearchMode: "provider-index"}
 	query := "trashed = false"
 	if q.Folder != "" {
 		if !identifier.MatchString(q.Folder) {

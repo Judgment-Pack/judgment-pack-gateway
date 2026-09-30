@@ -11,7 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -60,7 +59,7 @@ func TestDriveProcessingAppliesItsDeclaredDeadline(t *testing.T) {
 // substitute. This is a test-only export; production has no output-path option.
 func TestDriveRecordForPublishedSchema(t *testing.T) {
 	b, _, _ := testBroker(t)
-	f := finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	f := choose(t, b, "file-A")
 	raw, err := b.provider.read(context.Background(), b.store, mustJSON(ReadRequest{f.Selections[0].Grant, "file-A"}))
 	if err != nil {
 		t.Fatal(err)

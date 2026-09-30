@@ -52,7 +52,7 @@ func TestPublisherClientAllowsOAuthWithoutConfigure(t *testing.T) {
 
 func TestPublisherClientPreservesExistingConsentAndConfiguration(t *testing.T) {
 	b, _, _ := testBroker(t)
-	finish(t, b, start(t, b, "pick"), url.Values{"picked_file_ids": {"file-A"}})
+	choose(t, b, "file-A")
 	before, err := b.store.read("state.json")
 	if err != nil {
 		t.Fatal(err)

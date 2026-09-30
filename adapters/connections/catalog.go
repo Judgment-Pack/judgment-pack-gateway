@@ -30,7 +30,7 @@ type Descriptor struct {
 // fresh value so callers cannot alter the broker's operation allowlist.
 func ConnectionCatalog() Catalog {
 	return Catalog{Version: 2, Sources: []SourceDescriptor{{"web", "url", []string{"text/html", "text/plain", "application/pdf"}, 4 << 20}, {"web-discovery", "url", []string{"application/vnd.jpack.web-discovery+json"}, 1 << 20}}, Providers: []Descriptor{
-		{"google-drive", "oauth", "google-desktop", "browser-picker", false, []string{"status", "configure", "connect", "pick", "poll", "cancel", "disconnect"}},
+		{"google-drive", "oauth", "google-desktop", "source-search", false, []string{"status", "configure", "connect", "poll", "cancel", "disconnect", "search", "select"}},
 		{"gmail", "oauth", "google-desktop", "mail-search", false, []string{"status", "configure", "connect", "poll", "cancel", "disconnect", "search", "select"}},
 		{"notion", "oauth", "automatic", "source-search", true, []string{"status", "connect", "poll", "cancel", "disconnect", "search", "select"}},
 		{"obsidian", "local-folder", "none", "source-search", false, []string{"status", "configure", "disconnect", "search", "select"}},

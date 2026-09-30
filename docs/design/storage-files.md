@@ -15,7 +15,9 @@ human-consent proof against such programs.
 Catalog v3 advertises five additive operations for these three providers. The
 legacy catalog, attachment operations, signed acquisition formats and frozen
 conformance corpus remain unchanged. No credentials or upstream cursors reach
-the browser. Existing provider scope restrictions remain in force.
+the browser. S3's and the vault's scope restrictions remain in force. Drive's
+scope is the whole of the connected Drive, as
+[ADR-0010](../adr/0010-a-drive-connection-is-of-the-whole-drive.md) decides.
 
 ## Operations
 
@@ -51,9 +53,10 @@ Metadata and payload validation reject unknown fields and duplicate JSON keys.
 ## Discovery budgets
 
 - **Drive:** one indexed `files.list` request per page, with a partial field mask,
-  24 items and escaped `fullText contains`/parent predicates. Only files already
-  authorized through the existing `drive.file` grant are visible. This is not
-  whole-account search, and no broad scope is silently requested. Native Google
+  24 items and escaped `fullText contains`/parent predicates. The listing is of
+  the whole of the connected Drive, under the scope `drive` that the person
+  consented to at connection, and answers with the `scope` `account-files`. No
+  scope is asked for that ADR-0010 does not name. Native Google
   documents may be listed and moved to trash when permitted; their editor is the
   source application. This API edits ordinary uploaded files, not Docs/Sheets.
   A listing without search words asks Drive for its order `folder,name`, and

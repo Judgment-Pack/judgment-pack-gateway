@@ -16,7 +16,9 @@ import (
 
 const gmailScope = "https://www.googleapis.com/auth/gmail.readonly"
 
-const driveScope = "https://www.googleapis.com/auth/drive.file"
+// driveScope is the whole of a person's Drive, to read and to change
+// (ADR-0010). It is the one scope asked for, and a token of another is refused.
+const driveScope = "https://www.googleapis.com/auth/drive"
 const MaxFileBytes = 4 << 20
 const MaxOutputBytes = 16 << 20
 
