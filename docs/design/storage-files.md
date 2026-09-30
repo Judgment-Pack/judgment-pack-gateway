@@ -13,8 +13,9 @@ same OS principal are inside this trust boundary; a typed string is not a signed
 human-consent proof against such programs.
 
 Catalog v3 advertises five additive operations for these three providers. The
-legacy catalog, attachment operations, signed acquisition formats and frozen
-conformance corpus remain unchanged. No credentials or upstream cursors reach
+storage controls left the legacy catalog, attachment operations, signed
+acquisition formats and frozen conformance corpus unchanged. ADR-0010 has
+since changed Drive's entry in the catalog and how a Drive file is chosen. No credentials or upstream cursors reach
 the browser. S3's and the vault's scope restrictions remain in force. Drive's
 scope is the whole of the connected Drive, as
 [ADR-0010](../adr/0010-a-drive-connection-is-of-the-whole-drive.md) decides.
@@ -125,8 +126,9 @@ Never reconnect automatically to bypass an uncertain claim.
 Tests use temporary local vaults and TLS provider fakes, including independent
 SigV4 verification of S3 payloads and conditional headers, Drive multipart bodies,
 wrong delete confirmations, stale revisions, reconnects, crash/replay and bounds.
-They do not establish live Google/AWS account behavior. In particular, retain the
-Drive missing-ETag refusal until a real connection supports conditional updates.
+They do not establish live Google/AWS account behavior. The Drive missing-ETag
+refusal is retained until determination 4 of ADR-0010 is built, which holds a
+change of a Drive file to the file's version in its place.
 
 One try against a live Drive account, on 2026-09-29 and under a `drive.file`
 grant, recorded these three observations:

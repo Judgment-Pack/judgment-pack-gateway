@@ -38,15 +38,34 @@ func (p provider) metadata(ctx context.Context, token, id string) (metadata, err
 	if err != nil {
 		return m, err
 	}
-	if json.Unmarshal(raw, &m) != nil || m.ID != id || m.Name == "" || len(m.Name) > 250 || strings.ContainsAny(m.Name, "\x00\r\n\x7f") || m.Version == "" || len(m.Version) > 32 || m.Trashed || !m.Capabilities.CanDownload {
+	if json.Unmarshal(raw, &m) != nil || m.ID != id || !readableName(m.Name) || m.Version == "" || len(m.Version) > 32 || m.Trashed || !m.Capabilities.CanDownload {
 		return m, ErrUnsupported
 	}
-	for _, r := range m.Name {
+	return m, nil
+}
+
+// readableName is what a file's name must be for the file to be read: not
+// empty, of at most 250 bytes, and with no control character in it.
+func readableName(name string) bool {
+	if name == "" || len(name) > 250 || strings.ContainsRune(name, 0x7f) {
+		return false
+	}
+	for _, r := range name {
 		if r < 32 {
-			return m, ErrUnsupported
+			return false
 		}
 	}
-	return m, nil
+	return true
+}
+
+// readableSize is what a file's size must be for the file to be read. A
+// document of Google's own has no size to say before it is exported.
+func readableSize(media, size string) bool {
+	if strings.HasPrefix(media, "application/vnd.google-apps.") {
+		return true
+	}
+	n, e := strconv.ParseInt(size, 10, 64)
+	return e == nil && n > 0 && n <= MaxFileBytes
 }
 func Read(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
 	return google().read(ctx, s, raw)

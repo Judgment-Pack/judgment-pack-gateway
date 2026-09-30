@@ -14,11 +14,12 @@ var driveReadable = []string{"application/pdf", "text/plain", "text/markdown", "
 const driveSearchItems = 20
 
 // driveOperation is search and select for Drive, under the contract Notion's
-// have. A search is of the whole of the connected Drive (ADR-0010): with
-// words, what Drive finds for them, in Drive's order of relevance; without,
-// what was changed last. A selection is of what a search gave or of any other
-// file's ID: a grant says that the host asked to read a file, and nothing of
-// who chose it.
+// have. A search is of the connected Drive (ADR-0010): with words, what
+// Drive finds for them, in the order Drive gives them; without, what was
+// changed last. It offers what adapter-drive would take by what Drive says of
+// a file: its kind, its name, its size, and that it may be downloaded. A
+// selection is of what a search gave or of any other file's ID: a grant says
+// that the host asked to read a file, and nothing of who chose it.
 func (b *Broker) driveOperation(ctx context.Context, method string, raw []byte) (any, error) {
 	client, c, epoch, err := b.connectedSnapshot()
 	if err != nil {
@@ -42,7 +43,7 @@ func (b *Broker) driveOperation(ctx context.Context, method string, raw []byte) 
 		kinds[i] = "mimeType = '" + media + "'"
 	}
 	query := "trashed = false and (" + strings.Join(kinds, " or ") + ")"
-	values := url.Values{"spaces": {"drive"}, "pageSize": {"20"}, "fields": {"nextPageToken,incompleteSearch,files(id,name,mimeType)"}, "supportsAllDrives": {"true"}, "includeItemsFromAllDrives": {"true"}}
+	values := url.Values{"spaces": {"drive"}, "pageSize": {"20"}, "fields": {"nextPageToken,incompleteSearch,files(id,name,mimeType,size,capabilities(canDownload))"}, "supportsAllDrives": {"true"}, "includeItemsFromAllDrives": {"true"}}
 	// Drive refuses an order asked of a search by words.
 	if words := strings.TrimSpace(q.Query); words != "" {
 		query += " and fullText contains '" + strings.NewReplacer("\\", "\\\\", "'", "\\'").Replace(words) + "'"
@@ -56,9 +57,13 @@ func (b *Broker) driveOperation(ctx context.Context, method string, raw []byte) 
 	}
 	var found struct {
 		Files []struct {
-			ID        string `json:"id"`
-			Name      string `json:"name"`
-			MediaType string `json:"mimeType"`
+			ID           string `json:"id"`
+			Name         string `json:"name"`
+			MediaType    string `json:"mimeType"`
+			Size         string `json:"size"`
+			Capabilities struct {
+				CanDownload bool `json:"canDownload"`
+			} `json:"capabilities"`
 		} `json:"files"`
 		Next       string `json:"nextPageToken"`
 		Incomplete bool   `json:"incompleteSearch"`
@@ -74,16 +79,16 @@ func (b *Broker) driveOperation(ctx context.Context, method string, raw []byte) 
 		if strings.Contains(file.ID+file.Name+file.MediaType, token) {
 			return nil, ErrProvider
 		}
-		if !identifier.MatchString(file.ID) || seen[file.ID] || !driveOffers(file.MediaType) {
+		if !identifier.MatchString(file.ID) || seen[file.ID] || !driveOffers(file.MediaType) || !readableName(file.Name) || !readableSize(file.MediaType, file.Size) || !file.Capabilities.CanDownload {
 			continue
 		}
 		seen[file.ID] = true
-		title := strings.Join(strings.Fields(strings.Map(printable, file.Name)), " ")
-		if runes := []rune(title); len(runes) > 128 {
-			title = string(runes[:128])
-		}
+		title := strings.Join(strings.Fields(strings.Map(shown, file.Name)), " ")
 		if title == "" {
 			title = file.ID
+		}
+		if runes := []rune(title); len(runes) > 128 {
+			title = string(runes[:128])
 		}
 		// The address is made of the ID. None that Drive gives is taken.
 		out.Items = append(out.Items, SourcePreview{ID: file.ID, Title: title, URL: "https://drive.google.com/open?id=" + file.ID, Description: file.MediaType})
@@ -103,10 +108,11 @@ func driveOffers(media string) bool {
 	return false
 }
 
-// printable takes out of a name what is no character to show: the controls,
-// and the marks that turn the direction of the text after them.
-func printable(r rune) rune {
-	if r < 32 || r >= 0x7f && r <= 0x9f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 {
+// shown takes out of a name, for showing it, the characters Unicode gives
+// the property Bidi_Control: the marks that set or turn the direction of the
+// text about them. A name with a control character is offered by no search.
+func shown(r rune) rune {
+	if r == 0x061c || r == 0x200e || r == 0x200f || r >= 0x202a && r <= 0x202e || r >= 0x2066 && r <= 0x2069 {
 		return ' '
 	}
 	return r

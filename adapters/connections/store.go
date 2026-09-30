@@ -106,6 +106,33 @@ type state struct {
 }
 type Store struct{ root *os.Root }
 
+// consent is the record of what a connection's consent was for. It is kept
+// beside the state and not in it: an earlier release reads the state, and
+// refuses one that has a member it does not know. The record is of one
+// consent, which it knows by the refresh token that consent gave.
+type consent struct {
+	Connection string `json:"connection"`
+	Grant      string `json:"grant"`
+	Scope      string `json:"scope"`
+}
+
+// recordConsent is called under the store's lock, once the state is written.
+// Where it fails the connection is without a record, and is asked for again.
+func (s *Store) recordConsent(c *credential, scope string) error {
+	return s.write("consent.json", consent{c.ID, digest([]byte(c.Refresh)), scope})
+}
+
+// consentedScope is the scope the consent of this credential was for, and
+// nothing where no record says. A connection made before ADR-0010 has none.
+func (s *Store) consentedScope(c credential) string {
+	raw, err := s.read("consent.json")
+	var v consent
+	if err != nil || decode(raw, &v) != nil || v.Connection != c.ID || v.Grant != digest([]byte(c.Refresh)) {
+		return ""
+	}
+	return v.Scope
+}
+
 // OpenGmailStore separates Gmail consent, credentials and grants from Drive.
 func OpenGmailStore(dir, principal string) (*Store, error) {
 	if !filepath.IsAbs(dir) {

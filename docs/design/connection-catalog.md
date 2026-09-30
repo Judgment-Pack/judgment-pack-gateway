@@ -52,7 +52,8 @@ callers cannot mutate the broker's allowlist through a prior catalog value.
 This is **implementation support**, not account availability. An operator may
 still block a provider; app registration may be missing; consent may have expired;
 provider service may be down. Clients must obtain live `status`, complete normal
-consent, and use existing user-selection grants. Existing gateway checks still
+consent, and use read grants that the host asked for. A grant says that the
+host asked to read a resource; it does not say that a person chose it. Existing gateway checks still
 apply on every operation. `--catalog` is not a tool listing, a signed receipt, a
 health check, or a grant to enable account-wide assistant search.
 

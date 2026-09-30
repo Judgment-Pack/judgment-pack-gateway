@@ -194,7 +194,13 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			}
 			v.Connection = nil
 			v.Epoch = randomID()
-			return b.store.write("state.json", v)
+			if err := b.store.write("state.json", v); err != nil {
+				return err
+			}
+			// The record is of a connection that is gone. One that stays
+			// behind says nothing of another: it names the consent it is of.
+			_ = b.store.root.Remove("consent.json")
+			return nil
 		})
 		if err != nil {
 			return nil, err
@@ -354,7 +360,13 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 				return ErrRevoked
 			}
 			v.Connection = c
-			return b.store.write("state.json", v)
+			if err := b.store.write("state.json", v); err != nil {
+				return err
+			}
+			if b.provider.kind() == "google-drive" {
+				return b.store.recordConsent(c, b.provider.scope())
+			}
+			return nil
 		})
 	}
 	f.URL = ""

@@ -1098,8 +1098,9 @@ its account first. Operator-disabled connections remain blocked.
 is a bounded JSON-lines control companion over private parent pipes. It implements
 `status`, `configure`, `connect`, `poll`, `cancel`, `disconnect`, `search` and
 `select`. `connect` asks for the whole of the person's Drive, the scope `drive`,
-and for no chooser of Google's. `search` takes `{ "query": "words" }` and returns
-at most twenty files of the kinds `adapter-drive` reads, with a `selectionContext`;
+and for no chooser of Google's. A connection made under `drive.file` is answered
+`reconnect-required`. `search` takes `{ "query": "words" }` and returns
+at most twenty files that `adapter-drive` would take, with a `selectionContext`;
 `select` takes `{ "resourceIds": ["id"], "selectionContext": "context-from-search" }`
 of at most four files and returns a grant for each.
 `configure` takes a registered Google Desktop application's `clientId` and
@@ -1112,7 +1113,9 @@ personal companion.
 `adapter-drive --state-dir /private/connections --principal desktop-owner` is a
 separate source with `--source-shape drive=http`. It accepts
 `{"fileId":"selected-file","grant":"64-lowercase-hex"}`. The grant comes from
-`select`, is scoped to that file and connection, expires after five minutes, and is
+`select`, which takes any file's ID, one a search gave or another: a grant says
+that the host asked to read the file, and not that a person chose it. It
+is scoped to that file and connection, expires after five minutes, and is
 consumed once. `JPACK_CONNECTIONS_DIR` can supply the operator's state path when a
 source command cannot contain spaces; a request cannot override it. Give this
 source a 60-second timeout and 16 MiB output bound. Files are limited to 4 MiB;
@@ -1190,7 +1193,7 @@ Catalog v2 advertises it under `sources`, separately from account providers.
 
 The connection companion's catalog v3 advertises `aws-s3`. Existing hosts using
 `connection-v1`, credential forms, prefix queries and `resource-v1` can display it
-without provider-specific host code. The v2 catalog stays unchanged.
+without provider-specific host code. The S3 source left the v2 catalog unchanged.
 
 In Desk, choose **+ → More connections → Amazon S3**. Supply the commercial AWS
 region, a general-purpose bucket and optional key prefix, and credentials with

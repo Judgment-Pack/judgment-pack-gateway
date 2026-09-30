@@ -24,16 +24,21 @@ and one-time consumption. The consent asks for the scope
 `https://www.googleapis.com/auth/drive`, the whole of the person's Drive to read
 and to change, and for no other; a token that Google says is of another scope is
 refused. It asks for no chooser of Google's, and the Picker API is not used.
-Tokens never reach Desk. The source described here reads and changes nothing;
-the changes the scope permits are the
+Tokens never reach Desk. The source described here reads files and changes
+nothing; the changes the scope permits are the
 [storage controls'](storage-files.md), each on a person's confirmation.
 
-A connection made under the scope `drive.file`, which earlier releases asked
-for, is refused when its token is next renewed, within the hour. What is asked
-of it is then answered `reconnect-required`, and the person connects again.
-`status` does not say so: it says `connected` of any connection that is held,
-as it did. Until the renewal the connection sees what it saw before: the files
-it made and the files that were chosen for it.
+What a consent was for is recorded when it is given, in `consent.json` beside
+the state: the connection, a digest of the refresh token the consent gave, and
+the scope. The state itself is not changed, so that an earlier release reads
+it. Every request that needs Drive is held to that record, and not to what a
+renewal of the token says, which need not name a scope. A connection without a
+record of a consent for `drive`, which is every connection made under the
+scope `drive.file` that earlier releases asked for, is answered
+`reconnect-required` from its first such request, and Drive is asked nothing
+under its token. The person connects again. `status` does not say so: it says
+`connected` of any connection that is held, as it did, and `select` needs
+nothing of Drive and answers as before. To disconnect removes the record.
 
 A persisted authorization epoch survives the disconnected state. Disconnect and
 configuration changes invalidate callbacks from every companion for that principal.
@@ -41,13 +46,21 @@ Token refresh runs outside the private state lock, then commits only if its epoc
 and connection still match, so a slow provider cannot block local disconnect.
 
 `search` takes `{ "query": "words" }` and answers with at most twenty files of
-the connected Drive, of the kinds `adapter-drive` reads and of no folder: with
-words, what Drive finds for them in its order of relevance; with none, what was
-changed last. Each has the file's `id`, its name as `title`, held to 128
-characters and cleared of controls and of marks that turn the direction of
-text, an address made of the ID, and the media type as `description`. `more`
-says that Drive has more than was given; a search has no second page, and is
-narrowed by its words. The answer carries a `selectionContext`.
+the connected Drive: with words, what Drive finds for them, in the order Drive
+gives them, and no order is asked; with none, what was changed last. It names
+no `corpora`, so what is searched is what Drive searches when none is named.
+It offers a file that `adapter-drive` would take by what Drive says of it: one
+of the kinds that are read and no folder, with a name that is not empty, has at
+most 250 bytes and no control character, that may be downloaded, and, unless
+it is a document of Google's own, of more than no bytes and at most 4 MiB. A
+document of Google's own has no size until it is exported, so one that a
+search offers may still be refused by the read for its size. Each file has its
+`id`, its name as `title`, held to 128 characters and cleared of the marks
+that set the direction of text (Unicode's `Bidi_Control`), an address made of
+the ID, and the media type as `description`. `more` says that there may be
+more than was given: Drive named a further page, or said that its search was
+not complete. A search has no second page, and is narrowed by its words. The
+answer carries a `selectionContext`.
 
 `select` takes `{ "resourceIds": ["id"], "selectionContext": "context-from-search" }`,
 of at most four files, and answers with `{ "resourceId", "grant" }` for each.

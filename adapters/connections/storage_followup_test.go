@@ -42,6 +42,7 @@ func TestStorageFollowupDriveRefreshCannotCrossPlanExpiry(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	consented(t, s)
 	id := randomID()
 	intent := storageIntent{Plan: StoragePlan{ID: id, State: "prepared", Expires: deadline.UTC().Format(time.RFC3339)}, Connection: "connection", Epoch: "epoch", Change: StorageChange{Action: "create", ID: "reserved-file", Name: "file.txt", MediaType: "text/plain"}}
 	if err := s.writeStorageIntent(intent); err != nil {
@@ -63,6 +64,7 @@ func TestStorageFollowupDriveAllStoredStatesOffline(t *testing.T) {
 		v.Connection = &credential{ID: "connection", Access: "expired", Expires: 1}
 		return s.write("state.json", v)
 	})
+	consented(t, s)
 	for _, state := range []string{"prepared", "executing", "completed", "refused", "needs-attention"} {
 		for _, method := range []string{"files-status", "files-commit"} {
 			if state == "prepared" && method == "files-commit" {

@@ -187,6 +187,7 @@ func TestStorageDriveQueryAndConditionalTrash(t *testing.T) {
 		v.Connection = &credential{ID: "connection", Access: "private-token", Expires: time.Now().Add(time.Hour).Unix()}
 		return s.write("state.json", v)
 	})
+	consented(t, s)
 	writes := 0
 	etag := "\"revision-1\""
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -374,6 +375,7 @@ func TestStorageDriveUploadsAndMissingVersionLock(t *testing.T) {
 		v.Connection = &credential{ID: "connection", Access: "private-token", Expires: time.Now().Add(time.Hour).Unix()}
 		return s.write("state.json", v)
 	})
+	consented(t, s)
 	var writes int
 	etag := `"etag-1"`
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

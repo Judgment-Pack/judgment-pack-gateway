@@ -137,6 +137,12 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	if p.notion {
 		return p.notionAccess(ctx, s, client, c, epoch)
 	}
+	// A renewal need not say what scope its token is of, so what a Drive
+	// connection may do is held to the record of its consent, and not to
+	// what a renewal says. One without a record is asked for again.
+	if p.kind() == "google-drive" && s.consentedScope(c) != driveScope {
+		return "", ErrRevoked
+	}
 	if c.Expires > time.Now().Add(time.Minute).Unix() {
 		return c.Access, nil
 	}
@@ -171,6 +177,12 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 		}
 		if err := s.write("state.json", v); err != nil {
 			return err
+		}
+		// A renewal that gives another refresh token is of the same consent.
+		if p.kind() == "google-drive" && t.Refresh != "" {
+			if err := s.recordConsent(current, driveScope); err != nil {
+				return err
+			}
 		}
 		access = current.Access
 		return nil

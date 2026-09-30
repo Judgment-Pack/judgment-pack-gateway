@@ -54,7 +54,9 @@ No client registration is created by this code, and no synthetic client is used
 in production. Public builds retain `setup-required` until the installation owner
 explicitly configures the provider. Their build checks must preserve the empty
 registration sentinel rather than requiring a publisher registration. Existing
-local registrations and accounts remain valid across public application updates.
+local registrations remain valid across public application updates, and so do
+accounts, with one exception: a Drive account connected under the scope
+`drive.file` is asked to connect again once ADR-0010 is in force.
 
 References checked 2026-09-19:
 - https://developers.google.com/identity/protocols/oauth2/native-app

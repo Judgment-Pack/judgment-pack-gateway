@@ -33,6 +33,7 @@ func TestStorageDriveStatusDoesNotRefresh(t *testing.T) {
 		v.Connection = &credential{ID: "connection", Refresh: "refresh", Access: "expired", Expires: time.Now().Add(-time.Hour).Unix()}
 		return s.write("state.json", v)
 	})
+	consented(t, s)
 	id := randomID()
 	if err := s.writeStorageIntent(storageIntent{Plan: StoragePlan{ID: id, State: "completed"}, Connection: "connection", Epoch: "epoch"}); err != nil {
 		t.Fatal(err)

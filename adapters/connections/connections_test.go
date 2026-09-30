@@ -132,6 +132,16 @@ func finish(t *testing.T, b *Broker, f FlowResult, extra url.Values) FlowResult 
 	return v.(FlowResult)
 }
 
+// consented records, of a connection that a test wrote into the state, that
+// its consent was for the whole Drive, as a connection made through the
+// consent has it recorded.
+func consented(t *testing.T, s *Store) {
+	t.Helper()
+	if e := s.locked(func(v *state) error { return s.recordConsent(v.Connection, driveScope) }); e != nil {
+		t.Fatal(e)
+	}
+}
+
 // chosen is what a connection and a selection of files give: the flow's
 // result, and a grant for each file.
 type chosen struct {
@@ -439,9 +449,9 @@ func TestTokenOfAnotherScopeIsRefused(t *testing.T) {
 	}
 }
 
-// A connection made under the narrower scope is asked to connect again when
-// its token is next renewed, and is not used as if it were of the whole Drive.
-func TestConnectionOfTheNarrowerScopeIsAskedToConnectAgain(t *testing.T) {
+// A renewal that says its token is of another scope is refused, and the
+// token is neither kept nor used.
+func TestRenewalThatSaysAnotherScopeIsRefused(t *testing.T) {
 	b, count, _ := testBroker(t)
 	r := choose(t, b, "file-A")
 	if err := b.store.locked(func(v *state) error { v.Connection.Expires = 1; return b.store.write("state.json", v) }); err != nil {

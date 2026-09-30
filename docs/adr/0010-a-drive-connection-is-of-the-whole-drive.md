@@ -36,7 +36,8 @@ tried, every update and every move to trash was refused.
 
 - Keep `drive.file` and Google's chooser.
 - Ask for `drive.readonly` beside `drive.file`: read the whole Drive, change
-  only what the connection made.
+  only what the connection made and what a person chose for it in Google's
+  chooser.
 - Ask for `drive`: read and change the whole Drive.
 
 ## Decision outcome
@@ -55,13 +56,18 @@ Determinations:
    other sources have: a search of the connected Drive gives at most twenty
    files of the kinds `adapter-drive` reads, and a selection gives a grant for
    each of at most four files, for one read within five minutes.
-3. **A connection made before this record** is of the narrower scope. It is
-   refused when its token is next renewed, within the hour, and the person is
-   asked to connect again. Nothing is moved over on its behalf.
+3. **A connection made before this record** is of the narrower scope. What a
+   consent was for is recorded when it is given, beside the state and not in
+   it, so that an earlier release still reads the state. A connection without
+   a record of a consent for `drive` is refused from its first request that
+   needs Drive, and the person is asked to connect again. Nothing is moved
+   over on its behalf, and nothing is inferred from what a renewal says.
 4. **A change of a Drive file is held to the file's version.** An update and a
    move to trash read the file's version and name immediately before the change
    and refuse where either differs from what the person reviewed. They send no
-   conditional request, because Drive takes none. This replaces, for Drive, the
+   conditional request: the account that was tried gave no ETag to send, and
+   Google's reference names no precondition of `files.update`. That is what
+   was seen and read, and not a proof that Drive takes none. This replaces, for Drive, the
    consequence of ADR-0005 that a Drive change fails closed without a usable
    ETag. It is decided here and built apart from the first three
    determinations: until it is built the refusal stands.
@@ -73,8 +79,11 @@ Determinations:
 
 ### Consequences
 
-- Good, because the desk can list, find, read, make and, once determination 4
-  is built, change and trash any file of the connected Drive.
+- Good, because the scope no longer keeps the desk from a file of the
+  connected Drive. It can list and find them, and read, make and, once
+  determination 4 is built, change and trash those that the controls' own
+  bounds admit and that the person may change: the bounds of size and of kind
+  stay, and a document of Google's own is still neither made nor changed.
 - Good, because Google's Picker API is no longer needed, in a registration or
   in a desk.
 - Bad, because the custody of a connection now holds a token that reads and
@@ -100,6 +109,21 @@ Determinations:
 - Revisit when Drive offers a conditional change; when a registration is to be
   offered to the public; before any change is committed without a person; or
   when a narrower scope is found to serve.
+
+### What this replaces of earlier records
+
+- Of [ADR-0005](0005-personal-storage-controls.md), one consequence, and for
+  Drive only: "Drive changes fail closed when a usable ETag is absent."
+  Determination 4 replaces it. Its consequence that the connections support
+  browsing and edits without "broader automatic account grants" is not
+  replaced: the grant that is broader here is asked of the person, at the
+  consent.
+- Of [ADR-0006](0006-documents-are-rendered-by-an-adapter.md), nothing. It
+  rejected a published server that "requests scopes beyond `drive.file`", and
+  would revisit when one "requests no scope beyond `drive.file`". Those are
+  that record's conditions for a server that renders, and they stand as they
+  are written. That this repository's own Drive connection now holds a wider
+  scope does not widen them.
 
 ## More information
 
