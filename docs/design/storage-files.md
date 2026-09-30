@@ -324,8 +324,8 @@ the media type of a Google Doc. Nothing checks the name Drive gave the document,
 where Drive put it, or what it holds, and whether Drive keeps an extension
 written in the name was not tried. The controls then treat the document as they
 treat any native one: it can be listed and moved to trash where Drive permits,
-and it is read and edited in Google Docs, not here. The scope stays `drive.file`,
-under which an application creates files and sees the ones it created.
+and it is read and edited in Google Docs, not here. The scope is the one the
+connection has, `drive` since ADR-0010; a conversion asks for nothing more.
 
 **An earlier release does not read the plan.** A stored record is decoded
 strictly, so a release that does not know the members of a conversion's plan

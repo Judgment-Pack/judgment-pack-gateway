@@ -87,6 +87,7 @@ func newDriveConversionFake(t *testing.T) (*driveConversionFake, *Broker) {
 		v.Connection = &credential{ID: "connection", Access: "private-token", Expires: time.Now().Add(time.Hour).Unix()}
 		return s.write("state.json", v)
 	})
+	consented(t, s)
 	f := &driveConversionFake{t: t, answer: `{"id":"made-document","mimeType":"` + googleDocumentMedia + `"}`, status: 200,
 		found: `{"id":"a-folder","name":"Reports","mimeType":"application/vnd.google-apps.folder","version":"1","capabilities":{"canAddChildren":true}}`}
 	f.server = httptest.NewTLSServer(http.HandlerFunc(f.serve))
@@ -232,7 +233,10 @@ func renewing(t *testing.T, b *Broker) {
 	t.Helper()
 	if err := b.store.locked(func(v *state) error {
 		v.Connection.Refresh, v.Connection.Expires = "refresh", time.Now().Unix()
-		return b.store.write("state.json", v)
+		if err := b.store.write("state.json", v); err != nil {
+			return err
+		}
+		return b.store.recordConsent(v.Connection, driveScope)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -767,7 +771,10 @@ func TestATokenIsLookedForInTheAnswerAsItIsWritten(t *testing.T) {
 		f.answer = `{"id":"made-document","mimeType":"` + googleDocumentMedia + `","version":12345}`
 		if err := b.store.locked(func(v *state) error {
 			v.Connection.Access = token
-			return b.store.write("state.json", v)
+			if err := b.store.write("state.json", v); err != nil {
+				return err
+			}
+			return b.store.recordConsent(v.Connection, driveScope)
 		}); err != nil {
 			t.Fatal(err)
 		}
