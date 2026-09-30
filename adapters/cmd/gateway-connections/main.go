@@ -95,7 +95,10 @@ func run() int {
 	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
-	scan.Buffer(make([]byte, 4096), connections.StorageLineBytes)
+	// The scanner's bound counts the line's ending, which is one byte or two,
+	// and one byte more, so that a line a byte past its method's bound is
+	// read and refused by name. A longer line ends the pipe.
+	scan.Buffer(make([]byte, 4096), connections.StorageLineBytes+3)
 	for scan.Scan() {
 		var r struct {
 			ID     string          `json:"id"`
@@ -108,7 +111,7 @@ func run() int {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
 		var result any
 		var err error
-		if r.Method != "files-prepare" && len(scan.Bytes()) > connections.ControlLineBytes {
+		if len(scan.Bytes()) > requestBound(r.Method) {
 			err = connections.ErrRequest
 		} else {
 			result, err = b.Handle(ctx, r.Method, r.Params)
@@ -123,6 +126,15 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// requestBound is the most a request's line may hold. Only a request that
+// carries a file's content has the larger bound.
+func requestBound(method string) int {
+	if connections.StorageUpload(method) {
+		return connections.StorageLineBytes
+	}
+	return connections.ControlLineBytes
 }
 
 // Failed operations must never include partial metadata or grants.
