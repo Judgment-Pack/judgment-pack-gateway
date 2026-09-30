@@ -208,3 +208,53 @@ func TestDisconnectRemovesTheRecord(t *testing.T) {
 		t.Error("the record of a connection that is gone is kept")
 	}
 }
+
+// A process that holds a snapshot of the connection from before another
+// process renewed or remade it is not refused for that: what is held now is
+// looked at, and used where its consent is recorded.
+func TestSnapshotOfAnEarlierConsentTakesWhatIsHeldNow(t *testing.T) {
+	b, _ := counted(t)
+	if r := finish(t, b, start(t, b, "connect"), nil); r.State != "complete" {
+		t.Fatal(r)
+	}
+	var stale credential
+	var client Client
+	var epoch string
+	b.store.locked(func(v *state) error { stale, client, epoch = *v.Connection, v.Client, v.Epoch; return nil })
+	// Another process renewed the token and was given another refresh token.
+	b.store.locked(func(v *state) error {
+		v.Connection.Access, v.Connection.Refresh = "renewed-elsewhere", "rotated-elsewhere"
+		v.Connection.Expires = time.Now().Add(time.Hour).Unix()
+		if e := b.store.write("state.json", v); e != nil {
+			return e
+		}
+		return b.store.recordConsent(v.Connection, driveScope)
+	})
+	if token, e := b.provider.access(context.Background(), b.store, client, stale, epoch); e != nil || token != "renewed-elsewhere" {
+		t.Errorf("under a stale snapshot: %q, %v", token, e)
+	}
+	// Another process connected again, and its consent was for less.
+	b.store.locked(func(v *state) error {
+		return b.store.recordConsent(v.Connection, "https://www.googleapis.com/auth/drive.file")
+	})
+	if _, e := b.provider.access(context.Background(), b.store, client, stale, epoch); e != ErrRevoked {
+		t.Errorf("under a stale snapshot of a connection whose consent is now for less: %v", e)
+	}
+	// Another process disconnected and connected another account, whose
+	// consent is recorded. The stale snapshot is not that connection.
+	b.store.locked(func(v *state) error {
+		v.Connection = &credential{ID: randomID(), Account: account{ID: "account-B"}, Access: "other-access", Refresh: "other-refresh", Expires: time.Now().Add(time.Hour).Unix()}
+		if e := b.store.write("state.json", v); e != nil {
+			return e
+		}
+		return b.store.recordConsent(v.Connection, driveScope)
+	})
+	if token, e := b.provider.access(context.Background(), b.store, client, stale, epoch); e != ErrCanceled || token != "" {
+		t.Errorf("under a stale snapshot, with another connection in place: %q, %v", token, e)
+	}
+	// Another process disconnected.
+	b.store.locked(func(v *state) error { v.Connection = nil; v.Epoch = randomID(); return b.store.write("state.json", v) })
+	if _, e := b.provider.access(context.Background(), b.store, client, stale, epoch); e != ErrCanceled {
+		t.Errorf("under a stale snapshot of a connection that is gone: %v", e)
+	}
+}

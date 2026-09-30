@@ -141,7 +141,25 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	// connection may do is held to the record of its consent, and not to
 	// what a renewal says. One without a record is asked for again.
 	if p.kind() == "google-drive" && s.consentedScope(c) != driveScope {
-		return "", ErrRevoked
+		// The record may be of a consent or a renewal newer than this
+		// snapshot, given by another process since. What is held now is
+		// looked at once more, under the lock.
+		err := s.locked(func(v *state) error {
+			if v.Disabled {
+				return ErrPolicy
+			}
+			if v.Epoch != epoch || v.Connection == nil || v.Connection.ID != c.ID {
+				return ErrCanceled
+			}
+			if s.consentedScope(*v.Connection) != driveScope {
+				return ErrRevoked
+			}
+			c = *v.Connection
+			return nil
+		})
+		if err != nil {
+			return "", err
+		}
 	}
 	if c.Expires > time.Now().Add(time.Minute).Unix() {
 		return c.Access, nil
