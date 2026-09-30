@@ -405,3 +405,73 @@ func TestCommitWithoutARecordedConsentLeavesThePlanPrepared(t *testing.T) {
 		t.Errorf("the plan is %+v, %v", status, e)
 	}
 }
+
+// A renewal that Google refuses, because another process's renewal was given
+// another refresh token in the meantime, takes what that process holds where
+// it is good and recorded. Refused for any other reason, it is refused.
+func TestRenewalRefusedAfterAnotherProcessRenewedTakesItsToken(t *testing.T) {
+	for name, example := range map[string]struct {
+		other    func(v *state) error
+		recorded bool
+		token    string
+		err      error
+	}{
+		"another renewed, with another refresh token": {func(v *state) error {
+			v.Connection.Access, v.Connection.Refresh, v.Connection.Expires = "of-the-other", "rotated", time.Now().Add(time.Hour).Unix()
+			return nil
+		}, true, "of-the-other", nil},
+		"another renewed, and did not record it": {func(v *state) error {
+			v.Connection.Access, v.Connection.Refresh, v.Connection.Expires = "of-the-other", "rotated", time.Now().Add(time.Hour).Unix()
+			return nil
+		}, false, "", ErrRevoked},
+		"another renewed, but its token has run out": {func(v *state) error {
+			v.Connection.Access, v.Connection.Refresh, v.Connection.Expires = "of-the-other", "rotated", 1
+			return nil
+		}, true, "", ErrRevoked},
+		"no one renewed: Google refused the token": {func(v *state) error { return nil }, true, "", ErrRevoked},
+		"another renewed, with the same refresh token": {func(v *state) error {
+			v.Connection.Access, v.Connection.Expires = "of-the-other", time.Now().Add(time.Hour).Unix()
+			return nil
+		}, true, "of-the-other", nil},
+		"another connected another account": {func(v *state) error {
+			v.Connection = &credential{ID: randomID(), Account: account{ID: "account-B"}, Access: "of-another-account", Refresh: "other", Expires: time.Now().Add(time.Hour).Unix()}
+			return nil
+		}, true, "", ErrRevoked},
+		"another disconnected": {func(v *state) error { v.Connection = nil; v.Epoch = randomID(); return nil }, false, "", ErrRevoked},
+	} {
+		b, _ := counted(t)
+		if r := finish(t, b, start(t, b, "connect"), nil); r.State != "complete" {
+			t.Fatal(r)
+		}
+		b.store.locked(func(v *state) error { v.Connection.Expires = 1; return b.store.write("state.json", v) })
+		inner := b.provider.client.Transport
+		b.provider.client = &http.Client{Transport: pausedTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Path == "/token" {
+				b.store.locked(func(v *state) error {
+					if e := example.other(v); e != nil {
+						return e
+					}
+					if e := b.store.write("state.json", v); e != nil {
+						return e
+					}
+					if example.recorded && v.Connection != nil {
+						return b.store.recordConsent(v.Connection, driveScope)
+					}
+					return nil
+				})
+				res := fakeResponse(r, []byte(`{"error":"invalid_grant"}`))
+				res.StatusCode = 400
+				return res, nil
+			}
+			return inner.RoundTrip(r)
+		})}
+		var c credential
+		var client Client
+		var epoch string
+		b.store.locked(func(v *state) error { c, client, epoch = *v.Connection, v.Client, v.Epoch; return nil })
+		token, e := b.provider.access(context.Background(), b.store, client, c, epoch)
+		if e != example.err || token != example.token {
+			t.Errorf("%s: %q, %v", name, token, e)
+		}
+	}
+}

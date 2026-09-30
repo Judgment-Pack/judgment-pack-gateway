@@ -32,9 +32,12 @@ What a consent was for is recorded when it is given, in `consent.json` beside
 the state: the connection, a digest of the refresh token, a digest of the
 access token, and the scope. It is written again at every renewal, under the
 lock the state is written under. The state itself is not changed, so that an
-earlier release reads it. Every request that needs Drive is held to that
-record, and not to what a renewal of the token says, which need not name a
-scope. A connection without a record of a consent for `drive` for the tokens
+earlier release reads it. Every request that needs Drive under the tokens the
+custody holds is held to that record, and not to what a renewal of the token
+says, which need not name a scope. The one request made under a token the
+custody does not yet hold is the consent's own: the callback asks Drive who
+the account is, under the token the consent just gave, before anything is
+written. A connection without a record of a consent for `drive` for the tokens
 it holds is answered `reconnect-required` from its first such request, and
 Drive is asked nothing under its token. That is every connection made under
 the scope `drive.file` that earlier releases asked for; a connection whose
@@ -46,7 +49,11 @@ keeps the earlier one only where that one is recorded as of `drive`, since a
 refresh token renews to tokens of the consent that gave it; otherwise the
 consent is refused with `reconnect-required` and the person consents again.
 A process that holds a snapshot of the connection from before another process
-renewed or remade it is not refused for that: it looks again at what is held.
+renewed or remade it is not refused for that: it looks again at what is held,
+before a renewal where the record is not of its snapshot, and after a renewal
+that Google refused where another process's renewal was given a new refresh
+token in the meantime. A renewal that Google refuses for another reason is
+answered `reconnect-required`, as it was.
 
 An earlier release, run against this custody after a rollback, ignores the
 record. It uses a token of the whole Drive for as long as the token lasts and

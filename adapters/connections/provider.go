@@ -169,7 +169,24 @@ func (p provider) access(ctx context.Context, s *Store, client Client, c credent
 	}
 	t, err := p.exchange(ctx, client, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {c.Refresh}})
 	if err != nil {
-		return "", ErrRevoked
+		// The refresh token may have been spent by another process's
+		// renewal that was given another in its place. What that process
+		// holds now is used where it is good, and recorded for Drive.
+		var access string
+		if s.locked(func(v *state) error {
+			if v.Disabled || v.Epoch != epoch || v.Client != client || v.Connection == nil || v.Connection.ID != c.ID {
+				return ErrCanceled
+			}
+			current := v.Connection
+			if current.Expires <= time.Now().Add(time.Minute).Unix() || p.kind() == "google-drive" && s.consentedScope(*current) != driveScope {
+				return ErrRevoked
+			}
+			access = current.Access
+			return nil
+		}) != nil {
+			return "", ErrRevoked
+		}
+		return access, nil
 	}
 	var access string
 	err = s.locked(func(v *state) error {
