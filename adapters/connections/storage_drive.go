@@ -63,7 +63,8 @@ func (b *Broker) driveStorageList(ctx context.Context, q StorageQuery, token str
 	}
 	values := url.Values{"q": {query}, "spaces": {"drive"}, "pageSize": {"24"}, "fields": {"nextPageToken,incompleteSearch,files(" + driveStorageFields + ")"}, "supportsAllDrives": {"true"}, "includeItemsFromAllDrives": {"true"}}
 	// Drive refuses an order asked of a search by words, and gives what it
-	// finds by relevance. A listing without words is by name, folders first.
+	// finds by relevance. A listing without words asks for Drive's order
+	// "folder,name".
 	if q.Query == "" {
 		values.Set("orderBy", "folder,name")
 	}
