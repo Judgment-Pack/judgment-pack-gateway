@@ -545,3 +545,81 @@ test("a session named beyond Latin-1 is sealed by its seal", () => {
   put(store, name, "0.json", JSON.stringify(signed({ ...receiptV2(), sessionId: name })));
   assert.deepEqual(multiset(verdict(store, [sealLine(name, 1)]).findings), multiset([{ sessionId: name, callIndex: 0, status: "ok" }]));
 });
+
+// §4 step 8: a record the action names, found, that is a runtime evaluation
+// record, is compared with what the action claims of it, each claim its own
+// finding; any other record is not compared, and the verdict says so of the
+// action beside its findings, failing nothing.
+test("an action is held to the runtime evaluation record it names", () => {
+  const head = signed(acquisitionV3());
+  const cite = { sessionId: "s1", callIndex: 0, signature: head["signature"] };
+  const evaluation = (edits: Record<string, unknown> = {}) =>
+    JSON.stringify({
+      recordVersion: "1",
+      run: "r",
+      kind: "evaluation",
+      pack: { id: "p", version: "1", specVersion: "1.0", digest: "sha256:" + "3".repeat(64) },
+      inputs: { facts: { amount: 12.5 }, evidence: null, evidenceSupplied: false },
+      cites: [cite, cite],
+      disposition: { handoff: { state: "none" }, kind: "outcome", outcomeId: "approve", reasons: [] },
+      ...edits,
+    });
+  const notCompared = { sessionId: "s1", callIndex: 1, observation: "decision-record-not-compared" };
+  for (const [name, record, found, observed] of [
+    ["the record bears it out, its citation given twice", evaluation(), [], false],
+    ["another pack", evaluation({ pack: { digest: "sha256:" + "4".repeat(64) } }), ["decision-pack-mismatch"], false],
+    ["a record that cites nothing", evaluation({ cites: undefined }), ["decision-cites-mismatch"], false],
+    ["a record citing another receipt", evaluation({ cites: [{ ...cite, callIndex: 1 }] }), ["decision-cites-mismatch"], false],
+    ["cites not of the shape", evaluation({ cites: [{ ...cite, callIndex: "0" }] }), ["decision-cites-mismatch"], false],
+    ["a citation with a fraction beside its three members", evaluation({ cites: [{ ...cite, extra: { fraction: 0.5 } }] }), ["decision-cites-mismatch"], false],
+    ["both", evaluation({ pack: { digest: "sha256:" + "4".repeat(64) }, cites: [] }), ["decision-pack-mismatch", "decision-cites-mismatch"], false],
+    ["a graph composite", evaluation({ kind: "graph-composite", pack: undefined, cites: [] }), [], true],
+    ["another record version", evaluation({ recordVersion: "2", cites: [] }), [], true],
+    ["no pack digest", evaluation({ pack: { id: "p" }, cites: [] }), [], true],
+    ["a name twice", evaluation({ cites: [] }).replace('"amount":12.5', '"amount":12.5,"amount":13'), [], true],
+    ["a surrogate alone", evaluation({ cites: [] }).replace('"amount":12.5', '"note":"\\udc00","amount":12.5'), [], true],
+    ["an opaque record", "not a record", [], true],
+  ] as const) {
+    const { store, seals } = recordStore(record);
+    const v = verdict(store, seals, withRecords({ "r.json": record })) as { ok: boolean; findings: Record<string, unknown>[]; observations?: Record<string, unknown>[] };
+    const statuses = v.findings.filter((f) => f["callIndex"] === 1 && f["status"] !== "ok").map((f) => f["status"]);
+    assert.deepEqual(statuses, [...found], name);
+    assert.deepEqual(v.observations, observed ? [notCompared] : undefined, name);
+    assert.equal(v.ok, found.length === 0, name);
+  }
+  // A .jsonl file whole is a candidate and no record: named by the file's
+  // digest, the record it holds is not read.
+  const line = evaluation({ cites: [] });
+  const whole = recordStore(line + "\n");
+  const v = verdict(whole.store, whole.seals, withRecords({ "e.jsonl": line + "\n" })) as { observations?: Record<string, unknown>[] };
+  assert.deepEqual(v.observations, [notCompared], "a .jsonl file whole");
+  const file = recordStore(line + "\n");
+  assert.deepEqual(multiset(verdict(file.store, file.seals, withRecords({ "r.json": line + "\n" })).findings), multiset([...bothPass.map((f) => JSON.parse(f)), { sessionId: "s1", callIndex: 1, status: "decision-cites-mismatch" }]), "a file whole");
+  // A wide array in the facts is read like any other: a record of 200,000
+  // values is within every bound, and bears the action out.
+  const wide = evaluation({ inputs: { facts: { amount: 12.5, zeros: new Array(200000).fill(0) }, evidence: null, evidenceSupplied: false } });
+  const w = recordStore(wide);
+  const verdictWide = verdict(w.store, w.seals, withRecords({ "r.json": wide })) as { ok: boolean; observations?: unknown };
+  assert.equal(verdictWide.ok, true, "a wide array in the facts");
+  assert.equal(verdictWide.observations, undefined, "a wide array in the facts");
+});
+
+// action.policy is optional; present, it is a digest (§1.2a).
+test("an action's policy, when present, is a digest", () => {
+  const head = signed(acquisitionV3());
+  const cite = { sessionId: "s1", callIndex: 0, signature: head["signature"] };
+  for (const [policy, status] of [
+    ["sha256:" + "5".repeat(64), "ok"],
+    ["sha256:" + "A".repeat(64), "malformed"],
+    [null, "malformed"],
+    [7, "malformed"],
+  ] as const) {
+    const store = newStore();
+    const action = actionV3(1, head["signature"] as string, [cite], "sha256:" + "6".repeat(64));
+    (action["action"] as Record<string, unknown>)["policy"] = policy;
+    put(store, "s1", "0.json", JSON.stringify(head));
+    put(store, "s1", "1.json", JSON.stringify(signed(action)));
+    const findings = verdict(store, [sealLine("s1", 2)]).findings;
+    assert.ok(findings.some((f) => (f["callIndex"] === 1 || f["file"] === "1.json") && f["status"] === status), String(policy));
+  }
+});

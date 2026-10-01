@@ -397,7 +397,8 @@ snapshot. Removing unpinned snapshots is a separate operation that this note doe
 | `"3"` | accepted | optional, per platform whose binding has a live MCP operation |
 
 `connect` writes version `"3"` exactly when the entry it writes carries a pin, and otherwise
-leaves the version as it found it. `--replace` that captures nothing removes the member. A
+leaves the version as it found it; a file at a later version keeps its version
+([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md)). `--replace` that captures nothing removes the member. A
 capture of no tool pins nothing. `connect --no-descriptors` asks the live check to capture
 nothing and writes no pin: the choice for a deployment whose descriptors are confidential beyond
 what screening finds. The changes land in `engineVersions`, `platformMembers`, the parser and

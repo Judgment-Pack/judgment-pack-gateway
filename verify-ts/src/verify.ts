@@ -1,7 +1,8 @@
 // Registry-anchored verification of a store (SPEC.md §1.4, §4): each
 // receipt by the ladder, each session's sequence and chain, each session
-// against its seal, a version 3 action's citations and decision record,
-// and a decision record's own citations.
+// against its seal, a version 3 action's citations and decision record, a
+// decision record's own citations, and what an action claims of the
+// runtime evaluation record it names.
 
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
@@ -48,8 +49,9 @@ export type Status =
 export type Finding = ReadonlyArray<readonly [string, string | number | bigint | null]>;
 
 // A verdict's findings are made again each time they are read, from what
-// verification kept, so none is held for the verdict to be written.
-export type Verdict = { readonly ok: boolean; readonly findings: Iterable<Finding> };
+// verification kept, so none is held for the verdict to be written; so are
+// its observations (§4 step 8), which are no part of ok.
+export type Verdict = { readonly ok: boolean; readonly findings: Iterable<Finding>; readonly observations: Iterable<Finding> };
 
 // A receipt file as the ladder judged it, kept as no more than the rest of
 // verification reads of it, each kept string its own and none long, so no
@@ -63,9 +65,23 @@ type Judged = {
   readonly chain?: { readonly version: string; readonly signature: string; readonly prev: Prev };
   // For a version 3 action that passed: the record it names, and its
   // bytes' SHA-256, by which its citations are read again once the
-  // enumeration is whole.
-  readonly action?: { readonly recordDigest: string; readonly bytes: string };
+  // enumeration is whole; and what §4 step 8 compares with the record, the
+  // pack it names and its citations as a set (citesKey).
+  readonly action?: { readonly recordDigest: string; readonly bytes: string; readonly packDigest: string; readonly citesKey: string };
 };
+
+// Claims is what §4 step 8 reads of a record an action names, when it is a
+// runtime evaluation record: the pack digest it states, and its citations
+// as a set -- null when its cites is not of the shape, which matches no set.
+type Claims = { readonly packDigest: string; readonly citesKey: string | null };
+
+// citesKey names a set of citations: the SHA-256 of each distinct one's
+// three members, a line each, the lines sorted. No member holds a line
+// break, so two sets have one key only when they are one set.
+function citesKey(cites: Citation[]): string {
+  const lines = [...new Set(cites.map((c) => `${c.sessionId}\n${c.callIndex}\n${c.signature}`))].sort();
+  return sha256Hex(Buffer.from(lines.join("\n"), "utf8"));
+}
 
 // Prev is a prevSignature as the chain walk compares it: null, a string
 // short enough to be a signature, or neither.
@@ -99,10 +115,10 @@ export const sessionCost = 4 * entryCost;
 // receiptCost is what a receipt file is charged beside its name. What is
 // kept of a receipt but its name is bounded: a status and an index; for
 // one that passed, its version, its signature and a previous one of at
-// most 128 characters; for an action, the record it names and its bytes'
-// digest; in the index, its signature when of a citation's form -- 520
-// characters at most, beside a few objects and their entries in maps and
-// sets. A receipt file is charged all of it when it is met, and its name
+// most 128 characters; for an action, the record it names, its bytes'
+// digest, the pack it names and the key of its citations; in the index,
+// its signature when of a citation's form -- 655 characters at most,
+// beside a few objects and their entries in maps and sets. A receipt file is charged all of it when it is met, and its name
 // twice, in its session's list and as its stem, so a store is refused for
 // its size before any receipt is read.
 const receiptCost = 8 * entryCost;
@@ -297,8 +313,14 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
         : { kind: "other" };
   let action: Judged["action"];
   if (version === "3" && str(member(receipt, "kind")) === "action") {
-    const decision = member(member(receipt, "action") as ObjectValue, "decision") as ObjectValue;
-    action = { recordDigest: own(str(member(decision, "recordDigest"))!), bytes: bytesDigest };
+    const act = member(receipt, "action") as ObjectValue;
+    const decision = member(act, "decision") as ObjectValue;
+    action = {
+      recordDigest: own(str(member(decision, "recordDigest"))!),
+      bytes: bytesDigest,
+      packDigest: own(str(member(decision, "packDigest"))!),
+      citesKey: citesKey(citations(member(act, "cites")!)!),
+    };
   }
   return { file, status: "ok", callIndex, chain: { version: own(version), signature: own(signature), prev }, ...(action && { action }) };
 }
@@ -451,6 +473,10 @@ export function verifyStore(
     }
   }
   const recordFindings = new RecordFindings(budget);
+  // §4 step 8's reading of each record named and found: a record, read,
+  // that is a runtime evaluation record has its claims kept; a record found
+  // and not kept here is not compared.
+  const claims = new Map<string, Claims>();
   eachDecisionRecord(records, budget, (candidate) => {
     testHooks.sample?.("candidate");
     const digest = "sha256:" + candidate.digest;
@@ -460,14 +486,29 @@ export function verifyStore(
     if (candidate.bytes === null) {
       // Past the bound: a candidate that does not open an object is not
       // one JSON object, and one that does cannot be read for its cites.
+      // A .jsonl file whole comes here too, and is read for nothing.
       if (candidate.opensObject) {
         throw new NoVerdict(`a decision record of more than ${documentBound} bytes cannot be read for its citations`);
       }
       return;
     }
-    const status = recordCitations(candidate.bytes, resolves);
+    const bytes = candidate.bytes;
+    const record = parseOr(bytes, () => {
+      if (opensObject(bytes)) {
+        throw new NoVerdict(`a decision record of more than ${maxValues} values cannot be read for its citations`);
+      }
+      return null;
+    });
+    const status = recordCitations(record, resolves);
     if (status !== null) {
       recordFindings.add(candidate.digest, status);
+    }
+    if (named.has(digest) && !claims.has(digest)) {
+      const read = recordClaims(record);
+      if (read !== null) {
+        budget.charge(entryCost + size(digest) + size(read.packDigest) + size(read.citesKey ?? ""), "the claims of the decision records named");
+        claims.set(digest, read);
+      }
     }
   });
   testHooks.sample?.("decision records");
@@ -549,6 +590,27 @@ export function verifyStore(
             ["callIndex", j.callIndex!],
             ["status", "decision-record-mismatch"],
           ];
+          continue;
+        }
+        // §4 step 8: the record found, when it is a runtime evaluation
+        // record, bears out the pack and the citations the action claims.
+        const c = claims.get(j.action.recordDigest);
+        if (c === undefined) {
+          continue;
+        }
+        if (c.packDigest !== j.action.packDigest) {
+          yield [
+            ["sessionId", session],
+            ["callIndex", j.callIndex!],
+            ["status", "decision-pack-mismatch"],
+          ];
+        }
+        if (c.citesKey !== j.action.citesKey) {
+          yield [
+            ["sessionId", session],
+            ["callIndex", j.callIndex!],
+            ["status", "decision-cites-mismatch"],
+          ];
         }
       }
     }
@@ -563,12 +625,78 @@ export function verifyStore(
     }
     yield* recordFindings.findings();
   }
-  // The verdict is ok when every finding's status is.
+  // §4 step 8's observation: each action whose record was found and is
+  // not a runtime evaluation record, which is not compared.
+  function* observations(): Generator<Finding> {
+    for (const [session, judged] of sessions) {
+      for (const j of judged) {
+        if (j.action !== undefined && named.get(j.action.recordDigest) === true && !claims.has(j.action.recordDigest)) {
+          yield [
+            ["sessionId", session],
+            ["callIndex", j.callIndex!],
+            ["observation", "decision-record-not-compared"],
+          ];
+        }
+      }
+    }
+  }
+  // The verdict is ok when every finding's status is; an observation is no
+  // part of it.
   let ok = true;
   for (const f of findings()) {
     ok &&= f.some(([name, value]) => name === "status" && value === "ok");
   }
-  return { ok, findings: { [Symbol.iterator]: findings } };
+  return { ok, findings: { [Symbol.iterator]: findings }, observations: { [Symbol.iterator]: observations } };
+}
+
+// recordClaims is §4 step 8's reading of a record: its claims when it is a
+// runtime evaluation record -- one JSON object, no name given twice at any
+// depth and no surrogate alone in any string, whose recordVersion is "1",
+// whose kind is "evaluation" and whose pack's digest is a digest -- and
+// null when it is not one. A number of any form is admitted, as the
+// runtime writes its facts.
+function recordClaims(record: Value | null): Claims | null {
+  if (record === null || record.type !== "object" || hasDuplicate(record) || hasLoneSurrogate(record)) {
+    return null;
+  }
+  const pack = member(record, "pack");
+  const packDigest = pack?.type === "object" ? str(member(pack, "digest")) : undefined;
+  if (str(member(record, "recordVersion")) !== "1" || str(member(record, "kind")) !== "evaluation" || packDigest === undefined || !/^sha256:[0-9a-f]{64}$/.test(packDigest)) {
+    return null;
+  }
+  const cites = member(record, "cites");
+  let key: string | null = citesKey([]);
+  if (cites !== undefined) {
+    const cited = canonical(cites) !== null ? citations(cites) : null;
+    key = cited === null ? null : citesKey(cited);
+  }
+  return { packDigest: own(packDigest), citesKey: key };
+}
+
+// hasLoneSurrogate is whether any string in the value, a member's name
+// included, holds a surrogate that is not one of a pair.
+function hasLoneSurrogate(v: Value): boolean {
+  const work: Value[] = [v];
+  for (let w = work.pop(); w !== undefined; w = work.pop()) {
+    if (w.type === "string" && !w.value.isWellFormed()) {
+      return true;
+    }
+    if (w.type === "array") {
+      // one at a time: an array's items spread as arguments would pass the
+      // engine's limit on arguments for a wide array
+      for (const item of w.items) {
+        work.push(item);
+      }
+    } else if (w.type === "object") {
+      for (const m of w.members) {
+        if (!m.name.isWellFormed()) {
+          return true;
+        }
+        work.push(m.value);
+      }
+    }
+  }
+  return false;
 }
 
 // RecordFindings is §4 step 7's findings, kept as 33 bytes each -- a
@@ -610,13 +738,7 @@ class RecordFindings {
 // null: one that is one JSON object with a top-level cites member is a
 // record that cites, its cites held to the canonical domain and to the
 // shape of action.cites, and each entry resolved.
-function recordCitations(bytes: Uint8Array, resolves: (c: Citation) => boolean): "record-citation-malformed" | "record-citation-unresolved" | null {
-  const record = parseOr(bytes, () => {
-    if (opensObject(bytes)) {
-      throw new NoVerdict(`a decision record of more than ${maxValues} values cannot be read for its citations`);
-    }
-    return null;
-  });
+function recordCitations(record: Value | null, resolves: (c: Citation) => boolean): "record-citation-malformed" | "record-citation-unresolved" | null {
   if (record === null || record.type !== "object") {
     return null;
   }
@@ -634,16 +756,22 @@ function recordCitations(bytes: Uint8Array, resolves: (c: Citation) => boolean):
 
 // writeVerdict writes the verdict as the process contract does, a finding
 // at a time: no more of it is handed to write at once than one finding.
+// Observations follow the findings, when there are any.
 export function writeVerdict(v: Verdict, write: (text: string) => void): void {
+  const entry = (f: Finding) =>
+    "{" + f.map(([name, value]) => JSON.stringify(name) + ":" + (typeof value === "bigint" ? value.toString() : JSON.stringify(value))).join(",") + "}";
   write(`{"ok":${v.ok},"findings":[`);
   let first = true;
   for (const f of v.findings) {
-    write(
-      (first ? "{" : ",{") +
-        f.map(([name, value]) => JSON.stringify(name) + ":" + (typeof value === "bigint" ? value.toString() : JSON.stringify(value))).join(",") +
-        "}",
-    );
+    write((first ? "" : ",") + entry(f));
     first = false;
+  }
+  // The findings' close is written with the first observation, so a
+  // verdict with none is written as it always was.
+  let observed = false;
+  for (const o of v.observations) {
+    write((observed ? "," : `],"observations":[`) + entry(o));
+    observed = true;
   }
   write("]}\n");
 }

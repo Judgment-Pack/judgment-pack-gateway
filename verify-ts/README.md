@@ -2,8 +2,9 @@
 
 A verifier of this gateway's receipts, in TypeScript: the canonical form
 (`SPEC.md` §1.1) and registry-anchored verification (§1.4, §4, §4.1) of receipt
-versions 2 and 3, a version 3 action's citations and decision record, and a
-decision record's own citations included. It mints nothing and serves nothing;
+versions 2 and 3, a version 3 action's citations and decision record, a
+decision record's own citations, and what an action claims of the runtime
+evaluation record it names included. It mints nothing and serves nothing;
 the HTTP surface of §6 is not part of it.
 
 It answers to the frozen corpus through the process contract of
@@ -18,7 +19,8 @@ cd go && go build -o gateway . && ./gateway conform --impl ../verify-ts/impl
 exiting 1 for a document outside the domain and 2 for one past what it reads;
 `impl verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
 reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
-exiting 0 whenever it reached a verdict and 2 when it could not.
+with `"observations": […]` after the findings when §4 step 8 has any, exiting 0
+whenever it reached a verdict and 2 when it could not.
 
 ## How it was written, and what that makes it
 
@@ -71,13 +73,15 @@ reference.
   which is not a refusal of the document as outside the domain.
 - **What is kept.** One document is held at a time. Of each receipt only its
   file name, status and index are kept; of one that passed, also what the chain
-  walk compares; of an action that passed, the record it names and its bytes'
-  digest, its citations being read again once every receipt is indexed — and
-  its bytes then must be what they were, or there is no verdict. Beside those,
-  the index citations are resolved against: each receipt file's stem, and its
-  signature when it has the form a citation can match. Of the decision records,
-  only which of the named ones were found, and the findings for those that fail,
-  one each, as reported.
+  walk compares; of an action that passed, the record it names, its bytes'
+  digest, the pack it names and a digest of its citations as a set, its
+  citations being read again once every receipt is indexed — and its bytes
+  then must be what they were, or there is no verdict. Beside those, the index
+  citations are resolved against: each receipt file's stem, and its signature
+  when it has the form a citation can match. Of the decision records, only
+  which of the named ones were found, of each found that is a runtime
+  evaluation record the pack digest it states and a digest of its citations as
+  a set, and the findings for those that fail, one each, as reported.
 - **256 MiB kept.** Everything verification keeps is charged, as it is kept,
   to a budget of 256 MiB, strings at two bytes a character: each session, for
   what is kept of it empty or not — 1 KiB, and its name; each receipt file,

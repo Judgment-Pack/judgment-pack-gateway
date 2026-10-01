@@ -22,107 +22,8 @@ import (
 // user that can switch; what it proves is that the derivation is right end
 // to end, the switching being proved where it is implemented.
 func TestEngineConfigDrivesTheMCPAdapterEndToEnd(t *testing.T) {
-	goTool, err := exec.LookPath("go")
-	if err != nil {
-		t.Skip("no go toolchain on PATH")
-	}
 	dir := t.TempDir()
-	exe := ""
-	if runtime.GOOS == "windows" {
-		exe = ".exe"
-	}
-	bin := filepath.Join(dir, "bin")
-	if err := os.MkdirAll(bin, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	build := exec.Command(goTool, "build", "-buildvcs=false", "-o", filepath.Join(bin, "adapter-mcp"+exe), "./cmd/adapter-mcp")
-	build.Dir = filepath.Join("..", "adapters")
-	build.Env = append(os.Environ(), "GOWORK=off")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building the adapter: %v\n%s", err, out)
-	}
-	// The stand-in runtime: `run ... IMAGE` speaks JSON-RPC as the server
-	// the image would be, answering only when the env file the adapter
-	// mounted carried the credential; kill and inspect as for a container
-	// that is gone.
-	fakeDir := filepath.Join(dir, "fake")
-	if err := os.MkdirAll(fakeDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	fakeSource := `package main
-
-import (
-	"bufio"
-	"encoding/json"
-	"os"
-	"strings"
-)
-
-func main() {
-	if len(os.Args) < 2 {
-		os.Exit(2)
-	}
-	switch os.Args[1] {
-	case "kill":
-		os.Exit(0)
-	case "inspect":
-		os.Stderr.WriteString("Error: No such object: " + os.Args[2] + "\n")
-		os.Exit(1)
-	}
-	envFile := ""
-	for i, a := range os.Args {
-		if a == "--env-file" && i+1 < len(os.Args) {
-			data, _ := os.ReadFile(os.Args[i+1])
-			envFile = string(data)
-		}
-	}
-	if !strings.Contains(envFile, "SERVICE_TOKEN=secret-token") {
-		os.Stderr.WriteString("no token in the env file\n")
-		os.Exit(1)
-	}
-	in := bufio.NewScanner(os.Stdin)
-	for in.Scan() {
-		var m struct {
-			ID     json.RawMessage ` + "`json:\"id\"`" + `
-			Method string          ` + "`json:\"method\"`" + `
-			Params json.RawMessage ` + "`json:\"params\"`" + `
-		}
-		if json.Unmarshal(in.Bytes(), &m) != nil || len(m.ID) == 0 {
-			continue
-		}
-		var result any
-		switch m.Method {
-		case "initialize":
-			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "standin", "version": "0.1"}}
-		case "tools/list":
-			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "execute", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "drop", "inputSchema": map[string]any{"type": "object"}}}}
-		case "tools/call":
-			if strings.Contains(string(m.Params), ` + "`" + `"name":"drop"` + "`" + `) {
-				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refused: drop is not permitted for this principal"}}, "isError": true}
-				break
-			}
-			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "1 row"}}, "structuredContent": map[string]any{"rows": []any{map[string]any{"id": 101}}, "params": json.RawMessage(m.Params)}}
-		default:
-			continue
-		}
-		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
-		os.Stdout.Write(append(b, '\n'))
-	}
-}
-`
-	if err := os.WriteFile(filepath.Join(fakeDir, "main.go"), []byte(fakeSource), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fakeDir, "go.mod"), []byte("module fake\n\ngo 1.26\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	fake := filepath.Join(dir, "fake-runtime"+exe)
-	build = exec.Command(goTool, "build", "-buildvcs=false", "-o", fake, ".")
-	build.Dir = fakeDir
-	build.Env = append(os.Environ(), "GOWORK=off")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building the stand-in runtime: %v\n%s", err, out)
-	}
+	bin, fake := buildMCPStandIns(t, dir)
 	credentials := filepath.Join(dir, "warehouse.json")
 	if err := os.WriteFile(credentials, []byte(`{"SERVICE_TOKEN":"secret-token"}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -267,4 +168,232 @@ func main() {
 	if err != nil || !report.OK {
 		t.Fatalf("the store, the registry and the records must verify together: %v %v", err, report)
 	}
+}
+
+// The same join with the write held to its decision (ADR-0011): a platform
+// whose configuration holds its write tool to a decision policy; an
+// acquisition; a record in the runtime's own form, written where the engine
+// looks, citing it; an action whose claims the record does not bear out,
+// refused with nothing run; the action that meets every check, performed by
+// adapter-mcp on the write binding and receipted with the policy's digest;
+// and the store, the registry and the records verifying together, the
+// record compared and matching.
+func TestEngineHoldsAWriteToItsDecisionEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	bin, fake := buildMCPStandIns(t, dir)
+	credentials := filepath.Join(dir, "warehouse.json")
+	if err := os.WriteFile(credentials, []byte(`{"SERVICE_TOKEN":"secret-token"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
+	escape := func(p string) string { return strings.ReplaceAll(p, `\`, `\\`) }
+	policy := `{"outcomes":["approve"],"packs":["` + packA + `"],"reviewed":true,"bind":[{"argument":"/ticket","fact":"/ticket/id"},{"argument":"/revision","fact":"/ticket/revision"}]}`
+	text := `{"engineVersion":"4","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
+		`"registry":"` + escape(filepath.Join(dir, "registry.jsonl")) + `","decisionRecords":"` + escape(filepath.Join(dir, "decisions")) + `",` +
+		`"listen":"127.0.0.1:0","catalog":"` + escape(catalog) + `","runtime":"` + escape(fake) + `","adapters":"` + escape(bin) + `",` +
+		`"platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + escape(credentials) + `"},"live":{"file":"` + escape(credentials) + `"},"write":{"file":"` + escape(credentials) + `"}},` +
+		`"user":"engine-warehouse","endpoint":"warehouse.internal:5432","write":true,"decisionPolicy":{"execute":` + policy + `}}}}`
+	path := filepath.Join(dir, "engine.json")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, bindings, err := loadEngineConfig(path, stubAccounts(map[string]int{"engine-warehouse": 1001}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources := deriveSources(cfg, bindings)
+	for name, spec := range sources {
+		spec.user = ""
+		sources[name] = spec
+	}
+	service, err := buildService(cfg.store, testSeed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	post := func(t *testing.T, server *httptest.Server, path, body string) (int, map[string]any) {
+		t.Helper()
+		return authed(t, server, path, body, token)
+	}
+	server := httptest.NewServer(service.handler())
+	defer server.Close()
+	code, first := post(t, server, "/acquire", `{"session":"held-1","source":"warehouse/live","arguments":{"tool":"query","arguments":{"sql":"select * from tickets where id = 'T-1'"}}}`)
+	if code != http.StatusOK {
+		t.Fatalf("acquire failed: %d %v", code, first)
+	}
+	signature := first["receipt"].(map[string]any)["signature"].(string)
+	// A line in the form the runtime's audit trail writes one (runtime
+	// internal/audit): the pack's digest, the facts as evaluated -- a
+	// fraction among them -- the law it was judged under, the receipt it
+	// relied on, and the disposition in its canonical form.
+	line := `{"recordVersion":"1","run":"9a8b7c6d5e4f3a2b","at":"2026-09-30T10:00:00.5Z","kind":"evaluation","surface":"evaluate","tool":{"name":"jpack","version":"0.23.1"},` +
+		`"evaluatorSpecVersion":"1.0","pack":{"id":"ticket-approval","version":"2.0.0","specVersion":"1.0","digest":"` + packA + `"},` +
+		`"inputs":{"facts":{"ticket":{"id":"T-1","revision":7,"amount":1250.75}},"evidence":null,"evidenceSupplied":false},"reviewed":true,` +
+		`"reviewedSet":{"lockDigest":"sha256:` + strings.Repeat("c3", 32) + `","lockVersion":"1","configDigest":"sha256:` + strings.Repeat("d4", 32) + `"},` +
+		`"cites":[{"sessionId":"held-1","callIndex":0,"signature":"` + signature + `"}],` +
+		`"disposition":{"handoff":{"state":"none"},"kind":"outcome","outcomeId":"approve","reasons":[]}}`
+	if err := os.MkdirAll(cfg.decisionRecords, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.decisionRecords, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	act := func(revision string) string {
+		return `{"session":"held-1","platform":"warehouse","tool":"execute","arguments":{"sql":"update tickets set status = 'approved' where id = 'T-1'","ticket":"T-1","revision":` + revision + `},` +
+			`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"` + packA + `"},` +
+			`"cites":[{"sessionId":"held-1","callIndex":0,"signature":"` + signature + `"}]}`
+	}
+	// Decided on revision 7, written to revision 8: refused before the
+	// executor is started, and nothing is minted.
+	started := service.started.Load()
+	if code, body := post(t, server, "/act", act("8")); code != http.StatusBadRequest || body["refusedAt"] != "policy-bind" {
+		t.Fatalf("a write to another revision than the one decided: %d %v", code, body)
+	}
+	if service.started.Load() != started {
+		t.Fatal("an executor ran for a write its decision does not hold")
+	}
+	code, acted := post(t, server, "/act", act("7"))
+	if code != http.StatusOK {
+		t.Fatalf("act failed: %d %v", code, acted)
+	}
+	action := acted["receipt"].(map[string]any)
+	inner := action["action"].(map[string]any)
+	if action["kind"] != "action" || action["callIndex"] != float64(1) || inner["tool"].(map[string]any)["name"] != "execute" ||
+		inner["policy"] != sources["warehouse/write"].policies["execute"].digest || inner["policy"] != mustPolicy(t, policy).digest {
+		t.Fatalf("the action receipt names the policy the write was held to: %v", action)
+	}
+	echoed := acted["result"].(map[string]any)["structuredContent"].(map[string]any)["params"].(map[string]any)
+	if echoed["name"] != "execute" || echoed["arguments"].(map[string]any)["revision"] != float64(7) {
+		t.Fatalf("the target got the write as sent: %v", echoed)
+	}
+	if code, body := post(t, server, "/seal", `{"session":"held-1"}`); code != http.StatusOK {
+		t.Fatalf("seal failed: %d %v", code, body)
+	}
+	// The record is one the verifier understands, so it is compared: the
+	// action's pack and citations are the record's, and nothing is said of
+	// it but ok.
+	code, verified := post(t, server, "/verify", ``)
+	if code != http.StatusOK || verified["ok"] != true || verified["observations"] != nil {
+		t.Fatalf("/verify with the records: %d %v", code, verified)
+	}
+	for _, f := range verified["findings"].([]any) {
+		if f.(map[string]any)["status"] != "ok" {
+			t.Fatalf("every receipt ok over /verify: %v", verified["findings"])
+		}
+	}
+	report, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", cfg.decisionRecords, service.publicKey)
+	if err != nil || !report.OK || len(report.Observations) != 0 {
+		t.Fatalf("the store, the registry and the records must verify together: %v %+v", err, report)
+	}
+}
+
+// buildMCPStandIns builds the real adapter-mcp binary into dir/bin and the
+// stand-in container runtime below, and returns the adapters' directory and
+// the runtime's path; a test with no go toolchain to build them is skipped.
+func buildMCPStandIns(t *testing.T, dir string) (string, string) {
+	t.Helper()
+	goTool, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("no go toolchain on PATH")
+	}
+	exe := ""
+	if runtime.GOOS == "windows" {
+		exe = ".exe"
+	}
+	bin := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command(goTool, "build", "-buildvcs=false", "-o", filepath.Join(bin, "adapter-mcp"+exe), "./cmd/adapter-mcp")
+	build.Dir = filepath.Join("..", "adapters")
+	build.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building the adapter: %v\n%s", err, out)
+	}
+	// The stand-in runtime: `run ... IMAGE` speaks JSON-RPC as the server
+	// the image would be, answering only when the env file the adapter
+	// mounted carried the credential; kill and inspect as for a container
+	// that is gone.
+	fakeDir := filepath.Join(dir, "fake")
+	if err := os.MkdirAll(fakeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	fakeSource := `package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"os"
+	"strings"
+)
+
+func main() {
+	if len(os.Args) < 2 {
+		os.Exit(2)
+	}
+	switch os.Args[1] {
+	case "kill":
+		os.Exit(0)
+	case "inspect":
+		os.Stderr.WriteString("Error: No such object: " + os.Args[2] + "\n")
+		os.Exit(1)
+	}
+	envFile := ""
+	for i, a := range os.Args {
+		if a == "--env-file" && i+1 < len(os.Args) {
+			data, _ := os.ReadFile(os.Args[i+1])
+			envFile = string(data)
+		}
+	}
+	if !strings.Contains(envFile, "SERVICE_TOKEN=secret-token") {
+		os.Stderr.WriteString("no token in the env file\n")
+		os.Exit(1)
+	}
+	in := bufio.NewScanner(os.Stdin)
+	for in.Scan() {
+		var m struct {
+			ID     json.RawMessage ` + "`json:\"id\"`" + `
+			Method string          ` + "`json:\"method\"`" + `
+			Params json.RawMessage ` + "`json:\"params\"`" + `
+		}
+		if json.Unmarshal(in.Bytes(), &m) != nil || len(m.ID) == 0 {
+			continue
+		}
+		var result any
+		switch m.Method {
+		case "initialize":
+			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "standin", "version": "0.1"}}
+		case "tools/list":
+			result = map[string]any{"tools": []any{map[string]any{"name": "query", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "execute", "inputSchema": map[string]any{"type": "object"}}, map[string]any{"name": "drop", "inputSchema": map[string]any{"type": "object"}}}}
+		case "tools/call":
+			if strings.Contains(string(m.Params), ` + "`" + `"name":"drop"` + "`" + `) {
+				result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "refused: drop is not permitted for this principal"}}, "isError": true}
+				break
+			}
+			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "1 row"}}, "structuredContent": map[string]any{"rows": []any{map[string]any{"id": 101}}, "params": json.RawMessage(m.Params)}}
+		default:
+			continue
+		}
+		b, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": m.ID, "result": result})
+		os.Stdout.Write(append(b, '\n'))
+	}
+}
+`
+	if err := os.WriteFile(filepath.Join(fakeDir, "main.go"), []byte(fakeSource), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fakeDir, "go.mod"), []byte("module fake\n\ngo 1.26\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := filepath.Join(dir, "fake-runtime"+exe)
+	build = exec.Command(goTool, "build", "-buildvcs=false", "-o", fake, ".")
+	build.Dir = fakeDir
+	build.Env = append(os.Environ(), "GOWORK=off")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building the stand-in runtime: %v\n%s", err, out)
+	}
+	return bin, fake
 }

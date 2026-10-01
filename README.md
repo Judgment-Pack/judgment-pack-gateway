@@ -143,6 +143,17 @@ the target's response, and mints one action receipt in the session chain naming 
 the decision, the citations and the tool. The receipt is lineage of a request and a response: it
 says who asked, never that the write was right or that anyone approved it.
 
+For a write tool the operator holds to a **decision policy** in the configuration
+([ADR-0011](docs/adr/0011-hold-a-write-to-its-decision.md)), the engine also reads the record
+before anything is sent: it must be the runtime's evaluation record, the request's pack digest
+and citations must be the record's, and the record must state an outcome the policy allows, no
+handoff, a pack and reviewed law where the policy asks for them, and facts equal to the write's
+arguments where the policy binds them. The receipt then names the policy by its digest. For a
+tool held to none, nothing in the record is read. `gateway verify` compares an action's pack
+digest and citations with a runtime evaluation record it names, and says of any other record
+that it did not compare it. Without a policy, `decision` on a receipt means only that the
+record existed; SPEC.md §1.2a says what it does and does not establish.
+
 Personal Drive, S3 and local-vault file management is a separate authenticated
 host control surface in `gateway-connections`: bounded listing/search, selected
 file reads, and reviewed create/update/delete plans. It issues no signed action

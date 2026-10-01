@@ -126,8 +126,8 @@ Two forms recur and are named once:
 - a **digest** is the string `"sha256:"` followed by exactly 64 lowercase
   hexadecimal characters; uppercase, another length, or another prefix is not a
   digest. `resultDigest`, `argumentsCommitment`, `tokenDigest`, `adapter.digest`,
-  `statement`, `schema`, `recordDigest`, `packDigest`, `request`, and each element
-  of `pageItems` are digests;
+  `statement`, `schema`, `recordDigest`, `packDigest`, `request`, `policy`, and
+  each element of `pageItems` are digests;
 - a version 3 **signature** — the receipt's own and each `cites[*].signature` —
   is exactly 128 lowercase hexadecimal characters, the 64 bytes of an Ed25519
   signature; uppercase or another length is `malformed` here, where version 2
@@ -223,19 +223,63 @@ target's response bytes, retained like any artifact.
 | `requester` | `{ "issuer": string, "subject": string, "tokenDigest": "sha256:" + hex }` | the authenticated identity that submitted the request; **never `null`** — a request with no authenticated requester is refused before any executor runs |
 | `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex }` | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest |
 | `cites` | array of `{ "sessionId": flat token (§3a), "callIndex": non-negative integer, "signature": signature }` | the acquisition receipts the requester says the decision record relied on |
+| `policy` | `"sha256:" + hex` — **optional** | the decision policy the gateway held the action to before it was sent, by digest (below); absent when its operator held the tool to none |
 | `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string }` | what was called, named as `acquisition` names its adapter |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it |
 | `observedAt` | string | when the target answered |
 
-`decision.packDigest` and `cites` are assertions the requester supplied. §4
-checks that the cited receipts exist and that a decision record with the stated
-digest exists; it does not compare the record's contents with either. A decision
-record that itself carries a `cites` member of this same shape — a record the
-runtime wrote with the citations its caller gave it — has those resolved by §4
-step 7 on the record's own behalf, and that is the only member of a record §4
-reads. An action receipt does not say the action was right, and it does
-not say the identity approved it: it is lineage of a request and a response.
+`decision.packDigest` and `cites` are claims the requester supplied, recorded as
+given. §4 checks that the cited receipts exist and that a decision record with
+the stated digest exists (steps 5 and 6); when that record is a runtime
+evaluation record, it compares the record's pack digest and citations with these
+two (step 8), and reads nothing else of it. A decision record that itself
+carries a `cites` member of this same shape — a record the runtime wrote with
+the citations its caller gave it — has those resolved by §4 step 7 on the
+record's own behalf. An action receipt does not say the action was right, and it
+does not say the identity approved it: it is lineage of a request and a
+response.
+
+**What `decision` establishes.** Without `policy`, an action receipt
+establishes no more than this: the gateway that minted it found a decision
+record with the digest `decision.recordDigest` under its decision-record
+directory, and the cited receipts in its store under its key, before the action
+was sent (§6); §4 establishes both again against the store and the records it
+is given, and step 8 that a runtime evaluation record states the pack and the
+citations the receipt claims. It does not establish that the record permitted
+the action, that the record's outcome is the one the action assumes, that the
+record's inputs describe the object the action wrote, or that the target was
+unchanged since the record was made. With `policy`, it establishes
+in addition exactly the checks that policy names (below), as the gateway made
+them before the action was sent, and no more. Nothing in a receipt closes the
+interval between those checks and the target's commit: a precondition on the
+target — a revision or an ETag compared on write — is the only thing that does,
+and it is the target's, or its adapter's, to supply. A policy's `bind` stops an
+action on another object than the one decided; it does not stop a concurrent
+edit of that object.
+
+**`policy`.** The gateway's operator may hold a write tool to a **decision
+policy** in the gateway's configuration (`docs/design/engine-config.md`,
+`docs/adr/0011-hold-a-write-to-its-decision.md`): an object whose members are
+`outcomes`, the outcome ids a record may have decided, and optionally `packs`,
+the pack digests it may have been decided under, `reviewed`, whether it must
+carry `"reviewed": true`, and `bind`, pairs of JSON pointers (RFC 6901), one
+into the request's arguments and one into the record's `inputs.facts`, whose
+values must be equal. Before an action through such a tool is sent, the gateway
+requires the decision record to be a runtime evaluation record (§4 step 8); its
+`pack.digest` to be `decision.packDigest`, and its citations to be `cites` as a
+set; its `disposition` to be of kind `"outcome"`, its `outcomeId` among
+`outcomes`, and its `handoff.state` `"none"`; its `pack.digest` to be among
+`packs` when they are given; its `reviewed` to be `true` when `reviewed` is
+`true`; and, for each pair of `bind`, both pointers to resolve and the two
+values to have the same canonical form (§1.1) — a value outside the canonical
+domain equals none. It refuses the request otherwise, with nothing sent and
+nothing minted. `policy` is then `"sha256:"` + hex of SHA-256 over `canon` of
+the policy object as configured (§1.1) — for this object its RFC 8785 form too,
+since its member names are the fixed ASCII names above and it holds no number.
+The receipt carries the policy's digest and never the policy. A verifier checks
+the member's form and nothing else: it holds no configuration to recompute the
+digest against.
 
 **What the signature covers** — `"judgment-pack-gateway/receipt/3:"` followed by
 `canon` of the receipt object with **the receipt's own top-level `signature`
@@ -265,13 +309,13 @@ and a session that mixes them is `chain-broken` (§1.4).
 ### 1.4 Verification statuses
 
 Per receipt, the ladder below yields **at most one status**, taken at the first
-failure in this order. (§4 steps 5 and 6 add findings of their own to a
+failure in this order. (§4 steps 5, 6 and 8 add findings of their own to a
 version 3 action receipt that passed the ladder, beside its `ok`; those are not
 statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape — and never a relational one |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest — and never a relational one |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the verifier's own key id |
 | 4 | `signature-mismatch` | the signature does not verify over the input §1.2 or §1.2a defines for the receipt's version |
@@ -469,17 +513,54 @@ not rest on the HTTP layer alone.
    chose, floats included, and the object is read as JSON for the one member
    while the member itself is held to the canonical domain. This is the join from
    the record's side; step 6 is the join from the action's side, and neither says
-   the record cited the receipts the action did.
+   the record cited the receipts the action did; step 8 compares the two, for a
+   record it understands.
+8. For each such action receipt whose decision record step 6 found, the record —
+   the candidate whose bytes hash to `decision.recordDigest`, a regular file
+   whole or a line of a `.jsonl` file, never a `.jsonl` file whole — is compared
+   with what the receipt claims of it when it is a **runtime evaluation record**:
+   one JSON object — read as §1.1 reads a document, a member name given twice at
+   any depth, a string that is not UTF-8 or that escapes a surrogate not one of a
+   pair, and nesting past §5's bound each making it none, except that a number
+   may take any form RFC 8259 gives one — whose `recordVersion` is the string
+   `"1"`, whose `kind` is the string `"evaluation"`, and whose `pack` is an
+   object whose `digest` is a digest (§1.2a). That is the record the
+   judgment-pack runtime's audit trail writes of one pack evaluated on one facts
+   document. Of such a record:
+   - its `pack.digest` must be the receipt's `decision.packDigest` → otherwise
+     **`decision-pack-mismatch`**;
+   - its citations must be the receipt's `cites` as a set — each citation the
+     triple of its `sessionId`, `callIndex` and `signature`, order and repetition
+     aside — where a record with no `cites` member has none, and one whose `cites`
+     is not an array of objects of the shape §1.2a gives `action.cites`, its
+     members held to the canonical domain, matches no set → otherwise
+     **`decision-cites-mismatch`**.
 
-Steps 5 and 6 each report their finding once per action receipt, as
-`{sessionId, callIndex, status}` with the action receipt's own session and
-index, beside that receipt's `ok`; both may fire for one receipt, and they are
-independent of each other and of every other finding. Step 7 reports once per
-citing record, as `{recordDigest, status}`, independent of every other finding
-and of whether any action receipt names that record.
+   A record step 6 found that is not a runtime evaluation record — not one JSON
+   object, of another `recordVersion`, a graph composite, one without a pack
+   digest, a `.jsonl` file whole, an opaque file — is not compared, and nothing
+   is found of it: the report carries the **observation**
+   `decision-record-not-compared` for the receipt (below). The verifier reads a
+   record for these members and for nothing else.
+
+Steps 5, 6 and 8 each report once per action receipt, as `{sessionId,
+callIndex, status}` with the action receipt's own session and index, beside that
+receipt's `ok`; any of them may fire for one receipt, step 8 both of its
+findings, and each is independent of the others and of every other finding.
+Step 7 reports once per citing record, as `{recordDigest, status}`, independent
+of every other finding and of whether any action receipt names that record.
+
+**Observations.** A report carries, beside `ok` and `findings`, a member
+`observations` when there is anything the verifier says of a receipt without
+failing it: an array of `{sessionId, callIndex, observation}`, with the
+receipt's own session and index. The one observation this document names is
+step 8's `decision-record-not-compared`. An observation is not a finding: it
+never makes `ok` false, a consumer's verdict (§5a) does not read it, and a
+report with none may leave the member out.
 
 `ok` is true only if the inline verify passed **and** no registry finding fired
-**and** no citation, decision-record or record-citation finding fired.
+**and** no citation, decision-record, decision-pack, decision-cites or
+record-citation finding fired.
 
 The verifier must obtain the registry from the gateway (the key holder), **not** from
 the untrusted store. That is the whole point: the anchor's authority comes from being
@@ -704,10 +785,12 @@ receipt is of kind
 write tool, the decision record the write relies on and the receipts that
 record relied on, after the engine has found the cited receipts in its own
 store under its own key and the record under its decision-record directory —
-the standard §4 applies, and no more. The format was specified before the
-surface so that a verifier written then verifies what is minted now.
-`gateway verify` takes `--decision-records <dir>` for §4 steps 5 and 6.
-| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. |
+the standard §4 applies — and, for a tool its operator holds to a decision
+policy, after it has held the record and the request to that policy (§1.2a
+`policy`). The format was specified before the surface so that a verifier
+written then verifies what is minted now. `gateway verify` takes
+`--decision-records <dir>` for §4 steps 5 to 8.
+| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 step 8 has any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 
@@ -763,7 +846,7 @@ store vector per status this document names.
 
 `gateway conform` runs them, and `--impl CMD` drives any other implementation
 through a small process contract, so an implementation in any language can answer
-to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.**
+to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Observations (§4) are not compared.
 
 One question this specification does not settle, surfaced by building the
 corpus and recorded in [`corpus/README.md`](corpus/README.md): the order of

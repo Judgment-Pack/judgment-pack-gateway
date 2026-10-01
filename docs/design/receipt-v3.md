@@ -103,7 +103,8 @@ made that way says so.
 |---|---|---|
 | `requester` | `{ "issuer", "subject", "tokenDigest" }` | the authenticated identity that submitted the action request, from a verified token; never `null` — a request with no authenticated requester is refused before any executor runs. A token proves who asked, not that they approved this action; see open question 6 |
 | `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex }` | the decision record the requester says this action relies on, by digest, and the pack it says the decision was made under |
-| `cites` | array of `{ "sessionId", "callIndex", "signature" }` | the acquisition receipts the requester says the decision record cites. `decision.packDigest` and `cites` are assertions supplied with the request and recorded; the verifier checks the cited receipts exist and the record's bytes match `recordDigest`, and does not compare the record's contents with either — open question 5 |
+| `cites` | array of `{ "sessionId", "callIndex", "signature" }` | the acquisition receipts the requester says the decision record cites. `decision.packDigest` and `cites` are assertions supplied with the request and recorded; the verifier checks the cited receipts exist and the record's bytes match `recordDigest`, and, since open question 5 was decided ([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md)), compares both with a record that is the runtime's evaluation record |
+| `policy` | `"sha256:" + hex`, optional | added by [ADR-0011](../adr/0011-hold-a-write-to-its-decision.md): the decision policy the engine held the write to before it was sent, by the digest of its canonical form; absent when the operator held the tool to none |
 | `tool` | `{ "shape", "endpoint", "name" }` | what was called, named as `acquisition` names its adapter |
 | `request` | `"sha256:" + hex` | a salted commitment to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it |
@@ -139,9 +140,9 @@ Two findings are new, both per session, both after the chain check:
   bytes it finds and compares.
 
 Neither interprets the cited receipt's contents or the decision record's; the second hashes
-bytes. Whether the record cites the same receipts the action does, whether it was decided under
-the pack the action names, and whether the facts justified the action are not findings here
-(open question 5).
+bytes. Whether the record cites the same receipts the action does and whether it was decided
+under the pack the action names were left as open question 5, and are now findings of their own
+(below); whether the facts justified the action is not a finding anywhere.
 
 Two more, per decision record, from the record's side of the join (§4 step 7): a candidate
 under the decision-record directory that is one JSON object carrying a `cites` member of the
@@ -154,6 +155,17 @@ is read for that member and for nothing else:
 
 Reported as `{recordDigest, status}`, once per record, whether or not any action receipt names
 it; a candidate that is not one JSON object, or carries no `cites`, is not interpreted at all.
+
+Two more, per action receipt, from open question 5 as [ADR-0011](../adr/0011-hold-a-write-to-its-decision.md)
+decided it (§4 step 8): when the record an action receipt names is found and is the runtime's
+evaluation record — recordVersion `"1"`, kind `"evaluation"`, a pack digest — its pack digest and
+its citations are compared with the receipt's:
+
+- `decision-pack-mismatch`: the record's `pack.digest` is not `decision.packDigest`.
+- `decision-cites-mismatch`: the record's citations are not the receipt's `cites` as a set.
+
+A record the verifier does not understand is not compared, and the report says so of the
+receipt in its `observations` member, as `decision-record-not-compared`, failing nothing.
 
 ## Corpus impact
 
@@ -186,11 +198,14 @@ implementation, per [corpus/README.md](../../corpus/README.md).
 4. Whether a caller should be able to deposit a salt with an auditor of record at acquire
    time, so that revealing does not depend on the caller still holding it. The store must
    never carry salts; anything else is a consumer arrangement.
-5. Whether the verifier should read the decision record's own members — the runtime's audit
-   record names the pack digest and, after the join, the receipts it relied on — and compare
-   them with `decision.packDigest` and `cites`, reporting a mismatch. That would make the
-   advertised chain checkable end to end at the cost of coupling this verifier to the
-   runtime's record format and version. Until decided, both members are recorded assertions.
+5. **Decided** by [ADR-0011](../adr/0011-hold-a-write-to-its-decision.md). Whether the
+   verifier should read the decision record's own members — the runtime's audit record names
+   the pack digest and, after the join, the receipts it relied on — and compare them with
+   `decision.packDigest` and `cites`, reporting a mismatch. It does, for a record that is the
+   runtime's evaluation record, and says it did not compare any other; the executor, for a tool
+   the operator holds to a decision policy, makes the same comparison before the write is sent,
+   and holds the record to the policy. The cost named here is taken: this repository reads
+   the runtime's record format, version `"1"`.
 6. What evidence of *approval*, as distinct from authentication, an action receipt could carry.
    A token proves the requester's identity at the engine's boundary. Approval of this action
    would need a statement bound to the request commitment and the decision digest, signed by

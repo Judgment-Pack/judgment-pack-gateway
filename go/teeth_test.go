@@ -71,6 +71,10 @@ type defective struct {
 	canonDefect       func([]byte) []byte
 	ignoreAnchor      bool
 	ignoreActionLinks bool
+	// ignoreRecordClaims drops SPEC.md §4 step 8's findings; compareEvery
+	// Record makes a finding of every record step 8 does not compare.
+	ignoreRecordClaims bool
+	compareEveryRecord bool
 }
 
 func (defective) label() string { return "defective" }
@@ -87,6 +91,40 @@ func (d defective) canon(source string) ([]byte, bool) {
 }
 
 func (d defective) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+	if d.ignoreRecordClaims || d.compareEveryRecord {
+		// Every other check intact. Ignoring the claims: the record found is
+		// never read for what it says of the pack and the citations.
+		// Comparing every record: one this verifier does not understand is
+		// held to claims it cannot state, and fails.
+		rep, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		if err != nil {
+			return false, nil, err
+		}
+		var kept []map[string]any
+		for _, f := range rep.Findings {
+			if d.ignoreRecordClaims && (f["status"] == "decision-pack-mismatch" || f["status"] == "decision-cites-mismatch") {
+				continue
+			}
+			kept = append(kept, f)
+		}
+		if d.compareEveryRecord {
+			for _, o := range rep.Observations {
+				kept = append(kept, finding{"sessionId": o["sessionId"], "callIndex": o["callIndex"], "status": "decision-cites-mismatch"})
+			}
+		}
+		ok := true
+		var findings []map[string]any
+		for _, f := range kept {
+			encoded, _ := json.Marshal(f)
+			var asMap map[string]any
+			_ = json.Unmarshal(encoded, &asMap)
+			if asMap["status"] != "ok" {
+				ok = false
+			}
+			findings = append(findings, asMap)
+		}
+		return ok, findings, nil
+	}
 	if d.ignoreActionLinks {
 		// Every ladder and registry check intact; SPEC.md §4 steps 5 and 6
 		// never run -- a verifier that treats an action receipt's citations
@@ -203,6 +241,24 @@ func TestCorpusCatchesAVerifierThatIgnoresActionLinks(t *testing.T) {
 	for _, missed := range []string{"v3-citation-unresolved", "v3-decision-record-mismatch", "v3-decision-records-absent"} {
 		if !strings.Contains(joined, missed) {
 			t.Fatalf("corpus did not catch a verifier ignoring action links (%s):\n%s", missed, joined)
+		}
+	}
+}
+
+// A verifier that never reads the record an action names, and one that
+// holds every record to the action's claims, understood or not, must each
+// be caught: the vectors of SPEC.md §4 step 8 exist for exactly those two.
+func TestCorpusCatchesAVerifierThatMisreadsTheRecordAnActionNames(t *testing.T) {
+	joined := failuresFor(t, defective{ignoreRecordClaims: true})
+	for _, missed := range []string{"v3-decision-pack-mismatch", "v3-decision-cites-mismatch"} {
+		if !strings.Contains(joined, missed) {
+			t.Fatalf("corpus did not catch a verifier ignoring the record's claims (%s):\n%s", missed, joined)
+		}
+	}
+	joined = failuresFor(t, defective{compareEveryRecord: true})
+	for _, missed := range []string{"v3-decision-record-not-compared", "v3-action-valid"} {
+		if !strings.Contains(joined, missed) {
+			t.Fatalf("corpus did not catch a verifier comparing a record it does not understand (%s):\n%s", missed, joined)
 		}
 	}
 }
@@ -2682,5 +2738,260 @@ func TestDeepNestingIsRefusedAtParseBeforeAnythingPersists(t *testing.T) {
 	code, first := post(t, server, "/acquire", `{"session":"deep-1","source":"screening","arguments":{}}`)
 	if code != http.StatusOK || first["receipt"].(map[string]any)["callIndex"] != float64(0) {
 		t.Fatalf("the session must be usable at index 0 after the refusal: %d %v", code, first)
+	}
+}
+
+// actingService is a service whose tickets write source runs the test
+// helper, answering a good envelope, with the policies given; an identity
+// and a token to act with; and a directory of decision records.
+func actingService(t *testing.T, policies map[string]*decisionPolicy) (*gatewayService, *httptest.Server, string, string) {
+	t.Helper()
+	service, server := testService(t)
+	service.sources["tickets/write"] = sourceSpec{argv: []string{os.Args[0], "--tools=update_ticket"}, env: helperEnv, shape: "mcp",
+		tools: []string{"update_ticket"}, endpoint: "https://mcp.example/", policies: policies}
+	records := filepath.Join(t.TempDir(), "decisions")
+	if err := os.MkdirAll(records, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	service.decisionRecords = records
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	return service, server, records, issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+}
+
+// SPEC.md §4 step 8, as the attack it is there for: an action receipt whose
+// claims its decision record does not bear out -- minted through a tool the
+// operator holds to no policy, which is what lets the executor mint it --
+// is caught after the fact, claim by claim. A record the verifier does not
+// understand is not compared: the report says so of the receipt, and fails
+// nothing for it.
+func TestAnActionIsHeldToTheRecordItNames(t *testing.T) {
+	service, server, records, token := actingService(t, nil)
+	var signatures []string
+	for i := 0; i < 2; i++ {
+		code, body := authed(t, server, "/acquire", `{"session":"v-1","source":"screening","arguments":{"n":`+strconv.Itoa(i)+`}}`, token)
+		if code != http.StatusOK {
+			t.Fatalf("acquire: %d %v", code, body)
+		}
+		signatures = append(signatures, body["receipt"].(map[string]any)["signature"].(string))
+	}
+	cite := func(i int) string {
+		return `{"sessionId":"v-1","callIndex":` + strconv.Itoa(i) + `,"signature":"` + signatures[i] + `"}`
+	}
+	// runtimeLine cites one receipt of session act-p; these records cite
+	// as each case says.
+	record := func(cites string, edits ...string) string {
+		line := runtimeLine(t, signatures[0], edits...)
+		return strings.Replace(line, `"cites":[{"sessionId":"act-p","callIndex":0,"signature":"`+signatures[0]+`"}]`, `"cites":`+cites, 1)
+	}
+	composite := `{"recordVersion":"1","run":"r","at":"2026-09-30T10:00:00Z","kind":"graph-composite","surface":"evaluate-graph","tool":{"name":"jpack","version":"0.23.1"},` +
+		`"evaluatorSpecVersion":"1.0","graph":{"id":"g","version":"1","digest":"` + packB + `","resultNode":"n"},"cites":[` + cite(0) + `],` +
+		`"disposition":{"handoff":{"state":"none"},"kind":"outcome","outcomeId":"approve","reasons":[]}}`
+	var lines []string
+	for _, tc := range []struct {
+		name     string
+		record   string
+		pack     string
+		cites    string
+		findings []string // besides the receipt's ok
+		observed bool
+	}{
+		{"claims the record bears out, the citations in another order and one twice", record(`[` + cite(1) + `,` + cite(0) + `,` + cite(1) + `]`), packA, `[` + cite(0) + `,` + cite(1) + `]`, nil, false},
+		{"a pack the record was not decided under", record(`[` + cite(0) + `]`), packB, `[` + cite(0) + `]`, []string{"decision-pack-mismatch"}, false},
+		{"citations the record does not make", record(`[` + cite(0) + `]`), packA, `[` + cite(0) + `,` + cite(1) + `]`, []string{"decision-cites-mismatch"}, false},
+		{"a record that cites nothing", strings.Replace(record(`[]`), `"cites":[],`, ``, 1), packA, `[` + cite(0) + `]`, []string{"decision-cites-mismatch"}, false},
+		{"both", record(`[` + cite(1) + `]`), packB, `[` + cite(0) + `]`, []string{"decision-pack-mismatch", "decision-cites-mismatch"}, false},
+		{"a record whose cites is not of the shape", record(`[{"sessionId":"v-1","callIndex":"0","signature":"` + signatures[0] + `"}]`), packA, `[` + cite(0) + `]`, []string{"decision-cites-mismatch"}, false},
+		{"a record whose citation carries a fraction beside its three members", record(`[{"sessionId":"v-1","callIndex":0,"signature":"` + signatures[0] + `","extra":{"fraction":0.5}}]`), packA, `[` + cite(0) + `]`, []string{"decision-cites-mismatch"}, false},
+		{"an opaque record", "an opaque record", packB, `[` + cite(0) + `]`, nil, true},
+		{"a graph composite", composite, packB, `[` + cite(1) + `]`, nil, true},
+		{"a record of another version", record(`[`+cite(1)+`]`, `"recordVersion":"1"`, `"recordVersion":"2"`), packB, `[` + cite(0) + `]`, nil, true},
+		{"a record with no pack digest", record(`[`+cite(1)+`]`, `"digest":"`+packA+`"`, `"id2":"`+packA+`"`), packB, `[` + cite(0) + `]`, nil, true},
+		{"a record with a member twice", record(`[`+cite(1)+`]`, `"amount":12.5`, `"amount":12.5,"amount":13`), packB, `[` + cite(0) + `]`, nil, true},
+	} {
+		lines = append(lines, tc.record)
+		if err := os.WriteFile(filepath.Join(records, "evaluations.jsonl"), []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		act := `{"session":"v-1","platform":"tickets","tool":"update_ticket","arguments":{"id":"T-1"},` +
+			`"decision":{"recordDigest":"sha256:` + hexOf([]byte(tc.record)) + `","packDigest":"` + tc.pack + `"},"cites":` + tc.cites + `}`
+		code, body := authed(t, server, "/act", act, token)
+		if code != http.StatusOK {
+			t.Fatalf("%s: a tool with no policy mints whatever its record says: %d %v", tc.name, code, body)
+		}
+		index := body["receipt"].(map[string]any)["callIndex"].(float64)
+		// The session stays open for the next case; what is read here is
+		// this receipt's own findings, beside its ok.
+		report, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", records, service.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, f := range report.Findings {
+			if f["callIndex"] == int64(index) && f["status"] != "ok" {
+				got = append(got, f["status"].(string))
+			}
+		}
+		var observed []finding
+		for _, o := range report.Observations {
+			if o["callIndex"] == int64(index) {
+				observed = append(observed, o)
+			}
+		}
+		if strings.Join(got, ",") != strings.Join(tc.findings, ",") {
+			t.Fatalf("%s: findings %v, want %v", tc.name, got, tc.findings)
+		}
+		if tc.observed != (len(observed) == 1) || (tc.observed && (observed[0]["observation"] != "decision-record-not-compared" || observed[0]["sessionId"] != "v-1" || observed[0]["status"] != nil)) {
+			t.Fatalf("%s: observations %v", tc.name, observed)
+		}
+	}
+	// A .jsonl file whole is a candidate and no record: named by the file's
+	// digest, the record it holds is not read, where the same bytes as a
+	// file of their own are, and are compared.
+	line := record(`[` + cite(1) + `]`)
+	for _, tc := range []struct {
+		file     string
+		observed bool
+	}{{"single.jsonl", true}, {"single.json", false}} {
+		if err := os.WriteFile(filepath.Join(records, tc.file), []byte(line+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		act := `{"session":"v-1","platform":"tickets","tool":"update_ticket","arguments":{"id":"T-1"},` +
+			`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line+"\n")) + `","packDigest":"` + packA + `"},"cites":[` + cite(0) + `]}`
+		code, body := authed(t, server, "/act", act, token)
+		if code != http.StatusOK {
+			t.Fatalf("%s: %d %v", tc.file, code, body)
+		}
+		index := int64(body["receipt"].(map[string]any)["callIndex"].(float64))
+		report, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", records, service.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observed, mismatched := false, false
+		for _, o := range report.Observations {
+			observed = observed || o["callIndex"] == index
+		}
+		for _, f := range report.Findings {
+			mismatched = mismatched || (f["callIndex"] == index && f["status"] == "decision-cites-mismatch")
+		}
+		if observed != tc.observed || mismatched == tc.observed {
+			t.Fatalf("%s: observed %v, compared %v", tc.file, observed, mismatched)
+		}
+		if err := os.Remove(filepath.Join(records, tc.file)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// An observation fails nothing: a store whose one action names a record the
+// verifier does not understand verifies, and says of that receipt that its
+// record was not compared.
+func TestARecordNotComparedFailsNothing(t *testing.T) {
+	service, server, records, token := actingService(t, nil)
+	code, body := authed(t, server, "/acquire", `{"session":"v-2","source":"screening","arguments":{}}`, token)
+	if code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, body)
+	}
+	signature := body["receipt"].(map[string]any)["signature"].(string)
+	opaque := []byte("not a record this verifier reads\n")
+	if err := os.WriteFile(filepath.Join(records, "notes.txt"), opaque, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	act := `{"session":"v-2","platform":"tickets","tool":"update_ticket","arguments":{},` +
+		`"decision":{"recordDigest":"sha256:` + hexOf(opaque) + `","packDigest":"` + packA + `"},"cites":[{"sessionId":"v-2","callIndex":0,"signature":"` + signature + `"}]}`
+	if code, body := authed(t, server, "/act", act, token); code != http.StatusOK {
+		t.Fatalf("act: %d %v", code, body)
+	}
+	if _, err := service.sealSession("v-2"); err != nil {
+		t.Fatal(err)
+	}
+	report, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", records, service.publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.OK || len(report.Observations) != 1 || report.Observations[0]["callIndex"] != int64(1) {
+		t.Fatalf("an observation fails nothing: %+v", report)
+	}
+	for _, f := range report.Findings {
+		if f["status"] != "ok" {
+			t.Fatalf("a record not compared is no finding: %v", report.Findings)
+		}
+	}
+	text, err := report.marshal()
+	if err != nil || !strings.Contains(string(text), `"observations":[{"callIndex":1,"observation":"decision-record-not-compared","sessionId":"v-2"}]`) {
+		t.Fatalf("the report carries the observation: %s %v", text, err)
+	}
+	// A report with none carries no such member: its shape is what it was.
+	report.Observations = nil
+	if text, _ := report.marshal(); strings.Contains(string(text), "observations") {
+		t.Fatalf("a report with no observation: %s", text)
+	}
+}
+
+// action.policy is signed like every member of a receipt: altered or taken
+// out after signing, the receipt no longer verifies.
+func TestAnActionsPolicyIsSigned(t *testing.T) {
+	policy := mustPolicy(t, policyText)
+	service, server, records, token := actingService(t, map[string]*decisionPolicy{"update_ticket": policy})
+	code, body := authed(t, server, "/acquire", `{"session":"act-p","source":"screening","arguments":{}}`, token)
+	if code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, body)
+	}
+	signature := body["receipt"].(map[string]any)["signature"].(string)
+	line := runtimeLine(t, signature)
+	if err := os.WriteFile(filepath.Join(records, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	act := `{"session":"act-p","platform":"tickets","tool":"update_ticket","arguments":{"id":"Q-7","revision":4,"customer":{"name":"Acme","tier":2}},` +
+		`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"` + packA + `"},"cites":[{"sessionId":"act-p","callIndex":0,"signature":"` + signature + `"}]}`
+	if code, body := authed(t, server, "/act", act, token); code != http.StatusOK {
+		t.Fatalf("act: %d %v", code, body)
+	}
+	if _, err := service.sealSession("act-p"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(service.storeRoot, "receipts", "act-p", "1.json")
+	minted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusOf := func(t *testing.T) string {
+		t.Helper()
+		report, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", records, service.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, f := range report.Findings {
+			if f["sessionId"] == "act-p" && (f["callIndex"] == int64(1) || f["file"] == "1.json") {
+				return f["status"].(string)
+			}
+		}
+		return ""
+	}
+	if s := statusOf(t); s != "ok" || !strings.Contains(string(minted), `"policy":"`+policy.digest+`"`) {
+		t.Fatalf("the minted receipt carries the policy and verifies: %s", s)
+	}
+	v, err := parseJSON(minted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	action := sub(v.(*vObject), "action")
+	for _, tc := range []struct {
+		name   string
+		mutate func()
+	}{
+		{"altered", func() { action.set("policy", vString(testDigest("another policy"))) }},
+		{"taken out", func() { action.names = remove(action.names, "policy"); delete(action.byName, "policy") }},
+	} {
+		tc.mutate()
+		if err := os.WriteFile(path, append(canon(v), '\n'), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if s := statusOf(t); s != "signature-mismatch" {
+			t.Fatalf("a policy %s after signing: %s", tc.name, s)
+		}
 	}
 }
