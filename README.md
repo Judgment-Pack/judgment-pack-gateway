@@ -148,7 +148,9 @@ For a write tool the operator holds to a **decision policy** in the configuratio
 before anything is sent: it must be the runtime's evaluation record, the request's pack digest
 and citations must be the record's, and the record must state an outcome the policy allows, no
 handoff, a pack and reviewed law where the policy asks for them, and facts equal to the write's
-arguments where the policy binds them. The receipt then names the policy by its digest. For a
+arguments where the policy binds them. `reviewed` alone holds a write to whatever reviewed-set lock
+is current, so an edited pack locked again passes it; list `packs` to hold a write to particular
+reviewed bytes. The receipt then names the policy by its digest. For a
 tool held to none, nothing in the record is read. `gateway verify` compares an action's pack
 digest and citations with a runtime evaluation record it names, and says of any other record
 that it did not compare it. Without a policy, `decision` on a receipt means only that the
