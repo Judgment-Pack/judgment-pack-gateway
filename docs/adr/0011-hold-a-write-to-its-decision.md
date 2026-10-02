@@ -150,6 +150,10 @@ Determinations:
 - Bad, because a fact spelled `4.0` does not bind to an argument `4`; a fact outside the
   canonical domain binds to nothing. The refusal is the safe side of it, and the runtime records a
   fact as its caller spelled it.
+- Bad, because `reviewed` without `packs` holds a write to whatever reviewed-set lock is current,
+  not to particular reviewed bytes: an edited pack, locked again, yields records with
+  `"reviewed": true` and a new pack digest, and such a policy admits them. `packs` is the member that
+  names the reviewed bytes (gateway issue #196).
 - Bad, because the digest names the policy as configured: a policy with `"reviewed": false` and
   one without the member make the same checks and have two digests; and a reader needs the
   configuration to know what a digest stands for, since the receipt does not carry the policy.

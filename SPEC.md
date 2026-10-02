@@ -274,7 +274,11 @@ set; its `disposition` to be of kind `"outcome"`, its `outcomeId` among
 `true`; and, for each pair of `bind`, both pointers to resolve and the two
 values to have the same canonical form (§1.1) — a value outside the canonical
 domain equals none. It refuses the request otherwise, with nothing sent and
-nothing minted. `policy` is then `"sha256:"` + hex of SHA-256 over `canon` of
+nothing minted. `reviewed` holds the record to whatever reviewed-set lock was
+current when it was written, not to particular bytes: a pack that is edited and
+locked again yields records with `"reviewed": true` and a new pack digest, which
+a policy without `packs` admits. `packs` is what holds a write to particular
+reviewed packs. `policy` is then `"sha256:"` + hex of SHA-256 over `canon` of
 the policy object as configured (§1.1) — for this object its RFC 8785 form too,
 since its member names are the fixed ASCII names above and it holds no number.
 The receipt carries the policy's digest and never the policy. A verifier checks
