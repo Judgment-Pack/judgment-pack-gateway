@@ -18,8 +18,10 @@ decision record with the stated digest is there.
 
 For a tool the operator holds to a **decision policy**
 ([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md)), the engine holds one thing more
-before anything is sent: it reads the record, which must be the runtime's evaluation record;
-the request's claims about it must be the record's; and the record must meet the policy — an
+before anything is sent: it reads the record, which must be shaped as the runtime's evaluation
+record and, when the policy names runtime keys, signed by one of them
+([ADR-0012](../adr/0012-hold-a-write-to-a-signed-record.md)); the request's claims about it
+must be the record's; and the record must meet the policy — an
 outcome the policy allows, no handoff requested, a pack it names, reviewed law when it asks for
 that, and the write's arguments equal to the record's facts where it binds them. The policy is
 the operator's, in the engine's configuration ([engine-config.md](engine-config.md)), and
@@ -45,7 +47,7 @@ refused before anything else is read, since an action receipt's `requester` is n
 
 `decision` and `cites` are the requester's claims, recorded as given. For a tool with no
 policy the engine checks that what they name exists and compares nothing inside it; for a tool
-with one it also compares them with the record they name (step 9).
+with one it also compares them with the record they name (step 10).
 
 ## What refuses it, in order, before any executor runs
 
@@ -103,17 +105,27 @@ with one it also compares them with the record they name (step 9).
    `decisionRecords` directory by §4 step 6's rule — every regular file as its whole bytes,
    and every line of a `.jsonl` file — or the request is refused. For a tool with no decision
    policy, `packDigest` is recorded as given and checked against nothing: the record's
-   contents are the runtime's, and the engine reads none of them; for a tool with one, step 9
-   checks it. Symbolic links are not followed. The walk is `verify`'s own, and like
+   contents are the runtime's, and the engine reads none of them; for a tool with one, step 10
+   checks it. For a tool whose policy sets `requireSignedRecord`, the record is looked for
+   under §4 step 6's exact reading — a line is all its bytes before the `0x0A`, a `0x0D` among
+   them — since the digest a signature binds is of the bytes the runtime wrote, and a line
+   converted to CRLF is other bytes; the receipt then carries `decision.recordBytes: "exact"`,
+   and `verify` finds the record the same way. Symbolic links are not followed, and nothing is
+   read by a path: the walk holds its root first, as the directory it was named by (not a link,
+   and the directory opened the one judged, before the open and after it), then enumerates and
+   reads everything through that held root and the directories it holds below it, each judged
+   the same way, each file opened through its directory's handle and judged likewise. A link put
+   in place of the root, a directory or a file as it is judged refuses the read; one put there
+   once it is held is where the walk no longer looks. The walk is `verify`'s own, and like
    it is not bounded in bytes, entries or time: availability is a stated limit of this
    reference ([SECURITY.md](../../SECURITY.md)), and an operator who mounts an archive as the
    decision-record directory has made the walk as long as the archive. A directory that cannot
    be read refuses the action without saying where it is.
 
 For a tool with no decision policy the ladder ends here, and nothing in the record is read. For
-a tool with one, three steps follow, on the bytes step 7 hashed — a regular file whole or a
-line of a `.jsonl` file, never a `.jsonl` file whole — so the record judged is the record
-named:
+a tool with one, three steps follow, and a fourth when the policy sets `requireSignedRecord`, on
+the bytes step 7 hashed — a regular file whole or a line of a `.jsonl` file, never a `.jsonl`
+file whole — so the record judged is the record named:
 
 8. **`record`**: the record must be a runtime evaluation record (SPEC.md §4 step 8): one JSON
    object, read by the canonical parser with a number of any form admitted — a name twice at
@@ -122,11 +134,28 @@ named:
    refused: an opaque file, another record version, a record without a pack digest, and a
    graph composite, which carries no pack and no inputs to hold a write to (whether a write can
    be held to a composite is a later decision).
-9. **`consistency`**: the request's claims must be the record's. The record's `pack.digest`
+9. **`policy-signed`**, when the policy sets `requireSignedRecord`
+   ([ADR-0012](../adr/0012-hold-a-write-to-a-signed-record.md)): the record must have been signed
+   by one of the runtime keys the policy names, in the runtime's sidecar beside it, by the
+   record-signature rule the runtime's guide writes down (`docs/building-with-packs.md` in the
+   runtime, "Record signatures, exactly"). The record must carry `trail`, 32 lowercase hex, and
+   `sequence`, an integer from 1 to 2⁵³−2. A file named exactly `signatures.jsonl` must lie in
+   the directory of a file the record was found in, found by step 7's walk as the record is: a
+   regular file, never a link. One of its lines must be readable — ended by a newline, at most
+   4096 bytes before it, one JSON object of exactly the seven members of a record signature, each
+   of its form, whatever its whitespace — and name the record's `trail`, its `sequence` and, as
+   `record`, `decision.recordDigest`, the SHA-256 of the exact bytes step 7 matched, never of a
+   re-encoding. Its `keyId` must be the keyId of a key the policy names, and its signature must
+   verify under that key over `judgment-pack-runtime/record-signature/1:` followed by the
+   canonical form of `{"record", "sequence", "trail"}`. One such line admits the record. A
+   `key-rotation` line is never followed: a key signs here because the policy names it. The
+   step comes before anything in the record is compared, so a record no trusted key signed is
+   judged no further, and a hand-written one learns nothing of which later check it would fail.
+10. **`consistency`**: the request's claims must be the record's. The record's `pack.digest`
    must be `decision.packDigest`, and the record's `cites` must be the request's `cites` as a
    set of (sessionId, callIndex, signature). A record with no `cites` matches no action, since
    every action cites; one whose `cites` is not of the shape an action's takes matches none.
-10. **The policy**, in this order, each its own step: **`policy-outcome`**, the disposition is
+11. **The policy**, in this order, each its own step: **`policy-outcome`**, the disposition is
     of kind `outcome` and its `outcomeId` is one the policy's `outcomes` lists;
     **`policy-handoff`**, its `handoff.state` is `none` — a requested handoff never passes;
     **`policy-packs`**, when the policy lists `packs`, the record's pack digest is one of them;
@@ -141,7 +170,7 @@ named:
     order used for another.
 
 A refused request executes nothing and mints nothing. The refusal names which step refused, in
-`refusedAt`. A refusal at steps 8 to 10 names the check and never a value of the record's —
+`refusedAt`. A refusal at steps 8 to 11 names the check and never a value of the record's —
 not its outcome, not a fact — since the requester may know a record by its digest and not by
 its contents.
 
@@ -167,7 +196,7 @@ and `resultDigest` names them. The engine then mints one receipt in the session 
 | `caller` | the token identity |
 | `argumentsCommitment` | a salted commitment over the canonical request body's `arguments`, salt returned |
 | `action.requester` | the token identity again — the one who asked, named where the action is |
-| `action.decision`, `action.cites` | as given |
+| `action.decision`, `action.cites` | as given; `action.decision.recordBytes` is `"exact"` for a tool whose policy requires a signed record, and absent otherwise |
 | `action.policy` | for a tool with a decision policy, `"sha256:"` and the SHA-256 of the canonical form of the policy object as configured; absent for a tool with none |
 | `action.tool` | `{"shape": "mcp", "endpoint": <binding endpoint or null>, "name": <tool>}` |
 | `action.request` | a salted commitment over the canonical request sent to the executor, salt returned |
@@ -193,6 +222,13 @@ what that policy is — the receipt carries its digest, not its text. A precondi
 target — a revision or an ETag compared on write — is still the only thing that closes the
 interval between the check and the commit, and that is the target's or the adapter's to supply:
 `bind` stops a substituted object, not a concurrent edit of the same one.
+
+A record is found by its shape, so a policy holds a write to whatever record a writer of the
+decision-record directory put there. With `requireSignedRecord`, the record was signed, in its
+exact bytes, by whoever holds a key the policy names: a writer who cannot use one of those keys
+cannot write a record the policy admits. That establishes nothing against the holder of a named
+key, the operator among them, who can sign any record, and nothing of whether the trail is
+complete or when the record was written.
 A target that refuses the write is a response like any other — the receipt records the
 refusal bytes: the executor is started with `--error-results`, under which `adapter-mcp`
 envelopes a tool result that reports an error as the result of the call, where for a read the
@@ -203,7 +239,8 @@ nothing.
 
 - The refusal ladder above, each step with a test that reaches it and a mutation that
   removes it — the policy's steps included, and a tool with no policy shown to read nothing
-  in its record, not even a record that is not JSON; the interleavings the session step cannot see — a session another process puts
+  in its record, not even a record that is not JSON; the signature step against the runtime's
+  own test vector, and each way a sidecar can fail to sign a record; the interleavings the session step cannot see — a session another process puts
   in the store while a read into it is admitted and running, or in the last moment before the
   read's stamp, and a seal landing between the evidence checks and admission — each held to a
   session refusal with nothing run.
@@ -211,9 +248,10 @@ nothing.
   receipt, an `/act` that cites both, then `gateway verify` over the store, the registry and
   the decision-record directory reporting every receipt `ok` — the vector
   `v3-action-valid` is what a minted store must look like, and the verifier the corpus tests
-  is what judges it; and the same with the write tool held to a policy, a record in the
-  runtime's own form, a write to another revision refused before the executor starts, and the
-  receipt naming the policy by the digest the configuration gives it.
+  is what judges it; and the same with the write tool held to a policy that requires a signed
+  record, a chained record in the runtime's own form, the write refused while no sidecar signs
+  it, a write to another revision refused once one does, both before the executor starts, and
+  the receipt naming the policy by the digest the configuration gives it.
 - The receipt's one new member, `action.policy`, is held by the vectors `v3-action-policy`
   and `v3-action-policy-malformed`; what the verifier compares of a record, by
   `v3-decision-pack-mismatch`, `v3-decision-cites-mismatch` and

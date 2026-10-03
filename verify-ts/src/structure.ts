@@ -102,6 +102,7 @@ function isAction(v: Value | undefined): boolean {
     return false;
   }
   const decision = member(v, "decision");
+  const recordBytes = decision?.type === "object" ? member(decision, "recordBytes") : undefined;
   const cites = member(v, "cites");
   const tool = member(v, "tool");
   const policy = member(v, "policy");
@@ -110,6 +111,8 @@ function isAction(v: Value | undefined): boolean {
     decision?.type === "object" &&
     isDigest(member(decision, "recordDigest")) &&
     isDigest(member(decision, "packDigest")) &&
+    // how the record was found: optional, and "exact" when present
+    (recordBytes === undefined || (recordBytes.type === "string" && recordBytes.value === "exact")) &&
     cites !== undefined &&
     citations(cites) !== null &&
     tool?.type === "object" &&

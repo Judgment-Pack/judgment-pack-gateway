@@ -753,6 +753,12 @@ type configFile struct {
 // opened: a link put in its place, even one to the same file under another
 // name, is found by the second.
 func openEntry(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
+	return openEntryJudged(dir, name, entryJudged)
+}
+
+// openEntryJudged is openEntry with judged, when set, run between judging
+// the entry and opening it.
+func openEntryJudged(dir *os.Root, name string, judged func(name string)) (*os.File, os.FileInfo, error) {
 	entry, err := dir.Lstat(name)
 	if err != nil {
 		return nil, nil, err
@@ -760,8 +766,8 @@ func openEntry(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
 	if entry.Mode()&os.ModeSymlink != 0 {
 		return nil, nil, errors.New("is a symbolic link")
 	}
-	if entryJudged != nil {
-		entryJudged(name)
+	if judged != nil {
+		judged(name)
 	}
 	file, err := openNoFollow(dir, name)
 	if err != nil {

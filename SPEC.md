@@ -221,13 +221,27 @@ target's response bytes, retained like any artifact.
 | Member | Type | Meaning |
 |---|---|---|
 | `requester` | `{ "issuer": string, "subject": string, "tokenDigest": "sha256:" + hex }` | the authenticated identity that submitted the request; **never `null`** — a request with no authenticated requester is refused before any executor runs |
-| `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex }` | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest |
+| `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex, "recordBytes": "exact" }`, `recordBytes` **optional** | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest; `recordBytes`, how the gateway found the record (below) |
 | `cites` | array of `{ "sessionId": flat token (§3a), "callIndex": non-negative integer, "signature": signature }` | the acquisition receipts the requester says the decision record relied on |
 | `policy` | `"sha256:" + hex` — **optional** | the decision policy the gateway held the action to before it was sent, by digest (below); absent when its operator held the tool to none |
 | `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string }` | what was called, named as `acquisition` names its adapter |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it |
 | `observedAt` | string | when the target answered |
+
+**`decision.recordBytes`.** Present, it is the string `"exact"`: the gateway found
+the record named by its **exact bytes** — a line of a `.jsonl` file taken as all
+its bytes before its `0x0A`, a `0x0D` among them — and §4 finds it the same way
+(step 6). The gateway sets it on an action through a tool whose decision policy
+requires a signed record, since the digest a signature binds is of the bytes the
+runtime wrote, and a line converted to CRLF is other bytes
+(`docs/adr/0012-hold-a-write-to-a-signed-record.md`). Absent, the record is found
+by step 6's reading, one trailing `0x0D` removed from a line, as before. It is
+signed with every other member, so a reader cannot choose the reading after the
+fact. A verifier written before the member tolerates it, as it tolerates any
+signed member it does not know, and finds the record by step 6's reading: it can
+answer `ok` for a record converted to CRLF that a verifier reading the member
+reports `decision-record-mismatch` for.
 
 `decision.packDigest` and `cites` are claims the requester supplied, recorded as
 given. §4 checks that the cited receipts exist and that a decision record with
@@ -251,7 +265,15 @@ the action, that the record's outcome is the one the action assumes, that the
 record's inputs describe the object the action wrote, or that the target was
 unchanged since the record was made. With `policy`, it establishes
 in addition exactly the checks that policy names (below), as the gateway made
-them before the action was sent, and no more. Nothing in a receipt closes the
+them before the action was sent, and no more. Those are checks of a record
+found under the decision-record directory, and a record is found there by its
+shape: unless the policy sets `requireSignedRecord`, they hold the action to
+whatever record a writer of that directory put there, written by hand or not.
+With `requireSignedRecord`, the record was also signed, in its exact bytes, by
+whoever holds one of the runtime keys the policy names, so a writer who cannot
+use one of those keys cannot write a record the policy admits; it establishes
+nothing against the holder of a named key, the operator among them, who can
+sign any record. Nothing in a receipt closes the
 interval between those checks and the target's commit: a precondition on the
 target — a revision or an ETag compared on write — is the only thing that does,
 and it is the target's, or its adapter's, to supply. A policy's `bind` stops an
@@ -263,11 +285,21 @@ policy** in the gateway's configuration (`docs/design/engine-config.md`,
 `docs/adr/0011-hold-a-write-to-its-decision.md`): an object whose members are
 `outcomes`, the outcome ids a record may have decided, and optionally `packs`,
 the pack digests it may have been decided under, `reviewed`, whether it must
-carry `"reviewed": true`, and `bind`, pairs of JSON pointers (RFC 6901), one
+carry `"reviewed": true`, `bind`, pairs of JSON pointers (RFC 6901), one
 into the request's arguments and one into the record's `inputs.facts`, whose
-values must be equal. Before an action through such a tool is sent, the gateway
-requires the decision record to be a runtime evaluation record (§4 step 8); its
-`pack.digest` to be `decision.packDigest`, and its citations to be `cites` as a
+values must be equal, and `requireSignedRecord`, the Ed25519 public keys of the
+runtimes whose signature of the record it requires
+(`docs/adr/0012-hold-a-write-to-a-signed-record.md`). Before an action through
+such a tool is sent, the gateway requires the decision record to be a runtime
+evaluation record (§4 step 8); when `requireSignedRecord` is given, and before
+any other check of the record, a readable line of the runtime's signature
+sidecar — `signatures.jsonl` in the directory of a file the record was found in
+— signing the record's `trail`, its `sequence` and `decision.recordDigest`
+under one of those keys, by the runtime's record-signature rule, with no
+key-rotation line followed, the record then found by its exact bytes and the
+receipt saying so in `decision.recordBytes` (above); its `pack.digest` to be
+`decision.packDigest`, and
+its citations to be `cites` as a
 set; its `disposition` to be of kind `"outcome"`, its `outcomeId` among
 `outcomes`, and its `handoff.state` `"none"`; its `pack.digest` to be among
 `packs` when they are given; its `reviewed` to be `true` when `reviewed` is
@@ -319,7 +351,7 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest — and never a relational one |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"` — and never a relational one |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the verifier's own key id |
 | 4 | `signature-mismatch` | the signature does not verify over the input §1.2 or §1.2a defines for the receipt's version |
@@ -496,13 +528,19 @@ not rest on the HTTP layer alone.
    additionally yields one candidate per line: the file's bytes are split on
    each `0x0A`; each piece has one trailing `0x0D` removed if present; an empty
    piece is not a candidate; the piece after the last `0x0A`, if non-empty, is
-   a candidate. The verifier hashes candidates and compares; it interprets none
-   of them. The directory's own outcomes follow §4.1's table: absent is an
+   a candidate. For an action receipt whose `decision.recordBytes` is
+   `"exact"`, the record is looked for under the **exact reading** instead: a
+   `.jsonl` file's pieces are taken as they are, no `0x0D` removed, an empty
+   piece again no candidate; every other candidate is the same under both
+   readings. Each receipt is held to the reading it names, whatever reading
+   another receipt over the same directory names. The verifier hashes
+   candidates and compares; it interprets none of them. The directory's own outcomes follow §4.1's table: absent is an
    absent anchor, and every action receipt is then `decision-record-mismatch`;
    present and unreadable, in any of the forms the table lists, is no verdict.
    A verifier given no directory at all treats it as absent.
-7. For each candidate step 6 enumerated — a regular file whole, or for a `.jsonl`
-   file each line and **not** the file whole — that is one JSON object carrying a
+7. For each candidate step 6 enumerated under its first reading, one trailing
+   `0x0D` removed — a regular file whole, or for a `.jsonl` file each line and
+   **not** the file whole — that is one JSON object carrying a
    top-level `cites` member, the candidate is a **decision record that cites**, and
    each entry of `cites` must resolve exactly as step 5 resolves an action
    receipt's, by the same three string comparisons against the same enumeration →
@@ -521,7 +559,8 @@ not rest on the HTTP layer alone.
    record it understands.
 8. For each such action receipt whose decision record step 6 found, the record —
    the candidate whose bytes hash to `decision.recordDigest`, a regular file
-   whole or a line of a `.jsonl` file, never a `.jsonl` file whole — is compared
+   whole or a line of a `.jsonl` file under the reading the receipt names (step
+   6), never a `.jsonl` file whole — is compared
    with what the receipt claims of it when it is a **runtime evaluation record**:
    one JSON object — read as §1.1 reads a document, a member name given twice at
    any depth, a string that is not UTF-8 or that escapes a surrogate not one of a

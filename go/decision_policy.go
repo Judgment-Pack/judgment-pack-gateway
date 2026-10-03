@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -14,21 +15,25 @@ import (
 // configuration; for such a tool the executor reads the decision record the
 // request names -- the runtime's evaluation record, one line of its audit
 // trail -- holds the request's claims to it, and holds it to the policy,
-// before anything is sent. For a tool with no policy nothing here runs and
+// before anything is sent. A policy may also require the record to be signed
+// by a runtime key it trusts (docs/adr/0012-hold-a-write-to-a-signed-record.md,
+// record_signature.go). For a tool with no policy nothing here runs and
 // nothing in the record is read. The verifier reads the same record by the
 // same rule (SPEC.md §4 step 8), after the fact, for what an action receipt
 // claims of it.
 
 // decisionPolicy is what the operator holds one write tool to: the outcomes
 // a record may have decided, the packs it may have been decided under,
-// whether it must have been judged under reviewed law, and which of the
-// write's arguments must equal which of the record's facts. digest names the
-// policy as configured, and is what an action receipt carries.
+// whether it must have been judged under reviewed law, which of the write's
+// arguments must equal which of the record's facts, and which runtime keys,
+// if any, one of which must have signed the record. digest names the policy
+// as configured, and is what an action receipt carries.
 type decisionPolicy struct {
 	outcomes []string
 	packs    []string // empty when the member is absent: any pack
 	reviewed bool
 	bind     []factBinding
+	signers  []recordSigner // empty when requireSignedRecord is absent: no signature read
 	digest   string
 }
 
@@ -40,13 +45,14 @@ type factBinding struct {
 	fact     string
 }
 
-var decisionPolicyMembers = map[string]bool{"outcomes": true, "packs": false, "reviewed": false, "bind": false}
+var decisionPolicyMembers = map[string]bool{"outcomes": true, "packs": false, "reviewed": false, "bind": false, "requireSignedRecord": false}
 
 // parseDecisionPolicies reads a platform's decisionPolicy member: an object
 // keyed by write tool name, each a policy. Whether each tool is one the
 // platform's write binding names is judged where the binding is read
-// (resolveEngineConfig).
-func parseDecisionPolicies(v value, platform string) (map[string]*decisionPolicy, error) {
+// (resolveEngineConfig). version is the file's engineVersion, which says
+// which members a policy may have.
+func parseDecisionPolicies(v value, platform, version string) (map[string]*decisionPolicy, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
 		return nil, fmt.Errorf("engine configuration: platform %s: decisionPolicy must be an object keyed by write tool name", platform)
@@ -57,7 +63,7 @@ func parseDecisionPolicies(v value, platform string) (map[string]*decisionPolicy
 			return nil, fmt.Errorf("engine configuration: platform %s: decisionPolicy names a tool by the empty string", platform)
 		}
 		raw, _ := obj.get(tool)
-		policy, err := parseDecisionPolicy(raw, fmt.Sprintf("platform %s: decisionPolicy.%s", platform, requestText(tool)))
+		policy, err := parseDecisionPolicy(raw, fmt.Sprintf("platform %s: decisionPolicy.%s", platform, requestText(tool)), version)
 		if err != nil {
 			return nil, fmt.Errorf("engine configuration: %v", err)
 		}
@@ -68,12 +74,13 @@ func parseDecisionPolicies(v value, platform string) (map[string]*decisionPolicy
 
 // parseDecisionPolicy holds one policy to its closed shape: outcomes a
 // non-empty array of outcome ids, packs a non-empty array of digests,
-// reviewed a boolean, bind an array of {argument, fact} pointers -- a list
-// naming one entry twice is refused, as a list nobody meant. Its digest is
-// over the canonical form (SPEC.md §1.1) of the object as configured, which
-// for this object is its RFC 8785 form too: its member names are the fixed
-// ASCII names above, and it holds no number.
-func parseDecisionPolicy(v value, where string) (*decisionPolicy, error) {
+// reviewed a boolean, bind an array of {argument, fact} pointers, and, from
+// engineVersion 5, requireSignedRecord a non-empty array of Ed25519 public
+// keys -- a list naming one entry twice is refused, as a list nobody meant.
+// Its digest is over the canonical form (SPEC.md §1.1) of the object as
+// configured, which for this object is its RFC 8785 form too: its member
+// names are the fixed ASCII names above, and it holds no number.
+func parseDecisionPolicy(v value, where, version string) (*decisionPolicy, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
 		return nil, fmt.Errorf("%s must be an object", where)
@@ -127,6 +134,25 @@ func parseDecisionPolicy(v value, where string) (*decisionPolicy, error) {
 				}
 			}
 			policy.bind = append(policy.bind, b)
+		}
+	}
+	if _, present := obj.get("requireSignedRecord"); present {
+		if !versionAtLeast(version, "5") {
+			return nil, fmt.Errorf("%s: requireSignedRecord is a version-5 member; engineVersion %s has no requireSignedRecord", where, version)
+		}
+		keys, err := policyList(obj, "requireSignedRecord", where, func(s string) bool { return isLowerHexOfLen(s, 64) }, "an Ed25519 public key, 64 lowercase hex")
+		if err != nil {
+			return nil, err
+		}
+		for _, k := range keys {
+			raw, _ := hex.DecodeString(k)
+			// A key no signature verifies under admits nothing, and one of
+			// small order admits a signature anyone can make: neither is a
+			// key a writer must hold.
+			if reason := unusableSigningKey(raw); reason != "" {
+				return nil, fmt.Errorf("%s: requireSignedRecord names a key that %s", where, reason)
+			}
+			policy.signers = append(policy.signers, recordSigner{keyID: keyIDFor(raw), key: ed25519.PublicKey(raw)})
 		}
 	}
 	return policy, nil
@@ -293,17 +319,27 @@ func sameCitations(a, b []citation) bool {
 	return true
 }
 
-// holdToPolicy is the executor's steps 8 to 10 for a tool held to a policy
+// holdToPolicy is the executor's steps 8 to 11 for a tool held to a policy
 // (docs/design/executor.md): the record whose digest step 7 matched, read as
-// the runtime's evaluation record; the request's claims held to the record
-// it names; the record held to the operator's policy -- outcome, handoff,
+// the runtime's evaluation record; when the policy requires it, the record
+// signed by a key the policy trusts, in the sidecar beside it (signed holds
+// what the walk found there); the request's claims held to the record it
+// names; the record held to the operator's policy -- outcome, handoff,
 // packs, reviewed, bind, in that order. The first that fails is the refusal,
 // and nothing is sent. The bytes read are the bytes step 7 hashed, so the
 // record judged is the record named.
-func holdToPolicy(data []byte, claimed decision, cites []citation, arguments value, policy *decisionPolicy) error {
+func holdToPolicy(data []byte, claimed decision, cites []citation, arguments value, policy *decisionPolicy, signed sidecarEvidence) error {
 	record, why := readRuntimeRecord(data)
 	if record == nil {
 		return actRefusal{"record", why + "; a tool held to a decision policy acts only on a runtime evaluation record"}
+	}
+	// Whose record it is comes before anything in it is compared: a record
+	// no trusted key signed is not judged further, so a hand-written one
+	// learns nothing of which of the policy's checks it would fail.
+	if len(policy.signers) > 0 {
+		if err := holdToSignature(record, claimed.recordDigest, signed, policy.signers); err != nil {
+			return err
+		}
 	}
 	// The request's claims, held to the record they name (option A of
 	// ADR-0011): a request whose claims do not match its record is refused.

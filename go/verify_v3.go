@@ -14,10 +14,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"unicode/utf8"
 )
@@ -270,6 +266,14 @@ func validateAction(v value, r *receipt) error {
 			return fmt.Errorf("action.decision: %w", err)
 		}
 	}
+	// How the record was found (ADR-0012): optional, and "exact" when
+	// present, the one reading a receipt names.
+	if recordBytes, present := decision.get("recordBytes"); present {
+		if s, ok := recordBytes.(vString); !ok || s != "exact" {
+			return errors.New(`action.decision: recordBytes, when present, is "exact"`)
+		}
+		r.exactRecord = true
+	}
 	citesV, ok := obj.get("cites")
 	if !ok {
 		return errors.New(`action: missing member "cites"`)
@@ -344,49 +348,106 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 // handed over are the bytes that hashed to the digest; a line is a slice of
 // the file's buffer, for onWanted to copy if it keeps it.
 func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func(citingRecord), onWanted func(digestHex string, data []byte)) (map[string]bool, bool, error) {
+	hooks := decisionWalk{onRecord: onRecord}
+	if onWanted != nil {
+		hooks.onWanted = func(h string, exact bool, data []byte) {
+			if !exact {
+				onWanted(h, data)
+			}
+		}
+	}
+	found, _, present, err := walkDecisionRecords(dir, wanted, hooks)
+	return found, present, err
+}
+
+// decisionWalk is what a walk of the decision-record directory looks for
+// and hands on as it goes, each optional.
+//
+// Two readings of a .jsonl file's lines are looked for. Under §4 step 6's,
+// each line has one trailing 0x0D removed; the digests wanted that way are
+// walkDecisionRecords' wanted. Under the exact reading, a line is all its
+// bytes before the 0x0A, a 0x0D among them -- the bytes the runtime wrote
+// and signed, for an action receipt whose decision.recordBytes is "exact"
+// and for /act under a policy that requires a signed record; the digests
+// wanted that way are exact. Any other candidate, a regular file whole, is
+// the same under both.
+//
+// It hands on: a candidate that cites, under step 6's reading (onRecord);
+// the bytes of a wanted record, once per reading (onWanted); the path of
+// every file a wanted record is found in as a record -- a line of it, or the
+// file whole when it is no .jsonl file -- each time it is found (onWantedIn);
+// and the path and bytes of every regular file the walk reads (onFile),
+// which is how a record's sidecar is found the way the record is.
+type decisionWalk struct {
+	onRecord   func(citingRecord)
+	exact      map[string]bool
+	onWanted   func(digestHex string, exact bool, data []byte)
+	onWantedIn func(digestHex string, exact bool, path string)
+	onFile     func(path string, data []byte)
+}
+
+// walkDecisionRecords walks the decision-record directory (SPEC.md §4 step
+// 6) and reports which wanted digests some candidate hashes to under step
+// 6's reading (found), which exact digests some candidate hashes to under
+// the exact reading (foundExact), and whether the directory was there at
+// all. The walk holds its root first, as the directory it was named by, and
+// enumerates and reads everything beneath it through that held root and the
+// directories it holds below it (heldTree), never by a path a link could be
+// put in since.
+func walkDecisionRecords(dir string, wanted map[string]bool, hooks decisionWalk) (map[string]bool, map[string]bool, bool, error) {
+	onRecord, onWanted := hooks.onRecord, hooks.onWanted
 	if dir == "" {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	if err := requirePlainSpelling(dir, false); err != nil {
-		return nil, false, fmt.Errorf("decision-record directory: %w", err)
+		return nil, nil, false, fmt.Errorf("decision-record directory: %w", err)
 	}
 	if there, err := registryContainerReachable(dir); err != nil {
-		return nil, false, fmt.Errorf("decision-record directory: %w", err)
+		return nil, nil, false, fmt.Errorf("decision-record directory: %w", err)
 	} else if !there {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	// a link that leads nowhere is there and cannot be read, at the
 	// directory as above it (§4.1), never the absence it would be taken for
 	info, err := statInput(dir, "the decision-record directory is a link that leads nowhere")
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if info == nil {
-		return nil, false, nil
+		return nil, nil, false, nil
 	}
 	if !info.IsDir() {
-		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
+		return nil, nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
 	}
-	found, handed := map[string]bool{}, map[string]bool{}
-	// note hashes a candidate for step 6; read reads it for step 7 and hands
-	// it to onWanted as well, which a .jsonl file's lines get and the file
-	// whole does not, so that a record is judged once and not also as the
-	// file it is the only line of.
-	note := func(data []byte, record bool) {
-		if len(wanted) == 0 {
+	found, foundExact := map[string]bool{}, map[string]bool{}
+	handed, handedExact := map[string]bool{}, map[string]bool{}
+	// note hashes a candidate for step 6 under one reading; a record --
+	// which a .jsonl file's lines are and the file whole is not, so that a
+	// record is judged once and not also as the file it is the only line of
+	// -- is handed on as well.
+	note := func(path string, data []byte, record, exact bool) {
+		want, got, gave := wanted, found, handed
+		if exact {
+			want, got, gave = hooks.exact, foundExact, handedExact
+		}
+		if len(want) == 0 {
 			return
 		}
 		sum := sha256.Sum256(data)
-		if h := hex.EncodeToString(sum[:]); wanted[h] {
-			found[h] = true
-			if record && onWanted != nil && !handed[h] {
-				handed[h] = true
-				onWanted(h, data)
+		if h := hex.EncodeToString(sum[:]); want[h] {
+			got[h] = true
+			if record && hooks.onWantedIn != nil {
+				hooks.onWantedIn(h, exact, path)
+			}
+			if record && onWanted != nil && !gave[h] {
+				gave[h] = true
+				onWanted(h, exact, data)
 			}
 		}
 	}
-	read := func(data []byte) {
-		note(data, true)
+	// read reads a record under step 6's reading for step 7.
+	read := func(path string, data []byte) {
+		note(path, data, true, false)
 		if onRecord == nil {
 			return
 		}
@@ -395,52 +456,52 @@ func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func
 			onRecord(citingRecord{digest: "sha256:" + hex.EncodeToString(sum[:]), cites: cites, malformed: malformed})
 		}
 	}
-	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	tree, err := holdRoot(dir)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if tree == nil {
+		// The directory is named by a link, which is never followed: it is
+		// there, and nothing under it is a candidate.
+		return found, foundExact, true, nil
+	}
+	defer tree.close()
+	err = tree.walk(func(path, name string, data []byte) error {
+		if hooks.onFile != nil {
+			hooks.onFile(path, data)
 		}
-		// a name Windows would not read as spelled is read, by its path, as
-		// another file or none: it cannot be read, and is no verdict (§4.1)
-		if runtime.GOOS == "windows" && path != dir && !windowsReadsAsSpelled(d.Name()) {
-			return fmt.Errorf("decision-record directory holds a name Windows would not read as spelled: %s", path)
-		}
-		if d.Type()&fs.ModeSymlink != 0 {
-			return nil // never followed, whatever it points at
-		}
-		if !d.Type().IsRegular() {
+		if !strings.HasSuffix(name, ".jsonl") {
+			read(path, data)
+			note(path, data, true, true)
 			return nil
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if !strings.HasSuffix(d.Name(), ".jsonl") {
-			read(data)
-		} else {
-			note(data, false)
-			// One candidate per line: split on 0x0A, one trailing 0x0D removed,
-			// empty pieces skipped, the unterminated final piece kept. Walked by
-			// index so a file of newlines allocates nothing per line.
-			rest := data
-			for len(rest) > 0 {
-				line := rest
-				if i := bytes.IndexByte(rest, '\n'); i >= 0 {
-					line, rest = rest[:i], rest[i+1:]
-				} else {
-					rest = nil
-				}
-				line = bytes.TrimSuffix(line, []byte{'\r'})
-				if len(line) > 0 {
-					read(line)
-				}
+		note(path, data, false, false)
+		note(path, data, false, true)
+		// One candidate per line: split on 0x0A, one trailing 0x0D removed
+		// under step 6's reading and none under the exact one, empty pieces
+		// skipped, the unterminated final piece kept. Walked by index so a
+		// file of newlines allocates nothing per line.
+		rest := data
+		for len(rest) > 0 {
+			line := rest
+			if i := bytes.IndexByte(rest, '\n'); i >= 0 {
+				line, rest = rest[:i], rest[i+1:]
+			} else {
+				rest = nil
+			}
+			if len(line) > 0 {
+				note(path, line, true, true)
+			}
+			if line = bytes.TrimSuffix(line, []byte{'\r'}); len(line) > 0 {
+				read(path, line)
 			}
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
-	return found, true, nil
+	return found, foundExact, true, nil
 }
 
 // parseCitations holds a cites member to the shape §1.2a gives action.cites

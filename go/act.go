@@ -20,9 +20,10 @@ import (
 // under its own decision-record directory -- before anything is sent to a
 // target, and that the receipt names who asked. For a tool the operator holds
 // to a decision policy (ADR-0011) it holds one thing more, still before
-// anything is sent: that the record is the runtime's, that the request's
-// claims are the record's, and that the record meets the policy
-// (holdToPolicy). For a tool with none, nothing in the record is read.
+// anything is sent: that the record is the runtime's, signed by a key the
+// policy trusts when it says so, that the request's claims are the record's,
+// and that the record meets the policy (holdToPolicy). For a tool with none,
+// nothing in the record is read.
 
 // actRefusal is why an action was refused before any executor ran, and at
 // which step of the ladder; it is answered as a bad request naming the step.
@@ -133,25 +134,57 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		return nil, actRefusal{"decision", "this engine was started without a decision-record directory, so no record can be found for an action to rely on"}
 	}
 	recordHex := strings.TrimPrefix(decision.recordDigest, "sha256:")
+	// A policy that requires a signed record finds the record under the
+	// exact reading: a line of a .jsonl file is all its bytes before the
+	// 0x0A, since the digest a signature binds is of the bytes the runtime
+	// wrote and a line converted to CRLF is other bytes. The receipt says
+	// so (decision.recordBytes), and verify then finds the record the same
+	// way. Every other request is found under §4 step 6's reading.
+	exact := policy != nil && len(policy.signers) > 0
+	wanted, exactWanted := map[string]bool{recordHex: true}, map[string]bool(nil)
+	if exact {
+		wanted, exactWanted = nil, map[string]bool{recordHex: true}
+	}
 	// The record's bytes are kept only for a tool held to a policy: the
 	// bytes that hashed to the digest, which are then the bytes judged.
 	var recorded []byte
-	var keep func(string, []byte)
+	hooks := decisionWalk{exact: exactWanted}
 	if policy != nil {
-		keep = func(_ string, data []byte) { recorded = append([]byte(nil), data...) }
+		hooks.onWanted = func(_ string, _ bool, data []byte) { recorded = append([]byte(nil), data...) }
 	}
-	found, present, err := decisionCandidatesReading(g.decisionRecords, map[string]bool{recordHex: true}, nil, keep)
+	// For a policy that requires a signed record, the walk also notes every
+	// directory the record is found in, and reads each sidecar it meets for
+	// the lines that name the record's digest: the sidecar beside the record
+	// is the one in such a directory, found as the record is.
+	recordDirs := map[string]bool{}
+	sidecars := map[string][]recordSignature{}
+	if exact {
+		hooks.onWantedIn = func(_ string, _ bool, path string) { recordDirs[filepath.Dir(path)] = true }
+		hooks.onFile = func(path string, data []byte) {
+			if filepath.Base(path) == sidecarName {
+				sidecars[filepath.Dir(path)] = recordSignaturesFor(data, decision.recordDigest)
+			}
+		}
+	}
+	found, foundExact, present, err := walkDecisionRecords(g.decisionRecords, wanted, hooks)
 	if err != nil {
 		// What went wrong is the operator's to read in the log; the
 		// requester learns that the directory could not be read, not where
 		// it is.
 		return nil, actRefusal{"decision", "the decision-record directory could not be read"}
 	}
-	if !present || !found[recordHex] {
+	if !present || !(found[recordHex] || foundExact[recordHex]) {
 		return nil, actRefusal{"decision", fmt.Sprintf("no candidate under the decision-record directory has the digest %s", decision.recordDigest)}
 	}
 	if policy != nil {
-		if err := holdToPolicy(recorded, decision, cites, arguments, policy); err != nil {
+		var signed sidecarEvidence
+		for dir := range recordDirs {
+			if lines, beside := sidecars[dir]; beside {
+				signed.beside = true
+				signed.lines = append(signed.lines, lines...)
+			}
+		}
+		if err := holdToPolicy(recorded, decision, cites, arguments, policy, signed); err != nil {
 			return nil, err
 		}
 	}
@@ -224,6 +257,12 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	decided := newObject()
 	decided.set("recordDigest", vString(decision.recordDigest))
 	decided.set("packDigest", vString(decision.packDigest))
+	// How the record was found, under the signature: by its exact bytes for
+	// a policy that requires a signed record, which the verifier then reads
+	// the same way (SPEC.md §1.2a, §4 step 6); absent otherwise.
+	if exact {
+		decided.set("recordBytes", vString("exact"))
+	}
 	action.set("decision", decided)
 	cited := make(vArray, 0, len(cites))
 	for _, c := range cites {

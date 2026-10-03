@@ -27,15 +27,17 @@ import (
 // engineVersion is the newest version this engine reads; engineVersions are
 // all it reads. Version 2 adds the optional `mcp` member (docs/design/
 // mcp-server.md), version 3 a platform's optional `descriptors` pin
-// (docs/design/tool-descriptors.md), and version 4 a platform's optional
-// `decisionPolicy` (docs/adr/0011-hold-a-write-to-its-decision.md): a file
-// of an earlier version without the member still loads, and one with it is
-// refused by name, as any member a version does not have. connect raises a
-// file to version 3 exactly when the entry it writes carries a pin, and
-// otherwise leaves the version as it found it; it never lowers one.
-const engineVersion = "4"
+// (docs/design/tool-descriptors.md), version 4 a platform's optional
+// `decisionPolicy` (docs/adr/0011-hold-a-write-to-its-decision.md), and
+// version 5 a decision policy's optional `requireSignedRecord`
+// (docs/adr/0012-hold-a-write-to-a-signed-record.md): a file of an earlier
+// version without the member still loads, and one with it is refused by
+// name, as any member a version does not have. connect raises a file to
+// version 3 exactly when the entry it writes carries a pin, and otherwise
+// leaves the version as it found it; it never lowers one.
+const engineVersion = "5"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -224,7 +226,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q or %q", version, "1", "2", "3", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q or %q", version, "1", "2", "3", "4", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
@@ -423,7 +425,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			if !pc.write {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: decisionPolicy holds write tools to a decision, and the platform does not set write: true", name)
 			}
-			if pc.policies, err = parseDecisionPolicies(policiesValue, name); err != nil {
+			if pc.policies, err = parseDecisionPolicies(policiesValue, name, version); err != nil {
 				return engineConfig{}, err
 			}
 		}
