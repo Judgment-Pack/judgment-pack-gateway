@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// A write held to its decision (ADR-0011, docs/design/executor.md steps 8 to
-// 10): for a tool the operator holds to a decision policy, the executor reads
+// A write held to its decision (ADR-0011, docs/design/executor.md steps 8,
+// 10 and 11; step 9, a signed record, is act_signed_test.go's): for a tool the operator holds to a decision policy, the executor reads
 // the record the request names, holds the request's claims to it and holds
 // it to the policy, and refuses at the first that fails, with nothing run.
 
@@ -38,7 +38,7 @@ func mustPolicy(t *testing.T, text string) *decisionPolicy {
 	if err != nil {
 		t.Fatal(err)
 	}
-	policy, err := parseDecisionPolicy(v, "test")
+	policy, err := parseDecisionPolicy(v, "test", engineVersion)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,13 +121,13 @@ func TestActHoldsAWriteToItsDecisionPolicy(t *testing.T) {
 		{"a graph composite", runtimeLine(t, signature, `"kind":"evaluation"`, `"kind":"graph-composite"`), "", "", "record", "graph composite"},
 		{"a record of another kind", runtimeLine(t, signature, `"kind":"evaluation"`, `"kind":"other"`), "", "", "record", `kind is not "evaluation"`},
 		{"a record with no pack digest", runtimeLine(t, signature, `"digest":"`+packA+`"`, `"id2":"`+packA+`"`), "", "", "record", "no pack digest"},
-		// step 9: the request's claims are the record's
+		// step 10: the request's claims are the record's
 		{"a pack digest the record was not decided under", "", packB, "", "consistency", "decision.packDigest"},
 		{"a record citing another receipt", runtimeLine(t, signature, signature, strings.Repeat("e", 128)), "", "", "consistency", "as a set"},
 		{"a record citing nothing", runtimeLine(t, signature, `"cites":[{"sessionId":"act-p","callIndex":0,"signature":"`+signature+`"}],`, ``), "", "", "consistency", "cites none"},
 		{"a record whose cites is not of the shape", runtimeLine(t, signature, `"callIndex":0`, `"callIndex":"0"`), "", "", "consistency", "not of the shape"},
 		{"a record whose citation carries a fraction beside its three members", runtimeLine(t, signature, `"callIndex":0,`, `"callIndex":0,"extra":{"fraction":0.5},`), "", "", "consistency", "not of the shape"},
-		// step 10: the policy, in its order
+		// step 11: the policy, in its order
 		{"a handoff requested on an unresolved record", runtimeLine(t, signature, `{"handoff":{"state":"none"},"kind":"outcome","outcomeId":"approve","reasons":[]}`, `{"handoff":{"state":"requested","triggeredBy":["unknown"]},"kind":"unresolved","reasons":["unknown"]}`), "", "", "policy-outcome", "not an outcome the tool's decision policy allows"},
 		{"an outcome the policy does not allow", runtimeLine(t, signature, `"outcomeId":"approve"`, `"outcomeId":"deny"`), "", "", "policy-outcome", "not an outcome"},
 		{"an allowed outcome id on a disposition of another kind", runtimeLine(t, signature, `"kind":"outcome"`, `"kind":"unresolved"`), "", "", "policy-outcome", "not an outcome"},

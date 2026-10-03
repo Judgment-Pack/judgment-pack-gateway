@@ -20,9 +20,10 @@ import (
 // under its own decision-record directory -- before anything is sent to a
 // target, and that the receipt names who asked. For a tool the operator holds
 // to a decision policy (ADR-0011) it holds one thing more, still before
-// anything is sent: that the record is the runtime's, that the request's
-// claims are the record's, and that the record meets the policy
-// (holdToPolicy). For a tool with none, nothing in the record is read.
+// anything is sent: that the record is the runtime's, signed by a key the
+// policy trusts when it says so, that the request's claims are the record's,
+// and that the record meets the policy (holdToPolicy). For a tool with none,
+// nothing in the record is read.
 
 // actRefusal is why an action was refused before any executor ran, and at
 // which step of the ladder; it is answered as a bad request naming the step.
@@ -136,11 +137,25 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	// The record's bytes are kept only for a tool held to a policy: the
 	// bytes that hashed to the digest, which are then the bytes judged.
 	var recorded []byte
-	var keep func(string, []byte)
+	var hooks decisionWalk
 	if policy != nil {
-		keep = func(_ string, data []byte) { recorded = append([]byte(nil), data...) }
+		hooks.onWanted = func(_ string, data []byte) { recorded = append([]byte(nil), data...) }
 	}
-	found, present, err := decisionCandidatesReading(g.decisionRecords, map[string]bool{recordHex: true}, nil, keep)
+	// For a policy that requires a signed record, the walk also notes every
+	// directory the record is found in, and reads each sidecar it meets for
+	// the lines that name the record's digest: the sidecar beside the record
+	// is the one in such a directory, found as the record is.
+	recordDirs := map[string]bool{}
+	sidecars := map[string][]recordSignature{}
+	if policy != nil && len(policy.signers) > 0 {
+		hooks.onWantedIn = func(_ string, path string) { recordDirs[filepath.Dir(path)] = true }
+		hooks.onFile = func(path string, data []byte) {
+			if filepath.Base(path) == sidecarName {
+				sidecars[filepath.Dir(path)] = recordSignaturesFor(data, decision.recordDigest)
+			}
+		}
+	}
+	found, present, err := walkDecisionRecords(g.decisionRecords, map[string]bool{recordHex: true}, hooks)
 	if err != nil {
 		// What went wrong is the operator's to read in the log; the
 		// requester learns that the directory could not be read, not where
@@ -151,7 +166,14 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		return nil, actRefusal{"decision", fmt.Sprintf("no candidate under the decision-record directory has the digest %s", decision.recordDigest)}
 	}
 	if policy != nil {
-		if err := holdToPolicy(recorded, decision, cites, arguments, policy); err != nil {
+		var signed sidecarEvidence
+		for dir := range recordDirs {
+			if lines, beside := sidecars[dir]; beside {
+				signed.beside = true
+				signed.lines = append(signed.lines, lines...)
+			}
+		}
+		if err := holdToPolicy(recorded, decision, cites, arguments, policy, signed); err != nil {
 			return nil, err
 		}
 	}

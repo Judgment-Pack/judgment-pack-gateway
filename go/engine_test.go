@@ -220,7 +220,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"unknown member", engineJSON(t, catalog, `,"port":8787`, good), `unknown member "port"`},
 		{"duplicate member", `{"engineVersion":"1","engineVersion":"1"}`, "duplicate"},
 		{"missing member", replace(`"registry":"`, `"registryx":"`), `unknown member "registryx"`},
-		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"5"`), `engineVersion "5" is not "1", "2", "3" or "4"`},
+		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"6"`), `engineVersion "6" is not "1", "2", "3", "4" or "5"`},
 		{"identity without an audience", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), `missing member "audience"`},
 		{"identity with an unknown member", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`","jwksUrl":"https://x"}`, good), `unknown member "jwksUrl"`},
 		{"identity with an empty issuer", engineJSON(t, catalog, `,"identity":{"issuer":"","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), "identity.issuer must be the token issuer"},

@@ -171,13 +171,16 @@ func TestEngineConfigDrivesTheMCPAdapterEndToEnd(t *testing.T) {
 }
 
 // The same join with the write held to its decision (ADR-0011): a platform
-// whose configuration holds its write tool to a decision policy; an
-// acquisition; a record in the runtime's own form, written where the engine
-// looks, citing it; an action whose claims the record does not bear out,
-// refused with nothing run; the action that meets every check, performed by
-// adapter-mcp on the write binding and receipted with the policy's digest;
-// and the store, the registry and the records verifying together, the
-// record compared and matching.
+// whose configuration holds its write tool to a decision policy that
+// requires a record signed by a runtime key it trusts (ADR-0012); an
+// acquisition; a chained record in the runtime's own form, written where the
+// engine looks, citing it; the action refused with nothing run while no
+// sidecar signs the record, and, once one does, an action whose claims the
+// record does not bear out refused too; the action that meets every check,
+// performed by adapter-mcp on the write binding and receipted with the
+// policy's digest; and the store, the registry and the records -- the
+// sidecar among them -- verifying together, the record compared and
+// matching.
 func TestEngineHoldsAWriteToItsDecisionEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	bin, fake := buildMCPStandIns(t, dir)
@@ -187,8 +190,10 @@ func TestEngineHoldsAWriteToItsDecisionEndToEnd(t *testing.T) {
 	}
 	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
 	escape := func(p string) string { return strings.ReplaceAll(p, `\`, `\\`) }
-	policy := `{"outcomes":["approve"],"packs":["` + packA + `"],"reviewed":true,"bind":[{"argument":"/ticket","fact":"/ticket/id"},{"argument":"/revision","fact":"/ticket/revision"}]}`
-	text := `{"engineVersion":"4","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
+	runtimeKey := keyFromSeed(t, vectorSeed1)
+	policy := `{"outcomes":["approve"],"packs":["` + packA + `"],"reviewed":true,"bind":[{"argument":"/ticket","fact":"/ticket/id"},{"argument":"/revision","fact":"/ticket/revision"}],` +
+		`"requireSignedRecord":["` + runtimeKey.public + `"]}`
+	text := `{"engineVersion":"5","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
 		`"registry":"` + escape(filepath.Join(dir, "registry.jsonl")) + `","decisionRecords":"` + escape(filepath.Join(dir, "decisions")) + `",` +
 		`"listen":"127.0.0.1:0","catalog":"` + escape(catalog) + `","runtime":"` + escape(fake) + `","adapters":"` + escape(bin) + `",` +
 		`"platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + escape(credentials) + `"},"live":{"file":"` + escape(credentials) + `"},"write":{"file":"` + escape(credentials) + `"}},` +
@@ -229,7 +234,8 @@ func TestEngineHoldsAWriteToItsDecisionEndToEnd(t *testing.T) {
 	// internal/audit): the pack's digest, the facts as evaluated -- a
 	// fraction among them -- the law it was judged under, the receipt it
 	// relied on, and the disposition in its canonical form.
-	line := `{"recordVersion":"1","run":"9a8b7c6d5e4f3a2b","at":"2026-09-30T10:00:00.5Z","kind":"evaluation","surface":"evaluate","tool":{"name":"jpack","version":"0.23.1"},` +
+	trail := strings.Repeat("8d", 16)
+	line := `{"recordVersion":"1","trail":"` + trail + `","sequence":1,"previous":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","run":"9a8b7c6d5e4f3a2b","at":"2026-09-30T10:00:00.5Z","kind":"evaluation","surface":"evaluate","tool":{"name":"jpack","version":"0.23.1"},` +
 		`"evaluatorSpecVersion":"1.0","pack":{"id":"ticket-approval","version":"2.0.0","specVersion":"1.0","digest":"` + packA + `"},` +
 		`"inputs":{"facts":{"ticket":{"id":"T-1","revision":7,"amount":1250.75}},"evidence":null,"evidenceSupplied":false},"reviewed":true,` +
 		`"reviewedSet":{"lockDigest":"sha256:` + strings.Repeat("c3", 32) + `","lockVersion":"1","configDigest":"sha256:` + strings.Repeat("d4", 32) + `"},` +
@@ -246,9 +252,18 @@ func TestEngineHoldsAWriteToItsDecisionEndToEnd(t *testing.T) {
 			`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"` + packA + `"},` +
 			`"cites":[{"sessionId":"held-1","callIndex":0,"signature":"` + signature + `"}]}`
 	}
+	// No sidecar signs the record yet: refused before the executor is
+	// started, and nothing is minted.
+	started := service.started.Load()
+	if code, body := post(t, server, "/act", act("7")); code != http.StatusBadRequest || body["refusedAt"] != "policy-signed" {
+		t.Fatalf("a record no trusted key signed: %d %v", code, body)
+	}
+	// The runtime signs it in the sidecar beside the trail.
+	if err := os.WriteFile(filepath.Join(cfg.decisionRecords, sidecarName), []byte(signedLine(runtimeKey, trail, 1, "sha256:"+hexOf([]byte(line)))+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// Decided on revision 7, written to revision 8: refused before the
 	// executor is started, and nothing is minted.
-	started := service.started.Load()
 	if code, body := post(t, server, "/act", act("8")); code != http.StatusBadRequest || body["refusedAt"] != "policy-bind" {
 		t.Fatalf("a write to another revision than the one decided: %d %v", code, body)
 	}

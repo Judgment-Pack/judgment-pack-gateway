@@ -344,6 +344,28 @@ func decisionCandidates(dir string, wanted map[string]bool, onRecord func(citing
 // handed over are the bytes that hashed to the digest; a line is a slice of
 // the file's buffer, for onWanted to copy if it keeps it.
 func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func(citingRecord), onWanted func(digestHex string, data []byte)) (map[string]bool, bool, error) {
+	return walkDecisionRecords(dir, wanted, decisionWalk{onRecord: onRecord, onWanted: onWanted})
+}
+
+// decisionWalk is what a walk of the decision-record directory hands on as
+// it goes, each optional: a candidate that cites (onRecord); the bytes of a
+// wanted record, once (onWanted); the path of every file a wanted record is
+// found in as a record -- a line of it, or the file whole when it is no
+// .jsonl file -- each time it is found (onWantedIn); and the path and bytes
+// of every regular file the walk reads (onFile), which is how a record's
+// sidecar is found the way the record is: an entry of the walk, never a
+// link, read once with the rest.
+type decisionWalk struct {
+	onRecord   func(citingRecord)
+	onWanted   func(digestHex string, data []byte)
+	onWantedIn func(digestHex, path string)
+	onFile     func(path string, data []byte)
+}
+
+// walkDecisionRecords is decisionCandidatesReading with every hook of a
+// decisionWalk.
+func walkDecisionRecords(dir string, wanted map[string]bool, hooks decisionWalk) (map[string]bool, bool, error) {
+	onRecord, onWanted := hooks.onRecord, hooks.onWanted
 	if dir == "" {
 		return nil, false, nil
 	}
@@ -372,21 +394,24 @@ func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func
 	// it to onWanted as well, which a .jsonl file's lines get and the file
 	// whole does not, so that a record is judged once and not also as the
 	// file it is the only line of.
-	note := func(data []byte, record bool) {
+	note := func(path string, data []byte, record bool) {
 		if len(wanted) == 0 {
 			return
 		}
 		sum := sha256.Sum256(data)
 		if h := hex.EncodeToString(sum[:]); wanted[h] {
 			found[h] = true
+			if record && hooks.onWantedIn != nil {
+				hooks.onWantedIn(h, path)
+			}
 			if record && onWanted != nil && !handed[h] {
 				handed[h] = true
 				onWanted(h, data)
 			}
 		}
 	}
-	read := func(data []byte) {
-		note(data, true)
+	read := func(path string, data []byte) {
+		note(path, data, true)
 		if onRecord == nil {
 			return
 		}
@@ -414,10 +439,13 @@ func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func
 		if err != nil {
 			return err
 		}
+		if hooks.onFile != nil {
+			hooks.onFile(path, data)
+		}
 		if !strings.HasSuffix(d.Name(), ".jsonl") {
-			read(data)
+			read(path, data)
 		} else {
-			note(data, false)
+			note(path, data, false)
 			// One candidate per line: split on 0x0A, one trailing 0x0D removed,
 			// empty pieces skipped, the unterminated final piece kept. Walked by
 			// index so a file of newlines allocates nothing per line.
@@ -431,7 +459,7 @@ func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func
 				}
 				line = bytes.TrimSuffix(line, []byte{'\r'})
 				if len(line) > 0 {
-					read(line)
+					read(path, line)
 				}
 			}
 		}
