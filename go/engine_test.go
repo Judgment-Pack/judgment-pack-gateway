@@ -898,3 +898,184 @@ func TestALinkAtTheSeedOrCredentialsIsFollowedAndHeld(t *testing.T) {
 	creds[credentials] = fileOwnership{uid: 1001, mode: 0o777, link: true}
 	expect("a credentials link of the platform user's", creds, cfg, credentials+" is a symbolic link owned by uid 1001, not root")
 }
+
+// Every adapter the sources launch is held at start-up and launched by the
+// path it resolved to (#203). The engine image's layout starts: the adapters
+// root's, at /usr/local/bin, found on the engine's PATH or named by the
+// configuration's adapters. A directory others may write, a link into one, a
+// link another user owns, a directory on the way others may write, an
+// adapter that is no regular file, one another user owns, and one its group
+// or others may write are each refused; so is one not there.
+func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
+	// Rooted on a volume, so the paths are absolute on Windows too, as a
+	// path an adapter is launched by must be.
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+	bin := filepath.Join(root, "usr", "local", "bin")
+	const signer = 65532
+	image := func() ownership {
+		fs := ownership{}
+		for _, dir := range []string{root, filepath.Join(root, "usr"), filepath.Join(root, "usr", "local"), bin} {
+			fs[dir] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+		}
+		for _, name := range []string{"adapter-airbyte", "adapter-mcp"} {
+			fs[filepath.Join(bin, name)] = fileOwnership{uid: 0, mode: 0o755}
+		}
+		return fs
+	}
+	onPath := func(dir string) func(string) (string, error) {
+		return func(name string) (string, error) { return filepath.Join(dir, name), nil }
+	}
+	// Every adapter reads as a static native executable of this host, but
+	// the ones a test names otherwise.
+	type format struct {
+		loader string
+		err    error
+	}
+	formats := map[string]format{}
+	formatOf := func(path string) (string, error) {
+		f := formats[path]
+		return f.loader, f.err
+	}
+	host := func(fs ownership, lookPath func(string) (string, error)) engineHost {
+		return engineHost{euid: signer, fileOwner: fs.owner, readLink: readLinkStub, lookPath: lookPath, executableFormat: formatOf}
+	}
+	sources := func(adapters string) map[string]sourceSpec {
+		name := func(adapter string) string {
+			if adapters == "" {
+				return adapter
+			}
+			return filepath.Join(adapters, adapter)
+		}
+		return map[string]sourceSpec{
+			"warehouse/history": {argv: []string{name("adapter-airbyte"), "--image=x"}},
+			"warehouse/live":    {argv: []string{name("adapter-mcp"), "--image=y"}},
+			"warehouse/write":   {argv: []string{name("adapter-mcp"), "--image=z"}},
+		}
+	}
+	for _, adapters := range []string{"", bin} {
+		launched := sources(adapters)
+		if err := holdAdapterSources(launched, host(image(), onPath(bin))); err != nil {
+			t.Fatalf("the image's layout, adapters %q: %v", adapters, err)
+		}
+		if launched["warehouse/history"].argv[0] != filepath.Join(bin, "adapter-airbyte") || launched["warehouse/write"].argv[0] != filepath.Join(bin, "adapter-mcp") ||
+			launched["warehouse/live"].argv[1] != "--image=y" {
+			t.Fatalf("each source launches the resolved path, its arguments kept: %v", launched)
+		}
+	}
+	// Each command is resolved once: the live and write sources share
+	// adapter-mcp, and a second lookup, which here would answer another
+	// path, is never made.
+	lookups := map[string]int{}
+	counted := func(name string) (string, error) {
+		lookups[name]++
+		if lookups[name] > 1 {
+			return filepath.Join(root, "elsewhere", name), nil
+		}
+		return filepath.Join(bin, name), nil
+	}
+	once := sources("")
+	if err := holdAdapterSources(once, host(image(), counted)); err != nil {
+		t.Fatal(err)
+	}
+	if lookups["adapter-mcp"] != 1 || lookups["adapter-airbyte"] != 1 || once["warehouse/live"].argv[0] != once["warehouse/write"].argv[0] ||
+		once["warehouse/live"].argv[0] != filepath.Join(bin, "adapter-mcp") || once["warehouse/write"].argv[1] != "--image=z" {
+		t.Fatalf("one lookup per command, one resolved path: %v %v", lookups, once)
+	}
+	// What the format check says of an adapter refuses it, naming why; a
+	// dynamically linked adapter's loader is held as the adapter is.
+	for name, err := range map[string]error{
+		"a script":                        errScript,
+		"a file that is no native binary": errors.New("is not an ELF executable this host runs: bad magic number"),
+	} {
+		formats[filepath.Join(bin, "adapter-mcp")] = format{err: err}
+		if got := holdAdapterSources(sources(""), host(image(), onPath(bin))); got == nil || !strings.Contains(got.Error(), filepath.Join(bin, "adapter-mcp")+" "+err.Error()) {
+			t.Fatalf("%s: got %v", name, got)
+		}
+	}
+	lib := filepath.Join(root, "lib")
+	loader := filepath.Join(lib, "ld.so")
+	formats[filepath.Join(bin, "adapter-mcp")] = format{loader: loader}
+	withLoader := image()
+	withLoader[lib] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	withLoader[loader] = fileOwnership{uid: 0, mode: 0o755}
+	if err := holdAdapterSources(sources(""), host(withLoader, onPath(bin))); err != nil {
+		t.Fatalf("a loader root's, in root's directory: %v", err)
+	}
+	withLoader[lib] = fileOwnership{uid: 0, mode: 0o777, dir: true}
+	if err := holdAdapterSources(sources(""), host(withLoader, onPath(bin))); err == nil || !strings.Contains(err.Error(), "is run by the loader "+loader+", which is refused: "+lib+" is writable beyond its owner") {
+		t.Fatalf("a loader in a directory others may write: %v", err)
+	}
+	withLoader[lib] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	withLoader[loader] = fileOwnership{uid: 1002, mode: 0o755}
+	if err := holdAdapterSources(sources(""), host(withLoader, onPath(bin))); err == nil || !strings.Contains(err.Error(), "is run by the loader "+loader+", which is refused: "+loader+" is owned by uid 1002") {
+		t.Fatalf("a loader another user owns: %v", err)
+	}
+	delete(formats, filepath.Join(bin, "adapter-mcp"))
+	expect := func(name string, fs ownership, adapters string, want string) {
+		t.Helper()
+		if err := holdAdapterSources(sources(adapters), host(fs, onPath(bin))); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%s: want %q, got %v", name, want, err)
+		}
+	}
+	opt := filepath.Join(root, "opt")
+	adapters := filepath.Join(opt, "adapters")
+	open := image()
+	open[opt] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	open[adapters] = fileOwnership{uid: 0, mode: 0o777, dir: true}
+	open[filepath.Join(adapters, "adapter-airbyte")] = fileOwnership{uid: 0, mode: 0o755}
+	open[filepath.Join(adapters, "adapter-mcp")] = fileOwnership{uid: 0, mode: 0o755}
+	expect("a 0777 adapter directory", open, adapters, adapters+" is writable beyond its owner (mode 0777) without the sticky bit")
+	open[adapters] = fileOwnership{uid: signer, mode: 0o755, dir: true}
+	open[opt] = fileOwnership{uid: 0, mode: 0o777, dir: true}
+	expect("a directory on the way others may write", open, adapters, opt+" is writable beyond its owner (mode 0777) without the sticky bit")
+	open[opt] = fileOwnership{uid: 0, mode: 0o777, dir: true, sticky: true}
+	if err := holdAdapterSources(sources(adapters), host(open, onPath(bin))); err != nil {
+		t.Fatalf("a signer's adapter directory under a sticky one: %v", err)
+	}
+	linked := image()
+	linked[filepath.Join(root, "srv")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	linked[filepath.Join(root, "srv", "open")] = fileOwnership{uid: 0, mode: 0o777, dir: true}
+	linked[filepath.Join(root, "srv", "open", "adapter-mcp")] = fileOwnership{uid: 0, mode: 0o755}
+	linked[filepath.Join(bin, "adapter-mcp")] = fileOwnership{uid: 0, mode: 0o777, link: true}
+	linkTargets[filepath.Join(bin, "adapter-mcp")] = filepath.Join(root, "srv", "open", "adapter-mcp")
+	expect("a link into a directory others may write", linked, "", filepath.Join(root, "srv", "open")+" is writable beyond its owner (mode 0777) without the sticky bit")
+	linked[filepath.Join(root, "srv", "open")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	resolved := sources("")
+	if err := holdAdapterSources(resolved, host(linked, onPath(bin))); err != nil || resolved["warehouse/live"].argv[0] != filepath.Join(root, "srv", "open", "adapter-mcp") {
+		t.Fatalf("a root's link is followed and its target launched: %v %v", err, resolved["warehouse/live"].argv)
+	}
+	linked[filepath.Join(bin, "adapter-mcp")] = fileOwnership{uid: signer, mode: 0o777, link: true}
+	if err := holdAdapterSources(sources(""), host(linked, onPath(bin))); err != nil {
+		t.Fatalf("a link of the signer's own is followed: %v", err)
+	}
+	linked[filepath.Join(bin, "adapter-mcp")] = fileOwnership{uid: 1002, mode: 0o777, link: true}
+	expect("a link another user owns", linked, "", filepath.Join(bin, "adapter-mcp")+" is a symbolic link owned by uid 1002, neither root nor uid 65532")
+	delete(linkTargets, filepath.Join(bin, "adapter-mcp"))
+	for name, file := range map[string]fileOwnership{
+		"a directory where the adapter should be": {uid: 0, mode: 0o755, dir: true},
+		"an adapter another user owns":            {uid: 1002, mode: 0o755},
+		"an adapter its group may write":          {uid: 0, mode: 0o775},
+		"an adapter others may write":             {uid: signer, mode: 0o757},
+	} {
+		fs := image()
+		fs[filepath.Join(bin, "adapter-mcp")] = file
+		want := map[bool]string{true: "is a directory, not an executable", false: "so its owner could replace what runs as a platform's user"}[file.dir]
+		if file.uid != 1002 && !file.dir {
+			want = "is writable beyond its owner"
+		}
+		expect(name, fs, "", want)
+	}
+	gone := image()
+	delete(gone, filepath.Join(bin, "adapter-airbyte"))
+	expect("an adapter not there", gone, bin, filepath.Join(bin, "adapter-airbyte")+": file does not exist")
+	notFound := func(string) (string, error) { return "", errors.New("executable file not found in $PATH") }
+	if err := holdAdapterSources(sources(""), host(image(), notFound)); err == nil || !strings.Contains(err.Error(), "it is not found on the engine's PATH") {
+		t.Fatalf("an adapter not on the PATH: %v", err)
+	}
+	// Where the host finds no PATH, a name without a directory is the
+	// launch's to find, as before.
+	bare := sources("")
+	if err := holdAdapterSources(bare, host(ownership{}, nil)); err != nil || bare["warehouse/live"].argv[0] != "adapter-mcp" {
+		t.Fatalf("no PATH to search: %v %v", err, bare["warehouse/live"].argv)
+	}
+}

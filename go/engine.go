@@ -176,6 +176,14 @@ type engineHost struct {
 	switching func(sources map[string]sourceSpec) error
 	// executable is this binary as the kernel sees it (exeFacts).
 	executable func() (exeFacts, error)
+	// lookPath finds an adapter named without a directory on the engine's
+	// PATH, as a launch would (exec.LookPath); nil leaves such a name to the
+	// launch.
+	lookPath func(file string) (string, error)
+	// executableFormat holds an adapter's file to a native executable of
+	// this host (readNativeExecutable) and answers the loader it names, if
+	// any; nil leaves that unchecked, as a test of other things may.
+	executableFormat func(path string) (loader string, err error)
 }
 
 // exeFacts is what the engine knows about its own binary: its path, its
@@ -1327,6 +1335,119 @@ func walkComponents(path string, host engineHost, hold func(dir string) error, l
 		current = next
 	}
 	return current, nil
+}
+
+// holdAdapterSources holds every adapter executable the sources launch
+// (gateway #203) and rewrites each source's command to the path it resolved
+// to, which is then the path launched. An adapter runs as a platform's user
+// with that platform's credentials, so whoever could replace it could act
+// as that platform. Each is found as a launch would find it: by its path
+// when it has a directory (the configuration's adapters), and otherwise on
+// the engine's PATH, once, here, so a file put on the PATH later is never
+// the one launched. Its way is then walked as the seed's is (trustedFile),
+// for the signer: every directory owned by root or the signer and writable
+// by nobody else unless the sticky bit keeps others from replacing what
+// they do not own, every link root's or the signer's and followed, each
+// link's directory and every ancestor of its target held in turn. The file
+// it arrives at must be there, a regular file, owned by root or the signer,
+// writable by nobody else, and a native executable: a script names an
+// interpreter, or has env find one, that nothing here holds.
+//
+// This is a check of owners and modes at start-up. It holds while the file
+// and the directories on its way keep that protection, and only against
+// access opened after it was in place: a process that opened the file for
+// writing before then, or an owner or a mode changed later, is not seen, and
+// the launch runs whatever is at the resolved path, not a descriptor held
+// from here. It assumes the adapters were installed, by root or the signer,
+// from a source they trust.
+func holdAdapterSources(sources map[string]sourceSpec, host engineHost) error {
+	resolved := map[string]string{}
+	names := make([]string, 0, len(sources))
+	for name := range sources {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		spec := sources[name]
+		if len(spec.argv) == 0 {
+			continue
+		}
+		command := spec.argv[0]
+		path, held := resolved[command]
+		if !held {
+			var err error
+			if path, err = holdAdapter(command, host); err != nil {
+				return fmt.Errorf("source %s: adapter %s: %v", name, command, err)
+			}
+			resolved[command] = path
+		}
+		spec.argv = append([]string{path}, spec.argv[1:]...)
+		sources[name] = spec
+	}
+	return nil
+}
+
+// holdAdapter is holdAdapterSources for one command: the path it resolved
+// to, or why it is refused. A name without a directory is left as it is
+// where the host finds no PATH.
+func holdAdapter(command string, host engineHost) (string, error) {
+	path := command
+	if !strings.ContainsRune(command, filepath.Separator) && !strings.ContainsRune(command, '/') {
+		if host.lookPath == nil {
+			return command, nil
+		}
+		found, err := host.lookPath(command)
+		if err != nil {
+			return "", fmt.Errorf("it is not found on the engine's PATH: %v", err)
+		}
+		path = found
+	}
+	resolved, err := holdExecutableFile(path, host)
+	if err != nil {
+		return "", err
+	}
+	// A script names its interpreter, and `#!/usr/bin/env` finds one on a
+	// PATH, so an adapter must be an executable the kernel runs itself, for
+	// this host (nativeExecutable). A dynamically linked one names the loader
+	// the kernel hands it to, which is held as the adapter is.
+	if host.executableFormat != nil {
+		loader, err := host.executableFormat(resolved)
+		if err != nil {
+			return "", fmt.Errorf("%s %v", resolved, err)
+		}
+		if loader != "" {
+			if _, err := holdExecutableFile(loader, host); err != nil {
+				return "", fmt.Errorf("%s is run by the loader %s, which is refused: %v", resolved, loader, err)
+			}
+		}
+	}
+	return resolved, nil
+}
+
+// holdExecutableFile walks the way to an executable for the signer, as
+// trustedFile does, and holds the file it arrives at: there, a regular file,
+// owned by root or the signer, and writable by nobody else. It answers the
+// resolved path.
+func holdExecutableFile(path string, host engineHost) (string, error) {
+	if !filepath.IsAbs(path) {
+		return "", fmt.Errorf("%s is not an absolute path", path)
+	}
+	resolved, err := trustedFile(path, host.euid, linkOwners{other: host.euid}, host)
+	if err != nil {
+		return "", err
+	}
+	owner, err := host.fileOwner(resolved)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("%s: %v", resolved, err)
+	case owner.dir:
+		return "", fmt.Errorf("%s is a directory, not an executable", resolved)
+	case owner.uid != 0 && owner.uid != host.euid:
+		return "", fmt.Errorf("%s is owned by uid %d, neither root nor the signer (uid %d), so its owner could replace what runs as a platform's user", resolved, owner.uid, host.euid)
+	case owner.mode&0o022 != 0:
+		return "", fmt.Errorf("%s is writable beyond its owner (mode %04o), so another user could replace what runs as a platform's user; chmod go-w %s", resolved, owner.mode, resolved)
+	}
+	return resolved, nil
 }
 
 // holdDecisionRecords holds the decision-record directory to what lets a

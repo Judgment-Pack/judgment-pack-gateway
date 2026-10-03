@@ -149,9 +149,10 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   means a TLS-terminating front the operator runs and trusts, outside this repository.
   `identity` decides who may call, never from where.
 - `catalog` is the directory of binding files (below). `runtime` is the container runtime
-  command the adapters use, `docker` by default or `podman`, by name or by path. `adapters`
-  is the directory holding the adapter binaries; when absent they are found on the engine's
-  `PATH`.
+  command the adapters use, `docker` by default or `podman`, by name or by path. `adapters` is
+  the directory holding the adapter binaries; when absent they are found on the engine's
+  `PATH`, once, at start-up. Either way each adapter is held there and launched by the path it
+  resolves to (below).
 - `identity` names the token issuer, the audience the engine expects to be named as, and a
   local copy of the issuer's public keys. The engine verifies tokens with the standard library
   and never fetches keys over the network on the request path; refreshing the key file is the
@@ -252,6 +253,42 @@ engine refuses to start under a configuration the isolation claim of
   itself gain privilege on exec, such as a rootless container runtime that needs `newuidmap`,
   cannot run as a switched source; the runtime an adapter uses is one that listens on a socket
   the platform user may reach;
+- an **adapter executable another user could replace**, since it runs as a platform's user with
+  that platform's credentials: every adapter the sources launch is found as a launch would find
+  it — by its path under `adapters`, or else on the engine's `PATH`, once, at start-up, so a
+  file put on the `PATH` later is never the one launched — and its way is walked as the seed's
+  is, component by component from the root, for the signer: every directory owned by root or
+  the signer and writable by nobody else unless the sticky bit keeps others from replacing what
+  they do not own, every link owned by root or the signer and followed, each link's directory
+  and every ancestor of its target held in turn, with the same bound of thirty-two links. The
+  file it arrives at must be there, a regular file, owned by root or the signer, writable by
+  nobody else, and a **native executable of this host** as far as Go's own parsers read its
+  headers: on Linux, an ELF file of type `ET_EXEC` or `ET_DYN` for the host's machine, class
+  and byte order (`debug/elf`), whatever OS ABI its header names, which is not checked; on
+  macOS, a Mach-O file of type `MH_EXECUTE` for the host's CPU, or a universal file whose
+  architecture table parses and holds such a slice (`debug/macho`). `ET_DYN` is how Go builds a
+  position-independent executable, and the type cannot tell one from a shared library, so a
+  shared library of the host is not refused by this check. The check is a parse of the headers,
+  not proof that the file runs: the bytes after a header that parses, outside what the parser
+  reads, are not checked. Refused: a script, which starts with `#!`, since the interpreter it
+  names, or the one `#!/usr/bin/env` would find, is not held; a file whose headers do not
+  parse, a truncated one or a Java class among them; a file for another CPU, class or byte
+  order; an ELF object or core file; a Mach-O object or dylib; and a universal file without an
+  executable slice for this host. A dynamically linked executable names the loader the kernel
+  hands it to (`PT_INTERP`, or `LC_LOAD_DYLINKER`), and that loader is held as the adapter is;
+  the shared libraries the loader then finds are not, so an adapter is best linked statically,
+  as the image's are (`CGO_ENABLED=0`). The source then launches that resolved path. The
+  image's layout passes: the adapters are binaries built from `adapters/`, root's, mode `0755`,
+  in root's `/usr/local/bin`. An install that another user owns, such as a Homebrew prefix or
+  another user's `~/go/bin`, is refused even with `0755` files, since that user could replace
+  them: install the adapters root's (`sudo install -o root -m 0755 adapter-airbyte adapter-mcp
+  /usr/local/libexec/engine/`, naming that directory as `adapters`), or run the signer as the
+  user who owns them. What the check is: of owners and modes, at start-up. It holds while the
+  files and the directories on their way keep that protection, and only against access opened
+  after it was in place: a process that opened an adapter for writing before then, or a later
+  change of an owner or a mode, is not seen, and the launch runs whatever is at the resolved
+  path, not a descriptor held from start-up. It assumes the adapters were installed, by root or
+  the signer, from a source they trust;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
   the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
@@ -278,22 +315,26 @@ engine refuses to start under a configuration the isolation claim of
 - the seed file's own checks, as for any `serve`: a regular file, owned by the signer, readable
   by nobody else.
 
-What these checks establish, and no more: every adapter runs as a user that is neither root
-nor the signer nor another platform's; no credentials file, and no directory on the way to
-one, can be read or replaced by anyone but its owner and root; nobody but root, the signer
-and the decision-record directory's owner can write a file into or beneath that directory, or
-replace a directory on the way to it, as it stands at start-up; the signer holds no capability
-that reads past permissions and none an adapter could take up. **A signer that holds
-`CAP_SETUID` can assume any user**, and so can read any credentials file by becoming its owner:
-what this configuration holds is the signer *as written* — it reads no credential — not a
-signer that has been compromised. Holding a compromised signer out of credentials takes a
-privileged launcher separate from an unprivileged signer, which is the engine image's job and
-not this file's. What the checks do not see is stated with them: an access-control list that
-grants a read the mode bits do not show; a runtime reachable through a socket at another path;
-a platform user that is also in a group the signer's files admit; a decision record written,
-or a mode changed, after the engine started, and a mount that shows the decision-record
-directory elsewhere. The engine holds the configuration to what the filesystem and the kernel
-report, and no further.
+What these checks establish, and no more: every adapter runs as a user that is neither root nor
+the signer nor another platform's; as the owners and modes stood when the engine started, no
+credentials file, and no directory on the way to one, could be read or replaced by anyone but
+its owner and root; nobody but root, the signer and the decision-record directory's owner could
+write a file into or beneath that directory, or replace a directory on the way to it; and
+nobody but root and the signer could replace the seed or an adapter the engine launches. Those
+hold while the files and directories keep that protection, and only against access opened after
+it was in place: a descriptor opened for writing before then, or an owner or a mode changed
+later, is not seen, and each assumes its files were put there, by their owners, from a source
+they trust. The signer holds no capability that reads past permissions and none an adapter
+could take up. **A signer that holds `CAP_SETUID` can assume any user**, and so can read any
+credentials file by becoming its owner: what this configuration holds is the signer *as
+written* — it reads no credential — not a signer that has been compromised. Holding a
+compromised signer out of credentials takes a privileged launcher separate from an unprivileged
+signer, which is the engine image's job and not this file's. What the checks do not see is
+stated with them: an access-control list that grants a read the mode bits do not show; a
+runtime reachable through a socket at another path; a platform user that is also in a group the
+signer's files admit; a decision record written, or a mode changed, after the engine started,
+and a mount that shows the decision-record directory elsewhere. The engine holds the
+configuration to what the filesystem and the kernel report, and no further.
 
 ## Credentials
 

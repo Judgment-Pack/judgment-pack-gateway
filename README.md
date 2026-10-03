@@ -210,7 +210,10 @@ is [SPEC.md §5a](SPEC.md), executable in `go/ceremony_test.go`.
 `gateway serve --config engine.json` is the engine's form of the same command: the file
 names platforms — a catalog binding pinned by digest, a credentials file, the OS user the
 platform's adapters run as — and `serve` derives every source from it, refusing to start
-under a configuration in which an adapter could read the seed or the signer a credential
+under a configuration in which an adapter could read the seed or the signer a credential, or in
+which, as owners and modes stand at start-up, anyone but root and the signer could replace an
+adapter it launches, which must be a native executable of the host (ELF on Linux, Mach-O on
+macOS, for its CPU), not a script; it launches each adapter by the path that adapter resolves to
 ([docs/design/engine-config.md](docs/design/engine-config.md)). `gateway connect --config
 engine.json <platform> --binding <name> --credentials-file <operation>=<path>... --user <name>`
 writes a platform entry: it holds the configuration that would result to the same refusals, runs each

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"strconv"
 	"syscall"
@@ -65,13 +66,15 @@ func openRegular(path string) (*os.File, error) {
 // osEngineHost is the operating system as the engine's host.
 func osEngineHost() engineHost {
 	return engineHost{
-		euid:         os.Geteuid(),
-		sockets:      hostRuntimeSockets,
-		capabilities: processCapabilities,
-		fileOwner:    fileOwnerOf,
-		readLink:     os.Readlink,
-		account:      accountOf,
-		switching:    requireUserSwitching,
-		executable:   executableFacts,
+		euid:             os.Geteuid(),
+		sockets:          hostRuntimeSockets,
+		capabilities:     processCapabilities,
+		fileOwner:        fileOwnerOf,
+		readLink:         os.Readlink,
+		account:          accountOf,
+		switching:        requireUserSwitching,
+		executable:       executableFacts,
+		lookPath:         exec.LookPath,
+		executableFormat: readNativeExecutable,
 	}
 }

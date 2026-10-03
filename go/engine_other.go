@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 )
 
 // openRegular opens a path and judges the descriptor it got; there is no
@@ -32,5 +33,5 @@ func accountOf(name string) (int, string, error) {
 }
 
 func osEngineHost() engineHost {
-	return engineHost{euid: -1, sockets: hostRuntimeSockets, fileOwner: fileOwnerOf, readLink: os.Readlink, account: accountOf, switching: requireUserSwitching, executable: executableFacts}
+	return engineHost{euid: -1, sockets: hostRuntimeSockets, fileOwner: fileOwnerOf, readLink: os.Readlink, account: accountOf, switching: requireUserSwitching, executable: executableFacts, lookPath: exec.LookPath, executableFormat: readNativeExecutable}
 }

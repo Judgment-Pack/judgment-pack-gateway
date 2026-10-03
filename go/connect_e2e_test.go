@@ -187,6 +187,12 @@ func main() {
 	trace := filepath.Join(dir, "runtime.trace")
 	fs := goodFilesystem(seed, credentials, os.Geteuid(), 4242)
 	fs[connector] = fileOwnership{uid: 4242, mode: 0o600}
+	// The adapters, held as serve holds them: the signer's own, writable by
+	// nobody else, in a directory of the signer's.
+	fs[bin] = fileOwnership{uid: os.Geteuid(), mode: 0o755, dir: true}
+	for _, name := range []string{"adapter-airbyte", "adapter-mcp"} {
+		fs[filepath.Join(bin, name)] = fileOwnership{uid: os.Geteuid(), mode: 0o755}
+	}
 	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
 	host := engineHost{
 		euid:         os.Geteuid(),

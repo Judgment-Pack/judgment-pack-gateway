@@ -307,6 +307,9 @@ func TestConnectRefusesBeforeAnyCheck(t *testing.T) {
 			f.fs = goodFilesystem(f.seed, f.credentials, 1003, 1003)
 		}, "user engine-desk is the signer's own"},
 		{"root as the platform's user", func(f *connectFixture, req *connectRequest) { req.user = "root" }, "user root is root"},
+		{"an adapter others may write", func(f *connectFixture, req *connectRequest) {
+			adaptersOnPath(f, 0o777)
+		}, "adapter-airbyte is writable beyond its owner (mode 0777), so another user could replace what runs as a platform's user"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newConnectFixture(t, restrictedBinding, ``)
@@ -321,6 +324,79 @@ func TestConnectRefusesBeforeAnyCheck(t *testing.T) {
 				t.Fatalf("nothing is asked and nothing is written: asked %d, changed %v", len(f.asked), f.fileText(t) != before)
 			}
 		})
+	}
+}
+
+// stubBin is the stub filesystem's /usr/local/bin, on the fixture's volume.
+func stubBin(f *connectFixture) string {
+	return filepath.Join(filepath.VolumeName(f.dir)+string(filepath.Separator), "usr", "local", "bin")
+}
+
+// adaptersOnPath puts the two adapters in the stub's /usr/local/bin, root's,
+// with mode, and has the host find them there on its PATH, as the engine
+// image's are found.
+func adaptersOnPath(f *connectFixture, mode os.FileMode) {
+	bin := stubBin(f)
+	for dir := bin; ; dir = filepath.Dir(dir) {
+		f.fs[dir] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	for _, name := range []string{"adapter-airbyte", "adapter-mcp"} {
+		f.fs[filepath.Join(bin, name)] = fileOwnership{uid: 0, mode: mode}
+	}
+	f.host.lookPath = func(name string) (string, error) { return filepath.Join(bin, name), nil }
+	f.host.executableFormat = func(string) (string, error) { return "", nil }
+}
+
+// serve --config holds the adapters before anything is made or started, as
+// connect does (engineStart): with the image's adapters it resolves each
+// source's command to its path; with one others may write it refuses,
+// naming the source, the adapter and why, before the store exists.
+func TestServeHoldsTheAdaptersBeforeItStarts(t *testing.T) {
+	platform := `"warehouse":{"binding":"postgres@` + digestOf(restrictedBinding) + `","credentials":{"history":{"file":"` + escapePath(f0(t)) + `"},"live":{"file":"` + escapePath(f0(t)) + `"}},"user":"engine-warehouse"}`
+	start := func(mode os.FileMode) (map[string]sourceSpec, string, error) {
+		f := newConnectFixture(t, restrictedBinding, platform)
+		f.fs[f0(t)] = fileOwnership{uid: 1001, mode: 0o600}
+		adaptersOnPath(f, mode)
+		cfg, bindings, err := loadEngineConfig(f.config, f.host.account)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, sources, err := engineStart(&cfg, bindings, f.host)
+		return sources, cfg.store, err
+	}
+	sources, store, err := start(0o755)
+	if err != nil {
+		t.Fatalf("the image's adapters: %v", err)
+	}
+	if bin := sources["warehouse/history"].argv[0]; !strings.HasSuffix(bin, filepath.Join("usr", "local", "bin", "adapter-airbyte")) || !filepath.IsAbs(bin) {
+		t.Fatalf("serve launches the resolved path: %v", sources["warehouse/history"].argv)
+	}
+	if _, err := os.Stat(store); err == nil {
+		t.Fatal("nothing is made by the start-up checks")
+	}
+	_, store, err = start(0o777)
+	if err == nil || !strings.Contains(err.Error(), "source warehouse/history: adapter adapter-airbyte: ") || !strings.Contains(err.Error(), "is writable beyond its owner (mode 0777)") {
+		t.Fatalf("an adapter others may write: %v", err)
+	}
+	if _, err := os.Stat(store); err == nil {
+		t.Fatal("a refused start makes nothing")
+	}
+}
+
+// Connect holds the adapters it runs as serve holds them, and runs each by
+// the path it resolved to: the engine image's adapters, root's at
+// /usr/local/bin and found on the PATH, are run by those paths.
+func TestConnectRunsTheAdaptersByTheirResolvedPaths(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	adaptersOnPath(f, 0o755)
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.asked) != 2 || f.asked[0].argv[0] != filepath.Join(stubBin(f), "adapter-airbyte") || f.asked[1].argv[0] != filepath.Join(stubBin(f), "adapter-mcp") {
+		t.Fatalf("each check runs the adapter's resolved path: %+v", f.asked)
 	}
 }
 
