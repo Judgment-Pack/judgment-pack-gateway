@@ -262,28 +262,33 @@ engine refuses to start under a configuration the isolation claim of
   they do not own, every link owned by root or the signer and followed, each link's directory
   and every ancestor of its target held in turn, with the same bound of thirty-two links. The
   file it arrives at must be there, a regular file, owned by root or the signer, writable by
-  nobody else, and a **native executable of this host**, as Go's own parsers read it: on Linux,
-  an ELF file of type `ET_EXEC` or `ET_DYN` (Go builds either) for the host's machine, class
-  and byte order (`debug/elf`); on macOS, a Mach-O file of type `MH_EXECUTE` for the host's
-  CPU, or a universal file whose architecture table parses and holds such a slice
-  (`debug/macho`). Anything else is refused: a script, which starts with `#!`, since the
-  interpreter it names, or the one `#!/usr/bin/env` would find, is not held; a truncated
-  header; a file for another CPU; an object or a library; a universal file without a slice for
-  this host; and a file that only begins like one, such as a Java class. A dynamically linked
-  executable names the loader the kernel hands it to (`PT_INTERP`, or `LC_LOAD_DYLINKER`), and
-  that loader is held as the adapter is; the shared libraries the loader then finds are not, so
-  an adapter is best linked statically, as the image's are (`CGO_ENABLED=0`). The source then
-  launches that resolved path. The image's layout passes: the adapters are binaries built from
-  `adapters/`, root's, mode `0755`, in root's `/usr/local/bin`. An install that another user
-  owns, such as a Homebrew prefix or another user's `~/go/bin`, is refused even with `0755`
-  files, since that user could replace them: install the adapters root's (`sudo install -o root
-  -m 0755 adapter-airbyte adapter-mcp /usr/local/libexec/engine/`, naming that directory as
-  `adapters`), or run the signer as the user who owns them. What the check is: of owners and
-  modes, at start-up. It holds while the files and the directories on their way keep that
-  protection, and only against access opened after it was in place: a process that opened an
-  adapter for writing before then, or a later change of an owner or a mode, is not seen, and
-  the launch runs whatever is at the resolved path, not a descriptor held from start-up. It
-  assumes the adapters were installed, by root or the signer, from a source they trust;
+  nobody else, and a **native executable of this host** as far as Go's own parsers read its
+  headers: on Linux, an ELF file of type `ET_EXEC` or `ET_DYN` for the host's machine, class
+  and byte order (`debug/elf`), whatever OS ABI its header names, which is not checked; on
+  macOS, a Mach-O file of type `MH_EXECUTE` for the host's CPU, or a universal file whose
+  architecture table parses and holds such a slice (`debug/macho`). `ET_DYN` is how Go builds a
+  position-independent executable, and the type cannot tell one from a shared library, so a
+  shared library of the host is not refused by this check. The check is a parse of the headers,
+  not proof that the file runs: the bytes after a header that parses, outside what the parser
+  reads, are not checked. Refused: a script, which starts with `#!`, since the interpreter it
+  names, or the one `#!/usr/bin/env` would find, is not held; a file whose headers do not
+  parse, a truncated one or a Java class among them; a file for another CPU, class or byte
+  order; an ELF object or core file; a Mach-O object or dylib; and a universal file without an
+  executable slice for this host. A dynamically linked executable names the loader the kernel
+  hands it to (`PT_INTERP`, or `LC_LOAD_DYLINKER`), and that loader is held as the adapter is;
+  the shared libraries the loader then finds are not, so an adapter is best linked statically,
+  as the image's are (`CGO_ENABLED=0`). The source then launches that resolved path. The
+  image's layout passes: the adapters are binaries built from `adapters/`, root's, mode `0755`,
+  in root's `/usr/local/bin`. An install that another user owns, such as a Homebrew prefix or
+  another user's `~/go/bin`, is refused even with `0755` files, since that user could replace
+  them: install the adapters root's (`sudo install -o root -m 0755 adapter-airbyte adapter-mcp
+  /usr/local/libexec/engine/`, naming that directory as `adapters`), or run the signer as the
+  user who owns them. What the check is: of owners and modes, at start-up. It holds while the
+  files and the directories on their way keep that protection, and only against access opened
+  after it was in place: a process that opened an adapter for writing before then, or a later
+  change of an owner or a mode, is not seen, and the launch runs whatever is at the resolved
+  path, not a descriptor held from start-up. It assumes the adapters were installed, by root or
+  the signer, from a source they trust;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
   the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
