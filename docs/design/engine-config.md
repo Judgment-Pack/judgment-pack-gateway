@@ -138,8 +138,9 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   signer does not demand.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
   takes today, named.
-- `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve
-  an action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)).
+- `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an
+  action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)). The engine refuses
+  one that anyone but root, the signer and its owner could write a record into (below).
 - `listen` is a literal loopback address with a port — `127.0.0.1:8787` or `[::1]:8787` —
   and the engine refuses any other, a name such as `localhost` included, since a resolver may
   map a name elsewhere. The gateway speaks plain HTTP and a token presented over plain HTTP
@@ -211,18 +212,22 @@ engine refuses to start under a configuration the isolation claim of
   as root reads the seed), is the **signer's own** (the same), is the **MCP server's**
   (`engine-mcp`, uid 65533: a credentials file would belong to the user that process runs
   as), or is **another platform's** (one platform could read the other's credentials);
-- a credentials file not owned by the platform's user, or readable beyond its owner (mode
-  other than `0600`); and any directory on the way to it that is owned by neither root nor
-  that user, or writable beyond its owner without the sticky bit (so someone else could
-  replace the file under its name), or that the user cannot traverse (the adapter could not
-  open its own credentials, judged by the owner bits when the directory is the user's and by
-  the other bits when it is root's). The path is walked component by component from the
-  root, and everything the walk meets is held: a symbolic link is allowed only when root owns
-  it — a system's own, such as macOS's `/var` — so nobody but root could have placed or could
-  retarget it, and the walk then continues through its target's components, each held in
-  turn, with a bound of thirty-two hops; the path with every link resolved is the path the
-  adapter is then given, so the file judged is the file it opens. The seed's directories are
-  held to the same, for the signer, and its path used resolved;
+- a credentials file not owned by the platform's user, or readable beyond its owner (mode other
+  than `0600`); and any directory on the way to it that is owned by neither root nor that user,
+  or writable beyond its owner without the sticky bit (so someone else could replace the file
+  under its name), or that the user cannot traverse (the adapter could not open its own
+  credentials, judged by the owner bits when the directory is the user's and by the other bits
+  when it is root's). The path is walked component by component from the root, the file's own
+  name included, and everything the walk meets is held: a symbolic link is allowed only when
+  root owns it — a system's own, such as macOS's `/var`, or a mounted secret's — so nobody but
+  root could have placed or could retarget it, and the walk then continues through its target's
+  components, each held in turn, with a bound of thirty-two hops, which also ends a loop; the
+  path with every link resolved is the path the adapter is then given, so the file judged is
+  the file it opens. A credentials file mounted as a projected secret, its name a root-owned
+  link to `..data/<name>`, is so walked to the file it leads to. The seed's way is held to the
+  same, for the signer, a link on it, at its own name included, may be the signer's as well as
+  root's, and its path is used resolved, so the file the seed's own checks open is the one the
+  walk arrived at;
 - a signer that runs as **root**, which reads every credentials file whatever protects it,
   unless the operator sets `"rootSigner": "accepted"` — the engine then says in one line at
   startup that the separation between signer and adapters rests on the host, not on the
@@ -252,12 +257,32 @@ engine refuses to start under a configuration the isolation claim of
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
   unless the operator sets `"hostRuntime": "accepted"`, with the same one-line statement at
   startup;
+- a **decision-record directory** that anyone but root, the signer and the directory's owner
+  (the user the runtime writes as) could write a record into, since a decision policy without
+  `requireSignedRecord` holds a write to whatever well-shaped record is found there, and a
+  receipt's `decision` without a policy means only that one existed: the directory, and every
+  directory and regular file beneath it that the walk for a record reads, must be owned by one
+  of those three and writable by nobody else, the sticky bit excusing nothing there, since
+  whoever may create a file there may create a record; every directory on the way to it is held
+  as a credentials file's are, for those three owners (owned by one of them, writable beyond
+  its owner only with the sticky bit, a link only when root owns it); and a directory not there
+  yet is held through the directory it would be made in, which must be writable by its owner
+  alone, sticky or not, since whoever makes it first owns it, and must not be a link. A link at
+  the path itself must be owned by root, as a link on the way must; the walk never follows it,
+  though the start-up check that a directory is there does, and whoever may write the directory
+  the link is in could put a directory of records in its place, so that directory is held as
+  for a directory not there yet. Links and special files beneath are passed over, as the walk
+  passes over them. The refusal names the path, its owner or mode, and why; there is no
+  `"accepted"` for it: make the directory and what is in it writable by its owner alone (`chmod
+  -R go-w`);
 - the seed file's own checks, as for any `serve`: a regular file, owned by the signer, readable
   by nobody else.
 
 What these checks establish, and no more: every adapter runs as a user that is neither root
 nor the signer nor another platform's; no credentials file, and no directory on the way to
-one, can be read or replaced by anyone but its owner and root; the signer holds no capability
+one, can be read or replaced by anyone but its owner and root; nobody but root, the signer
+and the decision-record directory's owner can write a file into or beneath that directory, or
+replace a directory on the way to it, as it stands at start-up; the signer holds no capability
 that reads past permissions and none an adapter could take up. **A signer that holds
 `CAP_SETUID` can assume any user**, and so can read any credentials file by becoming its owner:
 what this configuration holds is the signer *as written* — it reads no credential — not a
@@ -265,8 +290,10 @@ signer that has been compromised. Holding a compromised signer out of credential
 privileged launcher separate from an unprivileged signer, which is the engine image's job and
 not this file's. What the checks do not see is stated with them: an access-control list that
 grants a read the mode bits do not show; a runtime reachable through a socket at another path;
-a platform user that is also in a group the signer's files admit. The engine holds the
-configuration to what the filesystem and the kernel report, and no further.
+a platform user that is also in a group the signer's files admit; a decision record written,
+or a mode changed, after the engine started, and a mount that shows the decision-record
+directory elsewhere. The engine holds the configuration to what the filesystem and the kernel
+report, and no further.
 
 ## Credentials
 

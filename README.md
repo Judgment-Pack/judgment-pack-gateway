@@ -170,6 +170,22 @@ and follows no key rotation: when the runtime's key changes, add the next key to
 before the project signs with it, and remove the old one once no record it signed is still to be
 acted on.
 
+So that only the user the runtime writes as, the signer and root can put a record where the engine
+looks for one, the engine refuses to start, and `gateway connect` to add a platform, while anyone
+else could write a record in the decision-record directory: the directory, and every directory and
+regular file beneath it that the walk reads, must be owned by one of those three and writable by
+nobody else, the sticky bit excusing nothing there; every directory on the way to it must be owned
+by one of them and writable by nobody else unless it is sticky, as `/tmp` is; a directory not there
+yet must be in a directory only its owner can write, since whoever makes it first owns it; and a
+link at its path must be owned by root, and the directory the link is in is held the same way, since
+whoever may write it could put a directory of records in the link's place. The refusal names the
+path, its owner or mode, and why. It holds whatever policy the tools have, since without
+`requireSignedRecord` a policy trusts every writer of the directory, and without a policy `decision`
+means only that a record existed there. It establishes the state at start-up, as unix owners and
+permission bits show it, and no more: a mode or a file changed later, an access-control list the
+bits do not show (macOS's), a mount, and root are not seen; the engine runs only on unix, so there
+is no Windows check.
+
 Personal Drive, S3 and local-vault file management is a separate authenticated
 host control surface in `gateway-connections`: bounded listing/search, selected
 file reads, and reviewed create/update/delete plans. It issues no signed action

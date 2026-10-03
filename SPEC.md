@@ -269,6 +269,11 @@ them before the action was sent, and no more. Those are checks of a record
 found under the decision-record directory, and a record is found there by its
 shape: unless the policy sets `requireSignedRecord`, they hold the action to
 whatever record a writer of that directory put there, written by hand or not.
+A gateway started from a configuration refuses to start while anyone but root,
+its signer and the directory's owner could write a file into or beneath that
+directory, or replace a directory on the way to it, as the owners and the
+permission bits show then (`docs/design/engine-config.md`); that narrows who
+such a writer can be when it starts, and holds nothing after.
 With `requireSignedRecord`, the record was also signed, in its exact bytes, by
 whoever holds one of the runtime keys the policy names, so a writer who cannot
 use one of those keys cannot write a record the policy admits; it establishes

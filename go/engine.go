@@ -1097,7 +1097,10 @@ func capabilityRefusal(sets capabilitySets) error {
 // printed once at startup. What the checks establish, and no more: every
 // adapter runs as a user that is neither root nor the signer nor another
 // platform's; no credentials file, and no directory on the way to one, can
-// be read or replaced by anyone but its owner and root; the signer holds no
+// be read or replaced by anyone but its owner and root; nobody but root,
+// the signer and the decision-record directory's owner can write a file
+// into that directory or beneath it, or replace a directory on the way to
+// it (holdDecisionRecords); the signer holds no
 // capability that reads past permissions and none an adapter could take
 // up, and its binary, where it carries file capabilities, is executable by
 // nobody else. A signer that holds CAP_SETUID can assume any
@@ -1133,14 +1136,24 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			return nil, fmt.Errorf("the gateway binary %s carries file capabilities and is executable by others (mode %04o): a platform user's process that executed it would take them up; make it executable by the signer alone (chmod 0700)", exe.path, exe.mode)
 		}
 	}
-	// The seed's own file is held by loadSeed; the directories on the way
-	// to it must not let another user replace it, and the path used from
-	// here on is the resolved one.
-	seed, err := trustedAncestors(cfg.seed, host.euid, host)
+	// The seed's own file is held by loadSeed, through one descriptor; the
+	// way to it, links at its own name included, must not let another user
+	// replace it, and the path used from here on is the resolved one, so
+	// the file loadSeed opens is the file the walk arrived at. A link on
+	// that way may be the signer's own as well as root's.
+	seed, err := trustedFile(cfg.seed, host.euid, linkOwners{other: host.euid}, host)
 	if err != nil {
 		return nil, fmt.Errorf("seed: %v", err)
 	}
 	cfg.seed = seed
+	// The decision-record directory, whose records a write is held to: a
+	// record found there stands for one the runtime wrote only as far as
+	// nobody else could have written it there.
+	if cfg.decisionRecords != "" {
+		if err := holdDecisionRecords(cfg.decisionRecords, host); err != nil {
+			return nil, fmt.Errorf("decisionRecords: %v", err)
+		}
+	}
 	seen := map[int]string{}
 	for i := range cfg.platforms {
 		p := &cfg.platforms[i]
@@ -1167,7 +1180,7 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 		}
 		sort.Strings(ops)
 		for _, op := range ops {
-			credentials, err := trustedAncestors(p.credentials[op], uid, host)
+			credentials, err := trustedFile(p.credentials[op], uid, linkOwners{other: -1}, host)
 			if err != nil {
 				return nil, fmt.Errorf("platform %s: credentials.%s: %v", p.name, op, err)
 			}
@@ -1175,9 +1188,6 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			owner, err := host.fileOwner(credentials)
 			if err != nil {
 				return nil, fmt.Errorf("platform %s: credentials.%s: %v", p.name, op, err)
-			}
-			if owner.link {
-				return nil, fmt.Errorf("platform %s: credentials.%s %s is a symbolic link", p.name, op, credentials)
 			}
 			if owner.dir {
 				return nil, fmt.Errorf("platform %s: credentials.%s %s is a directory", p.name, op, credentials)
@@ -1203,35 +1213,57 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 	return statements, nil
 }
 
-// trustedAncestors holds every directory on the way to a file to what the
-// file's owner needs and no more, and returns the path with every
-// symbolic link resolved, which is the path then used. The walk goes
-// component by component from the root, and every directory and every
-// link it meets is held: a directory must be owned by root or by that
-// user, writable by nobody else unless the sticky bit keeps others from
-// removing or renaming what they do not own (so nobody else can replace
-// what is under it), and traversable by that user; a link must be owned
-// by root -- a system's own, such as macOS's /var -- so nobody else could
-// have placed or could retarget it, and the walk then continues through
-// its target's components as written, each held in turn, with a bound on
-// hops. The
-// file itself need not exist yet -- a seed does not before keygen -- so
-// it is the directory that is walked.
-func trustedAncestors(path string, uid int, host engineHost) (string, error) {
-	resolved, err := walkHeld(filepath.Dir(path), uid, host)
-	if err != nil {
-		return "", err
+// trustedFile holds the way to a file to what the file's owner needs and no
+// more, and returns the path with every symbolic link resolved, which is the
+// path then used. The walk goes component by component from the root, the
+// file's own name included, and every directory and every link it meets is
+// held: a directory must be owned by root or by that user, writable by
+// nobody else unless the sticky bit keeps others from removing or renaming
+// what they do not own (so nobody else can replace what is under it), and
+// traversable by that user; a link must be owned by root -- a system's own,
+// such as macOS's /var, or a mounted secret's -- or by the one other user
+// links names, so nobody else could have placed or could retarget it, and
+// the walk then continues through its target's components as written, each
+// held in turn, with a bound on hops that also ends a loop. A link at the
+// file's own name is followed the same way, so the file the walk arrives at,
+// which the caller then judges, is in directories it held. The file itself
+// need not exist yet -- a seed does not before keygen -- and the walk then
+// ends where it would be.
+func trustedFile(path string, uid int, links linkOwners, host engineHost) (string, error) {
+	hold := func(dir string) error { return holdDirectory(dir, uid, host.fileOwner) }
+	return walkComponents(path, host, hold, links, true)
+}
+
+// linkOwners says whose links a walk follows: root's always, and other's,
+// unless other is -1.
+type linkOwners struct{ other int }
+
+func (l linkOwners) trust(uid int) bool { return uid == 0 || (l.other >= 0 && uid == l.other) }
+
+func (l linkOwners) String() string {
+	if l.other < 0 {
+		return "not root"
 	}
-	return filepath.Join(resolved, filepath.Base(path)), nil
+	return fmt.Sprintf("neither root nor uid %d", l.other)
 }
 
 const maxLinkHops = 32
 
-func walkHeld(dir string, uid int, host engineHost) (string, error) {
-	root := filepath.VolumeName(dir) + string(filepath.Separator)
-	remaining := components(dir)
+// walkPath walks a directory as trustedFile walks a file's way, with the
+// rule each directory is held to given as hold and root's links alone
+// followed: every directory, the root first, is handed to hold.
+func walkPath(dir string, host engineHost, hold func(dir string) error) (string, error) {
+	return walkComponents(dir, host, hold, linkOwners{other: -1}, false)
+}
+
+// walkComponents is the walk of trustedFile and walkPath. With file set, the
+// last component, after every link is followed, may be anything but a
+// directory, or not there, and the walk ends at it without holding it.
+func walkComponents(path string, host engineHost, hold func(dir string) error, links linkOwners, file bool) (string, error) {
+	root := filepath.VolumeName(path) + string(filepath.Separator)
+	remaining := components(path)
 	current := root
-	if err := holdDirectory(current, uid, host.fileOwner); err != nil {
+	if err := hold(current); err != nil {
 		return "", err
 	}
 	hops := 0
@@ -1252,13 +1284,17 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 			continue
 		}
 		next := filepath.Join(current, token)
+		last := file && len(remaining) == 0
 		owner, err := host.fileOwner(next)
+		if last && errors.Is(err, os.ErrNotExist) {
+			return next, nil
+		}
 		if err != nil {
 			return "", fmt.Errorf("%s: %v", next, err)
 		}
 		if owner.link {
-			if owner.uid != 0 {
-				return "", fmt.Errorf("%s is a symbolic link owned by uid %d, not root, so its owner could retarget it", next, owner.uid)
+			if !links.trust(owner.uid) {
+				return "", fmt.Errorf("%s is a symbolic link owned by uid %d, %s, so its owner could retarget it", next, owner.uid, links)
 			}
 			if hops++; hops > maxLinkHops {
 				return "", fmt.Errorf("%s: more than %d symbolic links on the way", next, maxLinkHops)
@@ -1282,12 +1318,165 @@ func walkHeld(dir string, uid int, host engineHost) (string, error) {
 			remaining = append(components(target), remaining...)
 			continue
 		}
-		if err := holdDirectory(next, uid, host.fileOwner); err != nil {
+		if last && !owner.dir {
+			return next, nil
+		}
+		if err := hold(next); err != nil {
 			return "", err
 		}
 		current = next
 	}
 	return current, nil
+}
+
+// holdDecisionRecords holds the decision-record directory to what lets a
+// record found there stand for one the runtime wrote (gateway #195): nobody
+// but root, the signer, and the directory's owner, whom the runtime writes
+// as, may write a file into it or into any directory beneath it, change a
+// file there, or replace it or a directory on the way to it. Without a
+// signature (requireSignedRecord), a decision policy holds a write to
+// whatever well-shaped record is found there, and the receipt's decision
+// means only that such a file existed, so whoever else could write there
+// could decide.
+//
+//   - The directory, and every directory and regular file beneath it,
+//     must be owned by one of those three and writable by nobody else. The
+//     sticky bit excuses nothing there: whoever may create a file in a
+//     directory may create a record.
+//   - Every directory on the way to it, from the root, must be owned by one
+//     of those three and writable by nobody else unless the sticky bit
+//     keeps others from removing or renaming what they do not own, and
+//     every link on the way must be owned by root, as the seed's are
+//     (walkPath).
+//   - A directory not there yet is made later by whoever writes there, so
+//     its parent is held instead: owned as above and writable by nobody
+//     but its owner, sticky or not, since any other user who may make the
+//     directory first owns it. A parent that is a link is refused: name
+//     the directory's real place.
+//   - A link at the path itself must be owned by root, as a link on the
+//     way must. The walk never follows it, so nothing beneath it is read,
+//     but preflightPaths follows it and accepts the directory it leads
+//     to, and whoever may write the directory the link is in could put a
+//     directory of records in its place; so that directory is held as a
+//     parent is for a directory not there yet.
+//
+// A file at the path, or a path that cannot be looked at, is left to
+// preflightPaths, which refuses both. Links and special files beneath are
+// passed over, as the walk passes over them.
+//
+// This holds the state at start-up, as the owners and the permission bits
+// show it. It does not see a mode, an owner or a file changed after
+// start-up, an access control list the permission bits do not show (POSIX
+// ACLs show in the group bits; macOS ACLs do not), a mount, or root, which
+// writes anywhere. The engine runs only where files have unix owners and
+// modes (fileOwnerOf).
+func holdDecisionRecords(dir string, host engineHost) error {
+	owner, err := host.fileOwner(dir)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return holdDecisionRecordsParent(dir, host, false)
+	case err != nil || (!owner.link && !owner.dir):
+		return nil
+	case owner.link && owner.uid != 0:
+		return fmt.Errorf("%s is a symbolic link owned by uid %d, not root, so its owner could have placed it, and could retarget it", dir, owner.uid)
+	case owner.link:
+		return holdDecisionRecordsParent(dir, host, true)
+	case owner.mode&0o022 != 0:
+		return fmt.Errorf("%s is writable beyond its owner (mode %04o), so another user could write a record in it; chmod go-w %s", dir, owner.mode, dir)
+	}
+	trusted := recordWriters{owner: owner.uid, signer: host.euid}
+	resolved, err := walkPath(dir, host, func(path string) error { return holdRecordAncestor(path, trusted, host) })
+	if err != nil {
+		return err
+	}
+	return holdBeneath(resolved, trusted, host)
+}
+
+// holdDecisionRecordsParent holds the directory a decision-record
+// directory not there yet would be made in, or the one a link at its path
+// is in: whoever may write that directory could put a directory there.
+func holdDecisionRecordsParent(dir string, host engineHost, link bool) error {
+	parent := filepath.Dir(dir)
+	owner, err := host.fileOwner(parent)
+	what, then := "is not there, and the directory it would be made in", "make it first and write records in it"
+	if link {
+		what, then = "is a symbolic link, which the walk for a record does not follow, and the directory it is in", "put a directory of records in its place"
+	}
+	switch {
+	case err != nil || (!owner.link && !owner.dir):
+		return nil
+	case owner.link:
+		return fmt.Errorf("%s %s, %s, is a symbolic link; name the directory where it is", dir, what, parent)
+	case owner.mode&0o022 != 0:
+		return fmt.Errorf("%s %s, %s, is writable beyond its owner (mode %04o), so another user could %s", dir, what, parent, owner.mode, then)
+	}
+	trusted := recordWriters{owner: owner.uid, signer: host.euid}
+	_, err = walkPath(parent, host, func(path string) error { return holdRecordAncestor(path, trusted, host) })
+	return err
+}
+
+// recordWriters are the users who may write where decision records are:
+// root, the signer, and the owner of the directory, the runtime's user.
+type recordWriters struct{ owner, signer int }
+
+func (w recordWriters) trust(uid int) bool { return uid == 0 || uid == w.owner || uid == w.signer }
+
+func (w recordWriters) String() string {
+	return fmt.Sprintf("neither root, the signer (uid %d) nor the decision-record directory's owner (uid %d)", w.signer, w.owner)
+}
+
+// holdRecordAncestor holds one directory on the way to the decision-record
+// directory, the directory itself included.
+func holdRecordAncestor(dir string, trusted recordWriters, host engineHost) error {
+	owner, err := host.fileOwner(dir)
+	if err != nil {
+		return fmt.Errorf("%s: %v", dir, err)
+	}
+	switch {
+	case owner.link:
+		return fmt.Errorf("%s is a symbolic link where a directory was expected", dir)
+	case !owner.dir:
+		return fmt.Errorf("%s is not a directory", dir)
+	case !trusted.trust(owner.uid):
+		return fmt.Errorf("%s is owned by uid %d, %s, so its owner could replace what is under it", dir, owner.uid, trusted)
+	case owner.mode&0o022 != 0 && !owner.sticky:
+		return fmt.Errorf("%s is writable beyond its owner (mode %04o) without the sticky bit, so another user could replace what is under it", dir, owner.mode)
+	}
+	return nil
+}
+
+// holdBeneath holds every directory and regular file beneath dir, as the
+// walk would meet them: links and special files are passed over, never
+// followed.
+func holdBeneath(dir string, trusted recordWriters, host engineHost) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("%s could not be listed, as the walk for a record would need: %v", dir, err)
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if !entry.IsDir() && !entry.Type().IsRegular() {
+			continue
+		}
+		owner, err := host.fileOwner(path)
+		if err != nil {
+			return fmt.Errorf("%s: %v", path, err)
+		}
+		switch {
+		case owner.link:
+			continue
+		case !trusted.trust(owner.uid):
+			return fmt.Errorf("%s is owned by uid %d, %s, so its owner could write a record there", path, owner.uid, trusted)
+		case owner.mode&0o022 != 0:
+			return fmt.Errorf("%s is writable beyond its owner (mode %04o), so another user could write a record there; chmod go-w %s", path, owner.mode, path)
+		}
+		if owner.dir {
+			if err := holdBeneath(path, trusted, host); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // components are a path's elements below its root, in order and as
