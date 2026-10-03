@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -789,28 +790,111 @@ func TestEngineRefusalsHoldTheDecisionRecordDirectory(t *testing.T) {
 	}
 }
 
-// The seed's own file may not be a link, as a credentials file may not:
-// the seed is opened through it, and its target's directories are ones the
-// walk did not hold.
-func TestTheSeedItselfMayNotBeALink(t *testing.T) {
-	seed := filepath.Join(string(filepath.Separator), "var", "lib", "engine", "gateway.seed")
-	credentials := filepath.Join(string(filepath.Separator), "run", "secrets", "warehouse")
+// A link at the seed's own name, or at a credentials file's, is held and
+// followed as a link on the way is, the walk going on component by component
+// to the file it leads to, and that resolved path is the one used. A seed
+// mounted as a projected secret -- gateway.seed a link to ..data/gateway.seed,
+// ..data a link to a dated directory, both root's -- starts; so does a seed
+// link of the signer's own. A link of another user's is refused, and so is a
+// target in a directory, or under one, that others may write, a loop, and
+// more links than the bound. A credentials file's links must be root's.
+func TestALinkAtTheSeedOrCredentialsIsFollowedAndHeld(t *testing.T) {
+	root := string(filepath.Separator)
+	secret := filepath.Join(root, "etc", "engine", "secret")
+	seed := filepath.Join(secret, "gateway.seed")
+	dated := filepath.Join(secret, "..2026_10_03")
+	credentials := filepath.Join(root, "run", "secrets", "warehouse")
 	both := map[string]string{"history": credentials, "live": credentials}
 	cfg := engineConfig{runtime: "docker", seed: seed, platforms: []platformConfig{{name: "warehouse", credentials: both, user: "engine-warehouse", uid: 1001}}}
 	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
-	fs := goodFilesystem(seed, credentials, 1000, 1001)
-	host := engineHost{euid: 1000, sockets: func(string) []string { return nil }, capabilities: func() capabilitySets {
-		return capabilitySets{known: true, effective: three, permitted: three}
-	}, fileOwner: fs.owner, readLink: readLinkStub}
-	if _, err := engineRefusals(ptr(cfg), host); err != nil {
-		t.Fatalf("a seed that is a file: %v", err)
+	host := func(fs ownership) engineHost {
+		return engineHost{euid: 1000, sockets: func(string) []string { return nil }, capabilities: func() capabilitySets {
+			return capabilitySets{known: true, effective: three, permitted: three}
+		}, fileOwner: fs.owner, readLink: readLinkStub}
 	}
-	fs[seed] = fileOwnership{uid: 0, mode: 0o777, link: true}
-	if _, err := engineRefusals(ptr(cfg), host); err == nil || !strings.Contains(err.Error(), "seed: "+seed+" is a symbolic link; name the file itself") {
-		t.Fatalf("a seed that is a link, even root's: %v", err)
+	mounted := func() ownership {
+		fs := goodFilesystem(seed, credentials, 1000, 1001)
+		fs[secret] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+		fs[seed] = fileOwnership{uid: 0, mode: 0o777, link: true}
+		linkTargets[seed] = "..data/gateway.seed"
+		fs[filepath.Join(secret, "..data")] = fileOwnership{uid: 0, mode: 0o777, link: true}
+		linkTargets[filepath.Join(secret, "..data")] = "..2026_10_03"
+		fs[dated] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+		fs[filepath.Join(dated, "gateway.seed")] = fileOwnership{uid: 1000, mode: 0o600}
+		return fs
 	}
-	delete(fs, seed)
-	if _, err := engineRefusals(ptr(cfg), host); err != nil {
-		t.Fatalf("a seed not there yet is loadSeed's to refuse: %v", err)
+	resolved := ptr(cfg)
+	if _, err := engineRefusals(resolved, host(mounted())); err != nil || resolved.seed != filepath.Join(dated, "gateway.seed") {
+		t.Fatalf("a seed mounted as a projected secret: %v, the seed used %s", err, resolved.seed)
 	}
+	expect := func(name string, fs ownership, c engineConfig, want string) {
+		t.Helper()
+		if _, err := engineRefusals(ptr(c), host(fs)); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%s: want %q, got %v", name, want, err)
+		}
+	}
+	// A seed not there yet, where the links lead, is loadSeed's to refuse.
+	notYet := mounted()
+	delete(notYet, filepath.Join(dated, "gateway.seed"))
+	resolved = ptr(cfg)
+	if _, err := engineRefusals(resolved, host(notYet)); err != nil || resolved.seed != filepath.Join(dated, "gateway.seed") {
+		t.Fatalf("a mounted seed not there yet: %v %s", err, resolved.seed)
+	}
+	signers := mounted()
+	signers[seed] = fileOwnership{uid: 1000, mode: 0o777, link: true}
+	if _, err := engineRefusals(ptr(cfg), host(signers)); err != nil {
+		t.Fatalf("a seed link of the signer's own: %v", err)
+	}
+	strangers := mounted()
+	strangers[seed] = fileOwnership{uid: 1002, mode: 0o777, link: true}
+	expect("a seed link of another user's", strangers, cfg, seed+" is a symbolic link owned by uid 1002, neither root nor uid 1000")
+	open := mounted()
+	open[filepath.Join(root, "srv")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	open[filepath.Join(root, "srv", "open")] = fileOwnership{uid: 0, mode: 0o777, dir: true}
+	open[filepath.Join(root, "srv", "open", "gateway.seed")] = fileOwnership{uid: 1000, mode: 0o600}
+	linkTargets[filepath.Join(secret, "..data")] = filepath.Join(root, "srv", "open")
+	expect("a target in a directory others may write", open, cfg, filepath.Join(root, "srv", "open")+" is writable beyond its owner (mode 0777) without the sticky bit")
+	open[filepath.Join(root, "srv", "open", "keys")] = fileOwnership{uid: 1000, mode: 0o700, dir: true}
+	open[filepath.Join(root, "srv", "open", "keys", "gateway.seed")] = fileOwnership{uid: 1000, mode: 0o600}
+	linkTargets[filepath.Join(secret, "..data")] = filepath.Join(root, "srv", "open", "keys")
+	expect("a target under a directory others may write", open, cfg, filepath.Join(root, "srv", "open")+" is writable beyond its owner (mode 0777) without the sticky bit")
+	loop := mounted()
+	linkTargets[seed] = "gateway.seed"
+	expect("a link to itself", loop, cfg, "more than 32 symbolic links")
+	// A chain of links, each to the next: thirty-two are followed, and a
+	// thirty-third is one too many.
+	chain := func(n int) ownership {
+		fs := mounted()
+		linkTargets[seed] = "hop0"
+		for i := 0; i < n-1; i++ {
+			hop := filepath.Join(secret, fmt.Sprintf("hop%d", i))
+			fs[hop] = fileOwnership{uid: 0, mode: 0o777, link: true}
+			linkTargets[hop] = fmt.Sprintf("hop%d", i+1)
+		}
+		last := filepath.Join(secret, fmt.Sprintf("hop%d", n-1))
+		fs[last] = fileOwnership{uid: 0, mode: 0o777, link: true}
+		linkTargets[last] = filepath.Join(dated, "gateway.seed")
+		return fs
+	}
+	if _, err := engineRefusals(ptr(cfg), host(chain(31))); err != nil {
+		t.Fatalf("thirty-two links: %v", err)
+	}
+	expect("thirty-three links", chain(32), cfg, "more than 32 symbolic links")
+	linkTargets[seed] = "..data/gateway.seed"
+	linkTargets[filepath.Join(secret, "..data")] = "..2026_10_03"
+	// A credentials file mounted the same way: root's links are followed
+	// and the resolved path is the one an adapter is given; the platform
+	// user's own link is refused.
+	creds := mounted()
+	creds[credentials] = fileOwnership{uid: 0, mode: 0o777, link: true}
+	target := filepath.Join(root, "run", "secrets", "..data", "warehouse")
+	linkTargets[credentials] = "..data/warehouse"
+	creds[filepath.Join(root, "run", "secrets", "..data")] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	creds[target] = fileOwnership{uid: 1001, mode: 0o600}
+	resolved = ptr(cfg)
+	if _, err := engineRefusals(resolved, host(creds)); err != nil || resolved.platforms[0].credentials["history"] != target {
+		t.Fatalf("credentials mounted as a projected secret: %v %v", err, resolved.platforms[0].credentials)
+	}
+	creds[credentials] = fileOwnership{uid: 1001, mode: 0o777, link: true}
+	expect("a credentials link of the platform user's", creds, cfg, credentials+" is a symbolic link owned by uid 1001, not root")
 }
