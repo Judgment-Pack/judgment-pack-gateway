@@ -4,7 +4,7 @@ date: 2026-10-02
 deciders: maintainer
 ---
 
-# A decision policy may require its record to be signed by a runtime key it names; the signature is read from the sidecar beside the record, and a key-rotation line is never followed
+# A decision policy may require its record to be signed by a runtime key it names; the signature is read from the sidecar beside the record, a key-rotation line is never followed, and the receipt says the record was found by its exact bytes
 
 ## Context and problem statement
 
@@ -74,18 +74,13 @@ Determinations:
    ([executor.md](../design/executor.md)):
    - the record must carry `trail`, 32 lowercase hex, and `sequence`, an integer from 1 to
      2⁵³−2: a record no chain numbers carries nothing a signature can name;
-   - the record's bytes are its exact bytes: for a tool whose policy sets the member, step 7
-     takes a line of a `.jsonl` file as the bytes before its `0x0A`, a `0x0D` among them, and
-     does not remove one trailing `0x0D` as `SPEC.md` §4 step 6 does for the verifier and for
-     every other policy. A record converted to CRLF is other bytes than the runtime signed, and
-     is not found under the digest it signed;
+   - the record is found by its exact bytes (determination 6): step 7 takes a line of a
+     `.jsonl` file as all its bytes before its `0x0A`, a `0x0D` among them. A record converted
+     to CRLF is other bytes than the runtime signed, and is not found under the digest it
+     signed;
    - a file named exactly `signatures.jsonl` must lie in the directory of a file the record was
-     found in, a line of it or the file whole, found by the walk that finds the record: a regular
-     file, never a link. The walk reads each file, the record and the sidecar alike, as the entry
-     it found: through directories held one at a time from its root, each directory and the file
-     judged not a link and the thing opened the entry's own, before the open and after it. A link
-     put in place of either, or of a directory above them, after the walk judged it refuses the
-     read, and the action with it;
+     found in, a line of it or the file whole, found by the walk that finds the record
+     (determination 7): a regular file, never a link;
    - one of its readable lines must be a record signature whose `trail` and `sequence` are the
      record's and whose `record` is `decision.recordDigest`, the SHA-256 of the exact bytes step
      7 matched; whose `keyId` is the keyId of a key the policy names; and whose signature
@@ -128,6 +123,39 @@ Determinations:
      line spelling it `3.0` is unreadable;
    - a string member is read as its JSON value, so a line that spells one with an escape is
      readable.
+6. **One record, one byte identity, named under the signature.** `SPEC.md` §4 step 6 removes one
+   trailing `0x0D` from each line of a `.jsonl` file, and the digest a runtime signature binds is
+   of the line's exact bytes. Were admission to read the record exactly and verification by step
+   6, the two would disagree over one archive: a record signed with a `0x0D` admitted and then
+   reported missing, a record named with its `0x0D` found only as its file whole and never
+   compared, a `0x0D` put in after an action failing admission and passing verification. So the
+   reading is named by the receipt, under its signature, and every reader uses the one named:
+   - an action receipt minted for a tool whose policy sets `requireSignedRecord` carries
+     `decision.recordBytes`, the string `"exact"` (`SPEC.md` §1.2a). The gateway found the
+     record by its exact bytes, and §4 step 6 looks for it under the **exact reading**: a
+     `.jsonl` file's pieces as they are, no `0x0D` removed; step 8 compares the record found that
+     way. `recordBytes` present and of another value is `malformed`;
+   - a receipt without the member is found by step 6's reading, one trailing `0x0D` removed, as
+     before: every receipt made before this record, and every receipt through a tool held to no
+     policy or to one without the member, means what it meant;
+   - step 7, which reads every record that cites for its citations whoever names it, keeps step
+     6's reading;
+   - a verifier written before the member (v0.8.1 and earlier) tolerates it, as it tolerates any
+     signed member it does not know, and finds the record by step 6's reading. Run over the five
+     vectors that hold the member, the released verifier answers three of them otherwise than the
+     corpus: it reports a record converted to CRLF as found, a record named with its `0x0D` as
+     found and not compared, and a `recordBytes` of another value as `ok`. It reports no receipt
+     with the member `malformed`.
+7. **The walk holds what it reads.** The walk of the decision-record directory, for `/act` and
+   for `verify`, holds its root first, as the directory it was named by: not a link, and the
+   directory opened the one judged, before the open and after it. It enumerates and reads
+   everything beneath through that held root and the directories it holds below it, each judged
+   the same way, and opens each file through its directory's handle, judged likewise
+   (`openEntryJudged`). No name it judged is read again by a path. A link put in place of the
+   root, a directory or a file as it is judged refuses the walk, and the action with it; one put
+   there once it is held is where the walk no longer looks, so nothing outside the root it
+   judged is read. A root that is itself a link is followed by nothing, as before: the walk finds
+   no candidate under it.
 
 ### Consequences
 
@@ -135,8 +163,10 @@ Determinations:
   a policy that requires a signed record; the runtime's own vector, read by this rule, verifies.
 - Good, because what the gateway trusts is in the operator's configuration and under the policy's
   digest, and nothing in the decision-record directory can widen it.
-- Good, because a policy without the member, and every receipt made before, mean what they meant;
-  the receipt's form and the verifier are unchanged.
+- Good, because a policy without the member, and every receipt made before, mean what they meant:
+  a receipt without `decision.recordBytes` is verified as before.
+- Good, because admission and verification read a signed record by the same bytes, and the
+  receipt says which, under its signature.
 - Bad, because an operator who rotates the runtime's key must change the policy too, and records
   the next key signs are refused until they do.
 - Bad, because a key the policy still names is trusted for records signed after the runtime
@@ -150,8 +180,14 @@ Determinations:
 - Bad, because nothing here helps against the holder of a key, and the runtime's operator holds
   it.
 - Bad, because a record whose trail was converted to CRLF is not found for a tool that
-  requires a signed record, where the verifier and every other policy find it with its `0x0D`
-  removed; such a record is not the bytes the runtime signed.
+  requires a signed record, or by the verifier for a receipt minted under one, where every
+  other receipt and policy finds it with its `0x0D` removed; such a record is not the bytes the
+  runtime signed.
+- Bad, because the receipt grows an optional member, and a verifier that does not read it
+  (v0.8.1 and earlier) verifies such a receipt by step 6's reading, which can answer `ok` where
+  this verifier reports `decision-record-mismatch`.
+- Bad, because the walk now holds a directory handle per level of the tree it is in and judges
+  each entry twice, which costs a few system calls per file more than reading by path.
 - Revisit when a policy needs a revocation from a sequence on, when the gateway witnesses a trail
   (runtime ADR-0047 §3), or when the runtime's sidecar or record-signature version moves.
 
@@ -161,17 +197,21 @@ Determinations:
   of a policy's members, which gains `requireSignedRecord`, a version-5 member (a policy without
   it is a version-4 member as before); and determination 2 in part, the steps after step 7, which
   gain `policy-signed` after `record`. The rest of ADR-0011 stands: what `decision` establishes
-  with a policy is still exactly the policy's checks.
+  with a policy is still exactly the policy's checks. Of determination 4, in part: the verifier
+  finds and compares the record of a receipt carrying `decision.recordBytes` under the exact
+  reading (determination 6 above); every other receipt as before.
 - [ADR-0007](0007-the-engine-serves-the-adapters-it-ships.md)'s `services` still takes the next
   version when it is built.
 
 ## More information
 
-- `SPEC.md` §1.2a (`policy`, and what `decision` establishes);
+- `SPEC.md` §1.2a (`policy`, `decision.recordBytes`, and what `decision` establishes), §4 steps
+  1, 6, 7 and 8; the vectors `corpus/v3/stores/v3-decision-record-bytes-*.json`;
   [the executor](../design/executor.md), step 9; [the engine's configuration](../design/engine-config.md).
-- `go/record_signature.go`, `go/decision_policy.go`, `go/act.go`; the tests in
+- `go/record_signature.go`, `go/decision_policy.go`, `go/act.go`, `go/held_read.go`,
+  `go/verify_v3.go`, `go/verify.go`, and `verify-ts`; the tests in
   `go/act_signed_test.go`, the runtime's vector among them.
 - The runtime: ADR-0047 §2b, and `docs/building-with-packs.md`, "Signing the trail" and "Record
   signatures, exactly".
 - Issues #198 and #195.
-- Material-decision categories: public-surface, documented-claim, security.
+- Material-decision categories: public-surface, documented-claim, conformance, security.

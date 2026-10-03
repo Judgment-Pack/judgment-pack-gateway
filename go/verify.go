@@ -80,6 +80,9 @@ type receipt struct {
 	cites        []citation
 	recordDigest string
 	packDigest   string
+	// exactRecord is decision.recordBytes "exact": the record is the
+	// candidate whose exact bytes hash to recordDigest (§4 step 6).
+	exactRecord bool
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {
@@ -710,9 +713,16 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 	// exists as some candidate's bytes, and a record found is compared with
 	// what the receipt claims of it. Each is reported beside the receipt's ok,
 	// once, and independently.
-	wanted := map[string]bool{}
+	// Each record is wanted under the reading its receipt names: step 6's,
+	// one trailing 0x0D removed from a line, or, for a receipt whose
+	// decision.recordBytes is "exact", a line's exact bytes.
+	wanted, wantedExact := map[string]bool{}, map[string]bool{}
 	for _, r := range actions {
-		wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+		if r.exactRecord {
+			wantedExact[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+		} else {
+			wanted[strings.TrimPrefix(r.recordDigest, "sha256:")] = true
+		}
 	}
 	// SPEC.md §4 step 7, resolved as each citing record is found -- the
 	// enumeration the citations resolve against is complete by now -- so
@@ -739,9 +749,15 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 	// found, for what it states of the pack and the citations -- once per
 	// record, and of each only those, so the archive is still retained no
 	// more than its findings.
-	named := map[string]recordClaims{}
-	onNamed := func(digestHex string, data []byte) { named[digestHex] = recordClaimsOf(data) }
-	candidates, recordsPresent, err := decisionCandidatesReading(decisionRecords, wanted, onRecord, onNamed)
+	named, namedExact := map[string]recordClaims{}, map[string]recordClaims{}
+	onNamed := func(digestHex string, exact bool, data []byte) {
+		if exact {
+			namedExact[digestHex] = recordClaimsOf(data)
+		} else {
+			named[digestHex] = recordClaimsOf(data)
+		}
+	}
+	candidates, candidatesExact, recordsPresent, err := walkDecisionRecords(decisionRecords, wanted, decisionWalk{onRecord: onRecord, exact: wantedExact, onWanted: onNamed})
 	if err != nil {
 		return nil, err
 	}
@@ -756,7 +772,11 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 			}
 		}
 		recordHex := strings.TrimPrefix(r.recordDigest, "sha256:")
-		if !recordsPresent || !candidates[recordHex] {
+		found, claimsOf := candidates, named
+		if r.exactRecord {
+			found, claimsOf = candidatesExact, namedExact
+		}
+		if !recordsPresent || !found[recordHex] {
 			rep.Findings = append(rep.Findings, finding{
 				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-record-mismatch",
 			})
@@ -766,7 +786,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		// is compared with what the receipt claims of it, each claim its own
 		// finding; any other record is not compared, and the report says so
 		// without failing the receipt.
-		claims := named[recordHex]
+		claims := claimsOf[recordHex]
 		if !claims.understood {
 			rep.Observations = append(rep.Observations, finding{
 				"sessionId": r.sessionID, "callIndex": r.callIndex, "observation": "decision-record-not-compared",

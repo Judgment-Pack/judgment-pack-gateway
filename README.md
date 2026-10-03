@@ -162,7 +162,8 @@ decision-record directory put there, one written by hand included. A policy that
 `requireSignedRecord` to the runtime's public keys (engine configuration version 5,
 [ADR-0012](docs/adr/0012-hold-a-write-to-a-signed-record.md)) also requires the record to be
 signed by one of them, in its exact bytes, in the runtime's sidecar beside it,
-`signatures.jsonl`. A writer who cannot use one of those keys then cannot satisfy the policy
+`signatures.jsonl`; the receipt then says, in `decision.recordBytes`, that the record was found
+by its exact bytes, and `gateway verify` finds it the same way. A writer who cannot use one of those keys then cannot satisfy the policy
 with a record of their own. It establishes nothing against whoever holds a named key, the
 operator included, who can sign any record. The gateway trusts exactly the keys the policy names
 and follows no key rotation: when the runtime's key changes, add the next key to the policy

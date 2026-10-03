@@ -67,7 +67,9 @@ type Judged = {
   // bytes' SHA-256, by which its citations are read again once the
   // enumeration is whole; and what §4 step 8 compares with the record, the
   // pack it names and its citations as a set (citesKey).
-  readonly action?: { readonly recordDigest: string; readonly bytes: string; readonly packDigest: string; readonly citesKey: string };
+  // exact is decision.recordBytes "exact": the record is found by a line's
+  // exact bytes (§4 step 6).
+  readonly action?: { readonly recordDigest: string; readonly bytes: string; readonly packDigest: string; readonly citesKey: string; readonly exact: boolean };
 };
 
 // Claims is what §4 step 8 reads of a record an action names, when it is a
@@ -320,6 +322,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
       bytes: bytesDigest,
       packDigest: own(str(member(decision, "packDigest"))!),
       citesKey: citesKey(citations(member(act, "cites")!)!),
+      exact: member(decision, "recordBytes") !== undefined,
     };
   }
   return { file, status: "ok", callIndex, chain: { version: own(version), signature: own(signature), prev }, ...(action && { action }) };
@@ -464,11 +467,14 @@ export function verifyStore(
   // §4 step 6's candidates, matched against the records the actions that
   // passed name, and step 7's findings, from one walk: each record named
   // is marked once a candidate is found to be it.
+  // Each under the reading its receipt names: step 6's, or, for a receipt
+  // whose decision.recordBytes is "exact", a line's exact bytes.
   const named = new Map<string, boolean>();
+  const namedExact = new Map<string, boolean>();
   for (const judged of sessions.values()) {
     for (const j of judged) {
       if (j.action !== undefined) {
-        named.set(j.action.recordDigest, false);
+        (j.action.exact ? namedExact : named).set(j.action.recordDigest, false);
       }
     }
   }
@@ -477,11 +483,20 @@ export function verifyStore(
   // that is a runtime evaluation record has its claims kept; a record found
   // and not kept here is not compared.
   const claims = new Map<string, Claims>();
+  const claimsExact = new Map<string, Claims>();
   eachDecisionRecord(records, budget, (candidate) => {
     testHooks.sample?.("candidate");
     const digest = "sha256:" + candidate.digest;
-    if (named.has(digest)) {
+    const exactDigest = "sha256:" + (candidate.exact?.digest ?? candidate.digest);
+    // A step 6 candidate is one that is not empty under its reading; a
+    // line of a carriage return alone is a candidate under the exact
+    // reading only.
+    const stepSix = candidate.bytes === null || candidate.bytes.length > 0 || candidate.exact === undefined;
+    if (stepSix && named.has(digest)) {
       named.set(digest, true);
+    }
+    if (namedExact.has(exactDigest)) {
+      namedExact.set(exactDigest, true);
     }
     if (candidate.bytes === null) {
       // Past the bound: a candidate that does not open an object is not
@@ -490,6 +505,10 @@ export function verifyStore(
       if (candidate.opensObject) {
         throw new NoVerdict(`a decision record of more than ${documentBound} bytes cannot be read for its citations`);
       }
+      return;
+    }
+    if (!stepSix) {
+      // a carriage return alone: no record, and nothing for step 7
       return;
     }
     const bytes = candidate.bytes;
@@ -503,11 +522,19 @@ export function verifyStore(
     if (status !== null) {
       recordFindings.add(candidate.digest, status);
     }
-    if (named.has(digest) && !claims.has(digest)) {
-      const read = recordClaims(record);
-      if (read !== null) {
-        budget.charge(entryCost + size(digest) + size(read.packDigest) + size(read.citesKey ?? ""), "the claims of the decision records named");
-        claims.set(digest, read);
+    // The claims of a record named and found, under each reading: under
+    // the exact one the record's bytes are the line's and its carriage
+    // return, which is whitespace to JSON, so they are read the same.
+    for (const [key, wanted, kept] of [
+      [digest, named, claims],
+      [exactDigest, namedExact, claimsExact],
+    ] as const) {
+      if (wanted.has(key) && !kept.has(key)) {
+        const read = recordClaims(record);
+        if (read !== null) {
+          budget.charge(entryCost + size(key) + size(read.packDigest) + size(read.citesKey ?? ""), "the claims of the decision records named");
+          kept.set(key, read);
+        }
       }
     }
   });
@@ -584,7 +611,8 @@ export function verifyStore(
             ["status", "citation-unresolved"],
           ];
         }
-        if (named.get(j.action.recordDigest) !== true) {
+        const [found, compared] = j.action.exact ? [namedExact, claimsExact] : [named, claims];
+        if (found.get(j.action.recordDigest) !== true) {
           yield [
             ["sessionId", session],
             ["callIndex", j.callIndex!],
@@ -594,7 +622,7 @@ export function verifyStore(
         }
         // §4 step 8: the record found, when it is a runtime evaluation
         // record, bears out the pack and the citations the action claims.
-        const c = claims.get(j.action.recordDigest);
+        const c = compared.get(j.action.recordDigest);
         if (c === undefined) {
           continue;
         }
@@ -630,7 +658,11 @@ export function verifyStore(
   function* observations(): Generator<Finding> {
     for (const [session, judged] of sessions) {
       for (const j of judged) {
-        if (j.action !== undefined && named.get(j.action.recordDigest) === true && !claims.has(j.action.recordDigest)) {
+        if (j.action === undefined) {
+          continue;
+        }
+        const [found, compared] = j.action.exact ? [namedExact, claimsExact] : [named, claims];
+        if (found.get(j.action.recordDigest) === true && !compared.has(j.action.recordDigest)) {
           yield [
             ["sessionId", session],
             ["callIndex", j.callIndex!],

@@ -313,7 +313,16 @@ function readBounded(fd: number): Uint8Array | null {
 // A candidate as read: its SHA-256, and either its bytes or, past
 // documentBound, whether its first byte that is not JSON whitespace opens
 // an object -- the one thing that could make it a record step 7 reads.
-export type Read = { readonly digest: string; readonly bytes: Uint8Array | null; readonly opensObject: boolean };
+export type Read = {
+  readonly digest: string;
+  readonly bytes: Uint8Array | null;
+  readonly opensObject: boolean;
+  // For a line of a .jsonl file: the SHA-256 of all its bytes before its
+  // 0x0A, a trailing 0x0D among them (the exact reading of SPEC.md §4 step
+  // 6), and whether those are none. Absent for anything else, which is the
+  // same bytes under both readings.
+  readonly exact?: { readonly digest: string; readonly empty: boolean };
+};
 
 const isSpace = (b: number) => b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d;
 
@@ -353,18 +362,23 @@ class Accumulating {
 
 // eachLine hands each line of the open file to visit, in order: its bytes
 // split on each line feed, one trailing carriage return taken off, the
-// empty ones included. The whole file's SHA-256 is the result.
+// empty ones included, and beside them the digest of all the line's bytes,
+// its carriage return kept. The whole file's SHA-256 is the result.
 function eachLine(fd: number, visit: (line: Read) => void): string {
   const whole = crypto.createHash("sha256");
   const buffer = Buffer.alloc(chunk);
   let line = new Accumulating();
+  let exact = crypto.createHash("sha256");
+  let exactEmpty = true;
   // A carriage return is taken off only at a line's end, so one is held
   // back until what follows it is known.
   let heldReturn = false;
   let any = false;
   const end = () => {
-    visit(line.done());
+    visit({ ...line.done(), exact: { digest: exact.digest("hex"), empty: exactEmpty } });
     line = new Accumulating();
+    exact = crypto.createHash("sha256");
+    exactEmpty = true;
     any = false;
   };
   for (;;) {
@@ -379,6 +393,8 @@ function eachLine(fd: number, visit: (line: Read) => void): string {
       const at = bytes.indexOf(0x0a, start);
       const piece = bytes.subarray(start, at === -1 ? bytes.length : at);
       if (piece.length > 0) {
+        exact.update(piece);
+        exactEmpty = false;
         if (heldReturn) {
           line.add(Buffer.from([0x0d]));
         }
@@ -506,8 +522,11 @@ function readCandidate(at: Buffer, name: Buffer, visit: (candidate: Read) => voi
   try {
     withRegular(at, what, (fd) => {
       if (endsWith(name, ".jsonl")) {
+        // A line is a candidate when it is not empty under either reading:
+        // a line of a carriage return alone is one under the exact reading
+        // only.
         const whole = eachLine(fd, (line) => {
-          if (line.bytes === null || line.bytes.length > 0) {
+          if (line.bytes === null || line.bytes.length > 0 || line.exact?.empty === false) {
             visit(line);
           }
         });

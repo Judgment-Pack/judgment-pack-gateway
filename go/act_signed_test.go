@@ -553,6 +553,33 @@ func TestActRequiresARecordSignedByATrustedKey(t *testing.T) {
 		swapAt(t, "evaluations.jsonl", filepath.Join("kept", "evaluations.txt"))
 		refused(t, "a record swapped for a link", digest, "decision", "could not be read")
 	})
+	t.Run("the root swapped for a link once it is held", func(t *testing.T) {
+		if !canLink {
+			t.Skip("no symbolic link here")
+		}
+		elsewhere := t.TempDir()
+		for name, text := range map[string]string{"evaluations.jsonl": record + "\n", sidecarName: good + "\n"} {
+			if err := os.WriteFile(filepath.Join(elsewhere, name), []byte(text), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		write(t, map[string]string{"evaluations.jsonl": record + "\n", sidecarName: ""})
+		root, done := service.decisionRecords, false
+		walkEntryJudged = func(rel string) {
+			if rel != "evaluations.jsonl" || done {
+				return
+			}
+			done = true
+			if err := os.Rename(root, root+".gone"); err != nil {
+				t.Error(err)
+			}
+			if err := os.Symlink(elsewhere, root); err != nil {
+				t.Error(err)
+			}
+		}
+		t.Cleanup(func() { walkEntryJudged = nil })
+		refused(t, "the root swapped for a link once held", digest, "policy-signed", "no readable line")
+	})
 	t.Run("a directory swapped for a link to another", func(t *testing.T) {
 		files := map[string]string{"decoy/evaluations.jsonl": record + "\n", "decoy/" + sidecarName: good + "\n", "trail/evaluations.jsonl": record + "\n", "trail/" + sidecarName: ""}
 		write(t, files)
@@ -687,4 +714,193 @@ func TestConnectKeepsASignedRecordPolicyAndTheVersion(t *testing.T) {
 	if after.version != "5" || kept == nil || kept.digest != before.platforms[0].policies["execute"].digest || len(kept.signers) != 1 {
 		t.Fatalf("version %s, policy %+v: the policy kept as written, the version not lowered", after.version, kept)
 	}
+}
+
+// One signed record has one byte identity, for admission and for
+// verification alike: a receipt minted under a policy that requires a
+// signed record says, under its signature, that its record was found by
+// its exact bytes (decision.recordBytes "exact"), and verify then finds it
+// the same way; a receipt without the member is verified by §4 step 6's
+// reading, one trailing 0x0D removed from a line, as before.
+func TestASignedRecordHasOneByteIdentity(t *testing.T) {
+	service, server := testService(t)
+	key := keyFromSeed(t, vectorSeed1)
+	service.sources["tickets/write"] = sourceSpec{argv: []string{os.Args[0], "--tools=update_ticket,delete_ticket"}, env: helperEnv, shape: "mcp",
+		tools: []string{"update_ticket", "delete_ticket"}, endpoint: "https://mcp.example/",
+		policies: map[string]*decisionPolicy{"update_ticket": mustPolicy(t, signedPolicy(key.public)), "delete_ticket": mustPolicy(t, policyText)}}
+	service.decisionRecords = t.TempDir()
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	code, first := authed(t, server, "/acquire", `{"session":"bytes-1","source":"screening","arguments":{"q":"acme"}}`, token)
+	if code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, first)
+	}
+	signature := first["receipt"].(map[string]any)["signature"].(string)
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	trail := strings.Repeat("9e", 16)
+	// record is the runtime's line for this session at a sequence of its own.
+	record := func(sequence int) string {
+		return strings.Replace(runtimeLine(t, signature, `"sessionId":"act-p"`, `"sessionId":"bytes-1"`), `"recordVersion":"1",`,
+			`"recordVersion":"1","trail":"`+trail+`","sequence":`+strconv.Itoa(sequence)+`,"previous":"sha256:`+strings.Repeat("7c", 32)+`",`, 1)
+	}
+	put := func(t *testing.T, name, text string) {
+		t.Helper()
+		path := filepath.Join(service.decisionRecords, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	act := func(t *testing.T, tool, signed string) (int, map[string]any) {
+		t.Helper()
+		return authed(t, server, "/act", `{"session":"bytes-1","platform":"tickets","tool":"`+tool+`","arguments":{"id":"Q-7","revision":4,"status":"approved","customer":{"tier":2,"name":"Acme"}},`+
+			`"decision":{"recordDigest":"sha256:`+hexOf([]byte(signed))+`","packDigest":"`+packA+`"},`+
+			`"cites":[{"sessionId":"bytes-1","callIndex":0,"signature":"`+signature+`"}]}`, token)
+	}
+	recordBytes := func(answer map[string]any) any {
+		return answer["receipt"].(map[string]any)["action"].(map[string]any)["decision"].(map[string]any)["recordBytes"]
+	}
+
+	// 1. A signature over a record and a 0x0D, stored with its 0x0A after.
+	// 2. The same, the record's .jsonl file ending without a 0x0A.
+	// 3. A record signed as the runtime writes it, the 0x0D put in later.
+	// 4. A record under a policy that requires no signature, stored CRLF.
+	cases := []struct {
+		dir, tool, signed, stored string
+		sequence                  int64
+	}{
+		{"one", "update_ticket", record(1) + "\r", record(1) + "\r\n", 1},
+		{"two", "update_ticket", record(2) + "\r", record(2) + "\r", 2},
+		{"three", "update_ticket", record(3), record(3) + "\n", 3},
+		{"four", "delete_ticket", record(4), record(4) + "\r\n", 4},
+	}
+	for i, tc := range cases {
+		put(t, tc.dir+"/evaluations.jsonl", tc.stored)
+		if tc.tool == "update_ticket" {
+			put(t, tc.dir+"/"+sidecarName, signedLine(key, trail, tc.sequence, "sha256:"+hexOf([]byte(tc.signed)))+"\n")
+		}
+		code, answer := act(t, tc.tool, tc.signed)
+		if code != http.StatusOK {
+			t.Fatalf("case %d: %d %v", i+1, code, answer)
+		}
+		want := any("exact")
+		if tc.tool != "update_ticket" {
+			want = nil
+		}
+		if got := recordBytes(answer); got != want {
+			t.Fatalf("case %d: the receipt's decision.recordBytes is %v, want %v", i+1, got, want)
+		}
+	}
+	// verified says, of each action receipt (callIndex 1 to 4), whether its
+	// record was found and compared: no finding of step 6 or 8 and no
+	// observation beside it.
+	verified := func(t *testing.T) map[int64]string {
+		t.Helper()
+		rep, err := verifyWithRegistryAndRecords(service.storeRoot, service.regPath, "gateway:test", service.decisionRecords, service.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[int64]string{1: "compared", 2: "compared", 3: "compared", 4: "compared"}
+		for _, f := range rep.Findings {
+			if f["sessionId"] != "bytes-1" {
+				continue
+			}
+			if index, ok := f["callIndex"].(int64); ok && index > 0 && f["status"] != "ok" {
+				got[index] = fmt.Sprint(f["status"])
+			}
+		}
+		for _, o := range rep.Observations {
+			if index, ok := o["callIndex"].(int64); ok {
+				got[index] = fmt.Sprint(o["observation"])
+			}
+		}
+		return got
+	}
+	if got := verified(t); got[1] != "compared" || got[2] != "compared" || got[3] != "compared" || got[4] != "compared" {
+		t.Fatalf("each record admitted is found and compared by verify as it was by /act: %v", got)
+	}
+	// The 0x0D put in after the action: /act no longer finds the record, and
+	// neither does verify, for the receipt that says it was found exactly.
+	put(t, "three/evaluations.jsonl", record(3)+"\r\n")
+	if code, answer := act(t, "update_ticket", record(3)); code != http.StatusBadRequest || answer["refusedAt"] != "decision" {
+		t.Fatalf("a signed record with a 0x0D put in: %d %v", code, answer)
+	}
+	if got := verified(t); got[3] != "decision-record-mismatch" || got[1] != "compared" || got[2] != "compared" || got[4] != "compared" {
+		t.Fatalf("verify finds the record by the reading the receipt names: %v", got)
+	}
+}
+
+// The walk reads only beneath the root it judged: a link put in place of
+// the root as it is judged refuses the walk, and one put there once the
+// root is held changes nothing that is read.
+func TestTheWalkReadsBeneathTheRootItJudged(t *testing.T) {
+	if os.Symlink(".", filepath.Join(t.TempDir(), "probe")) != nil {
+		t.Skip("no symbolic link here")
+	}
+	inside, outside := []byte(`{"inside":true}`), []byte(`{"outside":true}`)
+	wanted := map[string]bool{hexOf(inside): true, hexOf(outside): true}
+	setup := func(t *testing.T) (string, string) {
+		t.Helper()
+		parent, elsewhere := t.TempDir(), t.TempDir()
+		root := filepath.Join(parent, "decisions")
+		if err := os.MkdirAll(root, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, "record.json"), inside, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(elsewhere, "record.json"), outside, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return root, elsewhere
+	}
+	swap := func(t *testing.T, root, elsewhere, at string) {
+		t.Helper()
+		done := false
+		walkEntryJudged = func(rel string) {
+			if rel != at || done {
+				return
+			}
+			done = true
+			if err := os.Rename(root, root+".gone"); err != nil {
+				t.Error(err)
+			}
+			if err := os.Symlink(elsewhere, root); err != nil {
+				t.Error(err)
+			}
+		}
+		t.Cleanup(func() { walkEntryJudged = nil })
+	}
+	t.Run("as the root is judged", func(t *testing.T) {
+		root, elsewhere := setup(t)
+		swap(t, root, elsewhere, "")
+		if found, _, err := decisionCandidates(root, wanted, nil); err == nil || found[hexOf(outside)] {
+			t.Fatalf("a root swapped for a link as it is judged: %v %v", found, err)
+		}
+	})
+	t.Run("once the root is held", func(t *testing.T) {
+		root, elsewhere := setup(t)
+		swap(t, root, elsewhere, "record.json")
+		found, present, err := decisionCandidates(root, wanted, nil)
+		if err != nil || !present || !found[hexOf(inside)] || found[hexOf(outside)] {
+			t.Fatalf("a root swapped for a link once held: %v %v %v", found, present, err)
+		}
+	})
+	t.Run("before the walk", func(t *testing.T) {
+		root, elsewhere := setup(t)
+		if err := os.Rename(root, root+".gone"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(elsewhere, root); err != nil {
+			t.Fatal(err)
+		}
+		if found, present, err := decisionCandidates(root, wanted, nil); err != nil || !present || len(found) != 0 {
+			t.Fatalf("a root that is a link is never followed: %v %v %v", found, present, err)
+		}
+	})
 }

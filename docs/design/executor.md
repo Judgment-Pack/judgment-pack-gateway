@@ -106,14 +106,17 @@ with one it also compares them with the record they name (step 10).
    and every line of a `.jsonl` file — or the request is refused. For a tool with no decision
    policy, `packDigest` is recorded as given and checked against nothing: the record's
    contents are the runtime's, and the engine reads none of them; for a tool with one, step 10
-   checks it. For a tool whose policy sets `requireSignedRecord`, a line is its exact bytes
-   before the `0x0A`, a `0x0D` among them, where §4 step 6 removes one trailing `0x0D`: the
-   digest a signature binds is of the bytes the runtime wrote, and a line converted to CRLF is
-   other bytes. Symbolic links are not followed: each file is read as the entry the walk found,
-   through directories held one at a time from the root, each directory and the file judged
-   not a link and the thing opened the entry's own, before the open and after it, so a link put
-   in place of one since the walk judged it refuses the read rather than being followed. The
-   walk is `verify`'s own, and like
+   checks it. For a tool whose policy sets `requireSignedRecord`, the record is looked for
+   under §4 step 6's exact reading — a line is all its bytes before the `0x0A`, a `0x0D` among
+   them — since the digest a signature binds is of the bytes the runtime wrote, and a line
+   converted to CRLF is other bytes; the receipt then carries `decision.recordBytes: "exact"`,
+   and `verify` finds the record the same way. Symbolic links are not followed, and nothing is
+   read by a path: the walk holds its root first, as the directory it was named by (not a link,
+   and the directory opened the one judged, before the open and after it), then enumerates and
+   reads everything through that held root and the directories it holds below it, each judged
+   the same way, each file opened through its directory's handle and judged likewise. A link put
+   in place of the root, a directory or a file as it is judged refuses the read; one put there
+   once it is held is where the walk no longer looks. The walk is `verify`'s own, and like
    it is not bounded in bytes, entries or time: availability is a stated limit of this
    reference ([SECURITY.md](../../SECURITY.md)), and an operator who mounts an archive as the
    decision-record directory has made the walk as long as the archive. A directory that cannot
@@ -193,7 +196,7 @@ and `resultDigest` names them. The engine then mints one receipt in the session 
 | `caller` | the token identity |
 | `argumentsCommitment` | a salted commitment over the canonical request body's `arguments`, salt returned |
 | `action.requester` | the token identity again — the one who asked, named where the action is |
-| `action.decision`, `action.cites` | as given |
+| `action.decision`, `action.cites` | as given; `action.decision.recordBytes` is `"exact"` for a tool whose policy requires a signed record, and absent otherwise |
 | `action.policy` | for a tool with a decision policy, `"sha256:"` and the SHA-256 of the canonical form of the policy object as configured; absent for a tool with none |
 | `action.tool` | `{"shape": "mcp", "endpoint": <binding endpoint or null>, "name": <tool>}` |
 | `action.request` | a salted commitment over the canonical request sent to the executor, salt returned |

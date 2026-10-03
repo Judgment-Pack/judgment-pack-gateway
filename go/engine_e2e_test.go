@@ -277,7 +277,8 @@ func TestEngineHoldsAWriteToItsDecisionEndToEnd(t *testing.T) {
 	action := acted["receipt"].(map[string]any)
 	inner := action["action"].(map[string]any)
 	if action["kind"] != "action" || action["callIndex"] != float64(1) || inner["tool"].(map[string]any)["name"] != "execute" ||
-		inner["policy"] != sources["warehouse/write"].policies["execute"].digest || inner["policy"] != mustPolicy(t, policy).digest {
+		inner["policy"] != sources["warehouse/write"].policies["execute"].digest || inner["policy"] != mustPolicy(t, policy).digest ||
+		inner["decision"].(map[string]any)["recordBytes"] != "exact" {
 		t.Fatalf("the action receipt names the policy the write was held to: %v", action)
 	}
 	echoed := acted["result"].(map[string]any)["structuredContent"].(map[string]any)["params"].(map[string]any)

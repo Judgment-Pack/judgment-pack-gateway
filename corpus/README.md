@@ -121,7 +121,7 @@ acquire/response vector class.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 25 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 30 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
@@ -143,6 +143,17 @@ nothing; and a graph composite, which is not compared, so the receipt that
 names it is `ok` whatever it claims. The records of the earlier action vectors
 carry no pack digest, so they are not runtime evaluation records and are not
 compared either.
+
+Five hold `decision.recordBytes` (§1.2a; ADR-0012): a receipt whose member is
+`"exact"` finds its record by a line's exact bytes, and one without it by step
+6's reading, one trailing `0x0D` removed. A record stored as a line ending in
+`0x0A` is found exactly; the same record stored with `0x0D 0x0A` after it is
+`decision-record-mismatch` for the exact receipt and found for one without the
+member, over the same archive; a record named with its trailing `0x0D`, the
+only and unterminated piece of its file, is found exactly and compared —
+`decision-pack-mismatch` — where step 6's reading finds the digest only as the
+file whole and compares nothing; and a `recordBytes` of another value is
+`malformed`.
 
 They are as frozen as the rest and were written against the specification, not
 against an implementation: no implementation answered them when they were
