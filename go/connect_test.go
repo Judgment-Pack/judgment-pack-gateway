@@ -347,6 +347,43 @@ func adaptersOnPath(f *connectFixture, mode os.FileMode) {
 		f.fs[filepath.Join(bin, name)] = fileOwnership{uid: 0, mode: mode}
 	}
 	f.host.lookPath = func(name string) (string, error) { return filepath.Join(bin, name), nil }
+	f.host.executableHead = func(string) ([]byte, error) { return nativeHead(), nil }
+}
+
+// serve --config holds the adapters before anything is made or started, as
+// connect does (engineStart): with the image's adapters it resolves each
+// source's command to its path; with one others may write it refuses,
+// naming the source, the adapter and why, before the store exists.
+func TestServeHoldsTheAdaptersBeforeItStarts(t *testing.T) {
+	platform := `"warehouse":{"binding":"postgres@` + digestOf(restrictedBinding) + `","credentials":{"history":{"file":"` + escapePath(f0(t)) + `"},"live":{"file":"` + escapePath(f0(t)) + `"}},"user":"engine-warehouse"}`
+	start := func(mode os.FileMode) (map[string]sourceSpec, string, error) {
+		f := newConnectFixture(t, restrictedBinding, platform)
+		f.fs[f0(t)] = fileOwnership{uid: 1001, mode: 0o600}
+		adaptersOnPath(f, mode)
+		cfg, bindings, err := loadEngineConfig(f.config, f.host.account)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, sources, err := engineStart(&cfg, bindings, f.host)
+		return sources, cfg.store, err
+	}
+	sources, store, err := start(0o755)
+	if err != nil {
+		t.Fatalf("the image's adapters: %v", err)
+	}
+	if bin := sources["warehouse/history"].argv[0]; !strings.HasSuffix(bin, filepath.Join("usr", "local", "bin", "adapter-airbyte")) || !filepath.IsAbs(bin) {
+		t.Fatalf("serve launches the resolved path: %v", sources["warehouse/history"].argv)
+	}
+	if _, err := os.Stat(store); err == nil {
+		t.Fatal("nothing is made by the start-up checks")
+	}
+	_, store, err = start(0o777)
+	if err == nil || !strings.Contains(err.Error(), "source warehouse/history: adapter adapter-airbyte: ") || !strings.Contains(err.Error(), "is writable beyond its owner (mode 0777)") {
+		t.Fatalf("an adapter others may write: %v", err)
+	}
+	if _, err := os.Stat(store); err == nil {
+		t.Fatal("a refused start makes nothing")
+	}
 }
 
 // Connect holds the adapters it runs as serve holds them, and runs each by

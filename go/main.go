@@ -262,6 +262,28 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	return service, nil
 }
 
+// engineStart is what serve --config judges before it loads the seed, in
+// order: the isolation refusals first, so a configuration is judged as a
+// configuration whatever this process may do, leaving every path resolved;
+// the sources derived from those; every adapter they launch, held and
+// rewritten to the path it resolved to; and the paths serve makes. Then
+// come the seed and whether the switching the configuration needs is
+// available. Nothing is made or started here.
+func engineStart(cfg *engineConfig, bindings map[string]binding, host engineHost) ([]string, map[string]sourceSpec, error) {
+	statements, err := engineRefusals(cfg, host)
+	if err != nil {
+		return nil, nil, err
+	}
+	sources := deriveSources(*cfg, bindings)
+	if err := holdAdapterSources(sources, host); err != nil {
+		return nil, nil, err
+	}
+	if err := preflightPaths(cfg.store, cfg.registry, cfg.decisionRecords); err != nil {
+		return nil, nil, err
+	}
+	return statements, sources, nil
+}
+
 // cmdServeEngine is `serve --config FILE`: the engine's configuration names
 // platforms, the sources are derived from their bindings, and the engine
 // refuses to start under a configuration the isolation claim does not
@@ -279,21 +301,8 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	closeInheritedDescriptors()
-	// The isolation refusals come first, so a configuration is judged as a
-	// configuration whatever this process may do; they leave every path
-	// resolved, and the sources are derived from those; then the seed, then
-	// whether the switching the configuration needs is available.
-	statements, err := engineRefusals(&cfg, host)
+	statements, sources, err := engineStart(&cfg, bindings, host)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	sources := deriveSources(cfg, bindings)
-	if err := holdAdapterSources(sources, host); err != nil {
-		fmt.Fprintln(os.Stderr, "start:", err)
-		return 1
-	}
-	if err := preflightPaths(cfg.store, cfg.registry, cfg.decisionRecords); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}

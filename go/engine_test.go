@@ -925,8 +925,17 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 	onPath := func(dir string) func(string) (string, error) {
 		return func(name string) (string, error) { return filepath.Join(dir, name), nil }
 	}
+	// Every adapter reads as a native executable of this platform, but the
+	// ones a test names otherwise.
+	heads := map[string]string{}
+	head := func(path string) ([]byte, error) {
+		if text, ok := heads[path]; ok {
+			return []byte(text), nil
+		}
+		return nativeHead(), nil
+	}
 	host := func(fs ownership, lookPath func(string) (string, error)) engineHost {
-		return engineHost{euid: signer, fileOwner: fs.owner, readLink: readLinkStub, lookPath: lookPath}
+		return engineHost{euid: signer, fileOwner: fs.owner, readLink: readLinkStub, lookPath: lookPath, executableHead: head}
 	}
 	sources := func(adapters string) map[string]sourceSpec {
 		name := func(adapter string) string {
@@ -951,6 +960,44 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 			t.Fatalf("each source launches the resolved path, its arguments kept: %v", launched)
 		}
 	}
+	// Each command is resolved once: the live and write sources share
+	// adapter-mcp, and a second lookup, which here would answer another
+	// path, is never made.
+	lookups := map[string]int{}
+	counted := func(name string) (string, error) {
+		lookups[name]++
+		if lookups[name] > 1 {
+			return filepath.Join(root, "elsewhere", name), nil
+		}
+		return filepath.Join(bin, name), nil
+	}
+	once := sources("")
+	if err := holdAdapterSources(once, host(image(), counted)); err != nil {
+		t.Fatal(err)
+	}
+	if lookups["adapter-mcp"] != 1 || lookups["adapter-airbyte"] != 1 || once["warehouse/live"].argv[0] != once["warehouse/write"].argv[0] ||
+		once["warehouse/live"].argv[0] != filepath.Join(bin, "adapter-mcp") || once["warehouse/write"].argv[1] != "--image=z" {
+		t.Fatalf("one lookup per command, one resolved path: %v %v", lookups, once)
+	}
+	// An adapter the kernel would hand to an interpreter: a script, by its
+	// own interpreter or by env, and any other file that is not a native
+	// executable.
+	for name, text := range map[string]string{
+		"a script":                        "#!/srv/open/sh\n",
+		"a script through env":            "#!/usr/bin/env sh\n",
+		"a file that is no native binary": "MZ\x90\x00",
+		"an empty file":                   "",
+	} {
+		heads[filepath.Join(bin, "adapter-mcp")] = text
+		want := "is not a native executable"
+		if strings.HasPrefix(text, "#!") {
+			want = "is a script (it starts with #!), and the interpreter it names, or the one env would find, is not held"
+		}
+		if err := holdAdapterSources(sources(""), host(image(), onPath(bin))); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%s: want %q, got %v", name, want, err)
+		}
+	}
+	delete(heads, filepath.Join(bin, "adapter-mcp"))
 	expect := func(name string, fs ownership, adapters string, want string) {
 		t.Helper()
 		if err := holdAdapterSources(sources(adapters), host(fs, onPath(bin))); err == nil || !strings.Contains(err.Error(), want) {
@@ -1018,4 +1065,12 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 	if err := holdAdapterSources(bare, host(ownership{}, nil)); err != nil || bare["warehouse/live"].argv[0] != "adapter-mcp" {
 		t.Fatalf("no PATH to search: %v %v", err, bare["warehouse/live"].argv)
 	}
+}
+
+// nativeHead is the first bytes of a native executable of this platform.
+func nativeHead() []byte {
+	if runtime.GOOS == "darwin" {
+		return []byte{0xcf, 0xfa, 0xed, 0xfe}
+	}
+	return []byte("\x7fELF")
 }

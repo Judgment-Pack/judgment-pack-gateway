@@ -16,7 +16,7 @@ import (
 // directory others may write, and an executable its group may write are
 // refused.
 func TestAdapterExecutablesAreHeldOnARealFilesystem(t *testing.T) {
-	host := engineHost{euid: os.Geteuid(), fileOwner: fileOwnerOf, readLink: os.Readlink}
+	host := engineHost{euid: os.Geteuid(), fileOwner: fileOwnerOf, readLink: os.Readlink, executableHead: readExecutableHead}
 	tree := func(t *testing.T, dirMode, fileMode os.FileMode) string {
 		t.Helper()
 		base, err := filepath.EvalSymlinks(t.TempDir())
@@ -28,7 +28,7 @@ func TestAdapterExecutablesAreHeldOnARealFilesystem(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, name := range []string{"adapter-airbyte", "adapter-mcp"} {
-			if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/false\n"), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(bin, name), append(nativeHead(), make([]byte, 60)...), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Chmod(filepath.Join(bin, name), fileMode); err != nil {
@@ -68,16 +68,43 @@ func TestAdapterExecutablesAreHeldOnARealFilesystem(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(fifo, "adapter-mcp"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// A script, whatever protects it, names an interpreter this check does
+	// not hold: one in a directory others may write, or whichever sh env
+	// would find on a PATH.
+	script := func(text string) string {
+		bin := tree(t, 0o755, 0o755)
+		if err := os.WriteFile(filepath.Join(bin, "adapter-mcp"), []byte(text), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return bin
+	}
+	open := filepath.Join(filepath.Dir(bin), "open")
+	if err := os.Mkdir(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(open, 0o777); err != nil {
+		t.Fatal(err)
+	}
 	for name, c := range map[string]struct {
 		bin  string
 		want string
 	}{
-		"a FIFO where an adapter should be": {fifo, "neither a regular file nor a directory"},
-		"a directory others may write":      {tree(t, 0o777, 0o755), "is writable beyond its owner (mode 0777) without the sticky bit"},
-		"an executable its group may write": {tree(t, 0o755, 0o775), "is writable beyond its owner (mode 0775)"},
+		"a script whose interpreter others may replace": {script("#!" + filepath.Join(open, "sh") + "\n"), "is a script (it starts with #!)"},
+		"a script through env":                          {script("#!/usr/bin/env sh\n"), "is a script (it starts with #!)"},
+		"a text file":                                   {script("adapter\n"), "is not a native executable"},
+		"a FIFO where an adapter should be":             {fifo, "neither a regular file nor a directory"},
+		"a directory others may write":                  {tree(t, 0o777, 0o755), "is writable beyond its owner (mode 0777) without the sticky bit"},
+		"an executable its group may write":             {tree(t, 0o755, 0o775), "is writable beyond its owner (mode 0775)"},
 	} {
 		if err := holdAdapterSources(sources(c.bin), host); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Fatalf("%s: want %q, got %v", name, c.want, err)
+		}
+	}
+	// An adapter the signer cannot read cannot be told from a script.
+	if os.Geteuid() != 0 {
+		unreadable := tree(t, 0o755, 0o111)
+		if err := holdAdapterSources(sources(unreadable), host); err == nil || !strings.Contains(err.Error(), "could not be read to tell whether it is a native executable") {
+			t.Fatalf("an adapter the signer cannot read: %v", err)
 		}
 	}
 }
