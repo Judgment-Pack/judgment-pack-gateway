@@ -223,7 +223,8 @@ engine refuses to start under a configuration the isolation claim of
   retarget it, and the walk then continues through its target's components, each held in
   turn, with a bound of thirty-two hops; the path with every link resolved is the path the
   adapter is then given, so the file judged is the file it opens. The seed's directories are
-  held to the same, for the signer, and its path used resolved;
+  held to the same, for the signer, and its path used resolved, and the seed file itself, like
+  a credentials file, may not be a link;
 - a signer that runs as **root**, which reads every credentials file whatever protects it,
   unless the operator sets `"rootSigner": "accepted"` — the engine then says in one line at
   startup that the separation between signer and adapters rests on the host, not on the
@@ -263,10 +264,14 @@ engine refuses to start under a configuration the isolation claim of
   as a credentials file's are, for those three owners (owned by one of them, writable beyond
   its owner only with the sticky bit, a link only when root owns it); and a directory not there
   yet is held through the directory it would be made in, which must be writable by its owner
-  alone, sticky or not, since whoever makes it first owns it, and must not be a link. Links and
-  special files beneath are passed over, as the walk passes over them. The refusal names the
-  path, its owner or mode, and why; there is no `"accepted"` for it: make the directory and
-  what is in it writable by its owner alone (`chmod -R go-w`);
+  alone, sticky or not, since whoever makes it first owns it, and must not be a link. A link at
+  the path itself must be owned by root, as a link on the way must; the walk never follows it,
+  though the start-up check that a directory is there does, and whoever may write the directory
+  the link is in could put a directory of records in its place, so that directory is held as
+  for a directory not there yet. Links and special files beneath are passed over, as the walk
+  passes over them. The refusal names the path, its owner or mode, and why; there is no
+  `"accepted"` for it: make the directory and what is in it writable by its owner alone (`chmod
+  -R go-w`);
 - the seed file's own checks, as for any `serve`: a regular file, owned by the signer, readable
   by nobody else.
 

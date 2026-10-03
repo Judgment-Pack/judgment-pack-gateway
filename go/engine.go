@@ -1144,6 +1144,12 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 		return nil, fmt.Errorf("seed: %v", err)
 	}
 	cfg.seed = seed
+	// The seed's own file may not be a link, as a credentials file may not:
+	// openSeed follows one, and the directories of its target are ones
+	// nothing above held.
+	if owner, err := host.fileOwner(seed); err == nil && owner.link {
+		return nil, fmt.Errorf("seed: %s is a symbolic link; name the file itself, so that the directories held are the ones it is in", seed)
+	}
 	// The decision-record directory, whose records a write is held to: a
 	// record found there stands for one the runtime wrote only as far as
 	// nobody else could have written it there.
@@ -1332,12 +1338,16 @@ func walkPath(dir string, host engineHost, hold func(dir string) error) (string,
 //     but its owner, sticky or not, since any other user who may make the
 //     directory first owns it. A parent that is a link is refused: name
 //     the directory's real place.
+//   - A link at the path itself must be owned by root, as a link on the
+//     way must. The walk never follows it, so nothing beneath it is read,
+//     but preflightPaths follows it and accepts the directory it leads
+//     to, and whoever may write the directory the link is in could put a
+//     directory of records in its place; so that directory is held as a
+//     parent is for a directory not there yet.
 //
-// A link at the path itself, a file there, or a path that cannot be looked
-// at is left to preflightPaths, which refuses what serve could not use:
-// the walk never follows a link at the path, so nothing beneath one is
-// read. Links and special files beneath are passed over, as the walk
-// passes over them.
+// A file at the path, or a path that cannot be looked at, is left to
+// preflightPaths, which refuses both. Links and special files beneath are
+// passed over, as the walk passes over them.
 //
 // This holds the state at start-up, as the owners and the permission bits
 // show it. It does not see a mode, an owner or a file changed after
@@ -1349,9 +1359,13 @@ func holdDecisionRecords(dir string, host engineHost) error {
 	owner, err := host.fileOwner(dir)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return holdDecisionRecordsParent(dir, host)
-	case err != nil || owner.link || !owner.dir:
+		return holdDecisionRecordsParent(dir, host, false)
+	case err != nil || (!owner.link && !owner.dir):
 		return nil
+	case owner.link && owner.uid != 0:
+		return fmt.Errorf("%s is a symbolic link owned by uid %d, not root, so its owner could have placed it, and could retarget it", dir, owner.uid)
+	case owner.link:
+		return holdDecisionRecordsParent(dir, host, true)
 	case owner.mode&0o022 != 0:
 		return fmt.Errorf("%s is writable beyond its owner (mode %04o), so another user could write a record in it; chmod go-w %s", dir, owner.mode, dir)
 	}
@@ -1364,17 +1378,22 @@ func holdDecisionRecords(dir string, host engineHost) error {
 }
 
 // holdDecisionRecordsParent holds the directory a decision-record
-// directory not there yet would be made in.
-func holdDecisionRecordsParent(dir string, host engineHost) error {
+// directory not there yet would be made in, or the one a link at its path
+// is in: whoever may write that directory could put a directory there.
+func holdDecisionRecordsParent(dir string, host engineHost, link bool) error {
 	parent := filepath.Dir(dir)
 	owner, err := host.fileOwner(parent)
+	what, then := "is not there, and the directory it would be made in", "make it first and write records in it"
+	if link {
+		what, then = "is a symbolic link, which the walk for a record does not follow, and the directory it is in", "put a directory of records in its place"
+	}
 	switch {
 	case err != nil || (!owner.link && !owner.dir):
 		return nil
 	case owner.link:
-		return fmt.Errorf("%s is not there, and the directory it would be made in, %s, is a symbolic link; name the directory where it is", dir, parent)
+		return fmt.Errorf("%s %s, %s, is a symbolic link; name the directory where it is", dir, what, parent)
 	case owner.mode&0o022 != 0:
-		return fmt.Errorf("%s is not there, and the directory it would be made in, %s, is writable beyond its owner (mode %04o), so another user could make it first and write records in it", dir, parent, owner.mode)
+		return fmt.Errorf("%s %s, %s, is writable beyond its owner (mode %04o), so another user could %s", dir, what, parent, owner.mode, then)
 	}
 	trusted := recordWriters{owner: owner.uid, signer: host.euid}
 	_, err = walkPath(parent, host, func(path string) error { return holdRecordAncestor(path, trusted, host) })

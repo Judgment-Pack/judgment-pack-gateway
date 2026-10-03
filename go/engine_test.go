@@ -788,3 +788,29 @@ func TestEngineRefusalsHoldTheDecisionRecordDirectory(t *testing.T) {
 		t.Fatalf("a group-writable decision-record directory: %v", err)
 	}
 }
+
+// The seed's own file may not be a link, as a credentials file may not:
+// the seed is opened through it, and its target's directories are ones the
+// walk did not hold.
+func TestTheSeedItselfMayNotBeALink(t *testing.T) {
+	seed := filepath.Join(string(filepath.Separator), "var", "lib", "engine", "gateway.seed")
+	credentials := filepath.Join(string(filepath.Separator), "run", "secrets", "warehouse")
+	both := map[string]string{"history": credentials, "live": credentials}
+	cfg := engineConfig{runtime: "docker", seed: seed, platforms: []platformConfig{{name: "warehouse", credentials: both, user: "engine-warehouse", uid: 1001}}}
+	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
+	fs := goodFilesystem(seed, credentials, 1000, 1001)
+	host := engineHost{euid: 1000, sockets: func(string) []string { return nil }, capabilities: func() capabilitySets {
+		return capabilitySets{known: true, effective: three, permitted: three}
+	}, fileOwner: fs.owner, readLink: readLinkStub}
+	if _, err := engineRefusals(ptr(cfg), host); err != nil {
+		t.Fatalf("a seed that is a file: %v", err)
+	}
+	fs[seed] = fileOwnership{uid: 0, mode: 0o777, link: true}
+	if _, err := engineRefusals(ptr(cfg), host); err == nil || !strings.Contains(err.Error(), "seed: "+seed+" is a symbolic link; name the file itself") {
+		t.Fatalf("a seed that is a link, even root's: %v", err)
+	}
+	delete(fs, seed)
+	if _, err := engineRefusals(ptr(cfg), host); err != nil {
+		t.Fatalf("a seed not there yet is loadSeed's to refuse: %v", err)
+	}
+}

@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -165,4 +166,72 @@ func TestOnlyRootTheSignerAndTheOwnerMayOwnTheDecisionRecords(t *testing.T) {
 	if err := holdDecisionRecords(absent, recordsHost(map[string]int{parent: runtimeUser})); err != nil {
 		t.Fatalf("a directory not there yet, under one the runtime owns: %v", err)
 	}
+}
+
+// A link at the decision-record path itself: preflightPaths follows it and
+// accepts the directory it leads to, so it is not what holds the link, and
+// the walk for a record never follows it. holdDecisionRecords, which serve
+// and connect apply first, refuses one root does not own, and holds the
+// directory a root-owned one is in as it holds the parent of a directory
+// not there yet, since whoever may write that directory could put a
+// directory of records in the link's place.
+func TestALinkAtTheDecisionRecordPathIsHeld(t *testing.T) {
+	dir := os.ModeDir
+	base := recordsTree(t, map[string]os.FileMode{"open": dir | 0o777, "private": dir | 0o700, "real": dir | 0o700, "real/evaluations.jsonl": 0o600})
+	exposed := filepath.Join(base, "open", "records")
+	sheltered := filepath.Join(base, "private", "records")
+	for _, link := range []string{exposed, sheltered} {
+		if err := os.Symlink(filepath.Join(base, "real"), link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, registry := filepath.Join(base, "private", "store"), filepath.Join(base, "private", "registry.jsonl")
+	if err := preflightPaths(store, registry, exposed); err != nil {
+		t.Fatalf("preflightPaths follows a link at the path and accepts where it leads: %v", err)
+	}
+	// start judges the path as serve and connect do: the refusals,
+	// holdDecisionRecords among them, and then preflightPaths.
+	start := func(records string, host engineHost) error {
+		if err := holdDecisionRecords(records, host); err != nil {
+			return err
+		}
+		return preflightPaths(store, registry, records)
+	}
+	if os.Geteuid() != 0 {
+		if err := start(exposed, recordsHost(nil)); err == nil || !strings.Contains(err.Error(), exposed+" is a symbolic link owned by uid") {
+			t.Fatalf("a link root does not own: %v", err)
+		}
+		if err := start(sheltered, recordsHost(nil)); err == nil || !strings.Contains(err.Error(), "not root") {
+			t.Fatalf("a link root does not own, in a private directory: %v", err)
+		}
+	}
+	rootLinks := map[string]int{exposed: 0, sheltered: 0}
+	if err := start(exposed, recordsHost(rootLinks)); err == nil ||
+		!strings.Contains(err.Error(), filepath.Join(base, "open")+", is writable beyond its owner (mode 0777), so another user could put a directory of records in its place") {
+		t.Fatalf("a root-owned link in a directory others may write: %v", err)
+	}
+	if err := start(sheltered, recordsHost(rootLinks)); err != nil {
+		t.Fatalf("a root-owned link in a private directory: %v", err)
+	}
+}
+
+// Root's ownership excuses no mode: a root-owned directory on the way that
+// its group may write, a root-owned records directory its group may write
+// or that is sticky and anyone may write, and a root-owned file beneath its
+// group may write are each refused.
+func TestRootOwnershipExcusesNoWritableMode(t *testing.T) {
+	dir := os.ModeDir
+	base := recordsTree(t, map[string]os.FileMode{"shared": dir | 0o775, "shared/records": dir | 0o700})
+	shared := filepath.Join(base, "shared")
+	expectRecordsRefused(t, "a root-owned ancestor its group may write", filepath.Join(shared, "records"), recordsHost(map[string]int{shared: 0}), shared+" is writable beyond its owner (mode 0775) without the sticky bit")
+	// The records directory's own rule is the one the sticky bit does not
+	// excuse, so a sticky one shows it: the walk on the way would pass it.
+	for name, mode := range map[string]os.FileMode{"its group may write": dir | 0o770, "sticky, that anyone may write": dir | os.ModeSticky | 0o777} {
+		own := recordsTree(t, map[string]os.FileMode{"records": mode})
+		records := filepath.Join(own, "records")
+		expectRecordsRefused(t, "a root-owned records directory "+name, records, recordsHost(map[string]int{records: 0}), records+" is writable beyond its owner (mode "+fmt.Sprintf("%04o", mode.Perm())+"), so another user could write a record in it")
+	}
+	beneath := recordsTree(t, map[string]os.FileMode{"records": dir | 0o700, "records/root.jsonl": 0o664})
+	file := filepath.Join(beneath, "records", "root.jsonl")
+	expectRecordsRefused(t, "a root-owned file its group may write", filepath.Join(beneath, "records"), recordsHost(map[string]int{file: 0}), file+" is writable beyond its owner (mode 0664)")
 }
