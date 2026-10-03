@@ -141,11 +141,11 @@ Determinations:
    - step 7, which reads every record that cites for its citations whoever names it, keeps step
      6's reading;
    - a verifier written before the member (v0.8.1 and earlier) tolerates it, as it tolerates any
-     signed member it does not know, and finds the record by step 6's reading. Run over the five
-     vectors that hold the member, the released verifier answers three of them otherwise than the
+     signed member it does not know, and finds the record by step 6's reading. Run over the six
+     vectors that hold the member, the released verifier answers four of them otherwise than the
      corpus: it reports a record converted to CRLF as found, a record named with its `0x0D` as
-     found and not compared, and a `recordBytes` of another value as `ok`. It reports no receipt
-     with the member `malformed`.
+     found and not compared, a line of `0x0D` alone as not found, and a `recordBytes` of another
+     value as `ok`. It reports no receipt that carries `"exact"` as `malformed`.
 7. **The walk holds what it reads.** The walk of the decision-record directory, for `/act` and
    for `verify`, holds its root first, as the directory it was named by: not a link, and the
    directory opened the one judged, before the open and after it. It enumerates and reads
