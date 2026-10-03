@@ -27,7 +27,12 @@ func recordsHost(owners map[string]int) engineHost {
 // and returns its path.
 func recordsTree(t *testing.T, modes map[string]os.FileMode) string {
 	t.Helper()
-	base := abs(t, t.TempDir())
+	// The directory's real path, since the walk resolves a link on the way
+	// (macOS's /var) and the owners stood in for are named by real paths.
+	base, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Made shallowest first, so a file's directory is there; the modes are
 	// set deepest first, so a directory made private does not stop a chmod
 	// beneath it.
