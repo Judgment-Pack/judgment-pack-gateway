@@ -33,5 +33,5 @@ func accountOf(name string) (int, string, error) {
 }
 
 func osEngineHost() engineHost {
-	return engineHost{euid: -1, sockets: hostRuntimeSockets, fileOwner: fileOwnerOf, readLink: os.Readlink, account: accountOf, switching: requireUserSwitching, executable: executableFacts, lookPath: exec.LookPath, executableHead: readExecutableHead}
+	return engineHost{euid: -1, sockets: hostRuntimeSockets, fileOwner: fileOwnerOf, readLink: os.Readlink, account: accountOf, switching: requireUserSwitching, executable: executableFacts, lookPath: exec.LookPath, executableFormat: readNativeExecutable}
 }

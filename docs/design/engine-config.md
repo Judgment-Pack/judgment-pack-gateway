@@ -262,9 +262,17 @@ engine refuses to start under a configuration the isolation claim of
   they do not own, every link owned by root or the signer and followed, each link's directory
   and every ancestor of its target held in turn, with the same bound of thirty-two links. The
   file it arrives at must be there, a regular file, owned by root or the signer, writable by
-  nobody else, and a **native executable** — ELF, or Mach-O on macOS — which the kernel runs
-  itself: a script, which starts with `#!`, is refused, since the interpreter it names, or the
-  one `#!/usr/bin/env` would find, is not held, and so is any other file. The source then
+  nobody else, and a **native executable of this host**, as Go's own parsers read it: on Linux,
+  an ELF file of type `ET_EXEC` or `ET_DYN` (Go builds either) for the host's machine, class
+  and byte order (`debug/elf`); on macOS, a Mach-O file of type `MH_EXECUTE` for the host's
+  CPU, or a universal file whose architecture table parses and holds such a slice
+  (`debug/macho`). Anything else is refused: a script, which starts with `#!`, since the
+  interpreter it names, or the one `#!/usr/bin/env` would find, is not held; a truncated
+  header; a file for another CPU; an object or a library; a universal file without a slice for
+  this host; and a file that only begins like one, such as a Java class. A dynamically linked
+  executable names the loader the kernel hands it to (`PT_INTERP`, or `LC_LOAD_DYLINKER`), and
+  that loader is held as the adapter is; the shared libraries the loader then finds are not, so
+  an adapter is best linked statically, as the image's are (`CGO_ENABLED=0`). The source then
   launches that resolved path. The image's layout passes: the adapters are binaries built from
   `adapters/`, root's, mode `0755`, in root's `/usr/local/bin`. An install that another user
   owns, such as a Homebrew prefix or another user's `~/go/bin`, is refused even with `0755`

@@ -925,17 +925,19 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 	onPath := func(dir string) func(string) (string, error) {
 		return func(name string) (string, error) { return filepath.Join(dir, name), nil }
 	}
-	// Every adapter reads as a native executable of this platform, but the
-	// ones a test names otherwise.
-	heads := map[string]string{}
-	head := func(path string) ([]byte, error) {
-		if text, ok := heads[path]; ok {
-			return []byte(text), nil
-		}
-		return nativeHead(), nil
+	// Every adapter reads as a static native executable of this host, but
+	// the ones a test names otherwise.
+	type format struct {
+		loader string
+		err    error
+	}
+	formats := map[string]format{}
+	formatOf := func(path string) (string, error) {
+		f := formats[path]
+		return f.loader, f.err
 	}
 	host := func(fs ownership, lookPath func(string) (string, error)) engineHost {
-		return engineHost{euid: signer, fileOwner: fs.owner, readLink: readLinkStub, lookPath: lookPath, executableHead: head}
+		return engineHost{euid: signer, fileOwner: fs.owner, readLink: readLinkStub, lookPath: lookPath, executableFormat: formatOf}
 	}
 	sources := func(adapters string) map[string]sourceSpec {
 		name := func(adapter string) string {
@@ -979,25 +981,36 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 		once["warehouse/live"].argv[0] != filepath.Join(bin, "adapter-mcp") || once["warehouse/write"].argv[1] != "--image=z" {
 		t.Fatalf("one lookup per command, one resolved path: %v %v", lookups, once)
 	}
-	// An adapter the kernel would hand to an interpreter: a script, by its
-	// own interpreter or by env, and any other file that is not a native
-	// executable.
-	for name, text := range map[string]string{
-		"a script":                        "#!/srv/open/sh\n",
-		"a script through env":            "#!/usr/bin/env sh\n",
-		"a file that is no native binary": "MZ\x90\x00",
-		"an empty file":                   "",
+	// What the format check says of an adapter refuses it, naming why; a
+	// dynamically linked adapter's loader is held as the adapter is.
+	for name, err := range map[string]error{
+		"a script":                        errScript,
+		"a file that is no native binary": errors.New("is not an ELF executable this host runs: bad magic number"),
 	} {
-		heads[filepath.Join(bin, "adapter-mcp")] = text
-		want := "is not a native executable"
-		if strings.HasPrefix(text, "#!") {
-			want = "is a script (it starts with #!), and the interpreter it names, or the one env would find, is not held"
-		}
-		if err := holdAdapterSources(sources(""), host(image(), onPath(bin))); err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("%s: want %q, got %v", name, want, err)
+		formats[filepath.Join(bin, "adapter-mcp")] = format{err: err}
+		if got := holdAdapterSources(sources(""), host(image(), onPath(bin))); got == nil || !strings.Contains(got.Error(), filepath.Join(bin, "adapter-mcp")+" "+err.Error()) {
+			t.Fatalf("%s: got %v", name, got)
 		}
 	}
-	delete(heads, filepath.Join(bin, "adapter-mcp"))
+	lib := filepath.Join(root, "lib")
+	loader := filepath.Join(lib, "ld.so")
+	formats[filepath.Join(bin, "adapter-mcp")] = format{loader: loader}
+	withLoader := image()
+	withLoader[lib] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	withLoader[loader] = fileOwnership{uid: 0, mode: 0o755}
+	if err := holdAdapterSources(sources(""), host(withLoader, onPath(bin))); err != nil {
+		t.Fatalf("a loader root's, in root's directory: %v", err)
+	}
+	withLoader[lib] = fileOwnership{uid: 0, mode: 0o777, dir: true}
+	if err := holdAdapterSources(sources(""), host(withLoader, onPath(bin))); err == nil || !strings.Contains(err.Error(), "is run by the loader "+loader+", which is refused: "+lib+" is writable beyond its owner") {
+		t.Fatalf("a loader in a directory others may write: %v", err)
+	}
+	withLoader[lib] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+	withLoader[loader] = fileOwnership{uid: 1002, mode: 0o755}
+	if err := holdAdapterSources(sources(""), host(withLoader, onPath(bin))); err == nil || !strings.Contains(err.Error(), "is run by the loader "+loader+", which is refused: "+loader+" is owned by uid 1002") {
+		t.Fatalf("a loader another user owns: %v", err)
+	}
+	delete(formats, filepath.Join(bin, "adapter-mcp"))
 	expect := func(name string, fs ownership, adapters string, want string) {
 		t.Helper()
 		if err := holdAdapterSources(sources(adapters), host(fs, onPath(bin))); err == nil || !strings.Contains(err.Error(), want) {
@@ -1065,12 +1078,4 @@ func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
 	if err := holdAdapterSources(bare, host(ownership{}, nil)); err != nil || bare["warehouse/live"].argv[0] != "adapter-mcp" {
 		t.Fatalf("no PATH to search: %v %v", err, bare["warehouse/live"].argv)
 	}
-}
-
-// nativeHead is the first bytes of a native executable of this platform.
-func nativeHead() []byte {
-	if runtime.GOOS == "darwin" {
-		return []byte{0xcf, 0xfa, 0xed, 0xfe}
-	}
-	return []byte("\x7fELF")
 }

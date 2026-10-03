@@ -347,7 +347,7 @@ func adaptersOnPath(f *connectFixture, mode os.FileMode) {
 		f.fs[filepath.Join(bin, name)] = fileOwnership{uid: 0, mode: mode}
 	}
 	f.host.lookPath = func(name string) (string, error) { return filepath.Join(bin, name), nil }
-	f.host.executableHead = func(string) ([]byte, error) { return nativeHead(), nil }
+	f.host.executableFormat = func(string) (string, error) { return "", nil }
 }
 
 // serve --config holds the adapters before anything is made or started, as

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -12,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -182,10 +180,10 @@ type engineHost struct {
 	// PATH, as a launch would (exec.LookPath); nil leaves such a name to the
 	// launch.
 	lookPath func(file string) (string, error)
-	// executableHead is the first bytes of an adapter's file, which say
-	// whether the kernel runs it itself or hands it to an interpreter; nil
-	// leaves that unchecked, as a test of other things may.
-	executableHead func(path string) ([]byte, error)
+	// executableFormat holds an adapter's file to a native executable of
+	// this host (readNativeExecutable) and answers the loader it names, if
+	// any; nil leaves that unchecked, as a test of other things may.
+	executableFormat func(path string) (loader string, err error)
 }
 
 // exeFacts is what the engine knows about its own binary: its path, its
@@ -1404,6 +1402,33 @@ func holdAdapter(command string, host engineHost) (string, error) {
 		}
 		path = found
 	}
+	resolved, err := holdExecutableFile(path, host)
+	if err != nil {
+		return "", err
+	}
+	// A script names its interpreter, and `#!/usr/bin/env` finds one on a
+	// PATH, so an adapter must be an executable the kernel runs itself, for
+	// this host (nativeExecutable). A dynamically linked one names the loader
+	// the kernel hands it to, which is held as the adapter is.
+	if host.executableFormat != nil {
+		loader, err := host.executableFormat(resolved)
+		if err != nil {
+			return "", fmt.Errorf("%s %v", resolved, err)
+		}
+		if loader != "" {
+			if _, err := holdExecutableFile(loader, host); err != nil {
+				return "", fmt.Errorf("%s is run by the loader %s, which is refused: %v", resolved, loader, err)
+			}
+		}
+	}
+	return resolved, nil
+}
+
+// holdExecutableFile walks the way to an executable for the signer, as
+// trustedFile does, and holds the file it arrives at: there, a regular file,
+// owned by root or the signer, and writable by nobody else. It answers the
+// resolved path.
+func holdExecutableFile(path string, host engineHost) (string, error) {
 	if !filepath.IsAbs(path) {
 		return "", fmt.Errorf("%s is not an absolute path", path)
 	}
@@ -1422,60 +1447,7 @@ func holdAdapter(command string, host engineHost) (string, error) {
 	case owner.mode&0o022 != 0:
 		return "", fmt.Errorf("%s is writable beyond its owner (mode %04o), so another user could replace what runs as a platform's user; chmod go-w %s", resolved, owner.mode, resolved)
 	}
-	// A script names its interpreter, and `#!/usr/bin/env` finds one on a
-	// PATH; neither is held here, so an adapter must be an executable the
-	// kernel runs itself.
-	if host.executableHead != nil {
-		head, err := host.executableHead(resolved)
-		switch {
-		case err != nil:
-			return "", fmt.Errorf("%s could not be read to tell whether it is a native executable: %v", resolved, err)
-		case bytes.HasPrefix(head, []byte("#!")):
-			return "", fmt.Errorf("%s is a script (it starts with #!), and the interpreter it names, or the one env would find, is not held; install the adapter's own binary", resolved)
-		case !nativeExecutable(head, runtime.GOOS):
-			return "", fmt.Errorf("%s is not a native executable (%s); an adapter is the binary built from adapters/", resolved, nativeFormat(runtime.GOOS))
-		}
-	}
 	return resolved, nil
-}
-
-// nativeExecutable says whether a file's first bytes are an executable the
-// kernel of goos runs itself: Mach-O, thin or universal, on macOS, and ELF
-// elsewhere.
-func nativeExecutable(head []byte, goos string) bool {
-	if goos != "darwin" {
-		return bytes.HasPrefix(head, []byte("\x7fELF"))
-	}
-	for _, magic := range [][]byte{{0xcf, 0xfa, 0xed, 0xfe}, {0xce, 0xfa, 0xed, 0xfe}, {0xfe, 0xed, 0xfa, 0xcf}, {0xfe, 0xed, 0xfa, 0xce}, {0xca, 0xfe, 0xba, 0xbe}} {
-		if bytes.HasPrefix(head, magic) {
-			return true
-		}
-	}
-	return false
-}
-
-// nativeFormat names the format nativeExecutable accepts on goos.
-func nativeFormat(goos string) string {
-	if goos == "darwin" {
-		return "Mach-O"
-	}
-	return "ELF"
-}
-
-// readExecutableHead reads the first four bytes of a file, or fewer when it
-// is shorter.
-func readExecutableHead(path string) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	head := make([]byte, 4)
-	n, err := io.ReadFull(file, head)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	return head[:n], nil
 }
 
 // holdDecisionRecords holds the decision-record directory to what lets a

@@ -16,7 +16,7 @@ import (
 // directory others may write, and an executable its group may write are
 // refused.
 func TestAdapterExecutablesAreHeldOnARealFilesystem(t *testing.T) {
-	host := engineHost{euid: os.Geteuid(), fileOwner: fileOwnerOf, readLink: os.Readlink, executableHead: readExecutableHead}
+	host := engineHost{euid: os.Geteuid(), fileOwner: fileOwnerOf, readLink: os.Readlink, executableFormat: readNativeExecutable}
 	tree := func(t *testing.T, dirMode, fileMode os.FileMode) string {
 		t.Helper()
 		base, err := filepath.EvalSymlinks(t.TempDir())
@@ -28,7 +28,7 @@ func TestAdapterExecutablesAreHeldOnARealFilesystem(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, name := range []string{"adapter-airbyte", "adapter-mcp"} {
-			if err := os.WriteFile(filepath.Join(bin, name), append(nativeHead(), make([]byte, 60)...), 0o700); err != nil {
+			if err := os.WriteFile(filepath.Join(bin, name), hostExecutable(), 0o700); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.Chmod(filepath.Join(bin, name), fileMode); err != nil {
@@ -91,7 +91,7 @@ func TestAdapterExecutablesAreHeldOnARealFilesystem(t *testing.T) {
 	}{
 		"a script whose interpreter others may replace": {script("#!" + filepath.Join(open, "sh") + "\n"), "is a script (it starts with #!)"},
 		"a script through env":                          {script("#!/usr/bin/env sh\n"), "is a script (it starts with #!)"},
-		"a text file":                                   {script("adapter\n"), "is not a native executable"},
+		"a text file":                                   {script("adapter\n"), "executable this host runs"},
 		"a FIFO where an adapter should be":             {fifo, "neither a regular file nor a directory"},
 		"a directory others may write":                  {tree(t, 0o777, 0o755), "is writable beyond its owner (mode 0777) without the sticky bit"},
 		"an executable its group may write":             {tree(t, 0o755, 0o775), "is writable beyond its owner (mode 0775)"},
