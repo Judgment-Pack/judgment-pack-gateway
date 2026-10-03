@@ -251,7 +251,15 @@ the action, that the record's outcome is the one the action assumes, that the
 record's inputs describe the object the action wrote, or that the target was
 unchanged since the record was made. With `policy`, it establishes
 in addition exactly the checks that policy names (below), as the gateway made
-them before the action was sent, and no more. Nothing in a receipt closes the
+them before the action was sent, and no more. Those are checks of a record
+found under the decision-record directory, and a record is found there by its
+shape: unless the policy sets `requireSignedRecord`, they hold the action to
+whatever record a writer of that directory put there, written by hand or not.
+With `requireSignedRecord`, the record was also signed, in its exact bytes, by
+whoever holds one of the runtime keys the policy names, so a writer who cannot
+use one of those keys cannot write a record the policy admits; it establishes
+nothing against the holder of a named key, the operator among them, who can
+sign any record. Nothing in a receipt closes the
 interval between those checks and the target's commit: a precondition on the
 target — a revision or an ETag compared on write — is the only thing that does,
 and it is the target's, or its adapter's, to supply. A policy's `bind` stops an
@@ -263,11 +271,19 @@ policy** in the gateway's configuration (`docs/design/engine-config.md`,
 `docs/adr/0011-hold-a-write-to-its-decision.md`): an object whose members are
 `outcomes`, the outcome ids a record may have decided, and optionally `packs`,
 the pack digests it may have been decided under, `reviewed`, whether it must
-carry `"reviewed": true`, and `bind`, pairs of JSON pointers (RFC 6901), one
+carry `"reviewed": true`, `bind`, pairs of JSON pointers (RFC 6901), one
 into the request's arguments and one into the record's `inputs.facts`, whose
-values must be equal. Before an action through such a tool is sent, the gateway
-requires the decision record to be a runtime evaluation record (§4 step 8); its
-`pack.digest` to be `decision.packDigest`, and its citations to be `cites` as a
+values must be equal, and `requireSignedRecord`, the Ed25519 public keys of the
+runtimes whose signature of the record it requires
+(`docs/adr/0012-hold-a-write-to-a-signed-record.md`). Before an action through
+such a tool is sent, the gateway requires the decision record to be a runtime
+evaluation record (§4 step 8); when `requireSignedRecord` is given, and before
+any other check of the record, a readable line of the runtime's signature
+sidecar — `signatures.jsonl` in the directory of a file the record was found in
+— signing the record's `trail`, its `sequence` and `decision.recordDigest`
+under one of those keys, by the runtime's record-signature rule, with no
+key-rotation line followed; its `pack.digest` to be `decision.packDigest`, and
+its citations to be `cites` as a
 set; its `disposition` to be of kind `"outcome"`, its `outcomeId` among
 `outcomes`, and its `handoff.state` `"none"`; its `pack.digest` to be among
 `packs` when they are given; its `reviewed` to be `true` when `reviewed` is

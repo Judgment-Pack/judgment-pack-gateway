@@ -145,16 +145,29 @@ says who asked, never that the write was right or that anyone approved it.
 
 For a write tool the operator holds to a **decision policy** in the configuration
 ([ADR-0011](docs/adr/0011-hold-a-write-to-its-decision.md)), the engine also reads the record
-before anything is sent: it must be the runtime's evaluation record, the request's pack digest
-and citations must be the record's, and the record must state an outcome the policy allows, no
-handoff, a pack and reviewed law where the policy asks for them, and facts equal to the write's
-arguments where the policy binds them. `reviewed` alone holds a write to whatever reviewed-set lock
-is current, so an edited pack locked again passes it; list `packs` to hold a write to particular
-reviewed bytes. The receipt then names the policy by its digest. For a
-tool held to none, nothing in the record is read. `gateway verify` compares an action's pack
-digest and citations with a runtime evaluation record it names, and says of any other record
-that it did not compare it. Without a policy, `decision` on a receipt means only that the
-record existed; SPEC.md §1.2a says what it does and does not establish.
+before anything is sent: it must be shaped as the runtime's evaluation record (`recordVersion`
+1, `kind` evaluation, a pack digest), the request's pack digest and citations must be the
+record's, and the record must state an outcome the policy allows, no handoff, a pack and
+reviewed law where the policy asks for them, and facts equal to the write's arguments where the
+policy binds them. `reviewed` alone holds a write to whatever reviewed-set lock is current, so an
+edited pack locked again passes it; list `packs` to hold a write to particular reviewed bytes.
+The receipt then names the policy by its digest. For a tool held to none, nothing in the record
+is read. `gateway verify` compares an action's pack digest and citations with a runtime
+evaluation record it names, and says of any other record that it did not compare it. Without a
+policy, `decision` on a receipt means only that the record existed; SPEC.md §1.2a says what it
+does and does not establish.
+
+A record is found by its shape, so a policy holds a write to whatever record a writer of the
+decision-record directory put there, one written by hand included. A policy that sets
+`requireSignedRecord` to the runtime's public keys (engine configuration version 5,
+[ADR-0012](docs/adr/0012-hold-a-write-to-a-signed-record.md)) also requires the record to be
+signed by one of them, in its exact bytes, in the runtime's sidecar beside it,
+`signatures.jsonl`. A writer who cannot use one of those keys then cannot satisfy the policy
+with a record of their own. It establishes nothing against whoever holds a named key, the
+operator included, who can sign any record. The gateway trusts exactly the keys the policy names
+and follows no key rotation: when the runtime's key changes, add the next key to the policy
+before the project signs with it, and remove the old one once no record it signed is still to be
+acted on.
 
 Personal Drive, S3 and local-vault file management is a separate authenticated
 host control surface in `gateway-connections`: bounded listing/search, selected

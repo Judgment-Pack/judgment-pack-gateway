@@ -59,13 +59,14 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
 `descriptors` and `decisionPolicy` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"`, `"2"`, `"3"` and `"4"`: version 2 added `mcp`, version 3 a platform's `descriptors`,
-  and version 4 a platform's `decisionPolicy`. A file of an earlier version still loads without
-  the member and is refused by name with it. `connect` raises a file to version 3 exactly when
-  an entry it writes carries a pin, and otherwise leaves the version as it found it — it never
-  lowers one — so a signer older than version 3 goes on reading every file `connect` has not
-  pinned. (ADR-0007 named version 4 for its `services` member, which is not built; ADR-0011
-  gave 4 to `decisionPolicy`, and `services` takes the next version when it is built.)
+  `"1"` to `"5"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  platform's `decisionPolicy`, and version 5 a decision policy's `requireSignedRecord`. A file
+  of an earlier version still loads without the member and is refused by name with it.
+  `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and
+  otherwise leaves the version as it found it — it never lowers one — so a signer older than
+  version 3 goes on reading every file `connect` has not pinned. (ADR-0007 named version 4 for
+  its `services` member, which is not built; ADR-0011 gave 4 to `decisionPolicy`, ADR-0012 gave
+  5 to `requireSignedRecord`, and `services` takes the next version when it is built.)
 - `decisionPolicy`, in a version-4 file, holds the platform's write tools to their decisions
   ([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md), [executor.md](executor.md)): an
   object keyed by write tool name, each value a policy —
@@ -102,6 +103,22 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   make the same checks. `connect` has no flag for it: the entry it replaces keeps its policy, and
   a replacement the policy would not fit — one without `--write`, or a binding whose write
   operation does not name a tool the policy holds — is refused before any check runs.
+
+  `requireSignedRecord`, in a version-5 file, is optional: a non-empty array of Ed25519 public
+  keys, each 64 lowercase hex as `jpack audit key public` prints one, none given twice
+  ([ADR-0012](../adr/0012-hold-a-write-to-a-signed-record.md)) —
+
+  ```json
+  "requireSignedRecord": ["d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"]
+  ```
+
+  — and the record must then be signed by one of them in the runtime's sidecar beside it,
+  `signatures.jsonl` ([executor.md](executor.md), step 9). A key that encodes no point of the
+  curve, or one of small order, under which a signature can be made without any secret, is
+  refused. The keys are trusted as named and no key-rotation line is followed: when the
+  runtime's key changes, the next key is added before the project signs with it, and the old
+  one removed once no record it signed is still to be acted on. The keys are part of the
+  policy's digest, in their order.
 - `descriptors`, in a version-3 file, pins the snapshot of the platform's tool descriptors
   that `connect` captured from its live operation, `sha256:<64 hex>`, kept beside the file in
   `<file>.descriptors/` ([tool-descriptors.md](tool-descriptors.md)). A platform whose binding
