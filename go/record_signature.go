@@ -201,13 +201,15 @@ var (
 )
 
 // unusableSigningKey is why 32 bytes are no key a policy may trust, or "":
-// they encode no point of the curve, so no signature verifies under them;
-// or they encode a point whose order divides 8, the curve's cofactor. Under
-// such a key a signature can be made without any secret -- this engine's
-// verifier, the standard library's, admits one for most messages -- so a
-// policy that trusted it would admit a record anyone signed. The encoding
-// is read as the verifier reads it: y little-endian, the top bit the sign of
-// x, a y of p or more taken modulo p.
+// they are not the canonical encoding of a point (RFC 8032 §5.1.3) -- a y of
+// p or more, which the standard library's verifier reads modulo p, or an x
+// of 0 with its sign bit set -- so the key a reader takes them for is not
+// the one written; they encode no point of the curve, so no signature
+// verifies under them; or they encode a point whose order divides 8, the
+// curve's cofactor. Under such a key a signature can be made without any
+// secret -- this engine's verifier, the standard library's, admits one for
+// most messages -- so a policy that trusted it would admit a record anyone
+// signed. The encoding is y little-endian, its top bit the sign of x.
 func unusableSigningKey(raw []byte) string {
 	if len(raw) != ed25519.PublicKeySize {
 		return "is not 32 bytes"
@@ -216,10 +218,13 @@ func unusableSigningKey(raw []byte) string {
 	for i, b := range raw {
 		le[len(raw)-1-i] = b
 	}
+	sign := le[0] >> 7
 	le[0] &= 0x7f
 	p := curveP
 	y := new(big.Int).SetBytes(le)
-	y.Mod(y, p)
+	if y.Cmp(p) >= 0 {
+		return "is not the canonical encoding of a point: its y is not below p"
+	}
 	// x² = (y² - 1) / (d·y² + 1)
 	yy := new(big.Int).Mul(y, y)
 	u := new(big.Int).Sub(yy, big.NewInt(1))
@@ -230,6 +235,9 @@ func unusableSigningKey(raw []byte) string {
 	x, ok := squareRoot(xx)
 	if !ok {
 		return "is not a point of the Ed25519 curve, so no signature verifies under it"
+	}
+	if x.Sign() == 0 && sign == 1 {
+		return "is not the canonical encoding of a point: its x is 0 and its sign bit is set"
 	}
 	// [8]P by three doublings; the identity is (0, 1).
 	for range 3 {

@@ -113,9 +113,9 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   ```
 
   — and the record must then be signed by one of them in the runtime's sidecar beside it,
-  `signatures.jsonl` ([executor.md](executor.md), step 9). A key that encodes no point of the
-  curve, or one of small order, under which a signature can be made without any secret, is
-  refused. The keys are trusted as named and no key-rotation line is followed: when the
+  `signatures.jsonl` ([executor.md](executor.md), step 9). A key that is not the canonical
+  encoding of a point, that encodes no point of the curve, or that is of small order, under
+  which a signature can be made without any secret, is refused. The keys are trusted as named and no key-rotation line is followed: when the
   runtime's key changes, the next key is added before the project signs with it, and the old
   one removed once no record it signed is still to be acted on. The keys are part of the
   policy's digest, in their order.

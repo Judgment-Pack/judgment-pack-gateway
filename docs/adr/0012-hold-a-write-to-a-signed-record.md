@@ -58,10 +58,12 @@ Determinations:
 
 1. **The member.** A decision policy may carry `requireSignedRecord`: a non-empty array of
    Ed25519 public keys, each 64 lowercase hexadecimal characters, as `jpack audit key public`
-   prints one, none given twice. A key that encodes no point of the curve is refused, since no
-   signature verifies under it, and so is one of small order, since the standard library's
-   verifier admits a signature under such a key that no secret made: the all-zero key, a
-   plausible placeholder, is one. The member moves `engineVersion` to `"5"` under the rule that a
+   prints one, none given twice. A key that is not the canonical encoding of a point (RFC 8032
+   §5.1.3) is refused: a `y` of `p` or more, which the standard library's verifier reads modulo
+   `p` as another key than the one written, or an `x` of 0 with its sign bit set. So is a key
+   that encodes no point of the curve, since no signature verifies under it, and one of small
+   order, since the standard library's verifier admits a signature under such a key that no
+   secret made: the all-zero key, a plausible placeholder, is one. The member moves `engineVersion` to `"5"` under the rule that a
    member change moves the version ([engine-config.md](../design/engine-config.md)); a file of an
    earlier version is refused by name with it. `connect` keeps a policy as written and never
    lowers a version. The receipt's `action.policy` digest is over the policy as configured, so
@@ -72,9 +74,18 @@ Determinations:
    ([executor.md](../design/executor.md)):
    - the record must carry `trail`, 32 lowercase hex, and `sequence`, an integer from 1 to
      2⁵³−2: a record no chain numbers carries nothing a signature can name;
+   - the record's bytes are its exact bytes: for a tool whose policy sets the member, step 7
+     takes a line of a `.jsonl` file as the bytes before its `0x0A`, a `0x0D` among them, and
+     does not remove one trailing `0x0D` as `SPEC.md` §4 step 6 does for the verifier and for
+     every other policy. A record converted to CRLF is other bytes than the runtime signed, and
+     is not found under the digest it signed;
    - a file named exactly `signatures.jsonl` must lie in the directory of a file the record was
      found in, a line of it or the file whole, found by the walk that finds the record: a regular
-     file, never a link;
+     file, never a link. The walk reads each file, the record and the sidecar alike, as the entry
+     it found: through directories held one at a time from its root, each directory and the file
+     judged not a link and the thing opened the entry's own, before the open and after it. A link
+     put in place of either, or of a directory above them, after the walk judged it refuses the
+     read, and the action with it;
    - one of its readable lines must be a record signature whose `trail` and `sequence` are the
      record's and whose `record` is `decision.recordDigest`, the SHA-256 of the exact bytes step
      7 matched; whose `keyId` is the keyId of a key the policy names; and whose signature
@@ -138,6 +149,9 @@ Determinations:
   unbounded already ([SECURITY.md](../../SECURITY.md)).
 - Bad, because nothing here helps against the holder of a key, and the runtime's operator holds
   it.
+- Bad, because a record whose trail was converted to CRLF is not found for a tool that
+  requires a signed record, where the verifier and every other policy find it with its `0x0D`
+  removed; such a record is not the bytes the runtime signed.
 - Revisit when a policy needs a revocation from a sequence on, when the gateway witnesses a trail
   (runtime ADR-0047 §3), or when the runtime's sidecar or record-signature version moves.
 

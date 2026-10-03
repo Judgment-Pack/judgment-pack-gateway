@@ -106,7 +106,14 @@ with one it also compares them with the record they name (step 10).
    and every line of a `.jsonl` file — or the request is refused. For a tool with no decision
    policy, `packDigest` is recorded as given and checked against nothing: the record's
    contents are the runtime's, and the engine reads none of them; for a tool with one, step 10
-   checks it. Symbolic links are not followed. The walk is `verify`'s own, and like
+   checks it. For a tool whose policy sets `requireSignedRecord`, a line is its exact bytes
+   before the `0x0A`, a `0x0D` among them, where §4 step 6 removes one trailing `0x0D`: the
+   digest a signature binds is of the bytes the runtime wrote, and a line converted to CRLF is
+   other bytes. Symbolic links are not followed: each file is read as the entry the walk found,
+   through directories held one at a time from the root, each directory and the file judged
+   not a link and the thing opened the entry's own, before the open and after it, so a link put
+   in place of one since the walk judged it refuses the read rather than being followed. The
+   walk is `verify`'s own, and like
    it is not bounded in bytes, entries or time: availability is a stated limit of this
    reference ([SECURITY.md](../../SECURITY.md)), and an operator who mounts an archive as the
    decision-record directory has made the walk as long as the archive. A directory that cannot

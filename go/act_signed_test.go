@@ -175,8 +175,7 @@ func TestASigningKeyMustBeAPointOfLargeOrder(t *testing.T) {
 			t.Fatalf("a generated key: %s", reason)
 		}
 	}
-	// The eight points whose order divides 8, by their encodings, and two
-	// encodings of a y past p.
+	// The eight points whose order divides 8, by their canonical encodings.
 	ff := strings.Repeat("ff", 30)
 	smallOrder := []string{
 		"01" + strings.Repeat("00", 31), // the identity
@@ -187,21 +186,21 @@ func TestASigningKeyMustBeAPointOfLargeOrder(t *testing.T) {
 		"26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
 		"c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
 		"c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
-		"ed" + ff + "7f", // y = p, read as 0
-		"ee" + ff + "7f", // y = p + 1, read as 1
 	}
 	for _, key := range smallOrder {
 		if reason := unusableSigningKey(mustHex(t, key)); !strings.Contains(reason, "small order") {
 			t.Fatalf("%s: %q", key, reason)
 		}
 	}
-	// Why it matters: under each, the standard library's verifier admits a
-	// signature with s = 0 and R a point of small order, for most messages.
-	for _, key := range smallOrder {
+	// Why it matters: under each, and under a non-canonical encoding of one
+	// (y = p read as 0, y = p + 1 read as 1), the standard library's verifier
+	// admits a signature with s = 0 and R a point of small order, for most
+	// messages.
+	for _, key := range append(smallOrder[:len(smallOrder):len(smallOrder)], "ed"+ff+"7f", "ee"+ff+"7f") {
 		forged := false
 		for m := 0; m < 32 && !forged; m++ {
 			message := []byte("a record no key signed " + strconv.Itoa(m))
-			for _, r := range smallOrder[:8] {
+			for _, r := range smallOrder {
 				if ed25519.Verify(mustHex(t, key), message, append(mustHex(t, r), make([]byte, 32)...)) {
 					forged = true
 					break
@@ -210,6 +209,27 @@ func TestASigningKeyMustBeAPointOfLargeOrder(t *testing.T) {
 		}
 		if !forged {
 			t.Fatalf("no forgery found under %s", key)
+		}
+	}
+	// Not the canonical encoding of a point: every y from p to 2^255 - 1,
+	// with either sign -- read modulo p by the standard library's verifier,
+	// so a key other than the one written, small order or not -- and an x
+	// of 0 with its sign bit set.
+	for k := 0; k <= 18; k++ {
+		for _, last := range []string{"7f", "ff"} {
+			key := fmt.Sprintf("%02x", 0xed+k) + ff + last
+			if reason := unusableSigningKey(mustHex(t, key)); !strings.Contains(reason, "not the canonical encoding") || !strings.Contains(reason, "y is not below p") {
+				t.Fatalf("%s: %q", key, reason)
+			}
+		}
+	}
+	// y = p + 3 read as 3 is a point of large order: only its encoding is wrong.
+	if reason := unusableSigningKey(mustHex(t, "03"+strings.Repeat("00", 31))); reason != "" {
+		t.Fatalf("y = 3: %q", reason)
+	}
+	for _, key := range []string{"01" + strings.Repeat("00", 30) + "80", "ec" + ff + "ff"} {
+		if reason := unusableSigningKey(mustHex(t, key)); !strings.Contains(reason, "its x is 0 and its sign bit is set") {
+			t.Fatalf("%s: %q", key, reason)
 		}
 	}
 	// A y for which no x exists, found by Euler's criterion -- (y²-1)/(d·y²+1)
@@ -445,13 +465,129 @@ func TestActRequiresARecordSignedByATrustedKey(t *testing.T) {
 		}
 	}
 
+	refused := func(t *testing.T, what, named, step, want string) {
+		t.Helper()
+		before := service.started.Load()
+		code, answer := authed(t, server, "/act", request(named, packA), token)
+		if code != http.StatusBadRequest || answer["refusedAt"] != step || !strings.Contains(fmt.Sprint(answer["error"]), want) || service.started.Load() != before {
+			t.Fatalf("%s: want a refusal at %q saying %q, got %d %v", what, step, want, code, answer)
+		}
+	}
+	admitted := func(t *testing.T, what, named string) {
+		t.Helper()
+		before := service.started.Load()
+		if code, answer := authed(t, server, "/act", request(named, packA), token); code != http.StatusOK || service.started.Load() != before+1 {
+			t.Fatalf("%s: %d %v", what, code, answer)
+		}
+	}
+
+	// The digest a signature binds is of the line's exact bytes. A signed
+	// record whose newline was converted to CRLF is other bytes: no
+	// candidate has the digest the runtime signed, and named by the digest
+	// of its converted bytes, no line signs it.
+	write(t, map[string]string{"evaluations.jsonl": record + "\r\n", sidecarName: good + "\n"})
+	refused(t, "a signed record converted to CRLF", digest, "decision", "no candidate under the decision-record directory has the digest")
+	refused(t, "a signed record converted to CRLF, named as converted", "sha256:"+hexOf([]byte(record+"\r")), "policy-signed", "no readable line")
+
+	// The ceiling of a sequence: 2^53 - 2 is one a signature names, and
+	// 2^53 - 1 none, in the record and in the sidecar alike.
+	for _, tc := range []struct {
+		sequence string
+		admit    bool
+	}{{"9007199254740990", true}, {"9007199254740991", false}} {
+		at, _ := strconv.ParseInt(tc.sequence, 10, 64)
+		line := strings.Replace(record, `"sequence":3,`, `"sequence":`+tc.sequence+`,`, 1)
+		named := "sha256:" + hexOf([]byte(line))
+		write(t, map[string]string{"evaluations.jsonl": line + "\n", sidecarName: signedLine(key1, trail, at, named) + "\n"})
+		if tc.admit {
+			admitted(t, "a record at sequence "+tc.sequence, named)
+		} else {
+			refused(t, "a record at sequence "+tc.sequence, named, "policy-signed", "no trail and sequence")
+		}
+	}
+
+	// Each file is read as the entry the walk found: a link put in place of
+	// the sidecar, of the record, or of a directory between the moment the
+	// entry is judged and its open is refused, wherever the link points,
+	// and the action with it.
+	canLink := os.Symlink(".", filepath.Join(t.TempDir(), "probe")) == nil
+	// swapAt puts a link to target in place of the entry at rel, at the
+	// moment the walk has judged that entry and not yet opened it.
+	swapAt := func(t *testing.T, rel, target string) {
+		t.Helper()
+		if !canLink {
+			t.Skip("no symbolic link here")
+		}
+		done := false
+		walkEntryJudged = func(judged string) {
+			if judged != rel || done {
+				return
+			}
+			done = true
+			at := filepath.Join(service.decisionRecords, filepath.FromSlash(rel))
+			if err := os.Rename(at, at+".gone"); err != nil {
+				t.Error(err)
+			}
+			if err := os.Symlink(target, at); err != nil {
+				t.Error(err)
+			}
+		}
+		t.Cleanup(func() { walkEntryJudged = nil })
+	}
+	outside := filepath.Join(t.TempDir(), sidecarName)
+	if err := os.WriteFile(outside, []byte(good+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Run("a sidecar swapped for a link to another inside the directory", func(t *testing.T) {
+		write(t, map[string]string{"evaluations.jsonl": record + "\n", sidecarName: "", "elsewhere/" + sidecarName: good + "\n"})
+		swapAt(t, sidecarName, filepath.Join("elsewhere", sidecarName))
+		refused(t, "a sidecar swapped for a link", digest, "decision", "could not be read")
+	})
+	t.Run("a sidecar swapped for a link outside the directory", func(t *testing.T) {
+		write(t, map[string]string{"evaluations.jsonl": record + "\n", sidecarName: ""})
+		swapAt(t, sidecarName, outside)
+		refused(t, "a sidecar swapped for a link outside", digest, "decision", "could not be read")
+	})
+	t.Run("a record swapped for a link to a copy of it", func(t *testing.T) {
+		write(t, map[string]string{"evaluations.jsonl": record + "\n", "kept/evaluations.txt": record + "\n", sidecarName: good + "\n"})
+		swapAt(t, "evaluations.jsonl", filepath.Join("kept", "evaluations.txt"))
+		refused(t, "a record swapped for a link", digest, "decision", "could not be read")
+	})
+	t.Run("a directory swapped for a link to another", func(t *testing.T) {
+		files := map[string]string{"decoy/evaluations.jsonl": record + "\n", "decoy/" + sidecarName: good + "\n", "trail/evaluations.jsonl": record + "\n", "trail/" + sidecarName: ""}
+		write(t, files)
+		admitted(t, "the record signed beside one of its two copies", digest)
+		write(t, files)
+		swapAt(t, "trail", "decoy")
+		refused(t, "a directory swapped for a link", digest, "decision", "could not be read")
+	})
+	walkEntryJudged = nil
+	write(t, map[string]string{"evaluations.jsonl": record + "\n", sidecarName: good + "\n"})
+	admitted(t, "the same files with nothing swapped", digest)
+
 	// A policy without the member reads no sidecar: an unsigned record
-	// passes it as before.
+	// passes it as before, and the lines are read by §4 step 6's rule, a
+	// trailing 0x0D removed.
 	service.sources["tickets/write"] = sourceSpec{argv: []string{os.Args[0], "--tools=update_ticket"}, env: helperEnv, shape: "mcp",
 		tools: []string{"update_ticket"}, endpoint: "https://mcp.example/", policies: map[string]*decisionPolicy{"update_ticket": mustPolicy(t, policyText)}}
-	write(t, map[string]string{"evaluations.jsonl": unchained + "\n"})
-	if code, answer := authed(t, server, "/act", request("sha256:"+hexOf([]byte(unchained)), packA), token); code != http.StatusOK {
-		t.Fatalf("a policy that does not require a signature: %d %v", code, answer)
+	for _, ending := range []string{"\n", "\r\n"} {
+		write(t, map[string]string{"evaluations.jsonl": unchained + ending})
+		admitted(t, "a policy that does not require a signature", "sha256:"+hexOf([]byte(unchained)))
+	}
+}
+
+// A sidecar line names a sequence from 1 to 2^53 - 2.
+func TestASidecarLinesSequenceIsBounded(t *testing.T) {
+	key := keyFromSeed(t, vectorSeed1)
+	trail, record := strings.Repeat("5a", 16), "sha256:"+strings.Repeat("ab", 32)
+	for _, tc := range []struct {
+		sequence int64
+		readable bool
+	}{{0, false}, {1, true}, {9007199254740990, true}, {9007199254740991, false}} {
+		line := signedLine(key, trail, tc.sequence, record)
+		if _, readable := readRecordSignature([]byte(line)); readable != tc.readable {
+			t.Fatalf("sequence %d: readable %v", tc.sequence, readable)
+		}
 	}
 }
 
@@ -512,6 +648,7 @@ func TestRequireSignedRecordConfiguration(t *testing.T) {
 		{"a key twice", config("5", `["`+key1+`","`+key2+`","`+key1+`"]`), "names one entry twice"},
 		{"the all-zero key", config("5", `["`+strings.Repeat("00", 32)+`"]`), "small order"},
 		{"the identity", config("5", `["01`+strings.Repeat("00", 31)+`"]`), "small order"},
+		{"a key whose y is past p", config("5", `["f0`+strings.Repeat("ff", 30)+`7f"]`), "not the canonical encoding"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := parseEngineConfig([]byte(tc.text)); err == nil || !strings.Contains(err.Error(), tc.want) {

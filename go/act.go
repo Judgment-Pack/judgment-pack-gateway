@@ -148,6 +148,10 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	recordDirs := map[string]bool{}
 	sidecars := map[string][]recordSignature{}
 	if policy != nil && len(policy.signers) > 0 {
+		// The digest a signature binds is of the line's exact bytes: a line
+		// whose newline was converted to CRLF is other bytes, and is not the
+		// record signed.
+		hooks.exactLines = true
 		hooks.onWantedIn = func(_ string, path string) { recordDirs[filepath.Dir(path)] = true }
 		hooks.onFile = func(path string, data []byte) {
 			if filepath.Base(path) == sidecarName {

@@ -282,7 +282,9 @@ any other check of the record, a readable line of the runtime's signature
 sidecar — `signatures.jsonl` in the directory of a file the record was found in
 — signing the record's `trail`, its `sequence` and `decision.recordDigest`
 under one of those keys, by the runtime's record-signature rule, with no
-key-rotation line followed; its `pack.digest` to be `decision.packDigest`, and
+key-rotation line followed, a line of a `.jsonl` file then being its exact
+bytes before the `0x0A`, with no trailing `0x0D` removed (§4 step 6 removes
+one); its `pack.digest` to be `decision.packDigest`, and
 its citations to be `cites` as a
 set; its `disposition` to be of kind `"outcome"`, its `outcomeId` among
 `outcomes`, and its `handoff.state` `"none"`; its `pack.digest` to be among

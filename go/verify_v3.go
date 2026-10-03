@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -354,12 +353,16 @@ func decisionCandidatesReading(dir string, wanted map[string]bool, onRecord func
 // .jsonl file -- each time it is found (onWantedIn); and the path and bytes
 // of every regular file the walk reads (onFile), which is how a record's
 // sidecar is found the way the record is: an entry of the walk, never a
-// link, read once with the rest.
+// link, read once with the rest. exactLines takes each line of a .jsonl
+// file as its exact bytes before the 0x0A, a 0x0D among them, where §4 step
+// 6 removes one trailing 0x0D: a digest a signature binds is over the bytes
+// the runtime wrote, and a line converted to CRLF is other bytes.
 type decisionWalk struct {
 	onRecord   func(citingRecord)
 	onWanted   func(digestHex string, data []byte)
 	onWantedIn func(digestHex, path string)
 	onFile     func(path string, data []byte)
+	exactLines bool
 }
 
 // walkDecisionRecords is decisionCandidatesReading with every hook of a
@@ -390,6 +393,11 @@ func walkDecisionRecords(dir string, wanted map[string]bool, hooks decisionWalk)
 		return nil, false, fmt.Errorf("decision-record path is not a directory: %s", dir)
 	}
 	found, handed := map[string]bool{}, map[string]bool{}
+	// Every file is read as the entry the walk found, through directories
+	// held from the root (heldTree), never through a link put in place of
+	// one since.
+	held := newHeldTree(dir)
+	defer held.close()
 	// note hashes a candidate for step 6; read reads it for step 7 and hands
 	// it to onWanted as well, which a .jsonl file's lines get and the file
 	// whole does not, so that a record is judged once and not also as the
@@ -435,7 +443,7 @@ func walkDecisionRecords(dir string, wanted map[string]bool, hooks decisionWalk)
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		data, err := os.ReadFile(path)
+		data, err := held.read(path)
 		if err != nil {
 			return err
 		}
@@ -446,9 +454,10 @@ func walkDecisionRecords(dir string, wanted map[string]bool, hooks decisionWalk)
 			read(path, data)
 		} else {
 			note(path, data, false)
-			// One candidate per line: split on 0x0A, one trailing 0x0D removed,
-			// empty pieces skipped, the unterminated final piece kept. Walked by
-			// index so a file of newlines allocates nothing per line.
+			// One candidate per line: split on 0x0A, one trailing 0x0D removed
+			// (unless exactLines), empty pieces skipped, the unterminated final
+			// piece kept. Walked by index so a file of newlines allocates
+			// nothing per line.
 			rest := data
 			for len(rest) > 0 {
 				line := rest
@@ -457,7 +466,9 @@ func walkDecisionRecords(dir string, wanted map[string]bool, hooks decisionWalk)
 				} else {
 					rest = nil
 				}
-				line = bytes.TrimSuffix(line, []byte{'\r'})
+				if !hooks.exactLines {
+					line = bytes.TrimSuffix(line, []byte{'\r'})
+				}
 				if len(line) > 0 {
 					read(path, line)
 				}
