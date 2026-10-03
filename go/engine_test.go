@@ -907,7 +907,9 @@ func TestALinkAtTheSeedOrCredentialsIsFollowedAndHeld(t *testing.T) {
 // adapter that is no regular file, one another user owns, and one its group
 // or others may write are each refused; so is one not there.
 func TestAdapterExecutablesAreHeldAndLaunchedResolved(t *testing.T) {
-	root := string(filepath.Separator)
+	// Rooted on a volume, so the paths are absolute on Windows too, as a
+	// path an adapter is launched by must be.
+	root := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
 	bin := filepath.Join(root, "usr", "local", "bin")
 	const signer = 65532
 	image := func() ownership {
