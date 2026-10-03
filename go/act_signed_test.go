@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -557,6 +558,9 @@ func TestActRequiresARecordSignedByATrustedKey(t *testing.T) {
 		if !canLink {
 			t.Skip("no symbolic link here")
 		}
+		if runtime.GOOS == "windows" {
+			t.Skip("a directory held open cannot be renamed on Windows, so the root cannot be swapped once it is held")
+		}
 		elsewhere := t.TempDir()
 		for name, text := range map[string]string{"evaluations.jsonl": record + "\n", sidecarName: good + "\n"} {
 			if err := os.WriteFile(filepath.Join(elsewhere, name), []byte(text), 0o600); err != nil {
@@ -884,6 +888,9 @@ func TestTheWalkReadsBeneathTheRootItJudged(t *testing.T) {
 		}
 	})
 	t.Run("once the root is held", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("a directory held open cannot be renamed on Windows, so the root cannot be swapped once it is held")
+		}
 		root, elsewhere := setup(t)
 		swap(t, root, elsewhere, "record.json")
 		found, present, err := decisionCandidates(root, wanted, nil)
