@@ -765,3 +765,26 @@ func TestPlatformNamesAreGraphic(t *testing.T) {
 		t.Fatalf("a control character is named as the reason: %v", err)
 	}
 }
+
+// The decision-record directory is held at start-up, among the refusals
+// serve and connect apply: one its group can write is refused with the
+// reason, and one not there yet under a private parent is not.
+func TestEngineRefusalsHoldTheDecisionRecordDirectory(t *testing.T) {
+	seed := filepath.Join(string(filepath.Separator), "var", "lib", "engine", "gateway.seed")
+	credentials := filepath.Join(string(filepath.Separator), "run", "secrets", "warehouse")
+	records := filepath.Join(string(filepath.Separator), "var", "lib", "engine", "decisions")
+	both := map[string]string{"history": credentials, "live": credentials}
+	cfg := engineConfig{runtime: "docker", seed: seed, decisionRecords: records, platforms: []platformConfig{{name: "warehouse", credentials: both, user: "engine-warehouse", uid: 1001}}}
+	three := uint64(1<<capSetuid | 1<<capSetgid | 1<<capKill)
+	fs := goodFilesystem(seed, credentials, 1000, 1001)
+	host := engineHost{euid: 1000, sockets: func(string) []string { return nil }, capabilities: func() capabilitySets {
+		return capabilitySets{known: true, effective: three, permitted: three}
+	}, fileOwner: fs.owner, readLink: readLinkStub}
+	if _, err := engineRefusals(ptr(cfg), host); err != nil {
+		t.Fatalf("a decision-record directory not there yet, under the signer's private directory: %v", err)
+	}
+	fs[records] = fileOwnership{uid: 1002, mode: 0o775, dir: true}
+	if _, err := engineRefusals(ptr(cfg), host); err == nil || !strings.Contains(err.Error(), "decisionRecords: "+records+" is writable beyond its owner (mode 0775), so another user could write a record in it") {
+		t.Fatalf("a group-writable decision-record directory: %v", err)
+	}
+}

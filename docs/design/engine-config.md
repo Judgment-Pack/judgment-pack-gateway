@@ -138,8 +138,9 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   signer does not demand.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
   takes today, named.
-- `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve
-  an action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)).
+- `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an
+  action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)). The engine refuses
+  one that anyone but root, the signer and its owner could write a record into (below).
 - `listen` is a literal loopback address with a port — `127.0.0.1:8787` or `[::1]:8787` —
   and the engine refuses any other, a name such as `localhost` included, since a resolver may
   map a name elsewhere. The gateway speaks plain HTTP and a token presented over plain HTTP
@@ -252,12 +253,28 @@ engine refuses to start under a configuration the isolation claim of
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
   unless the operator sets `"hostRuntime": "accepted"`, with the same one-line statement at
   startup;
+- a **decision-record directory** that anyone but root, the signer and the directory's owner
+  (the user the runtime writes as) could write a record into, since a decision policy without
+  `requireSignedRecord` holds a write to whatever well-shaped record is found there, and a
+  receipt's `decision` without a policy means only that one existed: the directory, and every
+  directory and regular file beneath it that the walk for a record reads, must be owned by one
+  of those three and writable by nobody else, the sticky bit excusing nothing there, since
+  whoever may create a file there may create a record; every directory on the way to it is held
+  as a credentials file's are, for those three owners (owned by one of them, writable beyond
+  its owner only with the sticky bit, a link only when root owns it); and a directory not there
+  yet is held through the directory it would be made in, which must be writable by its owner
+  alone, sticky or not, since whoever makes it first owns it, and must not be a link. Links and
+  special files beneath are passed over, as the walk passes over them. The refusal names the
+  path, its owner or mode, and why; there is no `"accepted"` for it: make the directory and
+  what is in it writable by its owner alone (`chmod -R go-w`);
 - the seed file's own checks, as for any `serve`: a regular file, owned by the signer, readable
   by nobody else.
 
 What these checks establish, and no more: every adapter runs as a user that is neither root
 nor the signer nor another platform's; no credentials file, and no directory on the way to
-one, can be read or replaced by anyone but its owner and root; the signer holds no capability
+one, can be read or replaced by anyone but its owner and root; nobody but root, the signer
+and the decision-record directory's owner can write a file into or beneath that directory, or
+replace a directory on the way to it, as it stands at start-up; the signer holds no capability
 that reads past permissions and none an adapter could take up. **A signer that holds
 `CAP_SETUID` can assume any user**, and so can read any credentials file by becoming its owner:
 what this configuration holds is the signer *as written* — it reads no credential — not a
@@ -265,8 +282,10 @@ signer that has been compromised. Holding a compromised signer out of credential
 privileged launcher separate from an unprivileged signer, which is the engine image's job and
 not this file's. What the checks do not see is stated with them: an access-control list that
 grants a read the mode bits do not show; a runtime reachable through a socket at another path;
-a platform user that is also in a group the signer's files admit. The engine holds the
-configuration to what the filesystem and the kernel report, and no further.
+a platform user that is also in a group the signer's files admit; a decision record written,
+or a mode changed, after the engine started, and a mount that shows the decision-record
+directory elsewhere. The engine holds the configuration to what the filesystem and the kernel
+report, and no further.
 
 ## Credentials
 
