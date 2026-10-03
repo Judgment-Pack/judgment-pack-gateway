@@ -342,6 +342,11 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		return out, err
 	}
 	sources := deriveSources(candidate, bindings)
+	// Every adapter the sources launch, held as serve holds them at start,
+	// and launched by the path it resolved to.
+	if err := holdAdapterSources(sources, host); err != nil {
+		return out, err
+	}
 	// Every source's user, held as serve holds them at start -- the
 	// platforms already configured included, whose accounts may have
 	// changed since they were written -- before any adapter is run.

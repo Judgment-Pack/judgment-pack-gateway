@@ -307,6 +307,9 @@ func TestConnectRefusesBeforeAnyCheck(t *testing.T) {
 			f.fs = goodFilesystem(f.seed, f.credentials, 1003, 1003)
 		}, "user engine-desk is the signer's own"},
 		{"root as the platform's user", func(f *connectFixture, req *connectRequest) { req.user = "root" }, "user root is root"},
+		{"an adapter others may write", func(f *connectFixture, req *connectRequest) {
+			adaptersOnPath(f, 0o777)
+		}, "adapter-airbyte is writable beyond its owner (mode 0777), so another user could replace what runs as a platform's user"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newConnectFixture(t, restrictedBinding, ``)
@@ -321,6 +324,42 @@ func TestConnectRefusesBeforeAnyCheck(t *testing.T) {
 				t.Fatalf("nothing is asked and nothing is written: asked %d, changed %v", len(f.asked), f.fileText(t) != before)
 			}
 		})
+	}
+}
+
+// stubBin is the stub filesystem's /usr/local/bin, on the fixture's volume.
+func stubBin(f *connectFixture) string {
+	return filepath.Join(filepath.VolumeName(f.dir)+string(filepath.Separator), "usr", "local", "bin")
+}
+
+// adaptersOnPath puts the two adapters in the stub's /usr/local/bin, root's,
+// with mode, and has the host find them there on its PATH, as the engine
+// image's are found.
+func adaptersOnPath(f *connectFixture, mode os.FileMode) {
+	bin := stubBin(f)
+	for dir := bin; ; dir = filepath.Dir(dir) {
+		f.fs[dir] = fileOwnership{uid: 0, mode: 0o755, dir: true}
+		if filepath.Dir(dir) == dir {
+			break
+		}
+	}
+	for _, name := range []string{"adapter-airbyte", "adapter-mcp"} {
+		f.fs[filepath.Join(bin, name)] = fileOwnership{uid: 0, mode: mode}
+	}
+	f.host.lookPath = func(name string) (string, error) { return filepath.Join(bin, name), nil }
+}
+
+// Connect holds the adapters it runs as serve holds them, and runs each by
+// the path it resolved to: the engine image's adapters, root's at
+// /usr/local/bin and found on the PATH, are run by those paths.
+func TestConnectRunsTheAdaptersByTheirResolvedPaths(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, ``)
+	adaptersOnPath(f, 0o755)
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.asked) != 2 || f.asked[0].argv[0] != filepath.Join(stubBin(f), "adapter-airbyte") || f.asked[1].argv[0] != filepath.Join(stubBin(f), "adapter-mcp") {
+		t.Fatalf("each check runs the adapter's resolved path: %+v", f.asked)
 	}
 }
 

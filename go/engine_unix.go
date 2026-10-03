@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/user"
 	"strconv"
 	"syscall"
@@ -73,5 +74,6 @@ func osEngineHost() engineHost {
 		account:      accountOf,
 		switching:    requireUserSwitching,
 		executable:   executableFacts,
+		lookPath:     exec.LookPath,
 	}
 }

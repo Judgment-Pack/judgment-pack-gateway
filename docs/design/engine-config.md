@@ -149,9 +149,10 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   means a TLS-terminating front the operator runs and trusts, outside this repository.
   `identity` decides who may call, never from where.
 - `catalog` is the directory of binding files (below). `runtime` is the container runtime
-  command the adapters use, `docker` by default or `podman`, by name or by path. `adapters`
-  is the directory holding the adapter binaries; when absent they are found on the engine's
-  `PATH`.
+  command the adapters use, `docker` by default or `podman`, by name or by path. `adapters` is
+  the directory holding the adapter binaries; when absent they are found on the engine's
+  `PATH`, once, at start-up. Either way each adapter is held there and launched by the path it
+  resolves to (below).
 - `identity` names the token issuer, the audience the engine expects to be named as, and a
   local copy of the issuer's public keys. The engine verifies tokens with the standard library
   and never fetches keys over the network on the request path; refreshing the key file is the
@@ -252,6 +253,21 @@ engine refuses to start under a configuration the isolation claim of
   itself gain privilege on exec, such as a rootless container runtime that needs `newuidmap`,
   cannot run as a switched source; the runtime an adapter uses is one that listens on a socket
   the platform user may reach;
+- an **adapter executable another user could replace**, since it runs as a platform's user with
+  that platform's credentials: every adapter the sources launch is found as a launch would find
+  it — by its path under `adapters`, or else on the engine's `PATH`, once, at start-up, so a
+  file put on the `PATH` later is never the one launched — and its way is walked as the seed's
+  is, component by component from the root, for the signer: every directory owned by root or
+  the signer and writable by nobody else unless the sticky bit keeps others from replacing what
+  they do not own, every link owned by root or the signer and followed, each link's directory
+  and every ancestor of its target held in turn, with the same bound of thirty-two links. The
+  file it arrives at must be there, a regular file, owned by root or the signer, and writable
+  by nobody else; the source then launches that resolved path. The image's layout passes: the
+  adapters are root's, mode `0755`, in root's `/usr/local/bin`. What remains between this check
+  and each launch: the launch runs the file at the resolved path, not a descriptor held from
+  start-up, so a file root or the signer puts there later, or a mode or owner they change
+  later, is what runs; nobody else can change it while the directories stay as they were
+  judged;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
   the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
   it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
@@ -282,7 +298,8 @@ What these checks establish, and no more: every adapter runs as a user that is n
 nor the signer nor another platform's; no credentials file, and no directory on the way to
 one, can be read or replaced by anyone but its owner and root; nobody but root, the signer
 and the decision-record directory's owner can write a file into or beneath that directory, or
-replace a directory on the way to it, as it stands at start-up; the signer holds no capability
+replace a directory on the way to it, as it stands at start-up; nobody but root and the signer
+can replace an adapter the engine launches, as it stood at start-up; the signer holds no capability
 that reads past permissions and none an adapter could take up. **A signer that holds
 `CAP_SETUID` can assume any user**, and so can read any credentials file by becoming its owner:
 what this configuration holds is the signer *as written* — it reads no credential — not a
