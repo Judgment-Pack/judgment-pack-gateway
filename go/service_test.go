@@ -1329,9 +1329,11 @@ func TestASealCountingBelowZeroClosesItsSession(t *testing.T) {
 	if _, err := os.Stat(started); err == nil {
 		t.Fatal("the source ran for a session sealed at -1")
 	}
-	// Unchanged behaviour, not the fix: the writer refuses a seal for a
-	// session that any parseable line of the registry names, whatever that
-	// line's count or signature, so it refused this one before the fix too.
+	// The writer refuses a second seal for a session the registry holds a
+	// seal for that loads (SPEC.md §3, read by the verifier's parseSeals),
+	// and this one loads: signed under the engine's key, naming its keyId,
+	// counting -1. A line that names the session and does not load is no
+	// seal to the writer either (TestADiscardedRegistryLineDoesNotHoldASessionOpen).
 	if _, err := service.registry.seal("below-zero", 0, nowStamp()); err == nil || !strings.Contains(err.Error(), "already sealed") {
 		t.Fatalf("a second seal of a session sealed at -1: %v", err)
 	}

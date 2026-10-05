@@ -320,6 +320,12 @@ func newRegistryWriter(path string, seed []byte, history func() (bool, error)) (
 
 // seal appends a signed final count. Append-only: sealing an already sealed
 // session is refused, so a count can never be re-sealed to a smaller value.
+// A session is already sealed when the registry holds a seal for it that
+// the verifier loads (SPEC.md §3, §4 step 2), read by the verifier's own
+// parseSeals: a line that names the session and is no such seal -- a
+// signature that does not verify, a keyId not this gateway's, a member
+// missing -- seals nothing, here as for /acquire (§6), and the new seal is
+// appended beside it.
 func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt string) (*vObject, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, err
@@ -336,16 +342,12 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	if !present {
 		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", w.path)
 	}
-	for _, line := range splitLines(existing) {
-		v, err := parseJSON(line)
-		if err != nil {
-			continue
-		}
-		if obj, ok := v.(*vObject); ok {
-			if name, ok := memberString(obj, "sessionId"); ok && name == sessionID {
-				return nil, fmt.Errorf("session already sealed: %s", sessionID)
-			}
-		}
+	// sealed as the verifier loads a seal, never as any parseable line
+	// naming the session: a reader of its own would let the writer refuse
+	// a session the verifier reports unsealed, and it could never be sealed
+	seals, _ := parseSeals(existing, w.priv.Public().(ed25519.PublicKey))
+	if _, sealed := seals[sessionID]; sealed {
+		return nil, fmt.Errorf("session already sealed: %s", sessionID)
 	}
 
 	signature := ed25519.Sign(w.priv, sealSigningInput(sessionID, finalCount, sealedAt, w.keyID))
@@ -388,32 +390,6 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 		return nil, sealMayBeWritten{err}
 	}
 	return record, nil
-}
-
-func splitLines(data []byte) [][]byte {
-	var out [][]byte
-	start := 0
-	for i := 0; i <= len(data); i++ {
-		if i == len(data) || data[i] == '\n' {
-			line := data[start:i]
-			if len(trimSpace(line)) > 0 {
-				out = append(out, line)
-			}
-			start = i + 1
-		}
-	}
-	return out
-}
-
-func trimSpace(data []byte) []byte {
-	start, end := 0, len(data)
-	for start < end && (data[start] == ' ' || data[start] == '\t' || data[start] == '\r' || data[start] == '\n') {
-		start++
-	}
-	for end > start && (data[end-1] == ' ' || data[end-1] == '\t' || data[end-1] == '\r' || data[end-1] == '\n') {
-		end--
-	}
-	return data[start:end]
 }
 
 func nowStamp() string {

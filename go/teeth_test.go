@@ -1058,6 +1058,148 @@ func TestASealCountingBelowZeroIsTheSessionsSeal(t *testing.T) {
 	}
 }
 
+// A line of the registry that the verifier discards cannot hold a session
+// open (SPEC.md §3, issue #138). Whoever can write the registry appends a
+// line that names a live session and is no seal under SPEC.md §4 step 2: a
+// signature that does not verify under the gateway's own keyId, a keyId not
+// the gateway's, a member missing. The session is then sealed as though the
+// line were not there: an acquisition into it is admitted (§6), /seal
+// answers 200 with the seal at the session's count, the line stays where it
+// was with the new seal after it, the verifier loads the new seal and grades
+// the session ok, and only then is a second /seal refused, since the
+// session now holds a seal that loads. A writer with a reader of its own,
+// one that takes any parseable line naming the session for a seal, refuses
+// the first /seal here, and the session can never be sealed.
+func TestADiscardedRegistryLineDoesNotHoldASessionOpen(t *testing.T) {
+	own := ed25519.NewKeyFromSeed(testSeed)
+	ownKeyID := keyIDFor(own.Public().(ed25519.PublicKey))
+	foreign := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	foreignKeyID := keyIDFor(foreign.Public().(ed25519.PublicKey))
+	if foreignKeyID == ownKeyID {
+		t.Fatal("the foreign key is the gateway's own: the test tests nothing")
+	}
+	for _, tt := range []struct {
+		name string
+		line func(session string) string
+	}{
+		{
+			// the line of the issue's reproduction
+			name: "a signature that does not verify, under the gateway's own keyId",
+			line: func(session string) string {
+				return fmt.Sprintf(`{"finalCount":1,"keyId":"%s","sealedAt":"t","sessionId":"%s","signature":"%s"}`+"\n",
+					ownKeyID, session, strings.Repeat("0", 128))
+			},
+		},
+		{
+			// the gateway's own key signed it, so only the keyId check drops it
+			name: "a foreign keyId, signed by the gateway's own key",
+			line: func(session string) string { return sealLineKeyID(t, own, session, 1, foreignKeyID) },
+		},
+		{
+			name: "another gateway's seal, under its own keyId",
+			line: func(session string) string { return sealLine(t, foreign, session, 1) },
+		},
+		{
+			name: "a member missing: no signature",
+			line: func(session string) string {
+				return fmt.Sprintf(`{"finalCount":1,"keyId":"%s","sealedAt":"t","sessionId":"%s"}`+"\n", ownKeyID, session)
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service, server := testService(t)
+			const session = "discarded"
+			if code, body := post(t, server, "/acquire", `{"session":"discarded","source":"screening","arguments":{"q":"a"}}`); code != http.StatusOK {
+				t.Fatalf("the first acquisition: %d %v", code, body)
+			}
+			line := tt.line(session)
+			registry, err := os.OpenFile(service.regPath, os.O_WRONLY|os.O_APPEND, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.WriteString(line); err != nil {
+				registry.Close()
+				t.Fatal(err)
+			}
+			if err := registry.Close(); err != nil {
+				t.Fatal(err)
+			}
+			// the line names the session and parses, and the verifier
+			// drops it: otherwise the test tests nothing
+			if parsed, err := parseJSON([]byte(strings.TrimSuffix(line, "\n"))); err != nil {
+				t.Fatalf("the line does not parse: the test tests nothing: %v", err)
+			} else if obj, ok := parsed.(*vObject); !ok {
+				t.Fatal("the line is not an object: the test tests nothing")
+			} else if named, _ := memberString(obj, "sessionId"); named != session {
+				t.Fatal("the line does not name the session: the test tests nothing")
+			}
+			if seals, _, err := loadSeals(service.regPath, service.publicKey); err != nil {
+				t.Fatal(err)
+			} else if _, loaded := seals[session]; loaded {
+				t.Fatal("the verifier loads the line as a seal: the test tests nothing")
+			}
+
+			// §6: the line establishes no seal for an acquisition
+			if code, body := post(t, server, "/acquire", `{"session":"discarded","source":"screening","arguments":{"q":"b"}}`); code != http.StatusOK {
+				t.Fatalf("an acquisition after the discarded line: %d %v", code, body)
+			}
+			// §3: nor for a seal, which is the session's count, two
+			code, sealed := post(t, server, "/seal", `{"session":"discarded"}`)
+			if code != http.StatusOK {
+				t.Fatalf("a seal of a session only a discarded line names: %d %v", code, sealed)
+			}
+			if sealed["sessionId"] != session || sealed["finalCount"] != float64(2) || sealed["keyId"] != service.keyID {
+				t.Fatalf("the seal answered is not the session's at its count: %v", sealed)
+			}
+			// the line stays where it was, and the new seal follows it on
+			// a line of its own
+			data, err := os.ReadFile(service.regPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(data), line) || strings.Count(string(data), "\n") != 2 {
+				t.Fatalf("the registry is not the discarded line and then the seal:\n%s", data)
+			}
+			seals, _, err := loadSeals(service.regPath, service.publicKey)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, loaded := seals[session]; !loaded || got.finalCount != 2 {
+				t.Fatalf("the verifier does not load the new seal at the session's count: %v", seals)
+			}
+			// §4: the session is sealed at its count, and the store verifies
+			resp, err := http.Get(server.URL + "/verify")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var verdict struct {
+				OK       bool             `json:"ok"`
+				Findings []map[string]any `json:"findings"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&verdict); err != nil {
+				t.Fatal(err)
+			}
+			want := []map[string]any{
+				{"sessionId": session, "callIndex": 0, "status": "ok"},
+				{"sessionId": session, "callIndex": 1, "status": "ok"},
+			}
+			have, wanted := strings.Join(sortedFindings(verdict.Findings), "|"), strings.Join(sortedFindings(want), "|")
+			if resp.StatusCode != http.StatusOK || !verdict.OK || have != wanted {
+				t.Fatalf("verify: %d ok=%v findings %s\nwant ok=true findings %s", resp.StatusCode, verdict.OK, have, wanted)
+			}
+			// a seal that loads is the one a second seal is refused for
+			code, again := post(t, server, "/seal", `{"session":"discarded"}`)
+			if code != http.StatusBadRequest || again["error"] != "session already sealed: "+session {
+				t.Fatalf("a second seal: %d %v", code, again)
+			}
+			if _, err := service.registry.seal(session, 1, nowStamp()); err == nil || err.Error() != "session already sealed: "+session {
+				t.Fatalf("a second seal through the writer itself, at a smaller count: %v", err)
+			}
+		})
+	}
+}
+
 func TestStoreRootShapes(t *testing.T) {
 	regPath := filepath.Join(t.TempDir(), "registry.jsonl")
 	if err := os.WriteFile(regPath, nil, 0o600); err != nil {
