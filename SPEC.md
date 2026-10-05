@@ -453,7 +453,13 @@ own: a gateway that finds the registry's last line unterminated — an earlier s
 part, or whole but for its newline — ends that line before it writes the record, since a
 record joined to it would make one line that is no seal (§4 drops it) and lose both. Sealing a session that is already sealed is **refused** — a session's
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
-backward to excuse a rollback.
+backward to excuse a rollback. A session is already sealed when the registry holds a seal for
+it that §4 step 2 loads — a JSON object whose `keyId` is the gateway's own and whose signature
+verifies under its public key — and a line that names the session and is no such seal (a
+signature that does not verify, a foreign `keyId`, a member missing) establishes no seal for
+`/seal` either, as it establishes none for `/acquire` (§6): the gateway appends the new seal
+beside that line, which stays where it is, and answers `200` with the seal record, and §4
+step 2 loads the new seal, since it is the session's first seal that loads.
 
 A gateway makes its registry, empty, when it starts without one — only where nothing is, never
 through a link, and only for a store with no history — so that from then on the registry's
