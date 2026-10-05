@@ -377,7 +377,8 @@ recovers it by sending the same checkpoint again, or by reading the trail.
   witness cannot check that, and lines from two histories of one trail identity can arrive
   together. The earlier lines are compared with what the witness holds, for conflicts, and are
   otherwise discarded, and with them the evidence of what they said (question 7).
-- **The answers.** Submissions for one trail are taken one at a time.
+- **The answers.** Submissions for one trail are taken one at a time, and the write step of every
+  trail is serialized under one writer lock (below).
   - **The trail is retired**: `409`, `reason: "retired"`, with the retirement statement.
   - **A line conflicts**: the witness holds a `checkpoint` statement at its sequence with another
     `recordDigest`. `409`, `{"error", "reason": "conflict", "statements": [<held>, <conflict>]}`,
@@ -390,12 +391,12 @@ recovers it by sending the same checkpoint again, or by reading the trail.
   - **The last line is below the latest checkpoint statement's sequence, and not held.** `409`,
     `reason: "below-head"`, with the head statement. Nothing is appended. A deliverer whose cursor
     fell behind learns where the witness is.
-  - **Otherwise** the witness signs a `checkpoint` statement at the next index, makes it durable,
-    and only then answers `200` with it, `application/jsonl`.
+  - **Otherwise** the witness signs a `checkpoint` statement at the next index, makes it durable
+    and marks it, and only then answers `200` with it, `application/jsonl`.
   - **The append, a sync or the mark fails**: `503`. A statement was signed and may be durable;
-    it is not marked, so it was not published. The witness signs nothing more for that trail until
-    it restarts and has checked its log against its marks (below): it never signs a second
-    statement at an index whose first may be durable.
+    it is not published. The log or the marks file may now end in a torn line, so the witness
+    signs nothing more, for any trail, until it restarts and has checked both (below): it never
+    signs a second statement at an index whose first may be durable.
   - `400` for a body out of shape, `401` without a valid token, `403` for a trail unregistered or
     registered to another subject, `413` over the bound, and `429` over `submissionsPerMinute`, or
     for a new trail over `trailsPerSubmitter`.
@@ -440,45 +441,61 @@ and its registrations, and checks them:
   and a retirement only last;
 - **the log reaches every mark**: each mark names a statement the log holds, by trail, index and
   signature;
-- a trail's statements that no mark names are at most one, its last;
+- the statements no mark names are at most one, the log's last line, since one writer appends
+  for every trail;
 - every trail with a statement has a registration.
 
-It refuses to start on any failure, naming it, and repairs nothing by itself. `gateway witness
-repair` does only what follows, and never anything that leaves a mark unreached.
+It refuses to start on any failure, naming it, and repairs nothing by itself.
 
-- **An unmarked last statement**, whole, was never published. Repair marks it: it is kept, and its
-  index is not reused.
-- **A torn last line** — bytes after the log's last newline. If they are a whole statement that
-  passes the checks, short of its newline only, repair adds the newline, and marks it if no mark
-  names it. Otherwise repair may set the bytes aside, into a file beside the log, kept and never
-  served, and end the log at its last newline, **only if the marks file ends cleanly and the log
-  without them still reaches every mark**. Then the bytes are demonstrably unpublished: no mark
-  named them, so no answer or read ever carried them, and their index is free for the trail's next
-  statement. They may hold a
-  signature over a statement the witness then signs again, differently, at that index; whoever
-  holds that file holds a statement no reader was ever served, and the record says so rather than
-  pretending the bytes were never signed. A torn line the marks name is published damage, below.
-- **A torn last line of the marks file.** Under the fixed order one crash tears at most one of
-  the two files: a mark is written only after the log line it names was synced whole. So repair
-  sets the torn mark bytes aside, and marks the log's last statement again if it is whole and no
-  mark names it. If the log's last line is torn as well, that is damage, not a crash: which
-  statement the torn mark named, and whether it was published, is uncertain, so no index is
-  released: repair stops, and the witness recovers as for a log that does not reach its marks.
-- **A log that does not reach the marks** — a stale backup restored, an acknowledged or served
-  last statement cut short, a damaged line — is not repaired, and no index it lacks is released.
-  The one same-key recovery is restoring a copy of the log that reaches every mark and passes the
-  checks: it holds every statement the witness may have published. A stale restoration that would
-  erase a retirement fails the same way, since the retirement is marked.
-- **Otherwise, a new key.** Without such a copy, or with the marks file lost or damaged beyond a
-  torn last line, nothing shows which indexes were published, so the witness goes on only under a
-  **new key**: a new witness, whose chains begin at index 0 for trails registered anew. The old key
-  signs nothing more. Its chains stay readable under its pin, as historical readings from the
-  statements readers kept, and its last published statements are what those readers hold. Under
-  question 6's shared key, that is a new key for the gateway's receipts and seals too.
-- **What this cannot catch.** An operator who restores the marks file from a backup as well, or
-  loses log and marks together and restores both, leaves the witness nothing to judge by. The rule
-  that marks are never restored is the operator's to keep, and a witness that breaks it can sign a
-  second chain without colluding with anyone; readers who kept statements still expose it (§5).
+**One writer.** One lock covers the log-and-marks pair for the whole witness: a statement's append
+and sync and its mark's append and sync happen under it, for every trail and every kind,
+retirements and conflicts included, and a failure under it stops all signing (the `503` above).
+Submissions of different trails are taken in parallel up to that step and serialized at it, which
+the rate bound already keeps cheap. So one crash tears at most one of the two files. That is for
+liveness, so that an honest crash rarely costs a key; it is not what makes recovery safe. The
+rules below are, and under them two torn files are a new key whatever tore them.
+
+**Recovery, in three rules.** `gateway witness repair` does what these allow and nothing else.
+
+1. **An index is released in exactly one case.** The marks file ends cleanly, the log's last line
+   is torn (bytes after its last newline that are not a whole statement), and the log without
+   those bytes reaches every mark. Then the torn bytes were never marked, so never published.
+   Repair sets them aside, in a file beside the log that is kept and never served, ends the log at
+   its last newline, and their index is free for the trail's next statement. They may hold a
+   signature over a statement the witness then signs again, differently, at that index; whoever
+   holds that file holds a statement no reader was ever served, and the record says so rather
+   than pretending the bytes were never signed.
+2. **No mark is ever made from damaged evidence.** Repair never writes a mark in place of one that
+   is torn, missing or unreadable, and never discards a mark line. The one mark it writes is the
+   step the fixed order was about to take: with the marks file ending cleanly, the log's whole
+   last statement, passing the checks, that no mark names (or the log's torn last bytes when they
+   are such a statement short of its newline only, the newline added). Both files are intact up
+   to it, so completing it infers nothing, and it releases nothing.
+3. **Everything else is a new key.** A torn, unreadable or otherwise damaged mark line; both files
+   torn; a lost marks file; and a log that does not reach every mark of an intact marks file — a
+   stale backup, a published statement cut short, a damaged line, an erased retirement — unless
+   a copy of the log that passes the start-up checks against that marks file is put in its place.
+   That copy is not a repair: it is the log as the checks find it, and it holds every statement
+   the witness may have published. Otherwise nothing shows which indexes were published, so none
+   is inferred and none released: the witness goes on only under a **new key**, a new witness
+   whose chains begin at index 0 for trails registered anew. The old key signs nothing more. Its
+   chains stay readable under its pin, as historical readings from the statements readers kept.
+   Under question 6's shared key, that is a new key for the gateway's receipts and seals too.
+
+**The cost, accepted.** A torn mark line costs a key, even when only a crash in the middle of its
+append tore it. That is accepted because the marks file is small, about 200 bytes a statement,
+written one line per statement under the writer lock, so a crash tears it only in that one
+append; and because the alternative is to infer from damaged evidence what was published, and a
+wrong inference reuses a published index under the same key, which is a second chain. Discarding
+a torn mark as an interrupted write is such an inference: if it was a published statement's mark,
+damaged later, a stale log restored behind it reaches every remaining mark and starts, and that
+statement's index, a retirement's perhaps, is signed again.
+
+**What this cannot catch.** An operator who restores the marks file from a backup as well, or
+loses log and marks together and restores both, leaves the witness nothing to judge by; so does a
+marks file that loses whole lines at its end, which reads like an older one. The rule that marks
+are never restored is the operator's to keep, and a witness that breaks it can sign a second chain
+without colluding with anyone; readers who kept statements still expose it (§5).
 
 **How the witness is itself checked.** `gateway witness verify --log <file> --public-key <file>`,
 over a copy of its log, applies the start-up checks, all but the registrations, and gives its
@@ -627,7 +644,13 @@ and coverage a whole reading would. The head is also judged against the continua
 Vectors read the same chains whole and in steps, with the step's bound lowered in the test: a
 conflict at 100 after checkpoints at 100 and 200, continued from index 1, which passes as it does
 whole; a conflict above the latest checkpoint, which fails either way; and a long run of
-conflicts after the last checkpoint, which the steps get through.
+conflicts after the last checkpoint, which the steps get through. Others hold the continuation's
+own rules: a head at the continuation's index that matches it, and one that differs
+(`witness-equivocation`); a head below it (`witness-head-behind`); statements at or below its
+index supplied, refused before anything is read; its checkpoint held again after the trail copy
+changed, failing where the copy no longer matches; a statement after a continuation whose last
+statement is a retirement (`witness-chain-broken`); a failing step, which leaves the saved
+continuation as it was; and the bounds, with the continuation's two statements counted.
 
 **What is credited.** Every verified `checkpoint` statement's checkpoint is held against the trail
 exactly as `--expect`'s are, so a mismatch is always reported. But only a chain with no witness
@@ -697,9 +720,9 @@ One pull request each, in this order.
 | # | Repository | What | Needs |
 |---|---|---|---|
 | 1 | gateway | `SPEC.md` gains the witness statement (format, key rule and equation, coverage, chain, what it establishes) and §6 rows for the endpoints. `corpus/witness/` vectors: valid chains, a chain beginning late, equivocation, a head unreached, a non-canonical key, a small-order key, a signature only the cofactored check accepts, `S` of L or more, and the bounds at and one past each limit. The same PR teaches `gateway conform` and verify-ts to read them, with the corpus README's stated counts, so no vector lands unread | this record accepted; a cross-vendor review (public-surface, documented-claim, conformance, security) |
-| 2 | gateway | The witness log, marks, registrations, statement signing in the order sign, durable, marked, published, start-up checks and repair in the core module, and `gateway witness verify`. Recovery vectors: a stale valid backup behind the marks, refused; an acknowledged last statement cut short, refused; a retirement erased by a stale restoration, refused; a whole unmarked last statement, marked and kept; a torn unmarked last line, set aside and its index released; a torn last mark line; both last lines torn, refused | 1 |
+| 2 | gateway | The witness log, marks, registrations, statement signing in the order sign, durable, marked, published, start-up checks and repair in the core module, and `gateway witness verify`. Recovery vectors: a stale valid backup behind the marks, refused; an acknowledged last statement cut short, refused; a retirement erased by a stale restoration, refused; a whole unmarked last statement with the marks file ending cleanly, its mark completed; a torn unmarked last line with the marks file ending cleanly, set aside and its index released; a torn published mark with a stale backup log, `S[k]` a retirement, refused and a new key; a torn mark line from a crash mid-append, a new key; both last lines torn, a new key; one crash under the writer lock with two trails submitting, at most one file torn | 1 |
 | 3 | gateway | The engine's `witness` member at the next `engineVersion`, `gateway witness register` and `retire`, the endpoints, bounds, and `SECURITY.md`'s scope line for them | 2; questions 2, 3, 4, 6 and 10 |
-| 4 | runtime | `audit verify --witness`, `--witness-head`, `--witness-resume`, `--witness-save`, `--witness-key` and `--require-countersigned-through`; the chain rule, continuations, the bounds, the `countersigned` coverage, the findings and sentences; the vectors of PR 1 in its tests, and the whole-and-stepped vectors of determination 6; a guide section | 1 (the format and vectors), not the service; questions 8, 9 and 11 |
+| 4 | runtime | `audit verify --witness`, `--witness-head`, `--witness-resume`, `--witness-save`, `--witness-key` and `--require-countersigned-through`; the chain rule, continuations, the bounds, the `countersigned` coverage, the findings and sentences; the vectors of PR 1 in its tests, and determination 6's vectors read whole and in steps and of the continuation's own rules; a guide section | 1 (the format and vectors), not the service; questions 8, 9 and 11 |
 | 5 | desk | A new Desk ADR for a witness as a holder: ADR-0010 §2's HTTPS channel to the witness's form; the cursor moved only by a `checkpoint` statement that verifies under the pinned key, held to `CheckPublicKey`, and whose checkpoint is the last line sent (trail, sequence and digest); the statements kept; the panel passing `--witness` and a head it fetched | 3 and 4 released; questions 5 and 7 |
 | 6 | desk | Its implementation, as ADR-0010's delivery PR 10 | 5; Desk's pins moved |
 
@@ -732,8 +755,9 @@ runtime prints that chain's checkpoints in the same form.
 - Bad, because nothing here helps against a witness that colludes. One key is one party.
 - Bad, because retention is the witness's promise. Nothing makes it checkable beyond the statements
   others kept.
-- Bad, because a log that cannot be shown to reach the marks, or lost marks, cost the witness its
-  key, and with question 6's shared key the gateway's key for receipts and seals too.
+- Bad, because a log that cannot be shown to reach the marks, lost marks, or a single torn mark
+  line, even from a crash mid-append, cost the witness its key, and with question 6's shared key
+  the gateway's key for receipts and seals too.
 - Bad, because the rule that marks are never restored from a backup is the witness operator's to
   keep: broken, it lets an honest witness sign a second chain.
 - Bad, because a second signed format sits beside the receipt, with vectors of its own.
@@ -843,13 +867,14 @@ runtime prints that chain's checkpoints in the same form.
     the issuer; what it got signed stays. A trail poisoned by it is retired by the witness's
     operator, its honest history stays readable as a historical reading ending before the first
     poisoned statement, and the trail's operator goes on under a new trail identity, registered anew
-    (moving a trail aside is the runtime's and Desk's decision, Desk ADR-0010 question 9). The only
-    bytes repair removes from the log are a torn last line without which the log still reaches
-    every mark, so demonstrably never published, and they are kept aside. Same-key recovery is
-    restoring a copy of the log that reaches every mark, the marks file itself never being restored
-    from a backup. Anything less — a stale backup, a published statement cut short, lost marks — is
-    recovered under a new key, published as a new witness, the old key's chains staying readable as
-    historical under its pin: never a new or older log under the old key.
+    (moving a trail aside is the runtime's and Desk's decision, Desk ADR-0010 question 9). Damaged
+    state follows determination 4's three rules: an index is released only for a torn last log line
+    that no mark can name, the marks file ending cleanly; no mark is ever made from damaged
+    evidence, so a torn or unreadable mark line is a new key; same-key recovery of a damaged log is
+    a copy that reaches every mark, the marks file itself never being restored from a backup.
+    Anything less — a stale backup, a published statement cut short, a damaged or lost marks file —
+    is recovered under a new key, published as a new witness, the old key's chains staying readable
+    as historical under its pin: never a new or older log under the old key.
 11. **What limits bound one verification?**
     **Recommendation:** at most 16 witness keys; statement files together at most 64 MiB and
     110,000 statements, refused above either, never truncated; one Ed25519 verification per
