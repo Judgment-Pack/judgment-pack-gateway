@@ -912,8 +912,9 @@ issuer, and the signer's other endpoints that take a token take it as well.
 **Answers.** A statement is answered `200`, `Content-Type: application/jsonl`, each statement
 its canonical form (§8.2) exactly as the witness keeps it, ended by a newline. A refusal is
 `application/json`, `{"error": <a sentence>, "reason": <a word>}`, and a `409` carries
-`statements` too. The sentence is the witness's own: it repeats no token, no text a request
-carried and no file's name. Every answer states its `Content-Length` and carries
+`statements` too. The sentence is the witness's own, but for a `401`'s, which is the token
+check's reason as every endpoint of this gateway gives it; none repeats a token or a file's
+name. Every answer states its `Content-Length` and carries
 `Cache-Control: no-store`. The reasons:
 
 | Status | `reason` | When |
@@ -932,14 +933,15 @@ carried and no file's name. Every answer states its `Content-Length` and carries
 | `429` | `rate` | a submitter over its rate, with `Retry-After` (below) |
 | `429` | `trails` | a submitter over its number of trails (below) |
 | `500` | `internal` | an answer the witness could not make; the reason is on the signer's standard error |
-| `503` | `busy` | as many submissions, or reads, in flight as the witness takes, with `Retry-After: 1` |
+| `503` | `busy` | as many submissions in flight as the witness takes, or as it takes from one submitter, or as many reads, with `Retry-After: 1` |
 | `503` | `stopped` | a submission to a witness whose writer failed (below) |
 
 **A submission, in order.** Everything that needs no body is decided before a byte of it is
 read: the method; that there is no query; the bearer token, verified as every other endpoint
 of this gateway verifies one (`docs/design/engine-config.md`, `identity`); the subject, when the
 configuration names `submitters`; the submitter's rate; the type; a `Content-Length` over the
-bound; and a place among the 32 submissions the witness takes in flight. The body is then read
+bound; and a place among the 32 submissions the witness takes in flight, at most 4 of them one
+submitter's, so that a submitter sending slowly holds no more. The body is then read
 through its bound a line at a time, and each line is held as it arrives — a checkpoint in its
 canonical form, ended by a newline, of the first line's trail, its sequence above the line
 before's — so the first line that fails ends the read, with at most a line's bound read past

@@ -265,7 +265,8 @@ reaching the engine from another host means a TLS-terminating front the operator
 for that, and what the reference does for it is narrow. A submission carries a bearer token of
 the configured issuer, verified as every other endpoint verifies one, and is taken only for a
 trail registered to the token's subject; each submitter is held to a number of submissions a
-minute and a number of trails, and the witness to 32 submissions and 64 reads in flight, a body
+minute and a number of trails, and the witness to 32 submissions in flight, 4 of them from one
+submitter, and 64 reads, a body
 of one mebibyte and a line of 4096 bytes, each read through its bound and held to its form as it
 is read, and 30 seconds to write an answer. Reads are open to anyone who names a trail, and the
 reference bounds no reader's rate. What it does not do: it speaks plain HTTP on a loopback
