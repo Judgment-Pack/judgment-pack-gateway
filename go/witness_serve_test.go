@@ -420,11 +420,19 @@ func TestWitnessSubmissionBodyBounds(t *testing.T) {
 			refusedAs(t, f.serve(submission(f.token(t, subjectOf(testTrail)), strings.NewReader(c.body))), c.status, c.reason)
 		})
 	}
-	// the first line that fails ends the read: the rest is never read
-	body := &sentinel{t: t, first: []byte("not a checkpoint\n")}
-	refusedAs(t, f.serve(submission(f.token(t, subjectOf(testTrail)), body)), http.StatusBadRequest, witnessReasonMalformed)
-	if body.read.Load() != int64(len("not a checkpoint\n")) {
-		t.Fatalf("the read went on past the line that failed: %d bytes", body.read.Load())
+	// the first line that fails ends the read, whichever check it fails:
+	// what follows it is never asked for
+	for what, first := range map[string][]byte{
+		"not a checkpoint":     []byte("not a checkpoint\n"),
+		"of another trail":     jsonl(cpLine(testTrail, 1, "a"), cpLine(trailB, 2, "a")),
+		"a sequence not above": jsonl(cpLine(testTrail, 3, "a"), cpLine(testTrail, 2, "a")),
+		"respelled":            []byte(strings.Replace(line, `"sequence":1`, `"sequence": 1`, 1) + "\n"),
+	} {
+		body := &sentinel{t: t, first: first}
+		refusedAs(t, f.serve(submission(f.token(t, subjectOf(testTrail)), body)), http.StatusBadRequest, witnessReasonMalformed)
+		if body.read.Load() != int64(len(first)) {
+			t.Fatalf("%s: the read went on past the line that failed", what)
+		}
 	}
 	// a body of exactly the bound is taken, and one byte more is not; the
 	// length is not stated, so the bound on what is read decides
@@ -649,9 +657,13 @@ func TestWitnessSubmissionsInFlight(t *testing.T) {
 // submission and every one after it is answered 503 -- a statement held
 // included -- the operator is told once, and nothing unpublished is read.
 func TestWitnessStoppedRefusesEverySubmission(t *testing.T) {
-	f := newWitnessFixture(t, witnessSpec{}, testTrail, trailB)
+	f := newWitnessFixture(t, witnessSpec{}, testTrail, trailB, trailC)
 	held := statementAnswer(t, f.submit(t, trailB, cpLine(trailB, 1, "a")))
 	head := statementAnswer(t, f.submit(t, testTrail, cpLine(testTrail, 1, "a")))
+	statementAnswer(t, f.submit(t, trailC, cpLine(trailC, 1, "a")))
+	if _, err := f.log.retire(trailC); err != nil {
+		t.Fatal(err)
+	}
 	failing, fired := faultyWitnessIO(osWitnessIO(), "mark-sync", "whole")
 	f.log.io = f.tw.io(failing)
 	refusedAs(t, f.submit(t, testTrail, cpLine(testTrail, 2, "a")), http.StatusServiceUnavailable, witnessReasonStopped)
@@ -662,6 +674,11 @@ func TestWitnessStoppedRefusesEverySubmission(t *testing.T) {
 	// not even a statement it holds, nor the head a line falls below
 	refusedAs(t, f.submit(t, trailB, cpLine(trailB, 1, "a")), http.StatusServiceUnavailable, witnessReasonStopped)
 	refusedAs(t, f.submit(t, testTrail, cpLine(testTrail, 1, "b")), http.StatusServiceUnavailable, witnessReasonStopped)
+	// a retired trail too, and its retirement asked for again
+	refusedAs(t, f.submit(t, trailC, cpLine(trailC, 2, "a")), http.StatusServiceUnavailable, witnessReasonStopped)
+	if _, err := f.log.retire(trailC); !errors.Is(err, errWitnessStopped) {
+		t.Fatalf("a retirement asked for again after the failure: %v", err)
+	}
 	if got := strings.Count(f.reports.String(), "witness: stopped:"); got != 1 || !strings.Contains(f.reports.String(), "mark-sync") {
 		t.Fatalf("the operator was told %d times: %.200s", got, f.reports.String())
 	}
@@ -960,6 +977,14 @@ func TestWitnessAnswerTimeIsBounded(t *testing.T) {
 	}
 	if len(f.svc.reading) != 0 {
 		t.Fatal("an answer nobody reads holds its place past its bound")
+	}
+	// and the answer was abandoned at its bound, not written afterwards
+	// with no bound once its place was given back
+	time.Sleep(100 * time.Millisecond)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	got, err := conn.Read(make([]byte, 64))
+	if got != 0 || err == nil {
+		t.Fatalf("after its bound the answer was still written: %d bytes read, %v", got, err)
 	}
 }
 
