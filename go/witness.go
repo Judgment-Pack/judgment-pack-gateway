@@ -499,14 +499,9 @@ func readWitnessFiles(trail string, keyPaths, statementPaths []string, headPath 
 	}
 	in := witnessReading{trail: trail}
 	for _, path := range keyPaths {
-		raw, err := readBoundedFile(path, 4096)
+		key, err := readWitnessKeyFile(path)
 		if err != nil {
 			return witnessVerdict{}, err
-		}
-		text := strings.TrimSpace(string(raw))
-		key, err := hex.DecodeString(text)
-		if err != nil || len(text) != 64 {
-			return witnessVerdict{}, fmt.Errorf("%w: %s is not 64 hexadecimal characters", errWitnessInput, path)
 		}
 		in.keys = append(in.keys, key)
 	}
@@ -551,6 +546,21 @@ func readWitnessFiles(trail string, keyPaths, statementPaths []string, headPath 
 		}
 	}
 	return readWitness(in), nil
+}
+
+// readWitnessKeyFile reads a witness key file: 64 hexadecimal characters,
+// whitespace around them allowed. The key rule is applied by the caller.
+func readWitnessKeyFile(path string) ([]byte, error) {
+	raw, err := readBoundedFile(path, 4096)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSpace(string(raw))
+	key, err := hex.DecodeString(text)
+	if err != nil || len(text) != 64 {
+		return nil, fmt.Errorf("%w: %s is not 64 hexadecimal characters", errWitnessInput, path)
+	}
+	return key, nil
 }
 
 var errOverBound = errors.New("over the bound")

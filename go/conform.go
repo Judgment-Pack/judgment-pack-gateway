@@ -260,7 +260,7 @@ func corpusPublicKey(corpusDir string) ([]byte, error) {
 }
 
 // corpusCounts is how many vectors of each family a run read.
-type corpusCounts struct{ canon, stores, witness int }
+type corpusCounts struct{ canon, stores, witness, recovery int }
 
 func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, error) {
 	var failures []string
@@ -352,7 +352,18 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		return nil, counts, err
 	}
 	counts.witness = witnessCount
-	return append(failures, witnessFailures...), counts, nil
+	failures = append(failures, witnessFailures...)
+
+	// The recovery vectors hold this implementation's own witness, so they
+	// are run only when it is the implementation under test; for any other
+	// they are read and held to their form, and not run.
+	_, own := impl.(inProcess)
+	recoveryFailures, recoveryCount, err := runRecoveryVectors(corpusDir, own)
+	if err != nil {
+		return nil, counts, err
+	}
+	counts.recovery = recoveryCount
+	return append(failures, recoveryFailures...), counts, nil
 }
 
 // storeVectorPaths lists every store vector the runner answers to, in a fixed
@@ -398,6 +409,11 @@ func cmdConform(args []string) int {
 	}
 	fmt.Printf("%s vs corpus: %d canon vectors, %d store vectors, %d witness vectors\n",
 		impl.label(), counts.canon, counts.stores, counts.witness)
+	if _, own := impl.(inProcess); own {
+		fmt.Printf("this implementation's witness vs corpus: %d witness recovery vectors\n", counts.recovery)
+	} else {
+		fmt.Printf("%d witness recovery vectors read and not run: they hold this reference witness's own storage, outside the process contract\n", counts.recovery)
+	}
 	for _, failure := range failures {
 		fmt.Printf("  FAIL %s\n", failure)
 	}

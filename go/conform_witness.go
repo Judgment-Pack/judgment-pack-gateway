@@ -112,6 +112,10 @@ func corpusEntries(corpusDir string) error {
 		"stores":               "*.json",
 		"v3":                   "stores",
 		"witness":              "*.json",
+		// The witness's own storage: read by this implementation's runner
+		// alone (conform_witness_recovery.go), outside the process
+		// contract, since no reader of a chain reads it.
+		"witness-recovery": "*.json",
 	}
 	entries, err := os.ReadDir(corpusDir)
 	if err != nil {
@@ -244,8 +248,23 @@ var (
 	statedStores   = regexp.MustCompile("\\*\\*`stores/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedV3       = regexp.MustCompile("\\*\\*`v3/stores/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedWitness  = regexp.MustCompile("\\*\\*`witness/\\*\\.json`\\*\\* — (\\d+) vectors")
+	statedRecovery = regexp.MustCompile("\\*\\*`witness-recovery/\\*\\.json`\\*\\* — (\\d+) vectors")
 	statedFamilies = regexp.MustCompile("(?m)^\\| `([a-z-]+)` \\| (\\d+) \\|")
 )
+
+// readmeSection is the README's section under a heading, up to the next
+// heading of its level: each family table is read in its own section.
+func readmeSection(readme, heading string) string {
+	start := strings.Index(readme, "\n## "+heading+"\n")
+	if start < 0 {
+		return ""
+	}
+	rest := readme[start+1:]
+	if end := strings.Index(rest[3:], "\n## "); end >= 0 {
+		return rest[:end+3]
+	}
+	return rest
+}
 
 // corpusStatedCounts refuses a corpus whose README states another number of
 // vectors than it holds: of canon.json, stores/, v3/stores/ and witness/,
@@ -281,6 +300,10 @@ func corpusStatedCounts(corpusDir string) error {
 	if err != nil {
 		return err
 	}
+	recovery, err := recoveryVectorPaths(corpusDir)
+	if err != nil {
+		return err
+	}
 	for _, c := range []struct {
 		re     *regexp.Regexp
 		what   string
@@ -290,6 +313,7 @@ func corpusStatedCounts(corpusDir string) error {
 		{statedStores, "stores/*.json vectors", len(stores)},
 		{statedV3, "v3/stores/*.json vectors", len(v3)},
 		{statedWitness, "witness/*.json vectors", len(witness)},
+		{statedRecovery, "witness-recovery/*.json vectors", len(recovery)},
 	} {
 		n, err := stated(c.re, c.what)
 		if err != nil {
@@ -307,16 +331,37 @@ func corpusStatedCounts(corpusDir string) error {
 		}
 		actual[vector.Family]++
 	}
+	if err := statedFamilyCounts(readmeSection(readme, "Witness vectors"), "witness", witnessFamilies, actual); err != nil {
+		return err
+	}
+	publicKey, err := corpusPublicKey(corpusDir)
+	if err != nil {
+		return err
+	}
+	actual = map[string]int{}
+	for _, path := range recovery {
+		vector, err := readRecoveryVector(path, publicKey)
+		if err != nil {
+			return err
+		}
+		actual[vector.Family]++
+	}
+	return statedFamilyCounts(readmeSection(readme, "Witness recovery vectors"), "witness-recovery", recoveryFamilies, actual)
+}
+
+// statedFamilyCounts refuses a section whose family table states another
+// count than the corpus holds, or a family no runner reads.
+func statedFamilyCounts(section, what string, families map[string]bool, actual map[string]int) error {
 	statedFamily := map[string]int{}
-	for _, row := range statedFamilies.FindAllStringSubmatch(readme, -1) {
-		if !witnessFamilies[row[1]] {
-			return fmt.Errorf("corpus/README.md states a witness family %q no runner reads", row[1])
+	for _, row := range statedFamilies.FindAllStringSubmatch(section, -1) {
+		if !families[row[1]] {
+			return fmt.Errorf("corpus/README.md states a %s family %q no runner reads", what, row[1])
 		}
 		statedFamily[row[1]], _ = strconv.Atoi(row[2])
 	}
-	for family := range witnessFamilies {
+	for family := range families {
 		if statedFamily[family] != actual[family] {
-			return fmt.Errorf("corpus/README.md states %d witness vectors of family %s, and the corpus holds %d", statedFamily[family], family, actual[family])
+			return fmt.Errorf("corpus/README.md states %d %s vectors of family %s, and the corpus holds %d", statedFamily[family], what, family, actual[family])
 		}
 	}
 	return nil

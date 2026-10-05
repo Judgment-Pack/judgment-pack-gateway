@@ -1,0 +1,70 @@
+{
+  "name": "writer-one-crash-in-a-mark-with-two-trails-submitting",
+  "family": "writer",
+  "note": "Trails A and B submit at once, and the first statement's mark, whichever trail's it is, is cut short by a crash after the statement was made durable. The other submission is refused. Only the marks fail to end cleanly, as the writer lock makes sure; and last bytes in the marks cost a key, so the witness goes on only under a new one.",
+  "clock": "2026-10-05T12:00:00Z",
+  "registration": "operator",
+  "statements": [
+    "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:804c5cdc574040e30ae2f230bf323a86b810efc051c34597ee9c155872eaa2c3\",\"sequence\":10,\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"},\"index\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"checkpoint\",\"prevSignature\":null,\"signature\":\"b19334cafbf9ababab1e4edca856a375e5b356f1c0207f35aad0379d2eb8978bcc374711b0c77fe390bc34fbc96452e2ff20fd7acc6c6929aa5f4bfac2039d0f\",\"witnessVersion\":\"1\",\"witnessedAt\":\"2026-10-05T12:00:00Z\"}",
+    "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:451f0c3c7b9cf6f291b75b2ab78ce1926311862dfbd787ba621a322c64d2ee91\",\"sequence\":5,\"trail\":\"7d1f3b5a9c2e4f6a8b0d2c4e6f8a1b3c\"},\"index\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"checkpoint\",\"prevSignature\":null,\"signature\":\"1cb0f81ea0a94c028d3bb9a8acb99ae17fbb25d7ded92d046140c8c5a1c52018a7493b26cafbf7d98e094c18d0a36b4a947b65ef24d5c22076d96702662e4e03\",\"witnessVersion\":\"1\",\"witnessedAt\":\"2026-10-05T12:00:00Z\"}"
+  ],
+  "files": {
+    "registrations": "{\"issuer\":\"https://issuer.example\",\"subject\":\"deliverer-a\",\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"}\n{\"issuer\":\"https://issuer.example\",\"subject\":\"deliverer-b\",\"trail\":\"7d1f3b5a9c2e4f6a8b0d2c4e6f8a1b3c\"}\n"
+  },
+  "steps": [
+    {
+      "open": {
+        "outcome": "start",
+        "findings": []
+      }
+    },
+    {
+      "concurrent": [
+        {
+          "issuer": "https://issuer.example",
+          "subject": "deliverer-a",
+          "lines": [
+            "{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:804c5cdc574040e30ae2f230bf323a86b810efc051c34597ee9c155872eaa2c3\",\"sequence\":10,\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"}"
+          ]
+        },
+        {
+          "issuer": "https://issuer.example",
+          "subject": "deliverer-b",
+          "lines": [
+            "{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:451f0c3c7b9cf6f291b75b2ab78ce1926311862dfbd787ba621a322c64d2ee91\",\"sequence\":5,\"trail\":\"7d1f3b5a9c2e4f6a8b0d2c4e6f8a1b3c\"}"
+          ]
+        }
+      ],
+      "fault": {
+        "step": "mark",
+        "leaves": "torn"
+      },
+      "answers": [
+        "failed",
+        "stopped"
+      ],
+      "notEndingCleanlyAtMost": 1
+    },
+    {
+      "open": {
+        "outcome": "new-key",
+        "findings": [
+          "witness-marks-torn",
+          "witness-unmarked"
+        ]
+      }
+    },
+    {
+      "repair": {
+        "outcome": "new-key",
+        "findings": [
+          "witness-marks-torn",
+          "witness-unmarked"
+        ]
+      },
+      "files": {
+        "setAside": null
+      }
+    }
+  ]
+}
