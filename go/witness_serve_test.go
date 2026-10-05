@@ -128,6 +128,19 @@ func (f *witnessFixture) serve(r *http.Request) *httptest.ResponseRecorder {
 	return rec
 }
 
+// serveWithin answers a request within a time, or gives nil: a request
+// that waits where it should have been refused.
+func (f *witnessFixture) serveWithin(r *http.Request, d time.Duration) *httptest.ResponseRecorder {
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- f.serve(r) }()
+	select {
+	case rec := <-done:
+		return rec
+	case <-time.After(d):
+		return nil
+	}
+}
+
 // submission is a request to submit a body, under a token, as
 // application/jsonl.
 func submission(token string, body io.Reader) *http.Request {
@@ -621,13 +634,16 @@ func TestWitnessSubmissionsInFlight(t *testing.T) {
 		go func() { answers <- f.serve(submission(tokenA, bytes.NewReader(jsonl(cpLine(testTrail, 5, "a"))))) }()
 	}
 	wait(2)
-	ownBound := f.serve(submission(tokenA, bytes.NewReader(jsonl(cpLine(testTrail, 6, "a")))))
+	ownBound := f.serveWithin(submission(tokenA, bytes.NewReader(jsonl(cpLine(testTrail, 6, "a")))), 5*time.Second)
 	for i := 0; i < 2; i++ {
 		go func() { answers <- f.serve(submission(tokenB, bytes.NewReader(jsonl(cpLine(trailB, 5, "a"))))) }()
 	}
 	wait(4)
-	allBound := f.serve(submission(tokenC, bytes.NewReader(jsonl(cpLine(trailC, 1, "a")))))
+	allBound := f.serveWithin(submission(tokenC, bytes.NewReader(jsonl(cpLine(trailC, 1, "a")))), 5*time.Second)
 	f.log.writer.Unlock()
+	if ownBound == nil || allBound == nil {
+		t.Fatalf("a submission past a bound waited instead of being refused: the submitter's %v, the witness's %v", ownBound == nil, allBound == nil)
+	}
 	for _, busy := range []*httptest.ResponseRecorder{ownBound, allBound} {
 		refusedAs(t, busy, http.StatusServiceUnavailable, witnessReasonBusy)
 		if busy.Header().Get("Retry-After") != "1" {
@@ -879,8 +895,11 @@ func TestWitnessReadsInFlight(t *testing.T) {
 	for len(f.svc.reading) < 3 && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	busy := f.serve(httptest.NewRequest(http.MethodGet, "/witness/trails/"+testTrail+"/statements", nil))
+	busy := f.serveWithin(httptest.NewRequest(http.MethodGet, "/witness/trails/"+testTrail+"/statements", nil), 5*time.Second)
 	f.log.index.Unlock()
+	if busy == nil {
+		t.Fatal("a read past the bound waited instead of being refused")
+	}
 	refusedAs(t, busy, http.StatusServiceUnavailable, witnessReasonBusy)
 	for i := 0; i < 3; i++ {
 		statementAnswer(t, <-answers)
