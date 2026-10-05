@@ -123,6 +123,79 @@ func TestStoreVectors(t *testing.T) {
 	t.Logf("%d/%d store vectors", passed, len(names))
 }
 
+// TestWitnessVectors holds this reader to every witness vector, through the
+// files the process contract hands an implementation (SPEC.md §8).
+func TestWitnessVectors(t *testing.T) {
+	failures, count, err := runWitnessVectors(corpusPath(), inProcess{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range failures {
+		t.Error(failure)
+	}
+	t.Logf("%d/%d witness vectors", count-len(failures), count)
+}
+
+// The corpus holds nothing the runner does not read: an entry of another
+// name, a file in place of a directory of vectors, and a vector of a family
+// the runner does not know each refuse the run.
+func TestTheCorpusHoldsNothingUnread(t *testing.T) {
+	if err := corpusEntries(corpusPath()); err != nil {
+		t.Fatalf("the corpus: %v", err)
+	}
+	copyCorpus := func(t *testing.T) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	for _, c := range []struct {
+		what string
+		make func(dir string) error
+	}{
+		{"a family of vectors with no reader", func(dir string) error {
+			return os.Mkdir(filepath.Join(dir, "v4"), 0o755)
+		}},
+		{"a file beside the witness vectors", func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "witness", "notes.txt"), nil, 0o600)
+		}},
+		{"a directory under the version 3 vectors", func(dir string) error {
+			return os.Mkdir(filepath.Join(dir, "v3", "receipts"), 0o755)
+		}},
+		{"a directory among the store vectors", func(dir string) error {
+			return os.Mkdir(filepath.Join(dir, "v3", "stores", "more"), 0o755)
+		}},
+	} {
+		dir := copyCorpus(t)
+		if err := c.make(dir); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runCorpus(dir, inProcess{}); err == nil {
+			t.Errorf("%s: the run was not refused", c.what)
+		}
+	}
+	dir := copyCorpus(t)
+	vector := filepath.Join(dir, "witness", "valid-one-statement.json")
+	raw, err := os.ReadFile(vector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, edit := range map[string][2]string{
+		"a family no reader knows":   {`"family": "valid"`, `"family": "continuation"`},
+		"a member no reader knows":   {`"family": "valid",`, `"family": "valid", "resume": "",`},
+		"a name that is not its own": {`"name": "valid-one-statement"`, `"name": "valid-two-statements"`},
+	} {
+		if err := os.WriteFile(vector, bytes.Replace(raw, []byte(edit[0]), []byte(edit[1]), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runCorpus(dir, inProcess{}); err == nil {
+			t.Errorf("%s: the run was not refused", what)
+		}
+	}
+}
+
 // normalizeFindings round-trips through the wire encoding, so what is compared
 // is what the process contract would actually emit.
 func normalizeFindings(t *testing.T, findings []finding) []string {
@@ -246,5 +319,38 @@ func TestREADMEVectorCounts(t *testing.T) {
 	}
 	if statedV3 != len(v3Files) {
 		t.Errorf("README.md states %d version 3 store vectors, but there are actually %d in v3/stores/*.json", statedV3, len(v3Files))
+	}
+
+	// The witness vectors: the total, and each family's row of the table.
+	witnessRe := regexp.MustCompile(`\*\*` + "`" + `witness/\*\.json` + "`" + `\*\* — (\d+) vectors`)
+	witnessMatch := witnessRe.FindStringSubmatch(readme)
+	if witnessMatch == nil {
+		t.Fatal("README.md missing expected sentence for witness/*.json vectors count")
+	}
+	statedWitness, _ := strconv.Atoi(witnessMatch[1])
+	paths, err := witnessVectorPaths(corpusPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if statedWitness != len(paths) {
+		t.Errorf("README.md states %d witness vectors, but there are actually %d in witness/*.json", statedWitness, len(paths))
+	}
+	actualFamilies := map[string]int{}
+	for _, path := range paths {
+		vector, err := readWitnessVector(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		actualFamilies[vector.Family]++
+	}
+	statedFamilies := map[string]int{}
+	for _, row := range regexp.MustCompile("(?m)^\\| `([a-z-]+)` \\| (\\d+) \\|").FindAllStringSubmatch(readme, -1) {
+		n, _ := strconv.Atoi(row[2])
+		statedFamilies[row[1]] = n
+	}
+	for family := range witnessFamilies {
+		if statedFamilies[family] != actualFamilies[family] {
+			t.Errorf("README.md states %d witness vectors of family %s, but there are %d", statedFamilies[family], family, actualFamilies[family])
+		}
 	}
 }

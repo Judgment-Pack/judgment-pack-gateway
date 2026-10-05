@@ -211,8 +211,46 @@ var (
 // most messages -- so a policy that trusted it would admit a record anyone
 // signed. The encoding is y little-endian, its top bit the sign of x.
 func unusableSigningKey(raw []byte) string {
-	if len(raw) != ed25519.PublicKeySize {
+	switch publicKeyFault(raw) {
+	case keyWrongLength:
 		return "is not 32 bytes"
+	case keyYNotBelowP:
+		return "is not the canonical encoding of a point: its y is not below p"
+	case keyNotOnCurve:
+		return "is not a point of the Ed25519 curve, so no signature verifies under it"
+	case keyXZeroSignSet:
+		return "is not the canonical encoding of a point: its x is 0 and its sign bit is set"
+	case keySmallOrder:
+		return "is of small order, under which a signature can be made without any secret"
+	}
+	return ""
+}
+
+// keyFault is what the runtime's public-key rule finds of 32 bytes: nothing,
+// or the first of the faults below. A runtime key a policy names
+// (unusableSigningKey) and a witness key a reader is given (SPEC.md §8.4)
+// are both held to it.
+type keyFault int
+
+const (
+	keySound keyFault = iota
+	keyWrongLength
+	keyYNotBelowP
+	keyNotOnCurve
+	keyXZeroSignSet
+	keySmallOrder
+)
+
+// publicKeyFault holds 32 bytes to the runtime's public-key rule: the
+// canonical encoding (RFC 8032 §5.1.2) of a point of the curve whose order
+// does not divide 8. The encoding is read as written, before anything
+// reduces it: y is its low 255 bits, little-endian, and its top bit is the
+// sign of x. The faults are disjoint but for a y of p or more, which is
+// found first, so the order they are tested in names the same fault the
+// runtime's order does.
+func publicKeyFault(raw []byte) keyFault {
+	if len(raw) != ed25519.PublicKeySize {
+		return keyWrongLength
 	}
 	le := make([]byte, len(raw))
 	for i, b := range raw {
@@ -223,7 +261,7 @@ func unusableSigningKey(raw []byte) string {
 	p := curveP
 	y := new(big.Int).SetBytes(le)
 	if y.Cmp(p) >= 0 {
-		return "is not the canonical encoding of a point: its y is not below p"
+		return keyYNotBelowP
 	}
 	// x² = (y² - 1) / (d·y² + 1)
 	yy := new(big.Int).Mul(y, y)
@@ -234,19 +272,19 @@ func unusableSigningKey(raw []byte) string {
 	xx.Mul(xx, u).Mod(xx, p)
 	x, ok := squareRoot(xx)
 	if !ok {
-		return "is not a point of the Ed25519 curve, so no signature verifies under it"
+		return keyNotOnCurve
 	}
 	if x.Sign() == 0 && sign == 1 {
-		return "is not the canonical encoding of a point: its x is 0 and its sign bit is set"
+		return keyXZeroSignSet
 	}
 	// [8]P by three doublings; the identity is (0, 1).
 	for range 3 {
 		x, y = edwardsAdd(x, y, x, y)
 	}
 	if x.Sign() == 0 && y.Cmp(big.NewInt(1)) == 0 {
-		return "is of small order, under which a signature can be made without any secret"
+		return keySmallOrder
 	}
-	return ""
+	return keySound
 }
 
 // squareRoot is a square root of a modulo p, or false when a is no square

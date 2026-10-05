@@ -4,7 +4,8 @@ A verifier of this gateway's receipts, in TypeScript: the canonical form
 (`SPEC.md` §1.1) and registry-anchored verification (§1.4, §4, §4.1) of receipt
 versions 2 and 3, a version 3 action's citations and decision record, a
 decision record's own citations, and what an action claims of the runtime
-evaluation record it names included. It mints nothing and serves nothing;
+evaluation record it names included; and the reading of a chain of the
+checkpoint witness's statements (§8). It mints nothing and serves nothing;
 the HTTP surface of §6 is not part of it.
 
 It answers to the frozen corpus through the process contract of
@@ -21,6 +22,10 @@ exiting 1 for a document outside the domain and 2 for one past what it reads;
 reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
 with `"observations": […]` after the findings when §4 step 8 has any, exiting 0
 whenever it reached a verdict and 2 when it could not.
+`impl witness --trail <hex> --witness-key <file>... [--witness <file>]...
+[--witness-head <file>]` reads a chain of witness statements (§8.6) and writes
+its answer — a refusal, findings, or what the chain says — exiting 0 whenever it
+gave one and 2 when it could not.
 
 ## How it was written, and what that makes it
 
@@ -39,6 +44,12 @@ start), and knew that code's shape from doing so. What it is: a second body of
 code, written to the text, that agrees with the reference on every vector and
 disagrees with it nowhere the corpus looks. Whether that meets a two-implementation
 bar is for whoever holds the bar to judge.
+
+Its witness reader (§8) is less apart than that. It was written in the same change
+as the reference's, by the same author, from §8 and the witness vectors, which were
+written first and whose expected answers neither reader computed. It is a second
+body of code in another language — Node's Ed25519, OpenSSL's, for the equation, and
+a key rule of its own in `BigInt` — not an independent one.
 
 ## Its limits
 
@@ -104,6 +115,10 @@ reference.
   digits, and its finding would carry it whole.
 - **Nesting past ten thousand levels.** Like the reference, it reads nothing
   deeper (§5).
+- **A witness reading** is held to §8.7's bounds and no others: its files are
+  read whole, 64 MiB of them together at most, and a statement line holding more
+  than 64 JSON values is malformed without being parsed further, as one holds
+  thirteen.
 
 ## Running it
 

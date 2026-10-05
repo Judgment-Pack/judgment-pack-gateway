@@ -9,6 +9,11 @@
 //                      stdin: the 32-byte Ed25519 public key; stdout:
 //                      {"ok": bool, "findings": [...]}; exit 0 whenever a
 //                      verdict was reached, 2 when none could be
+//   main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]
+//                      a reading of a chain of witness statements
+//                      (SPEC.md §8.6); stdout: the answer, a refusal
+//                      among them; exit 0 whenever one was given, 2 when
+//                      none could be
 
 import * as fs from "node:fs";
 
@@ -17,6 +22,7 @@ import { Bytes, NoVerdict, code, documentBound } from "./inputs.ts";
 import { TooLarge, maxValues, parse } from "./json.ts";
 import type { Value } from "./json.ts";
 import { verifyStore, writeVerdict } from "./verify.ts";
+import { readWitnessFiles } from "./witness.ts";
 
 // readInput is standard input to its end, or null past limit bytes, which
 // are no more than documentBound: no more than a byte past the limit is
@@ -185,7 +191,58 @@ function main(args: string[]): number {
       throw e;
     }
   }
-  process.stderr.write("usage: main.ts canon | main.ts verify <store-root> <registry-path> <authority> [<decision-records-dir>]\n");
+  if (command === "witness") {
+    return witness(rest);
+  }
+  process.stderr.write(
+    "usage: main.ts canon | main.ts verify <store-root> <registry-path> <authority> [<decision-records-dir>] | main.ts witness --trail <hex> --witness-key <file>... [--witness <file>]... [--witness-head <file>]\n",
+  );
+  return 64;
+}
+
+// witness answers the process contract's witness command.
+function witness(args: string[]): number {
+  let trail: string | null = null;
+  let head: string | null = null;
+  const keys: string[] = [];
+  const files: string[] = [];
+  try {
+    const exact = exactArguments(args);
+    for (let i = 0; i < exact.length; i += 2) {
+      const flag = exact[i]!;
+      const value = exact[i + 1];
+      if (value === undefined) {
+        return usage(`${flag} needs a value`);
+      }
+      if (flag === "--trail") {
+        trail = value;
+      } else if (flag === "--witness-key") {
+        keys.push(value);
+      } else if (flag === "--witness") {
+        files.push(value);
+      } else if (flag === "--witness-head") {
+        head = value;
+      } else {
+        return usage(`unknown flag ${flag}`);
+      }
+    }
+    if (trail === null || keys.length === 0) {
+      return usage("--trail and at least one --witness-key are required");
+    }
+    const answer = readWitnessFiles(trail, keys, files, head);
+    process.stdout.write(JSON.stringify(answer));
+    return 0;
+  } catch (e) {
+    if (e instanceof NoVerdict) {
+      process.stderr.write(`witness: no answer: ${e.message}\n`);
+      return 2;
+    }
+    throw e;
+  }
+}
+
+function usage(why: string): number {
+  process.stderr.write(`witness: ${why}\n`);
   return 64;
 }
 

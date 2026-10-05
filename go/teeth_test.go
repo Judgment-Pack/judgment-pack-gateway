@@ -60,6 +60,8 @@ func init() {
 			os.Exit(0)
 		case "verify":
 			os.Exit(cmdVerify(os.Args[2:]))
+		case "witness":
+			os.Exit(witnessContract(os.Args[2:], os.Stdout, os.Stderr))
 		default:
 			os.Exit(2)
 		}
@@ -78,6 +80,12 @@ type defective struct {
 }
 
 func (defective) label() string { return "defective" }
+
+// witness is the reference's reading: the defects above are of canon and
+// of store verification; the witness reader's own are in witness_test.go.
+func (defective) witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error) {
+	return inProcess{}.witness(trail, keyPaths, statementPaths, headPath)
+}
 
 func (d defective) canon(source string) ([]byte, bool) {
 	out, err := canonText([]byte(source))
@@ -200,7 +208,7 @@ func asciiEscaping(out []byte) []byte {
 
 func failuresFor(t *testing.T, impl implementation) string {
 	t.Helper()
-	failures, _, _, err := runCorpus(corpusDir, impl)
+	failures, _, err := runCorpus(corpusDir, impl)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1582,7 +1590,7 @@ func TestCmdConformExitStatus(t *testing.T) {
 	if rc := cmdConform([]string{"--corpus", corpusDir}); rc != 0 {
 		t.Fatalf("cmdConform healthy returned %d, want 0", rc)
 	}
-	failures, _, _, err := runCorpus(corpusDir, inProcess{})
+	failures, _, err := runCorpus(corpusDir, inProcess{})
 	if err != nil {
 		t.Fatalf("runCorpus healthy: %v", err)
 	}
@@ -1593,7 +1601,7 @@ func TestCmdConformExitStatus(t *testing.T) {
 	// Wrong: via --impl helper -> non-zero and non-empty, specifically 1 not 2.
 	t.Setenv(envConformHelper, "1")
 	impl := subprocess{argv: []string{os.Args[0]}}
-	failures, _, _, err = runCorpus(corpusDir, impl)
+	failures, _, err = runCorpus(corpusDir, impl)
 	if err != nil {
 		t.Fatalf("runCorpus wrong impl returned error (would be exit 2): %v", err)
 	}
