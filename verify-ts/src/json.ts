@@ -56,9 +56,9 @@ const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // parse is the one JSON value the bytes hold, or null when they are not
 // UTF-8 holding exactly one JSON value (RFC 8259), whitespace around it
-// allowed and a byte order mark not. A document of more than maxValues
-// values throws TooLarge.
-export function parse(bytes: Uint8Array): Value | null {
+// allowed and a byte order mark not. A document of more than limit values,
+// maxValues unless a caller reads less, throws TooLarge.
+export function parse(bytes: Uint8Array, limit: number = maxValues): Value | null {
   let text: string;
   try {
     text = utf8.decode(bytes);
@@ -66,7 +66,7 @@ export function parse(bytes: Uint8Array): Value | null {
     return null;
   }
   try {
-    return new Reader(text).document();
+    return new Reader(text, limit).document();
   } catch (e) {
     if (e instanceof NotJSON) {
       return null;
@@ -81,8 +81,10 @@ class Reader {
   private i = 0;
   private values = 0;
   private readonly s: string;
+  private readonly limit: number;
 
-  constructor(s: string) {
+  constructor(s: string, limit: number) {
+    this.limit = limit;
     this.s = s;
   }
 
@@ -132,7 +134,7 @@ class Reader {
   // opening reads the start of a value: a scalar whole, or an empty
   // container whole, or else it opens a container on the stack and is null.
   private opening(stack: Frame[]): Value | null {
-    if (++this.values > maxValues) {
+    if (++this.values > this.limit) {
       throw new TooLarge();
     }
     this.space();

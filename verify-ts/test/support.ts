@@ -209,3 +209,80 @@ export function put(store: Store, session: string, file: string, text: string): 
   fs.mkdirSync(path.join(store.root, "receipts", session), { recursive: true });
   fs.writeFileSync(path.join(store.root, "receipts", session, file), text);
 }
+
+// A witness vector (corpus/README.md, "Witness vectors"): a file is its
+// text, or parts each repeated a number of times.
+export type WitnessFile = string | { parts: { text: string; times: number }[] };
+export type WitnessVector = {
+  name: string;
+  family: string;
+  trail: string;
+  keys: string[];
+  witness: WitnessFile[];
+  head?: WitnessFile;
+  expected: Record<string, unknown>;
+};
+
+export function witnessVectors(): WitnessVector[] {
+  const dir = path.join(corpus, "witness");
+  return fs
+    .readdirSync(dir)
+    .sort()
+    .map((name) => JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")));
+}
+
+function writeWitnessFile(at: string, file: WitnessFile): void {
+  const fd = fs.openSync(at, "wx");
+  try {
+    for (const { text, times } of typeof file === "string" ? [{ text: file, times: 1 }] : file.parts) {
+      const chunk = Buffer.from(text, "utf8");
+      const perWrite = Math.max(1, Math.floor((1 << 20) / Math.max(chunk.length, 1)));
+      for (let left = times; left > 0; left -= perWrite) {
+        fs.writeSync(fd, Buffer.alloc(chunk.length * Math.min(left, perWrite), chunk));
+      }
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// materializeWitness writes a witness vector as the runner hands it over:
+// a key file per key, a file per statements file, and the head file.
+export function materializeWitness(v: WitnessVector): { keys: string[]; files: string[]; head: string | null } {
+  const at = tempDir();
+  const keys = v.keys.map((key, i) => {
+    const p = path.join(at, `key-${i}`);
+    fs.writeFileSync(p, key + "\n");
+    return p;
+  });
+  const files = v.witness.map((file, i) => {
+    const p = path.join(at, `statements-${i}.jsonl`);
+    writeWitnessFile(p, file);
+    return p;
+  });
+  let head: string | null = null;
+  if (v.head !== undefined) {
+    head = path.join(at, "head.jsonl");
+    writeWitnessFile(head, v.head);
+  }
+  return { keys, files, head };
+}
+
+// sameWitnessAnswer is whether an answer is the one a vector expects, as
+// the runner compares them: a refusal by its reason, findings as a set,
+// and every member of a reading with none.
+export function sameWitnessAnswer(expected: Record<string, unknown>, produced: Record<string, unknown>): boolean {
+  const set = (v: unknown) => [...new Set(v as string[])].sort();
+  if ("refused" in expected || "refused" in produced) {
+    return JSON.stringify(expected) === JSON.stringify(produced);
+  }
+  if (expected["ok"] !== produced["ok"] || JSON.stringify(set(expected["findings"])) !== JSON.stringify(set(produced["findings"]))) {
+    return false;
+  }
+  if (expected["ok"] !== true) {
+    return true;
+  }
+  return ["reading", "headIndex", "highestIndex", "latestCheckpoint", "conflicts", "retired"].every(
+    (name) => JSON.stringify(expected[name]) === JSON.stringify(produced[name]),
+  );
+}

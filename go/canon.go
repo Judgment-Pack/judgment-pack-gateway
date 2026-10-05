@@ -219,6 +219,10 @@ type parser struct {
 	// anyNumber admits a number of any form JSON gives one (parseRecordJSON),
 	// keeping one outside the canonical domain as a vNumber.
 	anyNumber bool
+	// unsigned refuses a number spelled with a sign, -0 among them
+	// (parseStatementJSON): every integer of a witness statement is spelled
+	// in digits alone, as the runtime reads a checkpoint's sequence.
+	unsigned bool
 }
 
 // descend enters a nested value, refusing the level past maxNesting before
@@ -253,6 +257,14 @@ func parseJSONWithin(data []byte, maxValues int) (value, error) {
 // kept as spelled (vNumber).
 func parseRecordJSON(data []byte) (value, error) {
 	return (&parser{data: data, anyNumber: true}).document()
+}
+
+// parseStatementJSON is parseJSON for one witness statement line (SPEC.md
+// §8.2): the canonical parser, a number spelled with a sign refused, and at
+// most maxValues values -- a statement holds thirteen, so a line holding more
+// is no statement, and is refused before it is built.
+func parseStatementJSON(data []byte, maxValues int) (value, error) {
+	return (&parser{data: data, maxValues: maxValues, unsigned: true}).document()
 }
 
 // document parses the whole of p.data as one JSON text.
@@ -534,6 +546,9 @@ func (p *parser) readHex4() (uint16, error) {
 func (p *parser) parseNumber() (value, error) {
 	start := p.pos
 	if p.pos < len(p.data) && p.data[p.pos] == '-' {
+		if p.unsigned {
+			return nil, fmt.Errorf("a number spelled with a sign at %d", p.pos)
+		}
 		p.pos++
 	}
 	digitsStart := p.pos

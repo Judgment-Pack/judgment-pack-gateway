@@ -11,9 +11,13 @@ package main
 //	gateway conform                    # this implementation, in process
 //	gateway conform --impl ./other     # any implementation, via CONTRACT.md
 //
-// Note this reads only corpus/TEST-PUBLIC-KEY. Running the corpus never hands
-// the runner a secret, which is the same property receipt version 2 gives a real
-// verifier.
+// Every entry of the corpus is read, or the run is refused: a family of
+// vectors the runner does not know cannot land in corpus/ and go unread
+// (corpusEntries).
+//
+// Note this reads only public keys: corpus/TEST-PUBLIC-KEY, and the keys a
+// witness vector supplies. Running the corpus never hands the runner a
+// secret, which is the same property receipt version 2 gives a real verifier.
 
 import (
 	"bytes"
@@ -57,6 +61,9 @@ type storeVector struct {
 type implementation interface {
 	canon(source string) ([]byte, bool)
 	verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error)
+	// witness reads one chain of witness statements (SPEC.md §8.6) from
+	// files, and answers with the verdict the process contract gives.
+	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
 	label() string
 }
 
@@ -89,6 +96,19 @@ func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords stri
 		return false, nil, err
 	}
 	return decoded.OK, decoded.Findings, nil
+}
+
+func (inProcess) witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error) {
+	verdict, err := readWitnessFiles(trail, keyPaths, statementPaths, headPath)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := verdict.marshal()
+	if err != nil {
+		return nil, err
+	}
+	var decoded map[string]any
+	return decoded, json.Unmarshal(raw, &decoded)
 }
 
 type subprocess struct{ argv []string }
@@ -128,6 +148,36 @@ func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords s
 		return false, nil, err
 	}
 	return decoded.OK, decoded.Findings, nil
+}
+
+// witnessArgs is the process contract's `witness` command line
+// (corpus/README.md), its flags those of the runtime's `audit verify`.
+func witnessArgs(trail string, keyPaths, statementPaths []string, headPath string) []string {
+	args := []string{"witness", "--trail", trail}
+	for _, path := range keyPaths {
+		args = append(args, "--witness-key", path)
+	}
+	for _, path := range statementPaths {
+		args = append(args, "--witness", path)
+	}
+	if headPath != "" {
+		args = append(args, "--witness-head", headPath)
+	}
+	return args
+}
+
+func (s subprocess) witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error) {
+	cmd := exec.Command(s.argv[0], append(s.argv[1:], witnessArgs(trail, keyPaths, statementPaths, headPath)...)...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("witness produced no answer: %v: %s", err, stderr.String())
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
+		return nil, fmt.Errorf("witness answered with no JSON object: %v", err)
+	}
+	return decoded, nil
 }
 
 // sortedFindings renders findings for comparison. Order is NOT normative, so
@@ -209,18 +259,28 @@ func corpusPublicKey(corpusDir string) ([]byte, error) {
 	return hex.DecodeString(strings.TrimSpace(string(raw)))
 }
 
-func runCorpus(corpusDir string, impl implementation) ([]string, int, int, error) {
+// corpusCounts is how many vectors of each family a run read.
+type corpusCounts struct{ canon, stores, witness int }
+
+func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, error) {
 	var failures []string
+	var counts corpusCounts
+	if err := corpusEntries(corpusDir); err != nil {
+		return nil, counts, err
+	}
+	if err := corpusStatedCounts(corpusDir); err != nil {
+		return nil, counts, err
+	}
 
 	raw, err := os.ReadFile(filepath.Join(corpusDir, "canon.json"))
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, counts, err
 	}
 	var canonFile struct {
 		Vectors []canonVector `json:"vectors"`
 	}
 	if err := json.Unmarshal(raw, &canonFile); err != nil {
-		return nil, 0, 0, err
+		return nil, counts, err
 	}
 	for _, vector := range canonFile.Vectors {
 		produced, accepted := impl.canon(vector.InputJSON)
@@ -234,7 +294,7 @@ func runCorpus(corpusDir string, impl implementation) ([]string, int, int, error
 		}
 		expected, err := hex.DecodeString(vector.ExpectedHex)
 		if err != nil {
-			return nil, 0, 0, err
+			return nil, counts, err
 		}
 		if !accepted {
 			failures = append(failures, fmt.Sprintf(
@@ -248,31 +308,31 @@ func runCorpus(corpusDir string, impl implementation) ([]string, int, int, error
 
 	publicKey, err := corpusPublicKey(corpusDir)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, counts, err
 	}
 	// Both directories arbitrate: the version 2 vectors and, since the
 	// version 3 verifier, the version 3 vectors staged beside them.
 	paths, err := storeVectorPaths(corpusDir)
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, counts, err
 	}
 	for _, path := range paths {
 		raw, err := os.ReadFile(path)
 		if err != nil {
-			return nil, 0, 0, err
+			return nil, counts, err
 		}
 		var vector storeVector
 		if err := json.Unmarshal(raw, &vector); err != nil {
-			return nil, 0, 0, err
+			return nil, counts, err
 		}
 		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
 		if err != nil {
-			return nil, 0, 0, err
+			return nil, counts, err
 		}
 		ok, findings, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, publicKey)
 		os.RemoveAll(root)
 		if err != nil {
-			return nil, 0, 0, err
+			return nil, counts, err
 		}
 		if ok != vector.Expected.OK {
 			failures = append(failures, fmt.Sprintf("store %s: expected ok=%v, got ok=%v",
@@ -285,7 +345,14 @@ func runCorpus(corpusDir string, impl implementation) ([]string, int, int, error
 				vector.Name, want, have))
 		}
 	}
-	return failures, len(canonFile.Vectors), len(paths), nil
+	counts.canon, counts.stores = len(canonFile.Vectors), len(paths)
+
+	witnessFailures, witnessCount, err := runWitnessVectors(corpusDir, impl)
+	if err != nil {
+		return nil, counts, err
+	}
+	counts.witness = witnessCount
+	return append(failures, witnessFailures...), counts, nil
 }
 
 // storeVectorPaths lists every store vector the runner answers to, in a fixed
@@ -324,13 +391,13 @@ func cmdConform(args []string) int {
 			i++
 		}
 	}
-	failures, canonCount, storeCount, err := runCorpus(corpusDir, impl)
+	failures, counts, err := runCorpus(corpusDir, impl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "corpus:", err)
 		return 2
 	}
-	fmt.Printf("%s vs corpus: %d canon vectors, %d store vectors\n",
-		impl.label(), canonCount, storeCount)
+	fmt.Printf("%s vs corpus: %d canon vectors, %d store vectors, %d witness vectors\n",
+		impl.label(), counts.canon, counts.stores, counts.witness)
 	for _, failure := range failures {
 		fmt.Printf("  FAIL %s\n", failure)
 	}

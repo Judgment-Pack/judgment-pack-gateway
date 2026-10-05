@@ -23,6 +23,11 @@ The reason for the divergence is the property version 1 could not have: verifyin
 HMAC requires the key that mints it, so "an independent party can check this" was
 never true of version 1. See §5.
 
+**It is normative too for the witness statement (§8), version 1:** a record of another
+kind, which a gateway run by a party other than a decision trail's operator signs over the
+runtime's audit checkpoints. It is not a receipt, nothing in §1 to §7 changes for it, and
+no receipt verifier reads one.
+
 ## 1. The format
 
 Everything a signature depends on is stated here. An earlier revision of this
@@ -887,16 +892,49 @@ keeps the contract of one request and one result: what an adapter reports rides
 inside the result it was always allowed to write, and the gateway, not the adapter,
 decides what of it is signed.
 
+### Witness endpoints
+
+A gateway that is a witness (§8) answers three more endpoints. They are specified with the
+statement, so that a deliverer and a reader can be written to them before the service is:
+this reference does not serve them yet, and the configuration that makes a gateway a
+witness comes with the service.
+
+| Method | Path | Body / result |
+|--------|------|---------------|
+| POST | `/witness/checkpoints` | Submit. The body is `application/jsonl`: one or more checkpoint lines (§8.1) as `jpack audit checkpoint --since` prints them, each in its canonical form and ended by a newline, all of one trail, their sequences strictly increasing; at most 1 MiB (1048576 bytes), this gateway's request bound, and each line at most 4096 bytes, its newline not counted. A bearer token is required, and the trail must be registered to the token's issuer and subject (below). **Only the last line is signed**: the earlier lines are compared with what the witness holds, for conflicts, and otherwise discarded, and with them the evidence of what they said. `200`, `application/jsonl`: a `checkpoint` statement for the last line — the one already held for the same trail, sequence and digest, so that sending a checkpoint again gives the same statement, or a new one at the chain's next index. `409` with `reason` `"conflict"` and `statements`, two JSON strings each holding a statement's exact line: the `checkpoint` statement the witness holds at a line's sequence, and the `conflict` statement recording another digest offered for it — the first offered for that sequence, which acknowledges nothing of the digest just sent. `409` with `reason` `"below-head"`, with the head statement, when the last line's sequence is below the latest checkpoint statement's and not held. `409` with `reason` `"retired"`, with the retirement statement. `400` for a body out of shape, `401` without a valid token, `403` for a trail not registered or registered to another subject, `413` over a bound, and `429` over the submitter's rate or, for a trail it has not submitted before, over its number of trails. `503` when a statement signed could not be kept, after which the witness signs nothing more, for any trail, until it has restarted. |
+| GET | `/witness/trails/{trail}/head` | The trail's last statement (§8.5), `application/jsonl`, exactly as the witness keeps it. `400` for a `{trail}` that is not 32 lowercase hexadecimal characters; `404` for a trail the witness holds nothing for, which reads as a trail never submitted (§8.8). |
+| GET | `/witness/trails/{trail}/statements?from=<index>&limit=<n>` | The trail's statements from index `from` (0 when absent), at most `limit` of them (1 to 1000, 1000 when absent), in index order, `application/jsonl`, each exactly as the witness keeps it. A reader asks again from the next index until it reaches the head's. |
+
+**Registration.** A trail is registered to exactly one issuer and subject before anything
+is signed for it: by the witness's operator, by default, or, where that operator opts in,
+by the first submission accepted for the trail — which lets any subject the witness allows
+claim a trail whose identity it has learned. A registration is never in a statement and is
+never served. A token establishes an issuer and a subject and nothing more: every deliverer
+of one trail submits under the one subject registered for it, and the witness cannot tell
+the trail's operator from a holder of the operator's credential (§8.8).
+
+**Rate.** The witness's operator bounds each submitter's submissions, from 1 to 6000 a
+minute, 60 by default, and the trails it may submit for, from 1 to 100000, 100 by default.
+
+**Reads are open.** The two reads need no token, as `/registry` and `/publickey` need none:
+a verifier holds no token. Naming a trail is what lets one read it, and no endpoint lists
+trails; whoever holds one of a trail's checkpoints can therefore follow its continuing
+activity (§8.8). The reference bounds no read. A witness reached from other hosts sits
+behind the TLS-terminating front `docs/design/engine-config.md` requires for any other
+host, and that front bounds reads.
+
 ## 7. Conformance
 
 An implementation of this specification is checked against the frozen vectors in
 [`corpus/`](corpus/README.md), never against another implementation's source. The
 corpus is **frozen**: hand-maintained normative data, not output regenerated from
 whichever implementation exists. Changing a vector is a specification change and
-needs the same justification as changing this document. Two families:
-**canon vectors** (a value → its exact canonical bytes, or a refusal) and **store
+needs the same justification as changing this document. Three families:
+**canon vectors** (a value → its exact canonical bytes, or a refusal); **store
 vectors** (a complete store and registry → the expected `(ok, findings)`), with one
-store vector per status this document names.
+store vector per status this document names; and **witness vectors** (a trail, keys
+and witness statements → a refusal or a reading, §8.6), with one vector or more per
+refusal and finding §8 names.
 
 `gateway conform` runs them, and `--impl CMD` drives any other implementation
 through a small process contract, so an implementation in any language can answer
@@ -910,9 +948,11 @@ produce the `sequence-broken` that follows from its exclusion from the chain
 reconstruction — is settled by §1.4: it is, and the vectors expect it.
 
 The vectors are signed under a published test seed (`corpus/TEST-SEED`), which signs
-nothing real and must never be used by a deployment. Verification consumes only
-`corpus/TEST-PUBLIC-KEY` — running the corpus never hands the runner a secret,
-which is the same property receipt version 2 gives a real verifier.
+nothing real and must never be used by a deployment; a witness statement is signed under
+it too, since a witness signs with the gateway's seed (§8.3). Verification consumes only
+public keys — `corpus/TEST-PUBLIC-KEY`, and the keys a witness vector supplies — so
+running the corpus never hands the runner a secret, which is the same property receipt
+version 2 gives a real verifier.
 
 The version 3 store vectors live under `corpus/v3/stores/`. They are written
 against §1.2a and §4 and are as frozen as the rest; `gateway conform` reads
@@ -920,3 +960,327 @@ both directories (`corpus/README.md`). A version 3 store vector may carry a
 `decisionRecords` map beside `files`, materialized as the directory §4 step 6
 names and handed to the implementation as the process contract's optional
 fourth argument.
+
+The witness vectors live under `corpus/witness/`, each a reading of §8.6: the trail being
+verified, the keys supplied, statements files and a head file, and the answer expected — a
+refusal by its reason, or findings compared as a set of names, and, for a reading with
+none, what §8.6 says it reports. `gateway conform` reads them, and drives any other
+implementation through the process contract's `witness` command (`corpus/README.md`). The
+runner refuses a corpus holding an entry it does not read and a vector of a family it does
+not know, so no family of vectors lands in the corpus unread.
+
+## 8. The checkpoint witness
+
+A **witness** is a gateway, run by a party other than a decision trail's operator, that
+signs the judgment-pack runtime's audit checkpoints and serves what it signed to any
+verifier who names the trail (`docs/adr/0013-checkpoint-witness.md`). What it signs is a
+**witness statement**: a record of its own beside the seal (§3), not a receipt, under a
+prefix of its own. Nothing a statement adds changes what a receipt, a seal or a registry
+means, and no receipt verifier reads a statement.
+
+What makes a gateway a witness is who holds its key, not its software. A gateway whose
+key the trail's operator can use is no witness against that operator, and nothing in a
+statement can show independence: the witness cannot know who runs it. A verifier decides
+which witness keys it trusts, as it decides which time-stamping roots it trusts.
+
+This section is normative for statement version 1: the checkpoint it covers (§8.1), its
+members (§8.2), what its signature covers (§8.3), the key rule and the one equation a
+reader holds a witness key and a signature to (§8.4), how statements chain per trail
+(§8.5), how a reader reads a chain (§8.6) and within what bounds (§8.7), and what a
+statement establishes (§8.8). The vectors under `corpus/witness/` hold each of these (§7).
+The format and the reading are specified before the service, so that a reader written now
+reads what a witness serves later: the service that makes and serves statements — its
+log, its registrations, the order in which it signs, keeps and answers, and the endpoints
+of §6 — follows in later releases. Until then this reference signs no statement, serves
+none, and reads them only in `gateway conform`.
+
+### 8.1 The witnessed checkpoint
+
+The witness signs a checkpoint as `jpack audit checkpoint` prints it, carried as an object
+of exactly four members, each once:
+
+| Member | Form |
+|---|---|
+| `checkpointVersion` | the string `"1"` |
+| `trail` | 32 lowercase hexadecimal characters: the trail's identity |
+| `sequence` | an integer from 1 to 2⁵³−2: the record's line number in the trail |
+| `recordDigest` | a digest (§1.2a): the SHA-256 of the record line's exact bytes, without its newline |
+
+Its canonical form (§1.1) is the checkpoint line without its newline, byte for byte: the
+member names are ASCII and already in code-point order, and the values are hex strings, a
+fixed string and an integer below 2⁵³, so the canonical form is also the RFC 8785 form the
+runtime prints. The bytes inside a statement's signing input are therefore the bytes a
+holder's checkpoint file holds, and their SHA-256 is what a time stamp of the checkpoint
+imprints. A witness accepts a submitted checkpoint line only in that form and never
+re-encodes one. A verifier holding the trail recomputes the checkpoint for a sequence N
+from the trail's line N: the SHA-256 of its exact bytes, without the newline, is
+`recordDigest`, and its `trail` member is `trail`.
+
+### 8.2 The statement
+
+Every member is required, and the set is closed: a statement with a member not listed
+here is malformed, because a new member is a new `witnessVersion`. (A receipt verifier
+tolerates a member it does not know; a statement reader refuses one, so that a reader
+unaware of a new version refuses rather than skips.)
+
+| Member | Form | Meaning |
+|---|---|---|
+| `witnessVersion` | the string `"1"` | this format |
+| `kind` | `"checkpoint"`, `"conflict"` or `"retirement"` | §8.5 |
+| `checkpoint` | the object of §8.1 | for `"checkpoint"`, the checkpoint witnessed; for `"conflict"`, a checkpoint offered and refused; for `"retirement"`, the trail's latest witnessed checkpoint, repeated |
+| `index` | an integer from 0 to 2⁵³−2 | this statement's place in the witness's chain for `checkpoint.trail` |
+| `prevSignature` | `null`, or 128 lowercase hexadecimal characters | the `signature` of the statement at `index` − 1 for the same trail; `null` at index 0 (§8.5) |
+| `witnessedAt` | `YYYY-MM-DDThh:mm:ssZ`, a digit where each letter but `T` and `Z` stands: UTC, whole seconds, the form `servedAt` takes (§6) | the witness's clock when it signed |
+| `keyId` | 32 lowercase hexadecimal characters, derived as §1.2 derives it | the witness's key |
+| `signature` | 128 lowercase hexadecimal characters, the 64 bytes of an Ed25519 signature | §8.3 |
+
+A statement is read by its JSON value, under §1.1's grammar: whitespace, the order of
+members and the escapes in a string are its spelling, not the statement, and a member name
+given twice, a string that is not UTF-8 or a lone surrogate make it malformed. Each form is
+held on the value read. An integer is spelled in digits alone, with no sign, fraction or
+exponent — `-0`, `1.0` and `1e0` are not integers here, as they are not in a checkpoint's
+`sequence` when the runtime reads one — and a string is held to its form as its escapes
+decode. Two statements with the same canonical bytes are one statement.
+
+`witnessedAt` is held to its form and to nothing else: a reader compares it with no clock
+and with no other statement's. A witness never states a time earlier than the previous
+statement's for the trail — it takes the later of its clock and that time — and that is the
+witness's rule, which a reader does not check.
+
+A statement at index 7 and sequence 120, its hexadecimal elided, as a witness serves it:
+
+```
+{"checkpoint":{"checkpointVersion":"1","recordDigest":"sha256:…","sequence":120,"trail":"…"},"index":7,"keyId":"…","kind":"checkpoint","prevSignature":"…","signature":"…","witnessVersion":"1","witnessedAt":"2026-10-04T12:00:00Z"}
+```
+
+With its hexadecimal in full it is 608 bytes. A witness serves every statement as one line,
+its canonical form, ended by a newline.
+
+### 8.3 What the signature covers
+
+`signature` = Ed25519, under the gateway's signing seed (§5) — the seed that signs its
+receipts and seals, so a statement's `keyId` is the gateway's own — over
+`"judgment-pack-gateway/witness/1:"` followed by `canon` of the statement with **its
+top-level `signature` member removed and every other member retained**, the nested
+`checkpoint` included. That is §1.2's rule: appending anything anywhere invalidates the
+signature. The prefix is neither the receipt's nor the seal's, so none of the three can be
+replayed as another. A party that wants the witness's role apart from its receipts runs a
+second gateway with a seed of its own.
+
+Every value of a statement that reads (§8.2) is an ASCII string, an integer below 2⁵³ or
+`null`, so the signed bytes are exactly
+
+```
+judgment-pack-gateway/witness/1:{"checkpoint":{"checkpointVersion":"1","recordDigest":"<recordDigest>","sequence":<sequence>,"trail":"<trail>"},"index":<index>,"keyId":"<keyId>","kind":"<kind>","prevSignature":<null, or "<prevSignature>">,"witnessVersion":"1","witnessedAt":"<witnessedAt>"}
+```
+
+built from the values read, each integer in decimal digits. That is also their RFC 8785
+form, so a reader without this gateway's `canon`, such as the runtime, builds them so.
+
+### 8.4 The key rule and the equation
+
+A reader never takes a witness key from a statement. It is given the keys it trusts, out
+of band (§5), and holds each to the runtime's public-key rule before it reads anything
+signed. 32 bytes are a key a reader may trust exactly when they are the canonical encoding
+(RFC 8032 §5.1.2) of a point of the curve whose order does not divide 8. The encoding is
+read as written, before anything reduces it: `y` is its low 255 bits, little-endian, and
+its top bit is the sign of `x`. A key is refused when, taken in this order:
+
+1. **it is not canonical** (`key-not-canonical`): `y` is p = 2²⁵⁵ − 19 or more, or `x` is 0
+   (`y` is 1 or p − 1) and the sign bit is set. A lenient decoder, Go's `crypto/ed25519`
+   among them, reads such an encoding as another key: `y` = p as `y` = 0, the all-zero key;
+2. **it is of small order** (`key-small-order`): it is one of the eight points whose order
+   divides 8, by their canonical encodings — every other encoding of them is refused by 1:
+
+   ```
+   0100000000000000000000000000000000000000000000000000000000000000
+   ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f
+   0000000000000000000000000000000000000000000000000000000000000000
+   0000000000000000000000000000000000000000000000000000000000000080
+   26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05
+   26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85
+   c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a
+   c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa
+   ```
+
+   Under such a key a signature can be made without a private key — for most messages, `R`
+   a point of small order and `S` zero verify — and the all-zero key, a plausible
+   placeholder, is one;
+3. **it is no point** (`key-not-on-curve`): (`y`² − 1) / (d·`y`² + 1) has no square root
+   modulo p, so nothing verifies under it.
+
+A key of mixed order — a point of prime order plus one of small order — is not refused,
+since its order does not divide 8, and no key a seed derives is refused. This is the rule
+the runtime's guide writes down ("Record signatures, exactly") and holds every public key
+it reads to, and the rule `requireSignedRecord` holds a runtime key to here (§1.2a).
+
+A signature is 64 bytes: `R`, the first 32, and `S`, the last 32 read as a little-endian
+integer. It verifies under a key's 32 bytes `A` over the signed bytes `M` (§8.3) exactly
+when `S` is below L = 2²⁵² + 27742317777372353535851937790883648493 and the canonical
+encoding of [`S`]B − [h]A is `R`, byte for byte, B being the base point and h the SHA-512
+of `R` ‖ `A` ‖ `M` read as a little-endian integer and reduced modulo L. That is RFC 8032's
+check without the cofactor and with a canonical scalar, as Go's `crypto/ed25519` verifies.
+The cofactored check RFC 8032 §5.1.7 also allows, [8][`S`]B = [8]`R` + [8][h]A, accepts
+more — an `R` with a part of small order, and, under a key of mixed order, a signature that
+holds only up to that part — and is not used. `R` is not otherwise decoded: an encoding of
+it that is not canonical never verifies, and one of a point of small order verifies when
+the equation holds.
+
+### 8.5 The chain
+
+A witness keeps one chain of statements per trail. Along it:
+
+- `index` runs from 0 with no gap, and each statement's `prevSignature` is the `signature`
+  of the statement before it, `null` at index 0. The last statement therefore commits to
+  every one before it, and a witness that drops, reorders or alters a statement it served
+  breaks the chain for anyone who holds a later one.
+- The sequences of its `checkpoint` statements strictly increase. Its **latest witnessed
+  checkpoint** is its last `checkpoint` statement, and coverage is always stated by that
+  one: a `conflict` at sequence 100 after a checkpoint at 200 does not move coverage back
+  to 100.
+- A **`conflict`** statement records that a submitter the witness allowed for the trail
+  offered another `recordDigest` for a sequence at which the witness holds a `checkpoint`
+  statement. The first such offer is the evidence, and there is at most one per sequence.
+  Since a witness holds only sequences it signed, a conflict's sequence is at or below the
+  latest `checkpoint` statement's before it, and that is what a reader checks of it. That
+  the sequence was held, and that no sequence has two conflicts, are the witness's rules,
+  which a reader does not check.
+- A **`retirement`** statement is the last of its chain: the witness accepts nothing more
+  for the trail, and keeps and serves the chain as before. Its `checkpoint` repeats the
+  latest witnessed checkpoint, all four members, so it names the trail and pins where the
+  chain ended; a chain with no `checkpoint` statement has nothing to retire.
+- The witness's **head** for a trail is the chain's last statement, of any kind.
+
+A witness cannot check that a checkpoint extends the one before it: that needs the
+records, which it never sees. A rewrite of a trail from sequence k on is caught by holding
+the trail to an **earlier** statement whose sequence is k or above, which the rewritten
+trail no longer matches — even when a later checkpoint of the rewritten trail was signed.
+Whoever presents a chain can leave that statement out, so a chain is read from its first
+statement and never late (§8.6), and the head, fetched from the witness, says how far the
+chain reaches. The witness serves the latest statement it holds as the end of the chain,
+not in place of it.
+
+### 8.6 Reading a chain
+
+A reading takes the identity of the trail being verified — for a reader holding the trail,
+the `trail` its chained records carry; the witness keys the reader trusts, in an order; the
+statements supplied, in files of statement lines; and, optionally, a **head** the reader
+fetched from the witness, in a file of its own. A file's lines are its bytes up to each
+`0x0A`, the piece after the last one included. A line that is empty, or holds only spaces,
+tabs and carriage returns, is passed over; every other line is one statement as served
+(§8.2), its surrounding JSON whitespace allowed. A head file holds exactly one statement
+line.
+
+Before any statement is read the reading is refused — no reading at all, never a reading
+of part — by the first of these: more keys than §8.7 allows (`keys-over-bound`); a key the
+key rule refuses, the keys taken in their order, with that key's reason (§8.4); the files
+over §8.7's bound on bytes (`bytes-over-bound`); and the files over its bound on statements
+(`statements-over-bound`). Otherwise:
+
+1. **Each statement.** The statements of every file and the head are one set, whatever
+   files they came in and in whatever order. Two with the same canonical bytes are one, and
+   each statement is checked once, against, in this order: its form (§8.2), or
+   **`witness-malformed`** — a head file of other than one statement line too; its
+   signature, under the key its `keyId` names among those supplied, by §8.4's equation over
+   §8.3's bytes, or **`witness-signature-invalid`**, a `keyId` that names no key supplied
+   included; and its trail, which must be the trail being verified, or
+   **`witness-trail-mismatch`**. A statement takes the first of these findings and no other.
+   A statement that fails is never passed over, whatever it claims: it fails the reading.
+2. **Equivocation.** Two statements that passed step 1, are of one index and differ are
+   **`witness-equivocation`**: the witness signed two chains.
+3. **The chain.** A set in which steps 1 and 2 found anything is not walked: the findings
+   are those steps', and a hole a failed statement leaves is not reported. Otherwise the
+   **chain** is the set, less a head whose index is more than one past the index of every
+   other statement of the set. Taken in index order, it must begin at index 0 with
+   `prevSignature` `null` and hold every index from there to its highest, each
+   `prevSignature` after the first the `signature` of the statement before; each
+   `checkpoint` statement's sequence must exceed the latest `checkpoint` statement's before
+   it; each `conflict` statement must have a `checkpoint` statement before it and a sequence
+   at or below the latest one's; and a `retirement` statement must have a `checkpoint`
+   statement before it, repeat the latest one's checkpoint, all four members, and be the
+   chain's last. Otherwise **`witness-chain-broken`**. A set that begins late is never read
+   from where it begins, and a set of no statement does not begin at index 0.
+4. **The head.** A head left out of the chain in step 3 is **`witness-head-unreached`**: the
+   statements supplied do not reach it. A head at an index the chain holds is the chain's
+   statement at that index, by its signature, since step 2 found no other; a head one index
+   past every other statement was walked in step 3 as the chain's last. The chain may run
+   past the head: statements the witness signed after the reader's fetch, supplied from
+   elsewhere, are checked like the rest.
+
+A reading with any finding is credited nothing. A reading with none is **current** when a
+head was supplied, as of the reader's fetch of it — a signature does not say when it was
+fetched — and **historical** when none was: it ends at the highest statement supplied and
+says nothing of any statement after it. It reports the chain's highest index, the head's
+index, the latest witnessed checkpoint's index, sequence and `witnessedAt`, the sequence of
+each `conflict` statement in index order, and whether the chain is retired;
+`corpus/README.md` gives the form `gateway conform` compares.
+
+A reader that holds the trail then holds each `checkpoint` statement's checkpoint against
+it as a holder's checkpoint is held: line N's exact bytes against the statement for
+sequence N. That comparison, continuing a reading in steps from a continuation the
+reader's own earlier reading saved, the coverage a credited chain gives a trail, and the
+sentences a report states, are the runtime's verifier's
+(`docs/adr/0013-checkpoint-witness.md` §6), and are not specified here.
+
+### 8.7 Bounds
+
+One reading takes at most **16** keys; statement files and a head file of at most
+**67108864 bytes** (64 MiB) together; and at most **110000** statements, counted as the
+lines step 1 would read — every line of every file, the head file's included, that is not
+passed over — before two copies of one statement are one. Over any of them the reading is
+refused before any statement is checked (§8.6), and is never truncated. The bytes are
+bounded first, by the files' sizes, before any file is read. The statements are then
+counted as the files are split into lines, the statements files in their order and the
+head file last, and the reading is refused at the first line past the bound, keeping and
+reading none of the lines after it: a file of many short lines costs a reader no more than
+110000 statements do. Each statement costs one Ed25519 verification, under the one key its
+`keyId` names, so the work of a reading is bounded by its statement count. A chain longer
+than one reading takes is read in steps, each continuing from what the step before saved,
+which is the runtime's (§8.6): 110000 statements are about 30 hours of a witness taking 60
+submissions a minute, and about 12 years at one an hour.
+
+### 8.8 What a statement establishes, and what it does not
+
+| | Establishes | Does not establish |
+|---|---|---|
+| A `checkpoint` statement, verified under a key the verifier trusts | the key's holder was given this checkpoint and signed it as statement `index` of its chain for the trail, and states that it did so at `witnessedAt` | that the checkpoint names a real record; that it extends the one before; that the submitter was the trail's operator; that `witnessedAt` is true; anything against a witness that colludes, or whose key is stolen |
+| The same, held against a trail copy | lines 1 to its sequence are the lines that existed when the witness signed, if the witness is independent of the operator | anything after that sequence; that this is the project's only trail; that the records are true, or that every decision was recorded |
+| A chain read from index 0, every statement present and linked, up to the signature of a head the reader fetched from the witness | the reader holds every statement of the chain that head commits to, as the witness signed them: none is missing, out of order or altered, and none starts late | that the head is still the witness's head after the fetch; that the witness signed no second chain for the trail, for another audience; that it will serve these tomorrow |
+| The same chain read only as far as it was supplied, with no head | the same, up to the highest statement supplied | anything about statements after it: the reading is historical |
+| A `conflict` statement | a submitter the witness allowed for the trail offered another record for a sequence the witness held | which of the two is the trail's; who that submitter was, beyond the witness's own registration |
+| A `retirement` statement | the witness accepts no more statements for the trail, and the chain ends there | why; whether the trail's operator went on under another trail |
+
+A witness learns of a trail its identity, the sequences submitted — so how many lines the
+trail had at each submission — the record digests at those sequences, when, and the
+submitter it registered; never a record's contents, pack, inputs or outcome. Its reads are
+open to anyone who names a trail (§6), so anyone who holds one of a trail's checkpoints can
+follow its continuing activity — its sequences, the time of each statement, every conflict
+— for as long as the witness serves it.
+
+Against the trail's operator, a chain read from its first statement and held against a
+trail copy establishes that no record up to the latest checkpoint statement's sequence was
+edited, removed, inserted or moved since the witness signed the first statement covering
+it; a copy cut short below that sequence fails; and a rewrite from any sequence at or below
+an earlier statement's fails at that statement. It does not establish:
+
+- anything against a witness that colludes, or whose key is stolen: it can sign any
+  checkpoint at any time it states, and a second chain for a trail for another audience.
+  Two statements of one trail and one index that differ, both verifying, prove that it
+  signed two chains; a statement someone kept that the chain served lacks shows a second
+  chain to whoever holds both. One witness gives no protection against collusion;
+- who submitted: the witness cannot tell the trail's operator from a holder of the
+  operator's credential, and a verifier cannot either. A credential stolen can have a
+  checkpoint signed at a sequence no honest checkpoint will exceed, and that statement
+  stays in the chain: the trail is then retired, not repaired;
+- anything about an operator who stops submitting, about records after the latest
+  checkpoint statement, or about a trail rewritten before its first submission;
+- that the trail is the project's only one: a verifier must hold the trail identities it
+  expects;
+- that the witness keeps what it signed: a witness that loses or withholds its latest
+  statements serves an older head that is internally consistent, and for a trail it holds
+  nothing for it answers as for one never submitted. A statement of a higher index than the
+  head served shows that the served view is not the whole one; it does not show whether the
+  witness forgot or withholds;
+- when anything happened: `witnessedAt` is the witness's clock, an upper bound on when it
+  held the checkpoint as it states it, under no certificate policy, and it says nothing of
+  when a record was made.
