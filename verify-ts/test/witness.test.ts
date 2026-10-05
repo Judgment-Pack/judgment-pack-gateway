@@ -152,14 +152,15 @@ test("each finding, by the statement or set that makes it, and only it", () => {
 
 test("statements are counted as the files are split, and the split stops at the line past the bound", () => {
   const short = Buffer.from("x\n".repeat(1 << 22)); // 8 MiB, 4194304 lines
-  assert.deepEqual(collectLines([short], null, witnessBounds.statements), { within: false, counted: witnessBounds.statements + 1 });
+  // Compared as a sentence, not as the object: a reader that kept every line
+  // would otherwise fail here by printing four million of them.
+  const stopped = (r: ReturnType<typeof collectLines>) => (r.within ? `kept ${r.lines.length} lines` : `stopped at line ${r.counted}`);
+  const past = `stopped at line ${witnessBounds.statements + 1}`;
+  assert.equal(stopped(collectLines([short], null, witnessBounds.statements)), past);
   assert.equal(findings(read([short])), "refused statements-over-bound");
   // The head file is counted after the statements files.
   const one = lines(...chain(1));
-  assert.deepEqual(collectLines([Buffer.concat(Array(witnessBounds.statements).fill(one))], one, witnessBounds.statements), {
-    within: false,
-    counted: witnessBounds.statements + 1,
-  });
+  assert.equal(stopped(collectLines([Buffer.concat(Array(witnessBounds.statements).fill(one))], one, witnessBounds.statements)), past);
 });
 
 test("a chain begins with a checkpoint statement", () => {
