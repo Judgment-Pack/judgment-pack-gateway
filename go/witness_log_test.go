@@ -1593,8 +1593,11 @@ func TestWitnessSetAsideDamagedRecordKeepsNothing(t *testing.T) {
 	}
 	text := tw.read(t, "setAside")
 	i := strings.Index(text, `"file":"set-aside"`)
+	if i < 0 {
+		t.Fatal("no record of the set-aside file's own was written")
+	}
 	j := strings.LastIndex(text[:i], `"bytes":"`) + len(`"bytes":"`)
-	if i < 0 || j < len(`"bytes":"`) {
+	if j < len(`"bytes":"`) {
 		t.Fatal("no record of the set-aside file's own")
 	}
 	digit := byte('7')
