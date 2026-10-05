@@ -1242,7 +1242,9 @@ func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
 			}
 		}
 	}
-	if host.sockets != nil {
+	// a host runtime's socket is an adapter's way to the seed; an engine
+	// with no platform runs no adapter
+	if host.sockets != nil && len(cfg.platforms) > 0 {
 		for _, socket := range host.sockets(cfg.runtime) {
 			if _, err := os.Stat(socket); err == nil {
 				if !cfg.hostRuntime {
