@@ -89,8 +89,6 @@ type witnessService struct {
 	rate   sync.Mutex
 	minute int64
 	counts map[[sha256.Size]byte]int
-
-	stopReported sync.Once
 }
 
 // newWitnessService is the service of a witness log open under a
@@ -388,9 +386,9 @@ func (s *witnessService) answer(w http.ResponseWriter, answer witnessAnswer, err
 		witnessRefuse(w, http.StatusTooManyRequests, witnessReasonTrails, "this submitter submits for as many trails as the witness allows a submitter")
 		return
 	case errors.As(err, &failure):
-		s.stopReported.Do(func() {
-			fmt.Fprintf(s.reports, "witness: stopped: %v\n", failure)
-		})
+		// the storage gives the failure once, to the submission it
+		// stopped, and errWitnessStopped to every one after it
+		fmt.Fprintf(s.reports, "witness: stopped: %v\n", failure)
 		fallthrough
 	case errors.Is(err, errWitnessStopped):
 		witnessRefuse(w, http.StatusServiceUnavailable, witnessReasonStopped, "a statement this witness signed could not be kept, so it signs nothing more, for any trail, until it has restarted")
