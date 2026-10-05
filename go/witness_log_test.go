@@ -1011,6 +1011,7 @@ func TestWitnessTraceHoldsTheOrder(t *testing.T) {
 		{"3: a cut before the kept bytes are synced", []string{"write set-aside", "truncate log"}, "a file cut before"},
 		{"3: a cut before the kept bytes are read back", []string{"write set-aside", "sync set-aside", "truncate log"}, "a file cut before"},
 		{"3: a read-back before the sync", []string{"write set-aside", "readback set-aside", "sync set-aside", "truncate log"}, "a file cut before"},
+		{"3: a read-back of nothing kept", []string{"readback set-aside", "truncate log"}, "a file cut before"},
 		{"3: a cut after them", []string{"write set-aside", "sync set-aside", "readback set-aside", "truncate log", "sync log", "repaired -"}, ""},
 		{"3: a second cut on the first read-back", []string{"write set-aside", "sync set-aside", "readback set-aside", "truncate log", "sync log", "truncate registrations"}, "a file cut before"},
 		{"8: a read before a lock", []string{"hold -", "read log"}, "a file read before it was locked"},
