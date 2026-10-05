@@ -355,3 +355,27 @@ func TestWitnessPathsAreChecked(t *testing.T) {
 		}
 	}
 }
+
+// A lock that cannot be taken for any reason but another witness holding
+// it -- here no lock to be had, as flock(2) answers when the system has
+// none left -- refuses the start as surely as a held one: there is no
+// fallback to going on unlocked.
+func TestWitnessRefusesWhenNoLockCanBeTaken(t *testing.T) {
+	tw := newTestWitness(t, testTrail)
+	tw.open(t).close()
+	cfg := tw.config()
+	x := osWitnessIO()
+	x.lock = func(_ string, f *os.File) error {
+		return lockWitnessFile(f, func(int, int) error { return syscall.ENOLCK })
+	}
+	cfg.io = tw.io(x)
+	if w, err := openWitnessLog(cfg); err == nil {
+		w.close()
+		t.Fatal("a witness started without its locks")
+	} else if !strings.Contains(err.Error(), "could not be locked") {
+		t.Fatalf("refused, but not for the lock: %v", err)
+	}
+	if _, err := repairWitnessLog(cfg); err == nil {
+		t.Fatal("a repair without its locks")
+	}
+}

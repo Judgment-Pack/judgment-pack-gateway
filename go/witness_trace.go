@@ -18,7 +18,8 @@ package main
 //     marks or the registrations hold bytes not synced since they were
 //     written;
 //  3. no file is cut until the bytes it loses were appended to the
-//     set-aside file and that file was synced;
+//     set-aside file, that file was synced, and the records were read back
+//     from it as its reader reads them;
 //  4. after a file is made, its directory is synced before anything is
 //     written, cut, published or started;
 //  5. what a start, a repair or a registration read -- each file, and the
@@ -27,7 +28,8 @@ package main
 //  6. a repair and an offline registration end with every file they wrote
 //     synced and every directory they made a file in synced;
 //  7. no statement is appended while the registrations hold bytes not
-//     synced, so a statement never rests on a registration that may be lost.
+//     synced, so a statement never rests on a registration that may be lost;
+//  8. no file is read before it is locked, in the same hold of the files.
 
 import (
 	"fmt"
@@ -38,14 +40,17 @@ import (
 )
 
 type witnessTrace struct {
-	mu        sync.Mutex
-	count     int
-	recent    []string
-	broken    string
-	dirty     map[string]bool
-	unsynced  map[string]bool
-	pending   map[string]bool
-	asideKept bool
+	mu       sync.Mutex
+	count    int
+	recent   []string
+	broken   string
+	dirty    map[string]bool
+	unsynced map[string]bool
+	pending  map[string]bool
+	locked   map[string]bool
+	// asideSynced: the set-aside file written and synced since the last
+	// cut; asideReadBack: and its records read back since.
+	asideSynced, asideReadBack bool
 }
 
 func newWitnessTrace() *witnessTrace {
@@ -59,7 +64,8 @@ func newWitnessTrace() *witnessTrace {
 func (tr *witnessTrace) reset() {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
-	tr.dirty, tr.unsynced, tr.pending, tr.asideKept = map[string]bool{}, map[string]bool{}, map[string]bool{}, false
+	tr.dirty, tr.unsynced, tr.pending, tr.locked = map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
+	tr.asideSynced, tr.asideReadBack = false, false
 }
 
 // violation is the first operation that broke an invariant, or "".
@@ -129,8 +135,10 @@ func (tr *witnessTrace) before(op, file string) {
 			why = "a mark appended before the log line it names was synced" // 1
 		case op == "write" && file == "log" && tr.dirty["registrations"]:
 			why = "a statement appended before the registration it rests on was synced" // 7
-		case op == "truncate" && (!tr.asideKept || tr.dirty["set-aside"]):
-			why = "a file cut before the bytes it loses were kept in the set-aside file and synced" // 3
+		case op == "truncate" && (!tr.asideReadBack || tr.dirty["set-aside"]):
+			why = "a file cut before the bytes it loses were kept in the set-aside file, synced and read back" // 3
+		case op == "read" && !tr.locked[file]:
+			why = "a file read before it was locked" // 8
 		case op == "publish" || op == "start":
 			for _, f := range []string{"log", "marks", "registrations"} {
 				if tr.dirty[f] {
@@ -161,13 +169,21 @@ func (tr *witnessTrace) after(op, file string, err error) {
 		tr.dirty[file] = true
 	case "truncate":
 		tr.dirty[file] = true
-		tr.asideKept = false
+		tr.asideSynced, tr.asideReadBack = false, false
 	case "sync":
 		if err == nil {
 			if file == "set-aside" && tr.dirty[file] {
-				tr.asideKept = true
+				tr.asideSynced, tr.asideReadBack = true, false
 			}
 			tr.dirty[file], tr.unsynced[file] = false, false
+		}
+	case "readback":
+		tr.asideReadBack = tr.asideSynced && !tr.dirty["set-aside"]
+	case "hold":
+		tr.locked = map[string]bool{}
+	case "lock":
+		if err == nil {
+			tr.locked[file] = true
 		}
 	case "syncdir":
 		if err == nil {
@@ -210,10 +226,16 @@ func (tr *witnessTrace) wrap(base witnessIO) witnessIO {
 			tr.after("create", file, err)
 			return made, err
 		},
-		syncDir: func(dir string, root *os.Root) error {
+		syncDir: func(dir string, d *os.File) error {
 			tr.before("syncdir", dir)
-			err := base.syncDir(dir, root)
+			err := base.syncDir(dir, d)
 			tr.after("syncdir", dir, err)
+			return err
+		},
+		lock: func(file string, f *os.File) error {
+			tr.before("lock", file)
+			err := base.lock(file, f)
+			tr.after("lock", file, err)
 			return err
 		},
 		note: func(op, file string) {

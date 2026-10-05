@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -511,6 +512,10 @@ func TestWitnessStartUpCases(t *testing.T) {
 			findings: []string{findingUnmarked, findingWitnessMalformed}},
 		{name: "empty marks behind statements", log: log(stmts[0]), marks: "", want: outcomeMarkCompleted, findings: []string{findingUnmarked}},
 		{name: "a lost marks file behind statements", log: log(stmts...), noMarks: true, want: outcomeNewKey, findings: []string{findingMarksLost}},
+		{name: "a registration line at the bound", log: log(stmts...), marks: marks(3), registrations: p(reg + string(registrationLine(witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: strings.Repeat("s", witnessLineLimit-(len(registrationLine(witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: ""}))-1))}))),
+			want: outcomeStart},
+		{name: "a registration line one past the bound", log: log(stmts...), marks: marks(3), registrations: p(reg + string(registrationLine(witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: strings.Repeat("s", 1+witnessLineLimit-(len(registrationLine(witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: ""}))-1))}))),
+			want: outcomeRefused, findings: []string{findingRegistrationMalformed}},
 		{name: "a lost marks file behind a torn log", log: "{", noMarks: true, want: outcomeNewKey, findings: []string{findingLogTorn, findingMarksLost}},
 		{name: "a registration line damaged", log: log(stmts...), marks: marks(3), registrations: p(reg + "{}\n"), want: outcomeRefused,
 			findings: []string{findingRegistrationMalformed}},
@@ -991,7 +996,7 @@ func traceOf(ops ...string) string {
 // breaks it and one that keeps it, so that the checks the tests and the
 // recovery vectors rely on are themselves checked.
 func TestWitnessTraceHoldsTheOrder(t *testing.T) {
-	start := []string{"read log", "read registrations", "read marks", "sync log", "sync registrations", "sync marks", "syncdir log-dir", "syncdir marks-dir", "start -"}
+	start := []string{"hold -", "lock log", "lock registrations", "lock marks", "read log", "read registrations", "read marks", "sync log", "sync registrations", "sync marks", "syncdir log-dir", "syncdir marks-dir", "start -"}
 	for _, c := range []struct {
 		name string
 		ops  []string
@@ -1004,13 +1009,19 @@ func TestWitnessTraceHoldsTheOrder(t *testing.T) {
 		{"2: started on a log not synced", []string{"write log", "start -"}, "the log held bytes not synced"},
 		{"3: a cut with nothing kept", []string{"truncate log"}, "a file cut before"},
 		{"3: a cut before the kept bytes are synced", []string{"write set-aside", "truncate log"}, "a file cut before"},
-		{"3: a cut after them", []string{"write set-aside", "sync set-aside", "truncate log", "sync log", "repaired -"}, ""},
+		{"3: a cut before the kept bytes are read back", []string{"write set-aside", "sync set-aside", "truncate log"}, "a file cut before"},
+		{"3: a read-back before the sync", []string{"write set-aside", "readback set-aside", "sync set-aside", "truncate log"}, "a file cut before"},
+		{"3: a cut after them", []string{"write set-aside", "sync set-aside", "readback set-aside", "truncate log", "sync log", "repaired -"}, ""},
+		{"3: a second cut on the first read-back", []string{"write set-aside", "sync set-aside", "readback set-aside", "truncate log", "sync log", "truncate registrations"}, "a file cut before"},
+		{"8: a read before a lock", []string{"hold -", "read log"}, "a file read before it was locked"},
+		{"8: a read on a lock of an earlier hold", []string{"hold -", "lock log", "hold -", "read log"}, "a file read before it was locked"},
+		{"8: a lock that failed", []string{"hold -", "lock log failed", "read log"}, "a file read before it was locked"},
 		{"4: a write before the directory of a file made is synced", []string{"create log", "write log"}, "the directory of a file made"},
 		{"4: a write after it", []string{"create log", "syncdir log-dir", "write log", "sync log"}, ""},
-		{"5: a mark built on a line read and not synced", []string{"read log", "write marks"}, "what was read"},
-		{"5: a start on a file synced and its directory not", []string{"read log", "sync log", "start -"}, "what was read (log-dir)"},
-		{"5: a start on the marks' directory not synced", []string{"read marks", "sync marks", "syncdir log-dir", "start -"}, "what was read (marks-dir)"},
-		{"5: a file made on what was read", []string{"read registrations", "create log"}, "what was read"},
+		{"5: a mark built on a line read and not synced", []string{"hold -", "lock log", "read log", "write marks"}, "what was read"},
+		{"5: a start on a file synced and its directory not", []string{"hold -", "lock log", "read log", "sync log", "start -"}, "what was read (log-dir)"},
+		{"5: a start on the marks' directory not synced", []string{"hold -", "lock marks", "read marks", "sync marks", "syncdir log-dir", "start -"}, "what was read (marks-dir)"},
+		{"5: a file made on what was read", []string{"hold -", "lock registrations", "read registrations", "create log"}, "what was read"},
 		{"5: a start", start, ""},
 		{"6: a registration ending unsynced", []string{"write registrations", "registered -"}, "it ended with registrations not synced"},
 		{"6: a repair ending with a directory not synced", []string{"create set-aside", "repaired -"}, "the directory of a file made"},
@@ -1023,8 +1034,9 @@ func TestWitnessTraceHoldsTheOrder(t *testing.T) {
 	}
 }
 
-// The operations one start and one statement make, in their order: what
-// was read synced, files and directories, before the start; a statement's
+// The operations one start and one statement make, in their order: each
+// file locked before it is read, and what was read synced, files and
+// directories, before the start; a statement's
 // line written and synced, then its mark written and synced, then the
 // statement published; a first submission's registration written and
 // synced before its statement.
@@ -1033,7 +1045,7 @@ func TestWitnessOperationsInOrder(t *testing.T) {
 	tw.first = true
 	w := tw.open(t)
 	ops := strings.Join(tw.trace.last(), " | ")
-	if want := "read registrations | sync registrations | syncdir log-dir | syncdir marks-dir | create log | syncdir log-dir | create marks | syncdir marks-dir | start "; !strings.HasSuffix(ops, want) {
+	if want := "hold  | lock registrations | read registrations | sync registrations | syncdir log-dir | syncdir marks-dir | create log | lock log | syncdir log-dir | create marks | lock marks | syncdir marks-dir | start "; !strings.HasSuffix(ops, want) {
 		t.Fatalf("a first start: %s", ops)
 	}
 	mustSign(t, w, testTrail, 1)
@@ -1049,7 +1061,7 @@ func TestWitnessOperationsInOrder(t *testing.T) {
 	w.close()
 	tw.open(t).close()
 	ops = strings.Join(tw.trace.last(), " | ")
-	if want := "read log | read registrations | read marks | sync log | sync registrations | sync marks | syncdir log-dir | syncdir marks-dir | start "; !strings.HasSuffix(ops, want) {
+	if want := "hold  | lock log | lock registrations | lock marks | read log | read registrations | read marks | sync log | sync registrations | sync marks | syncdir log-dir | syncdir marks-dir | start "; !strings.HasSuffix(ops, want) {
 		t.Fatalf("a start on files there: %s", ops)
 	}
 }
@@ -1067,14 +1079,22 @@ func TestWitnessIOReachesTheSystem(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	self, err := openWitnessDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	x := osWitnessIO()
 	if err := x.sync("log", file); err != nil {
 		t.Fatalf("a sync of an open file: %v", err)
 	}
-	if err := x.syncDir("log-dir", root); err != nil {
+	if err := x.syncDir("log-dir", self); err != nil {
 		t.Fatalf("a sync of an open directory: %v", err)
 	}
+	if err := x.lock("log", file); err != nil {
+		t.Fatalf("a lock of an open file: %v", err)
+	}
 	file.Close()
+	self.Close()
 	root.Close()
 	if err := x.sync("log", file); err == nil {
 		t.Error("a sync of a closed file answered as done")
@@ -1085,8 +1105,11 @@ func TestWitnessIOReachesTheSystem(t *testing.T) {
 	if err := x.truncate("log", file, 0); err == nil {
 		t.Error("a cut of a closed file answered as done")
 	}
-	if err := x.syncDir("log-dir", root); err == nil {
+	if err := x.syncDir("log-dir", self); err == nil {
 		t.Error("a sync of a closed directory answered as done")
+	}
+	if err := x.lock("log", file); err == nil {
+		t.Error("a lock of a closed file answered as taken")
 	}
 	if made, err := x.create("log", root, "g"); err == nil {
 		made.Close()
@@ -1126,11 +1149,11 @@ func failingAt(n int) (witnessIO, *int) {
 		}
 		return base.create(file, dir, name)
 	}
-	out.syncDir = func(dir string, root *os.Root) error {
+	out.syncDir = func(dir string, d *os.File) error {
 		if fail() {
 			return errors.New("the directory sync failed")
 		}
-		return base.syncDir(dir, root)
+		return base.syncDir(dir, d)
 	}
 	return out, count
 }
@@ -1318,7 +1341,7 @@ func TestWitnessWritesOnlyLinesItsReaderReads(t *testing.T) {
 		if !ok || len(record) > witnessLineLimit {
 			t.Fatalf("a set-aside record of %d bytes its reader does not read", len(record))
 		}
-		kept = append(kept, part...)
+		kept = append(kept, part.bytes...)
 	}
 	if len(records) != 5 || string(kept) != tail {
 		t.Fatalf("%d records keeping %d bytes; want 5 keeping %d", len(records), len(kept), len(tail))
@@ -1356,5 +1379,336 @@ func TestWitnessWritesOnlyLinesItsReaderReads(t *testing.T) {
 		if err := admitWitnessLine(kind, bytes.Repeat([]byte(" "), witnessLineLimit+1)); err == nil || !strings.Contains(err.Error(), "longer than") {
 			t.Errorf("a %s line one past the bound: %v", kind, err)
 		}
+	}
+}
+
+// setAsideRecords reads the set-aside file as its reader reads it: how many
+// lines it holds, and the records among them.
+func setAsideRecords(t *testing.T, tw *testWitness) (int, []setAsideRecord) {
+	t.Helper()
+	text := tw.read(t, "setAside")
+	if text == "<absent>" {
+		return 0, nil
+	}
+	if !strings.HasSuffix(text, "\n") {
+		t.Fatal("the set-aside file does not end cleanly")
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	var records []setAsideRecord
+	for _, line := range lines {
+		if r, ok := parseSetAside([]byte(line)); ok {
+			records = append(records, r)
+		}
+	}
+	return len(lines), records
+}
+
+// A repair interrupted while it appended a set-aside record -- having
+// written nothing of it, half of it, or all of it but its newline -- is
+// repaired again: the retry settles the set-aside file's own last bytes
+// before it appends (ended where they stand, and, unless they are a whole
+// record, kept in a record of their own), appends its records, reads them
+// back, and only then cuts the log. Afterwards every line of the set-aside
+// file is a record its reader reads but the torn half, which stays where it
+// was and is kept by one; the log's last bytes are kept in records read
+// back in order; and the witness starts. For last bytes of one part and of several, the
+// interruption in the last record.
+func TestWitnessSetAsideSettlesItsOwnTailFirst(t *testing.T) {
+	for _, tail := range []string{`{"checkpoint":`, strings.Repeat("x", 2*setAsideChunk+100)} {
+		for _, leaves := range []string{"nothing", "half", "unterminated"} {
+			name := fmt.Sprintf("%d parts/%s", (len(tail)+setAsideChunk-1)/setAsideChunk, leaves)
+			t.Run(name, func(t *testing.T) {
+				tw := newTestWitness(t, testTrail)
+				w := tw.open(t)
+				mustSign(t, w, testTrail, 1)
+				w.close()
+				clean := tw.read(t, "log")
+				tw.write(t, "log", clean+tail)
+				parts := (len(tail) + setAsideChunk - 1) / setAsideChunk
+				x := osWitnessIO()
+				base := x.write
+				written := 0
+				x.write = func(file string, f *os.File, data []byte) (int, error) {
+					if file != "set-aside" {
+						return base(file, f, data)
+					}
+					written++
+					if written < parts {
+						return base(file, f, data)
+					}
+					n := map[string]int{"nothing": 0, "half": len(data) / 2, "unterminated": len(data) - 1}[leaves]
+					m, _ := base(file, f, data[:n])
+					return m, errors.New("the process ended in the append")
+				}
+				if _, err := tw.repair(x); err == nil {
+					t.Fatal("the interrupted repair did not answer with its failure")
+				}
+				if tw.read(t, "log") != clean+tail {
+					t.Fatal("the log was cut although its bytes were not kept")
+				}
+				interrupted := tw.read(t, "setAside")
+				if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != outcomeSetAside {
+					t.Fatalf("the repair run again: %v", err)
+				}
+				if tw.read(t, "log") != clean {
+					t.Fatal("the log was not ended at its last newline")
+				}
+				// every line is a record its reader reads, but for the torn
+				// half record, ended where it stood and kept by one
+				lines, records := setAsideRecords(t, tw)
+				if torn := map[string]int{"half": 1}[leaves]; lines != len(records)+torn {
+					t.Fatalf("%d lines in the set-aside file, %d of them records", lines, len(records))
+				}
+				var log, own []byte
+				for _, r := range records {
+					switch r.file {
+					case "log":
+						log = append(log, r.bytes...)
+					case "set-aside":
+						own = append(own, r.bytes...)
+					}
+				}
+				// the earlier, interrupted records keep a prefix of the log's
+				// last bytes, perhaps whole; the retry's keep them all
+				if !strings.HasSuffix(string(log), tail) {
+					t.Fatalf("the records keep %d bytes of the log, not ending in its %d last bytes", len(log), len(tail))
+				}
+				switch leaves {
+				case "half":
+					torn := interrupted[strings.LastIndexByte("\n"+interrupted, '\n'):]
+					if string(own) != torn {
+						t.Fatalf("the interrupted half record is kept as %d bytes, not %d", len(own), len(torn))
+					}
+				default:
+					if len(own) != 0 {
+						t.Fatalf("%d bytes kept as the set-aside file's own, with nothing torn", len(own))
+					}
+				}
+				tw.open(t).close()
+			})
+		}
+	}
+}
+
+// The records a repair appends to the set-aside file are read back before
+// the file they keep is cut: a record that is written otherwise than it was
+// meant -- keeping other bytes, or not reading as a record at all -- while
+// the write reports success, refuses the cut, and the log keeps its last
+// bytes.
+func TestWitnessSetAsideIsReadBackBeforeTheCut(t *testing.T) {
+	for what, spoil := range map[string]func([]byte) []byte{
+		"other bytes kept": func(data []byte) []byte {
+			return bytes.Replace(data, []byte(`"bytes":"7b`), []byte(`"bytes":"7c`), 1)
+		},
+		"no record": func(data []byte) []byte { return append([]byte("not a record "), data...) },
+	} {
+		t.Run(what, func(t *testing.T) {
+			tw := newTestWitness(t, testTrail)
+			w := tw.open(t)
+			mustSign(t, w, testTrail, 1)
+			w.close()
+			torn := tw.read(t, "log") + `{"checkpoint":`
+			tw.write(t, "log", torn)
+			x := osWitnessIO()
+			base := x.write
+			x.write = func(file string, f *os.File, data []byte) (int, error) {
+				if file == "set-aside" && len(data) > 1 {
+					spoiled := spoil(data)
+					if _, err := base(file, f, spoiled); err != nil {
+						return 0, err
+					}
+					return len(data), nil
+				}
+				return base(file, f, data)
+			}
+			if _, err := tw.repair(x); err == nil || !strings.Contains(err.Error(), "nothing is cut") {
+				t.Fatalf("the repair: %v", err)
+			}
+			if tw.read(t, "log") != torn {
+				t.Fatal("the log was cut although its records did not read back")
+			}
+		})
+	}
+}
+
+// Every append the witness makes settles its own file's last bytes first,
+// or refuses: a statement's line and its mark, and a registration, by a
+// running witness, are refused when the log, the marks or the registrations
+// gained last bytes behind its back, and nothing is joined to them; an
+// offline registration refuses registrations that do not end cleanly; a
+// repair completing a mark refuses marks that gained last bytes after they
+// were judged; and the set-aside file's are settled
+// (TestWitnessSetAsideSettlesItsOwnTailFirst). A running witness that finds
+// one stops, as after any failure.
+func TestWitnessEveryAppendSettlesItsTailFirst(t *testing.T) {
+	for _, c := range []struct {
+		file, step string
+		do         func(w *witnessLog) error
+	}{
+		{"log", "append", func(w *witnessLog) error {
+			_, err := w.submit(witnessIssuer, subjectOf(testTrail), [][]byte{cpLine(testTrail, 2, "a")})
+			return err
+		}},
+		{"marks", "mark", func(w *witnessLog) error {
+			_, err := w.submit(witnessIssuer, subjectOf(testTrail), [][]byte{cpLine(testTrail, 2, "a")})
+			return err
+		}},
+		{"registrations", "register", func(w *witnessLog) error {
+			return w.register(witnessRegistration{trail: trailC, issuer: witnessIssuer, subject: "c"})
+		}},
+	} {
+		t.Run("running/"+c.file, func(t *testing.T) {
+			tw := newTestWitness(t, testTrail)
+			w := tw.open(t)
+			defer w.close()
+			mustSign(t, w, testTrail, 1)
+			tw.write(t, c.file, tw.read(t, c.file)+`{"torn`)
+			before := map[string]string{}
+			for _, name := range []string{"log", "marks", "registrations"} {
+				before[name] = tw.read(t, name)
+			}
+			var failure witnessFailure
+			if err := c.do(w); !errors.As(err, &failure) || failure.step != c.step || !strings.Contains(err.Error(), "does not end cleanly") {
+				t.Fatalf("an append after last bytes in the %s: %v", c.file, err)
+			}
+			for name, text := range before {
+				if tw.read(t, name) != text {
+					t.Fatalf("the %s was written", name)
+				}
+			}
+			if _, err := w.submit(witnessIssuer, subjectOf(testTrail), [][]byte{cpLine(testTrail, 3, "a")}); !errors.Is(err, errWitnessStopped) {
+				t.Fatalf("after it: %v", err)
+			}
+		})
+	}
+	t.Run("offline/registrations", func(t *testing.T) {
+		tw := newTestWitness(t, testTrail)
+		tw.write(t, "registrations", tw.read(t, "registrations")+`{"torn`)
+		before := tw.read(t, "registrations")
+		if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
+			t.Fatal("an offline registration after last bytes")
+		}
+		if tw.read(t, "registrations") != before {
+			t.Fatal("the registrations were written")
+		}
+	})
+	t.Run("repair/marks", func(t *testing.T) {
+		tw := newTestWitness(t, testTrail)
+		w := tw.open(t)
+		mustSign(t, w, testTrail, 1)
+		mustSign(t, w, testTrail, 2)
+		w.close()
+		tw.write(t, "marks", strings.SplitAfter(tw.read(t, "marks"), "\n")[0])
+		tw.write(t, "log", strings.TrimSuffix(tw.read(t, "log"), "\n"))
+		// last bytes come to the marks after they were judged, while the
+		// newline is synced
+		x := osWitnessIO()
+		base := x.sync
+		x.sync = func(file string, f *os.File) error {
+			err := base(file, f)
+			if file == "log" && strings.HasSuffix(tw.read(t, "log"), "\n") && !strings.HasSuffix(tw.read(t, "marks"), `{"torn`) {
+				tw.write(t, "marks", tw.read(t, "marks")+`{"torn`)
+			}
+			return err
+		}
+		if _, err := tw.repair(x); err == nil || !strings.Contains(err.Error(), "does not end cleanly") {
+			t.Fatalf("a mark completed after last bytes in the marks: %v", err)
+		}
+		if !strings.HasSuffix(tw.read(t, "marks"), `{"torn`) {
+			t.Fatal("a mark was joined to the marks' last bytes")
+		}
+	})
+}
+
+// A file that changes while the start-up checks read it -- bytes appended
+// by something that ignores the locks, after its size was taken -- refuses
+// the start and the repair: what was judged is not the file there now.
+func TestWitnessRefusesAFileThatChangesWhileItIsRead(t *testing.T) {
+	for _, what := range []string{"open", "repair"} {
+		for _, file := range []string{"log", "marks", "registrations"} {
+			t.Run(what+"/"+file, func(t *testing.T) {
+				tw := newTestWitness(t, testTrail)
+				w := tw.open(t)
+				mustSign(t, w, testTrail, 1)
+				w.close()
+				if what == "repair" {
+					tw.write(t, "registrations", tw.read(t, "registrations")+`{"torn`)
+				}
+				cfg := tw.config()
+				x := osWitnessIO()
+				x.note = func(op, label string) {
+					if op == "read" && label == file {
+						tw.write(t, file, tw.read(t, file)+`{"checkpoint":1}`+"\n")
+					}
+				}
+				cfg.io = tw.io(x)
+				var err error
+				if what == "open" {
+					var w *witnessLog
+					if w, err = openWitnessLog(cfg); err == nil {
+						w.close()
+					}
+				} else {
+					_, err = repairWitnessLog(cfg)
+				}
+				if err == nil || !strings.Contains(err.Error(), "changed while it was read") {
+					t.Fatalf("a %s that grew while it was read: %v", file, err)
+				}
+			})
+		}
+	}
+}
+
+// A file that comes to a name between the look that found none there and
+// the making of it is refused, never taken for the file the witness made.
+func TestWitnessRefusesAFileThatAppearsAsItIsMade(t *testing.T) {
+	for _, file := range []string{"log", "marks"} {
+		t.Run(file, func(t *testing.T) {
+			tw := newTestWitness(t, testTrail)
+			cfg := tw.config()
+			x := osWitnessIO()
+			base := x.create
+			x.create = func(label string, dir *os.Root, name string) (*os.File, error) {
+				if label == file {
+					tw.write(t, file, "")
+				}
+				return base(label, dir, name)
+			}
+			cfg.io = tw.io(x)
+			w, err := openWitnessLog(cfg)
+			if err == nil {
+				w.close()
+			}
+			if err == nil || !errors.Is(err, fs.ErrExist) && !strings.Contains(err.Error(), "exists") {
+				t.Fatalf("a %s that appeared as it was made: %v", file, err)
+			}
+		})
+	}
+}
+
+// A write that reports fewer bytes than it was given, with no error, is a
+// failure like any other: the writer stops at that step.
+func TestWitnessShortWriteIsAFailure(t *testing.T) {
+	for _, c := range []struct{ file, step string }{{"log", "append"}, {"marks", "mark"}, {"registrations", "register"}} {
+		t.Run(c.file, func(t *testing.T) {
+			tw := newTestWitness(t, testTrail)
+			tw.first = true
+			w := tw.open(t)
+			defer w.close()
+			x := osWitnessIO()
+			base := x.write
+			x.write = func(file string, f *os.File, data []byte) (int, error) {
+				if file == c.file {
+					return base(file, f, data[:len(data)/2])
+				}
+				return base(file, f, data)
+			}
+			w.io = tw.io(x)
+			_, err := w.submit(witnessIssuer, subjectOf(trailC), [][]byte{cpLine(trailC, 1, "a")})
+			var failure witnessFailure
+			if !errors.As(err, &failure) || failure.step != c.step || !strings.Contains(err.Error(), "short write") {
+				t.Fatalf("a short write to the %s: %v", c.file, err)
+			}
+		})
 	}
 }

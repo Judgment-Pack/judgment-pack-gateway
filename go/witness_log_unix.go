@@ -46,20 +46,30 @@ func witnessFileHeld(info os.FileInfo) error {
 	return nil
 }
 
+// openWitnessDir opens a held directory itself, read-only, following no
+// link: the descriptor its syncs go through.
+func openWitnessDir(dir *os.Root) (*os.File, error) {
+	return dir.OpenFile(".", os.O_RDONLY|syscall.O_DIRECTORY|syscall.O_NOFOLLOW, 0)
+}
+
+// lockWitnessFileOS is lockWitnessFile with the system's flock(2).
+func lockWitnessFileOS(file *os.File) error { return lockWitnessFile(file, syscall.Flock) }
+
 // lockWitnessFile takes an exclusive lock on the file itself, through its
 // descriptor: flock(2) locks the open file, whatever name -- a hard link, a
 // linked directory -- it was opened by, so a second witness, or a second
 // open in this one, that reaches it by any name is refused. The lock is
-// held until the descriptor is closed, and a witness that cannot take it
-// refuses rather than waits or goes on without it.
-func lockWitnessFile(file *os.File) error {
+// held until the descriptor is closed. A witness that cannot take it, for
+// any reason -- held by another, or no lock to be had -- refuses rather
+// than waits or goes on without it.
+func lockWitnessFile(file *os.File, flock func(fd int, how int) error) error {
 	conn, err := file.SyscallConn()
 	if err != nil {
 		return err
 	}
 	var lockErr error
 	if err := conn.Control(func(fd uintptr) {
-		lockErr = syscall.Flock(int(fd), syscall.LOCK_EX|syscall.LOCK_NB)
+		lockErr = flock(int(fd), syscall.LOCK_EX|syscall.LOCK_NB)
 	}); err != nil {
 		return err
 	}

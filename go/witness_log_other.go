@@ -21,4 +21,6 @@ func openNoFollowAppend(dir *os.Root, name string) (*os.File, error) {
 
 func witnessFileHeld(info os.FileInfo) error { return errWitnessFilesNotKept }
 
-func lockWitnessFile(file *os.File) error { return errWitnessFilesNotKept }
+func lockWitnessFileOS(file *os.File) error { return errWitnessFilesNotKept }
+
+func openWitnessDir(dir *os.Root) (*os.File, error) { return nil, errWitnessFilesNotKept }

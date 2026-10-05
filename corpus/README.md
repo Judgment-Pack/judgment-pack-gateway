@@ -297,18 +297,25 @@ leaves is not reported as well.
 | `writer` | 5 | an append, a sync and a mark failure on one trail, each stopping signing on another trail until restart; one crash under the writer lock with two trails submitting, in an append and in a mark, at most one file not ending cleanly |
 
 **The order, as well as the outcome.** Every operation a vector's witness makes on its files —
-an append, a sync, a cut, a file made, a directory synced, and the notes of a read, a start, a
-publication and the end of a repair or a registration — goes through one seam, and the runner
+an append, a sync, a cut, a file made, a directory synced, a lock, and the notes of a hold, a
+read, a start, a publication, a read-back and the end of a repair or a registration — goes
+through one seam, and the runner
 holds their order to one rule: nothing is relied on, served or built upon until the bytes it
 rests on are durable (`go/witness_trace.go`). In particular, no mark is appended before the
 log line it names is synced; nothing is published, and no witness starts, before the log, the
 marks and the registrations are synced; no file is cut before the bytes it loses are kept in
-the set-aside file and synced; a file made has its directory synced before anything is written
-to it; what a start, a repair or a registration read is synced, files and directories, before
-anything after it; a repair or a registration ends with what it wrote synced; and no statement
-is appended while its registration is not synced. A vector whose outcome is right and whose
-order is not disagrees. And every line a witness writes is held, before it is written, to the
-function and the 4096-byte bound its own start reads that kind of line with.
+the set-aside file, synced and read back from it as its reader reads them; a file made has its
+directory synced before anything is written to it; no file is read before it is locked; what a
+start, a repair or a registration read is synced, files and directories, before anything after
+it; a repair or a registration ends with what it wrote synced; and no statement is appended
+while its registration is not synced. A vector whose outcome is right and whose order is not
+disagrees. The tests hold the order in which syncs are requested; that each request reaches
+the system is one line, `syncToSystem` in `go/witness_log.go`, which a Linux test observes
+asking the kernel; that the kernel and its disk then keep the bytes, no test here shows. Every
+line a witness writes is held, before it is written, to the function and the 4096-byte bound
+its own start reads that kind of line with, and no line is appended to last bytes another write
+left: the set-aside file's own are ended where they stand and, unless they are a whole record,
+kept in a record of their own.
 
 **No secret.** The statements are signed under `TEST-SEED` and checked under
 `TEST-PUBLIC-KEY` before a step runs. A writer step signs nothing: the runner gives the writer
