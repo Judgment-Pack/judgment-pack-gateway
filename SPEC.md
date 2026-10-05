@@ -1000,7 +1000,7 @@ reads what a witness serves later. A witness's own storage — its log, its mark
 registrations, the order in which it signs, keeps and publishes a statement, the checks it
 makes before it starts and the repair they allow — is the witness's, not a reader's, and
 is not specified here: `docs/adr/0013-checkpoint-witness.md` §4 states it, and this
-reference keeps it in its core, held to the vectors under `corpus/witness-recovery/`
+reference keeps it in its core, on Unix, held to the vectors under `corpus/witness-recovery/`
 (§7). `gateway witness verify --log <file> --public-key <file> [--marks <file>]` applies
 those checks, all but the registrations, to a copy of a witness's log, and gives its
 verdict in its JSON as `gateway verify` does (§5a.2): exit `0` whenever it reached one.

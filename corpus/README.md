@@ -239,8 +239,9 @@ rules of recovery), not against `SPEC.md`, which leaves a witness's storage to i
 beside `witness/` rather than in it because they are not readings of a chain: a reader holds a
 witness's statements, never its log, its marks or its registrations, so neither `verify-ts` nor
 the runtime has anything to answer them with, and they are not in the process contract.
-`gateway conform` runs them against this implementation's witness only; with `--impl` it
-reads every one and holds it to its form and to the counts here, and runs none.
+`gateway conform` runs them against this implementation's witness only, and only on Unix,
+where a witness keeps its files; with `--impl`, or elsewhere, it reads every one and holds it
+to its form and to the counts here, and runs none.
 
 Each vector gives the files a witness finds (`files`: `log`, `marks`, `registrations`, each
 its exact text, a file absent when it is not given), the witness's clock (`clock`), how it
@@ -261,8 +262,9 @@ registers trails (`registration`), the statements its writer may make (`statemen
   order — `append`, `sync`, `mark`, `mark-sync`, `publish`, `register`, `register-sync` —
   leaving in its file `nothing` of what it wrote, a `torn` half of it, all of it but its newline
   (`unterminated`) or all of it (`whole`); a failed sync leaving `nothing` loses what was
-  written, and one leaving `whole` keeps it. That is the state a crash at that step leaves, since
-  the writer writes nothing after a failure.
+  written, and one leaving `whole` keeps it; a sync fails only when it is the one that covers a
+  write of that step. That is the state a crash at that step leaves, since the writer writes
+  nothing after a failure.
 - `concurrent`: submissions at once with one `fault`, reached by whichever writes first, their
   `answers` compared as a set, and at most `notEndingCleanlyAtMost` of the log and the marks
   not ending in a newline afterwards.
@@ -293,6 +295,20 @@ leaves is not reported as well.
 | `new-key` | 8 | an unmarked last statement that fails the checks, nothing written; a torn published mark with a stale backup log, the statement a retirement; torn, and unterminated, last bytes of the marks; a lost marks file; a damaged mark line and an unreadable one, neither the file's last bytes; both files not ending cleanly |
 | `registration` | 2 | a trail with statements and no registration, refused until the operator registers it; torn last bytes of the registrations, set aside |
 | `writer` | 5 | an append, a sync and a mark failure on one trail, each stopping signing on another trail until restart; one crash under the writer lock with two trails submitting, in an append and in a mark, at most one file not ending cleanly |
+
+**The order, as well as the outcome.** Every operation a vector's witness makes on its files —
+an append, a sync, a cut, a file made, a directory synced, and the notes of a read, a start, a
+publication and the end of a repair or a registration — goes through one seam, and the runner
+holds their order to one rule: nothing is relied on, served or built upon until the bytes it
+rests on are durable (`go/witness_trace.go`). In particular, no mark is appended before the
+log line it names is synced; nothing is published, and no witness starts, before the log, the
+marks and the registrations are synced; no file is cut before the bytes it loses are kept in
+the set-aside file and synced; a file made has its directory synced before anything is written
+to it; what a start, a repair or a registration read is synced, files and directories, before
+anything after it; a repair or a registration ends with what it wrote synced; and no statement
+is appended while its registration is not synced. A vector whose outcome is right and whose
+order is not disagrees. And every line a witness writes is held, before it is written, to the
+function and the 4096-byte bound its own start reads that kind of line with.
 
 **No secret.** The statements are signed under `TEST-SEED` and checked under
 `TEST-PUBLIC-KEY` before a step runs. A writer step signs nothing: the runner gives the writer
