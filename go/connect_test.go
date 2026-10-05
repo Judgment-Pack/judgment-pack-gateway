@@ -51,7 +51,7 @@ type connectFixture struct {
 
 func newConnectFixture(t *testing.T, bindingText string, platforms string) *connectFixture {
 	t.Helper()
-	f := &connectFixture{dir: t.TempDir(), reports: map[string]string{"airbyte": airbyteReport, "mcp": mcpReport}, fail: map[string]string{}, captured: "{}"}
+	f := &connectFixture{dir: tempDirAt(t, 0o755), reports: map[string]string{"airbyte": airbyteReport, "mcp": mcpReport}, fail: map[string]string{}, captured: "{}"}
 	f.catalog = catalogWith(t, map[string]string{"postgres": bindingText})
 	// Synthetic paths, rooted on the platform's volume so they are absolute
 	// on Windows too; the stub filesystem is what holds them.
@@ -72,6 +72,10 @@ func newConnectFixture(t *testing.T, bindingText string, platforms string) *conn
 		`"registry":"` + abs(t, f.dir, "registry.jsonl") + `","decisionRecords":"` + abs(t, f.dir, "decisions") + `","listen":"127.0.0.1:0",` +
 		`"catalog":"` + abs(t, f.catalog) + `","platforms":{` + platforms + `}}`
 	if err := os.WriteFile(f.config, []byte(text), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	// At 0640 whatever the umask: tests hold connect to keeping the mode.
+	if err := os.Chmod(f.config, 0o640); err != nil {
 		t.Fatal(err)
 	}
 	f.fs = goodFilesystem(f.seed, f.credentials, 1000, 1001)

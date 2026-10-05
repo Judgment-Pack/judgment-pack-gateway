@@ -183,6 +183,10 @@ func TestFactsOfReadTheOpenFile(t *testing.T) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// At 0755 whatever the umask: the facts are held to that mode.
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
