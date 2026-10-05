@@ -278,7 +278,11 @@ is never refused.
 - A `conflict` statement records that a submitter allowed for the trail offered another
   `recordDigest` for a sequence at which the witness holds a `checkpoint` statement. There is at
   most one per sequence: the first offer is the evidence, and later ones are answered with it. It
-  joins the chain, so the witness cannot drop it unnoticed.
+  joins the chain, so the witness cannot drop it unnoticed. Since the witness holds only sequences
+  it signed, a conflict's sequence is always at or below the latest checkpoint statement's before
+  it. That is what a reader checks of it (determination 6), because it needs no statement but the
+  latest checkpoint; that the sequence was held, and that no sequence has two conflicts, are the
+  witness's rules, which a reader does not check.
 - A `retirement` statement is the last of its chain: the witness accepts nothing more for the
   trail, and keeps and serves the chain as before (question 4). Its `checkpoint` repeats the
   latest witnessed checkpoint, so it names the trail and pins where the chain ended.
@@ -315,6 +319,8 @@ That is `"6"` unless ADR-0007's `services` takes it first: the engine reads `"1"
 (`docs/design/engine-config.md`). Its members:
 
 - `log`, an absolute path: the witness log, and the registrations beside it (below);
+- `marks`, an absolute path on storage apart from the log's, another device or volume: the marks
+  file (below);
 - `registration`, `"operator"` (the default) or `"first-submission"` (below; question 2);
 - `submitters`, optional: the `{issuer, subject}` pairs allowed to submit at all; absent, any
   subject the configured issuer's tokens name;
@@ -350,10 +356,13 @@ issuer and a subject:
   in the chain, and every verification of that trail against it fails (`checkpoint-beyond-trail`).
   Recovery is retirement, not erasure (question 10).
 
-**Signed, durable, acknowledged.** A statement is *signed* when the witness has made it in
-memory; *durable* when it is appended to the log and the log is synced; *acknowledged* when a
-`200` carrying it is sent. The witness acknowledges only durable statements. A durable
-statement may go unacknowledged — a lost response, or a crash after the sync — and the submitter
+**Signed, durable, marked, published.** A statement is *signed* when the witness has made it in
+memory; *durable* when it is appended to the log and the log is synced; *marked* when a line
+naming it — its trail, index and signature — is appended to the marks file and that file is
+synced; *published* when it is acknowledged in an answer or served by a read. The order is fixed:
+sign, make durable, mark, publish. The witness publishes only marked statements, so a statement
+no mark names was never published: that is what "demonstrably unpublished" means below. A marked
+statement may go unacknowledged — a lost response, or a crash after the mark — and the submitter
 recovers it by sending the same checkpoint again, or by reading the trail.
 
 **`POST /witness/checkpoints`: submit.**
@@ -383,9 +392,10 @@ recovers it by sending the same checkpoint again, or by reading the trail.
     fell behind learns where the witness is.
   - **Otherwise** the witness signs a `checkpoint` statement at the next index, makes it durable,
     and only then answers `200` with it, `application/jsonl`.
-  - **The append or the sync fails**: `503`. A statement was signed and may have reached the
-    disk. The witness signs nothing more for that trail until it restarts and has validated its
-    log (below): it never signs a second statement at an index whose first may be durable.
+  - **The append, a sync or the mark fails**: `503`. A statement was signed and may be durable;
+    it is not marked, so it was not published. The witness signs nothing more for that trail until
+    it restarts and has checked its log against its marks (below): it never signs a second
+    statement at an index whose first may be durable.
   - `400` for a body out of shape, `401` without a valid token, `403` for a trail unregistered or
     registered to another subject, `413` over the bound, and `429` over `submissionsPerMinute`, or
     for a new trail over `trailsPerSubmitter`.
@@ -399,42 +409,76 @@ as logged. `404` for a trail the witness holds nothing for. `{trail}` must be 32
 asks again from the next index until it reaches the head's.
 
 **Both reads are open,** like `/registry` and `/publickey`: a verifier holds no token. Knowing a
-trail's identity is what lets one read it, and no endpoint lists trails. They serve only lines of
-a log the witness validated when it started, and never bytes a repair set aside. The reference
-bounds no read. A party that exposes a witness puts it behind the TLS-terminating front
+trail's identity is what lets one read it, and no endpoint lists trails. They serve only marked
+statements of a log the witness checked when it started, and never bytes a repair set aside. The
+reference bounds no read. A party that exposes a witness puts it behind the TLS-terminating front
 `engine-config.md` already requires for any other host, and bounds reads there.
 
 **What the witness stores, and in what order.**
 
 - **The witness log**: one canonical statement per line, newline-ended, append-only. A complete
   line is never rewritten or removed.
+- **The marks**: one line per statement, `{trail, index, signature}`, appended and synced after
+  the statement is durable and before it is published. The file lives on storage apart from the
+  log's and is **never restored from a backup**: it is the witness's own record of every
+  statement it may have published, against which a log, restored or not, is judged. It is about
+  200 bytes a statement.
 - **The registrations**: one line per registration or change, `{trail, issuer, subject}`, beside
   the log, appended and synced **before** anything is signed for the trail, and never served. So
   a crash leaves at most a registration with no statement, which is harmless, and never a
   statement with no registration.
 - **Retirement** is a statement in the chain, signed when the witness's operator runs `gateway
-  witness retire --trail <id>`, so it is as durable as the log and needs no state of its own.
+  witness retire --trail <id>`, and marked like any other, so it needs no state of its own.
 - **Retention**: every statement, for as long as the witness runs. Nothing is pruned (question 4).
 
-**Start-up, and repair.** Before it serves anything, the witness reads its whole log and its
-registrations and checks them: every complete line a statement that verifies under its key; each
-trail's chain from index 0, contiguous and linked; checkpoint sequences increasing; each conflict
-naming a sequence held before it; a retirement only last; a registration for every trail with a
-statement. It refuses to start on any failure, naming it, and repairs nothing by itself.
+**Start-up, and repair.** Before it serves anything, the witness reads its whole log, its marks
+and its registrations, and checks them:
 
-- **A torn last line** — bytes after the log's last newline, a write cut short — refuses start
-  until `gateway witness repair`. If those bytes are a whole statement that passes the checks
-  above, short of its newline only, repair adds the newline: the statement becomes durable, as an
-  unacknowledged one. Otherwise repair moves them into a file beside the log, kept and never
-  served, and ends the log at its last newline. That is the one way the log loses bytes, and only
-  bytes that were never acknowledged or served. They may hold a signature over a statement the
-  witness then signs again, differently, at the same index; whoever holds that file holds a
-  statement no reader was ever served, and the record says so rather than pretending the bytes
-  were never signed.
-- **Any other failure** — a complete line that is no valid statement, a broken chain, a missing
-  registration — is not repaired. The operator restores a copy that passes the checks, or the
-  witness starts a new log under a **new key** (question 10). Under the old key with a new log, it
-  would sign index 0 again for trails it had already signed: a second chain.
+- every complete line of the log is a statement that verifies under its key;
+- each trail's chain runs from index 0, contiguous and linked, with checkpoint sequences
+  increasing, each conflict's sequence at or below the latest checkpoint statement's before it,
+  and a retirement only last;
+- **the log reaches every mark**: each mark names a statement the log holds, by trail, index and
+  signature;
+- a trail's statements that no mark names are at most one, its last;
+- every trail with a statement has a registration.
+
+It refuses to start on any failure, naming it, and repairs nothing by itself. `gateway witness
+repair` does only what follows, and never anything that leaves a mark unreached.
+
+- **An unmarked last statement**, whole, was never published. Repair marks it: it is kept, and its
+  index is not reused.
+- **A torn last line** — bytes after the log's last newline. If they are a whole statement that
+  passes the checks, short of its newline only, repair adds the newline, and marks it if no mark
+  names it. Otherwise repair may set the bytes aside, into a file beside the log, kept and never
+  served, and end the log at its last newline, **only if the marks file ends cleanly and the log
+  without them still reaches every mark**. Then the bytes are demonstrably unpublished: no mark
+  named them, so no answer or read ever carried them, and their index is free for the trail's next
+  statement. They may hold a
+  signature over a statement the witness then signs again, differently, at that index; whoever
+  holds that file holds a statement no reader was ever served, and the record says so rather than
+  pretending the bytes were never signed. A torn line the marks name is published damage, below.
+- **A torn last line of the marks file.** Under the fixed order one crash tears at most one of
+  the two files: a mark is written only after the log line it names was synced whole. So repair
+  sets the torn mark bytes aside, and marks the log's last statement again if it is whole and no
+  mark names it. If the log's last line is torn as well, that is damage, not a crash: which
+  statement the torn mark named, and whether it was published, is uncertain, so no index is
+  released: repair stops, and the witness recovers as for a log that does not reach its marks.
+- **A log that does not reach the marks** — a stale backup restored, an acknowledged or served
+  last statement cut short, a damaged line — is not repaired, and no index it lacks is released.
+  The one same-key recovery is restoring a copy of the log that reaches every mark and passes the
+  checks: it holds every statement the witness may have published. A stale restoration that would
+  erase a retirement fails the same way, since the retirement is marked.
+- **Otherwise, a new key.** Without such a copy, or with the marks file lost or damaged beyond a
+  torn last line, nothing shows which indexes were published, so the witness goes on only under a
+  **new key**: a new witness, whose chains begin at index 0 for trails registered anew. The old key
+  signs nothing more. Its chains stay readable under its pin, as historical readings from the
+  statements readers kept, and its last published statements are what those readers hold. Under
+  question 6's shared key, that is a new key for the gateway's receipts and seals too.
+- **What this cannot catch.** An operator who restores the marks file from a backup as well, or
+  loses log and marks together and restores both, leaves the witness nothing to judge by. The rule
+  that marks are never restored is the operator's to keep, and a witness that breaks it can sign a
+  second chain without colluding with anyone; readers who kept statements still expose it (§5).
 
 **How the witness is itself checked.** `gateway witness verify --log <file> --public-key <file>`,
 over a copy of its log, applies the start-up checks, all but the registrations, and gives its
@@ -484,10 +528,12 @@ statement's fails at that statement, even when a later checkpoint of the rewrite
 - **That the witness keeps what it signed.** A witness that loses or withholds its latest
   statements serves an older head that is internally consistent and looks complete to a fresh
   verifier. For a trail it holds nothing for, it answers `404`, which reads like a trail never
-  submitted. This cannot be prevented, only shown: the submitter can obtain every durable
+  submitted. This cannot be prevented, only shown: the submitter can obtain every published
   statement for its trail, from a `200` or by sending the same checkpoint again, and a statement
   with a higher index than the head the witness serves shows the served view is not the whole
-  one. It does not show whether the witness forgot or withholds (RFC 0012, clauses 2 and 5).
+  one. It does not show whether the witness forgot or withholds (RFC 0012, clauses 2 and 5). An
+  honest witness whose log is damaged does not forget silently under its key: it refuses to start
+  until a log that reaches its marks is restored, or goes on under a new key (determination 4).
 - **When anything happened.** `witnessedAt` is the witness's clock: an upper bound on when it held
   the checkpoint, as it states. Like a stamp's time, but without the policy, accuracy and
   certificate chain an RFC 3161 token carries. It says nothing of when a record was made. A
@@ -515,14 +561,16 @@ witness takes the later of its clock and that time. A verifier compares nothing 
 
 - `--witness <file>`, repeatable: statements, one per line, as the witness serves them;
 - `--witness-head <file>`: one statement, the head the reader fetched from the witness;
-- `--witness-resume <file>`: one `checkpoint` statement the reader kept from an earlier complete
-  verification of the same trail (below);
+- `--witness-resume <file>`: a continuation the reader's own earlier successful reading of the
+  same trail saved (below);
+- `--witness-save <file>`: where to save a continuation, written only when the verification has
+  no finding at all;
 - `--witness-key <file>`, repeatable: a witness's public key, obtained out of band and held to
   `CheckPublicKey` before anything is read (`/publickey` is a convenience only, §5);
 - `--require-countersigned-through <sequence>`.
 
 **The chain a verification reads.** The statements of every `--witness` file, the head and the
-resume statement are one set, whatever files they came in and in whatever order:
+continuation's two statements are one set, whatever files they came in and in whatever order:
 
 - each must be of the trail being verified, the identity its chained records carry, or
   `witness-trail-mismatch`;
@@ -533,27 +581,53 @@ resume statement are one set, whatever files they came in and in whatever order:
 - a statement of another `witnessVersion` or `kind`, or out of shape, is `witness-malformed`;
 - two statements with the same canonical bytes are one. Two that verify, are of one index and
   differ are `witness-equivocation`: the witness signed two chains;
-- in `index` order the set must begin at index 0, with `prevSignature` `null`, or at the resume
-  statement, and hold every index from there to its highest, each `prevSignature` the signature
-  of the statement before. A resume statement, when given, must be in that chain by its
-  signature. Checkpoint sequences must increase, each conflict must name a sequence held before
-  it, and a retirement must be last and repeat the latest checkpoint statement's checkpoint.
-  Otherwise `witness-chain-broken`. A set that begins late is never read from where it begins;
+- in `index` order the set must begin at index 0, with `prevSignature` `null`, or, with a
+  continuation, at the index after its last statement, with that statement's signature as
+  `prevSignature`; and it must hold every index from there to its highest, each `prevSignature`
+  the signature of the statement before. Each checkpoint statement's sequence must exceed the
+  latest checkpoint statement's before it; each conflict's sequence must be at or below it; a
+  retirement must be last and repeat its checkpoint. Otherwise `witness-chain-broken`. A set that
+  begins late is never read from where it begins. With a continuation, statements at or below its
+  index are not supplied: they are refused before anything is read, never passed over;
 - with `--witness-head`, the head must be the chain's statement at its index, by its signature,
   or `witness-head-unreached`. The chain may run past it: statements the witness signed after the
   reader's fetch, supplied from elsewhere, are checked like the rest. The reading is then
   **current**, as of the reader's fetch. Without `--witness-head` it is **historical**: it ends at
-  the highest statement supplied and says nothing about any after it.
+  the highest statement supplied and says nothing about any after it;
+- with a continuation, a head at its last index must be its last statement, by signature, or
+  `witness-equivocation`; a head below it is `witness-head-behind`: the witness serves an older
+  head than a statement this reader's own earlier reading checked, so it forgot or withholds, or
+  the reader supplied a stale head.
 
-**Resuming.** A reader that verified a trail's chain completely before can keep the last
-`checkpoint` statement it verified and pass it as `--witness-resume`. The chain then begins at
-that statement, by its signature, instead of index 0, and its checkpoint is held against the
-trail like the others. That is sound because the statement's checkpoint commits, through the
-trail's own chain, to every line before it: a copy that still matches it holds the prefix every
-earlier statement was checked against. The resume statement is the reader's own earlier result,
-never the presenter's; the report says the reading resumed, and from which index. It is how a
-chain longer than one verification's bounds is read: in steps over one trail copy, each resuming
-from the last checkpoint statement of the step before.
+**Continuing.** A verification with no finding at all, given `--witness-save`, saves a
+**continuation**: `{"continuationVersion":"1","last":<statement>,"latestCheckpoint":<statement>}`,
+the last statement it read, of any kind, and the latest checkpoint statement at or before it,
+both as signed. Every check of determination 6 needs only the statement before and the latest
+checkpoint statement, so a later reading given the continuation as `--witness-resume` goes on
+from the index after `last` and checks what a reading from index 0 would have checked:
+
+- both statements are checked under the keys supplied, and `latestCheckpoint` must be a
+  `checkpoint` statement at or before `last`'s index, or `witness-chain-broken`;
+- `latestCheckpoint`'s checkpoint is held against the trail again, like the others. That keeps
+  every earlier constraint: the checkpoint commits, through the trail's own chain, to every line
+  before it, so a copy that still matches it holds the prefix every earlier statement was checked
+  against;
+- the continuation advances after any statement, conflicts and retirements included, so a chain
+  of any length and any mix of kinds is read in steps, each starting where the last one saved;
+- a continuation is saved only by a reading that failed nothing, so no failure is stepped over:
+  a step that fails saves nothing, and the reader starts again from the continuation it had;
+- **only the reader's own successful reading may become a continuation.** A statement whose
+  signature verifies, handed over by the operator or anyone else, is not one: it says the witness
+  signed it, not that this reader read everything before it. The runtime cannot tell a saved
+  continuation from one written by someone else, so the report says the reading continued, from
+  which index, and a fixed sentence says whose word that is.
+
+For the statements a reading reads, a chain read in steps over one trail copy gives the findings
+and coverage a whole reading would. The head is also judged against the continuation (above).
+Vectors read the same chains whole and in steps, with the step's bound lowered in the test: a
+conflict at 100 after checkpoints at 100 and 200, continued from index 1, which passes as it does
+whole; a conflict above the latest checkpoint, which fails either way; and a long run of
+conflicts after the last checkpoint, which the steps get through.
 
 **What is credited.** Every verified `checkpoint` statement's checkpoint is held against the trail
 exactly as `--expect`'s are, so a mismatch is always reported. But only a chain with no witness
@@ -572,20 +646,21 @@ says how far a witness's signature reaches:
   records up to that sequence are not all countersigned. It is the "whose evidence" floor of
   RFC 0012 clause 3, where `--require-checkpoint-through` is the "how much".
 - A report section, `witness`: the statements read and checked; the keys supplied; where the
-  reading began (index 0, or resumed at an index) and where it ended (current, at the head's
+  reading began (index 0, or continued after an index) and where it ended (current, at the head's
   index, or historical, at the highest supplied); the latest checkpoint statement's sequence and
   `witnessedAt`; each conflict statement's sequence; and whether the chain is retired. A conflict
   fails nothing by itself, and is reported with a fixed sentence.
 
 **Bounds of one verification** (question 11). At most 16 `--witness-key`. The `--witness`,
 `--witness-head` and `--witness-resume` files together at most 64 MiB, and at most 110,000
-statements: about 110,000 logged lines of 609 bytes, where one file at the bound of a held file
-(`MaxHeldBytes`, 16 MiB) holds about 27,500. Over either bound, the verification is refused before
-any statement is checked, never truncated. Each statement costs one Ed25519 verification, under
-the one key its `keyId` names, so the work is bounded by the statement count. A longer chain is
-read in steps with `--witness-resume`. How long a chain grows is the deliverer's cadence:
-110,000 statements is about 30 hours at the default ceiling of 60 submissions a minute, and about
-12 years at one an hour.
+statements, the continuation's two counted: about 110,000 logged lines of 609 bytes, where one file
+at the bound of a held file (`MaxHeldBytes`, 16 MiB) holds about 27,500. Over either bound, the
+verification is refused before any statement is checked, never truncated. Each statement costs one
+Ed25519 verification, under the one key its `keyId` names, so the work is bounded by the statement
+count. A longer chain is read in steps, each continuing from the continuation the step before saved,
+so every step advances, through conflicts as through checkpoints. How long a chain grows is the
+deliverer's cadence: 110,000 statements is about 30 hours at the default ceiling of 60 submissions a
+minute, and about 12 years at one an hour.
 
 The fixed sentences, proposed:
 
@@ -600,8 +675,10 @@ The fixed sentences, proposed:
 - Does not establish, historical: "That the witness held no statement for this trail after index
   K: no head fetched from the witness was supplied, so the chain was read only as far as it was
   supplied."
-- Does not establish, resumed: "Anything about statements before index K: the reading resumed
-  from a statement the reader kept from an earlier verification, and those were not read here."
+- Does not establish, continued: "Anything about statements up to index K, which this reading did
+  not read: it continued from a continuation supplied as the reader's own earlier successful
+  reading, which the runtime cannot tell from one someone else wrote, and is as complete as that
+  reading was."
 - Does not establish: "Anything against a witness that is not independent of the operator: one
   that colludes can sign what it is asked, at any time it states, and a second history for another
   audience; a key supplied is trusted because the verifier chose it."
@@ -620,9 +697,9 @@ One pull request each, in this order.
 | # | Repository | What | Needs |
 |---|---|---|---|
 | 1 | gateway | `SPEC.md` gains the witness statement (format, key rule and equation, coverage, chain, what it establishes) and §6 rows for the endpoints. `corpus/witness/` vectors: valid chains, a chain beginning late, equivocation, a head unreached, a non-canonical key, a small-order key, a signature only the cofactored check accepts, `S` of L or more, and the bounds at and one past each limit. The same PR teaches `gateway conform` and verify-ts to read them, with the corpus README's stated counts, so no vector lands unread | this record accepted; a cross-vendor review (public-surface, documented-claim, conformance, security) |
-| 2 | gateway | The witness log, registrations, statement signing, start-up checks and repair in the core module, and `gateway witness verify` | 1 |
+| 2 | gateway | The witness log, marks, registrations, statement signing in the order sign, durable, marked, published, start-up checks and repair in the core module, and `gateway witness verify`. Recovery vectors: a stale valid backup behind the marks, refused; an acknowledged last statement cut short, refused; a retirement erased by a stale restoration, refused; a whole unmarked last statement, marked and kept; a torn unmarked last line, set aside and its index released; a torn last mark line; both last lines torn, refused | 1 |
 | 3 | gateway | The engine's `witness` member at the next `engineVersion`, `gateway witness register` and `retire`, the endpoints, bounds, and `SECURITY.md`'s scope line for them | 2; questions 2, 3, 4, 6 and 10 |
-| 4 | runtime | `audit verify --witness`, `--witness-head`, `--witness-resume`, `--witness-key` and `--require-countersigned-through`; the chain rule, the bounds, the `countersigned` coverage, the findings and sentences; the vectors of PR 1 in its tests; a guide section | 1 (the format and vectors), not the service; questions 8, 9 and 11 |
+| 4 | runtime | `audit verify --witness`, `--witness-head`, `--witness-resume`, `--witness-save`, `--witness-key` and `--require-countersigned-through`; the chain rule, continuations, the bounds, the `countersigned` coverage, the findings and sentences; the vectors of PR 1 in its tests, and the whole-and-stepped vectors of determination 6; a guide section | 1 (the format and vectors), not the service; questions 8, 9 and 11 |
 | 5 | desk | A new Desk ADR for a witness as a holder: ADR-0010 §2's HTTPS channel to the witness's form; the cursor moved only by a `checkpoint` statement that verifies under the pinned key, held to `CheckPublicKey`, and whose checkpoint is the last line sent (trail, sequence and digest); the statements kept; the panel passing `--witness` and a head it fetched | 3 and 4 released; questions 5 and 7 |
 | 6 | desk | Its implementation, as ADR-0010's delivery PR 10 | 5; Desk's pins moved |
 
@@ -651,11 +728,14 @@ runtime prints that chain's checkpoints in the same form.
 - Bad, because the witness learns each trail's identity, its length at each submission and its
   record digests, and every holder of an old checkpoint can follow the trail's activity.
 - Bad, because a verifier reads a trail's whole chain, which grows by one statement, 609 bytes at
-  small numbers, per submission, or keeps its own resume point.
+  small numbers, per submission, or keeps its own continuation.
 - Bad, because nothing here helps against a witness that colludes. One key is one party.
 - Bad, because retention is the witness's promise. Nothing makes it checkable beyond the statements
   others kept.
-- Bad, because a lost log costs the witness its key.
+- Bad, because a log that cannot be shown to reach the marks, or lost marks, cost the witness its
+  key, and with question 6's shared key the gateway's key for receipts and seals too.
+- Bad, because the rule that marks are never restored from a backup is the witness operator's to
+  keep: broken, it lets an honest witness sign a second chain.
 - Bad, because a second signed format sits beside the receipt, with vectors of its own.
 - Revisit when a reader wants statements from two witnesses; when the record digest must be hidden
   from the witness (a salt, ADR-0047 "Privacy"); when a submission should prove possession of the
@@ -748,28 +828,34 @@ runtime prints that chain's checkpoints in the same form.
    reaches. A chain with any witness finding is credited nothing.
 9. **What is a complete and current verification, and what may a partial or historical one
    claim?**
-   **Recommendation:** complete means the chain read from index 0, or from a resume statement the
-   reader itself kept from an earlier complete verification, with every statement present and
-   linked; there is no partial reading, since a set that begins late fails. Current means the
+   **Recommendation:** complete means the chain read from index 0, or continued from a
+   continuation the reader's own earlier successful reading saved — never from a statement merely
+   because its signature verifies — with every statement present and linked; there is no partial
+   reading, since a set that begins late fails. Current means the
    chain reaches, by signature, a head the reader fetched from the witness itself, and is current
    as of that fetch. A historical reading ends earlier, without a head, and claims nothing about
    statements after its end; the report says which reading it was, and Desk's panel always reads
    to a head it fetched.
 10. **How are a stolen submission credential and poisoned or damaged witness state recovered,
     without erasing evidence?**
-    **Recommendation:** never by removing or rewriting an acknowledged statement. A stolen
-    credential is revoked at the issuer; what it got signed stays. A trail poisoned by it is
-    retired by the witness's operator, its honest history stays readable as a historical reading
-    ending before the first poisoned statement, and the trail's operator goes on under a new trail
-    identity, registered anew (moving a trail aside is the runtime's and Desk's decision, Desk
-    ADR-0010 question 9). A torn last line is repaired as determination 4 says, its bytes kept. A
-    log damaged otherwise is restored from a copy that passes the start-up checks, or replaced by a
-    new log under a new key, published as a new witness: never a new log under the old key.
+    **Recommendation:** never by removing or rewriting a statement a mark names, and never by
+    releasing an index whose statement may have been published. A stolen credential is revoked at
+    the issuer; what it got signed stays. A trail poisoned by it is retired by the witness's
+    operator, its honest history stays readable as a historical reading ending before the first
+    poisoned statement, and the trail's operator goes on under a new trail identity, registered anew
+    (moving a trail aside is the runtime's and Desk's decision, Desk ADR-0010 question 9). The only
+    bytes repair removes from the log are a torn last line without which the log still reaches
+    every mark, so demonstrably never published, and they are kept aside. Same-key recovery is
+    restoring a copy of the log that reaches every mark, the marks file itself never being restored
+    from a backup. Anything less — a stale backup, a published statement cut short, lost marks — is
+    recovered under a new key, published as a new witness, the old key's chains staying readable as
+    historical under its pin: never a new or older log under the old key.
 11. **What limits bound one verification?**
     **Recommendation:** at most 16 witness keys; statement files together at most 64 MiB and
     110,000 statements, refused above either, never truncated; one Ed25519 verification per
-    statement, under the key its `keyId` names; longer chains read in steps with
-    `--witness-resume`. The vectors test each limit at and one past it.
+    statement, under the key its `keyId` names; longer chains read in steps, each continuing from
+    the continuation the step before saved, which advances after any statement. The vectors test
+    each limit at and one past it.
 
 ## More information
 
