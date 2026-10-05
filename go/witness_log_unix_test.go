@@ -70,8 +70,8 @@ func TestWitnessFilesAreHeldNotFollowed(t *testing.T) {
 		go func() { _, err := openWitnessLog(tw.config()); done <- err }()
 		select {
 		case err := <-done:
-			if err == nil {
-				t.Fatal("a FIFO was taken for the log")
+			if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+				t.Fatalf("a FIFO in place of the log: %v", err)
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("the open waited on a FIFO")
