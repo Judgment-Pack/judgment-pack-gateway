@@ -29,7 +29,11 @@ func TestOneConnectAtATimeHoldsTheFile(t *testing.T) {
 		})
 		first <- err
 	}()
-	<-inChecks
+	select {
+	case <-inChecks:
+	case err := <-first:
+		t.Fatalf("the first connect ended before its checks: %v", err)
+	}
 	second := f.request()
 	second.platform = "replica"
 	second.user = "engine-docs"

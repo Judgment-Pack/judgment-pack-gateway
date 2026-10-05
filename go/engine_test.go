@@ -56,6 +56,21 @@ func abs(t *testing.T, elem ...string) string {
 	return strings.ReplaceAll(p, `\`, `\\`)
 }
 
+// tempDirAt is t.TempDir() set to mode, for a test that builds a tree the
+// engine holds. t.TempDir makes its directory with mode 0777 less the
+// umask, so under a umask that leaves the group write (0002, the default
+// where each user has a group of their own) the engine refuses the test's
+// own directory as one others may write, before whatever the test meant it
+// to judge; the mode is the test's, not the environment's.
+func tempDirAt(t *testing.T, mode os.FileMode) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, mode); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func engineJSON(t *testing.T, catalog string, extra string, platforms string) string {
 	t.Helper()
 	base := t.TempDir()
@@ -646,7 +661,7 @@ func TestHostRuntimeSocketsByBaseName(t *testing.T) {
 // user is this process's own is refused as such on Unix, and the
 // configuration form is refused outright where users cannot be switched.
 func TestServeConfigRefusesBeforeWriting(t *testing.T) {
-	dir := t.TempDir()
+	dir := tempDirAt(t, 0o755)
 	store := filepath.Join(dir, "store")
 	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
 	self, err := user.Current()

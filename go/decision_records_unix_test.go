@@ -24,13 +24,13 @@ func recordsHost(owners map[string]int) engineHost {
 	}}
 }
 
-// recordsTree makes base/records with the given modes, after the umask,
-// and returns its path.
+// recordsTree makes the given paths under a directory of its own, at the
+// given modes whatever the umask, and returns that directory.
 func recordsTree(t *testing.T, modes map[string]os.FileMode) string {
 	t.Helper()
 	// The directory's real path, since the walk resolves a link on the way
 	// (macOS's /var) and the owners stood in for are named by real paths.
-	base, err := filepath.EvalSymlinks(t.TempDir())
+	base, err := filepath.EvalSymlinks(tempDirAt(t, 0o755))
 	if err != nil {
 		t.Fatal(err)
 	}

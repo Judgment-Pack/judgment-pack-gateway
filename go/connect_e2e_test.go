@@ -23,7 +23,7 @@ func TestConnectRunsBothAdaptersEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Skip("no go toolchain on PATH")
 	}
-	dir := t.TempDir()
+	dir := tempDirAt(t, 0o755)
 	exe := ""
 	if runtime.GOOS == "windows" {
 		exe = ".exe"

@@ -6,6 +6,7 @@ import (
 	"debug/macho"
 	"encoding/binary"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -205,10 +206,26 @@ func TestAGoBuiltBinaryOfThisHostIsANativeExecutable(t *testing.T) {
 	if _, err := readNativeExecutable(self); err != nil {
 		t.Fatalf("the test binary: %v", err)
 	}
-	// Held as an adapter on this host, its loader, if it names one, with it.
+	// Held as an adapter on this host, its loader, if it names one, with it:
+	// a copy, in a directory at the test's mode, since the go command makes
+	// the directory the test binary is in with mode 0777 less the umask, and
+	// under a umask that leaves the group write the engine refuses that
+	// directory before it reaches the binary.
+	data, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := filepath.EvalSymlinks(tempDirAt(t, 0o755))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := filepath.Join(dir, "adapter")
+	if err := os.WriteFile(adapter, data, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	host := osEngineHost()
 	host.euid = os.Geteuid()
-	sources := map[string]sourceSpec{"warehouse/live": {argv: []string{self}}}
+	sources := map[string]sourceSpec{"warehouse/live": {argv: []string{adapter}}}
 	if err := holdAdapterSources(sources, host); err != nil {
 		t.Fatalf("the test binary as an adapter: %v", err)
 	}

@@ -18,7 +18,7 @@ func TestAMountedSeedResolvesToTheFileLoadSeedOpens(t *testing.T) {
 	host := engineHost{euid: os.Geteuid(), fileOwner: fileOwnerOf, readLink: os.Readlink}
 	mount := func(t *testing.T, datedMode os.FileMode) (string, string) {
 		t.Helper()
-		base, err := filepath.EvalSymlinks(t.TempDir())
+		base, err := filepath.EvalSymlinks(tempDirAt(t, 0o755))
 		if err != nil {
 			t.Fatal(err)
 		}

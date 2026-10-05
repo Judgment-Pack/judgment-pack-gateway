@@ -36,6 +36,10 @@ CI runs the same four on Linux, macOS and Windows against Go 1.26. `gateway conf
 matters most: `corpus/` is frozen, and a change that makes it pass differently has
 changed the format, whatever the diff looks like.
 
+The suite passes under umask 0022 and 0002 alike: a test that builds a tree the engine
+judges sets every mode it relies on, its own directory's included (`tempDirAt` in
+`go/engine_test.go`), rather than taking it from the umask.
+
 The repository holds a second Go module, `adapters/`, checked the same way from its own
 directory (`cd adapters && gofmt -l . && go vet ./... && go test ./...`). The two modules
 never import each other, and the core never imports anything outside the standard
