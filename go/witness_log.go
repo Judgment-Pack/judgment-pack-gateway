@@ -20,14 +20,26 @@ package main
 //     change, {"issuer","subject","trail"}, appended and synced before
 //     anything is signed for the trail, never served;
 //   - beside the log, <log>.set-aside: what repair took off the end of a
-//     file, one record a line, kept and never served;
-//   - <log>.lock and <marks>.lock, held while the files are open, so one
-//     process at a time writes them.
+//     file, one record a line, kept and never served.
 //
 // Every file is opened through its directory, held open from the start, as
 // the entry it is -- never a link, and the descriptor's file the entry's own
 // (openEntryBy) -- and read, appended and cut through that one descriptor:
-// no name is resolved again after it was judged.
+// no name is resolved again after it was judged. Each is locked by what it
+// is, through that descriptor, before a byte of it is read, has exactly one
+// name, and is none of the others (witnessFiles.hold): one writer, whatever
+// names it is reached by.
+//
+// The rule every path obeys: nothing is relied on, served or built upon
+// until the bytes it rests on are durable. A start, a repair and an offline
+// registration sync what they read, files and directories, before anything
+// is served, signed or written after it (syncRead); a statement's line is
+// synced before its mark is written, and both before it is published; a
+// repair's kept bytes are synced before a file is cut, and every write it
+// makes is synced before it ends; a file made is followed by a sync of its
+// directory before anything is written to it. Every one of those
+// operations goes through one seam (witnessIO), and the tests and the
+// recovery vectors hold its order to this rule (witness_trace.go).
 
 import (
 	"bufio"
@@ -50,13 +62,12 @@ const (
 	registrationsSuffix = ".registrations"
 	setAsideSuffix      = ".set-aside"
 
-	// witnessLineLimit bounds a line of any of the witness's files as it is
-	// read: a statement is about 609 bytes and a mark about 190, so a longer
-	// line is no line the witness wrote. It is read to its end, never kept.
+	// witnessLineLimit bounds a line of any of the witness's files, its
+	// newline not counted, as it is read and before it is written
+	// (admitWitnessLine): a statement is at most about 650 bytes and a mark
+	// about 190, so a longer line is no line the witness wrote. A line read
+	// past it is read to its end, never kept.
 	witnessLineLimit = 4096
-
-	// witnessNameLimit bounds a registration's issuer and subject, in bytes.
-	witnessNameLimit = 1024
 )
 
 // The outcomes of the start-up checks (§4, "Start-up, and repair"). The
@@ -213,8 +224,8 @@ func (r witnessRegistration) check() error {
 		return errors.New("witness: a trail is 32 lowercase hexadecimal characters")
 	}
 	for what, name := range map[string]string{"issuer": r.issuer, "subject": r.subject} {
-		if name == "" || len(name) > witnessNameLimit || !utf8.ValidString(name) {
-			return fmt.Errorf("witness: a registration's %s is UTF-8 of 1 to %d bytes", what, witnessNameLimit)
+		if name == "" || !utf8.ValidString(name) {
+			return fmt.Errorf("witness: a registration's %s is UTF-8 of at least one byte", what)
 		}
 	}
 	return nil
@@ -655,13 +666,16 @@ func judgeWitness(in witnessInput, key ed25519.PublicKey) (*witnessJudgement, er
 var witnessEntryJudged func(name string)
 
 // witnessFiles is the witness's files, held open: their directories, held
-// from the start; each file through one descriptor, or nil when it is not
-// there; and the two locks.
+// from the start, and each file through one descriptor, or nil when it is
+// not there. Every file is locked by what it is, not by the name it was
+// reached by (lockWitnessFile), from before a byte of it is read until it
+// is closed; has exactly one name; and is no other of the witness's files.
+// io is the one seam every operation on them goes through.
 type witnessFiles struct {
-	logDir, marksDir          *os.Root
-	logName, marksName        string
-	log, marks, registrations *os.File
-	unlock                    []func()
+	logDir, marksDir                    *os.Root
+	logName, marksName                  string
+	log, marks, registrations, setAside *os.File
+	io                                  witnessIO
 }
 
 // witnessPaths is where the witness keeps its log and its marks.
@@ -676,21 +690,29 @@ func (p witnessPaths) check() error {
 			return fmt.Errorf("witness: the %s names no file: %q", what, path)
 		}
 	}
-	for _, beside := range []string{p.log, p.log + registrationsSuffix, p.log + setAsideSuffix, p.log + ".lock"} {
-		if p.marks == beside || p.marks+".lock" == beside {
+	for _, beside := range []string{p.log, p.log + registrationsSuffix, p.log + setAsideSuffix} {
+		if p.marks == beside {
 			return fmt.Errorf("witness: the marks %q are the log or a file kept beside it", p.marks)
 		}
 	}
 	return nil
 }
 
-// holdWitnessFiles holds the witness's directories and takes its locks,
-// then opens each file that is there as the entry it is.
-func holdWitnessFiles(p witnessPaths) (*witnessFiles, error) {
+// errWitnessFilesNotKept is the refusal of every witness off Unix.
+var errWitnessFilesNotKept = errors.New("witness: a witness keeps its files only on Unix, where each can be locked by what it is and its names counted; elsewhere none is opened")
+
+// holdWitnessFiles holds the witness's directories, then opens and locks
+// each of its files that is there -- the log, the registrations, the marks,
+// in that order -- before any of them is read. A file another witness holds,
+// through this name or any other, refuses the hold: there is no fallback.
+func holdWitnessFiles(p witnessPaths, wio witnessIO) (*witnessFiles, error) {
+	if !witnessFilesKept {
+		return nil, errWitnessFilesNotKept
+	}
 	if err := p.check(); err != nil {
 		return nil, err
 	}
-	f := &witnessFiles{logName: filepath.Base(p.log), marksName: filepath.Base(p.marks)}
+	f := &witnessFiles{logName: filepath.Base(p.log), marksName: filepath.Base(p.marks), io: wio.orOS()}
 	fail := func(err error) (*witnessFiles, error) {
 		f.close()
 		return nil, err
@@ -702,29 +724,33 @@ func holdWitnessFiles(p witnessPaths) (*witnessFiles, error) {
 	if f.marksDir, err = holdWitnessDir(filepath.Dir(p.marks)); err != nil {
 		return fail(err)
 	}
-	for _, lock := range []struct {
-		dir  *os.Root
-		name string
-	}{{f.logDir, f.logName}, {f.marksDir, f.marksName}} {
-		unlock, err := lockBesideFor(lock.dir, lock.name, fileOwnerIDs{}, "witness")
+	for _, c := range f.kept() {
+		file, err := f.openHeld(c.dir, c.name)
 		if err != nil {
-			return fail(fmt.Errorf("witness: %v", err))
+			return fail(err)
 		}
-		f.unlock = append(f.unlock, unlock)
-	}
-	if f.log, err = openWitnessFile(f.logDir, f.logName); err != nil {
-		return fail(err)
-	}
-	if f.marks, err = openWitnessFile(f.marksDir, f.marksName); err != nil {
-		return fail(err)
-	}
-	if f.registrations, err = openWitnessFile(f.logDir, f.logName+registrationsSuffix); err != nil {
-		return fail(err)
-	}
-	if err := f.distinct(); err != nil {
-		return fail(err)
+		*c.file = file
 	}
 	return f, nil
+}
+
+// keptFile is one of the files the witness keeps, by its label in the
+// trace (witness_trace.go).
+type keptFile struct {
+	label string
+	file  **os.File
+	dir   *os.Root
+	name  string
+}
+
+// kept is the log, the registrations and the marks, in the order they are
+// held and made.
+func (f *witnessFiles) kept() []keptFile {
+	return []keptFile{
+		{"log", &f.log, f.logDir, f.logName},
+		{"registrations", &f.registrations, f.logDir, f.logName + registrationsSuffix},
+		{"marks", &f.marks, f.marksDir, f.marksName},
+	}
 }
 
 // holdWitnessDir holds a directory of the witness's: one nobody but root
@@ -745,9 +771,9 @@ func holdWitnessDir(path string) (*os.Root, error) {
 	return dir, nil
 }
 
-// openWitnessFile opens a file of the witness's to read and append, as the
-// entry it is, or gives nil when nothing is there.
-func openWitnessFile(dir *os.Root, name string) (*os.File, error) {
+// openHeld opens a file of the witness's, as the entry it is, and holds it
+// (hold), or gives nil when nothing is there.
+func (f *witnessFiles) openHeld(dir *os.Root, name string) (*os.File, error) {
 	file, info, err := openEntryBy(dir, name, openNoFollowAppend, witnessEntryJudged)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
@@ -755,46 +781,49 @@ func openWitnessFile(dir *os.Root, name string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("witness: %s %v", name, err)
 	}
-	if !info.Mode().IsRegular() {
+	if err := f.hold(file, info, name); err != nil {
 		file.Close()
-		return nil, fmt.Errorf("witness: %s is not a regular file", name)
-	}
-	if err := witnessFilePrivate(info); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("witness: %s %v", name, err)
+		return nil, err
 	}
 	return file, nil
 }
 
-// distinct refuses two of the files that are one file.
-func (f *witnessFiles) distinct() error {
-	var infos []os.FileInfo
-	for _, file := range []*os.File{f.log, f.marks, f.registrations} {
-		if file == nil {
+// hold judges a file of the witness's by its descriptor -- a regular file,
+// private to the signer, with exactly one name (witnessFileHeld), and none
+// of the witness's other files -- and locks it by what it is. A second
+// name, a hard link, would let a second witness reach the file by a name
+// this one never looked at; one file under two of the witness's names would
+// let a write to one cut the other.
+func (f *witnessFiles) hold(file *os.File, info os.FileInfo, name string) error {
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("witness: %s is not a regular file", name)
+	}
+	if err := witnessFileHeld(info); err != nil {
+		return fmt.Errorf("witness: %s %v", name, err)
+	}
+	for _, other := range []*os.File{f.log, f.marks, f.registrations, f.setAside} {
+		if other == nil {
 			continue
 		}
-		info, err := file.Stat()
+		otherInfo, err := other.Stat()
 		if err != nil {
 			return fmt.Errorf("witness: %v", err)
 		}
-		for _, other := range infos {
-			if os.SameFile(info, other) {
-				return errors.New("witness: the log, the marks and the registrations are one file under two names")
-			}
+		if os.SameFile(info, otherInfo) {
+			return fmt.Errorf("witness: %s is another of the witness's files: the log, the marks, the registrations and the set-aside file are one file under two names", name)
 		}
-		infos = append(infos, info)
+	}
+	if err := lockWitnessFile(file); err != nil {
+		return fmt.Errorf("witness: %s %v", name, err)
 	}
 	return nil
 }
 
 func (f *witnessFiles) close() {
-	for _, file := range []*os.File{f.log, f.marks, f.registrations} {
+	for _, file := range []*os.File{f.log, f.marks, f.registrations, f.setAside} {
 		if file != nil {
 			file.Close()
 		}
-	}
-	for i := len(f.unlock) - 1; i >= 0; i-- {
-		f.unlock[i]()
 	}
 	for _, dir := range []*os.Root{f.logDir, f.marksDir} {
 		if dir != nil {
@@ -820,6 +849,11 @@ func whole(file *os.File) (io.Reader, error) {
 // them now.
 func (f *witnessFiles) judge(key ed25519.PublicKey) (*witnessJudgement, error) {
 	in := witnessInput{marksChecked: true, registrationsChecked: true}
+	for _, c := range f.kept() {
+		if *c.file != nil {
+			f.io.note("read", c.label)
+		}
+	}
 	var err error
 	if in.log, err = whole(f.log); err != nil {
 		return nil, fmt.Errorf("witness log: %w", err)
@@ -833,20 +867,41 @@ func (f *witnessFiles) judge(key ed25519.PublicKey) (*witnessJudgement, error) {
 	return judgeWitness(in, key)
 }
 
+// syncRead makes durable what a start, a repair or a registration read,
+// before anything is served, signed or written on the strength of it: each
+// file there, and both directories. A line or a mark an earlier process
+// wrote and could not sync is made durable here, or, if it cannot be,
+// nothing goes on (witness_log.go, the rule at the top).
+func (f *witnessFiles) syncRead() error {
+	for _, c := range f.kept() {
+		if *c.file == nil {
+			continue
+		}
+		if err := f.io.sync(c.label, *c.file); err != nil {
+			return fmt.Errorf("witness: the %s read could not be made durable: %w", c.label, err)
+		}
+	}
+	for _, d := range []struct {
+		label string
+		dir   *os.Root
+	}{{"log-dir", f.logDir}, {"marks-dir", f.marksDir}} {
+		if err := f.io.syncDir(d.label, d.dir); err != nil {
+			return fmt.Errorf("witness: the %s could not be synced: %w", d.label, err)
+		}
+	}
+	return nil
+}
+
 // create makes each file that is not there, empty and 0600, exclusively --
 // never through a link, nor over a file that came since it was looked for
-// -- and syncs its directory, so the file survives a crash once this
-// returns. The log is made first and the marks last.
+// -- holds it, and syncs its directory before anything is written to it.
+// The log is made first and the marks last.
 func (f *witnessFiles) create() error {
-	for _, c := range []struct {
-		file **os.File
-		dir  *os.Root
-		name string
-	}{{&f.log, f.logDir, f.logName}, {&f.registrations, f.logDir, f.logName + registrationsSuffix}, {&f.marks, f.marksDir, f.marksName}} {
+	for _, c := range f.kept() {
 		if *c.file != nil {
 			continue
 		}
-		made, err := createWitnessFile(c.dir, c.name)
+		made, err := f.createHeld(c.label, c.dir, c.name)
 		if err != nil {
 			return err
 		}
@@ -855,57 +910,88 @@ func (f *witnessFiles) create() error {
 	return nil
 }
 
-func createWitnessFile(dir *os.Root, name string) (*os.File, error) {
-	made, err := dir.OpenFile(name, witnessFileFlags|os.O_CREATE|os.O_EXCL, 0o600)
+// createHeld makes one file of the witness's, holds it, and syncs its
+// directory.
+func (f *witnessFiles) createHeld(label string, dir *os.Root, name string) (*os.File, error) {
+	made, err := f.io.create(label, dir, name)
 	if err != nil {
 		return nil, fmt.Errorf("witness: %v", err)
 	}
 	fail := func(err error) (*os.File, error) {
 		made.Close()
-		return nil, fmt.Errorf("witness: %s %v", name, err)
-	}
-	// the mode exactly, whatever the umask made of it, through the
-	// descriptor
-	if err := made.Chmod(0o600); err != nil {
-		return fail(err)
+		return nil, err
 	}
 	info, err := made.Stat()
 	if err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("witness: %s %v", name, err))
 	}
 	if entry, err := dir.Lstat(name); err != nil || !os.SameFile(entry, info) {
-		return fail(errors.New("is not the file this witness made"))
+		return fail(fmt.Errorf("witness: %s is not the file this witness made", name))
 	}
-	if err := syncDirectory(dir, "."); err != nil {
+	if err := f.hold(made, info, name); err != nil {
 		return fail(err)
+	}
+	dirLabel := "log-dir"
+	if label == "marks" {
+		dirLabel = "marks-dir"
+	}
+	if err := f.io.syncDir(dirLabel, dir); err != nil {
+		return fail(fmt.Errorf("witness: %s was made and its directory could not be synced: %v", name, err))
 	}
 	return made, nil
 }
 
 // --- writing ------------------------------------------------------------------
 
-// witnessIO appends to a file, makes it durable and cuts it, through its
-// descriptor. A test stands in a failure for any of them, at any step, as it
-// does for the seal registry (registryWriter).
+// witnessIO is the one seam every operation on the witness's files goes
+// through: an append, a sync and a cut through a file's descriptor, the
+// making of a file and the sync of a directory, and a note of what is not a
+// file operation -- "read" when a file is about to be judged, "start" when
+// a witness begins serving what it read, "publish" when a statement may be
+// served, "repaired" and "registered" when a repair or an offline
+// registration ends. A test records them in order (witness_trace.go) and
+// stands in a failure for any of them, at any step, as it does for the seal
+// registry (registryWriter).
 type witnessIO struct {
 	write    func(file string, f *os.File, data []byte) (int, error)
 	sync     func(file string, f *os.File) error
 	truncate func(file string, f *os.File, size int64) error
+	create   func(file string, dir *os.Root, name string) (*os.File, error)
+	syncDir  func(dir string, root *os.Root) error
+	note     func(op, file string)
 }
 
 func osWitnessIO() witnessIO {
 	return witnessIO{
-		// at the file's end, which the append mode keeps on Unix and the
-		// seek gives where there is none (witnessFileFlags)
-		write: func(_ string, f *os.File, data []byte) (int, error) {
-			if _, err := f.Seek(0, io.SeekEnd); err != nil {
-				return 0, err
-			}
-			return f.Write(data)
-		},
+		// at the file's end: every witness file is opened to append
+		// (witnessFileFlags)
+		write:    func(_ string, f *os.File, data []byte) (int, error) { return f.Write(data) },
 		sync:     func(_ string, f *os.File) error { return f.Sync() },
 		truncate: func(_ string, f *os.File, size int64) error { return f.Truncate(size) },
+		create: func(_ string, dir *os.Root, name string) (*os.File, error) {
+			made, err := dir.OpenFile(name, witnessFileFlags|os.O_CREATE|os.O_EXCL, 0o600)
+			if err != nil {
+				return nil, err
+			}
+			// the mode exactly, whatever the umask made of it, through the
+			// descriptor
+			if err := made.Chmod(0o600); err != nil {
+				made.Close()
+				return nil, err
+			}
+			return made, nil
+		},
+		syncDir: func(_ string, dir *os.Root) error { return syncDirectory(dir, ".") },
+		note:    func(string, string) {},
 	}
+}
+
+// orOS is the seam given, or the operating system's when none was.
+func (x witnessIO) orOS() witnessIO {
+	if x.write == nil {
+		return osWitnessIO()
+	}
+	return x
 }
 
 // appendTo appends data whole, or fails: a short write is a failure.
@@ -915,6 +1001,36 @@ func (x witnessIO) appendTo(file string, f *os.File, data []byte) error {
 		err = errors.New("short write")
 	}
 	return err
+}
+
+// admitWitnessLine is why a line of one of the witness's files, without its
+// newline, would not be read back as written, or nil: longer than the bound
+// its reader takes (witnessLineLimit), or not a line of its kind as that
+// reader reads it -- the start-up checks' own functions, parseWitnessStatement,
+// parseMark, parseRegistration and parseSetAside. Every line is held to it
+// before a byte of it is written, so the witness never writes a line its
+// own start would refuse; a request whose line fails is refused, and is not
+// a failure that stops the writer.
+func admitWitnessLine(kind string, line []byte) error {
+	if len(line) > witnessLineLimit {
+		return fmt.Errorf("witness: a %s line of %d bytes is longer than the %d bytes its reader takes", kind, len(line), witnessLineLimit)
+	}
+	ok := false
+	switch kind {
+	case "statement":
+		st, parsed := parseWitnessStatement(line)
+		ok = parsed && st.whole == string(line)
+	case "mark":
+		_, ok = parseMark(line)
+	case "registration":
+		_, ok = parseRegistration(line)
+	case "set-aside":
+		_, ok = parseSetAside(line)
+	}
+	if !ok {
+		return fmt.Errorf("witness: a %s line its reader would not read", kind)
+	}
+	return nil
 }
 
 // witnessConfig is what a witness log is opened with: where its files are,
@@ -931,6 +1047,9 @@ type witnessConfig struct {
 	// verifies: the gateway's own seed (witnessSeedSigner).
 	sign  func(message []byte) []byte
 	clock func() time.Time
+	// io is the seam the witness's file operations go through: the
+	// operating system's when unset (osWitnessIO).
+	io witnessIO
 }
 
 // witnessSeedSigner is the gateway's seed as the witness's key (ADR-0013,
@@ -1047,10 +1166,11 @@ type witnessLog struct {
 }
 
 // openWitnessLog opens a witness's files and applies the start-up checks:
-// it starts only when they find nothing, makes the files that are not
+// it starts only when they find nothing, makes what it read durable before
+// it serves any of it or signs after it, makes the files that are not
 // there, and repairs nothing by itself.
 func openWitnessLog(cfg witnessConfig) (*witnessLog, error) {
-	files, err := holdWitnessFiles(cfg.paths)
+	files, err := holdWitnessFiles(cfg.paths, cfg.io)
 	if err != nil {
 		return nil, err
 	}
@@ -1063,17 +1183,22 @@ func openWitnessLog(cfg witnessConfig) (*witnessLog, error) {
 		files.close()
 		return nil, witnessNotStarted{j}
 	}
+	if err := files.syncRead(); err != nil {
+		files.close()
+		return nil, err
+	}
 	if err := files.create(); err != nil {
 		files.close()
 		return nil, err
 	}
+	files.io.note("start", "")
 	clock := cfg.clock
 	if clock == nil {
 		clock = time.Now
 	}
 	return &witnessLog{
 		files: files, publicKey: cfg.publicKey, keyID: keyIDFor(cfg.publicKey), sign: cfg.sign, clock: clock,
-		firstSubmission: cfg.firstSubmission, io: osWitnessIO(), published: func() error { return nil },
+		firstSubmission: cfg.firstSubmission, io: files.io, published: func() error { return nil },
 		trails: j.trails, registrations: j.registrations, logSize: j.logEnd,
 	}, nil
 }
@@ -1209,8 +1334,12 @@ func (w *witnessLog) keepRegistration(r witnessRegistration) error {
 	if err := r.check(); err != nil {
 		return err
 	}
+	line := registrationLine(r)
+	if err := admitWitnessLine("registration", line[:len(line)-1]); err != nil {
+		return err
+	}
 	file := w.files.registrations
-	if err := w.io.appendTo("registrations", file, registrationLine(r)); err != nil {
+	if err := w.io.appendTo("registrations", file, line); err != nil {
 		w.stopped = witnessFailure{"register", err}
 		return w.stopped
 	}
@@ -1235,6 +1364,11 @@ func (w *witnessLog) signAndKeep(kind, checkpoint string, t *witnessTrail) ([]by
 	if err != nil {
 		return nil, err
 	}
+	// its mark is held to the marks' reader too, before either is written
+	mark := markLine(st)
+	if err := admitWitnessLine("mark", mark[:len(mark)-1]); err != nil {
+		return nil, err
+	}
 	// durable: the line appended to the log, and the log synced
 	offset := w.logSize
 	if err := w.io.appendTo("log", w.files.log, append(append([]byte(nil), line...), '\n')); err != nil {
@@ -1247,7 +1381,7 @@ func (w *witnessLog) signAndKeep(kind, checkpoint string, t *witnessTrail) ([]by
 		return nil, w.stopped
 	}
 	// marked: its mark appended to the marks, and the marks synced
-	if err := w.io.appendTo("marks", w.files.marks, markLine(st)); err != nil {
+	if err := w.io.appendTo("marks", w.files.marks, mark); err != nil {
 		w.stopped = witnessFailure{"mark", err}
 		return nil, w.stopped
 	}
@@ -1256,6 +1390,7 @@ func (w *witnessLog) signAndKeep(kind, checkpoint string, t *witnessTrail) ([]by
 		return nil, w.stopped
 	}
 	// published: only now may a read serve it or an answer give it
+	w.io.note("publish", "statement")
 	w.index.Lock()
 	trailIn(w.trails, st.trail).admit(st, offset, len(line))
 	w.index.Unlock()
@@ -1302,6 +1437,9 @@ func (w *witnessLog) statement(kind, checkpoint string, t *witnessTrail) (*witne
 	signature := w.sign(append([]byte(witnessPrefix), canon(body)...))
 	body.set("signature", vString(hex.EncodeToString(signature)))
 	line := canon(body)
+	if err := admitWitnessLine("statement", line); err != nil {
+		return nil, nil, err
+	}
 	st, ok := parseWitnessStatement(line)
 	if !ok || st.whole != string(line) || st.keyID != w.keyID || !witnessSignatureValid(w.publicKey, st) || !chainFollows(last, latest, st) {
 		return nil, nil, fmt.Errorf("witness: the %s statement made at index %d would not read as the next of its chain; nothing was written", kind, index)
@@ -1361,14 +1499,17 @@ func (w *witnessLog) statements(trail string, from int64, limit int) ([][]byte, 
 // sets the log's torn last bytes aside, when the marks end cleanly and the
 // log without them reaches every mark, releasing their index; and it sets
 // the registrations' last bytes aside, a registration never acknowledged.
-// On any other outcome it writes nothing. It returns the judgement it acted
-// on; after a repair the checks must find nothing.
-func repairWitnessLog(cfg witnessConfig, wio witnessIO) (*witnessJudgement, error) {
-	files, err := holdWitnessFiles(cfg.paths)
+// On any other outcome it writes nothing. Before it writes, what it read is
+// made durable (syncRead), and each write is synced before the next relies
+// on it. It returns the judgement it acted on; after a repair the checks
+// must find nothing.
+func repairWitnessLog(cfg witnessConfig) (*witnessJudgement, error) {
+	files, err := holdWitnessFiles(cfg.paths, cfg.io)
 	if err != nil {
 		return nil, err
 	}
 	defer files.close()
+	wio := files.io
 	j, err := files.judge(cfg.publicKey)
 	if err != nil {
 		return nil, err
@@ -1381,9 +1522,12 @@ func repairWitnessLog(cfg witnessConfig, wio witnessIO) (*witnessJudgement, erro
 	if clock == nil {
 		clock = time.Now
 	}
+	if err := files.syncRead(); err != nil {
+		return j, fmt.Errorf("witness repair: %w", err)
+	}
 	switch j.outcome {
 	case outcomeSetAside:
-		if err := files.setAside("log", files.log, j.logEnd, clock, wio); err != nil {
+		if err := files.setAsideTail("log", files.log, j.logEnd, clock); err != nil {
 			return j, err
 		}
 	case outcomeNewlineAndMark:
@@ -1395,7 +1539,11 @@ func repairWitnessLog(cfg witnessConfig, wio witnessIO) (*witnessJudgement, erro
 		}
 		fallthrough
 	case outcomeMarkCompleted:
-		if err := wio.appendTo("marks", files.marks, markLine(j.complete)); err != nil {
+		mark := markLine(j.complete)
+		if err := admitWitnessLine("mark", mark[:len(mark)-1]); err != nil {
+			return j, err
+		}
+		if err := wio.appendTo("marks", files.marks, mark); err != nil {
 			return j, fmt.Errorf("witness repair: %w", err)
 		}
 		if err := wio.sync("marks", files.marks); err != nil {
@@ -1403,10 +1551,11 @@ func repairWitnessLog(cfg witnessConfig, wio witnessIO) (*witnessJudgement, erro
 		}
 	}
 	if j.registrationsTail {
-		if err := files.setAside("registrations", files.registrations, j.registrationsEnd, clock, wio); err != nil {
+		if err := files.setAsideTail("registrations", files.registrations, j.registrationsEnd, clock); err != nil {
 			return j, err
 		}
 	}
+	wio.note("repaired", "")
 	after, err := files.judge(cfg.publicKey)
 	if err != nil {
 		return j, err
@@ -1417,42 +1566,90 @@ func repairWitnessLog(cfg witnessConfig, wio witnessIO) (*witnessJudgement, erro
 	return j, nil
 }
 
-// setAside keeps a file's last bytes, from end on, in the set-aside file
-// beside the log -- appended and synced, made if it is not there -- and only
-// then ends the file at end. A crash between the two leaves the bytes kept
-// twice, never lost.
-func (f *witnessFiles) setAside(label string, file *os.File, end int64, clock func() time.Time, wio witnessIO) error {
+// setAsideChunk is how many of a file's last bytes one set-aside record
+// keeps: in hexadecimal, with its other members, a record is then a line of
+// about 2140 bytes, well within the bound every line of the witness's is
+// held to (admitWitnessLine). Last bytes of any length are kept, a record
+// for each part of them, in order.
+const setAsideChunk = 1024
+
+// setAsideLine is one set-aside record, a line.
+func setAsideLine(at string, kept []byte, label string, offset int64) []byte {
+	record := newObject()
+	record.set("at", vString(at))
+	record.set("bytes", vString(hex.EncodeToString(kept)))
+	record.set("file", vString(label))
+	record.set("offset", vInt(offset))
+	return append(canon(record), '\n')
+}
+
+var setAsideMembers = map[string]bool{"at": true, "bytes": true, "file": true, "offset": true}
+
+// parseSetAside reads a set-aside record, in the canonical bytes the
+// witness writes it in, giving the bytes it keeps.
+func parseSetAside(line []byte) ([]byte, bool) {
+	v, err := parseStatementJSON(line, 8)
+	if err != nil {
+		return nil, false
+	}
+	obj, ok := v.(*vObject)
+	if !ok || exactlyMembers(obj, setAsideMembers, "set-aside record") != nil || string(canon(obj)) != string(line) {
+		return nil, false
+	}
+	at, _ := memberString(obj, "at")
+	text, _ := memberString(obj, "bytes")
+	label, _ := memberString(obj, "file")
+	_, ok = witnessInteger(obj, "offset", 0)
+	kept, err := hex.DecodeString(text)
+	if !ok || err != nil || len(kept) == 0 || text != hex.EncodeToString(kept) || !witnessTimeForm.MatchString(at) || (label != "log" && label != "registrations") {
+		return nil, false
+	}
+	return kept, true
+}
+
+// setAsideTail keeps a file's last bytes, from end on, in the set-aside
+// file beside the log -- made if it is not there, appended and synced --
+// and only then ends the file at end and syncs it. A crash between the two
+// leaves the bytes kept twice, never lost. The bytes are read and kept a
+// part at a time, so last bytes of any length cost no more memory than one
+// part.
+func (f *witnessFiles) setAsideTail(label string, file *os.File, end int64, clock func() time.Time) error {
 	info, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("witness repair: %w", err)
 	}
-	last := make([]byte, info.Size()-end)
-	if _, err := file.ReadAt(last, end); err != nil {
+	if f.setAside == nil {
+		if f.setAside, err = f.openHeld(f.logDir, f.logName+setAsideSuffix); err != nil {
+			return fmt.Errorf("witness repair: %w", err)
+		}
+	}
+	if f.setAside == nil {
+		if f.setAside, err = f.createHeld("set-aside", f.logDir, f.logName+setAsideSuffix); err != nil {
+			return fmt.Errorf("witness repair: %w", err)
+		}
+	}
+	at := clock().UTC().Truncate(time.Second).Format("2006-01-02T15:04:05Z")
+	part := make([]byte, setAsideChunk)
+	for offset := end; offset < info.Size(); offset += setAsideChunk {
+		n := min(int64(setAsideChunk), info.Size()-offset)
+		if _, err := file.ReadAt(part[:n], offset); err != nil {
+			return fmt.Errorf("witness repair: %w", err)
+		}
+		line := setAsideLine(at, part[:n], label, offset)
+		if err := admitWitnessLine("set-aside", line[:len(line)-1]); err != nil {
+			return err
+		}
+		if err := f.io.appendTo("set-aside", f.setAside, line); err != nil {
+			return fmt.Errorf("witness repair: %w", err)
+		}
+	}
+	if err := f.io.sync("set-aside", f.setAside); err != nil {
 		return fmt.Errorf("witness repair: %w", err)
 	}
-	record := newObject()
-	record.set("at", vString(clock().UTC().Truncate(time.Second).Format("2006-01-02T15:04:05Z")))
-	record.set("bytes", vString(hex.EncodeToString(last)))
-	record.set("file", vString(label))
-	record.set("offset", vInt(end))
-	kept, err := openWitnessFile(f.logDir, f.logName+setAsideSuffix)
-	if err == nil && kept == nil {
-		kept, err = createWitnessFile(f.logDir, f.logName+setAsideSuffix)
-	}
-	if err != nil {
+	if err := f.io.truncate(label, file, end); err != nil {
 		return fmt.Errorf("witness repair: %w", err)
 	}
-	defer kept.Close()
-	if err := wio.appendTo("set-aside", kept, append(canon(record), '\n')); err != nil {
-		return fmt.Errorf("witness repair: %w", err)
-	}
-	if err := wio.sync("set-aside", kept); err != nil {
-		return fmt.Errorf("witness repair: %w", err)
-	}
-	if err := wio.truncate(label, file, end); err != nil {
-		return fmt.Errorf("witness repair: %w", err)
-	}
-	if err := wio.sync(label, file); err != nil {
+	if err := f.io.sync(label, file); err != nil {
 		return fmt.Errorf("witness repair: %w", err)
 	}
 	return nil
@@ -1461,39 +1658,53 @@ func (f *witnessFiles) setAside(label string, file *os.File, end int64, clock fu
 // registerWitnessTrail registers a trail while the witness is not running:
 // under its locks, to registrations that end cleanly, whatever the log
 // holds. A registration is harmless to the log: it is how a witness whose
-// start-up found a trail with no registration is given one.
+// start-up found a trail with no registration is given one. What it read
+// is made durable before it appends, and its line is held to the
+// registrations' reader before a byte of it is written.
 func registerWitnessTrail(paths witnessPaths, r witnessRegistration, wio witnessIO) error {
 	if err := r.check(); err != nil {
 		return err
 	}
-	files, err := holdWitnessFiles(paths)
+	line := registrationLine(r)
+	if err := admitWitnessLine("registration", line[:len(line)-1]); err != nil {
+		return err
+	}
+	files, err := holdWitnessFiles(paths, wio)
 	if err != nil {
 		return err
 	}
 	defer files.close()
+	wio = files.io
+	if files.registrations != nil {
+		wio.note("read", "registrations")
+		info, err := files.registrations.Stat()
+		if err != nil {
+			return fmt.Errorf("witness registrations: %w", err)
+		}
+		if size := info.Size(); size > 0 {
+			lastByte := make([]byte, 1)
+			if _, err := files.registrations.ReadAt(lastByte, size-1); err != nil {
+				return fmt.Errorf("witness registrations: %w", err)
+			}
+			if lastByte[0] != '\n' {
+				return errors.New("witness: the registrations do not end cleanly; repair sets their last bytes aside first")
+			}
+		}
+	}
+	if err := files.syncRead(); err != nil {
+		return err
+	}
 	if files.registrations == nil {
-		if files.registrations, err = createWitnessFile(files.logDir, files.logName+registrationsSuffix); err != nil {
+		if files.registrations, err = files.createHeld("registrations", files.logDir, files.logName+registrationsSuffix); err != nil {
 			return err
 		}
 	}
-	info, err := files.registrations.Stat()
-	if err != nil {
-		return fmt.Errorf("witness registrations: %w", err)
-	}
-	if size := info.Size(); size > 0 {
-		lastByte := make([]byte, 1)
-		if _, err := files.registrations.ReadAt(lastByte, size-1); err != nil {
-			return fmt.Errorf("witness registrations: %w", err)
-		}
-		if lastByte[0] != '\n' {
-			return errors.New("witness: the registrations do not end cleanly; repair sets their last bytes aside first")
-		}
-	}
-	if err := wio.appendTo("registrations", files.registrations, registrationLine(r)); err != nil {
+	if err := wio.appendTo("registrations", files.registrations, line); err != nil {
 		return fmt.Errorf("witness registrations: %w", err)
 	}
 	if err := wio.sync("registrations", files.registrations); err != nil {
 		return fmt.Errorf("witness registrations: %w", err)
 	}
+	wio.note("registered", "")
 	return nil
 }

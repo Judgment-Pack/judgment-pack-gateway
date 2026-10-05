@@ -205,7 +205,7 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 // runner to refusing a vector it cannot read and to running none for
 // another implementation.
 func TestWitnessRecoveryVectors(t *testing.T) {
-	failures, count, err := runRecoveryVectors(corpusPath(), true)
+	failures, count, err := runRecoveryVectors(corpusPath(), witnessFilesKept)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestWitnessRecoveryVectors(t *testing.T) {
 	if failures, _, err := runRecoveryVectors(dir, false); err != nil || len(failures) != 0 {
 		t.Errorf("read for another implementation, a vector was run: %v, %d failures", err, len(failures))
 	}
-	if failures, _, err := runRecoveryVectors(dir, true); err != nil || len(failures) != 1 {
+	if failures, _, err := runRecoveryVectors(dir, witnessFilesKept); err != nil || len(failures) != map[bool]int{true: 1, false: 0}[witnessFilesKept] {
 		t.Errorf("a vector expecting a start where the rules refuse: %v, %d failures", err, len(failures))
 	}
 	for what, edit := range map[string][2]string{

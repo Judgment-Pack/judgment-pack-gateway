@@ -172,9 +172,7 @@ func readWitnessVector(path string) (witnessVector, error) {
 	if err != nil {
 		return vector, err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&vector); err != nil {
+	if err := decodeVectorFile(raw, &vector, true); err != nil {
 		return vector, fmt.Errorf("%s: %v", path, err)
 	}
 	if !witnessFamilies[vector.Family] {
@@ -291,8 +289,8 @@ func corpusStatedCounts(corpusDir string) error {
 	if err != nil {
 		return err
 	}
-	if err := json.Unmarshal(canonRaw, &canonFile); err != nil {
-		return err
+	if err := decodeVectorFile(canonRaw, &canonFile, false); err != nil {
+		return fmt.Errorf("canon.json: %v", err)
 	}
 	stores, _ := filepath.Glob(filepath.Join(corpusDir, "stores", "*.json"))
 	v3, _ := filepath.Glob(filepath.Join(corpusDir, "v3", "stores", "*.json"))

@@ -1,3 +1,5 @@
+//go:build unix
+
 package main
 
 // The witness's own storage (witness_log.go; ADR-0013 §4): what it signs,
@@ -47,17 +49,26 @@ func newWitnessPaths(t *testing.T) witnessPaths {
 }
 
 // testWitness is a witness under the corpus's test seed, its clock the
-// test's to move.
+// test's to move. Every operation its witness, its repairs and its
+// registrations make on their files goes through one trace, and the test
+// fails, when it ends, if any of them broke the order witness_trace.go
+// holds them to.
 type testWitness struct {
 	paths  witnessPaths
 	signer witnessSigner
 	now    *time.Time
 	first  bool
+	trace  *witnessTrace
 }
 
 func newTestWitness(t *testing.T, trails ...string) *testWitness {
 	t.Helper()
-	tw := &testWitness{paths: newWitnessPaths(t), signer: newWitnessSigner(t), now: new(time.Time)}
+	tw := &testWitness{paths: newWitnessPaths(t), signer: newWitnessSigner(t), now: new(time.Time), trace: newWitnessTrace()}
+	t.Cleanup(func() {
+		if broken := tw.trace.violation(); broken != "" {
+			t.Errorf("the order of the witness's operations: %s; the last of them: %v", broken, tw.trace.last())
+		}
+	})
 	*tw.now = testClock
 	for _, trail := range trails {
 		tw.register(t, trail)
@@ -69,14 +80,24 @@ func subjectOf(trail string) string { return "deliverer-" + trail[:4] }
 
 func (tw *testWitness) register(t *testing.T, trail string) {
 	t.Helper()
-	if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trail, issuer: witnessIssuer, subject: subjectOf(trail)}, osWitnessIO()); err != nil {
+	if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trail, issuer: witnessIssuer, subject: subjectOf(trail)}, tw.io(osWitnessIO())); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func (tw *testWitness) config() witnessConfig {
 	public, sign := witnessSeedSigner(tw.signer.seed)
-	return witnessConfig{paths: tw.paths, firstSubmission: tw.first, publicKey: public, sign: sign, clock: func() time.Time { return *tw.now }}
+	return witnessConfig{paths: tw.paths, firstSubmission: tw.first, publicKey: public, sign: sign, clock: func() time.Time { return *tw.now }, io: tw.io(osWitnessIO())}
+}
+
+// io is base, traced.
+func (tw *testWitness) io(base witnessIO) witnessIO { return tw.trace.wrap(base) }
+
+// repair repairs with base in place of the operating system's operations.
+func (tw *testWitness) repair(base witnessIO) (*witnessJudgement, error) {
+	cfg := tw.config()
+	cfg.io = tw.io(base)
+	return repairWitnessLog(cfg)
 }
 
 func (tw *testWitness) open(t *testing.T) *witnessLog {
@@ -92,7 +113,7 @@ func (tw *testWitness) open(t *testing.T) *witnessLog {
 // are, without opening the witness.
 func (tw *testWitness) judge(t *testing.T) (string, []string) {
 	t.Helper()
-	files, err := holdWitnessFiles(tw.paths)
+	files, err := holdWitnessFiles(tw.paths, osWitnessIO())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -553,22 +574,20 @@ func newFailAt(tw *testWitness, step, leaves string, block <-chan struct{}) *fai
 			}
 		})
 	}
-	f.io = witnessIO{
-		write: func(file string, fd *os.File, data []byte) (int, error) {
-			n, err := inner.write(file, fd, data)
-			if *fired {
-				after()
-			}
-			return n, err
-		},
-		sync: func(file string, fd *os.File) error {
-			err := inner.sync(file, fd)
-			if *fired {
-				after()
-			}
-			return err
-		},
-		truncate: inner.truncate,
+	f.io = inner
+	f.io.write = func(file string, fd *os.File, data []byte) (int, error) {
+		n, err := inner.write(file, fd, data)
+		if *fired {
+			after()
+		}
+		return n, err
+	}
+	f.io.sync = func(file string, fd *os.File) error {
+		err := inner.sync(file, fd)
+		if *fired {
+			after()
+		}
+		return err
 	}
 	return f
 }
@@ -667,7 +686,7 @@ func TestWitnessCrashMatrix(t *testing.T) {
 			headBefore, _, _ := w.head(testTrail)
 
 			f := newFailAt(tw, c.step, c.leaves, nil)
-			w.io = f.io
+			w.io = tw.io(f.io)
 			if c.step == "publish" {
 				w.published = func() error { *f.fired = true; return errors.New("the process ended after the mark") }
 			}
@@ -717,7 +736,7 @@ func TestWitnessCrashMatrix(t *testing.T) {
 			}
 			if c.want == outcomeNewKey {
 				log, marks := tw.read(t, "log"), tw.read(t, "marks")
-				if j, err := repairWitnessLog(tw.config(), osWitnessIO()); err != nil || j.outcome != outcomeNewKey {
+				if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != outcomeNewKey {
 					t.Fatalf("repair: %v", err)
 				}
 				if tw.read(t, "log") != log || tw.read(t, "marks") != marks || tw.read(t, "setAside") != "<absent>" {
@@ -725,7 +744,7 @@ func TestWitnessCrashMatrix(t *testing.T) {
 				}
 				return
 			}
-			if j, err := repairWitnessLog(tw.config(), osWitnessIO()); err != nil || j.outcome != c.want {
+			if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != c.want {
 				t.Fatalf("repair: %v", err)
 			}
 			w = tw.open(t)
@@ -787,7 +806,7 @@ func TestWitnessOneCrashUnderTheLockWithTwoTrails(t *testing.T) {
 				mustSign(t, w, trailB, 1)
 				release := make(chan struct{})
 				f := newFailAt(tw, step, left, release)
-				w.io = f.io
+				w.io = tw.io(f.io)
 				var wg sync.WaitGroup
 				answers := make([]error, 2)
 				for i, trail := range []string{testTrail, trailB} {
@@ -849,13 +868,13 @@ func TestWitnessRepairInterruptedIsRepairedAgain(t *testing.T) {
 		tw.write(t, "marks", strings.SplitAfter(marks, "\n")[0])
 		failing := osWitnessIO()
 		failing.truncate = func(string, *os.File, int64) error { return errors.New("the process ended") }
-		if _, err := repairWitnessLog(tw.config(), failing); err == nil {
+		if _, err := tw.repair(failing); err == nil {
 			t.Fatal("the repair did not fail")
 		}
 		if tw.read(t, "log") != torn {
 			t.Fatal("the log was cut before its bytes were kept")
 		}
-		if j, err := repairWitnessLog(tw.config(), osWitnessIO()); err != nil || j.outcome != outcomeSetAside {
+		if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != outcomeSetAside {
 			t.Fatalf("repair again: %v", err)
 		}
 		if kept := tw.read(t, "setAside"); strings.Count(kept, hex.EncodeToString(second[:40])) != 2 {
@@ -869,13 +888,13 @@ func TestWitnessRepairInterruptedIsRepairedAgain(t *testing.T) {
 		tw.write(t, "log", strings.TrimSuffix(tw.read(t, "log"), "\n"))
 		tw.write(t, "marks", strings.SplitAfter(tw.read(t, "marks"), "\n")[0])
 		failing, _ := faultyWitnessIO(osWitnessIO(), "mark", "nothing")
-		if _, err := repairWitnessLog(tw.config(), failing); err == nil {
+		if _, err := tw.repair(failing); err == nil {
 			t.Fatal("the repair did not fail")
 		}
 		if outcome, _ := tw.judge(t); outcome != outcomeMarkCompleted {
 			t.Fatalf("after the newline, the checks give %s", outcome)
 		}
-		if j, err := repairWitnessLog(tw.config(), osWitnessIO()); err != nil || j.outcome != outcomeMarkCompleted {
+		if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != outcomeMarkCompleted {
 			t.Fatalf("repair again: %v", err)
 		}
 		tw.open(t).close()
@@ -887,7 +906,7 @@ func TestWitnessRepairInterruptedIsRepairedAgain(t *testing.T) {
 func TestWitnessRegistersOffline(t *testing.T) {
 	tw := newTestWitness(t, testTrail)
 	tw.write(t, "registrations", tw.read(t, "registrations")+`{"issu`)
-	if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, osWitnessIO()); err == nil {
+	if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
 		t.Error("a registration was appended to registrations that do not end cleanly")
 	}
 }

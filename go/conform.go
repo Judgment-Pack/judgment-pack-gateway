@@ -23,13 +23,34 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// decodeVectorFile reads a corpus file that is exactly one JSON value into
+// dst: anything after that value but whitespace -- a second object, a stray
+// byte -- refuses the file, so no corpus file holds material no runner
+// reads. Every family's loader reads through it; with strict set, a member
+// dst does not name refuses it too.
+func decodeVectorFile(raw []byte, dst any, strict bool) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("data follows the file's one JSON value")
+	}
+	return nil
+}
 
 type canonVector struct {
 	Note        string `json:"note"`
@@ -279,8 +300,8 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 	var canonFile struct {
 		Vectors []canonVector `json:"vectors"`
 	}
-	if err := json.Unmarshal(raw, &canonFile); err != nil {
-		return nil, counts, err
+	if err := decodeVectorFile(raw, &canonFile, false); err != nil {
+		return nil, counts, fmt.Errorf("canon.json: %v", err)
 	}
 	for _, vector := range canonFile.Vectors {
 		produced, accepted := impl.canon(vector.InputJSON)
@@ -322,8 +343,8 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 			return nil, counts, err
 		}
 		var vector storeVector
-		if err := json.Unmarshal(raw, &vector); err != nil {
-			return nil, counts, err
+		if err := decodeVectorFile(raw, &vector, false); err != nil {
+			return nil, counts, fmt.Errorf("%s: %v", path, err)
 		}
 		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
 		if err != nil {
@@ -355,10 +376,11 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 	failures = append(failures, witnessFailures...)
 
 	// The recovery vectors hold this implementation's own witness, so they
-	// are run only when it is the implementation under test; for any other
-	// they are read and held to their form, and not run.
+	// are run only when it is the implementation under test, and where a
+	// witness keeps its files; otherwise they are read and held to their
+	// form, and not run.
 	_, own := impl.(inProcess)
-	recoveryFailures, recoveryCount, err := runRecoveryVectors(corpusDir, own)
+	recoveryFailures, recoveryCount, err := runRecoveryVectors(corpusDir, own && witnessFilesKept)
 	if err != nil {
 		return nil, counts, err
 	}
@@ -409,8 +431,10 @@ func cmdConform(args []string) int {
 	}
 	fmt.Printf("%s vs corpus: %d canon vectors, %d store vectors, %d witness vectors\n",
 		impl.label(), counts.canon, counts.stores, counts.witness)
-	if _, own := impl.(inProcess); own {
+	if _, own := impl.(inProcess); own && witnessFilesKept {
 		fmt.Printf("this implementation's witness vs corpus: %d witness recovery vectors\n", counts.recovery)
+	} else if own {
+		fmt.Printf("%d witness recovery vectors read and not run: a witness keeps its files only on Unix\n", counts.recovery)
 	} else {
 		fmt.Printf("%d witness recovery vectors read and not run: they hold this reference witness's own storage, outside the process contract\n", counts.recovery)
 	}

@@ -15,10 +15,8 @@ package main
 // builds any other bytes gets no signature, and the step disagrees.
 
 import (
-	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -111,9 +109,7 @@ func readRecoveryVector(path string, publicKey ed25519.PublicKey) (recoveryVecto
 	if err != nil {
 		return v, err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&v); err != nil {
+	if err := decodeVectorFile(raw, &v, true); err != nil {
 		return v, fmt.Errorf("%s: %v", path, err)
 	}
 	fail := func(format string, args ...any) (recoveryVector, error) {
@@ -236,6 +232,10 @@ type recoveryRun struct {
 	signed    map[string][]byte
 	unsigned  []string
 	failures  []string
+	// trace holds every operation of every step to the order of
+	// witness_trace.go: a vector whose outcome is right and whose order is
+	// not disagrees.
+	trace *witnessTrace
 }
 
 func (r *recoveryRun) path(name string) string {
@@ -268,6 +268,7 @@ func (r *recoveryRun) config() witnessConfig {
 			return make([]byte, ed25519.SignatureSize)
 		},
 		clock: func() time.Time { return at },
+		io:    r.trace.wrap(osWitnessIO()),
 	}
 }
 
@@ -280,7 +281,7 @@ func runRecoveryVector(vector recoveryVector, publicKey ed25519.PublicKey) []str
 		return []string{err.Error()}
 	}
 	defer os.RemoveAll(root)
-	r := &recoveryRun{vector: vector, publicKey: publicKey, root: root, signed: map[string][]byte{}}
+	r := &recoveryRun{vector: vector, publicKey: publicKey, root: root, signed: map[string][]byte{}, trace: newWitnessTrace()}
 	for _, dir := range []string{"log", "marks"} {
 		if err := os.Mkdir(filepath.Join(root, dir), 0o700); err != nil {
 			return []string{err.Error()}
@@ -304,6 +305,9 @@ func runRecoveryVector(vector recoveryVector, publicKey ed25519.PublicKey) []str
 		if len(r.unsigned) > 0 {
 			r.failf("step %d: the writer built bytes no statement of the vector signs: %q", i+1, r.unsigned[0])
 			r.unsigned = nil
+		}
+		if broken := r.trace.violation(); broken != "" && len(r.failures) == before {
+			r.failf("step %d: the order of the witness's operations: %s", i+1, broken)
 		}
 		if len(r.failures) > 0 {
 			break
@@ -365,7 +369,9 @@ func (r *recoveryRun) step(step recoveryStep) {
 		}
 	case step.Repair != nil:
 		r.closeLog()
-		j, err := repairWitnessLog(r.config(), wio)
+		cfg := r.config()
+		cfg.io = r.trace.wrap(wio)
+		j, err := repairWitnessLog(cfg)
 		if err != nil {
 			r.failf("repair: %v", err)
 			return
@@ -376,9 +382,12 @@ func (r *recoveryRun) step(step recoveryStep) {
 		if err := r.replace(step.Replace); err != nil {
 			r.failf("replace: %v", err)
 		}
+		// files the operator put in place are as durable as the operator
+		// made them, whatever the witness left unsynced before
+		r.trace.reset()
 	case step.Offline != nil:
 		r.closeLog()
-		err := registerWitnessTrail(r.paths, witnessRegistration{trail: step.Offline.Trail, issuer: step.Offline.Issuer, subject: step.Offline.Subject}, wio)
+		err := registerWitnessTrail(r.paths, witnessRegistration{trail: step.Offline.Trail, issuer: step.Offline.Issuer, subject: step.Offline.Subject}, r.trace.wrap(wio))
 		if err != nil {
 			r.failf("registerOffline: %v", err)
 		}
@@ -413,7 +422,7 @@ func (r *recoveryRun) write(step recoveryStep, wio witnessIO, fired *bool) {
 		r.failf("a write with no witness open")
 		return
 	}
-	r.log.io = wio
+	r.log.io = r.trace.wrap(wio)
 	if step.Fault != nil && step.Fault.Step == "publish" {
 		r.log.published = func() error { *fired = true; return errors.New("the process ended after the mark") }
 	}
@@ -428,7 +437,7 @@ func (r *recoveryRun) write(step recoveryStep, wio witnessIO, fired *bool) {
 		err = r.log.register(witnessRegistration{trail: step.Register.Trail, issuer: step.Register.Issuer, subject: step.Register.Subject})
 		answer.kind = "registered"
 	}
-	r.log.io, r.log.published = osWitnessIO(), func() error { return nil }
+	r.log.io, r.log.published = r.trace.wrap(osWitnessIO()), func() error { return nil }
 	if fired != nil && !*fired && step.Fault != nil {
 		r.failf("the fault at %s was never reached", step.Fault.Step)
 	}
@@ -460,7 +469,7 @@ func (r *recoveryRun) concurrent(step recoveryStep, wio witnessIO, fired *bool) 
 		r.failf("a write with no witness open")
 		return
 	}
-	r.log.io = wio
+	r.log.io = r.trace.wrap(wio)
 	kinds := make([]string, len(step.Concurrent))
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -475,7 +484,7 @@ func (r *recoveryRun) concurrent(step recoveryStep, wio witnessIO, fired *bool) 
 	}
 	close(start)
 	wg.Wait()
-	r.log.io = osWitnessIO()
+	r.log.io = r.trace.wrap(osWitnessIO())
 	if !*fired {
 		r.failf("the fault at %s was never reached", step.Fault.Step)
 	}
