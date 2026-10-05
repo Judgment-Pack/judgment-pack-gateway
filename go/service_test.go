@@ -1157,6 +1157,63 @@ func TestASealStartsOnALineOfItsOwn(t *testing.T) {
 	}
 }
 
+// A seal written whole but for its newline is a seal: the verifier loads
+// it (SPEC.md §4 step 2), so a session whose only seal is that unterminated
+// last line is already sealed (§3), and a second seal is refused, over HTTP
+// and through the writer at a smaller count, with the registry left byte
+// for byte as it was. A writer that took an unterminated last line for one
+// still being written, and so for no seal, would end that line and append
+// a second seal the verifier never loads.
+func TestAnUnterminatedSealRefusesASecond(t *testing.T) {
+	service, server := testService(t)
+	const session = "unended"
+	for _, q := range []string{"a", "b"} {
+		if code, body := post(t, server, "/acquire", `{"session":"unended","source":"screening","arguments":{"q":"`+q+`"}}`); code != http.StatusOK {
+			t.Fatalf("acquire: %d %v", code, body)
+		}
+	}
+	if code, body := post(t, server, "/seal", `{"session":"unended"}`); code != http.StatusOK {
+		t.Fatalf("the first seal: %d %v", code, body)
+	}
+	data, err := os.ReadFile(service.regPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "\n") != 1 || !strings.HasSuffix(string(data), "\n") {
+		t.Fatalf("the registry is not the one seal on its line: %q", data)
+	}
+	unterminated := []byte(strings.TrimSuffix(string(data), "\n"))
+	if err := os.WriteFile(service.regPath, unterminated, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded := func() {
+		t.Helper()
+		seals, _, err := loadSeals(service.regPath, service.publicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := seals[session]; !ok || got.finalCount != 2 {
+			t.Fatalf("the verifier does not load the unterminated seal at its count: %v", seals)
+		}
+	}
+	loaded()
+
+	if code, body := post(t, server, "/seal", `{"session":"unended"}`); code != http.StatusBadRequest || body["error"] != "session already sealed: "+session {
+		t.Fatalf("a second seal of a session sealed by an unterminated line: %d %v", code, body)
+	}
+	if _, err := service.registry.seal(session, 1, nowStamp()); err == nil || err.Error() != "session already sealed: "+session {
+		t.Fatalf("a second seal through the writer, at a smaller count: %v", err)
+	}
+	after, err := os.ReadFile(service.regPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, unterminated) {
+		t.Fatalf("the refused seals changed the registry:\nbefore %q\nafter  %q", unterminated, after)
+	}
+	loaded()
+}
+
 // A seal is final across a restart: a process started on the same store
 // and registry refuses an acquisition into a session an earlier process
 // sealed, before the source is started -- the registry is the one record of
