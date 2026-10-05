@@ -268,6 +268,58 @@ func TestWitnessRecoveryVectors(t *testing.T) {
 	}
 }
 
+// Every file of every corpus family is exactly one JSON value: a second
+// object after a vector, or a stray byte, refuses the run, so no file holds
+// material a runner would silently pass over. The loader every family is
+// read by (decodeVectorFile) is held to it for each.
+func TestEveryCorpusFileIsOneJSONValue(t *testing.T) {
+	first := func(pattern ...string) string {
+		paths, err := filepath.Glob(corpusPath(pattern...))
+		if err != nil || len(paths) == 0 {
+			t.Fatalf("no file %v", pattern)
+		}
+		sort.Strings(paths)
+		rel, err := filepath.Rel(corpusPath(), paths[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rel
+	}
+	families := map[string]string{
+		"canon":            "canon.json",
+		"stores":           first("stores", "*.json"),
+		"v3 stores":        first("v3", "stores", "*.json"),
+		"witness":          first("witness", "*.json"),
+		"witness recovery": first("witness-recovery", "*.json"),
+	}
+	run := func(family, rel, after string) error {
+		dir := t.TempDir()
+		if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, rel)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(raw, after...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = runCorpus(dir, inProcess{})
+		return err
+	}
+	for family, rel := range families {
+		for _, trailing := range []string{"\n{}\n", "x", "\n[]"} {
+			if err := run(family, rel, trailing); err == nil {
+				t.Errorf("%s: a file with %q after its value did not refuse the run", family, trailing)
+			}
+		}
+		if err := run(family, rel, " \n\t"); err != nil {
+			t.Errorf("%s: whitespace after the value refused the run: %v", family, err)
+		}
+	}
+}
+
 // normalizeFindings round-trips through the wire encoding, so what is compared
 // is what the process contract would actually emit.
 func normalizeFindings(t *testing.T, findings []finding) []string {
@@ -327,8 +379,7 @@ func readFile(t *testing.T, path string) string {
 
 func readJSON(t *testing.T, path string, dst any) {
 	t.Helper()
-	dec := json.NewDecoder(bytes.NewReader([]byte(readFile(t, path))))
-	if err := dec.Decode(dst); err != nil {
+	if err := decodeVectorFile([]byte(readFile(t, path)), dst, false); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
 }
