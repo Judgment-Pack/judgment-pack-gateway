@@ -1491,23 +1491,36 @@ func TestWitnessSetAsideSettlesItsOwnTailFirst(t *testing.T) {
 }
 
 // The records a repair appends to the set-aside file are read back before
-// the file they keep is cut: a record that is written otherwise than it was
-// meant -- keeping other bytes, or not reading as a record at all -- while
-// the write reports success, refuses the cut, and the log keeps its last
-// bytes.
+// the file they keep is cut: a record written otherwise than it was meant
+// while the write reports success -- keeping other bytes, not reading as a
+// record at all, lost, or given twice -- refuses the cut, and the log keeps
+// its last bytes, here of three parts.
 func TestWitnessSetAsideIsReadBackBeforeTheCut(t *testing.T) {
+	last := strings.Repeat("y", 2*setAsideChunk+10)
 	for what, spoil := range map[string]func([]byte) []byte{
 		"other bytes kept": func(data []byte) []byte {
-			return bytes.Replace(data, []byte(`"bytes":"7b`), []byte(`"bytes":"7c`), 1)
+			return bytes.Replace(data, []byte(`"bytes":"79`), []byte(`"bytes":"7a`), 1)
 		},
 		"no record": func(data []byte) []byte { return append([]byte("not a record "), data...) },
+		"a record lost": func(data []byte) []byte {
+			if bytes.Contains(data, []byte(hex.EncodeToString([]byte(last[2*setAsideChunk:])))) {
+				return nil
+			}
+			return data
+		},
+		"a record given twice": func(data []byte) []byte {
+			if bytes.Contains(data, []byte(hex.EncodeToString([]byte(last[2*setAsideChunk:])))) {
+				return append(append([]byte(nil), data...), data...)
+			}
+			return data
+		},
 	} {
 		t.Run(what, func(t *testing.T) {
 			tw := newTestWitness(t, testTrail)
 			w := tw.open(t)
 			mustSign(t, w, testTrail, 1)
 			w.close()
-			torn := tw.read(t, "log") + `{"checkpoint":`
+			torn := tw.read(t, "log") + last
 			tw.write(t, "log", torn)
 			x := osWitnessIO()
 			base := x.write
