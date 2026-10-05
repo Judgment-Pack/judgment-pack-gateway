@@ -477,6 +477,8 @@ func TestWitnessStartUpCases(t *testing.T) {
 			want: outcomeRefused, findings: []string{findingWitnessChainBroken}},
 		{name: "an unterminated last statement that fails the checks", log: log(stmts[0], stmts[1]) + otherKey, marks: marks(2), want: outcomeNewKey,
 			findings: []string{findingLogUnterminated, findingWitnessSignatureInvalid}},
+		{name: "an unterminated last statement breaking the chain", log: log(stmts[0], stmts[1]) + brokenChain, marks: marks(2), want: outcomeNewKey,
+			findings: []string{findingLogUnterminated, findingWitnessChainBroken}},
 		{name: "a marked statement missing its newline", log: log(stmts[0], stmts[1]) + stmts[2], marks: marks(3), want: outcomeRefused,
 			findings: []string{findingLogUnterminated, findingMarkUnreached}},
 		{name: "a torn tail after an unmarked statement", log: log(stmts...) + "{", marks: marks(2), want: outcomeRefused,
