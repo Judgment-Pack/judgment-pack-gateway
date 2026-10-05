@@ -983,7 +983,21 @@ func (e witnessNotStarted) Error() string {
 		outcomeRefused:              "only a copy of the log that passes these checks against the marks, put in its place, lets the witness go on under its key; otherwise it goes on only under a new key",
 		outcomeNewKey:               "the witness goes on only under a new key, a new witness whose chains begin at index 0; this key signs nothing more",
 	}[e.judgement.outcome]
+	if e.judgement.outcome == outcomeRefused && e.judgement.registrationsOnly() {
+		what = "a trail with statements has no registration, or a registration does not read: restore the registrations, or register the trail with the witness stopped"
+	}
 	return fmt.Sprintf("witness: the start-up checks found %s: %s", strings.Join(parts, "; "), what)
+}
+
+// registrationsOnly reports whether every finding is of the registrations:
+// a refusal no log copy answers.
+func (j *witnessJudgement) registrationsOnly() bool {
+	for _, f := range j.findings {
+		if f.File != "registrations" {
+			return false
+		}
+	}
+	return true
 }
 
 // witnessAnswer is a statement answer: "signed" for a statement made now,
