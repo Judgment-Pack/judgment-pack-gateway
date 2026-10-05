@@ -682,8 +682,8 @@ type witnessFiles struct {
 	log, marks, registrations, setAside *os.File
 	io                                  witnessIO
 	// judged is how many bytes of each file the start-up checks read: a
-	// file of another size afterwards changed while it was read
-	// (unchanged).
+	// file of another length afterwards was lengthened or shortened while
+	// it was read (sameLength).
 	judged map[string]int64
 }
 
@@ -865,7 +865,8 @@ func whole(file *os.File) (io.Reader, error) {
 //
 // Each file is read as far as its size when the read began, and how many
 // bytes were read is kept, so that a file found of another size afterwards
-// is known to have changed while it was read (unchanged).
+// is known to have been lengthened or shortened while it was read
+// (sameLength).
 func (f *witnessFiles) judge(key ed25519.PublicKey) (*witnessJudgement, error) {
 	in := witnessInput{marksChecked: true, registrationsChecked: true}
 	f.judged = map[string]int64{}
@@ -896,10 +897,13 @@ func (c countedReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// unchanged is why a file is not, now, the size the start-up checks read
-// of it, or nil: something wrote it while it was read, in spite of the
-// locks, and nothing read of it can be relied on.
-func (f *witnessFiles) unchanged() error {
+// sameLength is why a file is not, now, the length the start-up checks
+// read of it, or nil: something appended to it or cut it while it was
+// read, in spite of the locks, and nothing read of it can be relied on. It
+// compares lengths and nothing else: other bytes of the same length,
+// written by something that ignores the locks, are not found here. The
+// locks are what keep every other writer of this program out.
+func (f *witnessFiles) sameLength() error {
 	for _, c := range f.kept() {
 		if *c.file == nil {
 			continue
@@ -909,7 +913,7 @@ func (f *witnessFiles) unchanged() error {
 			return fmt.Errorf("witness %s: %w", c.label, err)
 		}
 		if info.Size() != f.judged[c.label] {
-			return fmt.Errorf("witness: the %s changed while it was read (%d bytes read, %d there now); another process writes it", c.label, f.judged[c.label], info.Size())
+			return fmt.Errorf("witness: the %s's length changed while it was read (%d bytes read, %d there now); another process writes it", c.label, f.judged[c.label], info.Size())
 		}
 	}
 	return nil
@@ -1270,7 +1274,7 @@ func openWitnessLog(cfg witnessConfig) (*witnessLog, error) {
 		files.close()
 		return nil, err
 	}
-	if err := files.unchanged(); err != nil {
+	if err := files.sameLength(); err != nil {
 		files.close()
 		return nil, err
 	}
@@ -1626,7 +1630,7 @@ func repairWitnessLog(cfg witnessConfig) (*witnessJudgement, error) {
 	if err := files.syncRead(); err != nil {
 		return j, fmt.Errorf("witness repair: %w", err)
 	}
-	if err := files.unchanged(); err != nil {
+	if err := files.sameLength(); err != nil {
 		return j, err
 	}
 	switch j.outcome {
@@ -1728,15 +1732,17 @@ func parseSetAside(line []byte) (setAsideRecord, bool) {
 // setAsideTail keeps a file's last bytes, from end on, in the set-aside
 // file beside the log, and only then ends the file at end. In order:
 //
-//  1. the set-aside file is made if it is not there, and its own last
-//     bytes, which an interrupted repair may have left, are settled
-//     (settleSetAside), so no record is ever joined to them;
+//  1. the set-aside file is made if it is not there, and settled
+//     (settleSetAside): its own last bytes, which an interrupted repair may
+//     have left, are ended where they stand, so no record is ever joined to
+//     them, and every line of it that is no record and that no record keeps
+//     yet is given a record keeping it;
 //  2. the file's last bytes are appended, a record for each part of them,
 //     and the set-aside file synced;
-//  3. every record appended is read back from the set-aside file through
-//     parseSetAside, and must keep exactly the bytes of its file at its
-//     offset, the file's last bytes all covered, in order -- or the repair
-//     refuses and cuts nothing;
+//  3. the whole set-aside file is read back through parseSetAside
+//     (readBack): every line a record, or kept by records of the set-aside
+//     file itself; and the records appended now keeping exactly the file's
+//     last bytes, in order -- or the repair refuses and cuts nothing;
 //  4. only then is the file cut at end, and synced.
 //
 // A crash anywhere leaves the bytes kept, twice perhaps, never lost: the
@@ -1768,7 +1774,7 @@ func (f *witnessFiles) setAsideTail(label string, file *os.File, end int64, cloc
 		}
 	}
 	at := clock().UTC().Truncate(time.Second).Format("2006-01-02T15:04:05Z")
-	from, keptFrom, keptTo, err := f.settleSetAside(at)
+	from, err := f.settleSetAside(at)
 	if err != nil {
 		return err
 	}
@@ -1778,7 +1784,7 @@ func (f *witnessFiles) setAsideTail(label string, file *os.File, end int64, cloc
 	if err := f.io.sync("set-aside", f.setAside); err != nil {
 		return fmt.Errorf("witness repair: %w", err)
 	}
-	if err := f.readBack(from, keptFrom, keptTo, label, file, end, info.Size()); err != nil {
+	if err := f.readBack(from, label, file, end, info.Size()); err != nil {
 		return err
 	}
 	f.io.note("readback", "set-aside")
@@ -1811,67 +1817,102 @@ func (f *witnessFiles) keepParts(at, label string, file *os.File, start, end int
 	return nil
 }
 
-// settleSetAside settles the set-aside file's own last bytes before a
-// record is appended to it, and gives the offset the new records begin at
-// and the span of the set-aside file its own records keep, if any.
-// A set-aside file ending cleanly is left as it is. Last bytes -- part of a
-// record an interrupted repair was appending, or a whole one but for its
-// newline -- are evidence like any other kept here: they are never
-// overwritten, joined to or cut. They are ended where they stand with a
-// newline, and, unless they are a whole record, which the newline makes
-// readable, a record with file "set-aside" and the offset they begin at
-// keeps them in hexadecimal, so they stay readable as a record too.
-func (f *witnessFiles) settleSetAside(at string) (from, keptFrom, keptTo int64, err error) {
-	fail := func(err error) (int64, int64, int64, error) { return 0, 0, 0, err }
-	info, err := f.setAside.Stat()
-	if err != nil {
-		return fail(fmt.Errorf("witness repair: %w", err))
-	}
-	size := info.Size()
-	if endsCleanly("set-aside", f.setAside) == nil {
-		return size, size, size, nil
-	}
-	// where the last bytes begin: after the last newline, found a part at
-	// a time from the end
-	begin := int64(0)
-	part := make([]byte, setAsideChunk)
-	for end := size; end > 0 && begin == 0; {
-		n := min(int64(setAsideChunk), end)
-		if _, err := f.setAside.ReadAt(part[:n], end-n); err != nil {
-			return fail(fmt.Errorf("witness repair: %w", err))
+// setAsideLines reads the set-aside file as its reader reads it, line by
+// line: the lines that are records, and those that are not -- each by the
+// span of its bytes, its newline not counted. The bytes a record keeps of
+// the set-aside file itself are reported by visit; nothing else is kept in
+// memory but the spans of the lines that are no record.
+func (f *witnessFiles) setAsideLines(size int64, visit func(r setAsideRecord, start, end int64) error) (fragments [][2]int64, err error) {
+	err = scanLines(io.NewSectionReader(f.setAside, 0, size), witnessLineLimit, func(line []byte, _, start, end int64, ended, over bool) error {
+		if ended {
+			end--
 		}
-		if i := bytes.LastIndexByte(part[:n], '\n'); i >= 0 {
-			begin = end - n + int64(i) + 1
+		if end == start {
+			return nil // an empty line keeps nothing and loses nothing
 		}
-		end -= n
-	}
-	whole := false
-	if size-begin <= witnessLineLimit {
-		last := make([]byte, size-begin)
-		if _, err := f.setAside.ReadAt(last, begin); err != nil {
-			return fail(fmt.Errorf("witness repair: %w", err))
+		if r, ok := parseSetAside(line); ok && !over && ended {
+			return visit(r, start, end)
 		}
-		_, whole = parseSetAside(last)
-	}
-	if err := f.io.appendTo("set-aside", f.setAside, []byte{'\n'}); err != nil {
-		return fail(fmt.Errorf("witness repair: %w", err))
-	}
-	if whole {
-		return size + 1, size, size, nil
-	}
-	if err := f.keepParts(at, "set-aside", f.setAside, begin, size); err != nil {
-		return fail(err)
-	}
-	return size + 1, begin, size, nil
+		fragments = append(fragments, [2]int64{start, end})
+		return nil
+	})
+	return fragments, err
 }
 
-// readBack reads every record from offset from on in the set-aside file,
-// as its reader reads them, and holds them to what was to be kept: each a
-// whole line its reader reads; the records of the set-aside file's own
-// last bytes keeping exactly its bytes from keptFrom to keptTo; and the
-// records of the file being cut keeping exactly its bytes from start to
-// end; each in order, every byte once. Anything else refuses the cut.
-func (f *witnessFiles) readBack(from, keptFrom, keptTo int64, label string, file *os.File, start, end int64) error {
+// keeps reports whether a record of the set-aside file itself keeps the
+// bytes the file holds at its offset: only such a record keeps anything. A
+// record damaged since it was written keeps nothing, and the line it was
+// to keep is given a record again.
+func (f *witnessFiles) keeps(r setAsideRecord) bool {
+	have := make([]byte, len(r.bytes))
+	_, err := f.setAside.ReadAt(have, r.offset)
+	return err == nil && bytes.Equal(have, r.bytes)
+}
+
+// keptBy reports whether records of the set-aside file itself, by offset
+// the length of the bytes each keeps, keep the span start to end whole, in
+// order.
+func keptBy(kept map[int64]int64, start, end int64) bool {
+	for at := start; at < end; {
+		n, ok := kept[at]
+		if !ok || n <= 0 {
+			return false
+		}
+		at += n
+	}
+	return true
+}
+
+// settleSetAside settles the set-aside file before a record is appended to
+// it, and gives the offset the new records begin at. Every line of it is to
+// be a record its reader reads, or a line no record is but that records of
+// the set-aside file itself keep, whole, by its offset: last bytes of an
+// interrupted repair -- part of a record, or a whole one but its newline --
+// are evidence like any other kept here, and are never overwritten, joined
+// to or cut. So, first, last bytes are ended where they stand with a
+// newline; then every line that is no record and that no record keeps yet
+// is given records keeping it. This holds the whole file to the rule each
+// time, so a repair interrupted between the newline and the keeping record
+// leaves the next repair the same work, never a line no record keeps.
+func (f *witnessFiles) settleSetAside(at string) (int64, error) {
+	if endsCleanly("set-aside", f.setAside) != nil {
+		if err := f.io.appendTo("set-aside", f.setAside, []byte{'\n'}); err != nil {
+			return 0, fmt.Errorf("witness repair: %w", err)
+		}
+	}
+	info, err := f.setAside.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("witness repair: %w", err)
+	}
+	from := info.Size()
+	kept := map[int64]int64{}
+	fragments, err := f.setAsideLines(from, func(r setAsideRecord, _, _ int64) error {
+		if r.file == "set-aside" && f.keeps(r) {
+			kept[r.offset] = int64(len(r.bytes))
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("witness repair: %w", err)
+	}
+	for _, span := range fragments {
+		if keptBy(kept, span[0], span[1]) {
+			continue
+		}
+		if err := f.keepParts(at, "set-aside", f.setAside, span[0], span[1]); err != nil {
+			return 0, err
+		}
+	}
+	return from, nil
+}
+
+// readBack reads the whole set-aside file, as its reader reads it, and
+// holds it to what is to be kept: every line a record its reader reads, or
+// kept whole by records of the set-aside file itself that keep its bytes;
+// and the records of the file being cut, from offset from on, keeping
+// exactly its bytes from start to end, in order, every byte once. Anything
+// else refuses the cut.
+func (f *witnessFiles) readBack(from int64, label string, file *os.File, start, end int64) error {
 	info, err := f.setAside.Stat()
 	if err != nil {
 		return fmt.Errorf("witness repair: %w", err)
@@ -1879,42 +1920,44 @@ func (f *witnessFiles) readBack(from, keptFrom, keptTo int64, label string, file
 	refuse := func(why string) error {
 		return fmt.Errorf("witness repair: the set-aside records read back %s; nothing is cut", why)
 	}
-	next, nextKept := start, keptFrom
 	compare := func(src *os.File, r setAsideRecord) bool {
 		have := make([]byte, len(r.bytes))
 		_, err := src.ReadAt(have, r.offset)
 		return err == nil && bytes.Equal(have, r.bytes)
 	}
-	var fault string
-	err = scanLines(io.NewSectionReader(f.setAside, from, info.Size()-from), witnessLineLimit, func(line []byte, number, _, _ int64, ended, over bool) error {
-		if fault != "" {
-			return nil
-		}
-		r, ok := parseSetAside(line)
+	next := start
+	kept := map[int64]int64{}
+	fault := ""
+	fragments, err := f.setAsideLines(info.Size(), func(r setAsideRecord, at, _ int64) error {
 		switch {
-		case !ended || over || !ok:
-			fault = fmt.Sprintf("with line %d not a whole record", number)
+		case fault != "":
 		case r.file == "set-aside":
-			if r.offset != nextKept || !compare(f.setAside, r) {
-				fault = fmt.Sprintf("with line %d not keeping the set-aside file's bytes at %d", number, nextKept)
+			// one that keeps no bytes of the file keeps nothing, and the
+			// line it was to keep is found unkept below
+			if f.keeps(r) {
+				kept[r.offset] = int64(len(r.bytes))
 			}
-			nextKept += int64(len(r.bytes))
+		case at < from:
 		case r.file != label || r.offset != next || !compare(file, r):
-			fault = fmt.Sprintf("with line %d not keeping the %s's bytes at %d", number, label, next)
+			fault = fmt.Sprintf("with the record at %d not keeping the %s's bytes at %d", at, label, next)
 		default:
 			next += int64(len(r.bytes))
 		}
 		return nil
 	})
-	switch {
-	case err != nil:
+	if err != nil {
 		return fmt.Errorf("witness repair: %w", err)
+	}
+	for _, span := range fragments {
+		if fault == "" && !keptBy(kept, span[0], span[1]) {
+			fault = fmt.Sprintf("with the line at %d neither a record nor kept by one", span[0])
+		}
+	}
+	switch {
 	case fault != "":
 		return refuse(fault)
 	case next != end:
 		return refuse(fmt.Sprintf("keeping the %s's bytes to %d of %d", label, next, end))
-	case nextKept != keptTo:
-		return refuse(fmt.Sprintf("keeping the set-aside file's own last bytes to %d of %d", nextKept, keptTo))
 	}
 	return nil
 }

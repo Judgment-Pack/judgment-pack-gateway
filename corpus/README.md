@@ -317,8 +317,11 @@ the system is one line, `syncToSystem` in `go/witness_log.go`, which a Linux tes
 asking the kernel; that the kernel and its disk then keep the bytes, no test here shows. Every
 line a witness writes is held, before it is written, to the function and the 4096-byte bound
 its own start reads that kind of line with, and no line is appended to last bytes another write
-left: the set-aside file's own are ended where they stand and, unless they are a whole record,
-kept in a record of their own.
+left: the set-aside file's own are ended where they stand. Every repair leaves every line of the
+set-aside file a record, or kept whole by records of the set-aside file itself, and reads the
+whole file back to that before it cuts anything. A start or a repair refuses a file whose length
+differs from what it read; other bytes of the same length, written by something that ignores
+the locks, are not found, and the locks are what keep every other writer of this program out.
 
 **No secret.** The statements are signed under `TEST-SEED` and checked under
 `TEST-PUBLIC-KEY` before a step runs. A writer step signs nothing: the runner gives the writer

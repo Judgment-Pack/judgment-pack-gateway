@@ -141,7 +141,7 @@ func (tw *testWitness) read(t *testing.T, name string) string {
 
 func (tw *testWitness) write(t *testing.T, name, text string) {
 	t.Helper()
-	path := map[string]string{"log": tw.paths.log, "marks": tw.paths.marks, "registrations": tw.paths.log + registrationsSuffix}[name]
+	path := map[string]string{"log": tw.paths.log, "marks": tw.paths.marks, "registrations": tw.paths.log + registrationsSuffix, "setAside": tw.paths.log + setAsideSuffix}[name]
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1663,10 +1663,13 @@ func TestWitnessEveryAppendSettlesItsTailFirst(t *testing.T) {
 	})
 }
 
-// A file that changes while the start-up checks read it -- bytes appended
-// by something that ignores the locks, after its size was taken -- refuses
-// the start and the repair: what was judged is not the file there now.
-func TestWitnessRefusesAFileThatChangesWhileItIsRead(t *testing.T) {
+// A file whose length changes while the start-up checks read it -- bytes
+// appended by something that ignores the locks, after its size was taken
+// -- refuses the start and the repair: what was judged is not the file
+// there now. Only the length is compared: other bytes of the same length,
+// written by something that ignores the locks, are not found, and the
+// locks are what keep every other writer of this program out.
+func TestWitnessRefusesAFileWhoseLengthChangesWhileItIsRead(t *testing.T) {
 	for _, what := range []string{"open", "repair"} {
 		for _, file := range []string{"log", "marks", "registrations"} {
 			t.Run(what+"/"+file, func(t *testing.T) {
@@ -1694,7 +1697,7 @@ func TestWitnessRefusesAFileThatChangesWhileItIsRead(t *testing.T) {
 				} else {
 					_, err = repairWitnessLog(cfg)
 				}
-				if err == nil || !strings.Contains(err.Error(), "changed while it was read") {
+				if err == nil || !strings.Contains(err.Error(), "length changed while it was read") {
 					t.Fatalf("a %s that grew while it was read: %v", file, err)
 				}
 			})
@@ -1754,4 +1757,183 @@ func TestWitnessShortWriteIsAFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+// interruptions is the operating system's operations with a repair's
+// set-aside writes failing as listed, one entry a write in turn: "" passes
+// the write, "fail" writes nothing of it, "half" half of it; each failing
+// write answers with its failure.
+func interruptions(plan ...string) witnessIO {
+	x := osWitnessIO()
+	base := x.write
+	n := 0
+	x.write = func(file string, f *os.File, data []byte) (int, error) {
+		if file != "set-aside" {
+			return base(file, f, data)
+		}
+		step := ""
+		if n < len(plan) {
+			step = plan[n]
+		}
+		n++
+		switch step {
+		case "fail":
+			return 0, errors.New("the process ended before the write")
+		case "half":
+			m, _ := base(file, f, data[:len(data)/2])
+			return m, errors.New("the process ended in the write")
+		}
+		return base(file, f, data)
+	}
+	return x
+}
+
+// keptLines checks the rule every repair leaves the set-aside file in:
+// every line a record its reader reads, or kept whole by records of the
+// set-aside file itself that keep its bytes. It gives the number of lines
+// that are no record.
+func keptLines(t *testing.T, tw *testWitness) int {
+	t.Helper()
+	text := tw.read(t, "setAside")
+	kept := map[int64]string{}
+	type line struct {
+		at   int64
+		text string
+	}
+	var others []line
+	at := int64(0)
+	for _, l := range strings.SplitAfter(text, "\n") {
+		if l == "" {
+			continue
+		}
+		body := strings.TrimSuffix(l, "\n")
+		if r, ok := parseSetAside([]byte(body)); ok {
+			if r.file == "set-aside" && int(r.offset)+len(r.bytes) <= len(text) && text[r.offset:int(r.offset)+len(r.bytes)] == string(r.bytes) {
+				kept[r.offset] = string(r.bytes)
+			}
+		} else if body != "" {
+			others = append(others, line{at, body})
+		}
+		at += int64(len(l))
+	}
+	for _, o := range others {
+		var whole strings.Builder
+		for p := o.at; p < o.at+int64(len(o.text)); {
+			part, ok := kept[p]
+			if !ok {
+				t.Fatalf("the line at %d of the set-aside file is no record and no record keeps it", o.at)
+			}
+			whole.WriteString(part)
+			p += int64(len(part))
+		}
+		if whole.String() != o.text {
+			t.Fatalf("the line at %d is kept as other bytes", o.at)
+		}
+	}
+	return len(others)
+}
+
+// Every repair leaves the set-aside file holding every line as a record, or
+// kept by records of its own: a repair interrupted after it ended the last
+// bytes an earlier one left and before it wrote the record keeping them --
+// the sequence the second review round found -- leaves the next repair the
+// same work, and it does it; so with two such lines from two such
+// interruptions; and a record of its own that was damaged keeps nothing, so
+// its line is kept again. A set-aside file that already holds to the rule is
+// not written to but for the records a repair keeps of the log.
+func TestWitnessSetAsideKeepsEveryLineOnEveryRepair(t *testing.T) {
+	setUp := func(t *testing.T) (*testWitness, string) {
+		tw := newTestWitness(t, testTrail)
+		w := tw.open(t)
+		mustSign(t, w, testTrail, 1)
+		w.close()
+		clean := tw.read(t, "log")
+		tw.write(t, "log", clean+`{"checkpoint":`)
+		return tw, clean
+	}
+	finish := func(t *testing.T, tw *testWitness, clean string, others int) {
+		t.Helper()
+		if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != outcomeSetAside {
+			t.Fatalf("the last repair: %v", err)
+		}
+		if tw.read(t, "log") != clean {
+			t.Fatal("the log was not ended at its last newline")
+		}
+		if n := keptLines(t, tw); n != others {
+			t.Fatalf("%d lines no record, kept by records; want %d", n, others)
+		}
+		tw.open(t).close()
+	}
+	t.Run("the newline written, the keeping record not", func(t *testing.T) {
+		tw, clean := setUp(t)
+		for _, plan := range [][]string{{"half"}, {"", "fail"}} {
+			if _, err := tw.repair(interruptions(plan...)); err == nil {
+				t.Fatalf("the interrupted repair %v answered no failure", plan)
+			}
+		}
+		if !strings.HasSuffix(tw.read(t, "setAside"), "\n") || strings.Contains(tw.read(t, "setAside"), `"file":"set-aside"`) {
+			t.Fatal("the interruptions did not leave a line ended and kept by nothing")
+		}
+		finish(t, tw, clean, 1)
+	})
+	t.Run("two such lines from two such interruptions", func(t *testing.T) {
+		tw, clean := setUp(t)
+		for _, plan := range [][]string{{"half"}, {"", "fail"}, {"half"}, {"", "fail"}} {
+			if _, err := tw.repair(interruptions(plan...)); err == nil {
+				t.Fatalf("the interrupted repair %v answered no failure", plan)
+			}
+		}
+		finish(t, tw, clean, 2)
+	})
+	t.Run("a damaged record of its own keeps nothing", func(t *testing.T) {
+		tw, clean := setUp(t)
+		if _, err := tw.repair(interruptions("half")); err == nil {
+			t.Fatal("the interrupted repair answered no failure")
+		}
+		if _, err := tw.repair(interruptions("", "", "fail")); err == nil {
+			t.Fatal("the second interrupted repair answered no failure")
+		}
+		// the bytes the record of its own keeps, a hexadecimal digit of
+		// them changed: still a record, keeping other bytes than the file's
+		var damaged []string
+		for _, line := range strings.SplitAfter(tw.read(t, "setAside"), "\n") {
+			if r, ok := parseSetAside([]byte(strings.TrimSuffix(line, "\n"))); ok && r.file == "set-aside" {
+				i := strings.Index(line, `"bytes":"`) + len(`"bytes":"`)
+				digit := byte('7')
+				if line[i] == '7' {
+					digit = '6'
+				}
+				line = line[:i] + string(digit) + line[i+1:]
+				if _, ok := parseSetAside([]byte(strings.TrimSuffix(line, "\n"))); !ok {
+					t.Fatal("the damaged record does not read as a record")
+				}
+			}
+			damaged = append(damaged, line)
+		}
+		damagedText := strings.Join(damaged, "")
+		if damagedText == tw.read(t, "setAside") {
+			t.Fatal("no record of the set-aside file's own to damage")
+		}
+		tw.write(t, "setAside", damagedText)
+		finish(t, tw, clean, 1)
+	})
+	t.Run("a file already holding to the rule", func(t *testing.T) {
+		tw, clean := setUp(t)
+		if _, err := tw.repair(interruptions("half")); err == nil {
+			t.Fatal("the interrupted repair answered no failure")
+		}
+		finish(t, tw, clean, 1)
+		before := tw.read(t, "setAside")
+		tw.write(t, "log", clean+`{"index":`)
+		finish(t, tw, clean, 1)
+		after := tw.read(t, "setAside")
+		if !strings.HasPrefix(after, before) {
+			t.Fatal("the set-aside file was written before its end")
+		}
+		for _, line := range strings.Split(strings.TrimSuffix(after[len(before):], "\n"), "\n") {
+			if r, ok := parseSetAside([]byte(line)); !ok || r.file != "log" {
+				t.Fatalf("a file holding to the rule was written a line other than a record of the log: %.80s", line)
+			}
+		}
+	})
 }
