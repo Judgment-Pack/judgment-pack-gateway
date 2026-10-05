@@ -272,7 +272,9 @@ The outcomes are the rules' own: `start`; `mark-completed` and `newline-and-mark
 rule 2's one mark; `set-aside`, rule 1's one release; `registration-set-aside`, for the last
 bytes of the registrations, which are never served and are written before anything is signed
 under them; `refused`, when the marks are intact and the log does not satisfy them, so that only
-a copy of the log that passes the checks against them, or a new key, lets the witness go on;
+a copy of the log that passes the checks against them, or a new key, lets the witness go on —
+or when a trail with statements has no registration or a registration line does not read,
+until the registrations are restored or the trail is registered with the witness stopped;
 and `new-key`, rule 3. Findings use the reader's names where they apply —
 `witness-malformed`, `witness-signature-invalid`, `witness-chain-broken` — and, of the files
 only a witness keeps, `witness-log-torn`, `witness-log-unterminated`, `witness-marks-lost`,
