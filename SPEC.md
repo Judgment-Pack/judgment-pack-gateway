@@ -727,7 +727,8 @@ not itself a finding.
   compromised gateway (key disclosure forges anything), and it is a single-identity,
   single-operator reference — not a multi-tenant or federated trust root.
 - Scope not claimed: no availability/HA guarantees, no authenticated transport
-  (binds localhost), no access control on the HTTP surface. This is a reference for
+  (binds localhost), no access control on the HTTP surface beyond a witness's
+  registrations (§6, "Witness endpoints"). This is a reference for
   self-hosting a trust root and for demonstrating the mechanism, not a hardened
   public deployment.
 - Version 3's `caller` and `requester` record who asked, as a token verified at
@@ -894,16 +895,63 @@ decides what of it is signed.
 
 ### Witness endpoints
 
-A gateway that is a witness (§8) answers three more endpoints. They are specified with the
-statement, so that a deliverer and a reader can be written to them before the service is:
-this reference does not serve them yet, and the configuration that makes a gateway a
-witness comes with the service.
+A gateway that is a witness (§8) — an engine whose configuration carries a `witness` member
+(`docs/design/engine-config.md`) — answers three more endpoints, and a gateway that is not one
+serves no path under `/witness/`. They are the signer's, on the same loopback address as every other
+endpoint, and they are the first meant to be reached from other hosts by other parties:
+through the TLS-terminating front that address requires (`SECURITY.md`). A front that passes
+them is to pass no other path of the signer: a submitter's token is a token of the configured
+issuer, and the signer's other endpoints that take a token take it as well.
 
 | Method | Path | Body / result |
 |--------|------|---------------|
-| POST | `/witness/checkpoints` | Submit. The body is `application/jsonl`: one or more checkpoint lines (§8.1) as `jpack audit checkpoint --since` prints them, each in its canonical form and ended by a newline, all of one trail, their sequences strictly increasing; at most 1 MiB (1048576 bytes), this gateway's request bound, and each line at most 4096 bytes, its newline not counted. A bearer token is required, and the trail must be registered to the token's issuer and subject (below). **Only the last line is signed**: the earlier lines are compared with what the witness holds, for conflicts, and otherwise discarded, and with them the evidence of what they said. `200`, `application/jsonl`: a `checkpoint` statement for the last line — the one already held for the same trail, sequence and digest, so that sending a checkpoint again gives the same statement, or a new one at the chain's next index. `409` with `reason` `"conflict"` and `statements`, two JSON strings each holding a statement's exact line: the `checkpoint` statement the witness holds at a line's sequence, and the `conflict` statement recording another digest offered for it — the first offered for that sequence, which acknowledges nothing of the digest just sent. `409` with `reason` `"below-head"`, with the head statement, when the last line's sequence is below the latest checkpoint statement's and not held. `409` with `reason` `"retired"`, with the retirement statement. `400` for a body out of shape, `401` without a valid token, `403` for a trail not registered or registered to another subject, `413` over a bound, and `429` over the submitter's rate or, for a trail it has not submitted before, over its number of trails. `503` when a statement signed could not be kept, after which the witness signs nothing more, for any trail, until it has restarted. |
+| POST | `/witness/checkpoints` | Submit. The body is `application/jsonl`: one or more checkpoint lines (§8.1) as `jpack audit checkpoint --since` prints them, each in its canonical form and ended by a newline, all of one trail, their sequences strictly increasing; at most 1 MiB (1048576 bytes), this gateway's request bound, and each line at most 4096 bytes, its newline not counted. A bearer token is required, and the trail must be registered to the token's issuer and subject (below). **Only the last line is signed**: the earlier lines are compared with what the witness holds, for conflicts, and otherwise discarded, and with them the evidence of what they said. `200`, `application/jsonl`: a `checkpoint` statement for the last line — the one already held for the same trail, sequence and digest, so that sending a checkpoint again gives the same statement and appends nothing, or a new one at the chain's next index. `409` with `reason` `"conflict"` and `statements`, two JSON strings each holding a statement's exact line: the `checkpoint` statement the witness holds at a line's sequence, and the `conflict` statement recording another digest offered for it — the first offered for that sequence, made durable and marked when it is made, which acknowledges nothing of the digest just sent. `409` with `reason` `"below-head"`, with the head statement, when the last line's sequence is below the latest checkpoint statement's and not held. `409` with `reason` `"retired"`, with the retirement statement. `400` for a body out of shape, `401` without a valid token, `403` for a subject the witness does not allow, or a trail not registered or registered to another subject, `413` over a bound, `415` for a body of another type, and `429` over the submitter's rate or, for a trail that holds no statement yet, over its number of trails. `503` when a statement signed could not be kept, after which the witness signs nothing more, for any trail, until it has restarted. |
 | GET | `/witness/trails/{trail}/head` | The trail's last statement (§8.5), `application/jsonl`, exactly as the witness keeps it. `400` for a `{trail}` that is not 32 lowercase hexadecimal characters; `404` for a trail the witness holds nothing for, which reads as a trail never submitted (§8.8). |
-| GET | `/witness/trails/{trail}/statements?from=<index>&limit=<n>` | The trail's statements from index `from` (0 when absent), at most `limit` of them (1 to 1000, 1000 when absent), in index order, `application/jsonl`, each exactly as the witness keeps it. A reader asks again from the next index until it reaches the head's. |
+| GET | `/witness/trails/{trail}/statements?from=<index>&limit=<n>` | The trail's statements from index `from` (0 when absent), at most `limit` of them (1 to 1000, 1000 when absent), in index order, `application/jsonl`, each exactly as the witness keeps it; none, from an index past the head's. `400` for a `{trail}` or a query out of shape, `404` as for the head. A reader asks again from the next index until it reaches the head's. |
+
+**Answers.** A statement is answered `200`, `Content-Type: application/jsonl`, each statement
+its canonical form (§8.2) exactly as the witness keeps it, ended by a newline. A refusal is
+`application/json`, `{"error": <a sentence>, "reason": <a word>}`, and a `409` carries
+`statements` too. The sentence is the witness's own: it repeats no token, no text a request
+carried and no file's name. Every answer states its `Content-Length` and carries
+`Cache-Control: no-store`. The reasons:
+
+| Status | `reason` | When |
+|---|---|---|
+| `400` | `malformed` | a path spelled with any percent-encoding, a `{trail}` out of shape, a query a read does not take or a submission any query, a body out of shape |
+| `401` | `unauthenticated` | a submission without a valid token, with `WWW-Authenticate: Bearer` |
+| `403` | `not-a-submitter` | a subject the configuration's `submitters` does not name |
+| `403` | `not-registered` | a trail not registered, or registered to another subject: one answer for both, so that a submitter learns nothing of another's registration; and, where the first submission registers, a submitter whose issuer and subject no registration line of 4096 bytes can hold |
+| `404` | `not-found` | a path under `/witness/` that is no endpoint |
+| `404` | `unknown-trail` | a trail the witness holds no statement for |
+| `405` | `method` | a method the table above does not name for the path, with `Allow` |
+| `409` | `conflict`, `below-head`, `retired` | as the table says, with `statements` |
+| `409` | `index-bound` | a trail whose chain is at index 2⁵³−2, the largest a statement holds |
+| `413` | `too-large` | a `Content-Length` over 1048576, a body over it, or a line over 4096 bytes |
+| `415` | `media-type` | a submission whose `Content-Type` is not `application/jsonl` (its parameters are not read) |
+| `429` | `rate` | a submitter over its rate, with `Retry-After` (below) |
+| `429` | `trails` | a submitter over its number of trails (below) |
+| `500` | `internal` | an answer the witness could not make; the reason is on the signer's standard error |
+| `503` | `busy` | as many submissions, or reads, in flight as the witness takes, with `Retry-After: 1` |
+| `503` | `stopped` | a submission to a witness whose writer failed (below) |
+
+**A submission, in order.** Everything that needs no body is decided before a byte of it is
+read: the method; that there is no query; the bearer token, verified as every other endpoint
+of this gateway verifies one (`docs/design/engine-config.md`, `identity`); the subject, when the
+configuration names `submitters`; the submitter's rate; the type; a `Content-Length` over the
+bound; and a place among the 32 submissions the witness takes in flight. The body is then read
+through its bound a line at a time, and each line is held as it arrives — a checkpoint in its
+canonical form, ended by a newline, of the first line's trail, its sequence above the line
+before's — so the first line that fails ends the read, with at most a line's bound read past
+it. Then, under the one writer lock that the witness's log and marks are written under
+(ADR-0013 §4): a witness stopped is `503`; the registration is checked; a trail that holds no
+statement is refused at the submitter's number of trails; where the first submission
+registers, a trail registered to nobody is then registered to the submitter, appended and
+synced before anything is signed for it; and the answer is the table's, a statement being
+answered only once it is published: its line appended and synced, its mark appended and
+synced. A second
+submission of the same checkpoint while the first is in flight waits at the lock and is answered
+with the statement the first made.
 
 **Registration.** A trail is registered to exactly one issuer and subject before anything
 is signed for it: by the witness's operator, by default, or, where that operator opts in,
@@ -913,15 +961,56 @@ never served. A token establishes an issuer and a subject and nothing more: ever
 of one trail submits under the one subject registered for it, and the witness cannot tell
 the trail's operator from a holder of the operator's credential (§8.8).
 
-**Rate.** The witness's operator bounds each submitter's submissions, from 1 to 6000 a
-minute, 60 by default, and the trails it may submit for, from 1 to 100000, 100 by default.
+**Rate.** The witness's operator bounds each submitter — an issuer and a subject — to a number
+of submissions a minute, from 1 to 6000, 60 by default: counted when each arrives, after its
+token and before its body is read, whatever becomes of it, in windows of the witness clock's
+whole minutes, the same for every submitter; past the bound a submission is `429` with
+`Retry-After`, the seconds until the minute turns. One minute counts at most 65536
+submitters, and one not yet counted in a minute that has counted that many is refused alike
+until it turns. The operator bounds the trails each submitter submits for too, from 1 to
+100000, 100 by default: counted as the trails registered to the submitter that hold a
+statement, so that a submission for a trail that holds none is `429` when the submitter has
+that many, and registers nothing.
+
+**After a failure.** When a statement's append, its sync, its mark or the mark's sync fails,
+or, where the first submission registers, a registration's append or sync, the witness signs nothing more, for any trail, until it restarts and its start-up checks pass
+(§8; ADR-0013 §4). That submission and every one after it is `503`, a statement the witness
+holds and the head a line falls below included: a statement signed after that head may have
+been made durable and marked, and is served after the restart. The reads go on serving what was
+published. The signer's standard error says, once, which step failed.
 
 **Reads are open.** The two reads need no token, as `/registry` and `/publickey` need none:
-a verifier holds no token. Naming a trail is what lets one read it, and no endpoint lists
-trails; whoever holds one of a trail's checkpoints can therefore follow its continuing
-activity (§8.8). The reference bounds no read. A witness reached from other hosts sits
-behind the TLS-terminating front `docs/design/engine-config.md` requires for any other
-host, and that front bounds reads.
+a verifier holds no token, and a read does not look at one. Naming a trail is what lets one
+read it, and no endpoint lists trails; whoever holds one of a trail's checkpoints can
+therefore follow its continuing activity (§8.8). A read serves only statements the witness
+published, of a log its start-up checks passed, and never bytes a repair set aside or a
+registration: a trail registered and not yet signed for is `404` as a trail never named is.
+The reference bounds how many reads it answers at once, 64, past which a read is `503`, and how
+long any answer of the witness's may take to be written: 30 seconds from the moment its request
+is handled, after which it is abandoned. It bounds no reader's rate, since a read carries no
+identity. A witness reached from other hosts sits behind the TLS-terminating front
+`docs/design/engine-config.md` requires for any other host, and that front bounds reads.
+
+**Retention.** A witness keeps every statement it signs for as long as it runs: this
+reference prunes nothing and removes nothing, and serves a retired trail's chain as before. A
+party that runs a witness publishes how long it keeps a trail; removing a trail's statements is
+not something this reference does (ADR-0013, question 4).
+
+**The witness's operator's acts.** `gateway witness register --config <engine.json> --trail
+<id> --issuer <issuer> --subject <subject>` registers a trail, or changes its registration,
+appended and synced and never served; the issuer must be the configuration's `identity.issuer`
+and, where `submitters` is given, the subject one of them, since a registration no token can
+match is refused rather than kept. `gateway witness retire --config <engine.json> --trail <id>`
+signs the trail's retirement, the last statement of its chain, repeating its latest witnessed
+checkpoint, made durable and marked like any statement, and prints its line; a trail retired
+already is answered with its retirement, and nothing is signed. `gateway witness repair
+--config <engine.json>` does what ADR-0013's three rules of recovery allow and nothing else,
+and prints `{"outcome", "findings", "repaired", "starts"}`, exiting `0` when the witness can
+then start and `1` when it cannot — when only a log copy that passes the checks against the
+marks, or a new key, lets it go on. Each takes the witness's files as the witness does, each locked by what it is
+and with exactly one name. A running witness holds them for as long as it runs, so an act on
+a running witness says so, changes nothing and exits `1`: registering a trail under
+`"operator"`, retiring one and repairing the files each take a stop of the witness.
 
 ## 7. Conformance
 
@@ -1004,9 +1093,10 @@ reference keeps it in its core, on Unix, held to the vectors under `corpus/witne
 (§7). `gateway witness verify --log <file> --public-key <file> [--marks <file>]` applies
 those checks, all but the registrations, to a copy of a witness's log, and gives its
 verdict in its JSON as `gateway verify` does (§5a.2): exit `0` whenever it reached one.
-The service that answers submissions and serves statements — the endpoints of §6 and the
-configuration that makes a gateway a witness — follows in a later release. Until then
-this reference serves no statement, and no command of it signs one.
+The service that answers submissions and serves statements is this reference's too: the
+endpoints of §6, the configuration that makes a gateway a witness, and the witness's
+operator's acts, `gateway witness register`, `retire` and `repair` (§6, "Witness endpoints").
+A reader holds a statement to this section alone, whatever served it.
 
 ### 8.1 The witnessed checkpoint
 
