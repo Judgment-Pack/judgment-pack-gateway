@@ -24,6 +24,10 @@ func openConfigForRead(dir *os.Root, name string) (*os.File, error) {
 
 func lockBeside(dir *os.Root, name string, owner fileOwnerIDs) (func(), error) { return func() {}, nil }
 
+func lockBesideFor(dir *os.Root, name string, owner fileOwnerIDs, holder string) (func(), error) {
+	return func() {}, nil
+}
+
 // Elsewhere than Unix a directory is not synced, a link is not refused by
 // the open, and a snapshot's mode and owner are not judged: connect writes
 // nothing on such hosts.

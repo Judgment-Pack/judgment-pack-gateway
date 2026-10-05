@@ -117,6 +117,12 @@ func openConfigForRead(dir *os.Root, name string) (*os.File, error) {
 // connect creates is given the configuration's owner, so a later connect by
 // that owner can take it after one by root.
 func lockBeside(dir *os.Root, name string, owner fileOwnerIDs) (func(), error) {
+	return lockBesideFor(dir, name, owner, "connect")
+}
+
+// lockBesideFor is lockBeside for a holder named in its refusal: "connect",
+// or "witness" for the witness's log and marks (witness_log.go).
+func lockBesideFor(dir *os.Root, name string, owner fileOwnerIDs, holder string) (func(), error) {
 	lockName := name + ".lock"
 	lock, err := dir.OpenFile(lockName, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err == nil {
@@ -147,7 +153,7 @@ func lockBeside(dir *os.Root, name string, owner fileOwnerIDs) (func(), error) {
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		lock.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, errors.New("another connect holds " + lockName + "; wait for it")
+			return nil, errors.New("another " + holder + " holds " + lockName + "; wait for it")
 		}
 		return nil, err
 	}

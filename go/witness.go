@@ -388,25 +388,18 @@ func readWitness(in witnessReading) witnessVerdict {
 		}
 	}
 	sort.Slice(chain, func(i, j int) bool { return chain[i].index < chain[j].index })
-	var latest *witnessStatement
+	var prev, latest *witnessStatement
 	var conflicts []int64
 	broken := len(chain) == 0
-	for i, st := range chain {
-		if i == 0 {
-			broken = broken || st.index != 0 || st.prev != ""
-		} else {
-			broken = broken || st.index != chain[i-1].index+1 || st.prev != chain[i-1].signature
-		}
+	for _, st := range chain {
+		broken = broken || !chainFollows(prev, latest, st)
 		switch st.kind {
 		case "checkpoint":
-			broken = broken || (latest != nil && st.sequence <= latest.sequence)
 			latest = st
 		case "conflict":
-			broken = broken || latest == nil || st.sequence > latest.sequence
 			conflicts = append(conflicts, st.sequence)
-		case "retirement":
-			broken = broken || latest == nil || st.checkpoint != latest.checkpoint || i != len(chain)-1
 		}
+		prev = st
 	}
 	if broken {
 		findings[findingWitnessChainBroken] = true
@@ -438,6 +431,33 @@ func readWitness(in witnessReading) witnessVerdict {
 		verdict.head = &index
 	}
 	return verdict
+}
+
+// chainFollows is the chain rule of §8.5 and §8.6 step 3 for one statement:
+// whether st may come next in its trail's chain after prev, nil at the
+// chain's start, latest being the last checkpoint statement before it, or
+// nil for none. The reader walks a chain with it, and the witness holds its
+// own log to it at start-up and every statement it signs to it before the
+// statement is written (witness_log.go), so the witness never keeps a chain
+// its readers would refuse. A statement after a retirement does not follow
+// it: a retirement is the last of its chain.
+func chainFollows(prev, latest, st *witnessStatement) bool {
+	if prev == nil {
+		if st.index != 0 || st.prev != "" {
+			return false
+		}
+	} else if prev.kind == "retirement" || st.index != prev.index+1 || st.prev != prev.signature {
+		return false
+	}
+	switch st.kind {
+	case "checkpoint":
+		return latest == nil || st.sequence > latest.sequence
+	case "conflict":
+		return latest != nil && st.sequence <= latest.sequence
+	case "retirement":
+		return latest != nil && st.checkpoint == latest.checkpoint
+	}
+	return false
 }
 
 // readStatementOnce reads a line as a statement, or nil for one malformed,
