@@ -45,12 +45,6 @@ const (
 	// default.
 	witnessReadLimit = 1000
 
-	// maxRateSubmitters bounds the submitters one minute's window counts:
-	// a submitter not yet counted in a minute that has counted this many is
-	// refused until the minute turns, so what the windows hold is bounded
-	// whatever the issuer names.
-	maxRateSubmitters = 65536
-
 	// witnessMediaType is what a submission is, and what a statement is
 	// answered as.
 	witnessMediaType = "application/jsonl"
@@ -62,6 +56,12 @@ var (
 	witnessSubmissionsInFlight = 32
 	witnessReadsInFlight       = 64
 	witnessAnswerTime          = 30 * time.Second
+
+	// maxRateSubmitters bounds the submitters one minute's window counts:
+	// a submitter not yet counted in a minute that has counted this many is
+	// refused until the minute turns, so what the windows hold is bounded
+	// whatever the issuer names.
+	maxRateSubmitters = 65536
 )
 
 // witnessService answers the witness's endpoints over a witness log open.
@@ -154,15 +154,14 @@ func (s *witnessService) handler(id *identityConfig) http.HandlerFunc {
 
 // answerWithin bounds how long an answer may take to be written, from the
 // moment the request is handled: a reader that does not read is not held
-// for longer. It returns what ends the bound once the answer is written,
-// flushed first, so the next request on the connection is not held to it.
+// for longer, and neither is the place among the reads or submissions in
+// flight that the answer is written under (witnessWrite flushes it there).
+// It returns what ends the bound once the answer is written, so the next
+// request on the connection is not held to it.
 func (s *witnessService) answerWithin(w http.ResponseWriter) func() {
 	rc := http.NewResponseController(w)
 	_ = rc.SetWriteDeadline(time.Now().Add(witnessAnswerTime))
-	return func() {
-		_ = rc.Flush()
-		_ = rc.SetWriteDeadline(time.Time{})
-	}
+	return func() { _ = rc.SetWriteDeadline(time.Time{}) }
 }
 
 // refuseMethod answers a method the specification does not name for the
@@ -195,13 +194,16 @@ func witnessRefuse(w http.ResponseWriter, status int, reason, sentence string, s
 	witnessWrite(w, status, "application/json", buf.Bytes())
 }
 
-// witnessWrite writes an answer whole, its length stated.
+// witnessWrite writes an answer whole, its length stated, and flushes it
+// to the connection: an answer is written, or its bound has passed, before
+// the place it was made under is given back.
 func witnessWrite(w http.ResponseWriter, status int, contentType string, body []byte) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
+	_ = http.NewResponseController(w).Flush()
 }
 
 // witnessLines answers 200 with statement lines, each exactly as the
