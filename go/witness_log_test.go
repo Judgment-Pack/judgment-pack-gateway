@@ -1574,6 +1574,51 @@ func TestWitnessSetAsideOwnBytesAreReadBack(t *testing.T) {
 	}
 }
 
+// A record of the set-aside file's own that no longer keeps the bytes at
+// its offset keeps nothing for the read-back either: when the record the
+// repair writes in its place is lost while the write reports success, the
+// cut is refused.
+func TestWitnessSetAsideDamagedRecordKeepsNothing(t *testing.T) {
+	tw := newTestWitness(t, testTrail)
+	w := tw.open(t)
+	mustSign(t, w, testTrail, 1)
+	w.close()
+	clean := tw.read(t, "log")
+	tw.write(t, "log", clean+`{"checkpoint":`)
+	if _, err := tw.repair(interruptions("half")); err == nil {
+		t.Fatal("the interrupted repair answered no failure")
+	}
+	if _, err := tw.repair(interruptions("", "", "fail")); err == nil {
+		t.Fatal("the second interrupted repair answered no failure")
+	}
+	text := tw.read(t, "setAside")
+	i := strings.Index(text, `"file":"set-aside"`)
+	j := strings.LastIndex(text[:i], `"bytes":"`) + len(`"bytes":"`)
+	if i < 0 || j < len(`"bytes":"`) {
+		t.Fatal("no record of the set-aside file's own")
+	}
+	digit := byte('7')
+	if text[j] == '7' {
+		digit = '6'
+	}
+	tw.write(t, "setAside", text[:j]+string(digit)+text[j+1:])
+	torn := tw.read(t, "log")
+	x := osWitnessIO()
+	base := x.write
+	x.write = func(file string, f *os.File, data []byte) (int, error) {
+		if file == "set-aside" && bytes.Contains(data, []byte(`"file":"set-aside"`)) {
+			return len(data), nil
+		}
+		return base(file, f, data)
+	}
+	if _, err := tw.repair(x); err == nil || !strings.Contains(err.Error(), "nothing is cut") {
+		t.Fatalf("the repair: %v", err)
+	}
+	if tw.read(t, "log") != torn {
+		t.Fatal("the log was cut although a line of the set-aside file is kept by nothing")
+	}
+}
+
 // Every append the witness makes settles its own file's last bytes first,
 // or refuses: a statement's line and its mark, and a registration, by a
 // running witness, are refused when the log, the marks or the registrations
@@ -1842,15 +1887,16 @@ func keptLines(t *testing.T, tw *testWitness) int {
 // its line is kept again. A set-aside file that already holds to the rule is
 // not written to but for the records a repair keeps of the log.
 func TestWitnessSetAsideKeepsEveryLineOnEveryRepair(t *testing.T) {
-	setUp := func(t *testing.T) (*testWitness, string) {
+	setUpWith := func(t *testing.T, tail string) (*testWitness, string) {
 		tw := newTestWitness(t, testTrail)
 		w := tw.open(t)
 		mustSign(t, w, testTrail, 1)
 		w.close()
 		clean := tw.read(t, "log")
-		tw.write(t, "log", clean+`{"checkpoint":`)
+		tw.write(t, "log", clean+tail)
 		return tw, clean
 	}
+	setUp := func(t *testing.T) (*testWitness, string) { return setUpWith(t, `{"checkpoint":`) }
 	finish := func(t *testing.T, tw *testWitness, clean string, others int) {
 		t.Helper()
 		if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != outcomeSetAside {
@@ -1915,6 +1961,17 @@ func TestWitnessSetAsideKeepsEveryLineOnEveryRepair(t *testing.T) {
 			t.Fatal("no record of the set-aside file's own to damage")
 		}
 		tw.write(t, "setAside", damagedText)
+		finish(t, tw, clean, 1)
+	})
+	t.Run("a long line kept in part", func(t *testing.T) {
+		// half a record of a part: a line longer than one part, so it is
+		// kept by two records, the second of which is interrupted
+		tw, clean := setUpWith(t, strings.Repeat("x", 2*setAsideChunk+100))
+		for _, plan := range [][]string{{"", "half"}, {"", "", "fail"}} {
+			if _, err := tw.repair(interruptions(plan...)); err == nil {
+				t.Fatalf("the interrupted repair %v answered no failure", plan)
+			}
+		}
 		finish(t, tw, clean, 1)
 	})
 	t.Run("a file already holding to the rule", func(t *testing.T) {
