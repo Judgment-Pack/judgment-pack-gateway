@@ -590,6 +590,9 @@ func faultyWitnessIO(base witnessIO, step, leaves string) (witnessIO, *bool) {
 	}
 	isSync := strings.HasSuffix(step, "sync")
 	var lastSize int64
+	// written is each file written through this seam: a sync fails only
+	// when it is the one that covers a write, as a crash in it would
+	written := map[string]bool{}
 	out := base
 	out.write = func(file string, f *os.File, data []byte) (int, error) {
 		mu.Lock()
@@ -597,6 +600,7 @@ func faultyWitnessIO(base witnessIO, step, leaves string) (witnessIO, *bool) {
 		if info, err := f.Stat(); err == nil {
 			lastSize = info.Size()
 		}
+		written[file] = true
 		if *fired || isSync || files[step] != file {
 			return base.write(file, f, data)
 		}
@@ -608,7 +612,7 @@ func faultyWitnessIO(base witnessIO, step, leaves string) (witnessIO, *bool) {
 	out.sync = func(file string, f *os.File) error {
 		mu.Lock()
 		defer mu.Unlock()
-		if *fired || !isSync || files[step] != file {
+		if *fired || !isSync || files[step] != file || !written[file] {
 			return base.sync(file, f)
 		}
 		*fired = true

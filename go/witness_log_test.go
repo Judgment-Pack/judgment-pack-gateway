@@ -445,6 +445,7 @@ func TestWitnessWritesNothingItsReadersWouldRefuse(t *testing.T) {
 type startState struct {
 	name          string
 	log, marks    string
+	noMarks       bool
 	registrations *string
 	want          string
 	findings      []string
@@ -509,6 +510,8 @@ func TestWitnessStartUpCases(t *testing.T) {
 		{name: "a line longer than any statement", log: log(stmts[0], strings.Repeat("x", witnessLineLimit+1)), marks: marks(1), want: outcomeNewKey,
 			findings: []string{findingUnmarked, findingWitnessMalformed}},
 		{name: "empty marks behind statements", log: log(stmts[0]), marks: "", want: outcomeMarkCompleted, findings: []string{findingUnmarked}},
+		{name: "a lost marks file behind statements", log: log(stmts...), noMarks: true, want: outcomeNewKey, findings: []string{findingMarksLost}},
+		{name: "a lost marks file behind a torn log", log: "{", noMarks: true, want: outcomeNewKey, findings: []string{findingLogTorn, findingMarksLost}},
 		{name: "a registration line damaged", log: log(stmts...), marks: marks(3), registrations: p(reg + "{}\n"), want: outcomeRefused,
 			findings: []string{findingRegistrationMalformed}},
 		{name: "registrations missing only a newline", log: log(stmts...), marks: marks(3), registrations: p(reg + strings.TrimSuffix(string(registrationLine(witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"})), "\n")),
@@ -523,6 +526,11 @@ func TestWitnessStartUpCases(t *testing.T) {
 			if c.log != "" || c.marks != "" {
 				tw.write(t, "log", c.log)
 				tw.write(t, "marks", c.marks)
+			}
+			if c.noMarks {
+				if err := os.Remove(tw.paths.marks); err != nil {
+					t.Fatal(err)
+				}
 			}
 			registrations := reg
 			if c.registrations != nil {
@@ -960,5 +968,393 @@ func TestWitnessVerifyCommand(t *testing.T) {
 	findings, _ := out["findings"].([]any)
 	if code != 0 || len(findings) != 1 || findings[0].(map[string]any)["count"] != float64(100000) {
 		t.Errorf("100000 malformed lines: exit %d, %d findings", code, len(findings))
+	}
+}
+
+// traceOf runs operations through a trace's checks, as the seam would, and
+// gives the first that broke an invariant, or "".
+func traceOf(ops ...string) string {
+	tr := newWitnessTrace()
+	for _, op := range ops {
+		fields := strings.Fields(op)
+		var err error
+		if len(fields) == 3 {
+			err = errors.New("failed")
+		}
+		tr.before(fields[0], fields[1])
+		tr.after(fields[0], fields[1], err)
+	}
+	return tr.violation()
+}
+
+// The trace's invariants (witness_trace.go), each held to a sequence that
+// breaks it and one that keeps it, so that the checks the tests and the
+// recovery vectors rely on are themselves checked.
+func TestWitnessTraceHoldsTheOrder(t *testing.T) {
+	start := []string{"read log", "read registrations", "read marks", "sync log", "sync registrations", "sync marks", "syncdir log-dir", "syncdir marks-dir", "start -"}
+	for _, c := range []struct {
+		name string
+		ops  []string
+		want string
+	}{
+		{"a start and a statement in order", append(append([]string{}, start...), "write log", "sync log", "write marks", "sync marks", "publish statement"), ""},
+		{"1: a mark before its line is synced", []string{"write log", "write marks"}, "a mark appended before the log line"},
+		{"1: a mark after a failed sync", []string{"write log", "sync log failed", "write marks"}, "a mark appended before the log line"},
+		{"2: published before the mark is synced", []string{"write log", "sync log", "write marks", "publish statement"}, "the marks held bytes not synced"},
+		{"2: started on a log not synced", []string{"write log", "start -"}, "the log held bytes not synced"},
+		{"3: a cut with nothing kept", []string{"truncate log"}, "a file cut before"},
+		{"3: a cut before the kept bytes are synced", []string{"write set-aside", "truncate log"}, "a file cut before"},
+		{"3: a cut after them", []string{"write set-aside", "sync set-aside", "truncate log", "sync log", "repaired -"}, ""},
+		{"4: a write before the directory of a file made is synced", []string{"create log", "write log"}, "the directory of a file made"},
+		{"4: a write after it", []string{"create log", "syncdir log-dir", "write log", "sync log"}, ""},
+		{"5: a mark built on a line read and not synced", []string{"read log", "write marks"}, "what was read"},
+		{"5: a start on a file synced and its directory not", []string{"read log", "sync log", "start -"}, "what was read (log-dir)"},
+		{"5: a start on the marks' directory not synced", []string{"read marks", "sync marks", "syncdir log-dir", "start -"}, "what was read (marks-dir)"},
+		{"5: a file made on what was read", []string{"read registrations", "create log"}, "what was read"},
+		{"5: a start", start, ""},
+		{"6: a registration ending unsynced", []string{"write registrations", "registered -"}, "it ended with registrations not synced"},
+		{"6: a repair ending with a directory not synced", []string{"create set-aside", "repaired -"}, "the directory of a file made"},
+		{"7: a statement on a registration not synced", []string{"write registrations", "write log"}, "the registration it rests on"},
+	} {
+		got := traceOf(c.ops...)
+		if (c.want == "") != (got == "") || !strings.Contains(got, c.want) {
+			t.Errorf("%s: %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// The operations one start and one statement make, in their order: what
+// was read synced, files and directories, before the start; a statement's
+// line written and synced, then its mark written and synced, then the
+// statement published; a first submission's registration written and
+// synced before its statement.
+func TestWitnessOperationsInOrder(t *testing.T) {
+	tw := newTestWitness(t, testTrail)
+	tw.first = true
+	w := tw.open(t)
+	ops := strings.Join(tw.trace.last(), " | ")
+	if want := "read registrations | sync registrations | syncdir log-dir | syncdir marks-dir | create log | syncdir log-dir | create marks | syncdir marks-dir | start "; !strings.HasSuffix(ops, want) {
+		t.Fatalf("a first start: %s", ops)
+	}
+	mustSign(t, w, testTrail, 1)
+	ops = strings.Join(tw.trace.last(), " | ")
+	if want := " | write log | sync log | write marks | sync marks | publish statement"; !strings.HasSuffix(ops, want) {
+		t.Fatalf("a statement: %s", ops)
+	}
+	mustSign(t, w, trailC, 1)
+	ops = strings.Join(tw.trace.last(), " | ")
+	if want := " | write registrations | sync registrations | write log | sync log | write marks | sync marks | publish statement"; !strings.HasSuffix(ops, want) {
+		t.Fatalf("a first submission: %s", ops)
+	}
+	w.close()
+	tw.open(t).close()
+	ops = strings.Join(tw.trace.last(), " | ")
+	if want := "read log | read registrations | read marks | sync log | sync registrations | sync marks | syncdir log-dir | syncdir marks-dir | start "; !strings.HasSuffix(ops, want) {
+		t.Fatalf("a start on files there: %s", ops)
+	}
+}
+
+// The seam's operations reach the system: each, given a file or a
+// directory already closed, fails rather than answering for an operation it
+// did not make. A sync that did nothing would pass every other test here.
+func TestWitnessIOReachesTheSystem(t *testing.T) {
+	dir := tempDirAt(t, 0o700)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := root.OpenFile("f", os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := osWitnessIO()
+	if err := x.sync("log", file); err != nil {
+		t.Fatalf("a sync of an open file: %v", err)
+	}
+	if err := x.syncDir("log-dir", root); err != nil {
+		t.Fatalf("a sync of an open directory: %v", err)
+	}
+	file.Close()
+	root.Close()
+	if err := x.sync("log", file); err == nil {
+		t.Error("a sync of a closed file answered as done")
+	}
+	if _, err := x.write("log", file, []byte("x")); err == nil {
+		t.Error("a write to a closed file answered as done")
+	}
+	if err := x.truncate("log", file, 0); err == nil {
+		t.Error("a cut of a closed file answered as done")
+	}
+	if err := x.syncDir("log-dir", root); err == nil {
+		t.Error("a sync of a closed directory answered as done")
+	}
+	if made, err := x.create("log", root, "g"); err == nil {
+		made.Close()
+		t.Error("a file made in a closed directory")
+	}
+}
+
+// failingAt is the operating system's operations with the nth of them --
+// a write, a sync, a cut, a file made or a directory synced -- failing,
+// leaving its file as it was.
+func failingAt(n int) (witnessIO, *int) {
+	count := new(int)
+	base := osWitnessIO()
+	out := base
+	fail := func() bool { *count++; return *count == n }
+	out.write = func(file string, f *os.File, data []byte) (int, error) {
+		if fail() {
+			return 0, errors.New("the write failed")
+		}
+		return base.write(file, f, data)
+	}
+	out.sync = func(file string, f *os.File) error {
+		if fail() {
+			return errors.New("the sync failed")
+		}
+		return base.sync(file, f)
+	}
+	out.truncate = func(file string, f *os.File, size int64) error {
+		if fail() {
+			return errors.New("the cut failed")
+		}
+		return base.truncate(file, f, size)
+	}
+	out.create = func(file string, dir *os.Root, name string) (*os.File, error) {
+		if fail() {
+			return nil, errors.New("the file could not be made")
+		}
+		return base.create(file, dir, name)
+	}
+	out.syncDir = func(dir string, root *os.Root) error {
+		if fail() {
+			return errors.New("the directory sync failed")
+		}
+		return base.syncDir(dir, root)
+	}
+	return out, count
+}
+
+// A repair of each kind failing at each of its operations, in turn: it
+// answers with the failure, the marked statements stay, the bytes it was to
+// set aside are never cut before they are kept, and a repair run again
+// finishes the work, after which the witness starts. Every run is held to
+// the trace's order.
+func TestWitnessRepairFailsAtEveryStep(t *testing.T) {
+	kinds := []struct {
+		name string
+		want string
+		make func(t *testing.T, tw *testWitness)
+	}{
+		{"a mark completed", outcomeMarkCompleted, func(t *testing.T, tw *testWitness) {
+			tw.write(t, "marks", strings.SplitAfter(tw.read(t, "marks"), "\n")[0])
+		}},
+		{"a newline and a mark completed", outcomeNewlineAndMark, func(t *testing.T, tw *testWitness) {
+			tw.write(t, "marks", strings.SplitAfter(tw.read(t, "marks"), "\n")[0])
+			tw.write(t, "log", strings.TrimSuffix(tw.read(t, "log"), "\n"))
+		}},
+		{"torn bytes set aside", outcomeSetAside, func(t *testing.T, tw *testWitness) {
+			tw.write(t, "log", tw.read(t, "log")+`{"checkpoint":`)
+		}},
+		{"a registration's bytes set aside", outcomeRegistrationSetAside, func(t *testing.T, tw *testWitness) {
+			tw.write(t, "registrations", tw.read(t, "registrations")+`{"issuer":`)
+		}},
+	}
+	for _, kind := range kinds {
+		// how many operations a clean repair of this kind makes
+		steps := 0
+		{
+			tw := newTestWitness(t, testTrail)
+			w := tw.open(t)
+			mustSign(t, w, testTrail, 1)
+			mustSign(t, w, testTrail, 2)
+			w.close()
+			kind.make(t, tw)
+			counting, count := failingAt(-1)
+			if j, err := tw.repair(counting); err != nil || j.outcome != kind.want {
+				t.Fatalf("%s: a clean repair: %v", kind.name, err)
+			}
+			steps = *count
+		}
+		for n := 1; n <= steps; n++ {
+			t.Run(fmt.Sprintf("%s/operation %d of %d", kind.name, n, steps), func(t *testing.T) {
+				tw := newTestWitness(t, testTrail)
+				w := tw.open(t)
+				mustSign(t, w, testTrail, 1)
+				mustSign(t, w, testTrail, 2)
+				w.close()
+				kind.make(t, tw)
+				marks, log := tw.read(t, "marks"), tw.read(t, "log")
+				failing, _ := failingAt(n)
+				if _, err := tw.repair(failing); err == nil {
+					t.Fatal("the repair did not answer with its failure")
+				}
+				if !strings.HasPrefix(tw.read(t, "marks"), marks) {
+					t.Fatal("a mark was lost")
+				}
+				if kind.want == outcomeSetAside && tw.read(t, "log") != log && tw.read(t, "setAside") == "<absent>" {
+					t.Fatal("the log was cut and its bytes are kept nowhere")
+				}
+				if _, err := tw.repair(osWitnessIO()); err != nil {
+					t.Fatalf("the repair run again: %v", err)
+				}
+				tw.open(t).close()
+			})
+		}
+	}
+}
+
+// A registration, by a first submission or by the operator, with the
+// witness running or stopped, failing at its write or its sync, leaving
+// every state that step can: the running witness then signs nothing for any
+// trail, and the checks at the next start give what ADR-0013's rules say.
+// The order of every run is held to the trace.
+func TestWitnessRegistrationFailsAtEveryStep(t *testing.T) {
+	for _, mode := range []string{"first-submission", "operator", "offline"} {
+		for _, step := range []string{"register", "register-sync"} {
+			leaves := []string{"nothing", "torn", "unterminated", "whole"}
+			if step == "register-sync" {
+				leaves = []string{"nothing", "whole"}
+			}
+			for _, left := range leaves {
+				t.Run(mode+"/"+step+"/"+left, func(t *testing.T) {
+					tw := newTestWitness(t, testTrail, trailB)
+					tw.first = mode == "first-submission"
+					w := tw.open(t)
+					mustSign(t, w, testTrail, 1)
+					faulty, fired := faultyWitnessIO(osWitnessIO(), step, left)
+					r := witnessRegistration{trail: trailC, issuer: witnessIssuer, subject: subjectOf(trailC)}
+					var err error
+					switch mode {
+					case "first-submission":
+						w.io = tw.io(faulty)
+						_, err = w.submit(witnessIssuer, subjectOf(trailC), [][]byte{cpLine(trailC, 1, "a")})
+					case "operator":
+						w.io = tw.io(faulty)
+						err = w.register(r)
+					case "offline":
+						w.close()
+						err = registerWitnessTrail(tw.paths, r, tw.io(faulty))
+					}
+					if !*fired || err == nil {
+						t.Fatalf("the fault fired %v; the registration answered %v", *fired, err)
+					}
+					if mode != "offline" {
+						if _, err := w.submit(witnessIssuer, subjectOf(trailB), [][]byte{cpLine(trailB, 1, "a")}); !errors.Is(err, errWitnessStopped) {
+							t.Fatalf("another trail after the failure: %v", err)
+						}
+						w.close()
+					}
+					if outcome, findings := tw.judge(t); outcome != crashOutcome(step, left) {
+						t.Fatalf("the checks give %s %v, the rules %s", outcome, findings, crashOutcome(step, left))
+					}
+				})
+			}
+		}
+	}
+}
+
+// Every line the witness writes is one its own start reads back: each kind
+// is held, before it is written, to its reader's function and to the
+// 4096-byte bound that reader takes. A registration at the bound is kept,
+// by the operator with the witness stopped or running, and read back; one
+// byte past it is refused, writes nothing and stops nothing. Set-aside
+// bytes of any length are kept in records within the bound. The largest
+// statement and the largest mark the format allows fit well within it, and
+// a line one past it of any kind is refused.
+func TestWitnessWritesOnlyLinesItsReaderReads(t *testing.T) {
+	registrationOf := func(length int) witnessRegistration {
+		r := witnessRegistration{trail: trailC, issuer: witnessIssuer, subject: "s"}
+		pad := length - (len(registrationLine(r)) - 1)
+		r.subject = strings.Repeat("s", 1+pad)
+		return r
+	}
+	for _, length := range []int{witnessLineLimit, witnessLineLimit + 1} {
+		r := registrationOf(length)
+		if got := len(registrationLine(r)) - 1; got != length {
+			t.Fatalf("a registration line of %d bytes, not %d", got, length)
+		}
+		for _, running := range []bool{false, true} {
+			tw := newTestWitness(t, testTrail)
+			before := tw.read(t, "registrations")
+			var err error
+			if running {
+				w := tw.open(t)
+				err = w.register(r)
+				if w.stopped != nil {
+					t.Fatalf("a registration of %d bytes stopped the witness", length)
+				}
+				w.close()
+			} else {
+				err = registerWitnessTrail(tw.paths, r, tw.io(osWitnessIO()))
+			}
+			switch {
+			case length <= witnessLineLimit && err != nil:
+				t.Fatalf("a registration line at the bound, running %v: %v", running, err)
+			case length > witnessLineLimit && (err == nil || !strings.Contains(err.Error(), "longer than")):
+				t.Fatalf("a registration line one past the bound, running %v: %v", running, err)
+			case length > witnessLineLimit && tw.read(t, "registrations") != before:
+				t.Fatal("a registration refused was written")
+			}
+			if outcome, findings := tw.judge(t); outcome != outcomeStart {
+				t.Fatalf("after a registration line of %d bytes the checks give %s %v", length, outcome, findings)
+			}
+		}
+	}
+
+	tw := newTestWitness(t, testTrail)
+	w := tw.open(t)
+	mustSign(t, w, testTrail, 1)
+	w.close()
+	tail := strings.Repeat("x", 5000)
+	tw.write(t, "log", tw.read(t, "log")+tail)
+	if j, err := tw.repair(osWitnessIO()); err != nil || j.outcome != outcomeSetAside {
+		t.Fatalf("repair: %v", err)
+	}
+	var kept []byte
+	records := strings.Split(strings.TrimSuffix(tw.read(t, "setAside"), "\n"), "\n")
+	for _, record := range records {
+		part, ok := parseSetAside([]byte(record))
+		if !ok || len(record) > witnessLineLimit {
+			t.Fatalf("a set-aside record of %d bytes its reader does not read", len(record))
+		}
+		kept = append(kept, part...)
+	}
+	if len(records) != 5 || string(kept) != tail {
+		t.Fatalf("%d records keeping %d bytes; want 5 keeping %d", len(records), len(kept), len(tail))
+	}
+
+	// a set-aside record at the bound and one past it
+	for _, digits := range []int64{0, 10, 100} {
+		at := setAsideLine("2026-10-05T12:00:00Z", nil, "log", digits)
+		over := len(at) - 1
+		if (witnessLineLimit-over)%2 != 0 {
+			continue
+		}
+		atBound := setAsideLine("2026-10-05T12:00:00Z", []byte(strings.Repeat("y", (witnessLineLimit-over)/2)), "log", digits)
+		if err := admitWitnessLine("set-aside", atBound[:len(atBound)-1]); err != nil || len(atBound)-1 != witnessLineLimit {
+			t.Fatalf("a set-aside record of %d bytes: %v", len(atBound)-1, err)
+		}
+		past := setAsideLine("2026-10-05T12:00:00Z", []byte(strings.Repeat("y", (witnessLineLimit-over)/2)), "log", max(10, digits*10))
+		if err := admitWitnessLine("set-aside", past[:len(past)-1]); err == nil || len(past)-1 <= witnessLineLimit {
+			t.Fatalf("a set-aside record of %d bytes was admitted", len(past)-1)
+		}
+		break
+	}
+
+	// the largest statement and mark, and one past the bound of each kind
+	s := newWitnessSigner(t)
+	largest, _ := s.line(stmt{kind: "conflict", sequence: maxWitnessInteger, index: maxWitnessInteger, prev: strings.Repeat("f", 128)})
+	st, ok := parseWitnessStatement([]byte(largest))
+	if !ok || admitWitnessLine("statement", []byte(largest)) != nil || admitWitnessLine("mark", markLine(st)[:len(markLine(st))-1]) != nil {
+		t.Fatal("the largest statement or mark is not admitted")
+	}
+	if len(largest) > witnessLineLimit/4 {
+		t.Fatalf("the largest statement is %d bytes, near the bound", len(largest))
+	}
+	for _, kind := range []string{"statement", "mark", "registration", "set-aside"} {
+		if err := admitWitnessLine(kind, bytes.Repeat([]byte(" "), witnessLineLimit+1)); err == nil || !strings.Contains(err.Error(), "longer than") {
+			t.Errorf("a %s line one past the bound: %v", kind, err)
+		}
 	}
 }
