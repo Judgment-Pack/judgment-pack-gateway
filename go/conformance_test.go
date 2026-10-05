@@ -165,6 +165,9 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 		{"a directory among the store vectors", func(dir string) error {
 			return os.Mkdir(filepath.Join(dir, "v3", "stores", "more"), 0o755)
 		}},
+		{"a file beside the witness recovery vectors", func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "witness-recovery", "generator.go"), nil, 0o600)
+		}},
 	} {
 		dir := copyCorpus(t)
 		if err := c.make(dir); err != nil {
@@ -194,6 +197,74 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 		if _, _, err := runCorpus(dir, inProcess{}); err == nil {
 			t.Errorf("%s: the run was not refused", what)
 		}
+	}
+}
+
+// TestWitnessRecoveryVectors holds this implementation's witness to every
+// recovery vector (corpus/witness-recovery/; ADR-0013 §4), and holds the
+// runner to refusing a vector it cannot read and to running none for
+// another implementation.
+func TestWitnessRecoveryVectors(t *testing.T) {
+	failures, count, err := runRecoveryVectors(corpusPath(), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range failures {
+		t.Error(failure)
+	}
+	t.Logf("%d/%d witness recovery vectors", count-len(failures), count)
+
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+		t.Fatal(err)
+	}
+	vector := filepath.Join(dir, "witness-recovery", "refused-a-stale-backup-behind-the-marks.json")
+	raw, err := os.ReadFile(vector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := bytes.Replace(raw, []byte(`"outcome": "refused"`), []byte(`"outcome": "start"`), 1)
+	if err := os.WriteFile(vector, wrong, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if failures, _, err := runRecoveryVectors(dir, false); err != nil || len(failures) != 0 {
+		t.Errorf("read for another implementation, a vector was run: %v, %d failures", err, len(failures))
+	}
+	if failures, _, err := runRecoveryVectors(dir, true); err != nil || len(failures) != 1 {
+		t.Errorf("a vector expecting a start where the rules refuse: %v, %d failures", err, len(failures))
+	}
+	for what, edit := range map[string][2]string{
+		"a family no reader knows":         {`"family": "refused"`, `"family": "rollback"`},
+		"a member no reader knows":         {`"family": "refused",`, `"family": "refused", "seed": "",`},
+		"a name that is not its own":       {`"name": "refused-a-stale-backup-behind-the-marks"`, `"name": "refused-a-stale-backup"`},
+		"a file no runner compares":        {`"files": {`, `"files": {"journal": "",`},
+		"a step of two actions":            {`"open": {`, `"replace": {}, "open": {`},
+		"an expected outcome with nothing": {`"findings": [`, `"findingz": [`},
+		"a registration of no kind":        {`"registration": "operator"`, `"registration": "anyone"`},
+	} {
+		if err := os.WriteFile(vector, bytes.Replace(raw, []byte(edit[0]), []byte(edit[1]), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runCorpus(dir, inProcess{}); err == nil {
+			t.Errorf("%s: the run was not refused", what)
+		}
+	}
+	if err := os.WriteFile(vector, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// a statement the test key did not sign refuses the vector before it runs
+	writer := filepath.Join(dir, "witness-recovery", "writer-a-sync-failure-stops-another-trail.json")
+	raw, err = os.ReadFile(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(writer, bytes.Replace(raw, []byte(`"statements": [
+    "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:`), []byte(`"statements": [
+    "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:0`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runRecoveryVectors(dir, false); err == nil || !strings.Contains(err.Error(), "no statement the test key signed") {
+		t.Errorf("a statement no key signed: %v", err)
 	}
 }
 
@@ -289,6 +360,10 @@ func TestREADMEVectorCounts(t *testing.T) {
 		{"the witness count", "**`witness/*.json`** — 54 vectors", "**`witness/*.json`** — 55 vectors"},
 		{"a family's row", "| `chain` | 10 |", "| `chain` | 11 |"},
 		{"a family no runner reads", "| `chain` | 10 |", "| `chain` | 10 |\n| `continuation` | 0 |"},
+		{"the witness recovery count", "**`witness-recovery/*.json`** — 25 vectors", "**`witness-recovery/*.json`** — 24 vectors"},
+		{"a recovery family's row", "| `new-key` | 8 |", "| `new-key` | 7 |"},
+		{"a recovery family no runner reads", "| `writer` | 5 |", "| `writer` | 5 |\n| `continuation` | 0 |"},
+		{"a recovery family stated among the witness families", "| `chain` | 10 |", "| `chain` | 10 |\n| `writer` | 0 |"},
 	} {
 		if !bytes.Contains(readme, []byte(edit.from)) {
 			t.Fatalf("%s: the README no longer says %q", edit.what, edit.from)
