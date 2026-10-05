@@ -732,7 +732,9 @@ func TestWitnessCrashMatrix(t *testing.T) {
 			if err := w.register(witnessRegistration{trail: trailC[:31] + "1", issuer: witnessIssuer, subject: "x"}); !errors.Is(err, errWitnessStopped) {
 				t.Fatalf("a registration after the failure: %v", err)
 			}
-			if a, err := w.submit(witnessIssuer, subjectOf(trailB), [][]byte{cpLine(trailB, 5, "a")}); err != nil || a.kind != "held" {
+			// not even a statement it holds: the head a line falls below,
+			// or the statement held, may no longer be what the restart serves
+			if _, err := w.submit(witnessIssuer, subjectOf(trailB), [][]byte{cpLine(trailB, 5, "a")}); !errors.Is(err, errWitnessStopped) {
 				t.Fatalf("a held statement after the failure: %v", err)
 			}
 			if head, _, _ := w.head(testTrail); c.step != "publish" && !bytes.Equal(head, headBefore) {

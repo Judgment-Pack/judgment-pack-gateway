@@ -4,8 +4,10 @@ package main
 // §4, "Endpoints and storage"): the witness log, the marks, the
 // registrations, the order in which a statement is signed, made durable,
 // marked and published, the start-up checks, and the repair their three
-// rules allow. This is the core the witness service is built on; nothing
-// here listens, and nothing here is served yet.
+// rules allow. This is the core the witness service is built on: the
+// service (witness_serve.go) answers submissions and serves reads through
+// it, and the commands (witness_cmd.go) register, retire and repair through
+// it with the witness stopped.
 //
 // The files, each private to the signer (0600):
 //
@@ -707,6 +709,11 @@ func (p witnessPaths) check() error {
 	return nil
 }
 
+// errWitnessHeld is a file another witness, or a command, holds: a witness
+// running holds its files for as long as it runs, so a command that finds
+// one held changes nothing.
+var errWitnessHeld = errors.New("is held by another witness, through this name or another")
+
 // errWitnessFilesNotKept is the refusal of every witness off Unix.
 var errWitnessFilesNotKept = errors.New("witness: a witness keeps its files only on Unix, where each can be locked by what it is and its names counted; elsewhere none is opened")
 
@@ -829,7 +836,7 @@ func (f *witnessFiles) hold(label string, file *os.File, info os.FileInfo, name 
 		}
 	}
 	if err := f.io.lock(label, file); err != nil {
-		return fmt.Errorf("witness: %s %v", name, err)
+		return fmt.Errorf("witness: %s %w", name, err)
 	}
 	return nil
 }
@@ -1137,7 +1144,16 @@ type witnessConfig struct {
 	// io is the seam the witness's file operations go through: the
 	// operating system's when unset (osWitnessIO).
 	io witnessIO
+	// trailsPerSubmitter bounds the trails a submitter submits for: a
+	// submission whose trail holds no statement yet is refused when the
+	// trails registered to its submitter that hold one are this many. Zero
+	// bounds nothing.
+	trailsPerSubmitter int
 }
+
+// submitterKey is a submitter, as a token names it and a registration
+// records it: an issuer and a subject.
+type submitterKey struct{ issuer, subject string }
 
 // witnessSeedSigner is the gateway's seed as the witness's key (ADR-0013,
 // question 6): the seed that signs its receipts and seals, under the
@@ -1159,6 +1175,12 @@ var (
 	errWitnessRegisteredElse = errors.New("witness: the trail is registered to another submitter")
 	errWitnessNothingRetired = errors.New("witness: the trail has no checkpoint statement to retire")
 	errWitnessIndexBound     = errors.New("witness: the trail's chain is at the largest index a statement holds")
+	errWitnessTrailsBound    = errors.New("witness: the submitter submits for as many trails as the witness allows each submitter")
+	// errWitnessUnregisterable: under "first-submission", a submitter whose
+	// registration would be a line the registrations' reader does not take
+	// -- a subject longer than a line holds -- cannot register a trail, and
+	// nothing is written.
+	errWitnessUnregisterable = errors.New("witness: the submitter's issuer and subject do not make a registration the witness can keep")
 )
 
 // witnessFailure is a write that failed at a step of the fixed order --
@@ -1235,6 +1257,11 @@ type witnessLog struct {
 	// published runs once a statement is marked and before it is answered:
 	// a test's way of failing at that step.
 	published func() error
+	// trailsPerSubmitter is witnessConfig's; submitterTrails counts, by
+	// submitter, the trails registered to it that hold a statement. Both are
+	// read and changed under the writer lock.
+	trailsPerSubmitter int
+	submitterTrails    map[submitterKey]int
 
 	// writer is the writer lock: a statement's append and sync and its
 	// mark's append and sync, or a registration's append and sync, happen
@@ -1287,11 +1314,30 @@ func openWitnessLog(cfg witnessConfig) (*witnessLog, error) {
 	if clock == nil {
 		clock = time.Now
 	}
+	counts := map[submitterKey]int{}
+	for trail, t := range j.trails {
+		if r, ok := j.registrations[trail]; ok && t.last != nil {
+			counts[submitterKey{r.issuer, r.subject}]++
+		}
+	}
 	return &witnessLog{
 		files: files, publicKey: cfg.publicKey, keyID: keyIDFor(cfg.publicKey), sign: cfg.sign, clock: clock,
 		firstSubmission: cfg.firstSubmission, io: files.io, published: func() error { return nil },
+		trailsPerSubmitter: cfg.trailsPerSubmitter, submitterTrails: counts,
 		trails: j.trails, registrations: j.registrations, logSize: j.logEnd,
 	}, nil
+}
+
+// held is how many trails the witness holds a statement for, and how many
+// statements it holds.
+func (w *witnessLog) held() (trails, statements int) {
+	w.index.RLock()
+	defer w.index.RUnlock()
+	for _, t := range w.trails {
+		trails++
+		statements += len(t.offsets)
+	}
+	return trails, statements
 }
 
 // close releases the files and the locks. A witness closed after a failure
@@ -1303,6 +1349,10 @@ func (w *witnessLog) close() { w.files.close() }
 // registered to it, or, under "first-submission", not registered yet. Only
 // the last line is signed; the others are compared with what the witness
 // holds, for conflicts, and otherwise discarded (§4, question 7).
+//
+// A witness stopped by a failure answers nothing else: not even a statement
+// it holds, or the head below which a line falls, since a statement signed
+// after that head may be durable and marked, and served after the restart.
 func (w *witnessLog) submit(issuer, subject string, lines [][]byte) (witnessAnswer, error) {
 	if len(lines) == 0 {
 		return witnessAnswer{}, witnessLineError{"a submission holds at least one checkpoint line"}
@@ -1324,18 +1374,29 @@ func (w *witnessLog) submit(issuer, subject string, lines [][]byte) (witnessAnsw
 
 	w.writer.Lock()
 	defer w.writer.Unlock()
+	if w.stopped != nil {
+		return witnessAnswer{}, errWitnessStopped
+	}
 	registration, registered := w.registrations[trail]
 	switch {
 	case registered && (registration.issuer != issuer || registration.subject != subject):
 		return witnessAnswer{}, errWitnessRegisteredElse
 	case !registered && !w.firstSubmission:
 		return witnessAnswer{}, errWitnessUnregistered
-	case !registered:
+	case !registered && admitRegistration(witnessRegistration{trail: trail, issuer: issuer, subject: subject}) != nil:
+		return witnessAnswer{}, errWitnessUnregisterable
+	}
+	t := w.trails[trail]
+	// a trail that holds no statement yet is a trail more for its
+	// submitter, refused at the bound before anything is registered
+	if t == nil && w.trailsPerSubmitter > 0 && w.submitterTrails[submitterKey{issuer, subject}] >= w.trailsPerSubmitter {
+		return witnessAnswer{}, errWitnessTrailsBound
+	}
+	if !registered {
 		if err := w.keepRegistration(witnessRegistration{trail: trail, issuer: issuer, subject: subject}); err != nil {
 			return witnessAnswer{}, err
 		}
 	}
-	t := w.trails[trail]
 	if t.retired() {
 		return w.answer("retired", t, t.last.index)
 	}
@@ -1385,6 +1446,9 @@ func (w *witnessLog) submit(issuer, subject string, lines [][]byte) (witnessAnsw
 func (w *witnessLog) retire(trail string) (witnessAnswer, error) {
 	w.writer.Lock()
 	defer w.writer.Unlock()
+	if w.stopped != nil {
+		return witnessAnswer{}, errWitnessStopped
+	}
 	t := w.trails[trail]
 	if t == nil || t.latest == nil {
 		return witnessAnswer{}, errWitnessNothingRetired
@@ -1416,19 +1480,26 @@ func (w *witnessLog) answer(kind string, t *witnessTrail, index int64) (witnessA
 	return witnessAnswer{kind: kind, statements: [][]byte{line}}, nil
 }
 
+// admitRegistration is why a registration cannot be kept, or nil: its
+// members, and its line as the registrations' reader takes it.
+func admitRegistration(r witnessRegistration) error {
+	if err := r.check(); err != nil {
+		return err
+	}
+	line := registrationLine(r)
+	return admitWitnessLine("registration", line[:len(line)-1])
+}
+
 // keepRegistration appends a registration and syncs it, under the writer
 // lock, before anything is signed for its trail.
 func (w *witnessLog) keepRegistration(r witnessRegistration) error {
 	if w.stopped != nil {
 		return errWitnessStopped
 	}
-	if err := r.check(); err != nil {
+	if err := admitRegistration(r); err != nil {
 		return err
 	}
 	line := registrationLine(r)
-	if err := admitWitnessLine("registration", line[:len(line)-1]); err != nil {
-		return err
-	}
 	file := w.files.registrations
 	if err := endsCleanly("registrations", file); err != nil {
 		w.stopped = witnessFailure{"register", err}
@@ -1442,10 +1513,28 @@ func (w *witnessLog) keepRegistration(r witnessRegistration) error {
 		w.stopped = witnessFailure{"register-sync", err}
 		return w.stopped
 	}
+	// a trail that holds statements moves, in the counts, to the submitter
+	// it is now registered to
+	if t := w.trails[r.trail]; t != nil && w.submitterTrails != nil {
+		if old, ok := w.registrations[r.trail]; ok {
+			w.countTrail(submitterKey{old.issuer, old.subject}, -1)
+		}
+		w.countTrail(submitterKey{r.issuer, r.subject}, 1)
+	}
 	w.index.Lock()
 	w.registrations[r.trail] = r
 	w.index.Unlock()
 	return nil
+}
+
+// countTrail adds to a submitter's count of trails, and forgets a submitter
+// with none. Called under the writer lock.
+func (w *witnessLog) countTrail(key submitterKey, by int) {
+	if n := w.submitterTrails[key] + by; n > 0 {
+		w.submitterTrails[key] = n
+	} else {
+		delete(w.submitterTrails, key)
+	}
 }
 
 // signAndKeep makes the trail's next statement, of a kind, over a
@@ -1499,6 +1588,10 @@ func (w *witnessLog) signAndKeep(kind, checkpoint string, t *witnessTrail) ([]by
 	w.index.Lock()
 	trailIn(w.trails, st.trail).admit(st, offset, len(line))
 	w.index.Unlock()
+	// a trail's first statement makes it one of its submitter's trails
+	if r, ok := w.registrations[st.trail]; ok && st.index == 0 && w.submitterTrails != nil {
+		w.countTrail(submitterKey{r.issuer, r.subject}, 1)
+	}
 	if err := w.published(); err != nil {
 		w.stopped = witnessFailure{"publish", err}
 		return nil, w.stopped
@@ -1572,27 +1665,35 @@ func (w *witnessLog) head(trail string) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 	line, err := w.line(t, t.last.index)
-	return line, err == nil, err
+	return line, true, err
 }
 
 // statements is a trail's statements from an index, at most limit of them,
 // in index order, each exactly as logged.
 func (w *witnessLog) statements(trail string, from int64, limit int) ([][]byte, error) {
+	out, _, err := w.read(trail, from, limit)
+	return out, err
+}
+
+// read is a trail's statements from an index, at most limit of them, in
+// index order, each exactly as logged, and whether the witness holds any
+// statement for the trail, both as of one moment.
+func (w *witnessLog) read(trail string, from int64, limit int) ([][]byte, bool, error) {
 	w.index.RLock()
 	defer w.index.RUnlock()
 	t := w.trails[trail]
 	var out [][]byte
-	if t == nil || from < 0 {
-		return out, nil
+	if t == nil || t.last == nil {
+		return out, false, nil
 	}
-	for index := from; index < int64(len(t.offsets)) && len(out) < limit; index++ {
+	for index := max(from, 0); index < int64(len(t.offsets)) && len(out) < limit; index++ {
 		line, err := w.line(t, index)
 		if err != nil {
-			return nil, err
+			return nil, true, err
 		}
 		out = append(out, line)
 	}
-	return out, nil
+	return out, true, nil
 }
 
 // --- repair -------------------------------------------------------------------

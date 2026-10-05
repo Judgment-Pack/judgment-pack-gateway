@@ -30,14 +30,15 @@ import (
 // (docs/design/tool-descriptors.md), version 4 a platform's optional
 // `decisionPolicy` (docs/adr/0011-hold-a-write-to-its-decision.md), and
 // version 5 a decision policy's optional `requireSignedRecord`
-// (docs/adr/0012-hold-a-write-to-a-signed-record.md): a file of an earlier
+// (docs/adr/0012-hold-a-write-to-a-signed-record.md), and version 6 the
+// optional `witness` (docs/adr/0013-checkpoint-witness.md): a file of an earlier
 // version without the member still loads, and one with it is refused by
 // name, as any member a version does not have. connect raises a file to
 // version 3 exactly when the entry it writes carries a pin, and otherwise
 // leaves the version as it found it; it never lowers one.
-const engineVersion = "5"
+const engineVersion = "6"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -73,6 +74,9 @@ type engineConfig struct {
 	platforms       []platformConfig // in name order
 	version         string
 	mcp             *mcpConfig // the MCP server's own settings; nil when the configuration has none
+	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
+	// configuration has none.
+	witness *witnessSpec
 }
 
 // mcpConfig is the `mcp` member (docs/design/mcp-server.md): where the MCP
@@ -184,6 +188,10 @@ type engineHost struct {
 	// this host (readNativeExecutable) and answers the loader it names, if
 	// any; nil leaves that unchecked, as a test of other things may.
 	executableFormat func(path string) (loader string, err error)
+	// device is the device a directory is on (stat's st_dev), by which a
+	// witness's marks are held to storage apart from its log's; nil leaves
+	// that unchecked, as a test of other things may.
+	device func(path string) (uint64, error)
 }
 
 // exeFacts is what the engine knows about its own binary: its path, its
@@ -209,7 +217,7 @@ var engineMembers = map[string]bool{
 	"engineVersion": true, "authority": true, "seed": true, "store": true, "registry": true,
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
-	"mcp": false,
+	"mcp": false, "witness": false,
 }
 
 var platformMembers = map[string]bool{
@@ -234,7 +242,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q or %q", version, "1", "2", "3", "4", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
@@ -279,6 +287,25 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, fmt.Errorf("engine configuration: identity.%v", err)
 		}
 		cfg.identity = spec
+	}
+	if witnessValue, present := obj.get("witness"); present {
+		if !versionAtLeast(version, "6") {
+			return engineConfig{}, fmt.Errorf("engine configuration: witness is a version-6 member; engineVersion %s has no witness", version)
+		}
+		// A submission is authenticated, by a bearer token from the
+		// configured issuer (ADR-0013 §4): a witness with no issuer would
+		// have nobody to take a submission from.
+		if cfg.identity == nil {
+			return engineConfig{}, errors.New("engine configuration: witness needs identity: a submission to a witness is authenticated by a bearer token from the configured issuer")
+		}
+		w, err := parseWitnessConfig(witnessValue, cfg.identity.issuer)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		if err := w.apart(cfg); err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		cfg.witness = w
 	}
 	cfg.runtime = "docker"
 	if _, present := obj.get("runtime"); present {
@@ -1115,8 +1142,15 @@ func capabilityRefusal(sets capabilitySets) error {
 // user, so a compromised signer is not held out of credentials by this;
 // the design note says which separation would.
 func engineRefusals(cfg *engineConfig, host engineHost) ([]string, error) {
-	if len(cfg.platforms) == 0 {
+	// A witness may be all an engine is (ADR-0013 §4): with one, no
+	// platform is needed.
+	if len(cfg.platforms) == 0 && cfg.witness == nil {
 		return nil, errors.New("engine configuration: platforms names no platform; `gateway connect` adds one")
+	}
+	if cfg.witness != nil {
+		if err := witnessRefusals(cfg.witness, host); err != nil {
+			return nil, err
+		}
 	}
 	var statements []string
 	if host.euid == 0 {
