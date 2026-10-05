@@ -35,10 +35,14 @@ import (
 
 // decodeVectorFile reads a corpus file that is exactly one JSON value into
 // dst: anything after that value but whitespace -- a second object, a stray
-// byte -- refuses the file, so no corpus file holds material no runner
-// reads. Every family's loader reads through it; with strict set, a member
-// dst does not name refuses it too.
+// byte -- refuses the file, and so does a member given twice in one object
+// at any depth, so no corpus file holds material no runner reads. Every
+// family's loader reads through it; with strict set, a member dst does not
+// name refuses it too.
 func decodeVectorFile(raw []byte, dst any, strict bool) error {
+	if err := noMemberTwice(raw); err != nil {
+		return err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if strict {
 		decoder.DisallowUnknownFields()
@@ -50,6 +54,54 @@ func decodeVectorFile(raw []byte, dst any, strict bool) error {
 		return errors.New("data follows the file's one JSON value")
 	}
 	return nil
+}
+
+// noMemberTwice is why a JSON text gives one member twice in an object, at
+// any depth, or nil. encoding/json would keep the last of the two and pass
+// the first over unread.
+func noMemberTwice(raw []byte) error {
+	type frame struct {
+		object, key bool
+		names       map[string]bool
+	}
+	var stack []*frame
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var top *frame
+		if n := len(stack); n > 0 {
+			top = stack[n-1]
+		}
+		if delim, ok := token.(json.Delim); ok {
+			switch delim {
+			case '{', '[':
+				if top != nil && top.object {
+					top.key = true // after this value, a name
+				}
+				stack = append(stack, &frame{object: delim == '{', key: delim == '{', names: map[string]bool{}})
+			default:
+				stack = stack[:len(stack)-1]
+			}
+			continue
+		}
+		if top == nil || !top.object {
+			continue
+		}
+		if top.key {
+			name, _ := token.(string)
+			if top.names[name] {
+				return fmt.Errorf("the member %q is given twice in one object", name)
+			}
+			top.names[name] = true
+		}
+		top.key = !top.key
+	}
 }
 
 type canonVector struct {

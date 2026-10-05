@@ -398,6 +398,11 @@ func (r *recoveryRun) step(step recoveryStep) {
 			r.write(step, wio, fired)
 		}
 	}
+	// every fault a vector declares fires, or the vector disagrees: a
+	// fault never reached would be a declaration no run read
+	if step.Fault != nil && step.Concurrent == nil && !*fired {
+		r.failf("the fault at %s, leaving %s, was never reached", step.Fault.Step, step.Fault.Leaves)
+	}
 	if step.Files != nil {
 		r.files(step.Files)
 	}
@@ -438,9 +443,6 @@ func (r *recoveryRun) write(step recoveryStep, wio witnessIO, fired *bool) {
 		answer.kind = "registered"
 	}
 	r.log.io, r.log.published = r.trace.wrap(osWitnessIO()), func() error { return nil }
-	if fired != nil && !*fired && step.Fault != nil {
-		r.failf("the fault at %s was never reached", step.Fault.Step)
-	}
 	kind := answerKind(err, answer.kind)
 	if kind != step.Answer.Kind {
 		r.failf("expected the answer %s, produced %s", step.Answer.Kind, kind)

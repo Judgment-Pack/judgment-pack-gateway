@@ -252,6 +252,24 @@ func TestWitnessRecoveryVectors(t *testing.T) {
 	if err := os.WriteFile(vector, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// a fault a vector declares and its run never reaches -- a publish
+	// fault on a repair, which publishes nothing -- makes it disagree
+	unfired := filepath.Join(dir, "witness-recovery", "mark-a-whole-unmarked-last-statement.json")
+	unfiredRaw, err := os.ReadFile(unfired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unfired, bytes.Replace(unfiredRaw, []byte(`"repair": {`), []byte(`"fault": {"step": "publish", "leaves": "whole"}, "repair": {`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if witnessFilesKept {
+		if failures, _, err := runRecoveryVectors(dir, true); err != nil || len(failures) != 1 || !strings.Contains(failures[0], "never reached") {
+			t.Errorf("a fault never reached: %v, %d failures", err, len(failures))
+		}
+	}
+	if err := os.WriteFile(unfired, unfiredRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	// a statement the test key did not sign refuses the vector before it runs
 	writer := filepath.Join(dir, "witness-recovery", "writer-a-sync-failure-stops-another-trail.json")
 	raw, err = os.ReadFile(writer)
@@ -316,6 +334,41 @@ func TestEveryCorpusFileIsOneJSONValue(t *testing.T) {
 		}
 		if err := run(family, rel, " \n\t"); err != nil {
 			t.Errorf("%s: whitespace after the value refused the run: %v", family, err)
+		}
+	}
+}
+
+// No corpus file gives a member twice in one object, at any depth: in
+// every family, a second member of a name at the top of a file, or inside
+// one of its objects, refuses the run, where encoding/json would read the
+// last and pass the first over.
+func TestNoCorpusFileGivesAMemberTwice(t *testing.T) {
+	for _, c := range []struct {
+		family, rel string
+		edits       [][2]string
+	}{
+		{"canon", "canon.json", [][2]string{{"{", `{"vectors": [],`}, {`"note":`, `"note": "x", "note":`}}},
+		{"stores", "stores/absent-registry.json", [][2]string{{"{", `{"name": "x",`}, {`"expected": {`, `"expected": {"ok": true,`}}},
+		{"v3 stores", "v3/stores/v2-and-v3-sessions.json", [][2]string{{"{", `{"name": "x",`}, {`"expected": {`, `"expected": {"ok": true,`}}},
+		{"witness", "witness/valid-one-statement.json", [][2]string{{"{", `{"name": "x",`}, {`"expected": {`, `"expected": {"ok": false,`}}},
+		{"witness recovery", "witness-recovery/mark-a-whole-unmarked-last-statement.json", [][2]string{{"{", `{"steps": [],`}, {`"open": {`, `"open": {"outcome": "start",`}}},
+	} {
+		for i, edit := range c.edits {
+			dir := t.TempDir()
+			if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, filepath.FromSlash(c.rel))
+			raw, err := os.ReadFile(path)
+			if err != nil || !bytes.Contains(raw, []byte(edit[0])) {
+				t.Fatalf("%s: %v, or no %q to give twice", c.family, err, edit[0])
+			}
+			if err := os.WriteFile(path, bytes.Replace(raw, []byte(edit[0]), []byte(edit[1]), 1), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := runCorpus(dir, inProcess{}); err == nil || !strings.Contains(err.Error(), "given twice") {
+				t.Errorf("%s, %s: a member given twice: %v", c.family, []string{"at the top", "inside an object"}[i], err)
+			}
 		}
 	}
 }

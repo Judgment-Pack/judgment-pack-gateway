@@ -223,7 +223,10 @@ generator for them is kept here.
 not read — a file or directory at the top it has no rule for, anything but vectors among
 the vectors — a witness vector with a member it does not know or of a family it does not
 read, one whose `name` is not its file's, and one whose `expected` holds a member its form
-does not, at any depth. It also refuses a corpus whose counts this README misstates: the
+does not, at any depth. Every file of every family is read as exactly one JSON value, with
+nothing after it and no member given twice in one object at any depth, and a recovery vector
+whose run never reaches a fault it declares disagrees. It also refuses a corpus whose counts
+this README misstates: the
 totals of `canon.json`, `stores/`, `v3/stores/` and `witness/`, and each row of the family
 table above. `gateway conform` checks them on every run, the image's and a release's
 included; `go/conformance_test.go` holds that check to each misstatement. `TEST-SEED` is read by no runner, and
