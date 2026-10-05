@@ -54,19 +54,21 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity` and `mcp` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp` and `witness` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors` and `decisionPolicy` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"5"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
-  platform's `decisionPolicy`, and version 5 a decision policy's `requireSignedRecord`. A file
-  of an earlier version still loads without the member and is refused by name with it.
+  `"1"` to `"6"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, and version
+  6 `witness`. A file of an earlier version still loads without the member and is refused by
+  name with it.
   `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and
   otherwise leaves the version as it found it — it never lowers one — so a signer older than
   version 3 goes on reading every file `connect` has not pinned. (ADR-0007 named version 4 for
   its `services` member, which is not built; ADR-0011 gave 4 to `decisionPolicy`, ADR-0012 gave
-  5 to `requireSignedRecord`, and `services` takes the next version when it is built.)
+  5 to `requireSignedRecord`, ADR-0013 gave 6 to `witness`, and `services` takes the next
+  version when it is built.)
 - `decisionPolicy`, in a version-4 file, holds the platform's write tools to their decisions
   ([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md), [executor.md](executor.md)): an
   object keyed by write tool name, each value a policy —
@@ -136,6 +138,40 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   file as metadata and holds `identity.issuer`, when it serves HTTP, to an authorization
   server's identifier (an absolute `https` URL with no query and no fragment), which the
   signer does not demand.
+- `witness`, in a version-6 file, makes the signer a checkpoint witness
+  ([ADR-0013](../adr/0013-checkpoint-witness.md); SPEC.md §6, "Witness endpoints", and §8): it
+  then answers `POST /witness/checkpoints` and the two reads of a trail, and keeps what it signs
+  in its own files. A closed object —
+
+  ```json
+  "witness": {
+    "log": "/var/lib/witness/log/witness.log",
+    "marks": "/var/lib/witness-marks/witness.marks",
+    "registration": "operator",
+    "submitters": [{ "issuer": "https://login.example", "subject": "desk-acme" }],
+    "trailsPerSubmitter": 100,
+    "submissionsPerMinute": 60
+  }
+  ```
+
+  — whose `log` and `marks` are required, each an absolute, clean path: the log, with the
+  registrations (`<log>.registrations`) and what a repair sets aside (`<log>.set-aside`) beside
+  it, and the marks, which may be neither the log nor a file beside it. `registration` is
+  `"operator"`, the default, under which the witness's operator registers each trail with
+  `gateway witness register` and a submission for a trail nobody registered is refused, or
+  `"first-submission"`, under which the first submission accepted for a trail registers it to
+  its submitter. `submitters`, when present, is the `{issuer, subject}` pairs allowed to submit
+  at all, each issuer `identity.issuer`, none given twice; present and empty, no subject may
+  submit, and the witness only serves what it holds; absent, any subject the issuer's tokens
+  name may. `trailsPerSubmitter` (`1` to `100000`, default `100`) bounds the trails registered
+  to one submitter that hold a statement, and `submissionsPerMinute` (`1` to `6000`, default
+  `60`) its submissions in a minute. A witness needs `identity`, since a submission is
+  authenticated by a bearer token of the configured issuer, and is refused without it; it needs
+  no platform, so a configuration whose `platforms` is empty starts as a witness and nothing
+  else. None of its files may be the seed or the registry, or be in the store or the
+  decision-record directory. The witness signs with the gateway's own seed, under a prefix of
+  its own (SPEC.md §8.3): a party that wants the witness's key apart from its receipts' runs a
+  second engine with a seed of its own. `connect` keeps the member, its values unchanged.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
   takes today, named.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an
@@ -164,7 +200,8 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   ES256, Ed25519 for EdDSA; the algorithm is the key's, never the token's word), from
   `issuer`, naming `audience`, within its validity window with thirty seconds' leeway — or is
   refused `401` with one reason and never the token; `/publickey` and `/registry` stay open,
-  since a verifier fetches its anchors there and holds no token. A receipt then carries
+  since a verifier fetches its anchors there and holds no token. A witness's submission carries
+  one verified the same way, and its two reads stay open, as `/registry` does. A receipt then carries
   `caller: {issuer, subject, tokenDigest}` (SPEC.md §1.2a). The key file is read once, when
   the engine starts; a key not in it is a key the engine does not know.
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`
@@ -290,10 +327,22 @@ engine refuses to start under a configuration the isolation claim of
   path, not a descriptor held from start-up. It assumes the adapters were installed, by root or
   the signer, from a source they trust;
 - a **host container-runtime socket** present at `/var/run/docker.sock` (or podman's) while
-  the runtime, by its command's base name, is `docker` (or `podman`): an adapter that can reach
-  it holds host authority, which includes the seed ([engine-image.md](engine-image.md)),
-  unless the operator sets `"hostRuntime": "accepted"`, with the same one-line statement at
-  startup;
+  the runtime, by its command's base name, is `docker` (or `podman`), for an engine with a
+  platform: an adapter that can reach it holds host authority, which includes the seed
+  ([engine-image.md](engine-image.md)), unless the operator sets `"hostRuntime": "accepted"`,
+  with the same one-line statement at startup; an engine with no platform runs no adapter, and
+  the socket is not judged;
+- for a **witness**: a platform where a witness keeps no files — anywhere but Unix, since each
+  of its files is locked by what it is and its names are counted; and marks whose directory is
+  on the device of the log's directory, as `stat` reports each: the marks are kept on storage
+  apart from the log's, another device or volume, so that a log restored from a backup is
+  judged against marks no backup of the log's storage restored. A device apart is not proof of
+  storage apart — two devices may share a disk, and one backup may take both — so the check
+  refuses only what is plainly one storage, and keeping the marks out of every backup the log
+  is restored from stays the operator's. After these, the seed and the identity's keys, the witness's files
+  are opened and its start-up checks applied (ADR-0013 §4) before the store or the registry is
+  made: a witness they refuse leaves nothing made, and is repaired, given a log copy, or given a
+  new key before it starts;
 - a **decision-record directory** that anyone but root, the signer and the directory's owner
   (the user the runtime writes as) could write a record into, since a decision policy without
   `requireSignedRecord` holds a write to whatever well-shaped record is found there, and a
@@ -476,7 +525,7 @@ members in canonical order, indented — and put in place by a rename, so a read
 file or the new and never a partial one. Every value written is valid UTF-8, since the file
 is JSON; a path that is not is refused rather than written as something else. A configuration
 with an empty `platforms` object is what the file looks like before its first `connect`; it
-parses, and `serve` refuses to start on it.
+parses, and `serve` refuses to start on it, unless the file carries a `witness`.
 
 ## What the file is not
 

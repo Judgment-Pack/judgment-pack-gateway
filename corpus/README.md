@@ -124,6 +124,14 @@ trade holds while the Go binary is the only server; a second independent
 implementation of the HTTP surface is the reopening condition for an
 acquire/response vector class.
 
+A checkpoint witness's endpoints (`SPEC.md` §6, "Witness endpoints") are on the same
+terms: no vector holds a submission or a read and its answer. What a witness serves is
+statements, and those are held by `witness/`, whose vectors a reader reads whatever served
+them; a deliverer's hand-over is to be acknowledged by such a statement, read so (ADR-0013,
+question 5). The requests and answers themselves have one implementation, this one, held by
+its tests (`go/witness_serve_test.go`), and a second implementation of the surface reopens
+the question for them too.
+
 ## Version 3 vectors, and when they arbitrate
 
 **`v3/stores/*.json`** — 31 vectors for receipt version 3 (`SPEC.md` §1.2a,
