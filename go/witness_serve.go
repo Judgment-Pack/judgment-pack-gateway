@@ -54,6 +54,7 @@ const (
 // written. Variables, so a test can reach them without a thousand requests.
 var (
 	witnessSubmissionsInFlight = 32
+	witnessSubmitterInFlight   = 4
 	witnessReadsInFlight       = 64
 	witnessAnswerTime          = 30 * time.Second
 
@@ -77,6 +78,12 @@ type witnessService struct {
 	submitting chan struct{}
 	reading    chan struct{}
 
+	// flying counts each submitter's submissions in flight, so that one
+	// submitter, however it sends, holds no more of the places in flight
+	// than witnessSubmitterInFlight; a submitter with none is forgotten.
+	flight sync.Mutex
+	flying map[submitterKey]int
+
 	// the rate windows: one per submitter, all of one minute, cleared when
 	// the minute turns (count)
 	rate   sync.Mutex
@@ -94,6 +101,7 @@ func newWitnessService(log *witnessLog, spec *witnessSpec, reports io.Writer) *w
 		submitting: make(chan struct{}, witnessSubmissionsInFlight),
 		reading:    make(chan struct{}, witnessReadsInFlight),
 		counts:     map[[sha256.Size]byte]int{},
+		flying:     map[submitterKey]int{},
 	}
 	if spec.submittersGiven {
 		s.allowed = map[submitterKey]bool{}
@@ -173,8 +181,9 @@ func refuseMethod(w http.ResponseWriter, allow string) {
 
 // witnessRefuse answers a refusal: {"error", "reason"}, and "statements",
 // each a statement's exact line as a JSON string, when there are any. The
-// sentence is the witness's own, never text a request carried or an
-// operating system wrote.
+// sentence is the witness's own -- but a 401's, which is the token check's
+// reason as every endpoint gives it -- and never a token, a file's name or
+// what an operating system wrote.
 func witnessRefuse(w http.ResponseWriter, status int, reason, sentence string, statements ...[]byte) {
 	body := map[string]any{"error": sentence, "reason": reason}
 	if len(statements) > 0 {
@@ -264,6 +273,12 @@ func (s *witnessService) submit(w http.ResponseWriter, r *http.Request, id *iden
 		witnessRefuse(w, http.StatusRequestEntityTooLarge, witnessReasonTooLarge, fmt.Sprintf("a submission is at most %d bytes", maxRequestBody))
 		return
 	}
+	if !s.enter(key) {
+		w.Header().Set("Retry-After", "1")
+		witnessRefuse(w, http.StatusServiceUnavailable, witnessReasonBusy, "this submitter has as many submissions in flight as the witness takes from one submitter")
+		return
+	}
+	defer s.leave(key)
 	select {
 	case s.submitting <- struct{}{}:
 		defer func() { <-s.submitting }()
@@ -284,6 +299,29 @@ func (s *witnessService) submit(w http.ResponseWriter, r *http.Request, id *iden
 	}
 	answer, err := s.log.submit(who.issuer, who.subject, lines)
 	s.answer(w, answer, err)
+}
+
+// enter counts a submission of a submitter in flight, or says it has as
+// many as one submitter may.
+func (s *witnessService) enter(key submitterKey) bool {
+	s.flight.Lock()
+	defer s.flight.Unlock()
+	if s.flying[key] >= witnessSubmitterInFlight {
+		return false
+	}
+	s.flying[key]++
+	return true
+}
+
+// leave counts a submission of a submitter out of flight.
+func (s *witnessService) leave(key submitterKey) {
+	s.flight.Lock()
+	defer s.flight.Unlock()
+	if n := s.flying[key] - 1; n > 0 {
+		s.flying[key] = n
+	} else {
+		delete(s.flying, key)
+	}
 }
 
 // readCheckpointLines reads a submission's body through its bound, a line

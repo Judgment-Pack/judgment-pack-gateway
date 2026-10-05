@@ -589,42 +589,59 @@ func TestWitnessTrailsPerSubmitter(t *testing.T) {
 	}
 }
 
-// Submissions in flight are bounded: with the writer held, the submissions
-// that reach it wait, the one past the bound is refused 503 busy, and the
-// ones waiting are answered once it is free. Two identical submissions in
-// flight at once are one statement: the second is answered with the first.
+// Submissions in flight are bounded, for the witness and for each
+// submitter: with the writer held, the submissions that reach it wait; one
+// past a submitter's bound is refused 503 busy, and so is one past the
+// witness's, from a submitter with none in flight; the waiting ones are
+// answered once the writer is free. Identical submissions in flight at once
+// are one statement: the others are answered with the first's.
 func TestWitnessSubmissionsInFlight(t *testing.T) {
-	saved := witnessSubmissionsInFlight
-	witnessSubmissionsInFlight = 4
-	t.Cleanup(func() { witnessSubmissionsInFlight = saved })
-	f := newWitnessFixture(t, witnessSpec{}, testTrail)
-	token := f.token(t, subjectOf(testTrail))
+	savedAll, savedOne := witnessSubmissionsInFlight, witnessSubmitterInFlight
+	witnessSubmissionsInFlight, witnessSubmitterInFlight = 4, 2
+	t.Cleanup(func() { witnessSubmissionsInFlight, witnessSubmitterInFlight = savedAll, savedOne })
+	f := newWitnessFixture(t, witnessSpec{}, testTrail, trailB)
+	tokenA, tokenB, tokenC := f.token(t, subjectOf(testTrail)), f.token(t, subjectOf(trailB)), f.token(t, "deliverer-c")
 	f.log.writer.Lock()
 	answers := make(chan *httptest.ResponseRecorder, 4)
-	for i := 0; i < 4; i++ {
-		go func() { answers <- f.serve(submission(token, bytes.NewReader(jsonl(cpLine(testTrail, 5, "a"))))) }()
-	}
-	deadline := time.Now().Add(10 * time.Second)
-	for len(f.svc.submitting) < 4 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	busy := f.submit(t, testTrail, cpLine(testTrail, 6, "a"))
-	f.log.writer.Unlock()
-	refusedAs(t, busy, http.StatusServiceUnavailable, witnessReasonBusy)
-	if busy.Header().Get("Retry-After") != "1" {
-		t.Fatal("a busy refusal names no Retry-After")
-	}
-	var lines [][]byte
-	for i := 0; i < 4; i++ {
-		lines = append(lines, statementAnswer(t, <-answers))
-	}
-	for _, line := range lines[1:] {
-		if !bytes.Equal(line, lines[0]) {
-			t.Fatal("identical submissions in flight were answered with different statements")
+	wait := func(n int) {
+		deadline := time.Now().Add(10 * time.Second)
+		for len(f.svc.submitting) < n && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
 		}
 	}
-	if strings.Count(f.tw.read(t, "log"), "\n") != 1 || len(f.svc.submitting) != 0 {
-		t.Fatalf("identical submissions in flight signed %d statements", strings.Count(f.tw.read(t, "log"), "\n"))
+	for i := 0; i < 2; i++ {
+		go func() { answers <- f.serve(submission(tokenA, bytes.NewReader(jsonl(cpLine(testTrail, 5, "a"))))) }()
+	}
+	wait(2)
+	ownBound := f.serve(submission(tokenA, bytes.NewReader(jsonl(cpLine(testTrail, 6, "a")))))
+	for i := 0; i < 2; i++ {
+		go func() { answers <- f.serve(submission(tokenB, bytes.NewReader(jsonl(cpLine(trailB, 5, "a"))))) }()
+	}
+	wait(4)
+	allBound := f.serve(submission(tokenC, bytes.NewReader(jsonl(cpLine(trailC, 1, "a")))))
+	f.log.writer.Unlock()
+	for _, busy := range []*httptest.ResponseRecorder{ownBound, allBound} {
+		refusedAs(t, busy, http.StatusServiceUnavailable, witnessReasonBusy)
+		if busy.Header().Get("Retry-After") != "1" {
+			t.Fatal("a busy refusal names no Retry-After")
+		}
+	}
+	if !strings.Contains(refusedAs(t, ownBound, http.StatusServiceUnavailable, witnessReasonBusy).Error, "one submitter") {
+		t.Fatal("the submitter's own bound is not what refused its third submission")
+	}
+	byTrail := map[string][][]byte{}
+	for i := 0; i < 4; i++ {
+		line := statementAnswer(t, <-answers)
+		st := statementOf(t, line)
+		byTrail[st.trail] = append(byTrail[st.trail], line)
+	}
+	for trail, lines := range byTrail {
+		if len(lines) != 2 || !bytes.Equal(lines[0], lines[1]) {
+			t.Fatalf("identical submissions in flight for %s were answered with %d statements, alike %v", trail[:4], len(lines), len(lines) == 2 && bytes.Equal(lines[0], lines[1]))
+		}
+	}
+	if strings.Count(f.tw.read(t, "log"), "\n") != 2 || len(f.svc.submitting) != 0 || len(f.svc.flying) != 0 {
+		t.Fatalf("identical submissions in flight signed %d statements; %d places and %d submitters still held", strings.Count(f.tw.read(t, "log"), "\n"), len(f.svc.submitting), len(f.svc.flying))
 	}
 }
 
