@@ -8,6 +8,7 @@ package main
 //	gateway canon                                    < value.json
 //	gateway verify <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
 //	gateway conform [--impl CMD] [--corpus DIR]
+//	gateway witness verify --log <file> --public-key <file> [--marks <file>]
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 //	gateway version
@@ -34,7 +35,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | serve | connect | keygen | mcp | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | witness | serve | connect | keygen | mcp | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -44,6 +45,8 @@ func main() {
 		os.Exit(cmdVerify(os.Args[2:]))
 	case "conform":
 		os.Exit(cmdConform(os.Args[2:]))
+	case "witness":
+		os.Exit(cmdWitness(os.Args[2:], os.Stdout, os.Stderr))
 	case "serve":
 		os.Exit(cmdServe(os.Args[2:]))
 	case "connect":

@@ -23,13 +23,86 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 )
+
+// decodeVectorFile reads a corpus file that is exactly one JSON value into
+// dst: anything after that value but whitespace -- a second object, a stray
+// byte -- refuses the file, and so does a member given twice in one object
+// at any depth, so no corpus file holds material no runner reads. Every
+// family's loader reads through it; with strict set, a member dst does not
+// name refuses it too.
+func decodeVectorFile(raw []byte, dst any, strict bool) error {
+	if err := noMemberTwice(raw); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if strict {
+		decoder.DisallowUnknownFields()
+	}
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("data follows the file's one JSON value")
+	}
+	return nil
+}
+
+// noMemberTwice is why a JSON text gives one member twice in an object, at
+// any depth, or nil. encoding/json would keep the last of the two and pass
+// the first over unread.
+func noMemberTwice(raw []byte) error {
+	type frame struct {
+		object, key bool
+		names       map[string]bool
+	}
+	var stack []*frame
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		var top *frame
+		if n := len(stack); n > 0 {
+			top = stack[n-1]
+		}
+		if delim, ok := token.(json.Delim); ok {
+			switch delim {
+			case '{', '[':
+				if top != nil && top.object {
+					top.key = true // after this value, a name
+				}
+				stack = append(stack, &frame{object: delim == '{', key: delim == '{', names: map[string]bool{}})
+			default:
+				stack = stack[:len(stack)-1]
+			}
+			continue
+		}
+		if top == nil || !top.object {
+			continue
+		}
+		if top.key {
+			name, _ := token.(string)
+			if top.names[name] {
+				return fmt.Errorf("the member %q is given twice in one object", name)
+			}
+			top.names[name] = true
+		}
+		top.key = !top.key
+	}
+}
 
 type canonVector struct {
 	Note        string `json:"note"`
@@ -260,7 +333,7 @@ func corpusPublicKey(corpusDir string) ([]byte, error) {
 }
 
 // corpusCounts is how many vectors of each family a run read.
-type corpusCounts struct{ canon, stores, witness int }
+type corpusCounts struct{ canon, stores, witness, recovery int }
 
 func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, error) {
 	var failures []string
@@ -279,8 +352,8 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 	var canonFile struct {
 		Vectors []canonVector `json:"vectors"`
 	}
-	if err := json.Unmarshal(raw, &canonFile); err != nil {
-		return nil, counts, err
+	if err := decodeVectorFile(raw, &canonFile, false); err != nil {
+		return nil, counts, fmt.Errorf("canon.json: %v", err)
 	}
 	for _, vector := range canonFile.Vectors {
 		produced, accepted := impl.canon(vector.InputJSON)
@@ -322,8 +395,8 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 			return nil, counts, err
 		}
 		var vector storeVector
-		if err := json.Unmarshal(raw, &vector); err != nil {
-			return nil, counts, err
+		if err := decodeVectorFile(raw, &vector, false); err != nil {
+			return nil, counts, fmt.Errorf("%s: %v", path, err)
 		}
 		root, storeRoot, registryPath, decisionRecords, err := materializeVector(vector)
 		if err != nil {
@@ -352,7 +425,19 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		return nil, counts, err
 	}
 	counts.witness = witnessCount
-	return append(failures, witnessFailures...), counts, nil
+	failures = append(failures, witnessFailures...)
+
+	// The recovery vectors hold this implementation's own witness, so they
+	// are run only when it is the implementation under test, and where a
+	// witness keeps its files; otherwise they are read and held to their
+	// form, and not run.
+	_, own := impl.(inProcess)
+	recoveryFailures, recoveryCount, err := runRecoveryVectors(corpusDir, own && witnessFilesKept)
+	if err != nil {
+		return nil, counts, err
+	}
+	counts.recovery = recoveryCount
+	return append(failures, recoveryFailures...), counts, nil
 }
 
 // storeVectorPaths lists every store vector the runner answers to, in a fixed
@@ -398,6 +483,13 @@ func cmdConform(args []string) int {
 	}
 	fmt.Printf("%s vs corpus: %d canon vectors, %d store vectors, %d witness vectors\n",
 		impl.label(), counts.canon, counts.stores, counts.witness)
+	if _, own := impl.(inProcess); own && witnessFilesKept {
+		fmt.Printf("this implementation's witness vs corpus: %d witness recovery vectors\n", counts.recovery)
+	} else if own {
+		fmt.Printf("%d witness recovery vectors read and not run: a witness keeps its files only on Unix\n", counts.recovery)
+	} else {
+		fmt.Printf("%d witness recovery vectors read and not run: they hold this reference witness's own storage, outside the process contract\n", counts.recovery)
+	}
 	for _, failure := range failures {
 		fmt.Printf("  FAIL %s\n", failure)
 	}

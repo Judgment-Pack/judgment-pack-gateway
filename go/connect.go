@@ -764,6 +764,13 @@ func openEntry(dir *os.Root, name string) (*os.File, os.FileInfo, error) {
 // openEntryJudged is openEntry with judged, when set, run between judging
 // the entry and opening it.
 func openEntryJudged(dir *os.Root, name string, judged func(name string)) (*os.File, os.FileInfo, error) {
+	return openEntryBy(dir, name, openNoFollow, judged)
+}
+
+// openEntryBy is openEntryJudged with the open its caller needs, which
+// follows no link and blocks on nothing: openNoFollow to read, and the
+// witness's openNoFollowAppend to read and append (witness_log.go).
+func openEntryBy(dir *os.Root, name string, open func(*os.Root, string) (*os.File, error), judged func(name string)) (*os.File, os.FileInfo, error) {
 	entry, err := dir.Lstat(name)
 	if err != nil {
 		return nil, nil, err
@@ -774,7 +781,7 @@ func openEntryJudged(dir *os.Root, name string, judged func(name string)) (*os.F
 	if judged != nil {
 		judged(name)
 	}
-	file, err := openNoFollow(dir, name)
+	file, err := open(dir, name)
 	if err != nil {
 		return nil, nil, err
 	}

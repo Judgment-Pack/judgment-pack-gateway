@@ -969,6 +969,13 @@ implementation through the process contract's `witness` command (`corpus/README.
 runner refuses a corpus holding an entry it does not read and a vector of a family it does
 not know, so no family of vectors lands in the corpus unread.
 
+Beside them, `corpus/witness-recovery/` holds a witness's own storage: its log, marks and
+registrations, and what its start-up checks, its repair and its writer must do with them,
+by `docs/adr/0013-checkpoint-witness.md` §4. No reader reads that storage, so these vectors
+are not in the process contract: `gateway conform` runs them against this reference's
+witness, and under `--impl` reads them and holds them to their form and their counts
+without running them.
+
 ## 8. The checkpoint witness
 
 A **witness** is a gateway, run by a party other than a decision trail's operator, that
@@ -989,10 +996,17 @@ reader holds a witness key and a signature to (§8.4), how statements chain per 
 (§8.5), how a reader reads a chain (§8.6) and within what bounds (§8.7), and what a
 statement establishes (§8.8). The vectors under `corpus/witness/` hold each of these (§7).
 The format and the reading are specified before the service, so that a reader written now
-reads what a witness serves later: the service that makes and serves statements — its
-log, its registrations, the order in which it signs, keeps and answers, and the endpoints
-of §6 — follows in later releases. Until then this reference signs no statement, serves
-none, and reads them only in `gateway conform`.
+reads what a witness serves later. A witness's own storage — its log, its marks, its
+registrations, the order in which it signs, keeps and publishes a statement, the checks it
+makes before it starts and the repair they allow — is the witness's, not a reader's, and
+is not specified here: `docs/adr/0013-checkpoint-witness.md` §4 states it, and this
+reference keeps it in its core, on Unix, held to the vectors under `corpus/witness-recovery/`
+(§7). `gateway witness verify --log <file> --public-key <file> [--marks <file>]` applies
+those checks, all but the registrations, to a copy of a witness's log, and gives its
+verdict in its JSON as `gateway verify` does (§5a.2): exit `0` whenever it reached one.
+The service that answers submissions and serves statements — the endpoints of §6 and the
+configuration that makes a gateway a witness — follows in a later release. Until then
+this reference serves no statement, and no command of it signs one.
 
 ### 8.1 The witnessed checkpoint
 

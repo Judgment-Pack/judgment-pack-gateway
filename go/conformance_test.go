@@ -165,6 +165,9 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 		{"a directory among the store vectors", func(dir string) error {
 			return os.Mkdir(filepath.Join(dir, "v3", "stores", "more"), 0o755)
 		}},
+		{"a file beside the witness recovery vectors", func(dir string) error {
+			return os.WriteFile(filepath.Join(dir, "witness-recovery", "generator.go"), nil, 0o600)
+		}},
 	} {
 		dir := copyCorpus(t)
 		if err := c.make(dir); err != nil {
@@ -193,6 +196,179 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 		}
 		if _, _, err := runCorpus(dir, inProcess{}); err == nil {
 			t.Errorf("%s: the run was not refused", what)
+		}
+	}
+}
+
+// TestWitnessRecoveryVectors holds this implementation's witness to every
+// recovery vector (corpus/witness-recovery/; ADR-0013 §4), and holds the
+// runner to refusing a vector it cannot read and to running none for
+// another implementation.
+func TestWitnessRecoveryVectors(t *testing.T) {
+	failures, count, err := runRecoveryVectors(corpusPath(), witnessFilesKept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, failure := range failures {
+		t.Error(failure)
+	}
+	t.Logf("%d/%d witness recovery vectors", count-len(failures), count)
+
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+		t.Fatal(err)
+	}
+	vector := filepath.Join(dir, "witness-recovery", "refused-a-stale-backup-behind-the-marks.json")
+	raw, err := os.ReadFile(vector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := bytes.Replace(raw, []byte(`"outcome": "refused"`), []byte(`"outcome": "start"`), 1)
+	if err := os.WriteFile(vector, wrong, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if failures, _, err := runRecoveryVectors(dir, false); err != nil || len(failures) != 0 {
+		t.Errorf("read for another implementation, a vector was run: %v, %d failures", err, len(failures))
+	}
+	if failures, _, err := runRecoveryVectors(dir, witnessFilesKept); err != nil || len(failures) != map[bool]int{true: 1, false: 0}[witnessFilesKept] {
+		t.Errorf("a vector expecting a start where the rules refuse: %v, %d failures", err, len(failures))
+	}
+	for what, edit := range map[string][2]string{
+		"a family no reader knows":         {`"family": "refused"`, `"family": "rollback"`},
+		"a member no reader knows":         {`"family": "refused",`, `"family": "refused", "seed": "",`},
+		"a name that is not its own":       {`"name": "refused-a-stale-backup-behind-the-marks"`, `"name": "refused-a-stale-backup"`},
+		"a file no runner compares":        {`"files": {`, `"files": {"journal": "",`},
+		"a step of two actions":            {`"open": {`, `"replace": {}, "open": {`},
+		"an expected outcome with nothing": {`"findings": [`, `"findingz": [`},
+		"a registration of no kind":        {`"registration": "operator"`, `"registration": "anyone"`},
+	} {
+		if err := os.WriteFile(vector, bytes.Replace(raw, []byte(edit[0]), []byte(edit[1]), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runCorpus(dir, inProcess{}); err == nil {
+			t.Errorf("%s: the run was not refused", what)
+		}
+	}
+	if err := os.WriteFile(vector, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// a fault a vector declares and its run never reaches -- a publish
+	// fault on a repair, which publishes nothing -- makes it disagree
+	unfired := filepath.Join(dir, "witness-recovery", "mark-a-whole-unmarked-last-statement.json")
+	unfiredRaw, err := os.ReadFile(unfired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unfired, bytes.Replace(unfiredRaw, []byte(`"repair": {`), []byte(`"fault": {"step": "publish", "leaves": "whole"}, "repair": {`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if witnessFilesKept {
+		if failures, _, err := runRecoveryVectors(dir, true); err != nil || len(failures) != 1 || !strings.Contains(failures[0], "never reached") {
+			t.Errorf("a fault never reached: %v, %d failures", err, len(failures))
+		}
+	}
+	if err := os.WriteFile(unfired, unfiredRaw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// a statement the test key did not sign refuses the vector before it runs
+	writer := filepath.Join(dir, "witness-recovery", "writer-a-sync-failure-stops-another-trail.json")
+	raw, err = os.ReadFile(writer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(writer, bytes.Replace(raw, []byte(`"statements": [
+    "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:`), []byte(`"statements": [
+    "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:0`), 1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runRecoveryVectors(dir, false); err == nil || !strings.Contains(err.Error(), "no statement the test key signed") {
+		t.Errorf("a statement no key signed: %v", err)
+	}
+}
+
+// Every file of every corpus family is exactly one JSON value: a second
+// object after a vector, or a stray byte, refuses the run, so no file holds
+// material a runner would silently pass over. The loader every family is
+// read by (decodeVectorFile) is held to it for each.
+func TestEveryCorpusFileIsOneJSONValue(t *testing.T) {
+	first := func(pattern ...string) string {
+		paths, err := filepath.Glob(corpusPath(pattern...))
+		if err != nil || len(paths) == 0 {
+			t.Fatalf("no file %v", pattern)
+		}
+		sort.Strings(paths)
+		rel, err := filepath.Rel(corpusPath(), paths[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rel
+	}
+	families := map[string]string{
+		"canon":            "canon.json",
+		"stores":           first("stores", "*.json"),
+		"v3 stores":        first("v3", "stores", "*.json"),
+		"witness":          first("witness", "*.json"),
+		"witness recovery": first("witness-recovery", "*.json"),
+	}
+	run := func(family, rel, after string) error {
+		dir := t.TempDir()
+		if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(dir, rel)
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, append(raw, after...), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err = runCorpus(dir, inProcess{})
+		return err
+	}
+	for family, rel := range families {
+		for _, trailing := range []string{"\n{}\n", "x", "\n[]"} {
+			if err := run(family, rel, trailing); err == nil {
+				t.Errorf("%s: a file with %q after its value did not refuse the run", family, trailing)
+			}
+		}
+		if err := run(family, rel, " \n\t"); err != nil {
+			t.Errorf("%s: whitespace after the value refused the run: %v", family, err)
+		}
+	}
+}
+
+// No corpus file gives a member twice in one object, at any depth: in
+// every family, a second member of a name at the top of a file, or inside
+// one of its objects, refuses the run, where encoding/json would read the
+// last and pass the first over.
+func TestNoCorpusFileGivesAMemberTwice(t *testing.T) {
+	for _, c := range []struct {
+		family, rel string
+		edits       [][2]string
+	}{
+		{"canon", "canon.json", [][2]string{{"{", `{"vectors": [],`}, {`"note":`, `"note": "x", "note":`}}},
+		{"stores", "stores/absent-registry.json", [][2]string{{"{", `{"name": "x",`}, {`"expected": {`, `"expected": {"ok": true,`}}},
+		{"v3 stores", "v3/stores/v2-and-v3-sessions.json", [][2]string{{"{", `{"name": "x",`}, {`"expected": {`, `"expected": {"ok": true,`}}},
+		{"witness", "witness/valid-one-statement.json", [][2]string{{"{", `{"name": "x",`}, {`"expected": {`, `"expected": {"ok": false,`}}},
+		{"witness recovery", "witness-recovery/mark-a-whole-unmarked-last-statement.json", [][2]string{{"{", `{"steps": [],`}, {`"open": {`, `"open": {"outcome": "start",`}}},
+	} {
+		for i, edit := range c.edits {
+			dir := t.TempDir()
+			if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, filepath.FromSlash(c.rel))
+			raw, err := os.ReadFile(path)
+			if err != nil || !bytes.Contains(raw, []byte(edit[0])) {
+				t.Fatalf("%s: %v, or no %q to give twice", c.family, err, edit[0])
+			}
+			if err := os.WriteFile(path, bytes.Replace(raw, []byte(edit[0]), []byte(edit[1]), 1), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := runCorpus(dir, inProcess{}); err == nil || !strings.Contains(err.Error(), "given twice") {
+				t.Errorf("%s, %s: a member given twice: %v", c.family, []string{"at the top", "inside an object"}[i], err)
+			}
 		}
 	}
 }
@@ -256,8 +432,7 @@ func readFile(t *testing.T, path string) string {
 
 func readJSON(t *testing.T, path string, dst any) {
 	t.Helper()
-	dec := json.NewDecoder(bytes.NewReader([]byte(readFile(t, path))))
-	if err := dec.Decode(dst); err != nil {
+	if err := decodeVectorFile([]byte(readFile(t, path)), dst, false); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
 }
@@ -289,6 +464,10 @@ func TestREADMEVectorCounts(t *testing.T) {
 		{"the witness count", "**`witness/*.json`** — 54 vectors", "**`witness/*.json`** — 55 vectors"},
 		{"a family's row", "| `chain` | 10 |", "| `chain` | 11 |"},
 		{"a family no runner reads", "| `chain` | 10 |", "| `chain` | 10 |\n| `continuation` | 0 |"},
+		{"the witness recovery count", "**`witness-recovery/*.json`** — 25 vectors", "**`witness-recovery/*.json`** — 24 vectors"},
+		{"a recovery family's row", "| `new-key` | 8 |", "| `new-key` | 7 |"},
+		{"a recovery family no runner reads", "| `writer` | 5 |", "| `writer` | 5 |\n| `continuation` | 0 |"},
+		{"a recovery family stated among the witness families", "| `chain` | 10 |", "| `chain` | 10 |\n| `writer` | 0 |"},
 	} {
 		if !bytes.Contains(readme, []byte(edit.from)) {
 			t.Fatalf("%s: the README no longer says %q", edit.what, edit.from)

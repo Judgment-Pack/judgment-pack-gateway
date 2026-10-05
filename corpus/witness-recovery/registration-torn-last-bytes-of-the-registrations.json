@@ -1,0 +1,43 @@
+{
+  "name": "registration-torn-last-bytes-of-the-registrations",
+  "family": "registration",
+  "note": "The registrations end in part of a registration: a crash in the middle of its append, before it was synced and so before anything was signed under it. Repair keeps the bytes in the set-aside file and ends the registrations at their last newline; the registration was never acknowledged and is not made. The log and the marks are untouched, and the witness starts.",
+  "clock": "2026-10-05T12:00:00Z",
+  "registration": "operator",
+  "statements": [],
+  "files": {
+    "log": "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:804c5cdc574040e30ae2f230bf323a86b810efc051c34597ee9c155872eaa2c3\",\"sequence\":10,\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"},\"index\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"checkpoint\",\"prevSignature\":null,\"signature\":\"ec90f810bf337a76f7b48cfe75e9b3b0793fa2b61fd5714de8ee47e8b16b83b1bdbceabc9041bb65619482c918d9be8ed17e3b22ed1f9a811d01b70924582d0c\",\"witnessVersion\":\"1\",\"witnessedAt\":\"2026-10-05T11:63:00Z\"}\n",
+    "marks": "{\"index\":0,\"signature\":\"ec90f810bf337a76f7b48cfe75e9b3b0793fa2b61fd5714de8ee47e8b16b83b1bdbceabc9041bb65619482c918d9be8ed17e3b22ed1f9a811d01b70924582d0c\",\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"}\n",
+    "registrations": "{\"issuer\":\"https://issuer.example\",\"subject\":\"deliverer-a\",\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"}\n{\"issuer\":\"https://issuer.example\",\"subject\":\"deliv"
+  },
+  "steps": [
+    {
+      "open": {
+        "outcome": "registration-set-aside",
+        "findings": [
+          "witness-registrations-torn"
+        ]
+      }
+    },
+    {
+      "repair": {
+        "outcome": "registration-set-aside",
+        "findings": [
+          "witness-registrations-torn"
+        ]
+      },
+      "files": {
+        "log": "{\"checkpoint\":{\"checkpointVersion\":\"1\",\"recordDigest\":\"sha256:804c5cdc574040e30ae2f230bf323a86b810efc051c34597ee9c155872eaa2c3\",\"sequence\":10,\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"},\"index\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"checkpoint\",\"prevSignature\":null,\"signature\":\"ec90f810bf337a76f7b48cfe75e9b3b0793fa2b61fd5714de8ee47e8b16b83b1bdbceabc9041bb65619482c918d9be8ed17e3b22ed1f9a811d01b70924582d0c\",\"witnessVersion\":\"1\",\"witnessedAt\":\"2026-10-05T11:63:00Z\"}\n",
+        "marks": "{\"index\":0,\"signature\":\"ec90f810bf337a76f7b48cfe75e9b3b0793fa2b61fd5714de8ee47e8b16b83b1bdbceabc9041bb65619482c918d9be8ed17e3b22ed1f9a811d01b70924582d0c\",\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"}\n",
+        "registrations": "{\"issuer\":\"https://issuer.example\",\"subject\":\"deliverer-a\",\"trail\":\"3c5e1a7f9b2d4c6e8a0f1b3d5c7e9a2b\"}\n",
+        "setAside": "{\"at\":\"2026-10-05T12:00:00Z\",\"bytes\":\"7b22697373756572223a2268747470733a2f2f6973737565722e6578616d706c65222c227375626a656374223a2264656c6976\",\"file\":\"registrations\",\"offset\":103}\n"
+      }
+    },
+    {
+      "open": {
+        "outcome": "start",
+        "findings": []
+      }
+    }
+  ]
+}
