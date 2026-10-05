@@ -8,11 +8,14 @@ import (
 	"syscall"
 )
 
+// witnessFileFlags is how a witness file is opened: to read, and to append.
+const witnessFileFlags = os.O_RDWR | os.O_APPEND
+
 // openNoFollowAppend opens a witness file in its held directory to read and
 // to append, following no link and blocking on nothing, so what is opened
 // is judged by the descriptor (openEntryBy).
 func openNoFollowAppend(dir *os.Root, name string) (*os.File, error) {
-	return dir.OpenFile(name, os.O_RDWR|os.O_APPEND|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
+	return dir.OpenFile(name, witnessFileFlags|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 }
 
 // witnessFilePrivate is why a witness file, as its descriptor reports it,

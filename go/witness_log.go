@@ -856,7 +856,7 @@ func (f *witnessFiles) create() error {
 }
 
 func createWitnessFile(dir *os.Root, name string) (*os.File, error) {
-	made, err := dir.OpenFile(name, os.O_RDWR|os.O_APPEND|os.O_CREATE|os.O_EXCL, 0o600)
+	made, err := dir.OpenFile(name, witnessFileFlags|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("witness: %v", err)
 	}
@@ -895,7 +895,14 @@ type witnessIO struct {
 
 func osWitnessIO() witnessIO {
 	return witnessIO{
-		write:    func(_ string, f *os.File, data []byte) (int, error) { return f.Write(data) },
+		// at the file's end, which the append mode keeps on Unix and the
+		// seek gives where there is none (witnessFileFlags)
+		write: func(_ string, f *os.File, data []byte) (int, error) {
+			if _, err := f.Seek(0, io.SeekEnd); err != nil {
+				return 0, err
+			}
+			return f.Write(data)
+		},
 		sync:     func(_ string, f *os.File) error { return f.Sync() },
 		truncate: func(_ string, f *os.File, size int64) error { return f.Truncate(size) },
 	}

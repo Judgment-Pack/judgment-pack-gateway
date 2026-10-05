@@ -514,7 +514,10 @@ func TestWitnessStartUpCases(t *testing.T) {
 			if outcome != c.want || strings.Join(findings, " ") != strings.Join(want, " ") {
 				t.Fatalf("outcome %s %v, want %s %v", outcome, findings, c.want, c.findings)
 			}
-			_, err := openWitnessLog(tw.config())
+			w, err := openWitnessLog(tw.config())
+			if err == nil {
+				w.close()
+			}
 			if (err == nil) != (c.want == outcomeStart) {
 				t.Fatalf("open: %v, with the outcome %s", err, outcome)
 			}
