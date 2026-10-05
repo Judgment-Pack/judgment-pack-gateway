@@ -268,6 +268,9 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 	if err := corpusEntries(corpusDir); err != nil {
 		return nil, counts, err
 	}
+	if err := corpusStatedCounts(corpusDir); err != nil {
+		return nil, counts, err
+	}
 
 	raw, err := os.ReadFile(filepath.Join(corpusDir, "canon.json"))
 	if err != nil {

@@ -166,7 +166,7 @@ question before it is an implementation one, the same rule as above.
 
 ## Witness vectors
 
-**`witness/*.json`** — 53 vectors for the checkpoint witness's statement (`SPEC.md` §8),
+**`witness/*.json`** — 54 vectors for the checkpoint witness's statement (`SPEC.md` §8),
 each a reading of §8.6: the trail being verified (`trail`), the witness keys supplied, in
 order (`keys`, each 64 lowercase hexadecimal characters), the statements files
 (`witness`), a head file when there is one (`head`), and the answer expected
@@ -183,7 +183,7 @@ order (`keys`, each 64 lowercase hexadecimal characters), the statements files
 | `trail` | 1 | a statement of another trail: `witness-trail-mismatch` |
 | `malformed` | 6 | a member the format does not define and a fifth member of the checkpoint, each signed with it; another `witnessVersion`; an index spelled `-0`; a signature in upper case; a head file of two statements: `witness-malformed` |
 | `chain` | 10 | the chain rule of §8.6: a hole, and one whose next statement names the signature before it; a previous signature not the one before; index 0 naming a previous and index 1 naming none; a checkpoint sequence not increasing; a conflict above the latest checkpoint and one with none before it; a retirement not last and one repeating an earlier checkpoint: `witness-chain-broken` |
-| `bound` | 6 | the bounds of §8.7, at and one past each: 16 keys, 67108864 bytes, 110000 statements |
+| `bound` | 7 | the bounds of §8.7, at and one past each: 16 keys, 67108864 bytes, 110000 statements; and 4194304 one-byte lines, far over the statement bound within the byte bound, refused without keeping every line |
 
 **The answer.** A refusal is `{"refused": <reason>}`, compared by its reason. A reading is
 `{"ok": false, "findings": [...]}`, its findings compared as a **set** of names — how many
@@ -196,10 +196,10 @@ sequences in index order.
 
 **A file at the bound.** A file is a string, its text exactly, or
 `{"parts": [{"text": …, "times": n}, …]}`, the bytes of each part's text repeated `n`
-times, in order. The four vectors of the byte and statement bounds are stated so: one
+times, in order. The five vectors of the byte and statement bounds are stated so: one
 statement and 67107902 or 67107903 blank lines, or one statement line 109999 or 110000
-times — each beside a head file holding the same statement — rather than landing files of
-up to 64 MiB. A runner writes the bytes out in full before an
+times — each beside a head file holding the same statement — or 4194304 lines of `x`,
+rather than landing files of up to 64 MiB. A runner writes the bytes out in full before an
 implementation reads them, so what is read is the file, never the description of it.
 
 **The keys.** The statements are signed under `TEST-SEED`, since a witness signs with the
@@ -219,7 +219,11 @@ generator for them is kept here.
 **No vector lands unread.** `gateway conform` refuses a corpus that holds an entry it does
 not read — a file or directory at the top it has no rule for, anything but vectors among
 the vectors — a witness vector with a member it does not know or of a family it does not
-read, and one whose `name` is not its file's. `TEST-SEED` is read by no runner, and
+read, one whose `name` is not its file's, and one whose `expected` holds a member its form
+does not, at any depth. It also refuses a corpus whose counts this README misstates: the
+totals of `canon.json`, `stores/`, `v3/stores/` and `witness/`, and each row of the family
+table above. `gateway conform` checks them on every run, the image's and a release's
+included; `go/conformance_test.go` holds that check to each misstatement. `TEST-SEED` is read by no runner, and
 `ed25519-vectors.json` by each implementation's own tests rather than through the process
 contract, which carries no raw signature.
 

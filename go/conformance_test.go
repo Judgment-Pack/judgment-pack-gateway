@@ -11,9 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 )
@@ -183,9 +181,12 @@ func TestTheCorpusHoldsNothingUnread(t *testing.T) {
 		t.Fatal(err)
 	}
 	for what, edit := range map[string][2]string{
-		"a family no reader knows":   {`"family": "valid"`, `"family": "continuation"`},
-		"a member no reader knows":   {`"family": "valid",`, `"family": "valid", "resume": "",`},
-		"a name that is not its own": {`"name": "valid-one-statement"`, `"name": "valid-two-statements"`},
+		"a family no reader knows":                      {`"family": "valid"`, `"family": "continuation"`},
+		"a member no reader knows":                      {`"family": "valid",`, `"family": "valid", "resume": "",`},
+		"a name that is not its own":                    {`"name": "valid-one-statement"`, `"name": "valid-two-statements"`},
+		"an expected member no runner compares":         {`"expected": {`, `"expected": {"unread-claim": true,`},
+		"a latest-checkpoint member no runner compares": {`"latestCheckpoint": {`, `"latestCheckpoint": {"unread-claim": true,`},
+		"an expected answer missing a member":           {`"retired": false`, `"retiredd": false`},
 	} {
 		if err := os.WriteFile(vector, bytes.Replace(raw, []byte(edit[0]), []byte(edit[1]), 1), 0o600); err != nil {
 			t.Fatal(err)
@@ -270,87 +271,37 @@ func mustHex(t *testing.T, s string) []byte {
 	return b
 }
 
+// The README states how many vectors each family holds, and `gateway
+// conform` refuses a corpus whose README says otherwise: a total of canon,
+// store, version 3 store or witness vectors, or a witness family's row.
 func TestREADMEVectorCounts(t *testing.T) {
-	readme := readFile(t, corpusPath("README.md"))
-
-	canonRe := regexp.MustCompile(`\*\*` + "`" + `canon\.json` + "`" + `\*\* — (\d+) vectors`)
-	storesRe := regexp.MustCompile(`\*\*` + "`" + `stores/\*\.json` + "`" + `\*\* — (\d+) vectors`)
-	v3Re := regexp.MustCompile(`\*\*` + "`" + `v3/stores/\*\.json` + "`" + `\*\* — (\d+) vectors`)
-
-	canonMatch := canonRe.FindStringSubmatch(readme)
-	if canonMatch == nil {
-		t.Fatal("README.md missing expected sentence for canon.json vectors count")
+	if err := corpusStatedCounts(corpusPath()); err != nil {
+		t.Fatal(err)
 	}
-	statedCanon, _ := strconv.Atoi(canonMatch[1])
-
-	storesMatch := storesRe.FindStringSubmatch(readme)
-	if storesMatch == nil {
-		t.Fatal("README.md missing expected sentence for stores/*.json vectors count")
-	}
-	statedStores, _ := strconv.Atoi(storesMatch[1])
-
-	v3Match := v3Re.FindStringSubmatch(readme)
-	if v3Match == nil {
-		t.Fatal("README.md missing expected sentence for v3/stores/*.json vectors count")
-	}
-	statedV3, _ := strconv.Atoi(v3Match[1])
-
-	var canonDoc struct {
-		Vectors []any `json:"vectors"`
-	}
-	readJSON(t, corpusPath("canon.json"), &canonDoc)
-	actualCanon := len(canonDoc.Vectors)
-
-	storeFiles, err := filepath.Glob(corpusPath("stores", "*.json"))
+	readme, err := os.ReadFile(corpusPath("README.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	actualStores := len(storeFiles)
-
-	if statedCanon != actualCanon {
-		t.Errorf("README.md states %d canon vectors, but there are actually %d in canon.json", statedCanon, actualCanon)
-	}
-	if statedStores != actualStores {
-		t.Errorf("README.md states %d store vectors, but there are actually %d in stores/*.json", statedStores, actualStores)
-	}
-	v3Files, err := filepath.Glob(corpusPath("v3", "stores", "*.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if statedV3 != len(v3Files) {
-		t.Errorf("README.md states %d version 3 store vectors, but there are actually %d in v3/stores/*.json", statedV3, len(v3Files))
-	}
-
-	// The witness vectors: the total, and each family's row of the table.
-	witnessRe := regexp.MustCompile(`\*\*` + "`" + `witness/\*\.json` + "`" + `\*\* — (\d+) vectors`)
-	witnessMatch := witnessRe.FindStringSubmatch(readme)
-	if witnessMatch == nil {
-		t.Fatal("README.md missing expected sentence for witness/*.json vectors count")
-	}
-	statedWitness, _ := strconv.Atoi(witnessMatch[1])
-	paths, err := witnessVectorPaths(corpusPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if statedWitness != len(paths) {
-		t.Errorf("README.md states %d witness vectors, but there are actually %d in witness/*.json", statedWitness, len(paths))
-	}
-	actualFamilies := map[string]int{}
-	for _, path := range paths {
-		vector, err := readWitnessVector(path)
-		if err != nil {
+	for _, edit := range []struct{ what, from, to string }{
+		{"the canon count", "**`canon.json`** — 30 vectors", "**`canon.json`** — 31 vectors"},
+		{"the store count", "**`stores/*.json`** — 21 vectors", "**`stores/*.json`** — 20 vectors"},
+		{"the version 3 count", "**`v3/stores/*.json`** — 31 vectors", "**`v3/stores/*.json`** — 32 vectors"},
+		{"the witness count", "**`witness/*.json`** — 54 vectors", "**`witness/*.json`** — 55 vectors"},
+		{"a family's row", "| `chain` | 10 |", "| `chain` | 11 |"},
+		{"a family no runner reads", "| `chain` | 10 |", "| `chain` | 10 |\n| `continuation` | 0 |"},
+	} {
+		if !bytes.Contains(readme, []byte(edit.from)) {
+			t.Fatalf("%s: the README no longer says %q", edit.what, edit.from)
+		}
+		dir := t.TempDir()
+		if err := os.CopyFS(dir, os.DirFS(corpusPath())); err != nil {
 			t.Fatal(err)
 		}
-		actualFamilies[vector.Family]++
-	}
-	statedFamilies := map[string]int{}
-	for _, row := range regexp.MustCompile("(?m)^\\| `([a-z-]+)` \\| (\\d+) \\|").FindAllStringSubmatch(readme, -1) {
-		n, _ := strconv.Atoi(row[2])
-		statedFamilies[row[1]] = n
-	}
-	for family := range witnessFamilies {
-		if statedFamilies[family] != actualFamilies[family] {
-			t.Errorf("README.md states %d witness vectors of family %s, but there are %d", statedFamilies[family], family, actualFamilies[family])
+		if err := os.WriteFile(filepath.Join(dir, "README.md"), bytes.Replace(readme, []byte(edit.from), []byte(edit.to), 1), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := runCorpus(dir, inProcess{}); err == nil {
+			t.Errorf("%s: a README that misstates it did not refuse the run", edit.what)
 		}
 	}
 }

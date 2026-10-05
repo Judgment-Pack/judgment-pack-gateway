@@ -11,7 +11,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -179,7 +182,144 @@ func readWitnessVector(path string) (witnessVector, error) {
 	if len(vector.Keys) == 0 || vector.Expected == nil {
 		return vector, fmt.Errorf("%s: no keys or no expected answer", path)
 	}
+	if err := checkWitnessExpected(vector.Expected); err != nil {
+		return vector, fmt.Errorf("%s: expected: %v", path, err)
+	}
 	return vector, nil
+}
+
+// checkWitnessExpected holds an expected answer to the members of its form
+// (corpus/README.md), each once and nothing else: {"refused"}; {"ok": false,
+// "findings"}; or {"ok": true, "findings", "reading", "headIndex",
+// "highestIndex", "latestCheckpoint", "conflicts", "retired"}, its
+// latestCheckpoint {"index", "sequence", "witnessedAt"}. A member of no form
+// would be an expectation no runner compares, so it refuses the run.
+func checkWitnessExpected(expected map[string]any) error {
+	exactly := func(object map[string]any, names ...string) error {
+		for name := range object {
+			if !slices.Contains(names, name) {
+				return fmt.Errorf("a member %q no runner compares", name)
+			}
+		}
+		for _, name := range names {
+			if _, ok := object[name]; !ok {
+				return fmt.Errorf("no member %q", name)
+			}
+		}
+		return nil
+	}
+	if _, refused := expected["refused"]; refused {
+		if _, ok := expected["refused"].(string); !ok {
+			return errors.New("refused is not a reason")
+		}
+		return exactly(expected, "refused")
+	}
+	ok, isBool := expected["ok"].(bool)
+	if !isBool {
+		return errors.New("neither refused nor ok")
+	}
+	if _, isArray := expected["findings"].([]any); !isArray {
+		return errors.New("findings is not an array")
+	}
+	if !ok {
+		return exactly(expected, "ok", "findings")
+	}
+	if err := exactly(expected, "ok", "findings", "reading", "headIndex", "highestIndex", "latestCheckpoint", "conflicts", "retired"); err != nil {
+		return err
+	}
+	latest, isObject := expected["latestCheckpoint"].(map[string]any)
+	if !isObject {
+		return errors.New("latestCheckpoint is not an object")
+	}
+	if err := exactly(latest, "index", "sequence", "witnessedAt"); err != nil {
+		return fmt.Errorf("latestCheckpoint: %w", err)
+	}
+	return nil
+}
+
+// The README's sentences and table that state how many vectors each family
+// holds (corpus/README.md).
+var (
+	statedCanon    = regexp.MustCompile("\\*\\*`canon\\.json`\\*\\* — (\\d+) vectors")
+	statedStores   = regexp.MustCompile("\\*\\*`stores/\\*\\.json`\\*\\* — (\\d+) vectors")
+	statedV3       = regexp.MustCompile("\\*\\*`v3/stores/\\*\\.json`\\*\\* — (\\d+) vectors")
+	statedWitness  = regexp.MustCompile("\\*\\*`witness/\\*\\.json`\\*\\* — (\\d+) vectors")
+	statedFamilies = regexp.MustCompile("(?m)^\\| `([a-z-]+)` \\| (\\d+) \\|")
+)
+
+// corpusStatedCounts refuses a corpus whose README states another number of
+// vectors than it holds: of canon.json, stores/, v3/stores/ and witness/,
+// and of each witness family, by the README's table. A vector added without
+// its count, or a count without its vectors, is caught by the runner, not
+// only by a test.
+func corpusStatedCounts(corpusDir string) error {
+	raw, err := os.ReadFile(filepath.Join(corpusDir, "README.md"))
+	if err != nil {
+		return err
+	}
+	readme := string(raw)
+	stated := func(re *regexp.Regexp, what string) (int, error) {
+		match := re.FindStringSubmatch(readme)
+		if match == nil {
+			return 0, fmt.Errorf("corpus/README.md states no count of %s", what)
+		}
+		return strconv.Atoi(match[1])
+	}
+	var canonFile struct {
+		Vectors []json.RawMessage `json:"vectors"`
+	}
+	canonRaw, err := os.ReadFile(filepath.Join(corpusDir, "canon.json"))
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(canonRaw, &canonFile); err != nil {
+		return err
+	}
+	stores, _ := filepath.Glob(filepath.Join(corpusDir, "stores", "*.json"))
+	v3, _ := filepath.Glob(filepath.Join(corpusDir, "v3", "stores", "*.json"))
+	witness, err := witnessVectorPaths(corpusDir)
+	if err != nil {
+		return err
+	}
+	for _, c := range []struct {
+		re     *regexp.Regexp
+		what   string
+		actual int
+	}{
+		{statedCanon, "canon.json vectors", len(canonFile.Vectors)},
+		{statedStores, "stores/*.json vectors", len(stores)},
+		{statedV3, "v3/stores/*.json vectors", len(v3)},
+		{statedWitness, "witness/*.json vectors", len(witness)},
+	} {
+		n, err := stated(c.re, c.what)
+		if err != nil {
+			return err
+		}
+		if n != c.actual {
+			return fmt.Errorf("corpus/README.md states %d %s, and the corpus holds %d", n, c.what, c.actual)
+		}
+	}
+	actual := map[string]int{}
+	for _, path := range witness {
+		vector, err := readWitnessVector(path)
+		if err != nil {
+			return err
+		}
+		actual[vector.Family]++
+	}
+	statedFamily := map[string]int{}
+	for _, row := range statedFamilies.FindAllStringSubmatch(readme, -1) {
+		if !witnessFamilies[row[1]] {
+			return fmt.Errorf("corpus/README.md states a witness family %q no runner reads", row[1])
+		}
+		statedFamily[row[1]], _ = strconv.Atoi(row[2])
+	}
+	for family := range witnessFamilies {
+		if statedFamily[family] != actual[family] {
+			return fmt.Errorf("corpus/README.md states %d witness vectors of family %s, and the corpus holds %d", statedFamily[family], family, actual[family])
+		}
+	}
+	return nil
 }
 
 // materializeWitnessVector writes a vector's files as the process contract

@@ -1228,12 +1228,16 @@ One reading takes at most **16** keys; statement files and a head file of at mos
 **67108864 bytes** (64 MiB) together; and at most **110000** statements, counted as the
 lines step 1 would read — every line of every file, the head file's included, that is not
 passed over — before two copies of one statement are one. Over any of them the reading is
-refused before any statement is checked (§8.6), and is never truncated. Each statement
-costs one Ed25519 verification, under the one key its `keyId` names, so the work of a
-reading is bounded by its statement count. A chain longer than one reading takes is read
-in steps, each continuing from what the step before saved, which is the runtime's (§8.6):
-110000 statements are about 30 hours of a witness taking 60 submissions a minute, and
-about 12 years at one an hour.
+refused before any statement is checked (§8.6), and is never truncated. The bytes are
+bounded first, by the files' sizes, before any file is read. The statements are then
+counted as the files are split into lines, the statements files in their order and the
+head file last, and the reading is refused at the first line past the bound, keeping and
+reading none of the lines after it: a file of many short lines costs a reader no more than
+110000 statements do. Each statement costs one Ed25519 verification, under the one key its
+`keyId` names, so the work of a reading is bounded by its statement count. A chain longer
+than one reading takes is read in steps, each continuing from what the step before saved,
+which is the runtime's (§8.6): 110000 statements are about 30 hours of a witness taking 60
+submissions a minute, and about 12 years at one an hour.
 
 ### 8.8 What a statement establishes, and what it does not
 

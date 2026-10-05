@@ -234,26 +234,51 @@ function verifies(key: crypto.KeyObject, st: Statement): boolean {
   return crypto.verify(null, st.signed, key, Buffer.from(st.signature, "hex"));
 }
 
-// lines is a file's statement lines: up to each 0x0A, the piece after the
-// last one included, less those that are empty or hold only spaces, tabs
-// and carriage returns.
-function lines(file: Uint8Array): Uint8Array[] {
-  const out: Uint8Array[] = [];
-  let start = 0;
-  let blank = true;
-  for (let i = 0; i <= file.length; i++) {
-    const b = i < file.length ? file[i] : 0x0a;
-    if (b === 0x0a) {
-      if (!blank) {
-        out.push(file.subarray(start, i));
+// Collected is the statement lines of a reading's files, or, past the
+// bound, how many lines were counted before the split stopped.
+export type Collected =
+  | { readonly within: true; readonly lines: Uint8Array[]; readonly headLines: Uint8Array[] }
+  | { readonly within: false; readonly counted: number };
+
+// collectLines splits the statements files, in order, and then the head
+// file into statement lines -- up to each 0x0A, the piece after the last one
+// included, less those that are empty or hold only spaces, tabs and
+// carriage returns -- counting them as it splits. At the line past limit it
+// stops: it keeps no more lines and splits nothing further, so a file of
+// many short lines costs no more than limit statements do (§8.7).
+export function collectLines(files: Uint8Array[], head: Uint8Array | null, limit: number): Collected {
+  let counted = 0;
+  const take = (file: Uint8Array, into: Uint8Array[]): boolean => {
+    let start = 0;
+    let blank = true;
+    for (let i = 0; i <= file.length; i++) {
+      const b = i < file.length ? file[i] : 0x0a;
+      if (b === 0x0a) {
+        if (!blank) {
+          if (++counted > limit) {
+            return false;
+          }
+          into.push(file.subarray(start, i));
+        }
+        start = i + 1;
+        blank = true;
+      } else if (b !== 0x20 && b !== 0x09 && b !== 0x0d) {
+        blank = false;
       }
-      start = i + 1;
-      blank = true;
-    } else if (b !== 0x20 && b !== 0x09 && b !== 0x0d) {
-      blank = false;
+    }
+    return true;
+  };
+  const lines: Uint8Array[] = [];
+  const headLines: Uint8Array[] = [];
+  for (const file of files) {
+    if (!take(file, lines)) {
+      return { within: false, counted };
     }
   }
-  return out;
+  if (head !== null && !take(head, headLines)) {
+    return { within: false, counted };
+  }
+  return { within: true, lines, headLines };
 }
 
 // --- the reading (§8.6) -----------------------------------------------------
@@ -285,11 +310,12 @@ export function readWitness(r: Reading): Answer {
   if (bytes > witnessBounds.bytes) {
     return { refused: "bytes-over-bound" };
   }
-  const supplied = r.files.flatMap(lines);
-  const headLines = r.head === null ? [] : lines(r.head);
-  if (supplied.length + headLines.length > witnessBounds.statements) {
+  const collected = collectLines(r.files, r.head, witnessBounds.statements);
+  if (!collected.within) {
     return { refused: "statements-over-bound" };
   }
+  const supplied = collected.lines;
+  const headLines = collected.headLines;
 
   // Step 1: the set, each statement once by its canonical bytes, held to
   // its form, its signature and its trail, the first failure its one

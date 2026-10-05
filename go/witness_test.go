@@ -17,6 +17,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -597,5 +598,62 @@ func TestWitnessContract(t *testing.T) {
 	}
 	if code, _ := run("--trail", testTrail, "--witness", statements); code != 64 {
 		t.Errorf("no key: %d", code)
+	}
+}
+
+// Statements are counted as the files are split, and the reading stops at
+// the line past the bound: a file of many short lines, far under the byte
+// bound, is refused having kept no more lines than the bound allows and
+// parsed none, so it costs no more than 110000 statements would.
+func TestWitnessStopsCountingAtTheBound(t *testing.T) {
+	w := newWitnessSigner(t)
+	short := bytes.Repeat([]byte("x\n"), 1<<22) // 8 MiB, 4194304 lines
+	lines, headLines, counted, within := collectStatementLines([][]byte{short}, nil, maxWitnessStatements)
+	if within || counted != maxWitnessStatements+1 || lines != nil || headLines != nil {
+		t.Fatalf("4194304 short lines: within %v, counted %d, kept %d and %d; want a stop at line %d, keeping none",
+			within, counted, len(lines), len(headLines), maxWitnessStatements+1)
+	}
+
+	// The head file is counted after the statements files.
+	one, _ := w.chain(1)
+	atBound := bytes.Repeat(file(one...), maxWitnessStatements)
+	if _, _, counted, within := collectStatementLines([][]byte{atBound}, file(one...), maxWitnessStatements); within || counted != maxWitnessStatements+1 {
+		t.Fatalf("the bound in the files and one statement in the head: within %v, counted %d", within, counted)
+	}
+
+	// What the refusal costs: the lines kept up to the bound, not every
+	// line of the file. Reading every line first, as a reader that counts
+	// after splitting does, allocates some 200 MB for this file.
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	v := readWitness(w.reading([][]byte{short}, nil))
+	runtime.ReadMemStats(&after)
+	wantRefused(t, "4194304 short lines", v, refusalStatementsOverBound)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	if allocated > 32<<20 {
+		t.Errorf("refusing 4194304 short lines allocated %d bytes", allocated)
+	}
+	t.Logf("refusing 4194304 short lines allocated %d bytes", allocated)
+}
+
+// A chain begins with a checkpoint statement: an empty set, and a set whose
+// first statement is a conflict or a retirement, are witness-chain-broken,
+// each by the reader's own check and not by a fault of building its answer.
+func TestWitnessAChainBeginsWithACheckpoint(t *testing.T) {
+	w := newWitnessSigner(t)
+	conflict, _ := w.line(stmt{kind: "conflict", sequence: 10, other: true})
+	retirement, _ := w.line(stmt{kind: "retirement", retires: &stmt{sequence: 10}})
+	for _, c := range []struct {
+		what  string
+		files [][]byte
+	}{
+		{"no statements file", nil},
+		{"an empty statements file", [][]byte{{}}},
+		{"blank lines only", [][]byte{[]byte("\n \r\n\t\n")}},
+		{"a conflict with no checkpoint before it", [][]byte{file(conflict)}},
+		{"a retirement with no checkpoint before it", [][]byte{file(retirement)}},
+	} {
+		wantFindings(t, c.what, readWitness(w.reading(c.files, nil)), findingWitnessChainBroken)
 	}
 }

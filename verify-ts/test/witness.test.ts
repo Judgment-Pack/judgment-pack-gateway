@@ -11,7 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
 
-import { keyRefusal, readWitness, readWitnessFiles, witnessBounds } from "../src/witness.ts";
+import { collectLines, keyRefusal, readWitness, readWitnessFiles, witnessBounds } from "../src/witness.ts";
 import type { Answer } from "../src/witness.ts";
 import { keyId, materializeWitness, publicKey, sameWitnessAnswer, sign, tempDir, witnessVectors } from "./support.ts";
 
@@ -147,6 +147,32 @@ test("each finding, by the statement or set that makes it, and only it", () => {
     ["a statement respelled", [lines(c[0]!), Buffer.from(" \r\n" + text0.replaceAll(",", " ,\t").replace('"kind"', '"k\\u0069nd"') + "\r\n")], null],
   ] as [string, Buffer[], Buffer | null][]) {
     assert.deepEqual(findings(read(files, head)), [], what);
+  }
+});
+
+test("statements are counted as the files are split, and the split stops at the line past the bound", () => {
+  const short = Buffer.from("x\n".repeat(1 << 22)); // 8 MiB, 4194304 lines
+  assert.deepEqual(collectLines([short], null, witnessBounds.statements), { within: false, counted: witnessBounds.statements + 1 });
+  assert.equal(findings(read([short])), "refused statements-over-bound");
+  // The head file is counted after the statements files.
+  const one = lines(...chain(1));
+  assert.deepEqual(collectLines([Buffer.concat(Array(witnessBounds.statements).fill(one))], one, witnessBounds.statements), {
+    within: false,
+    counted: witnessBounds.statements + 1,
+  });
+});
+
+test("a chain begins with a checkpoint statement", () => {
+  const conflict = statement(0, null, checkpoint(10, true), "conflict");
+  const retirement = statement(0, null, checkpoint(10), "retirement");
+  for (const [what, files] of [
+    ["no statements file", []],
+    ["an empty statements file", [Buffer.alloc(0)]],
+    ["blank lines only", [Buffer.from("\n \r\n\t\n")]],
+    ["a conflict with no checkpoint before it", [lines(conflict)]],
+    ["a retirement with no checkpoint before it", [lines(retirement)]],
+  ] as [string, Buffer[]][]) {
+    assert.deepEqual(findings(read(files)), ["witness-chain-broken"], what);
   }
 });
 

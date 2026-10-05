@@ -223,7 +223,7 @@ type witnessVerdict struct {
 	reading  string // "current" or "historical"
 	head     *int64
 	highest  int64
-	latest   witnessLatest
+	latest   *witnessLatest
 	conflict []int64
 	retired  bool
 }
@@ -248,23 +248,42 @@ func (v witnessVerdict) marshal() ([]byte, error) {
 	})
 }
 
-// statementLines is a file's statement lines: its lines, ended by 0x0A, the
-// piece after the last one included, less those that are empty or hold only
-// spaces, tabs and carriage returns.
-func statementLines(file []byte) [][]byte {
-	var lines [][]byte
-	for len(file) > 0 {
-		line := file
-		if i := bytes.IndexByte(file, '\n'); i >= 0 {
-			line, file = file[:i], file[i+1:]
-		} else {
-			file = nil
+// collectStatementLines splits the statements files, in order, and then the
+// head file into statement lines: each file's lines, ended by 0x0A, the piece
+// after the last one included, less those that are empty or hold only
+// spaces, tabs and carriage returns. It counts them as it splits, and at the
+// line past limit it stops: it keeps no more lines, splits nothing further,
+// and reports how many it had counted, so a file of many short lines costs no
+// more than limit statements do (§8.7).
+func collectStatementLines(files [][]byte, head []byte, limit int) (lines, headLines [][]byte, counted int, within bool) {
+	take := func(file []byte, into *[][]byte) bool {
+		for len(file) > 0 {
+			line := file
+			if i := bytes.IndexByte(file, '\n'); i >= 0 {
+				line, file = file[:i], file[i+1:]
+			} else {
+				file = nil
+			}
+			if len(bytes.Trim(line, " \t\r")) == 0 {
+				continue
+			}
+			counted++
+			if counted > limit {
+				return false
+			}
+			*into = append(*into, line)
 		}
-		if len(bytes.Trim(line, " \t\r")) > 0 {
-			lines = append(lines, line)
+		return true
+	}
+	for _, file := range files {
+		if !take(file, &lines) {
+			return nil, nil, counted, false
 		}
 	}
-	return lines
+	if head != nil && !take(head, &headLines) {
+		return nil, nil, counted, false
+	}
+	return lines, headLines, counted, true
 }
 
 // readWitness reads one chain (§8.6) within the bounds of §8.7.
@@ -286,15 +305,8 @@ func readWitness(in witnessReading) witnessVerdict {
 	if total > maxWitnessBytes {
 		return witnessVerdict{refused: refusalBytesOverBound}
 	}
-	var lines [][]byte
-	for _, file := range in.files {
-		lines = append(lines, statementLines(file)...)
-	}
-	var headLines [][]byte
-	if in.head != nil {
-		headLines = statementLines(in.head)
-	}
-	if len(lines)+len(headLines) > maxWitnessStatements {
+	lines, headLines, _, within := collectStatementLines(in.files, in.head, maxWitnessStatements)
+	if !within {
 		return witnessVerdict{refused: refusalStatementsOverBound}
 	}
 
@@ -407,12 +419,18 @@ func readWitness(in witnessReading) witnessVerdict {
 		return witnessVerdict{findings: sortedKeys(findings)}
 	}
 
-	verdict := witnessVerdict{
-		reading:  "historical",
-		highest:  chain[len(chain)-1].index,
-		latest:   witnessLatest{Index: latest.index, Sequence: latest.sequence, WitnessedAt: latest.witnessedAt},
-		conflict: conflicts,
-		retired:  chain[len(chain)-1].kind == "retirement",
+	// A chain that walked without a finding begins with a checkpoint
+	// statement, so it is never empty and always has a latest checkpoint.
+	// The verdict is built without assuming either, so that a fault in the
+	// walk shows as a wrong answer rather than a crash.
+	verdict := witnessVerdict{reading: "historical", highest: -1, conflict: conflicts}
+	if len(chain) > 0 {
+		last := chain[len(chain)-1]
+		verdict.highest = last.index
+		verdict.retired = last.kind == "retirement"
+	}
+	if latest != nil {
+		verdict.latest = &witnessLatest{Index: latest.index, Sequence: latest.sequence, WitnessedAt: latest.witnessedAt}
 	}
 	if head != nil {
 		verdict.reading = "current"
