@@ -1544,6 +1544,35 @@ func TestWitnessSetAsideIsReadBackBeforeTheCut(t *testing.T) {
 	}
 }
 
+// The read-back holds the set-aside file's own kept bytes to the same rule:
+// last bytes an interrupted repair left there, whose keeping record is lost
+// while the write reports success, refuse the cut.
+func TestWitnessSetAsideOwnBytesAreReadBack(t *testing.T) {
+	tw := newTestWitness(t, testTrail)
+	w := tw.open(t)
+	mustSign(t, w, testTrail, 1)
+	w.close()
+	torn := tw.read(t, "log") + `{"checkpoint":`
+	tw.write(t, "log", torn)
+	if err := os.WriteFile(tw.paths.log+setAsideSuffix, []byte(`{"at":"2026-10-05T11:00:00Z","by`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	x := osWitnessIO()
+	base := x.write
+	x.write = func(file string, f *os.File, data []byte) (int, error) {
+		if file == "set-aside" && bytes.Contains(data, []byte(`"file":"set-aside"`)) {
+			return len(data), nil
+		}
+		return base(file, f, data)
+	}
+	if _, err := tw.repair(x); err == nil || !strings.Contains(err.Error(), "nothing is cut") {
+		t.Fatalf("the repair: %v", err)
+	}
+	if tw.read(t, "log") != torn {
+		t.Fatal("the log was cut although the set-aside file's own bytes were not kept")
+	}
+}
+
 // Every append the witness makes settles its own file's last bytes first,
 // or refuses: a statement's line and its mark, and a registration, by a
 // running witness, are refused when the log, the marks or the registrations
