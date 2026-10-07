@@ -58,20 +58,20 @@ var readOCRStdout = program.ReadStdout
 // checked: a deadline that passes while they are made is now found by that
 // check, and the program is not started.
 func runOCRProgram(ctx context.Context, name string, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
-	return runOCRWithArgs(ctx, name, nil, pages, doc, maxOutput)
+	return runOCRWithEnv(ctx, name, nil, pages, doc, maxOutput)
 }
 
-// runOCRWithArgs is runOCRProgram with the operator's arguments before the
-// page numbers.
-func runOCRWithArgs(ctx context.Context, name string, prefix []string, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
-	args := append([]string(nil), prefix...)
+// runOCRWithEnv is runOCRProgram with the operator's entries added to the
+// program's environment.
+func runOCRWithEnv(ctx context.Context, name string, env []string, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
+	args := make([]string, 0, len(pages))
 	for _, n := range pages {
 		args = append(args, strconv.Itoa(n))
 	}
 	// The reader is looked up when the program's stdout is read, as it was
 	// when this function read it itself, and not when the run is begun.
 	read := func(r io.Reader, limit int64) ([]byte, error) { return readOCRStdout(r, limit) }
-	return program.Run{Program: name, Args: args, Stdin: doc, MaxOutput: maxOutput, Read: read}.Do(ctx)
+	return program.Run{Program: name, Args: args, Stdin: doc, MaxOutput: maxOutput, Read: read, Env: env}.Do(ctx)
 }
 
 // admitOCRAnswer holds the program's output to step 6's admission: one

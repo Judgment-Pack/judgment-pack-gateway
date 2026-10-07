@@ -440,8 +440,9 @@ func validOCRConnection(p OCRConnection) bool {
 }
 
 // configureOCR points cfg at the processor. A cloud worker is given the
-// connection's ID and the settings' revision before the page numbers, and
-// refuses to run under any other revision.
+// connection's ID and the settings' revision in its environment, never as
+// arguments (the revision is a digest over the file that holds the
+// credentials), and refuses to run under any other revision.
 func configureOCR(cfg *document.Config, p OCRConnection, revision string, c ProcessingConfig) {
 	cfg.OCR = ocrProgram(p)
 	if cfg.OCR != "" {
@@ -455,6 +456,6 @@ func configureOCR(cfg *document.Config, p OCRConnection, revision string, c Proc
 	}
 	cfg.Timeout = time.Duration(seconds) * time.Second
 	if cloudOCR(p.Kind) {
-		cfg.OCRArgs = []string{p.ID, revision}
+		cfg.OCREnv = []string{"JPACK_OCR_CONNECTION=" + p.ID, "JPACK_OCR_REVISION=" + revision}
 	}
 }

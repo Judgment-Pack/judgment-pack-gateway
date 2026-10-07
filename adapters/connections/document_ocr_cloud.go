@@ -31,11 +31,13 @@ type textractCredential struct {
 // cloudImageBytes bounds one rendered page sent to a cloud processor.
 const cloudImageBytes = 5 << 20
 
-// RunCloudOCR implements the existing page-text program contract. IDs and the
-// custody revision are operator args, not document data. No default credentials,
-// ambient auth, custom endpoints, redirects or fallback to another connection.
-func RunCloudOCR(ctx context.Context, args []string, input io.Reader, output io.Writer) error {
-	if len(args) < 3 || len(args) > 502 || !searchID.MatchString(args[0]) {
+// RunCloudOCR implements the existing page-text program contract: its
+// arguments are the page numbers alone. The connection and the custody
+// revision come from the operator through the worker's environment, never
+// from the document. No default credentials, ambient auth, custom endpoints,
+// redirects or fallback to another connection.
+func RunCloudOCR(ctx context.Context, connection, revision string, pages []string, input io.Reader, output io.Writer) error {
+	if len(pages) < 1 || len(pages) > 500 || !searchID.MatchString(connection) || revision == "" {
 		return ErrRequest
 	}
 	s, e := OpenProcessingStore(os.Getenv("JPACK_CONNECTIONS_DIR"), "desk-local")
@@ -55,12 +57,12 @@ func RunCloudOCR(ctx context.Context, args []string, input io.Reader, output io.
 	if e != nil {
 		return e
 	}
-	if rev != args[1] {
+	if rev != revision {
 		return Error("processing-changed")
 	}
 	var selected OCRConnection
 	for _, p := range c.Connections {
-		if p.ID == args[0] && p.Enabled && cloudOCR(p.Kind) {
+		if p.ID == connection && p.Enabled && cloudOCR(p.Kind) {
 			selected = p
 		}
 	}
@@ -69,7 +71,7 @@ func RunCloudOCR(ctx context.Context, args []string, input io.Reader, output io.
 	}
 	numbers := []int{}
 	seen := map[int]bool{}
-	for _, v := range args[2:] {
+	for _, v := range pages {
 		n, e := strconv.Atoi(v)
 		if e != nil || n < 1 || n > 500 || seen[n] {
 			return ErrRequest

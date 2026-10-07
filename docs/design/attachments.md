@@ -825,9 +825,11 @@ The processors:
 - `program` runs an absolute program path the operator names, under the same
   page-text contract.
 - `google-document-ai`, `azure-document-intelligence` (prebuilt-read) and
-  `aws-textract` (DetectDocumentText) run `ocr-cloud`, to which the adapter gives
-  the processor's ID and the settings' digest before the page numbers. The worker
-  refuses any other revision, reads it again before each page, and never falls back
+  `aws-textract` (DetectDocumentText) run `ocr-cloud`. Its arguments are the page
+  numbers alone; the adapter gives it the processor's ID and the settings' digest in
+  its environment (`JPACK_OCR_CONNECTION`, `JPACK_OCR_REVISION`), out of the host's
+  process listing, since the digest is over the file that holds the credentials. The
+  worker refuses any other revision, reads it again before each page, and never falls back
   to another processor. Only the pages that need OCR are rendered, each to a PNG of
   at most 5 MiB, and sent to the endpoint the processor names: Google's regional
   Document AI host, the Azure resource's own `*.cognitiveservices.azure.com`

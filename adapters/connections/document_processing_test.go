@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -144,18 +145,18 @@ func TestOCRRegistryPrivateCredentialsCASAndNoRetarget(t *testing.T) {
 	if e = ApplyDocumentProcessing(managed, &cfg); e != nil {
 		t.Fatal(e)
 	}
-	if len(cfg.OCRArgs) != 2 || cfg.OCRArgs[0] != "ocr-azure" || cfg.OCRArgs[1] != latest.SHA256 || cfg.Timeout != 75*time.Second || filepath.Base(cfg.OCR) != "ocr-cloud" || !filepath.IsAbs(cfg.OCR) || cfg.OCRName != "azure:ocr-cloud" {
+	if strings.Join(cfg.OCREnv, " ") != "JPACK_OCR_CONNECTION=ocr-azure JPACK_OCR_REVISION="+latest.SHA256 || cfg.Timeout != 75*time.Second || filepath.Base(cfg.OCR) != "ocr-cloud" || !filepath.IsAbs(cfg.OCR) || cfg.OCRName != "azure:ocr-cloud" {
 		t.Fatal("choice was not pinned")
 	}
 	var out bytes.Buffer
-	if e = RunCloudOCR(context.Background(), []string{"ocr-azure", next.SHA256, "1"}, strings.NewReader("invalid"), &out); e != Error("processing-changed") || out.Len() != 0 {
+	if e = RunCloudOCR(context.Background(), "ocr-azure", next.SHA256, []string{"1"}, strings.NewReader("invalid"), &out); e != Error("processing-changed") || out.Len() != 0 {
 		t.Fatal("stale worker read a different configuration", e)
 	}
 	c = asSent(latest.ProcessingConfig)
 	c.Mode = "off"
 	processingSave(t, b, latest, c)
 	cfg = document.DefaultConfig()
-	if ApplyDocumentProcessing(managed, &cfg) != nil || cfg.OCR != "" || len(cfg.OCRArgs) != 0 {
+	if ApplyDocumentProcessing(managed, &cfg) != nil || cfg.OCR != "" || len(cfg.OCREnv) != 0 {
 		t.Fatal("off still runs OCR")
 	}
 }
@@ -260,7 +261,7 @@ func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
 		t.Fatal("the command line's --ocr was replaced")
 	}
 	cfg = document.DefaultConfig()
-	if ApplyDocumentProcessing(managed, &cfg) != nil || filepath.Base(cfg.OCR) != "ocr-tesseract" || cfg.OCRName != "tesseract:ocr-tesseract" || len(cfg.OCRArgs) != 0 || cfg.Timeout != 120*time.Second {
+	if ApplyDocumentProcessing(managed, &cfg) != nil || filepath.Base(cfg.OCR) != "ocr-tesseract" || cfg.OCRName != "tesseract:ocr-tesseract" || len(cfg.OCREnv) != 0 || cfg.Timeout != 120*time.Second {
 		t.Fatal("local processor not applied", cfg.OCR)
 	}
 	// A settings file that does not hold to its rules is unreadable now.
@@ -493,7 +494,7 @@ func TestRunCloudOCRRefusesBeforeAnyRequest(t *testing.T) {
 	pdf := strings.NewReader("%PDF-1.4")
 	run := func(args ...string) error {
 		var out bytes.Buffer
-		e := RunCloudOCR(context.Background(), args, pdf, &out)
+		e := RunCloudOCR(context.Background(), args[0], args[1], args[2:], pdf, &out)
 		if out.Len() != 0 {
 			t.Fatal("a refused run wrote an answer")
 		}
@@ -504,7 +505,7 @@ func TestRunCloudOCRRefusesBeforeAnyRequest(t *testing.T) {
 		t.Fatal("ran without the settings directory")
 	}
 	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
-	for _, args := range [][]string{{"ocr-azure", rev}, {"ocr-azure", rev, "0"}, {"ocr-azure", rev, "501"}, {"ocr-azure", rev, "1", "1"}, {"ocr-azure", rev, "one"}, {"../x", rev, "1"}} {
+	for _, args := range [][]string{{"ocr-azure", rev}, {"ocr-azure", "", "1"}, {"ocr-azure", rev, "0"}, {"ocr-azure", rev, "501"}, {"ocr-azure", rev, "1", "1"}, {"ocr-azure", rev, "one"}, {"../x", rev, "1"}} {
 		if run(args...) != ErrRequest {
 			t.Fatal("page or connection arguments accepted", args)
 		}
@@ -681,5 +682,49 @@ func TestARecordNamesNoDirectoryOfItsWorker(t *testing.T) {
 		if strings.Contains(string(raw), part) {
 			t.Fatalf("the record names %q", part)
 		}
+	}
+}
+
+// The settings' revision, a digest over the file that holds the credentials,
+// reaches the cloud worker in its environment: its argument list, which every
+// process on the host can read, holds the page numbers alone.
+func TestTheCloudWorkerIsGivenNoDigestAsAnArgument(t *testing.T) {
+	b, dir := processingBroker(t)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	base := processingState(t, b)
+	c := base.ProcessingConfig
+	c.Connections = []OCRConnection{azureOCR()}
+	c.Mode, c.Connection = "auto", "ocr-azure"
+	saved := processingSave(t, b, base, c)
+	cfg := document.DefaultConfig()
+	if e := ApplyDocumentProcessing(managed, &cfg); e != nil {
+		t.Fatal(e)
+	}
+	// The worker is a stand-in that writes down what it was given.
+	seen := t.TempDir()
+	cfg.OCR = filepath.Join(seen, "ocr-cloud")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > " + seen + "/argv\nprintf '%s\\n' \"$JPACK_OCR_CONNECTION\" \"$JPACK_OCR_REVISION\" > " + seen + "/env\n/bin/cat >/dev/null\nprintf '{\"pages\":[{\"number\":1,\"text\":\"Scanned\"}]}'\n"
+	if e := os.WriteFile(cfg.OCR, []byte(script), 0700); e != nil {
+		t.Fatal(e)
+	}
+	pdf, e := os.ReadFile("../document/testdata/scanned.pdf")
+	if e != nil {
+		t.Fatal(e)
+	}
+	identity, _ := document.OwnIdentity()
+	started := time.Now()
+	if _, e = processDriveDocument(context.Background(), cfg, document.Request{Name: "scan.pdf", MediaType: "application/pdf", Bytes: pdf, SHA256: digest(pdf), OCR: "auto", ReceivedAt: started}, identity, started); e != nil {
+		t.Fatal(e)
+	}
+	argv, _ := os.ReadFile(filepath.Join(seen, "argv"))
+	env, _ := os.ReadFile(filepath.Join(seen, "env"))
+	if len(argv) == 0 || regexp.MustCompile(`[0-9a-f]{64}`).Match(argv) || strings.Contains(string(argv), "ocr-azure") {
+		t.Fatalf("the worker's arguments carry the processor or a digest: %q", argv)
+	}
+	if strings.TrimSpace(string(argv)) != cfg.OCR+"\n1" {
+		t.Fatalf("the worker's arguments are not the page numbers: %q", argv)
+	}
+	if string(env) != "ocr-azure\n"+saved.SHA256+"\n" {
+		t.Fatalf("the worker's environment lacks the processor and revision: %q", env)
 	}
 }

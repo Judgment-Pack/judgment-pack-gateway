@@ -73,10 +73,11 @@ type Config struct {
 	Timeout      time.Duration
 	// OCR is the OCR program, one word, or empty for none.
 	OCR string
-	// OCRArgs are given the OCR program before the page numbers. They are
-	// the operator's (the document-processing settings set them), never the
+	// OCREnv, NAME=value entries, is added to the OCR program's environment,
+	// never its arguments, which stay the page numbers alone. It is the
+	// operator's (the document-processing settings set it), never the
 	// document's or the caller's.
-	OCRArgs []string
+	OCREnv []string
 	// OCRName is how a record names the OCR program; empty, it names it as
 	// OCR gives it. The document-processing settings set it to the
 	// processor's kind and the program's file name, so that a record never
@@ -693,10 +694,10 @@ type processor struct {
 // the adapter began reading the request, which durationMs is measured from.
 func Process(ctx context.Context, cfg Config, req Request, identity attachment.Identity, reading time.Time) ([]byte, error) {
 	runner := runOCRProgram
-	if len(cfg.OCRArgs) > 0 {
-		prefix := append([]string(nil), cfg.OCRArgs...)
+	if len(cfg.OCREnv) > 0 {
+		env := append([]string(nil), cfg.OCREnv...)
 		runner = func(ctx context.Context, name string, pages []int, doc []byte, limit int64) ([]byte, string, error) {
-			return runOCRWithArgs(ctx, name, prefix, pages, doc, limit)
+			return runOCRWithEnv(ctx, name, env, pages, doc, limit)
 		}
 	}
 	p := &processor{cfg: cfg, identity: identity, reading: reading, now: time.Now, runOCR: runner}
