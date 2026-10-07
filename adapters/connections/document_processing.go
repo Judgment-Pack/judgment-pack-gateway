@@ -429,9 +429,7 @@ func (b *Broker) processingOperation(ctx context.Context, method string, raw jso
 		if err != nil || len(data) == 0 || len(data) > MaxFileBytes {
 			return nil, ErrRequest
 		}
-		cfg := document.DefaultConfig()
-		configureOCR(&cfg, *picked, sha, c)
-		cfg.MaxOutput = 8 << 20
+		cfg := testRunConfig(*picked, sha, c)
 		identity, err := document.OwnIdentity()
 		if err != nil {
 			return nil, Error("processing-failed")
@@ -460,6 +458,17 @@ func (b *Broker) processingOperation(ctx context.Context, method string, raw jso
 		return map[string]any{"processing": record.Processing, "extraction": record.Content.Extraction, "pageCount": record.Content.PageCount, "pages": preview}, nil
 	}
 	return nil, ErrRequest
+}
+
+// testRunConfig is a test's configuration. The companion is a long-lived
+// process that no gateway process group cleans up after, so its OCR program
+// runs in a group of its own, ended whole, whatever the program started.
+func testRunConfig(p OCRConnection, revision string, c ProcessingConfig) document.Config {
+	cfg := document.DefaultConfig()
+	configureOCR(&cfg, p, revision, c)
+	cfg.MaxOutput = 8 << 20
+	cfg.OCRGroup = true
+	return cfg
 }
 
 // ApplyDocumentProcessing resolves the operator's processor once, before

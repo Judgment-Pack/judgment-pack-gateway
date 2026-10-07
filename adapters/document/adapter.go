@@ -83,6 +83,11 @@ type Config struct {
 	// processor's kind and the program's file name, so that a record never
 	// names the directory the program was run from.
 	OCRName string
+	// OCRGroup runs the OCR program in a process group of its own, ended
+	// whole with it: for a caller that no outer group cleans up after, as
+	// the connection companion's test. Under the gateway it stays false and
+	// the program stays in the adapter's group.
+	OCRGroup bool
 }
 
 // DefaultConfig is the configuration the flags default to.
@@ -694,10 +699,10 @@ type processor struct {
 // the adapter began reading the request, which durationMs is measured from.
 func Process(ctx context.Context, cfg Config, req Request, identity attachment.Identity, reading time.Time) ([]byte, error) {
 	runner := runOCRProgram
-	if len(cfg.OCREnv) > 0 {
-		env := append([]string(nil), cfg.OCREnv...)
+	if len(cfg.OCREnv) > 0 || cfg.OCRGroup {
+		env, group := append([]string(nil), cfg.OCREnv...), cfg.OCRGroup
 		runner = func(ctx context.Context, name string, pages []int, doc []byte, limit int64) ([]byte, string, error) {
-			return runOCRWithEnv(ctx, name, env, pages, doc, limit)
+			return runOCRWith(ctx, name, env, group, pages, doc, limit)
 		}
 	}
 	p := &processor{cfg: cfg, identity: identity, reading: reading, now: time.Now, runOCR: runner}

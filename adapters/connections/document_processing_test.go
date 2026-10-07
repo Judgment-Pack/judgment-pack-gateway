@@ -17,8 +17,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -936,5 +938,62 @@ func TestAMissingWorkerStopsTheRead(t *testing.T) {
 	os.Remove(filepath.Join(workers, "ocr-cloud"))
 	if e := apply(); e != ErrProcessorMissing {
 		t.Errorf("cloud without ocr-cloud: %v", e)
+	}
+}
+
+// The companion's test runs the OCR program in a process group of its own and
+// ends the group: nothing the program started (a renderer, say) outlives a
+// test ended at its deadline. A read under the gateway keeps the program in
+// the adapter's group, which the gateway ends.
+func TestTheCompanionsTestEndsWhatTheProgramStarted(t *testing.T) {
+	bundle := t.TempDir()
+	useBundle(t, bundle)
+	pidFile := filepath.Join(t.TempDir(), "child")
+	program := filepath.Join(bundle, "ocr")
+	script := "#!/bin/sh\n/bin/sh -c 'echo $$ > " + pidFile + "; exec /bin/sleep 300' </dev/null >/dev/null 2>&1 &\n/bin/cat >/dev/null\nwhile [ ! -s " + pidFile + " ]; do :; done\nexec /bin/sleep 300\n"
+	if e := os.WriteFile(program, []byte(script), 0700); e != nil {
+		t.Fatal(e)
+	}
+	child := func() int {
+		raw, _ := os.ReadFile(pidFile)
+		pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+		return pid
+	}
+	t.Cleanup(func() {
+		if pid := child(); pid > 0 {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	})
+	p := OCRConnection{ID: "local", Name: "Local", Kind: "program", Program: program, Enabled: true}
+	settings := ProcessingConfig{Version: 1, Mode: "auto", Connection: "local", Connections: []OCRConnection{p}}
+	cfg := testRunConfig(p, "sha256:"+strings.Repeat("0", 64), settings)
+	if !cfg.OCRGroup {
+		t.Fatal("the companion's test does not run its program in a group of its own")
+	}
+	managedCfg := document.DefaultConfig()
+	configureOCR(&managedCfg, p, "sha256:"+strings.Repeat("0", 64), settings)
+	if managedCfg.OCRGroup {
+		t.Fatal("a read under the gateway was taken out of the adapter's group")
+	}
+	cfg.Timeout = 800 * time.Millisecond
+	pdf, e := os.ReadFile("../document/testdata/scanned.pdf")
+	if e != nil {
+		t.Fatal(e)
+	}
+	identity, _ := document.OwnIdentity()
+	started := time.Now()
+	if _, e = processDriveDocument(context.Background(), cfg, document.Request{Name: "scan.pdf", MediaType: "application/pdf", Bytes: pdf, SHA256: digest(pdf), OCR: "auto", ReceivedAt: started}, identity, started); e != nil {
+		t.Fatal(e)
+	}
+	pid := child()
+	if pid == 0 {
+		t.Fatal("the stand-in's child did not start")
+	}
+	until := time.Now().Add(3 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(until) {
+			t.Fatal("a child of the OCR program outlived the companion's test")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

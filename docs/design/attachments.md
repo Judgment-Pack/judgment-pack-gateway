@@ -814,7 +814,11 @@ a credential out keeps the saved one only when the processor's kind and destinat
 credential is never carried to another destination. `test` runs one PDF of at most
 4 MiB, on a request line of at most 6 MiB, through a named processor under a stated
 revision and answers a preview of at most eight pages of 400 characters each; it
-stores nothing.
+stores nothing. The companion is a long-lived process that no gateway process group
+cleans up after, so a test runs the processor's program in a process group of its
+own and ends the whole group, a renderer the program started included, at its
+deadline and when it is over; a read under the gateway keeps the program in the
+adapter's group, which the gateway ends.
 
 The processors:
 
