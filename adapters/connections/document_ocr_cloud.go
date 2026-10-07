@@ -1,6 +1,7 @@
 package connections
 
 import (
+	"adapters/attachment"
 	"adapters/internal/ocrrender"
 	"bytes"
 	"context"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
@@ -98,6 +100,12 @@ func RunCloudOCR(ctx context.Context, connection, revision string, pages []strin
 		}
 		token = t.AccessToken
 	}
+	// A page's text is held against every secret the settings hold, not
+	// only the selected processor's.
+	var held []string
+	for _, p := range c.Connections {
+		held = append(held, secretsOf(p)...)
+	}
 	type page struct {
 		Number int    `json:"number"`
 		Text   string `json:"text"`
@@ -116,7 +124,7 @@ func RunCloudOCR(ctx context.Context, connection, revision string, pages []strin
 		if e != nil {
 			return e
 		}
-		text, e := cloudOCRPage(ctx, client, selected, token, raster)
+		text, e := cloudOCRPage(ctx, client, selected, token, raster, held...)
 		if e != nil {
 			return e
 		}
@@ -165,7 +173,78 @@ func ocrResponse(client *http.Client, req *http.Request, want int, secrets ...st
 	}
 	return data, resp.Header, nil
 }
-func cloudOCRPage(ctx context.Context, client *http.Client, c OCRConnection, token string, png []byte) (string, error) {
+
+// secretsOf are the secrets a processor's settings hold. A credential that
+// cannot be read for them is held whole.
+func secretsOf(c OCRConnection) []string {
+	switch c.Kind {
+	case "azure-document-intelligence":
+		return []string{c.Credential}
+	case "aws-textract":
+		var cred textractCredential
+		if decode([]byte(c.Credential), &cred) == nil {
+			return []string{cred.SecretKey, cred.SessionToken}
+		}
+	case "google-document-ai":
+		var key struct {
+			PrivateKey string `json:"private_key"`
+		}
+		if json.Unmarshal([]byte(c.Credential), &key) == nil && key.PrivateKey != "" {
+			var body []string
+			for _, line := range strings.Split(key.PrivateKey, "\n") {
+				if !strings.HasPrefix(strings.TrimSpace(line), "-----") {
+					body = append(body, line)
+				}
+			}
+			return []string{strings.Join(body, "")}
+		}
+	}
+	if c.Credential != "" {
+		return []string{c.Credential}
+	}
+	return nil
+}
+
+// squeezed is text as a record would hold it (attachment.NormalizeText), with
+// every space, control and format character then left out, so that a secret
+// split across lines or blocks, or broken by a character the record drops,
+// is found whole.
+func squeezed(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, attachment.NormalizeText(s))
+}
+
+// holdsSecret reports whether text, as decoded, holds any of the secrets.
+func holdsSecret(text string, secrets []string) bool {
+	t := squeezed(text)
+	for _, secret := range secrets {
+		if k := squeezed(secret); k != "" && strings.Contains(t, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// cloudOCRPage answers one page's text. The text is held, decoded and in the
+// form a record would take, against the processor's own secrets, the token in
+// use and the others given (every secret the settings hold): a reply that
+// echoes one, escaped or split, is refused before any text is returned.
+func cloudOCRPage(ctx context.Context, client *http.Client, c OCRConnection, token string, png []byte, others ...string) (string, error) {
+	secrets := append(append(secretsOf(c), token), others...)
+	text, err := cloudOCRText(ctx, client, c, token, png)
+	if err != nil {
+		return "", err
+	}
+	if holdsSecret(text, secrets) {
+		return "", ErrProvider
+	}
+	return text, nil
+}
+func cloudOCRText(ctx context.Context, client *http.Client, c OCRConnection, token string, png []byte) (string, error) {
 	if len(png) == 0 || len(png) > cloudImageBytes {
 		return "", ErrLimit
 	}

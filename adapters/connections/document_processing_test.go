@@ -449,6 +449,45 @@ func TestCloudOCRProviderContracts(t *testing.T) {
 			t.Fatal("an Azure reply holding the key was taken as text")
 		}
 	})
+	// JSON decoding rebuilds an escaped secret, and a record joins lines and
+	// drops controls: the text is held as decoded, in a record's form.
+	t.Run("an escaped or split secret is not text", func(t *testing.T) {
+		google := OCRConnection{Kind: "google-document-ai", Project: "demo", Location: "eu", Processor: "123"}
+		textract := OCRConnection{Kind: "aws-textract", Region: "us-east-1", Credential: `{"accessKeyId":"id","secretAccessKey":"secret-key-value","sessionToken":"temporary-session"}`}
+		for _, c := range []struct {
+			name   string
+			conn   OCRConnection
+			token  string
+			reply  string
+			others []string
+		}{
+			{"escaped token", google, "access-token-value", `{"document":{"text":"seen access\u002dtoken\u002dvalue"}}`, nil},
+			{"token broken by a control", google, "access-token-value", `{"document":{"text":"access-tok\u0001en-value"}}`, nil},
+			{"token split by a zero-width space", google, "access-token-value", `{"document":{"text":"access-tok\u200ben-value"}}`, nil},
+			{"secret key split across lines", textract, "", `{"Blocks":[{"BlockType":"LINE","Text":"secret-key-"},{"BlockType":"LINE","Text":"value"}]}`, nil},
+			{"escaped session token", textract, "", `{"Blocks":[{"BlockType":"LINE","Text":"temporary\u002dsession"}]}`, nil},
+			{"another processor's secret", google, "access-token-value", `{"document":{"text":"key of another: other-secret-value"}}`, []string{"other-secret-value"}},
+		} {
+			client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) { return ocrReply(200, c.reply, nil), nil })}
+			if text, e := cloudOCRPage(context.Background(), client, c.conn, c.token, []byte("PNG"), c.others...); e != ErrProvider || text != "" {
+				t.Errorf("%s: taken as text %q", c.name, text)
+			}
+		}
+		calls := 0
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return ocrReply(202, "", http.Header{"Operation-Location": []string{"https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id"}}), nil
+			}
+			return ocrReply(200, `{"status":"succeeded","analyzeResult":{"content":"key private\u002dsec\nret"}}`, nil), nil
+		})}
+		if _, e := cloudOCRPage(context.Background(), client, azureOCR(), "", []byte("PNG")); e != ErrProvider {
+			t.Error("an escaped, split Azure key was taken as text")
+		}
+		if got := secretsOf(OCRConnection{Kind: "google-document-ai", Credential: `{"private_key":"-----BEGIN PRIVATE KEY-----\nAAAA\nBBBB\n-----END PRIVATE KEY-----\n"}`}); len(got) != 1 || got[0] != "AAAABBBB" {
+			t.Errorf("a service account's key is held as %q", got)
+		}
+	})
 	t.Run("an oversized reply or image is refused", func(t *testing.T) {
 		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
 			return ocrReply(200, `{"document":{"text":"`+strings.Repeat("a", 8<<20)+`"}}`, nil), nil
