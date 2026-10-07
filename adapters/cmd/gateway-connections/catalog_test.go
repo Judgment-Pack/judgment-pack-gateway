@@ -2,9 +2,11 @@ package main
 
 import (
 	"adapters/connections"
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +68,82 @@ func TestExtendedDiscoveryModesHaveNoAccountPrerequisite(t *testing.T) {
 				t.Fatal("discovery created state")
 			}
 		}
+	}
+}
+
+// The local plan follows the document-processing settings as they stand when
+// it is asked, and writes nothing: with none, or with none configured, it is
+// main's plan byte for byte, whatever the environment.
+func TestTheLocalPlanFollowsTheProcessingSettings(t *testing.T) {
+	plan := func(dir string, set bool) []byte {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCatalogCLIHelper$", "--", "--local-plan")
+		cmd.Env = []string{"GATEWAY_CATALOG_HELPER=1"}
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "JPACK_CONNECTIONS_DIR=") {
+				cmd.Env = append(cmd.Env, kv)
+			}
+		}
+		if set {
+			cmd.Env = append(cmd.Env, "JPACK_CONNECTIONS_DIR="+dir)
+		}
+		cmd.Dir = t.TempDir()
+		raw, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+	want, err := json.Marshal(connections.ConnectionLocalPlanWith(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, '\n')
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	for _, set := range []bool{false, true} {
+		if got := plan(dir, set); string(got) != string(want) {
+			t.Fatalf("without settings the plan is not main's: %s", got)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatal("the plan created custody")
+	}
+	s, err := connections.OpenProcessingStore(dir, "desk-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	b := connections.NewProcessing(s, false)
+	status, err := b.Handle(context.Background(), "status", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	current := status.(connections.ProcessingStatus)
+	config := current.ProcessingConfig
+	config.Connections = []connections.OCRConnection{{ID: "local", Name: "Local", Kind: "tesseract", Enabled: true}}
+	config.Mode, config.Connection = "auto", "local"
+	raw, _ := json.Marshal(map[string]any{"ifMatch": current.SHA256, "config": config})
+	if _, err = b.Handle(context.Background(), "configure", raw); err != nil {
+		t.Fatal(err)
+	}
+	if got := plan(dir, false); string(got) != string(want) {
+		t.Fatal("the plan read settings it was not pointed at")
+	}
+	var served connections.LocalPlan
+	if json.Unmarshal(plan(dir, true), &served) != nil {
+		t.Fatal("bad plan")
+	}
+	long := 0
+	for _, source := range served.Sources {
+		if source.Timeout == 150 {
+			long++
+			if !source.Connections || source.Args[len(source.Args)-1] != "--document-processing" {
+				t.Fatalf("%+v", source)
+			}
+		}
+	}
+	if long != 4 {
+		t.Fatalf("%d sources have the processing envelope", long)
 	}
 }

@@ -2,6 +2,7 @@
 package main
 
 import (
+	"adapters/connections"
 	"adapters/websource"
 	"context"
 	"fmt"
@@ -12,7 +13,9 @@ import (
 func main() { os.Exit(run()) }
 func run() int {
 	discover := len(os.Args) == 2 && os.Args[1] == "--discover"
-	if len(os.Args) != 1 && !discover {
+	// --document-processing: a read may run the operator's OCR processor.
+	processing := len(os.Args) == 2 && os.Args[1] == "--document-processing"
+	if len(os.Args) != 1 && !discover && !processing {
 		return 2
 	}
 	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 8193))
@@ -24,7 +27,11 @@ func run() int {
 	if discover {
 		out, err = websource.Discover(context.Background(), raw)
 	} else {
-		out, err = websource.Read(context.Background(), raw)
+		ctx := context.Background()
+		if processing {
+			ctx = connections.WithDocumentProcessing(ctx)
+		}
+		out, err = websource.Read(ctx, raw)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())

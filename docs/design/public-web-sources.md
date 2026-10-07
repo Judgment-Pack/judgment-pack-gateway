@@ -24,16 +24,17 @@ Redirects undergo the same checks; at most five redirects follow the initial
 request. Proxy environment variables, cookies, and authorization are not used.
 TLS verification is mandatory. There is no production insecure-test override.
 
-The total operation deadline is 45 seconds, or 140 seconds when the operator's
-OCR processor is enabled. Fetches also have a 30-second client
+The total operation deadline is 45 seconds, or 140 seconds when the adapter is
+launched with `--document-processing` and a processor is configured. Fetches also have a 30-second client
 deadline, 8-second dial/TLS and 10-second response-header limits. Headers are
 bounded at 32 KiB. Only successful `200` responses with HTML, plain text, or PDF
 media types are retained, up to 4 MiB. Text charsets must be UTF-8 or US-ASCII;
 compressed HTTP responses are refused. Output is at most 16 MiB. PDF processing
 uses the existing local document extractor, its inflate/page limits, and a
 25-second processing context within the outer deadline. OCR runs for a PDF only
-when the managed plan's document-processing settings enable a processor, and the
-processing deadline is then that setting's, 10 to 120 seconds
+when the adapter is launched with `--document-processing` and the operator's
+settings enable a processor, and the processing deadline is then that setting's,
+10 to 120 seconds
 ([attachments](attachments.md#document-processing-ocr-under-the-managed-local-plan)).
 Scanned/unreadable pages keep the existing partial/failed extraction contract.
 

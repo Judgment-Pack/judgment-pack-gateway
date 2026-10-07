@@ -49,19 +49,19 @@ func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
 	if json.Unmarshal(canonical, &members) != nil || (len(members) != 1 && len(members) != 2 || len(members) == 2 && members["site"] != req.Site || len(members) == 2 && req.Site == "") || members["url"] != req.URL {
 		return nil, ErrRequest
 	}
-	// The operator's document-processing settings are resolved before any
-	// request is made. A PDF read with OCR has OCRTimeout in all; any other
-	// read keeps Timeout.
+	// Under --document-processing the operator's settings are resolved before
+	// any request is made. A read with an OCR processor has the processing
+	// envelope in all; any other read keeps Timeout.
 	cfg := document.DefaultConfig()
 	cfg.MaxBytes = MaxBytes
 	cfg.MaxText = MaxBytes
 	cfg.MaxOutput = MaxOutput
-	if err := connections.ApplyDocumentProcessing(&cfg); err != nil {
+	if err := connections.ApplyDocumentProcessing(ctx, &cfg); err != nil {
 		return nil, ErrProcessing
 	}
 	budget := Timeout
 	if cfg.OCR != "" {
-		budget = OCRTimeout
+		budget = connections.ProcessingAdapterTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()

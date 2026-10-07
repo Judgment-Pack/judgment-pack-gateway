@@ -278,7 +278,14 @@ func TestWebPDFUsesSelectedOCRAndKeepsOriginalSource(t *testing.T) {
 		w.Header().Set("Content-Type", "application/pdf")
 		w.Write(pdf)
 	})
-	out, e := read(context.Background(), []byte(`{"url":"https://example.com/scan.pdf"}`), f)
+	// Launched without --document-processing, the adapter reads as before:
+	// no settings are read and no OCR runs.
+	plain, e := read(context.Background(), []byte(`{"url":"https://example.com/scan.pdf"}`), f)
+	var before struct{ Result attachment.Record }
+	if e != nil || json.Unmarshal(plain, &before) != nil || before.Result.Provenance.OCR != nil {
+		t.Fatal("an adapter launched without --document-processing ran OCR", e)
+	}
+	out, e := read(connections.WithDocumentProcessing(context.Background()), []byte(`{"url":"https://example.com/scan.pdf"}`), f)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -312,7 +319,7 @@ func TestUnreadableProcessingSettingsStopTheReadFirst(t *testing.T) {
 		w.Header().Set("Content-Type", "text/plain")
 		w.Write([]byte("text"))
 	})
-	if _, e := read(context.Background(), []byte(`{"url":"https://example.com/scan.pdf"}`), f); e != ErrProcessing || asked != 0 {
+	if _, e := read(connections.WithDocumentProcessing(context.Background()), []byte(`{"url":"https://example.com/scan.pdf"}`), f); e != ErrProcessing || asked != 0 {
 		t.Fatal("a read went ahead without its processing settings", e, asked)
 	}
 }

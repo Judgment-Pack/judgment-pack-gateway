@@ -771,11 +771,21 @@ unknown source kind is refused; earlier source variants are not broadened.
 
 ## Document processing (OCR) under the managed local plan
 
-Outside the managed local plan nothing here changes: an adapter runs the program
-its `--ocr` names, or none. Under the plan (`gateway-connections --local-plan`),
-the sources that may read a PDF, `documents`, `drive`, `web` and `aws-s3`, are
-given `JPACK_CONNECTIONS_DIR`, and each resolves the operator's document-processing
-settings once, before it extracts. An `--ocr` on the command line is kept.
+An adapter runs the program its `--ocr` names, or none, unless it is launched with
+`--document-processing`; only then does it resolve the operator's
+document-processing settings, once, before it extracts (an `--ocr` on the command
+line is still kept). `gateway-connections --local-plan` reads those settings as
+they stand when it is asked, under the `JPACK_CONNECTIONS_DIR` of its environment,
+creating, locking and writing nothing. While a processor is configured (or the
+settings are there and cannot be read), the plan launches the sources that may read
+a PDF, `documents`, `drive`, `web` and `aws-s3`, with `--document-processing`, the
+connections directory and 150 seconds, and those adapters stop at 140. With none
+configured, or no settings at all, the plan is the plan without document
+processing, byte for byte, which every desk takes. A desk reads the plan when it
+starts its local gateway, so turning a processor on or off changes the envelopes,
+and whether OCR runs, at the gateway's next start; until then an adapter keeps the
+launch it was given, and one launched without `--document-processing` never runs
+OCR (a scanned page stays `needs-ocr` under `ocr-not-run`).
 
 The settings belong to the `document-processing` companion provider
 (`gateway-connections --provider document-processing`, with the operations

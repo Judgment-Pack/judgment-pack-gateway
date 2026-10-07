@@ -134,7 +134,7 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	identity.Name = "adapter-drive"
 	cfg := document.DefaultConfig()
 	cfg.MaxBytes = MaxFileBytes
-	if err := ApplyDocumentProcessing(&cfg); err != nil {
+	if err := ApplyDocumentProcessing(ctx, &cfg); err != nil {
 		return nil, err
 	}
 	cfg.MaxOutput = 8 << 20

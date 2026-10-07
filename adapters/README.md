@@ -720,8 +720,9 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   numbers as arguments and the bytes on stdin. Its answer is admitted only within the
   canonicalizer's domain, with exact members and only the pages it was asked for; anything else
   applies nothing (`ocr-failed`). With no program, or `options.ocr` `never`, the pages stay
-  `needs-ocr` under `ocr-not-run`. The adapter carries no OCR engine. Under the managed
-  local plan, with no `--ocr`, the operator's document-processing settings name the
+  `needs-ocr` under `ocr-not-run`. The adapter carries no OCR engine. Launched with
+  `--document-processing` and no `--ocr`, as the local plan launches it while a
+  processor is configured, the operator's document-processing settings name the
   program and its deadline instead
   ([attachments](../docs/design/attachments.md#document-processing-ocr-under-the-managed-local-plan)).
 - **Bounds** are flags, each but `--max-output` reported in the record. Each has a default and a

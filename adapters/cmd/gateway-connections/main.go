@@ -27,8 +27,11 @@ func run() int {
 		return 2
 	}
 	if *catalog || *catalogV3 || *localPlan {
-		// Discovery must never open custody, configure a publisher, or consume
-		// stdin. Refuse mixed modes rather than silently ignoring their flags.
+		// Discovery must never configure a publisher, consume stdin, or create,
+		// lock or write anything. The local plan alone reads custody: whether
+		// the document-processing settings under JPACK_CONNECTIONS_DIR name a
+		// processor, as they stand when it is asked. Refuse mixed modes rather
+		// than silently ignoring their flags.
 		if fs.NFlag() != 1 {
 			return 2
 		}
@@ -37,7 +40,7 @@ func run() int {
 			output = connections.ConnectionCatalogV3()
 		}
 		if *localPlan {
-			output = connections.ConnectionLocalPlan()
+			output = connections.ConnectionLocalPlanWith(connections.ProcessingConfigured(os.Getenv("JPACK_CONNECTIONS_DIR")))
 		}
 		if json.NewEncoder(os.Stdout).Encode(output) != nil {
 			return 1

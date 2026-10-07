@@ -99,9 +99,10 @@ acquisition with an attachment record containing the retained original. All Goog
 Docs, Sheets and Slides exports in this first slice are PDFs. Download size is
 bounded to 4 MiB; output is bounded to 16 MiB including retained base64 and extracted
 text. Extraction uses the existing bounded parser with an explicit 25-second processing
-deadline, separate from the outer retrieval deadline of 140 seconds. No OCR executable
-is selected by a caller: OCR runs only when the operator's document-processing settings
-enable a processor, whose deadline (10 to 120 seconds) is then the processing deadline
+deadline, separate from the outer retrieval deadline (55 seconds, or 140 when launched
+with `--document-processing`). No OCR executable is selected by a caller: OCR runs only
+when the adapter is launched so and the operator's document-processing settings enable
+a processor, whose deadline (10 to 120 seconds) is then the processing deadline
 ([attachments](attachments.md#document-processing-ocr-under-the-managed-local-plan)). No automatic retry mints an additional receipt.
 
 Disconnect removes local access immediately and attempts upstream revocation;

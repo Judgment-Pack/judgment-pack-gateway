@@ -10,7 +10,9 @@ import (
 	"adapters/document"
 	"adapters/internal/ocrrender"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -26,7 +28,85 @@ const (
 	ProcessingMinTimeoutSeconds     = 10
 	ProcessingMaxTimeoutSeconds     = 120
 	ProcessingDefaultTimeoutSeconds = 120
+	// ProcessingSourceSeconds is what the local plan gives a source launched
+	// with --document-processing, and ProcessingAdapterTimeout is where such
+	// an adapter stops: the processing deadline, its read and its report fit.
+	ProcessingSourceSeconds  = 150
+	ProcessingAdapterTimeout = 140 * time.Second
 )
+
+type processingKey struct{}
+
+// WithDocumentProcessing marks a read as one whose adapter the plan launched
+// with --document-processing. Only such a read resolves the settings.
+func WithDocumentProcessing(ctx context.Context) context.Context {
+	return context.WithValue(ctx, processingKey{}, true)
+}
+func documentProcessing(ctx context.Context) bool {
+	v, _ := ctx.Value(processingKey{}).(bool)
+	return v
+}
+
+// ProcessingConfigured reports whether the settings under dir name a
+// processor, for the local plan. It creates, locks and writes nothing. No
+// directory, namespace or settings file, or settings that are off: false.
+// Settings that are there and cannot be read now: true, so the sources are
+// launched to resolve them and each read stops with that error, rather than
+// reading without the OCR the operator configured.
+func ProcessingConfigured(dir string) bool {
+	if dir == "" || !filepath.IsAbs(dir) {
+		return false
+	}
+	st, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil || !st.IsDir() || private(st, true) != nil {
+		return true
+	}
+	s, err := peekStore(filepath.Join(dir, "document-processing"), "desk-local")
+	if errors.Is(err, os.ErrNotExist) {
+		return false
+	}
+	if err != nil {
+		return true
+	}
+	defer s.Close()
+	c, _, err := s.processingConfig()
+	return err != nil || c.Mode == "auto"
+}
+
+// peekStore opens a store that is already there, held to the same custody
+// checks as OpenStore, creating nothing; os.ErrNotExist when the directory or
+// the principal's namespace is not there.
+func peekStore(dir, principal string) (*Store, error) {
+	st, err := os.Lstat(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, os.ErrNotExist
+	}
+	if err != nil || !st.IsDir() || private(st, true) != nil {
+		return nil, ErrStorage
+	}
+	r, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, ErrStorage
+	}
+	defer r.Close()
+	sum := sha256.Sum256([]byte(principal))
+	name := hex.EncodeToString(sum[:])
+	st, err = r.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, os.ErrNotExist
+	}
+	if err != nil || !st.IsDir() || private(st, true) != nil {
+		return nil, ErrStorage
+	}
+	child, err := r.OpenRoot(name)
+	if err != nil {
+		return nil, ErrStorage
+	}
+	return &Store{child}, nil
+}
 
 type OCRConnection struct {
 	ID      string `json:"id"`
@@ -279,14 +359,19 @@ func (b *Broker) processingOperation(ctx context.Context, method string, raw jso
 }
 
 // ApplyDocumentProcessing resolves the operator's processor once, before
-// extraction, when the managed plan gives the adapter JPACK_CONNECTIONS_DIR.
-// An OCR program given on the command line (--ocr) is the operator's own and
-// is kept. Settings that cannot be read now, a store the operator blocked, and
-// a chosen processor that is gone are errors, never "no OCR".
-func ApplyDocumentProcessing(cfg *document.Config) error {
-	dir := os.Getenv("JPACK_CONNECTIONS_DIR")
-	if dir == "" || cfg.OCR != "" {
+// extraction, for a read whose adapter the plan launched with
+// --document-processing (WithDocumentProcessing); any other read is left as
+// it was. An OCR program given on the command line (--ocr) is the operator's
+// own and is kept. Settings that cannot be read now (JPACK_CONNECTIONS_DIR
+// missing among them), a store the operator blocked, and a chosen processor
+// that is gone are errors, never "no OCR".
+func ApplyDocumentProcessing(ctx context.Context, cfg *document.Config) error {
+	if !documentProcessing(ctx) || cfg.OCR != "" {
 		return nil
+	}
+	dir := os.Getenv("JPACK_CONNECTIONS_DIR")
+	if dir == "" {
+		return ErrStorage
 	}
 	s, err := OpenProcessingStore(dir, "desk-local")
 	if err != nil {

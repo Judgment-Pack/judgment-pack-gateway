@@ -26,7 +26,7 @@ func ResourceDocument(ctx context.Context, provider, resourceID, name, mediaType
 	identity.Name = "adapter-sources"
 	cfg := document.DefaultConfig()
 	cfg.MaxBytes = MaxFileBytes
-	if err := ApplyDocumentProcessing(&cfg); err != nil {
+	if err := ApplyDocumentProcessing(ctx, &cfg); err != nil {
 		return nil, err
 	}
 	cfg.MaxOutput = 8 << 20

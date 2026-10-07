@@ -53,11 +53,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	maxOutput := fs.Int64("max-output", def.MaxOutput, "bound on the record in bytes; keep it at or below the gateway's --source-max-output")
 	timeout := fs.Duration("timeout", def.Timeout, "the deadline, from the adapter's start; keep it under the gateway's timeout for the source, thirty seconds by default, with room to spare")
 	ocr := fs.String("ocr", "", "the OCR program, one word, run for pages that need OCR; none when empty")
+	processing := fs.Bool("document-processing", false, "resolve the OCR program and its deadline from the operator's document-processing settings, as the local plan launches the adapter while a processor is configured")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: adapter-document [--max-bytes N] [--max-pages N] [--max-text N] [--max-inflate N] [--ocr-max-output N] [--max-output N] [--timeout D] [--ocr PROGRAM]")
+		fmt.Fprintln(stderr, "usage: adapter-document [--max-bytes N] [--max-pages N] [--max-text N] [--max-inflate N] [--ocr-max-output N] [--max-output N] [--timeout D] [--ocr PROGRAM] [--document-processing]")
 		return 2
 	}
 	cfg := document.Config{MaxBytes: *maxBytes, MaxPages: *maxPages, MaxText: *maxText, MaxInflate: *maxInflate, OCRMaxOutput: *ocrMaxOutput, MaxOutput: *maxOutput, Timeout: *timeout, OCR: *ocr}
@@ -65,10 +66,14 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "adapter-document:", err)
 		return 2
 	}
-	// The command line is checked as the operator wrote it. Under the managed
-	// plan, with no --ocr, the document-processing settings then name the
-	// program, by an absolute path that may hold a space, and its deadline.
-	if err := connections.ApplyDocumentProcessing(&cfg); err != nil {
+	// The command line is checked as the operator wrote it. Launched with
+	// --document-processing and no --ocr, the operator's settings then name
+	// the program, by an absolute path that may hold a space, and its deadline.
+	settings := context.Background()
+	if *processing {
+		settings = connections.WithDocumentProcessing(settings)
+	}
+	if err := connections.ApplyDocumentProcessing(settings, &cfg); err != nil {
 		return refused(stderr, err)
 	}
 	// The deadline runs from the adapter's start, before the request is

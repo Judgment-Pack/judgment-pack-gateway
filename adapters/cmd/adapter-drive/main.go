@@ -17,10 +17,17 @@ func run() int {
 	fs.SetOutput(io.Discard)
 	dir := fs.String("state-dir", os.Getenv("JPACK_CONNECTIONS_DIR"), "")
 	principal := fs.String("principal", "", "")
+	processing := fs.Bool("document-processing", false, "")
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 140*time.Second)
+	// Launched with --document-processing, a read may run the operator's OCR
+	// processor, and has the envelope the local plan gives for it.
+	ctx, timeout := context.Background(), 55*time.Second
+	if *processing {
+		ctx, timeout = connections.WithDocumentProcessing(ctx), connections.ProcessingAdapterTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	s, err := connections.OpenStore(*dir, *principal)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,9 @@ import (
 	"testing"
 	"time"
 )
+
+// managed is a read whose adapter the plan launched with --document-processing.
+var managed = WithDocumentProcessing(context.Background())
 
 func processingBroker(t *testing.T) (*Broker, string) {
 	t.Helper()
@@ -137,7 +141,7 @@ func TestOCRRegistryPrivateCredentialsCASAndNoRetarget(t *testing.T) {
 	}
 	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
 	cfg := document.DefaultConfig()
-	if e = ApplyDocumentProcessing(&cfg); e != nil {
+	if e = ApplyDocumentProcessing(managed, &cfg); e != nil {
 		t.Fatal(e)
 	}
 	if len(cfg.OCRArgs) != 2 || cfg.OCRArgs[0] != "ocr-azure" || cfg.OCRArgs[1] != latest.SHA256 || cfg.Timeout != 75*time.Second || filepath.Base(cfg.OCR) != "ocr-cloud" || !filepath.IsAbs(cfg.OCR) {
@@ -151,7 +155,7 @@ func TestOCRRegistryPrivateCredentialsCASAndNoRetarget(t *testing.T) {
 	c.Mode = "off"
 	processingSave(t, b, latest, c)
 	cfg = document.DefaultConfig()
-	if ApplyDocumentProcessing(&cfg) != nil || cfg.OCR != "" || len(cfg.OCRArgs) != 0 {
+	if ApplyDocumentProcessing(managed, &cfg) != nil || cfg.OCR != "" || len(cfg.OCRArgs) != 0 {
 		t.Fatal("off still runs OCR")
 	}
 }
@@ -235,8 +239,8 @@ func TestOCRRejectsUnsafeOrIncompleteConnections(t *testing.T) {
 func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
 	cfg := document.DefaultConfig()
 	t.Setenv("JPACK_CONNECTIONS_DIR", "")
-	if ApplyDocumentProcessing(&cfg) != nil || cfg.OCR != "" {
-		t.Fatal("unmanaged adapter changed")
+	if e := ApplyDocumentProcessing(managed, &cfg); e != ErrStorage || cfg.OCR != "" {
+		t.Fatal("a launch for processing without its settings directory went ahead", e)
 	}
 	b, dir := processingBroker(t)
 	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
@@ -245,13 +249,18 @@ func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
 	c.Connections = []OCRConnection{{ID: "local", Name: "Local", Kind: "tesseract", Enabled: true}}
 	c.Mode, c.Connection = "auto", "local"
 	processingSave(t, b, base, c)
+	// An adapter the plan did not launch for processing never reads them.
+	cfg = document.DefaultConfig()
+	if ApplyDocumentProcessing(context.Background(), &cfg) != nil || cfg.OCR != "" || cfg.Timeout != document.DefaultConfig().Timeout {
+		t.Fatal("an adapter launched without --document-processing applied the settings")
+	}
 	cfg = document.DefaultConfig()
 	cfg.OCR = "operator-ocr"
-	if ApplyDocumentProcessing(&cfg) != nil || cfg.OCR != "operator-ocr" || cfg.Timeout != document.DefaultConfig().Timeout {
+	if ApplyDocumentProcessing(managed, &cfg) != nil || cfg.OCR != "operator-ocr" || cfg.Timeout != document.DefaultConfig().Timeout {
 		t.Fatal("the command line's --ocr was replaced")
 	}
 	cfg = document.DefaultConfig()
-	if ApplyDocumentProcessing(&cfg) != nil || filepath.Base(cfg.OCR) != "ocr-tesseract" || len(cfg.OCRArgs) != 0 || cfg.Timeout != 120*time.Second {
+	if ApplyDocumentProcessing(managed, &cfg) != nil || filepath.Base(cfg.OCR) != "ocr-tesseract" || len(cfg.OCRArgs) != 0 || cfg.Timeout != 120*time.Second {
 		t.Fatal("local processor not applied", cfg.OCR)
 	}
 	// A settings file that does not hold to its rules is unreadable now.
@@ -259,7 +268,7 @@ func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
 		t.Fatal(e)
 	}
 	cfg = document.DefaultConfig()
-	if e := ApplyDocumentProcessing(&cfg); e != ErrStorage || cfg.OCR != "" {
+	if e := ApplyDocumentProcessing(managed, &cfg); e != ErrStorage || cfg.OCR != "" {
 		t.Fatal("invalid settings read as no OCR", e)
 	}
 	if _, e := b.Handle(context.Background(), "status", []byte(`{}`)); e != ErrStorage {
@@ -269,7 +278,7 @@ func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
 	blocked := NewProcessing(b.store, true)
 	blocked.Handle(context.Background(), "status", []byte(`{}`))
 	cfg = document.DefaultConfig()
-	if e := ApplyDocumentProcessing(&cfg); e != ErrPolicy {
+	if e := ApplyDocumentProcessing(managed, &cfg); e != ErrPolicy {
 		t.Fatal("blocked settings applied", e)
 	}
 }
@@ -513,22 +522,109 @@ func TestRunCloudOCRRefusesBeforeAnyRequest(t *testing.T) {
 	}
 }
 
-// Only the sources that may read a PDF are given the settings and the longer
-// envelope; every other source keeps what it had.
-func TestOCRManagedPlanPassesCustodyAndBounds(t *testing.T) {
-	ocr := map[string]bool{"documents": true, "drive": true, "web": true, "aws-s3": true}
-	was := map[string]int{"render": 30, "gmail": 60, "notion": 60, "obsidian": 60, "web-discovery": 60, "web-search": 60}
-	for _, s := range ConnectionLocalPlan().Sources {
-		switch {
-		case ocr[s.ID]:
-			if !s.Connections || s.Timeout != 150 {
-				t.Errorf("OCR settings unavailable to %s", s.ID)
-			}
-		case was[s.ID] != s.Timeout:
-			t.Errorf("%s changed its timeout to %d", s.ID, s.Timeout)
+// mainLocalPlan is the plan as main served it before document processing,
+// byte for byte.
+const mainLocalPlan = `{"version":1,"sources":[` +
+	`{"id":"documents","executable":"adapter-document","args":["--max-bytes","16777216","--max-output","8388608","--timeout","30s"],"shape":"command","timeout":40,"connections":false},` +
+	`{"id":"render","executable":"adapter-render","args":["--max-output","6291456"],"shape":"command","timeout":30,"connections":false},` +
+	`{"id":"drive","executable":"adapter-drive","args":["--principal","desk-local"],"shape":"http","timeout":60,"connections":true},` +
+	`{"id":"gmail","executable":"adapter-gmail","args":["--principal","desk-local"],"shape":"http","timeout":60,"connections":true},` +
+	`{"id":"notion","executable":"adapter-sources","args":["--provider","notion","--principal","desk-local"],"shape":"mcp","timeout":60,"connections":true},` +
+	`{"id":"obsidian","executable":"adapter-sources","args":["--provider","obsidian","--principal","desk-local"],"shape":"command","timeout":60,"connections":true},` +
+	`{"id":"web","executable":"adapter-web","args":[],"shape":"http","timeout":60,"connections":false},` +
+	`{"id":"web-discovery","executable":"adapter-web","args":["--discover"],"shape":"http","timeout":60,"connections":false},` +
+	`{"id":"web-search","executable":"adapter-sources","args":["--provider","web-search","--principal","desk-local"],"shape":"http","timeout":60,"connections":true},` +
+	`{"id":"aws-s3","executable":"adapter-sources","args":["--provider","aws-s3","--principal","desk-local"],"shape":"command","timeout":60,"connections":true}]}`
+
+// With no processor configured the plan is main's, so every released desk
+// takes it; with one, only the sources that may read a PDF change.
+func TestThePlanChangesOnlyWhileAProcessorIsConfigured(t *testing.T) {
+	for _, plan := range []LocalPlan{ConnectionLocalPlan(), ConnectionLocalPlanWith(false)} {
+		if raw, _ := json.Marshal(plan); string(raw) != mainLocalPlan {
+			t.Fatalf("the plan without processing is not main's:\n%s", raw)
 		}
 	}
-	if ProcessingMaxTimeoutSeconds+20 > 150 {
+	off, on := ConnectionLocalPlanWith(false), ConnectionLocalPlanWith(true)
+	ocr := map[string]bool{"documents": true, "drive": true, "web": true, "aws-s3": true}
+	for i, s := range on.Sources {
+		was := off.Sources[i]
+		if !ocr[s.ID] {
+			a, _ := json.Marshal(s)
+			b, _ := json.Marshal(was)
+			if string(a) != string(b) {
+				t.Errorf("%s changed with processing", s.ID)
+			}
+			continue
+		}
+		if s.Timeout != 150 || !s.Connections || len(s.Args) != len(was.Args)+1 || s.Args[len(s.Args)-1] != "--document-processing" || strings.Join(s.Args[:len(was.Args)], " ") != strings.Join(was.Args, " ") {
+			t.Errorf("%s = %+v", s.ID, s)
+		}
+	}
+	if ProcessingMaxTimeoutSeconds*time.Second+20*time.Second > ProcessingAdapterTimeout || ProcessingAdapterTimeout+10*time.Second > ProcessingSourceSeconds*time.Second {
 		t.Fatal("the processing deadline leaves the adapters no room inside the plan")
+	}
+	if raw, _ := json.Marshal(off); string(raw) != mainLocalPlan {
+		t.Fatal("building the processing plan changed the plan without it")
+	}
+}
+
+// tree lists every name under dir with its mode, size and time.
+func tree(t *testing.T, dir string) string {
+	t.Helper()
+	var b strings.Builder
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, _ := os.Lstat(path)
+		fmt.Fprintf(&b, "%s %v %d %d\n", path, st.Mode(), st.Size(), st.ModTime().UnixNano())
+		return nil
+	})
+	return b.String()
+}
+
+// The plan reads the settings as they stand, creating, locking and writing
+// nothing; settings that are there and cannot be read count as configured.
+func TestProcessingConfiguredReadsWithoutWriting(t *testing.T) {
+	empty := t.TempDir()
+	os.Chmod(empty, 0700)
+	for _, dir := range []string{"", "relative", filepath.Join(empty, "absent"), empty} {
+		if ProcessingConfigured(dir) {
+			t.Fatalf("%q reads as configured", dir)
+		}
+	}
+	if entries, _ := os.ReadDir(empty); len(entries) != 0 {
+		t.Fatal("the plan created custody")
+	}
+	b, dir := processingBroker(t)
+	base := processingState(t, b)
+	if ProcessingConfigured(dir) {
+		t.Fatal("no settings file reads as configured")
+	}
+	c := base.ProcessingConfig
+	c.Connections = []OCRConnection{{ID: "local", Name: "Local", Kind: "tesseract", Enabled: true}}
+	c.Connection = "local"
+	off := processingSave(t, b, base, c)
+	before := tree(t, dir)
+	if ProcessingConfigured(dir) || tree(t, dir) != before {
+		t.Fatal("settings that are off read as configured, or the read wrote")
+	}
+	c = asSent(off.ProcessingConfig)
+	c.Mode = "auto"
+	processingSave(t, b, off, c)
+	before = tree(t, dir)
+	if !ProcessingConfigured(dir) || tree(t, dir) != before {
+		t.Fatal("a configured processor is not seen, or the read wrote")
+	}
+	if e := b.store.write("processing.json", map[string]any{"version": 2}); e != nil {
+		t.Fatal(e)
+	}
+	if !ProcessingConfigured(dir) {
+		t.Fatal("settings that cannot be read were taken for none")
+	}
+	os.Chmod(dir, 0755)
+	defer os.Chmod(dir, 0700)
+	if !ProcessingConfigured(dir) {
+		t.Fatal("a store that fails custody was taken for none")
 	}
 }

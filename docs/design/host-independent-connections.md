@@ -133,10 +133,13 @@ present in the verified bundle manifest. Desk bounds the plan to 32 KiB/64 sourc
 rejects duplicate ids, word-splitting arguments and unrecognized shapes, and
 constructs the gateway CLI without a shell. Only JPACK_CONNECTIONS_DIR may be
 passed as source environment. The private signing seed remains with the core.
-The sources that may run the operator's OCR processor (documents, drive, web and
-aws-s3) are given JPACK_CONNECTIONS_DIR and 150 seconds. A desk that admits at most
-60 seconds a source refuses such a plan whole, so a desk takes a gateway with these
-bounds only from its release that admits them.
+The plan is read as the document-processing settings stand when it is asked
+(the one read of custody discovery makes, creating nothing). While a processor is
+configured, the sources that may run it (documents, drive, web and aws-s3) are
+launched with --document-processing, JPACK_CONNECTIONS_DIR and 150 seconds; with
+none configured the plan is unchanged, so a desk that admits at most 60 seconds a
+source keeps taking it
+([attachments](attachments.md#document-processing-ocr-under-the-managed-local-plan)).
 
 Provider changes therefore remain in gateway code: its implementation, catalog
 and source plan. Generic Desk relay routing and UI do not need a new provider case.

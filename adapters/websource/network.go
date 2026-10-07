@@ -21,11 +21,6 @@ const MaxBytes = 4 << 20
 const MaxOutput = 16 << 20
 const Timeout = 45 * time.Second
 
-// OCRTimeout is a read's whole deadline when the operator's OCR processor is
-// configured: its processing deadline is at most 120 seconds, and the local
-// plan gives the source 150.
-const OCRTimeout = 140 * time.Second
-
 var ErrURL = errors.New("web-invalid-url")
 var ErrNetwork = errors.New("web-unavailable")
 var ErrPrivate = errors.New("web-public-only")
