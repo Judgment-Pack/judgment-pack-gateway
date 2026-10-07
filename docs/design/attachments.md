@@ -799,7 +799,10 @@ sixteen processors; `timeoutSeconds` is 10 to 120 (120 when absent) and becomes 
 adapter's processing deadline. With no settings file, OCR is off. A file that
 cannot be read or does not hold to its rules, a store the operator blocked, and a
 chosen processor that is gone each stop the read with an error; none of them is
-taken for "no OCR".
+taken for "no OCR". So does a chosen processor that is not installed
+(`processor-not-installed`): before the settings are applied to a read, its worker,
+`ocr-tesseract` or `ocr-cloud` beside the executable (every symlink resolved, still
+there), and the tools it runs, Poppler and for `tesseract` Tesseract, must be found.
 
 `configure` replaces the settings only when `ifMatch` is the SHA-256 of the file as
 it stands, and answers `processing-changed` otherwise. `status` answers that digest

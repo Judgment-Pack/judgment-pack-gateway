@@ -199,19 +199,72 @@ func validProcessing(c ProcessingConfig) bool {
 func sameDestination(a, b OCRConnection) bool {
 	return a.ID == b.ID && a.Kind == b.Kind && a.Program == b.Program && a.Project == b.Project && a.Location == b.Location && a.Processor == b.Processor && a.Endpoint == b.Endpoint && a.Region == b.Region
 }
+
+// ocrWorkerDir is where the workers ocr-tesseract and ocr-cloud are: beside
+// the running executable, in the same bundle. findTool names Poppler and
+// Tesseract. Tests replace both.
+var ocrWorkerDir = func() string {
+	exe, err := os.Executable()
+	if err != nil || !filepath.IsAbs(exe) {
+		return ""
+	}
+	return filepath.Dir(exe)
+}
+var findTool = ocrrender.Find
+
 func ocrProgram(c OCRConnection) string {
 	if c.Kind == "program" {
 		return c.Program
 	}
-	exe, err := os.Executable()
-	if err != nil || !filepath.IsAbs(exe) {
+	dir := ocrWorkerDir()
+	if dir == "" {
 		return ""
 	}
 	name := "ocr-tesseract"
 	if cloudOCR(c.Kind) {
 		name = "ocr-cloud"
 	}
-	return filepath.Join(filepath.Dir(exe), name)
+	return filepath.Join(dir, name)
+}
+
+// ErrProcessorMissing is a processor whose worker or tools are not installed
+// where they are run from.
+const ErrProcessorMissing Error = "processor-not-installed"
+
+// processorInstalled reports whether what the processor runs is there now:
+// for a program, its file in its allowed place; for tesseract and the cloud
+// processors, the worker beside the executable (every symlink resolved, a
+// regular executable file still there) and the tools it runs, Poppler for
+// both and Tesseract for tesseract, as Find names them.
+func processorInstalled(c OCRConnection) bool {
+	if c.Kind == "program" {
+		return programAllowed(c.Program)
+	}
+	dir, worker := ocrWorkerDir(), ocrProgram(c)
+	if dir == "" || worker == "" {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(worker)
+	if err != nil || !inside(resolved, real) {
+		return false
+	}
+	if st, err := os.Stat(resolved); err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 {
+		return false
+	}
+	tools := []string{"pdftoppm"}
+	if c.Kind == "tesseract" {
+		tools = append(tools, "tesseract")
+	}
+	for _, name := range tools {
+		if _, err := findTool(name); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // ocrBundle and systemPrograms are the two places a program processor may
@@ -258,20 +311,13 @@ func inside(path, dir string) bool {
 	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") && !filepath.IsAbs(rel)
 }
 func ocrReady(ctx context.Context, c OCRConnection) bool {
-	if c.Kind == "program" {
-		return programAllowed(c.Program)
-	}
-	name := ocrProgram(c)
-	st, err := os.Stat(name)
-	if name == "" || err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 {
+	if !processorInstalled(c) {
 		return false
-	}
-	if cloudOCR(c.Kind) {
-		return ocrrender.Available("pdftoppm")
 	}
 	if c.Kind != "tesseract" {
 		return true
 	}
+	name := ocrProgram(c)
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, "--check")
@@ -376,6 +422,9 @@ func (b *Broker) processingOperation(ctx context.Context, method string, raw jso
 		if picked.Kind == "program" && !programAllowed(picked.Program) {
 			return nil, ErrProgramPlace
 		}
+		if !processorInstalled(*picked) {
+			return nil, ErrProcessorMissing
+		}
 		data, err := base64.StdEncoding.Strict().DecodeString(req.Document.Bytes)
 		if err != nil || len(data) == 0 || len(data) > MaxFileBytes {
 			return nil, ErrRequest
@@ -452,6 +501,11 @@ func ApplyDocumentProcessing(ctx context.Context, cfg *document.Config) error {
 		if p.ID == c.Connection && p.Enabled {
 			if p.Kind == "program" && !programAllowed(p.Program) {
 				return ErrProgramPlace
+			}
+			// A processor whose worker or tools are not installed stops the
+			// read, rather than ending a scanned document as ocr-failed.
+			if !processorInstalled(p) {
+				return ErrProcessorMissing
 			}
 			configureOCR(cfg, p, sha, c)
 			if cfg.OCR == "" {

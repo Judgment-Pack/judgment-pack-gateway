@@ -4,6 +4,7 @@ package connections
 
 import (
 	"adapters/document"
+	"adapters/internal/ocrrender"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -28,6 +29,30 @@ func useBundle(t *testing.T, dir string) {
 	saved := ocrBundle
 	t.Cleanup(func() { ocrBundle = saved })
 	ocrBundle = func() string { return dir }
+}
+
+// useWorkers stands in for the installed workers and tools: ocr-tesseract and
+// ocr-cloud in a directory of their own, and Poppler and Tesseract as Find
+// would name them. Nothing here is ever run.
+func useWorkers(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, name := range []string{"ocr-tesseract", "ocr-cloud", "pdftoppm", "tesseract"} {
+		if e := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexit 1\n"), 0700); e != nil {
+			t.Fatal(e)
+		}
+	}
+	savedDir, savedFind := ocrWorkerDir, findTool
+	t.Cleanup(func() { ocrWorkerDir, findTool = savedDir, savedFind })
+	ocrWorkerDir = func() string { return dir }
+	findTool = func(name string) (ocrrender.Tool, error) {
+		path := filepath.Join(dir, name)
+		if _, e := os.Stat(path); e != nil {
+			return ocrrender.Tool{}, ocrrender.ErrNoTool
+		}
+		return ocrrender.Tool{Path: path}, nil
+	}
+	return dir
 }
 
 // managed is a read whose adapter the plan launched with --document-processing.
@@ -84,6 +109,7 @@ func azureOCR() OCRConnection {
 	return OCRConnection{ID: "ocr-azure", Name: "Azure work", Kind: "azure-document-intelligence", Endpoint: "https://work.cognitiveservices.azure.com", Credential: "private-secret", Enabled: true}
 }
 func TestOCRRegistryPrivateCredentialsCASAndNoRetarget(t *testing.T) {
+	useWorkers(t)
 	b, dir := processingBroker(t)
 	old := processingState(t, b)
 	if old.Mode != "off" || len(old.Connections) != 0 {
@@ -246,6 +272,7 @@ func TestOCRRejectsUnsafeOrIncompleteConnections(t *testing.T) {
 
 // Settings that cannot be read now never read as "no OCR".
 func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
+	useWorkers(t)
 	cfg := document.DefaultConfig()
 	t.Setenv("JPACK_CONNECTIONS_DIR", "")
 	if e := ApplyDocumentProcessing(managed, &cfg); e != ErrStorage || cfg.OCR != "" {
@@ -749,6 +776,7 @@ func TestARecordNamesNoDirectoryOfItsWorker(t *testing.T) {
 // reaches the cloud worker in its environment: its argument list, which every
 // process on the host can read, holds the page numbers alone.
 func TestTheCloudWorkerIsGivenNoDigestAsAnArgument(t *testing.T) {
+	useWorkers(t)
 	b, dir := processingBroker(t)
 	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
 	base := processingState(t, b)
@@ -855,5 +883,58 @@ func TestAProgramRunsOnlyFromTheBundleOrUsrBin(t *testing.T) {
 	}
 	if processingState(t, b).Connections[0].Ready {
 		t.Fatal("a program that now resolves outside the bundle is ready")
+	}
+}
+
+// A processor whose worker or tools are not installed stops the read with
+// one token, before any extraction; it does not end a scanned document as
+// ocr-failed.
+func TestAMissingWorkerStopsTheRead(t *testing.T) {
+	workers := useWorkers(t)
+	b, dir := processingBroker(t)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	base := processingState(t, b)
+	c := base.ProcessingConfig
+	c.Connections = []OCRConnection{{ID: "local", Name: "Local", Kind: "tesseract", Enabled: true}, azureOCR()}
+	c.Mode, c.Connection = "auto", "local"
+	local := processingSave(t, b, base, c)
+	apply := func() error {
+		cfg := document.DefaultConfig()
+		e := ApplyDocumentProcessing(managed, &cfg)
+		if e != nil && cfg.OCR != "" {
+			t.Fatal("a refused processor was applied")
+		}
+		return e
+	}
+	if apply() != nil {
+		t.Fatal("an installed processor was refused")
+	}
+	for _, missing := range []string{"ocr-tesseract", "pdftoppm", "tesseract"} {
+		os.Rename(filepath.Join(workers, missing), filepath.Join(workers, missing+".away"))
+		if e := apply(); e != ErrProcessorMissing {
+			t.Errorf("tesseract without %s: %v", missing, e)
+		}
+		os.Rename(filepath.Join(workers, missing+".away"), filepath.Join(workers, missing))
+	}
+	// A worker that resolves outside its directory is not installed there.
+	elsewhere := filepath.Join(t.TempDir(), "ocr-tesseract")
+	os.WriteFile(elsewhere, []byte("#!/bin/sh\nexit 1\n"), 0700)
+	os.Remove(filepath.Join(workers, "ocr-tesseract"))
+	os.Symlink(elsewhere, filepath.Join(workers, "ocr-tesseract"))
+	if e := apply(); e != ErrProcessorMissing {
+		t.Errorf("a worker linked from elsewhere: %v", e)
+	}
+	if processingState(t, b).Connections[0].Ready {
+		t.Error("a processor not installed is ready")
+	}
+	c = asSent(local.ProcessingConfig)
+	c.Connection = "ocr-azure"
+	processingSave(t, b, local, c)
+	if apply() != nil {
+		t.Fatal("an installed cloud processor was refused")
+	}
+	os.Remove(filepath.Join(workers, "ocr-cloud"))
+	if e := apply(); e != ErrProcessorMissing {
+		t.Errorf("cloud without ocr-cloud: %v", e)
 	}
 }
