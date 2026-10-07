@@ -839,7 +839,9 @@ The processors:
   to another processor. Only the pages that need OCR are rendered, each to a PNG of
   at most 5 MiB, and sent to the endpoint the processor names: Google's regional
   Document AI host, the Azure resource's own `*.cognitiveservices.azure.com`
-  endpoint (its result is polled on that host only), or Textract's regional host.
+  endpoint (its result is polled at a URL rebuilt from the result's identifier, on that
+  host, with the API version sent; an `Operation-Location` that holds a secret, as
+  written or decoded, is refused), or Textract's regional host.
   The credential goes in a header (a bearer token, the Azure key, an AWS signature);
   requests follow no redirect, use no proxy, have 120 seconds in all and read at
   most 8 MiB of a reply. A reply that holds the credential is refused, and no

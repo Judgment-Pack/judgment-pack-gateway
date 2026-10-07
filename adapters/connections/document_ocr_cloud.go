@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -235,7 +236,7 @@ func holdsSecret(text string, secrets []string) bool {
 // echoes one, escaped or split, is refused before any text is returned.
 func cloudOCRPage(ctx context.Context, client *http.Client, c OCRConnection, token string, png []byte, others ...string) (string, error) {
 	secrets := append(append(secretsOf(c), token), others...)
-	text, err := cloudOCRText(ctx, client, c, token, png)
+	text, err := cloudOCRText(ctx, client, c, token, png, secrets)
 	if err != nil {
 		return "", err
 	}
@@ -244,7 +245,41 @@ func cloudOCRPage(ctx context.Context, client *http.Client, c OCRConnection, tok
 	}
 	return text, nil
 }
-func cloudOCRText(ctx context.Context, client *http.Client, c OCRConnection, token string, png []byte) (string, error) {
+
+// azureAPIVersion is the Document Intelligence API version sent, and
+// azureResults the fixed path of an analysis result.
+const azureAPIVersion = "2024-11-30"
+const azureResults = "/documentintelligence/documentModels/prebuilt-read/analyzeResults/"
+
+var azureResultID = regexp.MustCompile(`^[A-Za-z0-9-]{1,128}$`)
+
+// azurePollURL rebuilds the URL a result is polled at from an
+// Operation-Location header: the host the analysis was sent to, the fixed
+// path, the result's identifier and the API version sent; nothing else of
+// the header is used. A header that holds a secret, as written or decoded,
+// or that names another scheme, host or path, carries user information or a
+// fragment, or an identifier of another shape, is refused.
+func azurePollURL(header, host string, secrets []string) (string, bool) {
+	if header == "" || holdsSecret(header, secrets) {
+		return "", false
+	}
+	for _, unescape := range []func(string) (string, error){url.PathUnescape, url.QueryUnescape} {
+		decoded, err := unescape(header)
+		if err != nil || holdsSecret(decoded, secrets) {
+			return "", false
+		}
+	}
+	u, err := url.Parse(header)
+	if err != nil || u.Scheme != "https" || u.Host != host || u.User != nil || u.Fragment != "" || u.Opaque != "" || !strings.HasPrefix(u.EscapedPath(), azureResults) {
+		return "", false
+	}
+	id := strings.TrimPrefix(u.EscapedPath(), azureResults)
+	if !azureResultID.MatchString(id) {
+		return "", false
+	}
+	return "https://" + host + azureResults + id + "?api-version=" + azureAPIVersion, true
+}
+func cloudOCRText(ctx context.Context, client *http.Client, c OCRConnection, token string, png []byte, secrets []string) (string, error) {
 	if len(png) == 0 || len(png) > cloudImageBytes {
 		return "", ErrLimit
 	}
@@ -279,7 +314,7 @@ func cloudOCRText(ctx context.Context, client *http.Client, c OCRConnection, tok
 		}
 		return *out.Document.Text, nil
 	case "azure-document-intelligence":
-		endpoint := strings.TrimRight(c.Endpoint, "/") + "/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30"
+		endpoint := strings.TrimRight(c.Endpoint, "/") + "/documentintelligence/documentModels/prebuilt-read:analyze?api-version=" + azureAPIVersion
 		body, _ := json.Marshal(map[string]string{"base64Source": image})
 		req, e := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewReader(body))
 		if e != nil {
@@ -291,10 +326,9 @@ func cloudOCRText(ctx context.Context, client *http.Client, c OCRConnection, tok
 		if e != nil {
 			return "", e
 		}
-		operation := headers.Get("Operation-Location")
-		u, e := url.Parse(operation)
 		base, _ := url.Parse(endpoint)
-		if e != nil || u.Scheme != "https" || u.Host != base.Host || u.User != nil || u.Fragment != "" || !strings.HasPrefix(u.Path, "/documentintelligence/documentModels/prebuilt-read/analyzeResults/") {
+		operation, ok := azurePollURL(headers.Get("Operation-Location"), base.Host, secrets)
+		if !ok {
 			return "", ErrProvider
 		}
 		for {

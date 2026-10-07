@@ -380,7 +380,12 @@ func TestCloudOCRProviderContracts(t *testing.T) {
 				if r.URL.String() != "https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30" {
 					t.Fatal("wrong destination", r.URL)
 				}
-				return ocrReply(202, "", http.Header{"Operation-Location": []string{"https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id?api-version=2024-11-30"}}), nil
+				return ocrReply(202, "", http.Header{"Operation-Location": []string{"https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/3fa85f64-5717-4562-b3fc-2c963f66afa6?api-version=2023-01-01&extra=1"}}), nil
+			}
+			// The poll is rebuilt: the result's identifier and the API version
+			// sent, nothing else of the header.
+			if r.Method != "GET" || r.URL.String() != "https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/3fa85f64-5717-4562-b3fc-2c963f66afa6?api-version=2024-11-30" {
+				t.Fatal("polled at another URL", r.URL)
 			}
 			return ocrReply(200, `{"status":"succeeded","analyzeResult":{"content":"Azure text"}}`, nil), nil
 		})}
@@ -390,7 +395,12 @@ func TestCloudOCRProviderContracts(t *testing.T) {
 		}
 	})
 	t.Run("azure refuses foreign polling URL", func(t *testing.T) {
-		for _, location := range []string{"https://evil.invalid/collect", "http://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id", "https://work.cognitiveservices.azure.com:8443/documentintelligence/documentModels/prebuilt-read/analyzeResults/id", "https://work.cognitiveservices.azure.com/collect"} {
+		const results = "https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/"
+		for _, location := range []string{"https://evil.invalid/collect", "http://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id", "https://work.cognitiveservices.azure.com:8443/documentintelligence/documentModels/prebuilt-read/analyzeResults/id", "https://work.cognitiveservices.azure.com/collect",
+			// The key, as written or encoded, anywhere in the header.
+			results + "id?echo=private-secret", results + "id?echo=private%2Dsecret", results + "id?api-version=2024-11-30&echo=private%252Dsecret&x=private-sec%0Aret", results + "private-secret", results + "id#private-secret", "https://private-secret@work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id",
+			// An identifier of another shape.
+			results + "id/more", results + "id%2Fmore", results + "", results + "%2e%2e"} {
 			calls := 0
 			client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
 				calls++
