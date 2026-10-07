@@ -818,7 +818,9 @@ The processors:
 - `tesseract` runs `ocr-tesseract`, beside the companion. It renders each page with
   Poppler's `pdftoppm` and reads it with Tesseract's English data, each program named
   by an absolute path, from an `ocr-tools` bundle beside the executable or else from
-  `/usr/bin`, never from `PATH`. Pages are rendered to at most 2500 pixels on the
+  `/usr/bin`, never from `PATH`, and only once, every symlink resolved, it is a
+  regular executable file inside that place (the bundle's libraries are given only
+  to a program so established inside the bundle). Pages are rendered to at most 2500 pixels on the
   longest side, and every pipe is bounded: 24 MiB an image, 2 MiB a page's text,
   8 MiB of text in all, at most 500 pages. Nothing is written to disk and nothing is
   sent anywhere.

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -46,13 +47,23 @@ func runnable(path string) bool {
 	return err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0111 != 0
 }
 
-// Find names the program called name. The bundle's copy runs with the
-// bundle's libraries and language data; the system's runs with the caller's
-// environment, so the bundle's libraries never reach a system program.
-func Find(name string) Tool {
+// systemDir is where a program the bundle does not carry is taken from.
+// Tests replace it.
+var systemDir = "/usr/bin"
+
+// ErrNoTool is a program found in neither place.
+var ErrNoTool = errors.New("the program is in neither the OCR tools bundle nor /usr/bin")
+
+// Find names the program called name, by its path with every symlink
+// resolved: the bundle's copy when, so resolved, it is a regular executable
+// file inside the bundle, run with the bundle's libraries and language data;
+// otherwise the system's, held to /usr/bin the same way and run with the
+// caller's environment. A candidate that resolves anywhere else is not used,
+// and the bundle's libraries are given only to a program established inside
+// the bundle.
+func Find(name string) (Tool, error) {
 	if dir := bundle(); dir != "" {
-		path := filepath.Join(dir, "usr", "bin", name)
-		if runnable(path) {
+		if path, ok := within(dir, filepath.Join(dir, "usr", "bin", name)); ok {
 			triple := "x86_64-linux-gnu"
 			if runtime.GOARCH == "arm64" {
 				triple = "aarch64-linux-gnu"
@@ -60,15 +71,39 @@ func Find(name string) Tool {
 			env := append(os.Environ(),
 				"LD_LIBRARY_PATH="+filepath.Join(dir, "usr", "lib", triple),
 				"TESSDATA_PREFIX="+filepath.Join(dir, "usr", "share", "tesseract-ocr", "4.00", "tessdata"))
-			return Tool{path, env}
+			return Tool{path, env}, nil
 		}
 	}
-	return Tool{filepath.Join("/usr/bin", name), os.Environ()}
+	if path, ok := within(systemDir, filepath.Join(systemDir, name)); ok {
+		return Tool{path, os.Environ()}, nil
+	}
+	return Tool{}, ErrNoTool
 }
 
-// Available reports whether the program Find names is a regular executable
-// file now. It is a check made now, not a promise about the next run.
-func Available(name string) bool { return runnable(Find(name).Path) }
+// within resolves candidate and answers its resolved path when that is a
+// regular executable file inside root, itself resolved.
+func within(root, candidate string) (string, bool) {
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realRoot, resolved)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "../") || filepath.IsAbs(rel) || !runnable(resolved) {
+		return "", false
+	}
+	return resolved, true
+}
+
+// Available reports whether Find names the program now. It is a check made
+// now, not a promise about the next run.
+func Available(name string) bool {
+	_, err := Find(name)
+	return err == nil
+}
 
 // ErrBound is a program that wrote past its output bound, or whose output
 // could not be read to its end before its context ended; it was ended.
@@ -103,7 +138,7 @@ func Run(ctx context.Context, t Tool, args []string, input []byte, limit int64) 
 }
 
 // renderer is the Poppler program a page is rendered with. Tests replace it.
-var renderer = func() Tool { return Find("pdftoppm") }
+var renderer = func() (Tool, error) { return Find("pdftoppm") }
 
 // MaxScale is the longest side, in pixels, a page is rendered to.
 const MaxScale = 2500
@@ -112,7 +147,11 @@ const MaxScale = 2500
 // MaxScale pixels, holding the image to limit bytes.
 func Page(ctx context.Context, pdf []byte, number int, limit int64) ([]byte, error) {
 	n := strconv.Itoa(number)
-	out, err := Run(ctx, renderer(), []string{"-f", n, "-l", n, "-scale-to", strconv.Itoa(MaxScale), "-singlefile", "-png", "-"}, pdf, limit)
+	tool, err := renderer()
+	if err != nil {
+		return nil, err
+	}
+	out, err := Run(ctx, tool, []string{"-f", n, "-l", n, "-scale-to", strconv.Itoa(MaxScale), "-singlefile", "-png", "-"}, pdf, limit)
 	if err != nil {
 		return nil, err
 	}

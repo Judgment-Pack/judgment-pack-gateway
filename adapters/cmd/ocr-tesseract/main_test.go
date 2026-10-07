@@ -28,7 +28,9 @@ func standIns(t *testing.T, render, recognize string) string {
 	r, e := write("render", render), write("recognize", recognize)
 	saved := tools
 	t.Cleanup(func() { tools = saved })
-	tools = func() (ocrrender.Tool, ocrrender.Tool) { return ocrrender.Tool{Path: r}, ocrrender.Tool{Path: e} }
+	tools = func() (ocrrender.Tool, ocrrender.Tool, error) {
+		return ocrrender.Tool{Path: r}, ocrrender.Tool{Path: e}, nil
+	}
 	return dir
 }
 

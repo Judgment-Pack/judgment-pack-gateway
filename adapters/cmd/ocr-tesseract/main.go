@@ -30,8 +30,12 @@ const (
 )
 
 // tools names the renderer and the recognizer. Tests replace it.
-var tools = func() (renderer, engine ocrrender.Tool) {
-	return ocrrender.Find("pdftoppm"), ocrrender.Find("tesseract")
+var tools = func() (renderer, engine ocrrender.Tool, err error) {
+	if renderer, err = ocrrender.Find("pdftoppm"); err != nil {
+		return
+	}
+	engine, err = ocrrender.Find("tesseract")
+	return
 }
 
 func main() {
@@ -41,7 +45,10 @@ func main() {
 }
 
 func run(args []string, input io.Reader, output io.Writer) error {
-	renderer, engine := tools()
+	renderer, engine, err := tools()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), deadline)
 	defer cancel()
 	if len(args) == 1 && args[0] == "--check" {
