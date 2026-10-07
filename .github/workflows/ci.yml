@@ -120,6 +120,8 @@ jobs:
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_connected_schema.py "$RUNNER_TEMP/notion-record.json" "$RUNNER_TEMP/obsidian-record.json"
           JPACK_TEST_WEB_RECORD="$RUNNER_TEMP/web-record.json" go test ./websource -run '^TestWebSnapshotAndRedirect$' -count=1
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_web_schema.py "$RUNNER_TEMP/web-record.json"
+          JPACK_TEST_WEB_OCR_RECORD="$RUNNER_TEMP/web-ocr-record.json" go test ./websource -run '^TestWebPDFUsesSelectedOCRAndKeepsOriginalSource$' -count=1
+          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_web_schema.py "$RUNNER_TEMP/web-ocr-record.json"
           JPACK_TEST_RESOURCE_RECORD="$RUNNER_TEMP/resource-record.json" go test ./connections -run '^TestResourceProducerSupportsUnknownProviderAndBindsRetainedBytes$' -count=1
           "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_resource_schema.py "$RUNNER_TEMP/resource-record.json"
           JPACK_TEST_RESOURCE_PDF="$RUNNER_TEMP/resource-pdf.json" go test ./connections -run '^TestGenericResourcePDFUsesSharedRecord$' -count=1
