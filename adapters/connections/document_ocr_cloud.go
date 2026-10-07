@@ -40,6 +40,17 @@ const cloudImageBytes = 5 << 20
 // from the document. No default credentials, ambient auth, custom endpoints,
 // redirects or fallback to another connection.
 func RunCloudOCR(ctx context.Context, connection, revision string, pages []string, input io.Reader, output io.Writer) error {
+	return runCloudOCR(ctx, connection, revision, pages, input, output, cloudRun{ocrrender.Page, ocrHTTPClient})
+}
+
+// cloudRun is what a cloud run renders pages and reaches providers with.
+// Tests replace both.
+type cloudRun struct {
+	render func(ctx context.Context, pdf []byte, number int, limit int64) ([]byte, error)
+	client func() *http.Client
+}
+
+func runCloudOCR(ctx context.Context, connection, revision string, pages []string, input io.Reader, output io.Writer, run cloudRun) error {
 	if len(pages) < 1 || len(pages) > 500 || !searchID.MatchString(connection) || revision == "" {
 		return ErrRequest
 	}
@@ -86,7 +97,7 @@ func RunCloudOCR(ctx context.Context, connection, revision string, pages []strin
 	if e != nil || len(data) == 0 || len(data) > 16<<20 {
 		return ErrRequest
 	}
-	client := ocrHTTPClient()
+	client := run.client()
 	defer client.CloseIdleConnections()
 	// Resolve auth once for the document; keep it in this process's memory only.
 	token := ""
@@ -121,7 +132,7 @@ func RunCloudOCR(ctx context.Context, connection, revision string, pages []strin
 		if e != nil || current != rev {
 			return Error("processing-changed")
 		}
-		raster, e := ocrrender.Page(ctx, data, number, cloudImageBytes)
+		raster, e := run.render(ctx, data, number, cloudImageBytes)
 		if e != nil {
 			return e
 		}

@@ -997,3 +997,46 @@ func TestTheCompanionsTestEndsWhatTheProgramStarted(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// A change to the settings during a run stops it before the next page: no
+// request is made for a page after the change, and the run answers nothing.
+func TestASettingsChangeBetweenPagesStopsTheRun(t *testing.T) {
+	b, dir := processingBroker(t)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	base := processingState(t, b)
+	c := base.ProcessingConfig
+	c.Connections = []OCRConnection{{ID: "aws", Name: "AWS", Kind: "aws-textract", Region: "us-east-1", Credential: `{"accessKeyId":"id","secretAccessKey":"secret-key-value"}`, Enabled: true}}
+	c.Mode, c.Connection = "auto", "aws"
+	saved := processingSave(t, b, base, c)
+	rendered, sent := []int{}, 0
+	run := cloudRun{
+		render: func(_ context.Context, _ []byte, number int, _ int64) ([]byte, error) {
+			rendered = append(rendered, number)
+			return []byte("\x89PNG\r\n\x1a\npage"), nil
+		},
+		client: func() *http.Client {
+			return &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+				sent++
+				if sent == 1 {
+					// The operator renames the processor while page 1 is read.
+					next := asSent(saved.ProcessingConfig)
+					next.Connections[0].Name = "AWS renamed"
+					processingSave(t, b, saved, next)
+				}
+				return ocrReply(200, `{"Blocks":[{"BlockType":"LINE","Text":"Page text"}]}`, nil), nil
+			})}
+		},
+	}
+	var out bytes.Buffer
+	e := runCloudOCR(context.Background(), "aws", saved.SHA256, []string{"1", "2", "3"}, strings.NewReader("%PDF-1.4"), &out, run)
+	if e != Error("processing-changed") || sent != 1 || len(rendered) != 1 || out.Len() != 0 {
+		t.Fatalf("a run went on under changed settings: %v, %d requests, pages rendered %v, %d bytes answered", e, sent, rendered, out.Len())
+	}
+	// Unchanged, the same run reads every page.
+	current := processingState(t, b)
+	sent, rendered = 1, nil
+	out.Reset()
+	if e = runCloudOCR(context.Background(), "aws", current.SHA256, []string{"1", "2", "3"}, strings.NewReader("%PDF-1.4"), &out, run); e != nil || sent != 4 || len(rendered) != 3 || !strings.Contains(out.String(), "Page text") {
+		t.Fatalf("an unchanged run: %v, %d requests, %v", e, sent-1, rendered)
+	}
+}
