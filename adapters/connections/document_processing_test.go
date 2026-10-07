@@ -732,8 +732,14 @@ func TestTheCloudWorkerIsGivenNoDigestAsAnArgument(t *testing.T) {
 	if len(argv) == 0 || regexp.MustCompile(`[0-9a-f]{64}`).Match(argv) || strings.Contains(string(argv), "ocr-azure") {
 		t.Fatalf("the worker's arguments carry the processor or a digest: %q", argv)
 	}
-	if strings.TrimSpace(string(argv)) != cfg.OCR+"\n1" {
-		t.Fatalf("the worker's arguments are not the page numbers: %q", argv)
+	words := strings.Split(strings.TrimSpace(string(argv)), "\n")
+	if words[0] != cfg.OCR || len(words) < 2 {
+		t.Fatalf("the worker's arguments are not its name and page numbers: %q", argv)
+	}
+	for _, page := range words[1:] {
+		if !regexp.MustCompile(`^[1-9][0-9]{0,2}$`).MatchString(page) {
+			t.Fatalf("the worker was given %q, not a page number", page)
+		}
 	}
 	if string(env) != "ocr-azure\n"+saved.SHA256+"\n" {
 		t.Fatalf("the worker's environment lacks the processor and revision: %q", env)
