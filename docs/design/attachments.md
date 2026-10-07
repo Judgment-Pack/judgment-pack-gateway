@@ -744,8 +744,10 @@ Both URLs are bounded public-HTTPS source identities; network admission belongs
 to the adapter. `version` equals the retained byte digest and document identity.
 HTML uses `static-text-v1` and retains a plain-text snapshot, not original HTML;
 plain text and PDFs use `original-v1` with equal response and retained digests.
-Original bytes are inline base64; OCR is absent. Consumers must reject an unknown
-source kind and must not reinterpret it as a caller upload. No earlier variant
+Original bytes are inline base64. A static text snapshot carries no OCR; an
+`original-v1` PDF may, when the operator's document-processing settings enable a
+processor ([below](#document-processing-ocr-under-the-managed-local-plan)).
+Consumers must reject an unknown source kind and must not reinterpret it as a caller upload. No earlier variant
 or receipt format changes.
 
 
@@ -765,3 +767,65 @@ must consume a valid selection grant and bound retrieval first.
 Consumers must bind the selected provider/resource and grant commitment to the
 signed acquisition and retained bytes, as detailed in the linked contract. An
 unknown source kind is refused; earlier source variants are not broadened.
+
+
+## Document processing (OCR) under the managed local plan
+
+Outside the managed local plan nothing here changes: an adapter runs the program
+its `--ocr` names, or none. Under the plan (`gateway-connections --local-plan`),
+the sources that may read a PDF, `documents`, `drive`, `web` and `aws-s3`, are
+given `JPACK_CONNECTIONS_DIR`, and each resolves the operator's document-processing
+settings once, before it extracts. An `--ocr` on the command line is kept.
+
+The settings belong to the `document-processing` companion provider
+(`gateway-connections --provider document-processing`, with the operations
+`status`, `configure` and `test`; neither catalog advertises it). They are a
+version 1 `processing.json` in that provider's own namespace of the private store,
+kept as every provider's custody is: owner-only files and directories, no link
+followed, an atomic replace under the store's lock, at most 64 KiB, and held on
+every read to the rules it was written under. `mode` is `off` or `auto`;
+`connection` names the one processor used, which must be enabled; there are at most
+sixteen processors; `timeoutSeconds` is 10 to 120 (120 when absent) and becomes the
+adapter's processing deadline. With no settings file, OCR is off. A file that
+cannot be read or does not hold to its rules, a store the operator blocked, and a
+chosen processor that is gone each stop the read with an error; none of them is
+taken for "no OCR".
+
+`configure` replaces the settings only when `ifMatch` is the SHA-256 of the file as
+it stands, and answers `processing-changed` otherwise. `status` answers that digest
+as `sha256` and never a credential: a processor says only `credentialConfigured`,
+and `ready` when its programs were found usable as status was read (false says that
+was not confirmed then, not that the processor is absent). A configure that leaves
+a credential out keeps the saved one only when the processor's kind and destination
+(program, endpoint, project, location, processor and region) are unchanged, so a
+credential is never carried to another destination. `test` runs one PDF of at most
+4 MiB, on a request line of at most 6 MiB, through a named processor under a stated
+revision and answers a preview of at most eight pages of 400 characters each; it
+stores nothing.
+
+The processors:
+
+- `tesseract` runs `ocr-tesseract`, beside the companion. It renders each page with
+  Poppler's `pdftoppm` and reads it with Tesseract's English data, each program named
+  by an absolute path, from an `ocr-tools` bundle beside the executable or else from
+  `/usr/bin`, never from `PATH`. Pages are rendered to at most 2500 pixels on the
+  longest side, and every pipe is bounded: 24 MiB an image, 2 MiB a page's text,
+  8 MiB of text in all, at most 500 pages. Nothing is written to disk and nothing is
+  sent anywhere.
+- `program` runs an absolute program path the operator names, under the same
+  page-text contract.
+- `google-document-ai`, `azure-document-intelligence` (prebuilt-read) and
+  `aws-textract` (DetectDocumentText) run `ocr-cloud`, to which the adapter gives
+  the processor's ID and the settings' digest before the page numbers. The worker
+  refuses any other revision, reads it again before each page, and never falls back
+  to another processor. Only the pages that need OCR are rendered, each to a PNG of
+  at most 5 MiB, and sent to the endpoint the processor names: Google's regional
+  Document AI host, the Azure resource's own `*.cognitiveservices.azure.com`
+  endpoint (its result is polled on that host only), or Textract's regional host.
+  The credential goes in a header (a bearer token, the Azure key, an AWS signature);
+  requests follow no redirect, use no proxy, have 120 seconds in all and read at
+  most 8 MiB of a reply. A reply that holds the credential is refused, and no
+  provider's error body is kept. Credentials do not enter records.
+
+`provenance.ocr.program` is the program as resolved: an absolute path on the host
+that ran it.

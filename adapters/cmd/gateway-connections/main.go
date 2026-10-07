@@ -67,6 +67,9 @@ func run() int {
 	if *provider == "web-search" {
 		open = connections.OpenSearchStore
 	}
+	if *provider == "document-processing" {
+		open = connections.OpenProcessingStore
+	}
 	s, err := open(*dir, *principal)
 	if err != nil {
 		return 1
@@ -93,6 +96,10 @@ func run() int {
 	if *provider == "web-search" {
 		b = connections.NewSearch(s, *disabled)
 	}
+	if *provider == "document-processing" {
+		b = connections.NewProcessing(s, *disabled)
+		_ = os.Setenv("JPACK_CONNECTIONS_DIR", *dir)
+	}
 	defer b.Close()
 	scan := bufio.NewScanner(os.Stdin)
 	// The scanner's bound counts the line's ending, which is one byte or two,
@@ -108,10 +115,18 @@ func run() int {
 		if json.Unmarshal(scan.Bytes(), &r) != nil || len(r.ID) > 64 {
 			return 2
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+		timeout := 50 * time.Second
+		if *provider == "document-processing" && r.Method == "test" {
+			timeout = 140 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		var result any
 		var err error
-		if len(scan.Bytes()) > requestBound(r.Method) {
+		bound := requestBound(r.Method)
+		if *provider == "document-processing" && r.Method == "test" {
+			bound = connections.StorageLineBytes
+		}
+		if len(scan.Bytes()) > bound {
 			err = connections.ErrRequest
 		} else {
 			result, err = b.Handle(ctx, r.Method, r.Params)

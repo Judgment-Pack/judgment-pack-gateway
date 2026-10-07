@@ -38,6 +38,9 @@ func ConnectionCatalog() Catalog {
 }
 
 func LookupProvider(id string) (Descriptor, bool) {
+	if id == "document-processing" {
+		return processingDescriptor(), true
+	}
 	if id == "web-search" {
 		return searchDescriptor(), true
 	}

@@ -73,6 +73,10 @@ type Config struct {
 	Timeout      time.Duration
 	// OCR is the OCR program, one word, or empty for none.
 	OCR string
+	// OCRArgs are given the OCR program before the page numbers. They are
+	// the operator's (the document-processing settings set them), never the
+	// document's or the caller's.
+	OCRArgs []string
 }
 
 // DefaultConfig is the configuration the flags default to.
@@ -683,7 +687,14 @@ type processor struct {
 // Process builds the record for one admitted request. reading is the instant
 // the adapter began reading the request, which durationMs is measured from.
 func Process(ctx context.Context, cfg Config, req Request, identity attachment.Identity, reading time.Time) ([]byte, error) {
-	p := &processor{cfg: cfg, identity: identity, reading: reading, now: time.Now, runOCR: runOCRProgram}
+	runner := runOCRProgram
+	if len(cfg.OCRArgs) > 0 {
+		prefix := append([]string(nil), cfg.OCRArgs...)
+		runner = func(ctx context.Context, name string, pages []int, doc []byte, limit int64) ([]byte, string, error) {
+			return runOCRWithArgs(ctx, name, prefix, pages, doc, limit)
+		}
+	}
+	p := &processor{cfg: cfg, identity: identity, reading: reading, now: time.Now, runOCR: runner}
 	return p.process(ctx, req)
 }
 

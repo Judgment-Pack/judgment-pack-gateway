@@ -845,11 +845,11 @@ func (c *checker) source(rec *Record) {
 				c.fail("connection-resource", "Connection resource identity or snapshot is invalid")
 			}
 		} else if src.Kind == SourceWeb {
-			if !ValidWebSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version || rec.Provenance.OCR != nil {
+			if !ValidWebSource(src) || rec.Document.Version == nil || *rec.Document.Version != src.Version || rec.Document.ID != src.Version {
 				c.fail("web-source", "Web source identity or snapshot is invalid")
 			}
 			if src.Format == "static-text-v1" {
-				if rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText {
+				if rec.Document.MediaType != MediaText || rec.Provenance.Processor == nil || *rec.Provenance.Processor != ProcessorText || rec.Provenance.OCR != nil {
 					c.fail("web-source", "Web static text snapshot is invalid")
 				}
 			} else if rec.Document.MediaType != src.MediaType || rec.Document.ID != src.ResponseDigest {

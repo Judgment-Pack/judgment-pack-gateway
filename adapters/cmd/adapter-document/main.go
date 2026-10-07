@@ -17,6 +17,7 @@ import (
 	"os"
 	"time"
 
+	"adapters/connections"
 	"adapters/document"
 	"adapters/internal/redact"
 )
@@ -63,6 +64,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	if err := cfg.Check(); err != nil {
 		fmt.Fprintln(stderr, "adapter-document:", err)
 		return 2
+	}
+	// The command line is checked as the operator wrote it. Under the managed
+	// plan, with no --ocr, the document-processing settings then name the
+	// program, by an absolute path that may hold a space, and its deadline.
+	if err := connections.ApplyDocumentProcessing(&cfg); err != nil {
+		return refused(stderr, err)
 	}
 	// The deadline runs from the adapter's start, before the request is
 	// read: reading its own executable for its identity is inside it, and

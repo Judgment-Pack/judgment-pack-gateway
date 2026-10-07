@@ -134,10 +134,12 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	identity.Name = "adapter-drive"
 	cfg := document.DefaultConfig()
 	cfg.MaxBytes = MaxFileBytes
-	cfg.OCR = ""
+	if err := ApplyDocumentProcessing(&cfg); err != nil {
+		return nil, err
+	}
 	cfg.MaxOutput = 8 << 20
 	started := time.Now()
-	request := document.Request{Name: name, MediaType: media, Bytes: data, SHA256: digest(data), OCR: "never", ReceivedAt: started}
+	request := document.Request{Name: name, MediaType: media, Bytes: data, SHA256: digest(data), OCR: "auto", ReceivedAt: started}
 	encoded, err := processDriveDocument(ctx, cfg, request, identity, started)
 	if err != nil {
 		return nil, Error("processing-failed")

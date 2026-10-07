@@ -720,7 +720,10 @@ gateway serve ./store gateway.seed gateway:desk ./registry.jsonl --receipt-versi
   numbers as arguments and the bytes on stdin. Its answer is admitted only within the
   canonicalizer's domain, with exact members and only the pages it was asked for; anything else
   applies nothing (`ocr-failed`). With no program, or `options.ocr` `never`, the pages stay
-  `needs-ocr` under `ocr-not-run`. The adapter carries no OCR engine.
+  `needs-ocr` under `ocr-not-run`. The adapter carries no OCR engine. Under the managed
+  local plan, with no `--ocr`, the operator's document-processing settings name the
+  program and its deadline instead
+  ([attachments](../docs/design/attachments.md#document-processing-ocr-under-the-managed-local-plan)).
 - **Bounds** are flags, each but `--max-output` reported in the record. Each has a default and a
   ceiling:
 
@@ -1210,7 +1213,8 @@ can still appear in listing and fail selection/read with a permission message.
 The connector does not restore archived objects, accept requester-pays charges,
 accept customer encryption keys or follow alternate/custom endpoints. Selected
 objects are read conditionally and version-pinned when S3 supplies a version ID,
-including `null`. Document bytes are retained, extracted locally with OCR off,
+including `null`. Document bytes are retained, extracted locally (with OCR only when the
+operator's document-processing settings enable a processor),
 and verified through the existing signed resource record.
 
 Browse contexts expire after five minutes, with the latest eight pages retained

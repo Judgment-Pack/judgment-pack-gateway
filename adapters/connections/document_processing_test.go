@@ -1,0 +1,534 @@
+//go:build linux || darwin
+
+package connections
+
+import (
+	"adapters/document"
+	"bytes"
+	"context"
+	"crypto/tls"
+	"encoding/base64"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func processingBroker(t *testing.T) (*Broker, string) {
+	t.Helper()
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	s, e := OpenProcessingStore(dir, "desk-local")
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	return NewProcessing(s, false), dir
+}
+func processingState(t *testing.T, b *Broker) ProcessingStatus {
+	t.Helper()
+	v, e := b.Handle(context.Background(), "status", []byte(`{}`))
+	if e != nil {
+		t.Fatal(e)
+	}
+	return v.(ProcessingStatus)
+}
+func processingSave(t *testing.T, b *Broker, base ProcessingStatus, c ProcessingConfig) ProcessingStatus {
+	t.Helper()
+	v, e := processingTry(b, base, c)
+	if e != nil {
+		t.Fatal(e)
+	}
+	return v
+}
+func processingTry(b *Broker, base ProcessingStatus, c ProcessingConfig) (ProcessingStatus, error) {
+	raw, _ := json.Marshal(map[string]any{"ifMatch": base.SHA256, "config": c})
+	v, e := b.Handle(context.Background(), "configure", raw)
+	if e != nil {
+		return ProcessingStatus{}, e
+	}
+	return v.(ProcessingStatus), nil
+}
+
+// asSent is a configuration as a client sends it back: status-only members
+// cleared, credentials left out.
+func asSent(c ProcessingConfig) ProcessingConfig {
+	c.Connections = append([]OCRConnection(nil), c.Connections...)
+	for i := range c.Connections {
+		c.Connections[i].Ready = false
+		c.Connections[i].CredentialConfigured = false
+		c.Connections[i].Credential = ""
+	}
+	return c
+}
+func azureOCR() OCRConnection {
+	return OCRConnection{ID: "ocr-azure", Name: "Azure work", Kind: "azure-document-intelligence", Endpoint: "https://work.cognitiveservices.azure.com", Credential: "private-secret", Enabled: true}
+}
+func TestOCRRegistryPrivateCredentialsCASAndNoRetarget(t *testing.T) {
+	b, dir := processingBroker(t)
+	old := processingState(t, b)
+	if old.Mode != "off" || len(old.Connections) != 0 {
+		t.Fatal("OCR enabled without configuration")
+	}
+	c := old.ProcessingConfig
+	c.Connections = append(c.Connections, azureOCR())
+	c.Mode = "auto"
+	c.Connection = "ocr-azure"
+	c.TimeoutSeconds = 75
+	next := processingSave(t, b, old, c)
+	raw, _ := json.Marshal(next)
+	if bytes.Contains(raw, []byte("private-secret")) || !next.Connections[0].CredentialConfigured {
+		t.Fatal("secret disclosed or presence lost")
+	}
+	// The settings file is the store's: private to its owner.
+	var held os.FileInfo
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.Name() == "processing.json" {
+			held, _ = os.Lstat(path)
+		}
+		return nil
+	})
+	if held == nil || held.Mode().Perm() != 0600 {
+		t.Fatal("settings file missing or not private")
+	}
+	c = asSent(next.ProcessingConfig)
+	c.Connections[0].Name = "Renamed"
+	latest := processingSave(t, b, next, c)
+	saved, _, e := b.store.processingConfig()
+	if e != nil || saved.Connections[0].Credential != "private-secret" || saved.Connections[0].Name != "Renamed" {
+		t.Fatal("a save that left the credential out of an unchanged destination lost it")
+	}
+	// A credential left out is not carried to another destination: the
+	// key would go to a host it was not entered for.
+	for name, change := range map[string]func(*OCRConnection){
+		"endpoint": func(p *OCRConnection) { p.Endpoint = "https://other.cognitiveservices.azure.com" },
+		"kind": func(p *OCRConnection) {
+			p.Kind, p.Endpoint, p.Region = "aws-textract", "", "us-east-1"
+		},
+	} {
+		c = asSent(latest.ProcessingConfig)
+		change(&c.Connections[0])
+		if _, e = processingTry(b, latest, c); e != ErrRequest {
+			t.Fatalf("%s change kept the old credential: %v", name, e)
+		}
+	}
+	after, _, _ := b.store.processingConfig()
+	if after.Connections[0].Endpoint != "https://work.cognitiveservices.azure.com" || after.Connections[0].Credential != "private-secret" {
+		t.Fatal("a refused save changed the settings")
+	}
+	// Entered again with the new destination, it is taken.
+	c = asSent(latest.ProcessingConfig)
+	c.Connections[0].Endpoint = "https://other.cognitiveservices.azure.com"
+	c.Connections[0].Credential = "other-secret"
+	moved := processingSave(t, b, latest, c)
+	c = asSent(moved.ProcessingConfig)
+	c.Connections[0].Endpoint = "https://work.cognitiveservices.azure.com"
+	c.Connections[0].Credential = "private-secret"
+	latest = processingSave(t, b, moved, c)
+	stale, _ := json.Marshal(map[string]any{"ifMatch": old.SHA256, "config": c})
+	if _, e = b.Handle(context.Background(), "configure", stale); e != Error("processing-changed") {
+		t.Fatal(e)
+	}
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	cfg := document.DefaultConfig()
+	if e = ApplyDocumentProcessing(&cfg); e != nil {
+		t.Fatal(e)
+	}
+	if len(cfg.OCRArgs) != 2 || cfg.OCRArgs[0] != "ocr-azure" || cfg.OCRArgs[1] != latest.SHA256 || cfg.Timeout != 75*time.Second || filepath.Base(cfg.OCR) != "ocr-cloud" || !filepath.IsAbs(cfg.OCR) {
+		t.Fatal("choice was not pinned")
+	}
+	var out bytes.Buffer
+	if e = RunCloudOCR(context.Background(), []string{"ocr-azure", next.SHA256, "1"}, strings.NewReader("invalid"), &out); e != Error("processing-changed") || out.Len() != 0 {
+		t.Fatal("stale worker read a different configuration", e)
+	}
+	c = asSent(latest.ProcessingConfig)
+	c.Mode = "off"
+	processingSave(t, b, latest, c)
+	cfg = document.DefaultConfig()
+	if ApplyDocumentProcessing(&cfg) != nil || cfg.OCR != "" || len(cfg.OCRArgs) != 0 {
+		t.Fatal("off still runs OCR")
+	}
+}
+func TestOCRRejectsUnsafeOrIncompleteConnections(t *testing.T) {
+	base := ProcessingConfig{Version: 1, Mode: "off", Connections: []OCRConnection{azureOCR()}}
+	if !validProcessing(base) {
+		t.Fatal("the sound base is refused")
+	}
+	cases := map[string]func(*OCRConnection){
+		"plain http":        func(p *OCRConnection) { p.Endpoint = "http://work.cognitiveservices.azure.com" },
+		"suffix host":       func(p *OCRConnection) { p.Endpoint = "https://work.cognitiveservices.azure.com.evil.invalid" },
+		"any-character dot": func(p *OCRConnection) { p.Endpoint = "https://work.cognitiveservicesXazure.com" },
+		"not an AI host":    func(p *OCRConnection) { p.Endpoint = "https://work.api.cognitive.microsoft.azure.com" },
+		"user info":         func(p *OCRConnection) { p.Endpoint = "https://user:secret@work.cognitiveservices.azure.com" },
+		"port":              func(p *OCRConnection) { p.Endpoint = "https://work.cognitiveservices.azure.com:8443" },
+		"path":              func(p *OCRConnection) { p.Endpoint = "https://work.cognitiveservices.azure.com/other" },
+		"query":             func(p *OCRConnection) { p.Endpoint = "https://work.cognitiveservices.azure.com/?x=1" },
+		"no credential":     func(p *OCRConnection) { p.Credential = "" },
+		"program on cloud":  func(p *OCRConnection) { p.Program = "/bin/sh" },
+		"ready saved":       func(p *OCRConnection) { p.Ready = true },
+		"presence saved":    func(p *OCRConnection) { p.CredentialConfigured = true },
+		"path id":           func(p *OCRConnection) { p.ID = "../outside" },
+		"relative program": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "local", Name: "Local", Kind: "program", Program: "ocr"}
+		},
+		"unclean program": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "local", Name: "Local", Kind: "program", Program: "/usr/bin/../../tmp/ocr"}
+		},
+		"program with word": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "local", Name: "Local", Kind: "program", Program: "/usr/bin/ocr --all"}
+		},
+		"tesseract secret": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "local", Name: "Local", Kind: "tesseract", Credential: "x"}
+		},
+		"textract china": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "aws", Name: "AWS", Kind: "aws-textract", Region: "cn-north-1", Credential: `{"accessKeyId":"id","secretAccessKey":"secret"}`}
+		},
+		"textract dotted": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "aws", Name: "AWS", Kind: "aws-textract", Region: "evil.example", Credential: `{"accessKeyId":"id","secretAccessKey":"secret"}`}
+		},
+		"google not json": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "g", Name: "G", Kind: "google-document-ai", Project: "p", Location: "eu", Processor: "1", Credential: "key"}
+		},
+		"unknown kind": func(p *OCRConnection) { p.Kind = "other" },
+	}
+	for name, change := range cases {
+		c := base
+		c.Connections = append([]OCRConnection(nil), base.Connections...)
+		change(&c.Connections[0])
+		if validProcessing(c) {
+			t.Errorf("accepted %s", name)
+		}
+	}
+	for _, seconds := range []int{-1, 9, 121} {
+		c := base
+		c.TimeoutSeconds = seconds
+		if validProcessing(c) {
+			t.Errorf("accepted a timeout of %d seconds", seconds)
+		}
+	}
+	c := base
+	c.Mode = "auto"
+	c.Connection = "missing"
+	if validProcessing(c) {
+		t.Fatal("missing selection")
+	}
+	c.Connection = "ocr-azure"
+	c.Connections = []OCRConnection{azureOCR()}
+	c.Connections[0].Enabled = false
+	if validProcessing(c) {
+		t.Fatal("disabled selection")
+	}
+	c.Connections = nil
+	c.Mode, c.Connection = "off", ""
+	if validProcessing(c) {
+		t.Fatal("null connections")
+	}
+}
+
+// Settings that cannot be read now never read as "no OCR".
+func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
+	cfg := document.DefaultConfig()
+	t.Setenv("JPACK_CONNECTIONS_DIR", "")
+	if ApplyDocumentProcessing(&cfg) != nil || cfg.OCR != "" {
+		t.Fatal("unmanaged adapter changed")
+	}
+	b, dir := processingBroker(t)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	base := processingState(t, b)
+	c := base.ProcessingConfig
+	c.Connections = []OCRConnection{{ID: "local", Name: "Local", Kind: "tesseract", Enabled: true}}
+	c.Mode, c.Connection = "auto", "local"
+	processingSave(t, b, base, c)
+	cfg = document.DefaultConfig()
+	cfg.OCR = "operator-ocr"
+	if ApplyDocumentProcessing(&cfg) != nil || cfg.OCR != "operator-ocr" || cfg.Timeout != document.DefaultConfig().Timeout {
+		t.Fatal("the command line's --ocr was replaced")
+	}
+	cfg = document.DefaultConfig()
+	if ApplyDocumentProcessing(&cfg) != nil || filepath.Base(cfg.OCR) != "ocr-tesseract" || len(cfg.OCRArgs) != 0 || cfg.Timeout != 120*time.Second {
+		t.Fatal("local processor not applied", cfg.OCR)
+	}
+	// A settings file that does not hold to its rules is unreadable now.
+	if e := b.store.write("processing.json", map[string]any{"version": 1, "mode": "auto", "connection": "gone", "connections": []any{}}); e != nil {
+		t.Fatal(e)
+	}
+	cfg = document.DefaultConfig()
+	if e := ApplyDocumentProcessing(&cfg); e != ErrStorage || cfg.OCR != "" {
+		t.Fatal("invalid settings read as no OCR", e)
+	}
+	if _, e := b.Handle(context.Background(), "status", []byte(`{}`)); e != ErrStorage {
+		t.Fatal("status of invalid settings", e)
+	}
+	// A store the operator blocked refuses, rather than extracting without OCR.
+	blocked := NewProcessing(b.store, true)
+	blocked.Handle(context.Background(), "status", []byte(`{}`))
+	cfg = document.DefaultConfig()
+	if e := ApplyDocumentProcessing(&cfg); e != ErrPolicy {
+		t.Fatal("blocked settings applied", e)
+	}
+}
+func TestOCRTestAcceptsPDFLargerThanControlRequestWithoutStoringIt(t *testing.T) {
+	b, _ := processingBroker(t)
+	base := processingState(t, b)
+	cfg := base.ProcessingConfig
+	program := filepath.Join(t.TempDir(), "ocr")
+	os.WriteFile(program, []byte("#!/bin/sh\ncat >/dev/null\nprintf '{\"pages\":[]}'\n"), 0700)
+	cfg.Connections = []OCRConnection{{ID: "ocr-test", Name: "Test", Kind: "program", Program: program, Enabled: true}}
+	next := processingSave(t, b, base, cfg)
+	data, e := os.ReadFile("../document/testdata/normal.pdf")
+	if e != nil {
+		t.Fatal(e)
+	}
+	data = append(data, bytes.Repeat([]byte(" "), 70000)...)
+	raw, _ := json.Marshal(map[string]any{"connection": "ocr-test", "revision": next.SHA256, "document": map[string]string{"name": "test.pdf", "mediaType": "application/pdf", "bytes": base64.StdEncoding.EncodeToString(data)}})
+	if len(raw) <= ControlLineBytes {
+		t.Fatal("the test document fits a control line")
+	}
+	v, e := b.Handle(context.Background(), "test", raw)
+	if e != nil {
+		t.Fatal(e)
+	}
+	if v.(map[string]any)["pageCount"].(int64) < 1 {
+		t.Fatal("test did not extract")
+	}
+	after := processingState(t, b)
+	if after.SHA256 != next.SHA256 {
+		t.Fatal("test changed settings")
+	}
+	stale, _ := json.Marshal(map[string]any{"connection": "ocr-test", "revision": base.SHA256, "document": map[string]string{"name": "test.pdf", "mediaType": "application/pdf", "bytes": base64.StdEncoding.EncodeToString(data)}})
+	if _, e = b.Handle(context.Background(), "test", stale); e != Error("processing-changed") {
+		t.Fatal("a test ran under settings it was not asked for", e)
+	}
+}
+
+type ocrTransport func(*http.Request) (*http.Response, error)
+
+func (f ocrTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+func ocrReply(code int, body string, header http.Header) *http.Response {
+	return &http.Response{StatusCode: code, Body: io.NopCloser(strings.NewReader(body)), Header: header}
+}
+func TestCloudOCRProviderContracts(t *testing.T) {
+	t.Run("google", func(t *testing.T) {
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.String() != "https://eu-documentai.googleapis.com/v1/projects/demo/locations/eu/processors/123:process" || r.Header.Get("Authorization") != "Bearer access" {
+				t.Fatal("wrong destination/auth")
+			}
+			var body struct {
+				RawDocument struct{ Content, MimeType string }
+				FieldMask   string
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if body.RawDocument.Content != base64.StdEncoding.EncodeToString([]byte("PNG")) || body.RawDocument.MimeType != "image/png" || body.FieldMask != "text" {
+				t.Fatal("wrong image request")
+			}
+			return ocrReply(200, `{"document":{"text":"Recognized text"}}`, nil), nil
+		})}
+		text, e := cloudOCRPage(context.Background(), client, OCRConnection{Kind: "google-document-ai", Project: "demo", Location: "eu", Processor: "123"}, "access", []byte("PNG"))
+		if e != nil || text != "Recognized text" {
+			t.Fatal(text, e)
+		}
+	})
+	t.Run("textract", func(t *testing.T) {
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host != "textract.us-east-1.amazonaws.com" || r.Header.Get("X-Amz-Target") != "Textract.DetectDocumentText" || !strings.Contains(r.Header.Get("Authorization"), "/us-east-1/textract/aws4_request") || r.Header.Get("X-Amz-Security-Token") != "temporary" {
+				t.Fatal("wrong signed request")
+			}
+			if strings.Contains(r.Header.Get("Authorization"), "secret") || strings.Contains(r.URL.String(), "secret") {
+				t.Fatal("secret key sent")
+			}
+			return ocrReply(200, `{"Blocks":[{"BlockType":"PAGE"},{"BlockType":"LINE","Text":"Hello"},{"BlockType":"WORD","Text":"Hello"},{"BlockType":"LINE","Text":"World"}]}`, nil), nil
+		})}
+		text, e := cloudOCRPage(context.Background(), client, OCRConnection{Kind: "aws-textract", Region: "us-east-1", Credential: `{"accessKeyId":"id","secretAccessKey":"secret","sessionToken":"temporary"}`}, "", []byte("PNG"))
+		if e != nil || text != "Hello\nWorld" {
+			t.Fatal(text, e)
+		}
+	})
+	t.Run("azure polling", func(t *testing.T) {
+		calls := 0
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+			calls++
+			if r.Header.Get("Ocp-Apim-Subscription-Key") != "private-secret" || strings.Contains(r.URL.String(), "private-secret") {
+				t.Fatal("key missing from its header, or in the URL")
+			}
+			if calls == 1 {
+				if r.URL.String() != "https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read:analyze?api-version=2024-11-30" {
+					t.Fatal("wrong destination", r.URL)
+				}
+				return ocrReply(202, "", http.Header{"Operation-Location": []string{"https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id?api-version=2024-11-30"}}), nil
+			}
+			return ocrReply(200, `{"status":"succeeded","analyzeResult":{"content":"Azure text"}}`, nil), nil
+		})}
+		text, e := cloudOCRPage(context.Background(), client, azureOCR(), "", []byte("PNG"))
+		if e != nil || text != "Azure text" || calls != 2 {
+			t.Fatal(text, e, calls)
+		}
+	})
+	t.Run("azure refuses foreign polling URL", func(t *testing.T) {
+		for _, location := range []string{"https://evil.invalid/collect", "http://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id", "https://work.cognitiveservices.azure.com:8443/documentintelligence/documentModels/prebuilt-read/analyzeResults/id", "https://work.cognitiveservices.azure.com/collect"} {
+			calls := 0
+			client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+				calls++
+				return ocrReply(202, "", http.Header{"Operation-Location": []string{location}}), nil
+			})}
+			_, e := cloudOCRPage(context.Background(), client, azureOCR(), "", []byte("PNG"))
+			if e != ErrProvider || calls != 1 {
+				t.Fatal("credential sent to a polling URL off its endpoint", location)
+			}
+		}
+	})
+	t.Run("azure polling ends with its context", func(t *testing.T) {
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+			if r.Method == "POST" {
+				return ocrReply(202, "", http.Header{"Operation-Location": []string{"https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id"}}), nil
+			}
+			return ocrReply(200, `{"status":"running"}`, nil), nil
+		})}
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		defer cancel()
+		start := time.Now()
+		if _, e := cloudOCRPage(ctx, client, azureOCR(), "", []byte("PNG")); e != ErrCanceled || time.Since(start) > 3*time.Second {
+			t.Fatal("polling outlived its deadline", e)
+		}
+	})
+	t.Run("errors redact response", func(t *testing.T) {
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) { return ocrReply(403, `private-secret`, nil), nil })}
+		_, e := cloudOCRPage(context.Background(), client, azureOCR(), "", []byte("PNG"))
+		if e != Error("credentials-required") || strings.Contains(e.Error(), "private-secret") {
+			t.Fatal(e)
+		}
+	})
+	t.Run("an echoed secret is not text", func(t *testing.T) {
+		for _, c := range []struct {
+			conn  OCRConnection
+			token string
+			reply string
+		}{
+			{OCRConnection{Kind: "google-document-ai", Project: "demo", Location: "eu", Processor: "123"}, "access-token-value", `{"document":{"text":"seen access-token-value"}}`},
+			{OCRConnection{Kind: "aws-textract", Region: "us-east-1", Credential: `{"accessKeyId":"id","secretAccessKey":"secret-key-value","sessionToken":"temporary"}`}, "", `{"Blocks":[{"BlockType":"LINE","Text":"secret-key-value"}]}`},
+		} {
+			client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) { return ocrReply(200, c.reply, nil), nil })}
+			if text, e := cloudOCRPage(context.Background(), client, c.conn, c.token, []byte("PNG")); e != ErrProvider || text != "" {
+				t.Fatal("a reply holding the credential was taken as text", c.conn.Kind)
+			}
+		}
+		calls := 0
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+			calls++
+			if calls == 1 {
+				return ocrReply(202, "", http.Header{"Operation-Location": []string{"https://work.cognitiveservices.azure.com/documentintelligence/documentModels/prebuilt-read/analyzeResults/id"}}), nil
+			}
+			return ocrReply(200, `{"status":"succeeded","analyzeResult":{"content":"key private-secret"}}`, nil), nil
+		})}
+		if _, e := cloudOCRPage(context.Background(), client, azureOCR(), "", []byte("PNG")); e != ErrProvider {
+			t.Fatal("an Azure reply holding the key was taken as text")
+		}
+	})
+	t.Run("an oversized reply or image is refused", func(t *testing.T) {
+		client := &http.Client{Transport: ocrTransport(func(r *http.Request) (*http.Response, error) {
+			return ocrReply(200, `{"document":{"text":"`+strings.Repeat("a", 8<<20)+`"}}`, nil), nil
+		})}
+		if _, e := cloudOCRPage(context.Background(), client, OCRConnection{Kind: "google-document-ai", Project: "demo", Location: "eu", Processor: "123"}, "access", []byte("PNG")); e != ErrProvider {
+			t.Fatal("reply past 8 MiB taken", e)
+		}
+		if _, e := cloudOCRPage(context.Background(), client, azureOCR(), "", make([]byte, cloudImageBytes+1)); e != ErrLimit {
+			t.Fatal("image past its bound sent", e)
+		}
+	})
+}
+
+// The production client follows no redirect: the key goes to the host the
+// connection names and to no other.
+func TestCloudOCRClientDoesNotFollowRedirects(t *testing.T) {
+	var elsewhere atomic.Int32
+	other := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { elsewhere.Add(1) }))
+	defer other.Close()
+	named := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+"/collect", http.StatusTemporaryRedirect)
+	}))
+	defer named.Close()
+	client := ocrHTTPClient()
+	if client.Timeout <= 0 || client.Timeout > 120*time.Second {
+		t.Fatal("cloud requests have no overall deadline")
+	}
+	roots := named.Client().Transport.(*http.Transport).TLSClientConfig.RootCAs
+	client.Transport.(*http.Transport).TLSClientConfig = &tls.Config{RootCAs: roots}
+	req, _ := http.NewRequest("POST", named.URL+"/analyze", strings.NewReader("{}"))
+	req.Header.Set("Ocp-Apim-Subscription-Key", "private-secret")
+	if _, _, e := ocrResponse(client, req, 200, "private-secret"); e != ErrProvider || elsewhere.Load() != 0 {
+		t.Fatal("a redirect was followed", e, elsewhere.Load())
+	}
+	if client.Transport.(*http.Transport).Proxy != nil {
+		t.Fatal("cloud requests read a proxy from the environment")
+	}
+}
+
+// A worker refuses, before any request is made, what its arguments, its
+// settings or its operator do not allow.
+func TestRunCloudOCRRefusesBeforeAnyRequest(t *testing.T) {
+	b, dir := processingBroker(t)
+	base := processingState(t, b)
+	c := base.ProcessingConfig
+	local := OCRConnection{ID: "local", Name: "Local", Kind: "tesseract", Enabled: true}
+	off := azureOCR()
+	off.ID, off.Enabled = "ocr-off", false
+	c.Connections = []OCRConnection{azureOCR(), local, off}
+	c.Mode, c.Connection = "auto", "ocr-azure"
+	saved := processingSave(t, b, base, c)
+	rev := saved.SHA256
+	pdf := strings.NewReader("%PDF-1.4")
+	run := func(args ...string) error {
+		var out bytes.Buffer
+		e := RunCloudOCR(context.Background(), args, pdf, &out)
+		if out.Len() != 0 {
+			t.Fatal("a refused run wrote an answer")
+		}
+		return e
+	}
+	t.Setenv("JPACK_CONNECTIONS_DIR", "")
+	if run("ocr-azure", rev, "1") == nil {
+		t.Fatal("ran without the settings directory")
+	}
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	for _, args := range [][]string{{"ocr-azure", rev}, {"ocr-azure", rev, "0"}, {"ocr-azure", rev, "501"}, {"ocr-azure", rev, "1", "1"}, {"ocr-azure", rev, "one"}, {"../x", rev, "1"}} {
+		if run(args...) != ErrRequest {
+			t.Fatal("page or connection arguments accepted", args)
+		}
+	}
+	if run("local", rev, "1") != Error("processing-unavailable") || run("ocr-off", rev, "1") != Error("processing-unavailable") || run("missing", rev, "1") != Error("processing-unavailable") {
+		t.Fatal("a worker ran a connection that is not an enabled cloud processor")
+	}
+	if run("ocr-azure", base.SHA256, "1") != Error("processing-changed") {
+		t.Fatal("a worker ran under another revision")
+	}
+	blocked := NewProcessing(b.store, true)
+	blocked.Handle(context.Background(), "status", []byte(`{}`))
+	if run("ocr-azure", rev, "1") != ErrPolicy {
+		t.Fatal("a worker ran with its store blocked")
+	}
+}
+
+// Only the sources that may read a PDF are given the settings and the longer
+// envelope; every other source keeps what it had.
+func TestOCRManagedPlanPassesCustodyAndBounds(t *testing.T) {
+	ocr := map[string]bool{"documents": true, "drive": true, "web": true, "aws-s3": true}
+	was := map[string]int{"render": 30, "gmail": 60, "notion": 60, "obsidian": 60, "web-discovery": 60, "web-search": 60}
+	for _, s := range ConnectionLocalPlan().Sources {
+		switch {
+		case ocr[s.ID]:
+			if !s.Connections || s.Timeout != 150 {
+				t.Errorf("OCR settings unavailable to %s", s.ID)
+			}
+		case was[s.ID] != s.Timeout:
+			t.Errorf("%s changed its timeout to %d", s.ID, s.Timeout)
+		}
+	}
+	if ProcessingMaxTimeoutSeconds+20 > 150 {
+		t.Fatal("the processing deadline leaves the adapters no room inside the plan")
+	}
+}

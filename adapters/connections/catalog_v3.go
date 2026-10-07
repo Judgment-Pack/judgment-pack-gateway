@@ -98,9 +98,15 @@ type LocalSource struct {
 	Connections bool     `json:"connections"`
 }
 
+// The sources that may read a PDF with the operator's OCR processor
+// (documents, drive, web and aws-s3) hold the connections directory, where
+// the document-processing settings are kept, and 150 seconds: the processing
+// deadline is at most 120 (ApplyDocumentProcessing) and their adapters stop
+// at 140. A desk that admits at most 60 seconds a source refuses this plan
+// whole, so a desk takes it only from the release that knows these bounds.
 func ConnectionLocalPlan() LocalPlan {
 	return LocalPlan{1, []LocalSource{
-		{"documents", "adapter-document", []string{"--max-bytes", "16777216", "--max-output", "8388608", "--timeout", "30s"}, "command", 40, false},
+		{"documents", "adapter-document", []string{"--max-bytes", "16777216", "--max-output", "8388608", "--timeout", "30s"}, "command", 150, true},
 		// The record's bound is the one docs/design/rendering.md gives for a
 		// file of the adapter's default bound, 4 MiB. The adapter keeps its
 		// default deadline, five seconds under the timeout here. No rendering
@@ -108,13 +114,13 @@ func ConnectionLocalPlan() LocalPlan {
 		// refuses a plan that names a program its bundle does not carry, so
 		// a desk that takes this plan carries adapter-render.
 		{"render", "adapter-render", []string{"--max-output", "6291456"}, "command", 30, false},
-		{"drive", "adapter-drive", []string{"--principal", "desk-local"}, "http", 60, true},
+		{"drive", "adapter-drive", []string{"--principal", "desk-local"}, "http", 150, true},
 		{"gmail", "adapter-gmail", []string{"--principal", "desk-local"}, "http", 60, true},
 		{"notion", "adapter-sources", []string{"--provider", "notion", "--principal", "desk-local"}, "mcp", 60, true},
 		{"obsidian", "adapter-sources", []string{"--provider", "obsidian", "--principal", "desk-local"}, "command", 60, true},
-		{"web", "adapter-web", []string{}, "http", 60, false},
+		{"web", "adapter-web", []string{}, "http", 150, true},
 		{"web-discovery", "adapter-web", []string{"--discover"}, "http", 60, false},
 		{"web-search", "adapter-sources", []string{"--provider", "web-search", "--principal", "desk-local"}, "http", 60, true},
-		{"aws-s3", "adapter-sources", []string{"--provider", "aws-s3", "--principal", "desk-local"}, "command", 60, true},
+		{"aws-s3", "adapter-sources", []string{"--provider", "aws-s3", "--principal", "desk-local"}, "command", 150, true},
 	}}
 }

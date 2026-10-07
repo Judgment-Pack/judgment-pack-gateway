@@ -20,7 +20,7 @@ func run() int {
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 140*time.Second)
 	defer cancel()
 	s, err := connections.OpenStore(*dir, *principal)
 	if err != nil {

@@ -48,7 +48,14 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "invalid-request")
 		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	// A retained S3 file may be read with the operator's OCR processor, whose
+	// deadline is at most 120 seconds; the local plan gives the source 150.
+	// The other providers read text only and keep their deadline.
+	timeout := 55 * time.Second
+	if *provider == "aws-s3" {
+		timeout = 140 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	out, err := read(ctx, s, raw)
 	if err != nil {

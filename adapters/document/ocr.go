@@ -58,7 +58,13 @@ var readOCRStdout = program.ReadStdout
 // checked: a deadline that passes while they are made is now found by that
 // check, and the program is not started.
 func runOCRProgram(ctx context.Context, name string, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
-	args := make([]string, 0, len(pages))
+	return runOCRWithArgs(ctx, name, nil, pages, doc, maxOutput)
+}
+
+// runOCRWithArgs is runOCRProgram with the operator's arguments before the
+// page numbers.
+func runOCRWithArgs(ctx context.Context, name string, prefix []string, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
+	args := append([]string(nil), prefix...)
 	for _, n := range pages {
 		args = append(args, strconv.Itoa(n))
 	}
