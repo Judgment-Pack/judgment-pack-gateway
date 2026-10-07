@@ -362,7 +362,7 @@ status still says what the record is good for.
 | `source` | object | where the bytes came from. The initial kind is `{"kind": "inline"}`, a document the caller supplied, with no other member. The Google Drive source extension below adds `"google-drive"` with its named members; a consumer reads `kind` first, and a `kind` it does not know is a source it does not know — the record is still a record, its provenance unread |
 | `observedAt` | string | when the adapter had read the request in full, `YYYY-MM-DDThh:mm:ssZ`, UTC, whole seconds, by the adapter's clock. The receipt's own `observedAt` for a bare command is the gateway's stamp of when it read the output, which happens later; the two are readings of clocks at whole seconds that nothing relates, so they may be equal and a clock step can put the gateway's first. A consumer infers no order from them |
 | `processor` | string or `null` | the extraction implementation and its algorithm version: `"adapter-document/pdf/1"`, `"adapter-document/text/1"`. It moves when the extractor's output for the same bytes changes. `null` when no extractor ran: an unsupported or mismatched type, a retrieved document that is empty or past the size bound |
-| `ocr` | object or `null` | the provenance of **applied** OCR answers: `{"program": string, "digest": digest, "pages": array of integers}` — the program as configured, the SHA-256 of the file that name resolved to, read by the adapter before starting it, with a replacement between that read and the start not detected, and the numbers of the pages whose `extraction` is `"ocr"`, ascending and distinct. An object exactly when at least one page's `extraction` is `"ocr"`, and `null` otherwise. A run that applied nothing — `ocr-failed`, `ocr-timeout` and an admitted answer of no pages among them — is recorded only by its errors, and the record does not identify the program that ran |
+| `ocr` | object or `null` | the provenance of **applied** OCR answers: `{"program": string, "digest": digest, "pages": array of integers}` — the program as configured (under the operator's document-processing settings, `<kind>:<file name>`, never a directory: [below](#document-processing-ocr-under-the-managed-local-plan)), the SHA-256 of the file that name resolved to, read by the adapter before starting it, with a replacement between that read and the start not detected, and the numbers of the pages whose `extraction` is `"ocr"`, ascending and distinct. An object exactly when at least one page's `extraction` is `"ocr"`, and `null` otherwise. A run that applied nothing — `ocr-failed`, `ocr-timeout` and an admitted answer of no pages among them — is recorded only by its errors, and the record does not identify the program that ran |
 
 ## How a document is processed
 
@@ -837,5 +837,8 @@ The processors:
   most 8 MiB of a reply. A reply that holds the credential is refused, and no
   provider's error body is kept. Credentials do not enter records.
 
-`provenance.ocr.program` is the program as resolved: an absolute path on the host
-that ran it.
+A record never names the directory a program ran from: under these settings
+`provenance.ocr.program` is the processor's kind and the program's file name,
+`<kind>:<file name>` with the kind one of `tesseract`, `program`, `google`, `azure`
+and `aws` (`tesseract:ocr-tesseract`, `azure:ocr-cloud`), and `digest` is the
+SHA-256 of that file as the adapter read it before starting it.

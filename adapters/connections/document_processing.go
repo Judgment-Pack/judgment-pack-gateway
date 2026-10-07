@@ -405,6 +405,9 @@ func ApplyDocumentProcessing(ctx context.Context, cfg *document.Config) error {
 	return Error("processing-unavailable")
 }
 
+// ocrKinds are the names a record gives each kind of processor.
+var ocrKinds = map[string]string{"tesseract": "tesseract", "program": "program", "google-document-ai": "google", "azure-document-intelligence": "azure", "aws-textract": "aws"}
+
 func cloudOCR(kind string) bool {
 	return kind == "google-document-ai" || kind == "azure-document-intelligence" || kind == "aws-textract"
 }
@@ -441,6 +444,11 @@ func validOCRConnection(p OCRConnection) bool {
 // refuses to run under any other revision.
 func configureOCR(cfg *document.Config, p OCRConnection, revision string, c ProcessingConfig) {
 	cfg.OCR = ocrProgram(p)
+	if cfg.OCR != "" {
+		// A record names the kind and the program's file name, and the
+		// digest of the file as it ran; never the directory.
+		cfg.OCRName = ocrKinds[p.Kind] + ":" + filepath.Base(cfg.OCR)
+	}
 	seconds := c.TimeoutSeconds
 	if seconds == 0 {
 		seconds = ProcessingDefaultTimeoutSeconds

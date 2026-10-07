@@ -77,6 +77,11 @@ type Config struct {
 	// the operator's (the document-processing settings set them), never the
 	// document's or the caller's.
 	OCRArgs []string
+	// OCRName is how a record names the OCR program; empty, it names it as
+	// OCR gives it. The document-processing settings set it to the
+	// processor's kind and the program's file name, so that a record never
+	// names the directory the program was run from.
+	OCRName string
 }
 
 // DefaultConfig is the configuration the flags default to.
@@ -924,6 +929,10 @@ func (p *processor) applyOCR(ctx context.Context, req Request, rec *attachment.R
 		addError(rec, attachment.CodeOCRIncomplete, 0, fmt.Sprintf("the OCR program was asked for %d pages and answered %d; %d stay needs-ocr", len(pages), len(answers), missing))
 	}
 	if len(applied) > 0 {
-		rec.Provenance.OCR = &attachment.OCR{Program: p.cfg.OCR, Digest: digest, Pages: applied}
+		name := p.cfg.OCR
+		if p.cfg.OCRName != "" {
+			name = p.cfg.OCRName
+		}
+		rec.Provenance.OCR = &attachment.OCR{Program: name, Digest: digest, Pages: applied}
 	}
 }

@@ -144,7 +144,7 @@ func TestOCRRegistryPrivateCredentialsCASAndNoRetarget(t *testing.T) {
 	if e = ApplyDocumentProcessing(managed, &cfg); e != nil {
 		t.Fatal(e)
 	}
-	if len(cfg.OCRArgs) != 2 || cfg.OCRArgs[0] != "ocr-azure" || cfg.OCRArgs[1] != latest.SHA256 || cfg.Timeout != 75*time.Second || filepath.Base(cfg.OCR) != "ocr-cloud" || !filepath.IsAbs(cfg.OCR) {
+	if len(cfg.OCRArgs) != 2 || cfg.OCRArgs[0] != "ocr-azure" || cfg.OCRArgs[1] != latest.SHA256 || cfg.Timeout != 75*time.Second || filepath.Base(cfg.OCR) != "ocr-cloud" || !filepath.IsAbs(cfg.OCR) || cfg.OCRName != "azure:ocr-cloud" {
 		t.Fatal("choice was not pinned")
 	}
 	var out bytes.Buffer
@@ -260,7 +260,7 @@ func TestApplyDocumentProcessingFailsClosed(t *testing.T) {
 		t.Fatal("the command line's --ocr was replaced")
 	}
 	cfg = document.DefaultConfig()
-	if ApplyDocumentProcessing(managed, &cfg) != nil || filepath.Base(cfg.OCR) != "ocr-tesseract" || len(cfg.OCRArgs) != 0 || cfg.Timeout != 120*time.Second {
+	if ApplyDocumentProcessing(managed, &cfg) != nil || filepath.Base(cfg.OCR) != "ocr-tesseract" || cfg.OCRName != "tesseract:ocr-tesseract" || len(cfg.OCRArgs) != 0 || cfg.Timeout != 120*time.Second {
 		t.Fatal("local processor not applied", cfg.OCR)
 	}
 	// A settings file that does not hold to its rules is unreadable now.
@@ -626,5 +626,60 @@ func TestProcessingConfiguredReadsWithoutWriting(t *testing.T) {
 	defer os.Chmod(dir, 0700)
 	if !ProcessingConfigured(dir) {
 		t.Fatal("a store that fails custody was taken for none")
+	}
+}
+
+// A record names the processor's kind, the program's file name and its
+// digest, and no part of the directory it ran from, which here names a
+// person.
+func TestARecordNamesNoDirectoryOfItsWorker(t *testing.T) {
+	b, dir := processingBroker(t)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	home := filepath.Join(t.TempDir(), "home", "jane-doe-example", "desk", "ocr-tools", "usr", "bin")
+	if e := os.MkdirAll(home, 0700); e != nil {
+		t.Fatal(e)
+	}
+	program := filepath.Join(home, "ocr-fixture")
+	body := []byte("#!/bin/sh\n/bin/cat >/dev/null\nprintf '{\"pages\":[{\"number\":1,\"text\":\"Scanned text\"}]}'\n")
+	if e := os.WriteFile(program, body, 0700); e != nil {
+		t.Fatal(e)
+	}
+	base := processingState(t, b)
+	c := base.ProcessingConfig
+	c.Connections = []OCRConnection{{ID: "local", Name: "Local", Kind: "program", Program: program, Enabled: true}}
+	c.Mode, c.Connection = "auto", "local"
+	processingSave(t, b, base, c)
+	cfg := document.DefaultConfig()
+	if e := ApplyDocumentProcessing(managed, &cfg); e != nil {
+		t.Fatal(e)
+	}
+	pdf, e := os.ReadFile("../document/testdata/scanned.pdf")
+	if e != nil {
+		t.Fatal(e)
+	}
+	identity, _ := document.OwnIdentity()
+	started := time.Now()
+	raw, e := processDriveDocument(context.Background(), cfg, document.Request{Name: "scan.pdf", MediaType: "application/pdf", Bytes: pdf, SHA256: digest(pdf), OCR: "auto", ReceivedAt: started}, identity, started)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var record struct {
+		Provenance struct {
+			OCR *struct {
+				Program string `json:"program"`
+				Digest  string `json:"digest"`
+			} `json:"ocr"`
+		} `json:"provenance"`
+	}
+	if json.Unmarshal(raw, &record) != nil || record.Provenance.OCR == nil {
+		t.Fatal("no OCR applied")
+	}
+	if record.Provenance.OCR.Program != "program:ocr-fixture" || record.Provenance.OCR.Digest != digest(body) {
+		t.Fatal("the record does not name the kind, file name and digest", record.Provenance.OCR)
+	}
+	for _, part := range []string{"jane-doe-example", home, filepath.Dir(home), t.TempDir()[:len(t.TempDir())-len(filepath.Base(t.TempDir()))]} {
+		if strings.Contains(string(raw), part) {
+			t.Fatalf("the record names %q", part)
+		}
 	}
 }
