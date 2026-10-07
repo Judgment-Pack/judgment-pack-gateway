@@ -213,7 +213,54 @@ func ocrProgram(c OCRConnection) string {
 	}
 	return filepath.Join(filepath.Dir(exe), name)
 }
+
+// ocrBundle and systemPrograms are the two places a program processor may
+// run from. Tests replace ocrBundle.
+var ocrBundle = ocrrender.BundleDir
+
+const systemPrograms = "/usr/bin"
+
+// ErrProgramPlace is a program processor outside the OCR tools bundle and
+// /usr/bin.
+const ErrProgramPlace Error = "program-not-allowed"
+
+// programAllowed reports whether path names a program a processor may run:
+// absolute and clean, inside the OCR tools bundle beside the executable or
+// /usr/bin, and still inside it once every symlink is resolved, where it is a
+// regular executable file. It is checked at configure and again before a run.
+func programAllowed(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return false
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	st, err := os.Stat(resolved)
+	if err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 {
+		return false
+	}
+	for _, root := range []string{ocrBundle(), systemPrograms} {
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(root)
+		if err == nil && inside(path, filepath.Clean(root)) && inside(resolved, real) {
+			return true
+		}
+	}
+	return false
+}
+
+// inside reports whether path lies below dir.
+func inside(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, "../") && !filepath.IsAbs(rel)
+}
 func ocrReady(ctx context.Context, c OCRConnection) bool {
+	if c.Kind == "program" {
+		return programAllowed(c.Program)
+	}
 	name := ocrProgram(c)
 	st, err := os.Stat(name)
 	if name == "" || err != nil || !st.Mode().IsRegular() || st.Mode().Perm()&0111 == 0 {
@@ -269,6 +316,11 @@ func (b *Broker) processingOperation(ctx context.Context, method string, raw jso
 			if sha != req.IfMatch {
 				return Error("processing-changed")
 			}
+			for _, p := range req.Config.Connections {
+				if p.Kind == "program" && !programAllowed(p.Program) {
+					return ErrProgramPlace
+				}
+			}
 			for i := range req.Config.Connections {
 				p := &req.Config.Connections[i]
 				if p.Credential == "" {
@@ -320,6 +372,9 @@ func (b *Broker) processingOperation(ctx context.Context, method string, raw jso
 		}
 		if picked == nil {
 			return nil, Error("processing-unavailable")
+		}
+		if picked.Kind == "program" && !programAllowed(picked.Program) {
+			return nil, ErrProgramPlace
 		}
 		data, err := base64.StdEncoding.Strict().DecodeString(req.Document.Bytes)
 		if err != nil || len(data) == 0 || len(data) > MaxFileBytes {
@@ -395,6 +450,9 @@ func ApplyDocumentProcessing(ctx context.Context, cfg *document.Config) error {
 	}
 	for _, p := range c.Connections {
 		if p.ID == c.Connection && p.Enabled {
+			if p.Kind == "program" && !programAllowed(p.Program) {
+				return ErrProgramPlace
+			}
 			configureOCR(cfg, p, sha, c)
 			if cfg.OCR == "" {
 				return Error("processing-unavailable")
@@ -427,7 +485,7 @@ func validOCRConnection(p OCRConnection) bool {
 	case "tesseract":
 		return p.Program == "" && p.Credential == "" && p.Project == "" && p.Endpoint == "" && p.Region == "" && p.Processor == "" && p.Location == ""
 	case "program":
-		return filepath.IsAbs(p.Program) && filepath.Clean(p.Program) == p.Program && len(p.Program) <= 1024 && !strings.ContainsAny(p.Program, " \t\r\n\x00") && p.Credential == "" && p.Project == "" && p.Endpoint == "" && p.Region == "" && p.Processor == "" && p.Location == ""
+		return filepath.IsAbs(p.Program) && filepath.Clean(p.Program) == p.Program && len(p.Program) <= 1024 && !strings.ContainsAny(p.Program, "\t\r\n\x00") && p.Credential == "" && p.Project == "" && p.Endpoint == "" && p.Region == "" && p.Processor == "" && p.Location == ""
 	case "google-document-ai":
 		return p.Program == "" && p.Endpoint == "" && p.Region == "" && ocrPart.MatchString(p.Project) && ocrLocation.MatchString(p.Location) && ocrPart.MatchString(p.Processor) && len(p.Credential) <= 16<<10 && validateGoogleCredential(p.Credential) == nil
 	case "azure-document-intelligence":

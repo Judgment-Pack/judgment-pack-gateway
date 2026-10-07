@@ -822,8 +822,12 @@ The processors:
   longest side, and every pipe is bounded: 24 MiB an image, 2 MiB a page's text,
   8 MiB of text in all, at most 500 pages. Nothing is written to disk and nothing is
   sent anywhere.
-- `program` runs an absolute program path the operator names, under the same
-  page-text contract.
+- `program` runs a program the operator names by an absolute path, under the same
+  page-text contract. The path must lie in the `ocr-tools` bundle beside the
+  executable or in `/usr/bin`, and still lie there once every symlink is resolved,
+  naming a regular executable file; any other is refused at `configure` with
+  `program-not-allowed` and the settings kept as they were, and the path is checked
+  again before each read and by `status`.
 - `google-document-ai`, `azure-document-intelligence` (prebuilt-read) and
   `aws-textract` (DetectDocumentText) run `ocr-cloud`. Its arguments are the page
   numbers alone; the adapter gives it the processor's ID and the settings' digest in

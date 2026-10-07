@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -247,7 +248,18 @@ func TestWebPDFUsesSelectedOCRAndKeepsOriginalSource(t *testing.T) {
 	dir := t.TempDir()
 	os.Chmod(dir, 0700)
 	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
-	script := dir + "/ocr-fixture"
+	// A program processor runs from the OCR tools bundle beside the running
+	// executable, here the test's own.
+	exe, e := os.Executable()
+	if e != nil {
+		t.Fatal(e)
+	}
+	bundle := filepath.Join(filepath.Dir(exe), "ocr-tools")
+	if e = os.MkdirAll(bundle, 0700); e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { os.RemoveAll(bundle) })
+	script := filepath.Join(bundle, "ocr-fixture")
 	if e := os.WriteFile(script, []byte("#!/bin/sh\n/bin/cat >/dev/null\nprintf '{\"pages\":[{\"number\":1,\"text\":\"Scanned source text\"}]}'\n"), 0700); e != nil {
 		t.Fatal(e)
 	}

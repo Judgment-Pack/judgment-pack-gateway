@@ -22,6 +22,14 @@ import (
 	"time"
 )
 
+// useBundle stands dir in for the OCR tools bundle beside the executable.
+func useBundle(t *testing.T, dir string) {
+	t.Helper()
+	saved := ocrBundle
+	t.Cleanup(func() { ocrBundle = saved })
+	ocrBundle = func() string { return dir }
+}
+
 // managed is a read whose adapter the plan launched with --document-processing.
 var managed = WithDocumentProcessing(context.Background())
 
@@ -185,8 +193,8 @@ func TestOCRRejectsUnsafeOrIncompleteConnections(t *testing.T) {
 		"unclean program": func(p *OCRConnection) {
 			*p = OCRConnection{ID: "local", Name: "Local", Kind: "program", Program: "/usr/bin/../../tmp/ocr"}
 		},
-		"program with word": func(p *OCRConnection) {
-			*p = OCRConnection{ID: "local", Name: "Local", Kind: "program", Program: "/usr/bin/ocr --all"}
+		"program with a control": func(p *OCRConnection) {
+			*p = OCRConnection{ID: "local", Name: "Local", Kind: "program", Program: "/usr/bin/ocr\t--all"}
 		},
 		"tesseract secret": func(p *OCRConnection) {
 			*p = OCRConnection{ID: "local", Name: "Local", Kind: "tesseract", Credential: "x"}
@@ -287,8 +295,10 @@ func TestOCRTestAcceptsPDFLargerThanControlRequestWithoutStoringIt(t *testing.T)
 	b, _ := processingBroker(t)
 	base := processingState(t, b)
 	cfg := base.ProcessingConfig
-	program := filepath.Join(t.TempDir(), "ocr")
-	os.WriteFile(program, []byte("#!/bin/sh\ncat >/dev/null\nprintf '{\"pages\":[]}'\n"), 0700)
+	bundle := t.TempDir()
+	useBundle(t, bundle)
+	program := filepath.Join(bundle, "ocr")
+	os.WriteFile(program, []byte("#!/bin/sh\n/bin/cat >/dev/null\nprintf '{\"pages\":[]}'\n"), 0700)
 	cfg.Connections = []OCRConnection{{ID: "ocr-test", Name: "Test", Kind: "program", Program: program, Enabled: true}}
 	next := processingSave(t, b, base, cfg)
 	data, e := os.ReadFile("../document/testdata/normal.pdf")
@@ -640,6 +650,7 @@ func TestARecordNamesNoDirectoryOfItsWorker(t *testing.T) {
 	if e := os.MkdirAll(home, 0700); e != nil {
 		t.Fatal(e)
 	}
+	useBundle(t, filepath.Dir(filepath.Dir(home)))
 	program := filepath.Join(home, "ocr-fixture")
 	body := []byte("#!/bin/sh\n/bin/cat >/dev/null\nprintf '{\"pages\":[{\"number\":1,\"text\":\"Scanned text\"}]}'\n")
 	if e := os.WriteFile(program, body, 0700); e != nil {
@@ -726,5 +737,68 @@ func TestTheCloudWorkerIsGivenNoDigestAsAnArgument(t *testing.T) {
 	}
 	if string(env) != "ocr-azure\n"+saved.SHA256+"\n" {
 		t.Fatalf("the worker's environment lacks the processor and revision: %q", env)
+	}
+}
+
+// A program processor runs only from the OCR tools bundle or /usr/bin, after
+// every symlink is resolved; any other is refused at configure by one token,
+// with the settings left as they were, and again before a run.
+func TestAProgramRunsOnlyFromTheBundleOrUsrBin(t *testing.T) {
+	b, dir := processingBroker(t)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	root := t.TempDir()
+	bundle := filepath.Join(root, "desk", "ocr-tools")
+	outside := filepath.Join(root, "home", "jane-doe-example", "bin")
+	for _, d := range []string{filepath.Join(bundle, "usr", "bin"), outside} {
+		if e := os.MkdirAll(d, 0700); e != nil {
+			t.Fatal(e)
+		}
+	}
+	useBundle(t, bundle)
+	body := []byte("#!/bin/sh\n/bin/cat >/dev/null\nprintf '{\"pages\":[]}'\n")
+	inBundle := filepath.Join(bundle, "usr", "bin", "ocr")
+	atHome := filepath.Join(outside, "ocr")
+	for _, p := range []string{inBundle, atHome} {
+		if e := os.WriteFile(p, body, 0700); e != nil {
+			t.Fatal(e)
+		}
+	}
+	link := filepath.Join(bundle, "usr", "bin", "ocr-link")
+	if e := os.Symlink(atHome, link); e != nil {
+		t.Fatal(e)
+	}
+	base := processingState(t, b)
+	for _, program := range []string{atHome, "bin/ocr", "ocr", link, "/usr/bin/../bin/x", bundle + "/usr/bin/../bin/ocr", filepath.Join(bundle, "usr", "bin", "missing"), bundle} {
+		c := base.ProcessingConfig
+		c.Connections = []OCRConnection{{ID: "local", Name: "Local", Kind: "program", Program: program, Enabled: true}}
+		if _, e := processingTry(b, base, c); e != ErrProgramPlace {
+			t.Errorf("program %q: %v", program, e)
+		}
+	}
+	if processingState(t, b).SHA256 != base.SHA256 {
+		t.Fatal("a refused program changed the settings")
+	}
+	c := base.ProcessingConfig
+	c.Connections = []OCRConnection{{ID: "local", Name: "Local", Kind: "program", Program: inBundle, Enabled: true}}
+	c.Mode, c.Connection = "auto", "local"
+	saved := processingSave(t, b, base, c)
+	if !saved.Connections[0].Ready {
+		t.Fatal("a bundle program is not ready")
+	}
+	cfg := document.DefaultConfig()
+	if e := ApplyDocumentProcessing(managed, &cfg); e != nil || cfg.OCR != inBundle {
+		t.Fatal("a bundle program was not applied", e)
+	}
+	// Replaced since by a link to the outside, it is refused before a run.
+	os.Remove(inBundle)
+	if e := os.Symlink(atHome, inBundle); e != nil {
+		t.Fatal(e)
+	}
+	cfg = document.DefaultConfig()
+	if e := ApplyDocumentProcessing(managed, &cfg); e != ErrProgramPlace || cfg.OCR != "" {
+		t.Fatal("a program that now resolves outside the bundle was applied", e)
+	}
+	if processingState(t, b).Connections[0].Ready {
+		t.Fatal("a program that now resolves outside the bundle is ready")
 	}
 }

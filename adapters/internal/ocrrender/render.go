@@ -37,6 +37,10 @@ var bundle = func() string {
 	return filepath.Join(filepath.Dir(exe), "ocr-tools")
 }
 
+// BundleDir is the directory of OCR tools beside the running executable, or
+// "" when that executable's path is not known.
+func BundleDir() string { return bundle() }
+
 func runnable(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.Mode().IsRegular() && st.Mode().Perm()&0111 != 0
