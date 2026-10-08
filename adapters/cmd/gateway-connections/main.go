@@ -120,16 +120,7 @@ func run() int {
 		if json.Unmarshal(scan.Bytes(), &r) != nil || len(r.ID) > 64 {
 			return 2
 		}
-		timeout := 50 * time.Second
-		if *provider == "document-processing" && r.Method == "test" {
-			timeout = 140 * time.Second
-		}
-		// A search connection's test has the search's own deadline, at most
-		// SearchMaxTimeoutSeconds, and time to report it.
-		if *provider == "web-search" && r.Method == "test" {
-			timeout = connections.SearchAdapterTimeout
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := requestContext(*provider, r.Method)
 		var result any
 		var err error
 		bound := requestBound(r.Method)
@@ -151,6 +142,20 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// requestContext is the context one request is given: 50 seconds; a
+// document-processing test 140; a search connection's test the search's own
+// deadline, at most SearchMaxTimeoutSeconds, and time to report it.
+func requestContext(provider, method string) (context.Context, context.CancelFunc) {
+	timeout := 50 * time.Second
+	if provider == "document-processing" && method == "test" {
+		timeout = 140 * time.Second
+	}
+	if provider == "web-search" && method == "test" {
+		timeout = connections.SearchAdapterTimeout
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 // requestBound is the most a request's line may hold. Only a request that

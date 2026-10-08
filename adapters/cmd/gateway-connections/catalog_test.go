@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCatalogCLIHelper(t *testing.T) {
@@ -180,5 +181,21 @@ func TestTheLocalPlanFollowsTheSearchTimeouts(t *testing.T) {
 	got, _ := json.Marshal(plan())
 	if string(got) != string(want) {
 		t.Fatalf("a 90-second search connection: %s", got)
+	}
+}
+
+// Each request is given its deadline: 50 seconds, a document-processing test
+// 140, a search connection's test 125.
+func TestEachRequestGetsItsDeadline(t *testing.T) {
+	for _, c := range []struct {
+		provider, method string
+		want             time.Duration
+	}{{"web-search", "test", 125 * time.Second}, {"web-search", "status", 50 * time.Second}, {"web-search", "configure", 50 * time.Second}, {"document-processing", "test", 140 * time.Second}, {"document-processing", "status", 50 * time.Second}, {"google-drive", "test", 50 * time.Second}} {
+		ctx, cancel := requestContext(c.provider, c.method)
+		deadline, ok := ctx.Deadline()
+		cancel()
+		if left := time.Until(deadline); !ok || left > c.want || left < c.want-time.Second {
+			t.Errorf("%s %s: %v left, want %v", c.provider, c.method, left, c.want)
+		}
 	}
 }

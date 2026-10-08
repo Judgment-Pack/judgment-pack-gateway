@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSourcesCLIHelper(t *testing.T) {
@@ -101,5 +102,21 @@ func TestTheLongSearchEnvelopeIsWebSearchsAlone(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatal("a refused launch opened custody")
+	}
+}
+
+// Each launch gives the read the deadline its envelope allows: 55 seconds,
+// 125 under --long-search, 140 under --document-processing.
+func TestEachLaunchGivesTheReadItsDeadline(t *testing.T) {
+	for _, c := range []struct {
+		processing, longSearch bool
+		want                   time.Duration
+	}{{false, false, 55 * time.Second}, {false, true, 125 * time.Second}, {true, false, 140 * time.Second}} {
+		ctx, cancel := readContext(c.processing, c.longSearch)
+		deadline, ok := ctx.Deadline()
+		cancel()
+		if left := time.Until(deadline); !ok || left > c.want || left < c.want-time.Second {
+			t.Errorf("processing %v, long search %v: %v left, want %v", c.processing, c.longSearch, left, c.want)
+		}
 	}
 }

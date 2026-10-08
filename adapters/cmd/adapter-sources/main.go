@@ -12,6 +12,24 @@ import (
 )
 
 func main() { os.Exit(run()) }
+
+// readContext is the context a read is given: 55 seconds. Launched with
+// --document-processing (S3 only: the other providers read text), a retained
+// file may be read with the operator's OCR processor, and has the envelope
+// the local plan gives for it. Launched with --long-search, a search
+// connection's timeout may be up to SearchMaxTimeoutSeconds; otherwise a
+// longer one ends here, at 55 seconds, as search-timeout, before the plan's
+// ordinary 60.
+func readContext(processing, longSearch bool) (context.Context, context.CancelFunc) {
+	ctx, timeout := context.Background(), 55*time.Second
+	if processing {
+		ctx, timeout = connections.WithDocumentProcessing(ctx), connections.ProcessingAdapterTimeout
+	}
+	if longSearch {
+		timeout = connections.SearchAdapterTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
 func run() int {
 	fs := flag.NewFlagSet("adapter-sources", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -50,20 +68,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "invalid-request")
 		return 1
 	}
-	// Launched with --document-processing (S3 only: the other providers read
-	// text), a retained file may be read with the operator's OCR processor,
-	// and has the envelope the local plan gives for it.
-	ctx, timeout := context.Background(), 55*time.Second
-	if *processing {
-		ctx, timeout = connections.WithDocumentProcessing(ctx), connections.ProcessingAdapterTimeout
-	}
-	// Launched with --long-search, a search connection's timeout may be up to
-	// SearchMaxTimeoutSeconds; otherwise a longer one ends here, at 55 s, as
-	// search-timeout, before the plan's ordinary 60.
-	if *longSearch {
-		timeout = connections.SearchAdapterTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := readContext(*processing, *longSearch)
 	defer cancel()
 	out, err := read(ctx, s, raw)
 	if err != nil {
