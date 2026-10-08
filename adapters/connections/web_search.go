@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -153,6 +154,24 @@ func googleProvider() provider {
 	p.client.Transport.(*http.Transport).ResponseHeaderTimeout = 0
 	p.client.Timeout = SearchMaxTimeoutSeconds * time.Second
 	return p
+}
+
+// timeoutSeen carries requests and remembers whether one ended for time.
+type timeoutSeen struct {
+	http.RoundTripper
+	timedOut atomic.Bool
+}
+
+func (t *timeoutSeen) RoundTrip(r *http.Request) (*http.Response, error) {
+	base := t.RoundTripper
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	response, err := base.RoundTrip(r)
+	if err != nil && (searchRequestFailure(err, ErrProvider) == Error("search-timeout") || errors.Is(r.Context().Err(), context.DeadlineExceeded)) {
+		t.timedOut.Store(true)
+	}
+	return response, err
 }
 
 func searchRequestFailure(err error, fallback Error) error {
@@ -407,9 +426,17 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 		if e != nil {
 			return nil, ErrSetup
 		}
-		authCtx := context.WithValue(ctx, oauth2.HTTPClient, p.client)
+		// The JWT source reports a transport's failure as text only, so the
+		// token request goes through a transport that remembers a timeout.
+		seen := &timeoutSeen{RoundTripper: p.client.Transport}
+		tokenClient := *p.client
+		tokenClient.Transport = seen
+		authCtx := context.WithValue(ctx, oauth2.HTTPClient, &tokenClient)
 		access, e := cfg.TokenSource(authCtx).Token()
 		if e != nil {
+			if seen.timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, Error("search-timeout")
+			}
 			return nil, searchRequestFailure(e, Error("credentials-required"))
 		}
 		token = access.AccessToken

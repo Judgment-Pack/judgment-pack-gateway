@@ -5,8 +5,11 @@ package connections
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -218,6 +221,116 @@ func TestATamperedStoredTimeoutIsNeitherPlannedNorEchoed(t *testing.T) {
 		encoded, _ := json.Marshal(status)
 		if err != nil || !strings.Contains(string(encoded), `"timeoutSeconds":-1`) || stored != "-1" && strings.Contains(string(encoded), `"timeoutSeconds":`+stored) {
 			t.Errorf("a stored %s: status %s %v", stored, encoded, err)
+		}
+	}
+}
+
+// A stored timeout configure would refuse is refused before acquisition:
+// nothing is sent and nothing is metered.
+func TestATamperedStoredTimeoutIsRefusedBeforeAcquisition(t *testing.T) {
+	_, s, _ := tamperedSearch(t, "121")
+	var c SearchConnection
+	s.locked(func(v *state) error { c = v.Search.Connections[0]; return nil })
+	sent := 0
+	if _, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "public documentation", 1}, searchThrough(func(*http.Request) (*http.Response, error) {
+		sent++
+		return nil, errors.New("not reached")
+	})); err != ErrSetup || sent != 0 || searchSpent(t, s, c.ID) != 0 {
+		t.Fatalf("a tampered timeout was acquired: %v, %d requests", err, sent)
+	}
+}
+
+// timedOutRead is a body whose read the network ended for time.
+type timedOutRead struct{}
+
+func (timedOutRead) Read([]byte) (int, error) { return 0, timedOut{} }
+
+type timedOut struct{}
+
+func (timedOut) Error() string   { return "i/o timeout" }
+func (timedOut) Timeout() bool   { return true }
+func (timedOut) Temporary() bool { return true }
+
+// Running out of time while the Google token is exchanged, or while the reply
+// is read, is search-timeout; another failure at either step keeps its token.
+func TestSearchTimeoutDuringTheTokenExchangeAndTheBodyRead(t *testing.T) {
+	s, c := groundingFixture(t, "global")
+	for _, step := range []struct {
+		failure error
+		want    error
+	}{{context.DeadlineExceeded, Error("search-timeout")}, {timedOut{}, Error("search-timeout")}, {errors.New("refused"), Error("credentials-required")}} {
+		_, err := searchAcquire(context.Background(), s, SearchRequest{c.ID, c.Revision, "public sources", 1}, searchThrough(func(r *http.Request) (*http.Response, error) {
+			if r.URL.Host != "oauth2.googleapis.com" {
+				t.Errorf("asked %s without a token", r.URL)
+			}
+			return nil, step.failure
+		}))
+		if err != step.want {
+			t.Errorf("token exchange failing with %v: %v", step.failure, err)
+		}
+	}
+	tavily, _, conn := searchFixture(t)
+	for _, step := range []struct {
+		body io.Reader
+		want error
+	}{{timedOutRead{}, Error("search-timeout")}, {&failingAfter{strings.NewReader(`{"results":[`)}, ErrProvider}} {
+		tavily.locked(func(v *state) error { conn = v.Search.Connections[0]; return nil })
+		_, err := searchAcquire(context.Background(), tavily, SearchRequest{conn.ID, conn.Revision, "public documentation", 1}, searchThrough(func(*http.Request) (*http.Response, error) {
+			return searchReply(200, step.body), nil
+		}))
+		if err != step.want {
+			t.Errorf("a body read failing: %v, want %v", err, step.want)
+		}
+	}
+}
+
+// Search state that cannot be read now leaves the plan's envelope ordinary.
+func TestUnreadableSearchStateKeepsTheOrdinaryEnvelope(t *testing.T) {
+	dir, s, _ := tamperedSearch(t, "90")
+	if !SearchNeedsLongEnvelope(dir) {
+		t.Fatal("a valid 90-second timeout does not ask for the long envelope")
+	}
+	var state string
+	filepath.WalkDir(dir, func(path string, d os.DirEntry, err error) error {
+		if err == nil && d.Name() == "state.json" && strings.Contains(path, "web-search") {
+			state = path
+		}
+		return nil
+	})
+	if state == "" {
+		t.Fatal("no search state")
+	}
+	os.Chmod(state, 0644)
+	if SearchNeedsLongEnvelope(dir) {
+		t.Fatal("search state that fails custody chose the long envelope")
+	}
+	os.Chmod(state, 0600)
+	if e := s.write("state.json", json.RawMessage(`{"search":{"connections":"damaged"}}`)); e != nil {
+		t.Fatal(e)
+	}
+	if SearchNeedsLongEnvelope(dir) {
+		t.Fatal("damaged search state chose the long envelope")
+	}
+	if raw, _ := json.Marshal(ConnectionLocalPlanFor(false, SearchNeedsLongEnvelope(dir))); string(raw) != mainLocalPlan {
+		t.Fatal("unreadable search state changed the plan")
+	}
+}
+
+// The advertised minimum is 10 seconds, the one configure holds to.
+func TestTheAdvertisedMinimumIsTen(t *testing.T) {
+	_, b, _ := searchFixture(t)
+	status, err := b.Handle(context.Background(), "status", []byte(`{}`))
+	encoded, _ := json.Marshal(status)
+	var exposed struct{ Timeout struct{ MinSeconds int } }
+	if err != nil || json.Unmarshal(encoded, &exposed) != nil || exposed.Timeout.MinSeconds != 10 {
+		t.Fatalf("advertised minimum %d: %v", exposed.Timeout.MinSeconds, err)
+	}
+	for seconds, accepted := range map[int]bool{9: false, 10: true} {
+		_, nb, nc := searchFixture(t)
+		nc.TimeoutSeconds = seconds
+		raw, _ := json.Marshal(nc)
+		if _, err := nb.Handle(context.Background(), "configure", raw); (err == nil) != accepted {
+			t.Errorf("a timeout of %d s: %v", seconds, err)
 		}
 	}
 }
