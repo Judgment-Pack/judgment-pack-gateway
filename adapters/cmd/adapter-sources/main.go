@@ -19,7 +19,8 @@ func run() int {
 	principal := fs.String("principal", "", "")
 	provider := fs.String("provider", "", "")
 	processing := fs.Bool("document-processing", false, "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || *processing && *provider != "aws-s3" {
+	longSearch := fs.Bool("long-search", false, "")
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || *processing && *provider != "aws-s3" || *longSearch && *provider != "web-search" {
 		return 2
 	}
 	open, read := connections.OpenNotionStore, connections.ReadNotion
@@ -55,6 +56,12 @@ func run() int {
 	ctx, timeout := context.Background(), 55*time.Second
 	if *processing {
 		ctx, timeout = connections.WithDocumentProcessing(ctx), connections.ProcessingAdapterTimeout
+	}
+	// Launched with --long-search, a search connection's timeout may be up to
+	// SearchMaxTimeoutSeconds; otherwise a longer one ends here, at 55 s, as
+	// search-timeout, before the plan's ordinary 60.
+	if *longSearch {
+		timeout = connections.SearchAdapterTimeout
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

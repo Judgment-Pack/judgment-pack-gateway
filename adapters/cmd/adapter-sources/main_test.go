@@ -83,3 +83,23 @@ func TestSourcesCLIConsumesOnlyTheSelectedGrant(t *testing.T) {
 		t.Fatal("replayed grant accepted")
 	}
 }
+
+// --long-search is the web-search source's alone, as --document-processing
+// is S3's: any other provider launched with it is refused.
+func TestTheLongSearchEnvelopeIsWebSearchsAlone(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	for _, provider := range []string{"notion", "obsidian", "aws-s3"} {
+		args, _ := json.Marshal([]string{"adapter-sources", "--state-dir", dir, "--principal", "fixture", "--provider", provider, "--long-search"})
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSourcesCLIHelper$")
+		cmd.Env = append(os.Environ(), "SOURCES_CLI_HELPER=1", "SOURCES_CLI_ARGS="+string(args))
+		cmd.Stdin = strings.NewReader("{}")
+		err := cmd.Run()
+		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 {
+			t.Fatalf("%s took --long-search: %v", provider, err)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatal("a refused launch opened custody")
+	}
+}

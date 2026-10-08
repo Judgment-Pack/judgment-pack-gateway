@@ -30,7 +30,8 @@ func run() int {
 		// Discovery must never configure a publisher, consume stdin, or create,
 		// lock or write anything. The local plan alone reads custody: whether
 		// the document-processing settings under JPACK_CONNECTIONS_DIR name a
-		// processor, as they stand when it is asked. Refuse mixed modes rather
+		// processor, and whether a search connection there has a timeout the
+		// ordinary envelope does not carry, as they stand when it is asked. Refuse mixed modes rather
 		// than silently ignoring their flags.
 		if fs.NFlag() != 1 {
 			return 2
@@ -40,7 +41,8 @@ func run() int {
 			output = connections.ConnectionCatalogV3()
 		}
 		if *localPlan {
-			output = connections.ConnectionLocalPlanWith(connections.ProcessingConfigured(os.Getenv("JPACK_CONNECTIONS_DIR")))
+			dir := os.Getenv("JPACK_CONNECTIONS_DIR")
+			output = connections.ConnectionLocalPlanFor(connections.ProcessingConfigured(dir), connections.SearchNeedsLongEnvelope(dir))
 		}
 		if json.NewEncoder(os.Stdout).Encode(output) != nil {
 			return 1
@@ -121,6 +123,11 @@ func run() int {
 		timeout := 50 * time.Second
 		if *provider == "document-processing" && r.Method == "test" {
 			timeout = 140 * time.Second
+		}
+		// A search connection's test has the search's own deadline, at most
+		// SearchMaxTimeoutSeconds, and time to report it.
+		if *provider == "web-search" && r.Method == "test" {
+			timeout = connections.SearchAdapterTimeout
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		var result any

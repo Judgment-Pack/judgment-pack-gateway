@@ -112,6 +112,15 @@ func ConnectionLocalPlan() LocalPlan { return ConnectionLocalPlanWith(false) }
 // most 60 seconds a source refuses that plan whole, and is given the plan
 // without processing as long as no processor is configured.
 func ConnectionLocalPlanWith(processing bool) LocalPlan {
+	return ConnectionLocalPlanFor(processing, false)
+}
+
+// ConnectionLocalPlanFor is ConnectionLocalPlanWith, and with longSearch the
+// web-search source is launched with --long-search and SearchSourceSeconds,
+// for a search connection whose timeout the ordinary envelope does not carry.
+// A desk that admits at most 60 seconds a source refuses that plan whole, and
+// is given the ordinary one as long as no such timeout is configured.
+func ConnectionLocalPlanFor(processing, longSearch bool) LocalPlan {
 	plan := LocalPlan{1, []LocalSource{
 		{"documents", "adapter-document", []string{"--max-bytes", "16777216", "--max-output", "8388608", "--timeout", "30s"}, "command", 40, false},
 		// The record's bound is the one docs/design/rendering.md gives for a
@@ -136,6 +145,14 @@ func ConnectionLocalPlanWith(processing bool) LocalPlan {
 			if processingSources[source.ID] {
 				source.Args = append(append([]string{}, source.Args...), "--document-processing")
 				source.Timeout, source.Connections = ProcessingSourceSeconds, true
+			}
+		}
+	}
+	if longSearch {
+		for i := range plan.Sources {
+			if source := &plan.Sources[i]; source.ID == "web-search" {
+				source.Args = append(append([]string{}, source.Args...), "--long-search")
+				source.Timeout = SearchSourceSeconds
 			}
 		}
 	}

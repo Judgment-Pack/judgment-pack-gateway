@@ -147,3 +147,38 @@ func TestTheLocalPlanFollowsTheProcessingSettings(t *testing.T) {
 		t.Fatalf("%d sources have the processing envelope", long)
 	}
 }
+
+// A search connection whose timeout the ordinary envelope does not carry gives
+// web-search the long one in the plan, and nothing else changes.
+func TestTheLocalPlanFollowsTheSearchTimeouts(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	plan := func() connections.LocalPlan {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCatalogCLIHelper$", "--", "--local-plan")
+		cmd.Env = append(os.Environ(), "GATEWAY_CATALOG_HELPER=1", "JPACK_CONNECTIONS_DIR="+dir)
+		cmd.Dir = t.TempDir()
+		raw, err := cmd.Output()
+		var served connections.LocalPlan
+		if err != nil || json.Unmarshal(raw, &served) != nil {
+			t.Fatal(err)
+		}
+		return served
+	}
+	s, err := connections.OpenSearchStore(dir, "desk-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	b := connections.NewSearch(s, false)
+	defer b.Close()
+	raw, _ := json.Marshal(connections.SearchConnection{ID: "demo", Name: "Demo", Provider: "tavily", DailyLimit: 10, Credential: "tvly-test-private-key", TimeoutSeconds: 90})
+	if _, err = b.Handle(context.Background(), "configure", raw); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(connections.ConnectionLocalPlanFor(false, true))
+	got, _ := json.Marshal(plan())
+	if string(got) != string(want) {
+		t.Fatalf("a 90-second search connection: %s", got)
+	}
+}
