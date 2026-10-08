@@ -205,6 +205,9 @@ type gatewayService struct {
 	// meets a closure; afterReadAdmit is told what admission decided
 	beforeReadAdmit func()
 	afterReadAdmit  func(error)
+	// witness answers the witness's endpoints when the engine's
+	// configuration makes this signer a witness (ADR-0013); nil otherwise.
+	witness *witnessService
 }
 
 // startHook runs between making the store and opening the registry; a test
@@ -1362,19 +1365,13 @@ func (g *gatewayService) handler() http.Handler {
 		if g.identity == nil {
 			return nil, true
 		}
-		token := bearerToken(r.Header.Get("Authorization"))
-		if token == "" {
-			w.Header().Set("WWW-Authenticate", "Bearer")
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "a bearer token from the configured issuer is required"})
-			return nil, false
-		}
-		who, err := verifyToken(token, *g.identity, time.Now())
+		who, err := bearerCaller(g.identity, r.Header.Get("Authorization"), time.Now())
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 			return nil, false
 		}
-		return &who, true
+		return who, true
 	}
 
 	mux.HandleFunc("/acquire", func(w http.ResponseWriter, r *http.Request) {
@@ -1534,7 +1531,35 @@ func (g *gatewayService) handler() http.Handler {
 		writeJSON(w, http.StatusOK, g.publicKeyDocument())
 	})
 
+	// A witness's endpoints (witness_serve.go), only where the engine's
+	// configuration makes this signer a witness; elsewhere /witness/ is no
+	// endpoint at all.
+	if g.witness != nil {
+		mux.HandleFunc("/witness/", g.witness.handler(g.identity))
+	}
+
 	return mux
+}
+
+// errNoBearerToken is the refusal of a request that carries no bearer
+// token where one is required.
+var errNoBearerToken = errors.New("a bearer token from the configured issuer is required")
+
+// bearerCaller is the caller a request's Authorization header proves under
+// the configured identity -- a bearer token the issuer signed, naming this
+// engine, within its validity window -- or why none: one reason, never the
+// token. It is the one check every authenticated endpoint makes, a
+// witness's submission included.
+func bearerCaller(id *identityConfig, authorization string, now time.Time) (*caller, error) {
+	token := bearerToken(authorization)
+	if token == "" {
+		return nil, errNoBearerToken
+	}
+	who, err := verifyToken(token, *id, now)
+	if err != nil {
+		return nil, err
+	}
+	return &who, nil
 }
 
 // listenAndServe binds localhost only. This reference has no authentication and

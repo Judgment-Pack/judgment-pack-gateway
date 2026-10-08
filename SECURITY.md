@@ -4,7 +4,7 @@
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,
 compatibility, or support service-level guarantee, binds localhost, has no authorization on its HTTP
-surface and no authentication unless an `identity` is configured (which decides who may call,
+surface beyond a checkpoint witness's registrations and no authentication unless an `identity` is configured (which decides who may call,
 never from where; a token presented off the machine can be replayed), and runs as a single operator holding a single signing identity.
 It must not be used as the sole control for consequential production decisions, and a `/verify` that
 answers `ok` must not be read as a statement that the underlying facts are true — see
@@ -260,11 +260,39 @@ token is never stored and never signed into a receipt, only its digest. Transpor
 HTTP on a loopback address: a token presented off the machine can be captured and replayed, and
 reaching the engine from another host means a TLS-terminating front the operator runs and trusts.
 
+**A checkpoint witness is reached from other hosts by other parties** ([ADR-0013](docs/adr/0013-checkpoint-witness.md);
+[`SPEC.md`](SPEC.md) §6, "Witness endpoints"). It is the first surface of this reference meant
+for that, and what the reference does for it is narrow. A submission carries a bearer token of
+the configured issuer, verified as every other endpoint verifies one, and is taken only for a
+trail registered to the token's subject; each submitter is held to a number of submissions a
+minute and a number of trails, and the witness to 32 submissions in flight, 4 of them from one
+submitter, and 64 reads, a body
+of one mebibyte and a line of 4096 bytes, each read through its bound and held to its form as it
+is read, and 30 seconds to write an answer. Reads are open to anyone who names a trail, and the
+reference bounds no reader's rate. What it does not do: it speaks plain HTTP on a loopback
+address, so reaching it from another host takes a TLS-terminating front the witness's operator
+runs, which is also where reads are bounded and where the signer's other endpoints are kept from
+other hosts: a token a submitter holds is a token of the configured issuer, which every endpoint
+of the signer that takes a token accepts — `/seal` among them — so a front that passes more than
+`/witness/` passes that too; it is one key and one operator, not a multi-tenant service — every trail it
+witnesses is signed under the gateway's own seed, the key of its receipts and seals, and its
+submitters are the subjects of one issuer, told apart by nothing else; and **a credential is
+enough to spoil a trail at that witness for good**: whoever holds a token of a trail's registered
+subject can have a checkpoint at the largest sequence signed, after which no honest checkpoint of
+the trail is above the latest, and that statement stays in the chain. Revoking the token does not
+unsign it: the trail is retired and its operator goes on under a new trail. Under
+`"first-submission"`, any subject the issuer names, and `submitters` allows, can claim a trail
+whose identity it has learned before its operator does. A witness whose log or marks are damaged
+refuses to start, and the rules it recovers by can cost it its key, which is the gateway's key for
+receipts and seals too. Registering a trail, retiring one and repairing the files take a stop of
+the witness, since a running witness holds its files.
+
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
 checked. A verifier that reads both from the same untrusted place gets no guarantee.
 
-**Not in scope for this reference:** availability or HA, authenticated transport, access control,
-multi-tenancy, key rotation or custody, rate limiting, and resistance to a local attacker who can
+**Not in scope for this reference:** availability or HA, authenticated transport, access control
+beyond a checkpoint witness's registrations, multi-tenancy, key rotation or custody, rate limiting
+beyond a witness's bounds on its submitters, and resistance to a local attacker who can
 concurrently rename or replace store ancestors. Run it from a directory whose ownership and write
 permissions you control.

@@ -6,9 +6,10 @@ package main
 // runtime's audit checkpoints and chains its statements per trail. This file
 // holds what a reader of those statements does: the statement's form, the
 // key rule and the one equation, and the chain rule, within the bounds of
-// one reading. Nothing here signs a statement or serves one: the witness
-// service follows in a later release, and until then `gateway conform` is
-// the only caller, reading corpus/witness/.
+// one reading. Nothing here signs a statement or serves one: the witness's
+// storage (witness_log.go) signs, and its service (witness_serve.go)
+// serves; this reader is what `gateway conform` reads corpus/witness/ with,
+// and what the tests read the statements served with.
 
 import (
 	"bytes"

@@ -472,3 +472,14 @@ jobs:
         run: |
           go build -buildvcs=false -o gateway .
           ./gateway conform --impl ../verify-ts/impl
+      # A chain this gateway's witness serves over HTTP, submitted and read
+      # back a page at a time to its head, before and after a retirement,
+      # read by this implementation through the process contract's
+      # `witness` command with no finding (go/witness_serve_test.go). The
+      # test reads it through the Go reader on every platform; here it reads
+      # it through this one too.
+      - name: The second implementation reads a chain a witness serves
+        working-directory: go
+        env:
+          GATEWAY_VERIFY_TS_IMPL: ${{ github.workspace }}/verify-ts/impl
+        run: go test -count=1 -run '^TestWitnessServedChainReadsCleanly$' -v .

@@ -9,6 +9,7 @@ package main
 //	gateway verify <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
 //	gateway conform [--impl CMD] [--corpus DIR]
 //	gateway witness verify --log <file> --public-key <file> [--marks <file>]
+//	gateway witness register|retire|repair --config <engine.json> ...
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 //	gateway version
@@ -326,11 +327,26 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	// A witness is opened before the store and the registry are made: its
+	// start-up checks refuse a start that a repair, a log copy or a new key
+	// must answer first, and such a start leaves nothing made.
+	var witness *witnessService
+	if cfg.witness != nil {
+		log, err := openEngineWitness(cfg.witness, seed)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "start:", err)
+			return 1
+		}
+		defer log.close()
+		fmt.Fprintln(os.Stderr, "start:", witnessStartLine(log, cfg.witness))
+		witness = newWitnessService(log, cfg.witness, os.Stderr)
+	}
 	service, err := buildService(cfg.store, seed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, identity))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	service.witness = witness
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	service.bindLifetime(ctx)
