@@ -85,7 +85,10 @@ Each connection may set `timeoutSeconds`, a whole number from 10 through 120.
 Left out, or zero as an earlier release stored it, it is 45 seconds. `status`
 advertises the bounds as `timeout: {defaultSeconds: 45, minSeconds: 10,
 maxSeconds: 120}`, so a client sends the field only to a gateway that advertises
-them. Changing it changes the connection's revision. The deadline covers
+them. Changing it changes the connection's revision. A stored value configure
+would refuse (a hand-edited or damaged file) is never echoed: `status` reports
+it as `-1`, outside every bound; it does not choose the plan's envelope; and the
+connection answers `setup-required` until it is saved with a valid one. The deadline covers
 authentication and fetching the whole response, and the caller may end a search
 sooner; search has no shorter response-header cutoff, while the other Google
 integrations keep theirs. A search that runs out of time answers

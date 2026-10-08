@@ -167,3 +167,57 @@ func TestSearchNeedsLongEnvelopeReadsWithoutWriting(t *testing.T) {
 		}
 	}
 }
+
+// tamperedSearch stores a connection with a 90-second timeout, then puts the
+// stored value in its place, as a hand edit or damage would.
+func tamperedSearch(t *testing.T, stored string) (string, *Store, *Broker) {
+	t.Helper()
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	s, err := OpenSearchStore(dir, "desk-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	b := NewSearch(s, false)
+	t.Cleanup(b.Close)
+	raw, _ := json.Marshal(SearchConnection{ID: "demo", Name: "Demo", Provider: "tavily", DailyLimit: 10, Credential: "tvly-test-private-key", TimeoutSeconds: 90})
+	if _, err = b.Handle(context.Background(), "configure", raw); err != nil {
+		t.Fatal(err)
+	}
+	if !SearchNeedsLongEnvelope(dir) {
+		t.Fatal("a valid 90-second timeout does not ask for the long envelope")
+	}
+	held, err := s.read("state.json")
+	if err != nil || !strings.Contains(string(held), `"timeoutSeconds":90`) {
+		t.Fatal("no stored timeout to tamper with", err)
+	}
+	if err = s.write("state.json", json.RawMessage(strings.Replace(string(held), `"timeoutSeconds":90`, `"timeoutSeconds":`+stored, 1))); err != nil {
+		t.Fatal(err)
+	}
+	return dir, s, b
+}
+
+// A stored timeout configure would refuse is neither used to choose the
+// plan's envelope nor echoed by status, which reports it as invalid.
+func TestATamperedStoredTimeoutIsNeitherPlannedNorEchoed(t *testing.T) {
+	for _, stored := range []string{"121", "10000", "-1", `"90"`, "90.5"} {
+		dir, _, b := tamperedSearch(t, stored)
+		if SearchNeedsLongEnvelope(dir) {
+			t.Errorf("a stored %s chose the long envelope", stored)
+		}
+		status, err := b.Handle(context.Background(), "status", []byte(`{}`))
+		if stored == `"90"` || stored == "90.5" {
+			// Not an integer at all: the state does not decode, as any
+			// damaged state does not, and status says it cannot be read.
+			if err != ErrStorage {
+				t.Errorf("a stored %s: status %v", stored, err)
+			}
+			continue
+		}
+		encoded, _ := json.Marshal(status)
+		if err != nil || !strings.Contains(string(encoded), `"timeoutSeconds":-1`) || stored != "-1" && strings.Contains(string(encoded), `"timeoutSeconds":`+stored) {
+			t.Errorf("a stored %s: status %s %v", stored, encoded, err)
+		}
+	}
+}

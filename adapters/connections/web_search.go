@@ -67,7 +67,9 @@ func SearchNeedsLongEnvelope(dir string) bool {
 		return false
 	}
 	for _, c := range v.Search.Connections {
-		if c.TimeoutSeconds > SearchShortEnvelopeSeconds {
+		// A stored timeout configure would refuse counts as unset: such a
+		// connection cannot run, and must not change the plan.
+		if searchTimeoutValid(c.TimeoutSeconds) && c.TimeoutSeconds > SearchShortEnvelopeSeconds {
 			return true
 		}
 	}
@@ -173,8 +175,22 @@ func searchTimeout(c SearchConnection) time.Duration {
 	}
 	return time.Duration(seconds) * time.Second
 }
+
+// searchTimeoutValid reports whether a stored timeout is one configure
+// accepts: zero (the default) or SearchMinTimeoutSeconds to
+// SearchMaxTimeoutSeconds.
+func searchTimeoutValid(seconds int) bool {
+	return seconds == 0 || seconds >= SearchMinTimeoutSeconds && seconds <= SearchMaxTimeoutSeconds
+}
+
+// SearchTimeoutInvalid is what status reports for a stored timeout that is
+// not one configure accepts (a hand-edited or damaged file): never the value
+// itself, and a value outside every advertised bound. Such a connection
+// answers setup-required until it is saved with a valid timeout.
+const SearchTimeoutInvalid = -1
+
 func searchValid(c SearchConnection) bool {
-	if c.TimeoutSeconds != 0 && (c.TimeoutSeconds < SearchMinTimeoutSeconds || c.TimeoutSeconds > SearchMaxTimeoutSeconds) {
+	if !searchTimeoutValid(c.TimeoutSeconds) {
 		return false
 	}
 	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || c.DailyLimit < 1 || c.DailyLimit > 10000 || len(c.Credential) > 8192 {
@@ -231,6 +247,9 @@ func (b *Broker) searchOperation(ctx context.Context, method string, raw []byte)
 			if v.Search != nil {
 				for _, c := range v.Search.Connections {
 					c.Credential = ""
+					if !searchTimeoutValid(c.TimeoutSeconds) {
+						c.TimeoutSeconds = SearchTimeoutInvalid
+					}
 					if c.Day != time.Now().UTC().Format("2006-01-02") {
 						c.Requests = 0
 					}
