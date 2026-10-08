@@ -2,6 +2,7 @@ package websource
 
 import (
 	"adapters/attachment"
+	"adapters/connections"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -159,6 +161,7 @@ func TestPlainTextOriginal(t *testing.T) {
 }
 
 func TestPDFUsesLocalExtractionWithoutOCR(t *testing.T) {
+	t.Setenv("JPACK_CONNECTIONS_DIR", "")
 	for _, name := range []string{"normal.pdf", "scanned.pdf"} {
 		t.Run(name, func(t *testing.T) {
 			raw, err := os.ReadFile("../document/testdata/" + name)
@@ -238,5 +241,97 @@ func TestTitleIsMetadataAndParagraphSpacingIsBounded(t *testing.T) {
 	data, title, err := staticText(context.Background(), []byte(`<title>Title</title><div><h1>Visible</h1><p>Body</p></div><script/>hidden()</script><p>After</p>`))
 	if err != nil || title != "Title" || string(data) != "Visible\n\nBody\n\nAfter" {
 		t.Fatal(string(data), title, err)
+	}
+}
+
+func TestWebPDFUsesSelectedOCRAndKeepsOriginalSource(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	// A program processor runs from the OCR tools bundle beside the running
+	// executable, here the test's own.
+	exe, e := os.Executable()
+	if e != nil {
+		t.Fatal(e)
+	}
+	bundle := filepath.Join(filepath.Dir(exe), "ocr-tools")
+	if e = os.MkdirAll(bundle, 0700); e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { os.RemoveAll(bundle) })
+	script := filepath.Join(bundle, "ocr-fixture")
+	if e := os.WriteFile(script, []byte("#!/bin/sh\n/bin/cat >/dev/null\nprintf '{\"pages\":[{\"number\":1,\"text\":\"Scanned source text\"}]}'\n"), 0700); e != nil {
+		t.Fatal(e)
+	}
+	store, e := connections.OpenProcessingStore(dir, "desk-local")
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer store.Close()
+	b := connections.NewProcessing(store, false)
+	v, e := b.Handle(context.Background(), "status", []byte(`{}`))
+	if e != nil {
+		t.Fatal(e)
+	}
+	status := v.(connections.ProcessingStatus)
+	config := status.ProcessingConfig
+	config.Mode = "auto"
+	config.Connection = "ocr-fixture"
+	config.Connections = []connections.OCRConnection{{ID: "ocr-fixture", Name: "Fixture", Kind: "program", Program: script, Enabled: true}}
+	request, _ := json.Marshal(map[string]any{"ifMatch": status.SHA256, "config": config})
+	if _, e = b.Handle(context.Background(), "configure", request); e != nil {
+		t.Fatal(e)
+	}
+	pdf, e := os.ReadFile("../document/testdata/scanned.pdf")
+	if e != nil {
+		t.Fatal(e)
+	}
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		w.Write(pdf)
+	})
+	// Launched without --document-processing, the adapter reads as before:
+	// no settings are read and no OCR runs.
+	plain, e := read(context.Background(), []byte(`{"url":"https://example.com/scan.pdf"}`), f)
+	var before struct{ Result attachment.Record }
+	if e != nil || json.Unmarshal(plain, &before) != nil || before.Result.Provenance.OCR != nil {
+		t.Fatal("an adapter launched without --document-processing ran OCR", e)
+	}
+	out, e := read(connections.WithDocumentProcessing(context.Background()), []byte(`{"url":"https://example.com/scan.pdf"}`), f)
+	if e != nil {
+		t.Fatal(e)
+	}
+	var env struct{ Result attachment.Record }
+	if json.Unmarshal(out, &env) != nil {
+		t.Fatal("bad record")
+	}
+	if env.Result.Provenance.OCR == nil || env.Result.Content.Pages[0].Text != "Scanned source text" || env.Result.Provenance.Source.Format != "original-v1" {
+		t.Fatal("OCR result or source lost")
+	}
+	raw, _ := json.Marshal(env.Result)
+	if e = attachment.Check(raw); e != nil {
+		t.Fatal(e)
+	}
+	if export := os.Getenv("JPACK_TEST_WEB_OCR_RECORD"); export != "" {
+		if e = os.WriteFile(export, raw, 0600); e != nil {
+			t.Fatal(e)
+		}
+	}
+}
+
+// Settings that cannot be read now stop the read before any request is made;
+// they are not taken for "no OCR".
+func TestUnreadableProcessingSettingsStopTheReadFirst(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0755)
+	t.Setenv("JPACK_CONNECTIONS_DIR", dir)
+	asked := 0
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("text"))
+	})
+	if _, e := read(connections.WithDocumentProcessing(context.Background()), []byte(`{"url":"https://example.com/scan.pdf"}`), f); e != ErrProcessing || asked != 0 {
+		t.Fatal("a read went ahead without its processing settings", e, asked)
 	}
 }

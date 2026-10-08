@@ -26,10 +26,12 @@ func ResourceDocument(ctx context.Context, provider, resourceID, name, mediaType
 	identity.Name = "adapter-sources"
 	cfg := document.DefaultConfig()
 	cfg.MaxBytes = MaxFileBytes
-	cfg.OCR = ""
+	if err := ApplyDocumentProcessing(ctx, &cfg); err != nil {
+		return nil, err
+	}
 	cfg.MaxOutput = 8 << 20
 	started := time.Now()
-	raw, err := processDriveDocument(ctx, cfg, document.Request{Name: name, MediaType: mediaType, Bytes: data, SHA256: digest(data), OCR: "never", ReceivedAt: started}, identity, started)
+	raw, err := processDriveDocument(ctx, cfg, document.Request{Name: name, MediaType: mediaType, Bytes: data, SHA256: digest(data), OCR: "auto", ReceivedAt: started}, identity, started)
 	if err != nil {
 		return nil, err
 	}

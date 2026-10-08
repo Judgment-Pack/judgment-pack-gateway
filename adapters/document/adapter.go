@@ -73,6 +73,21 @@ type Config struct {
 	Timeout      time.Duration
 	// OCR is the OCR program, one word, or empty for none.
 	OCR string
+	// OCREnv, NAME=value entries, is added to the OCR program's environment,
+	// never its arguments, which stay the page numbers alone. It is the
+	// operator's (the document-processing settings set it), never the
+	// document's or the caller's.
+	OCREnv []string
+	// OCRName is how a record names the OCR program; empty, it names it as
+	// OCR gives it. The document-processing settings set it to the
+	// processor's kind and the program's file name, so that a record never
+	// names the directory the program was run from.
+	OCRName string
+	// OCRGroup runs the OCR program in a process group of its own, ended
+	// whole with it: for a caller that no outer group cleans up after, as
+	// the connection companion's test. Under the gateway it stays false and
+	// the program stays in the adapter's group.
+	OCRGroup bool
 }
 
 // DefaultConfig is the configuration the flags default to.
@@ -683,7 +698,14 @@ type processor struct {
 // Process builds the record for one admitted request. reading is the instant
 // the adapter began reading the request, which durationMs is measured from.
 func Process(ctx context.Context, cfg Config, req Request, identity attachment.Identity, reading time.Time) ([]byte, error) {
-	p := &processor{cfg: cfg, identity: identity, reading: reading, now: time.Now, runOCR: runOCRProgram}
+	runner := runOCRProgram
+	if len(cfg.OCREnv) > 0 || cfg.OCRGroup {
+		env, group := append([]string(nil), cfg.OCREnv...), cfg.OCRGroup
+		runner = func(ctx context.Context, name string, pages []int, doc []byte, limit int64) ([]byte, string, error) {
+			return runOCRWith(ctx, name, env, group, pages, doc, limit)
+		}
+	}
+	p := &processor{cfg: cfg, identity: identity, reading: reading, now: time.Now, runOCR: runner}
 	return p.process(ctx, req)
 }
 
@@ -913,6 +935,10 @@ func (p *processor) applyOCR(ctx context.Context, req Request, rec *attachment.R
 		addError(rec, attachment.CodeOCRIncomplete, 0, fmt.Sprintf("the OCR program was asked for %d pages and answered %d; %d stay needs-ocr", len(pages), len(answers), missing))
 	}
 	if len(applied) > 0 {
-		rec.Provenance.OCR = &attachment.OCR{Program: p.cfg.OCR, Digest: digest, Pages: applied}
+		name := p.cfg.OCR
+		if p.cfg.OCRName != "" {
+			name = p.cfg.OCRName
+		}
+		rec.Provenance.OCR = &attachment.OCR{Program: name, Digest: digest, Pages: applied}
 	}
 }

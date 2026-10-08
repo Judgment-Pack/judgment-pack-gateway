@@ -58,6 +58,13 @@ var readOCRStdout = program.ReadStdout
 // checked: a deadline that passes while they are made is now found by that
 // check, and the program is not started.
 func runOCRProgram(ctx context.Context, name string, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
+	return runOCRWith(ctx, name, nil, false, pages, doc, maxOutput)
+}
+
+// runOCRWith is runOCRProgram with the operator's entries added to the
+// program's environment, and, with group, the program in a process group of
+// its own that is ended whole (program.Run's Group).
+func runOCRWith(ctx context.Context, name string, env []string, group bool, pages []int, doc []byte, maxOutput int64) ([]byte, string, error) {
 	args := make([]string, 0, len(pages))
 	for _, n := range pages {
 		args = append(args, strconv.Itoa(n))
@@ -65,7 +72,7 @@ func runOCRProgram(ctx context.Context, name string, pages []int, doc []byte, ma
 	// The reader is looked up when the program's stdout is read, as it was
 	// when this function read it itself, and not when the run is begun.
 	read := func(r io.Reader, limit int64) ([]byte, error) { return readOCRStdout(r, limit) }
-	return program.Run{Program: name, Args: args, Stdin: doc, MaxOutput: maxOutput, Read: read}.Do(ctx)
+	return program.Run{Program: name, Args: args, Stdin: doc, MaxOutput: maxOutput, Read: read, Env: env, Group: group}.Do(ctx)
 }
 
 // admitOCRAnswer holds the program's output to step 6's admission: one

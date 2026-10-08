@@ -103,6 +103,17 @@ type Run struct {
 	// its own, which is not waited for where the wait for stdout gives up:
 	// the pipe is closed under it, and what it does after that is its own.
 	Read func(r io.Reader, limit int64) ([]byte, error)
+	// Env, NAME=value entries, is added to the environment the program
+	// inherits; none, it inherits the adapter's as it is. What a program is
+	// given here stays out of its argument list, which every process on the
+	// host can read.
+	Env []string
+	// Group starts the program in a process group of its own and ends the
+	// whole group, whatever the program started, when it is ended and when
+	// the run is over. It is for a caller that no outer process group
+	// cleans up after (the connection companion); under the gateway a
+	// program stays in the adapter's group, which the gateway ends.
+	Group bool
 }
 
 // Do resolves, digests and runs the program, and returns what it wrote on
@@ -152,6 +163,12 @@ func (r Run) Do(ctx context.Context) ([]byte, string, error) {
 	defer stdoutRead.Close()
 	cmd := exec.Command(path, r.Args...)
 	cmd.Args[0] = r.Program
+	if len(r.Env) > 0 {
+		cmd.Env = append(os.Environ(), r.Env...)
+	}
+	if r.Group {
+		startGroup(cmd)
+	}
 	cmd.Stdin, cmd.Stdout = stdinRead, stdoutWrite
 	// Stderr is discarded: nil connects it to the null device.
 	startErr := cmd.Start()
@@ -195,8 +212,16 @@ func (r Run) Do(ctx context.Context) ([]byte, string, error) {
 	kill := func() {
 		if !killed {
 			killed = true
-			_ = cmd.Process.Kill()
+			if r.Group {
+				endGroup(cmd)
+			} else {
+				_ = cmd.Process.Kill()
+			}
 		}
+	}
+	if r.Group {
+		// Whatever the program left running ends with the run.
+		defer endGroup(cmd)
 	}
 	startPipeWait := func() {
 		if pipeWait == nil {

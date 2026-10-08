@@ -18,7 +18,8 @@ func run() int {
 	dir := fs.String("state-dir", os.Getenv("JPACK_CONNECTIONS_DIR"), "")
 	principal := fs.String("principal", "", "")
 	provider := fs.String("provider", "", "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
+	processing := fs.Bool("document-processing", false, "")
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || *processing && *provider != "aws-s3" {
 		return 2
 	}
 	open, read := connections.OpenNotionStore, connections.ReadNotion
@@ -48,7 +49,14 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "invalid-request")
 		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 55*time.Second)
+	// Launched with --document-processing (S3 only: the other providers read
+	// text), a retained file may be read with the operator's OCR processor,
+	// and has the envelope the local plan gives for it.
+	ctx, timeout := context.Background(), 55*time.Second
+	if *processing {
+		ctx, timeout = connections.WithDocumentProcessing(ctx), connections.ProcessingAdapterTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, err := read(ctx, s, raw)
 	if err != nil {

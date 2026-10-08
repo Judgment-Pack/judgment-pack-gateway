@@ -78,7 +78,9 @@ selections on that change. Names are bounded plain display text, never secrets.
 The current resource-v1 contract preserves four files and 4 MiB per file; Desk
 also applies any lower local limit and displays the effective limits. A larger
 limit requires a reviewed protocol/consumer change. PDF/text extraction uses
-the existing processor with OCR disabled; original bytes are retained.
+the existing processor, with OCR only where the operator's document-processing
+settings enable it ([attachments](attachments.md#document-processing-ocr-under-the-managed-local-plan));
+original bytes are retained.
 
 Disconnect must explicitly return disconnected: true only after local access
 and outstanding grants are invalidated. revoked: true is permitted only after
@@ -110,7 +112,8 @@ Original bytes are retained inline, canonical base64, and must match document
 identity and size. Existing extraction, partial-result and OCR rules still apply.
 `ResourceDocument` produces this record after the provider adapter has admitted
 and consumed a source grant and bounded its read. It neither authorizes nor
-retrieves the source. The helper processes existing PDF/text inputs with OCR off.
+retrieves the source. The helper processes existing PDF/text inputs with the
+operator's OCR processor when one is enabled, and with OCR off otherwise.
 
 The consumer verifies the current signer, sealed receipt, acquisition source,
 supported receipt shape, argument commitment, selected resource id, signed provider
@@ -130,6 +133,13 @@ present in the verified bundle manifest. Desk bounds the plan to 32 KiB/64 sourc
 rejects duplicate ids, word-splitting arguments and unrecognized shapes, and
 constructs the gateway CLI without a shell. Only JPACK_CONNECTIONS_DIR may be
 passed as source environment. The private signing seed remains with the core.
+The plan is read as the document-processing settings stand when it is asked
+(the one read of custody discovery makes, creating nothing). While a processor is
+configured, the sources that may run it (documents, drive, web and aws-s3) are
+launched with --document-processing, JPACK_CONNECTIONS_DIR and 150 seconds; with
+none configured the plan is unchanged, so a desk that admits at most 60 seconds a
+source keeps taking it
+([attachments](attachments.md#document-processing-ocr-under-the-managed-local-plan)).
 
 Provider changes therefore remain in gateway code: its implementation, catalog
 and source plan. Generic Desk relay routing and UI do not need a new provider case.

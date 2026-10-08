@@ -99,6 +99,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if !ok || !descriptor.supports(method) {
 		return nil, ErrRequest
 	}
+	if b.provider.processing {
+		return b.processingOperation(ctx, method, raw)
+	}
 	if b.provider.search {
 		return b.searchOperation(ctx, method, raw)
 	}

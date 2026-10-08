@@ -106,6 +106,14 @@ builds:
     id: gateway-connections
     main: ./cmd/gateway-connections
     binary: gateway-connections
+  - <<: *adapter
+    id: ocr-cloud
+    main: ./cmd/ocr-cloud
+    binary: ocr-cloud
+  - <<: *adapter
+    id: ocr-tesseract
+    main: ./cmd/ocr-tesseract
+    binary: ocr-tesseract
 
 archives:
   # One archive per platform: the executables, the specification, and the

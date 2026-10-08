@@ -2,6 +2,7 @@ package websource
 
 import (
 	"adapters/attachment"
+	"adapters/connections"
 	"adapters/document"
 	"adapters/internal/canon"
 	"bytes"
@@ -48,7 +49,21 @@ func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
 	if json.Unmarshal(canonical, &members) != nil || (len(members) != 1 && len(members) != 2 || len(members) == 2 && members["site"] != req.Site || len(members) == 2 && req.Site == "") || members["url"] != req.URL {
 		return nil, ErrRequest
 	}
-	ctx, cancel := context.WithTimeout(ctx, Timeout)
+	// Under --document-processing the operator's settings are resolved before
+	// any request is made. A read with an OCR processor has the processing
+	// envelope in all; any other read keeps Timeout.
+	cfg := document.DefaultConfig()
+	cfg.MaxBytes = MaxBytes
+	cfg.MaxText = MaxBytes
+	cfg.MaxOutput = MaxOutput
+	if err := connections.ApplyDocumentProcessing(ctx, &cfg); err != nil {
+		return nil, ErrProcessing
+	}
+	budget := Timeout
+	if cfg.OCR != "" {
+		budget = connections.ProcessingAdapterTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	started := time.Now()
 	policy := readPolicy{maxBytes: MaxBytes}
@@ -132,14 +147,9 @@ func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
 		return nil, ErrProcessing
 	}
 	identity.Name = "adapter-web"
-	cfg := document.DefaultConfig()
-	cfg.MaxBytes = MaxBytes
-	cfg.MaxText = MaxBytes
-	cfg.MaxOutput = MaxOutput
-	cfg.OCR = ""
 	processing, stop := context.WithTimeout(ctx, cfg.Timeout)
 	defer stop()
-	encoded, err := document.Process(processing, cfg, document.Request{Name: title, MediaType: media, Bytes: data, SHA256: digest(data), OCR: "never", ReceivedAt: started}, identity, started)
+	encoded, err := document.Process(processing, cfg, document.Request{Name: title, MediaType: media, Bytes: data, SHA256: digest(data), OCR: "auto", ReceivedAt: started}, identity, started)
 	if err != nil || ctx.Err() != nil {
 		return nil, ErrProcessing
 	}

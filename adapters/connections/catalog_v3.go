@@ -98,8 +98,21 @@ type LocalSource struct {
 	Connections bool     `json:"connections"`
 }
 
-func ConnectionLocalPlan() LocalPlan {
-	return LocalPlan{1, []LocalSource{
+// ConnectionLocalPlan is the plan with no document processor configured,
+// which every desk takes.
+func ConnectionLocalPlan() LocalPlan { return ConnectionLocalPlanWith(false) }
+
+// ConnectionLocalPlanWith is the plan, and with processing the sources that
+// may read a PDF with the operator's OCR processor (documents, drive, web and
+// aws-s3) are launched with --document-processing, hold the connections
+// directory where the settings are kept, and have ProcessingSourceSeconds:
+// the processing deadline is at most 120 seconds and those adapters then stop
+// at 140. Only an adapter launched so resolves the settings, so a read never
+// runs OCR inside an envelope that was not given for it. A desk that admits at
+// most 60 seconds a source refuses that plan whole, and is given the plan
+// without processing as long as no processor is configured.
+func ConnectionLocalPlanWith(processing bool) LocalPlan {
+	plan := LocalPlan{1, []LocalSource{
 		{"documents", "adapter-document", []string{"--max-bytes", "16777216", "--max-output", "8388608", "--timeout", "30s"}, "command", 40, false},
 		// The record's bound is the one docs/design/rendering.md gives for a
 		// file of the adapter's default bound, 4 MiB. The adapter keeps its
@@ -117,4 +130,17 @@ func ConnectionLocalPlan() LocalPlan {
 		{"web-search", "adapter-sources", []string{"--provider", "web-search", "--principal", "desk-local"}, "http", 60, true},
 		{"aws-s3", "adapter-sources", []string{"--provider", "aws-s3", "--principal", "desk-local"}, "command", 60, true},
 	}}
+	if processing {
+		for i := range plan.Sources {
+			source := &plan.Sources[i]
+			if processingSources[source.ID] {
+				source.Args = append(append([]string{}, source.Args...), "--document-processing")
+				source.Timeout, source.Connections = ProcessingSourceSeconds, true
+			}
+		}
+	}
+	return plan
 }
+
+// processingSources are the sources that may read a PDF with OCR.
+var processingSources = map[string]bool{"documents": true, "drive": true, "web": true, "aws-s3": true}

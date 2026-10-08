@@ -51,7 +51,8 @@ revoked:false because an IAM key remains valid at AWS until removed there.
 - GET uses If-Match and the selected VersionId where supplied, caps the body at
   4 MiB, checks returned ETag/version/length, and rechecks local generation after
   fetching and processing. Only the explicitly selected PDF/text bytes enter the
-  existing resource-v1 producer. PDF OCR remains off.
+  existing resource-v1 producer. PDF OCR runs only when the operator's
+  document-processing settings enable a processor.
 - S3 metadata and request authentication never become document provenance. The
   signed resource identity is provider + bucket/key; retained bytes determine
   document identity. Long display filenames are shortened without changing the
