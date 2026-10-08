@@ -30,7 +30,8 @@ func run() int {
 		// Discovery must never configure a publisher, consume stdin, or create,
 		// lock or write anything. The local plan alone reads custody: whether
 		// the document-processing settings under JPACK_CONNECTIONS_DIR name a
-		// processor, as they stand when it is asked. Refuse mixed modes rather
+		// processor, and whether a search connection there has a timeout the
+		// ordinary envelope does not carry, as they stand when it is asked. Refuse mixed modes rather
 		// than silently ignoring their flags.
 		if fs.NFlag() != 1 {
 			return 2
@@ -40,7 +41,8 @@ func run() int {
 			output = connections.ConnectionCatalogV3()
 		}
 		if *localPlan {
-			output = connections.ConnectionLocalPlanWith(connections.ProcessingConfigured(os.Getenv("JPACK_CONNECTIONS_DIR")))
+			dir := os.Getenv("JPACK_CONNECTIONS_DIR")
+			output = connections.ConnectionLocalPlanFor(connections.ProcessingConfigured(dir), connections.SearchNeedsLongEnvelope(dir))
 		}
 		if json.NewEncoder(os.Stdout).Encode(output) != nil {
 			return 1
@@ -118,11 +120,7 @@ func run() int {
 		if json.Unmarshal(scan.Bytes(), &r) != nil || len(r.ID) > 64 {
 			return 2
 		}
-		timeout := 50 * time.Second
-		if *provider == "document-processing" && r.Method == "test" {
-			timeout = 140 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := requestContext(*provider, r.Method)
 		var result any
 		var err error
 		bound := requestBound(r.Method)
@@ -144,6 +142,20 @@ func run() int {
 		return 1
 	}
 	return 0
+}
+
+// requestContext is the context one request is given: 50 seconds; a
+// document-processing test 140; a search connection's test the search's own
+// deadline, at most SearchMaxTimeoutSeconds, and time to report it.
+func requestContext(provider, method string) (context.Context, context.CancelFunc) {
+	timeout := 50 * time.Second
+	if provider == "document-processing" && method == "test" {
+		timeout = 140 * time.Second
+	}
+	if provider == "web-search" && method == "test" {
+		timeout = connections.SearchAdapterTimeout
+	}
+	return context.WithTimeout(context.Background(), timeout)
 }
 
 // requestBound is the most a request's line may hold. Only a request that

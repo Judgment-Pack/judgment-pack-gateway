@@ -140,6 +140,8 @@ launched with --document-processing, JPACK_CONNECTIONS_DIR and 150 seconds; with
 none configured the plan is unchanged, so a desk that admits at most 60 seconds a
 source keeps taking it
 ([attachments](attachments.md#document-processing-ocr-under-the-managed-local-plan)).
+Likewise, while a search connection there has a timeout over 50 seconds, web-search
+is launched with --long-search and 130 seconds ([web search](../web-search.md#how-long-a-search-may-take)).
 
 Provider changes therefore remain in gateway code: its implementation, catalog
 and source plan. Generic Desk relay routing and UI do not need a new provider case.

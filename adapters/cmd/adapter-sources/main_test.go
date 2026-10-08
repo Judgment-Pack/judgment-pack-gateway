@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSourcesCLIHelper(t *testing.T) {
@@ -81,5 +82,41 @@ func TestSourcesCLIConsumesOnlyTheSelectedGrant(t *testing.T) {
 	}
 	if out, _, err := runCLI("obsidian", string(raw)); err == nil || len(out) != 0 {
 		t.Fatal("replayed grant accepted")
+	}
+}
+
+// --long-search is the web-search source's alone, as --document-processing
+// is S3's: any other provider launched with it is refused.
+func TestTheLongSearchEnvelopeIsWebSearchsAlone(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	for _, provider := range []string{"notion", "obsidian", "aws-s3"} {
+		args, _ := json.Marshal([]string{"adapter-sources", "--state-dir", dir, "--principal", "fixture", "--provider", provider, "--long-search"})
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSourcesCLIHelper$")
+		cmd.Env = append(os.Environ(), "SOURCES_CLI_HELPER=1", "SOURCES_CLI_ARGS="+string(args))
+		cmd.Stdin = strings.NewReader("{}")
+		err := cmd.Run()
+		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 2 {
+			t.Fatalf("%s took --long-search: %v", provider, err)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatal("a refused launch opened custody")
+	}
+}
+
+// Each launch gives the read the deadline its envelope allows: 55 seconds,
+// 125 under --long-search, 140 under --document-processing.
+func TestEachLaunchGivesTheReadItsDeadline(t *testing.T) {
+	for _, c := range []struct {
+		processing, longSearch bool
+		want                   time.Duration
+	}{{false, false, 55 * time.Second}, {false, true, 125 * time.Second}, {true, false, 140 * time.Second}} {
+		ctx, cancel := readContext(c.processing, c.longSearch)
+		deadline, ok := ctx.Deadline()
+		cancel()
+		if left := time.Until(deadline); !ok || left > c.want || left < c.want-time.Second {
+			t.Errorf("processing %v, long search %v: %v left, want %v", c.processing, c.longSearch, left, c.want)
+		}
 	}
 }

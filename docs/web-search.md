@@ -76,8 +76,35 @@ request counter is reserved before network access; concurrent calls cannot
 exceed it. Attempts, including failed calls and connection tests, count. The
 counter resets at midnight UTC. It limits requests, not currency or a cloud
 billing account's total usage. A Google request may itself perform several
-searches. Every call is capped at 45 seconds, a 2 MiB provider response and ten
-normalized hits. No retry silently spends more requests.
+searches. Every response is capped at 2 MiB and ten normalized hits. No retry
+silently spends more requests.
+
+### How long a search may take
+
+Each connection may set `timeoutSeconds`, a whole number from 10 through 120.
+Left out, or zero as an earlier release stored it, it is 45 seconds. `status`
+advertises the bounds as `timeout: {defaultSeconds: 45, minSeconds: 10,
+maxSeconds: 120}`, so a client sends the field only to a gateway that advertises
+them. Changing it changes the connection's revision. A stored value configure
+would refuse (a hand-edited or damaged file) is never echoed: `status` reports
+it as `-1`, outside every bound; it does not choose the plan's envelope; and the
+connection answers `setup-required` until it is saved with a valid one. The deadline covers
+authentication and fetching the whole response, and the caller may end a search
+sooner; search has no shorter response-header cutoff, while the other Google
+integrations keep theirs. A search that runs out of time answers
+`search-timeout`, never a credentials error. A connection test has the same
+deadline and metering as a search, and the companion allows it 125 seconds.
+
+The local plan's ordinary `web-search` envelope is 60 seconds, the adapter
+stopping at 55, which carries a timeout of up to 50 seconds. While a connection
+has a longer one, `gateway-connections --local-plan`, reading the connections
+directory its environment names and writing nothing, launches the source with
+`--long-search` and 130 seconds, and the adapter stops at 125. A desk reads the
+plan when it starts its local gateway, so a longer timeout takes the long
+envelope at that gateway's next start, and only where the desk passes the
+connections directory to `--local-plan`; until then a search that passes 55
+seconds ends there, as `search-timeout`. With no such timeout the plan is
+unchanged, and every desk takes it.
 
 ## The published form
 
@@ -107,8 +134,11 @@ looser than the adapter. Three things a consumer should not read into it:
 
 ## What was tested
 
-The tests answer from local TLS servers and a stand-in transport. No provider
-was called with an account, so nothing here is a claim that a live Tavily or
+The tests answer from local TLS servers and a stand-in transport. They hold
+the stored timeout to its bounds and its legacy default, the deadline a request
+is given, a caller's earlier cancellation, the revision a change makes, the
+metering of a failed attempt, and the plan's envelope to the timeouts stored.
+No provider was called with an account, so nothing here is a claim that a live Tavily or
 Google Cloud account is accepted, or of what a live answer holds: the form of
 Google's source links, the size of its attribution markup and the models that
 support grounding are as its documentation states them, not as observed.

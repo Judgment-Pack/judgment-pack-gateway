@@ -12,6 +12,24 @@ import (
 )
 
 func main() { os.Exit(run()) }
+
+// readContext is the context a read is given: 55 seconds. Launched with
+// --document-processing (S3 only: the other providers read text), a retained
+// file may be read with the operator's OCR processor, and has the envelope
+// the local plan gives for it. Launched with --long-search, a search
+// connection's timeout may be up to SearchMaxTimeoutSeconds; otherwise a
+// longer one ends here, at 55 seconds, as search-timeout, before the plan's
+// ordinary 60.
+func readContext(processing, longSearch bool) (context.Context, context.CancelFunc) {
+	ctx, timeout := context.Background(), 55*time.Second
+	if processing {
+		ctx, timeout = connections.WithDocumentProcessing(ctx), connections.ProcessingAdapterTimeout
+	}
+	if longSearch {
+		timeout = connections.SearchAdapterTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
 func run() int {
 	fs := flag.NewFlagSet("adapter-sources", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
@@ -19,7 +37,8 @@ func run() int {
 	principal := fs.String("principal", "", "")
 	provider := fs.String("provider", "", "")
 	processing := fs.Bool("document-processing", false, "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || *processing && *provider != "aws-s3" {
+	longSearch := fs.Bool("long-search", false, "")
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || *processing && *provider != "aws-s3" || *longSearch && *provider != "web-search" {
 		return 2
 	}
 	open, read := connections.OpenNotionStore, connections.ReadNotion
@@ -49,14 +68,7 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "invalid-request")
 		return 1
 	}
-	// Launched with --document-processing (S3 only: the other providers read
-	// text), a retained file may be read with the operator's OCR processor,
-	// and has the envelope the local plan gives for it.
-	ctx, timeout := context.Background(), 55*time.Second
-	if *processing {
-		ctx, timeout = connections.WithDocumentProcessing(ctx), connections.ProcessingAdapterTimeout
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := readContext(*processing, *longSearch)
 	defer cancel()
 	out, err := read(ctx, s, raw)
 	if err != nil {

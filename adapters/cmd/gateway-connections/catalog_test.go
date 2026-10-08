@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCatalogCLIHelper(t *testing.T) {
@@ -145,5 +146,56 @@ func TestTheLocalPlanFollowsTheProcessingSettings(t *testing.T) {
 	}
 	if long != 4 {
 		t.Fatalf("%d sources have the processing envelope", long)
+	}
+}
+
+// A search connection whose timeout the ordinary envelope does not carry gives
+// web-search the long one in the plan, and nothing else changes.
+func TestTheLocalPlanFollowsTheSearchTimeouts(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	plan := func() connections.LocalPlan {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCatalogCLIHelper$", "--", "--local-plan")
+		cmd.Env = append(os.Environ(), "GATEWAY_CATALOG_HELPER=1", "JPACK_CONNECTIONS_DIR="+dir)
+		cmd.Dir = t.TempDir()
+		raw, err := cmd.Output()
+		var served connections.LocalPlan
+		if err != nil || json.Unmarshal(raw, &served) != nil {
+			t.Fatal(err)
+		}
+		return served
+	}
+	s, err := connections.OpenSearchStore(dir, "desk-local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	b := connections.NewSearch(s, false)
+	defer b.Close()
+	raw, _ := json.Marshal(connections.SearchConnection{ID: "demo", Name: "Demo", Provider: "tavily", DailyLimit: 10, Credential: "tvly-test-private-key", TimeoutSeconds: 90})
+	if _, err = b.Handle(context.Background(), "configure", raw); err != nil {
+		t.Fatal(err)
+	}
+	want, _ := json.Marshal(connections.ConnectionLocalPlanFor(false, true))
+	got, _ := json.Marshal(plan())
+	if string(got) != string(want) {
+		t.Fatalf("a 90-second search connection: %s", got)
+	}
+}
+
+// Each request is given its deadline: 50 seconds, a document-processing test
+// 140, a search connection's test 125.
+func TestEachRequestGetsItsDeadline(t *testing.T) {
+	for _, c := range []struct {
+		provider, method string
+		want             time.Duration
+	}{{"web-search", "test", 125 * time.Second}, {"web-search", "status", 50 * time.Second}, {"web-search", "configure", 50 * time.Second}, {"document-processing", "test", 140 * time.Second}, {"document-processing", "status", 50 * time.Second}, {"google-drive", "test", 50 * time.Second}} {
+		ctx, cancel := requestContext(c.provider, c.method)
+		deadline, ok := ctx.Deadline()
+		cancel()
+		if left := time.Until(deadline); !ok || left > c.want || left < c.want-time.Second {
+			t.Errorf("%s %s: %v left, want %v", c.provider, c.method, left, c.want)
+		}
 	}
 }

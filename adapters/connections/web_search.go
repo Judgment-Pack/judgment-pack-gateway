@@ -13,12 +13,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -26,18 +30,66 @@ import (
 	googleauth "golang.org/x/oauth2/google"
 )
 
+const (
+	SearchDefaultTimeoutSeconds = 45
+	SearchMinTimeoutSeconds     = 10
+	SearchMaxTimeoutSeconds     = 120
+	// SearchShortEnvelopeSeconds is the longest connection timeout the
+	// plan's ordinary web-search envelope carries: 60 seconds, the adapter
+	// stopping at 55. A longer one needs the long envelope: the plan
+	// launches the source with --long-search and SearchSourceSeconds, and
+	// the adapter stops at SearchAdapterTimeout.
+	SearchShortEnvelopeSeconds = 50
+	SearchSourceSeconds        = SearchMaxTimeoutSeconds + 10
+	SearchAdapterTimeout       = (SearchMaxTimeoutSeconds + 5) * time.Second
+)
+
+// SearchNeedsLongEnvelope reports whether a search connection under dir has a
+// timeout longer than the ordinary envelope carries, for the local plan. It
+// creates, locks and writes nothing; no directory, no namespace, no state, or
+// state that cannot be read now, is false: the plan then stays the ordinary
+// one, and a search past it ends at the adapter's deadline as search-timeout.
+func SearchNeedsLongEnvelope(dir string) bool {
+	if dir == "" || !filepath.IsAbs(dir) {
+		return false
+	}
+	st, err := os.Lstat(dir)
+	if err != nil || !st.IsDir() || private(st, true) != nil {
+		return false
+	}
+	s, err := peekStore(filepath.Join(dir, "web-search"), "desk-local")
+	if err != nil {
+		return false
+	}
+	defer s.Close()
+	raw, err := s.read("state.json")
+	var v state
+	if err != nil || decode(raw, &v) != nil || v.Search == nil {
+		return false
+	}
+	for _, c := range v.Search.Connections {
+		// A stored timeout configure would refuse counts as unset: such a
+		// connection cannot run, and must not change the plan.
+		if searchTimeoutValid(c.TimeoutSeconds) && c.TimeoutSeconds > SearchShortEnvelopeSeconds {
+			return true
+		}
+	}
+	return false
+}
+
 type SearchConnection struct {
-	ID         string `json:"id"`
-	Revision   string `json:"revision"`
-	Name       string `json:"name"`
-	Provider   string `json:"provider"`
-	Project    string `json:"project,omitempty"`
-	Location   string `json:"location,omitempty"`
-	Model      string `json:"model,omitempty"`
-	DailyLimit int    `json:"dailyLimit"`
-	Credential string `json:"credential,omitempty"`
-	Day        string `json:"day,omitempty"`
-	Requests   int    `json:"requests,omitempty"`
+	ID             string `json:"id"`
+	Revision       string `json:"revision"`
+	Name           string `json:"name"`
+	Provider       string `json:"provider"`
+	Project        string `json:"project,omitempty"`
+	Location       string `json:"location,omitempty"`
+	Model          string `json:"model,omitempty"`
+	DailyLimit     int    `json:"dailyLimit"`
+	TimeoutSeconds int    `json:"timeoutSeconds,omitempty"`
+	Credential     string `json:"credential,omitempty"`
+	Day            string `json:"day,omitempty"`
+	Requests       int    `json:"requests,omitempty"`
 }
 type searchState struct {
 	Connections []SearchConnection `json:"connections"`
@@ -94,14 +146,72 @@ func NewSearch(s *Store, disabled bool) *Broker {
 
 // Alias keeps the existing provider transport (no proxies or redirects) distinct
 // from the OAuth library's package name.
-func googleProvider() provider { return google() }
+func googleProvider() provider {
+	p := google()
+	// Grounded generation may not send headers until the model has finished.
+	// Keep the bounded per-connection context, but do not apply the shorter
+	// metadata API header timeout to search. Other Google integrations retain it.
+	p.client.Transport.(*http.Transport).ResponseHeaderTimeout = 0
+	p.client.Timeout = SearchMaxTimeoutSeconds * time.Second
+	return p
+}
+
+// timeoutSeen carries requests and remembers whether one ended for time.
+type timeoutSeen struct {
+	http.RoundTripper
+	timedOut atomic.Bool
+}
+
+func (t *timeoutSeen) RoundTrip(r *http.Request) (*http.Response, error) {
+	base := t.RoundTripper
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	response, err := base.RoundTrip(r)
+	if err != nil && (searchRequestFailure(err, ErrProvider) == Error("search-timeout") || errors.Is(r.Context().Err(), context.DeadlineExceeded)) {
+		t.timedOut.Store(true)
+	}
+	return response, err
+}
+
+func searchRequestFailure(err error, fallback Error) error {
+	var timeout net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
+		return Error("search-timeout")
+	}
+	return fallback
+}
 func searchProviders() []map[string]any {
 	return []map[string]any{
 		{"id": "tavily", "name": "Tavily", "kind": "search-results", "fields": []string{"api-key"}, "docs": "https://docs.tavily.com/documentation/quickstart"},
 		{"id": "google-grounding", "name": "Google Cloud · Search grounding", "kind": "grounded-answer", "fields": []string{"project", "location", "model", "service-account-json"}, "docs": "https://cloud.google.com/vertex-ai/generative-ai/docs/grounding/grounding-with-google-search"},
 	}
 }
+func searchTimeout(c SearchConnection) time.Duration {
+	seconds := c.TimeoutSeconds
+	if seconds == 0 {
+		seconds = SearchDefaultTimeoutSeconds
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+// searchTimeoutValid reports whether a stored timeout is one configure
+// accepts: zero (the default) or SearchMinTimeoutSeconds to
+// SearchMaxTimeoutSeconds.
+func searchTimeoutValid(seconds int) bool {
+	return seconds == 0 || seconds >= SearchMinTimeoutSeconds && seconds <= SearchMaxTimeoutSeconds
+}
+
+// SearchTimeoutInvalid is what status reports for a stored timeout that is
+// not one configure accepts (a hand-edited or damaged file): never the value
+// itself, and a value outside every advertised bound. Such a connection
+// answers setup-required until it is saved with a valid timeout.
+const SearchTimeoutInvalid = -1
+
 func searchValid(c SearchConnection) bool {
+	if !searchTimeoutValid(c.TimeoutSeconds) {
+		return false
+	}
 	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || c.DailyLimit < 1 || c.DailyLimit > 10000 || len(c.Credential) > 8192 {
 		return false
 	}
@@ -156,6 +266,9 @@ func (b *Broker) searchOperation(ctx context.Context, method string, raw []byte)
 			if v.Search != nil {
 				for _, c := range v.Search.Connections {
 					c.Credential = ""
+					if !searchTimeoutValid(c.TimeoutSeconds) {
+						c.TimeoutSeconds = SearchTimeoutInvalid
+					}
 					if c.Day != time.Now().UTC().Format("2006-01-02") {
 						c.Requests = 0
 					}
@@ -164,7 +277,7 @@ func (b *Broker) searchOperation(ctx context.Context, method string, raw []byte)
 			}
 			return nil
 		})
-		return map[string]any{"version": 1, "providers": searchProviders(), "connections": rows}, err
+		return map[string]any{"version": 1, "providers": searchProviders(), "connections": rows, "timeout": map[string]int{"defaultSeconds": SearchDefaultTimeoutSeconds, "minSeconds": SearchMinTimeoutSeconds, "maxSeconds": SearchMaxTimeoutSeconds}}, err
 	case "configure":
 		var q SearchConnection
 		if decode(raw, &q) != nil || q.Day != "" || q.Requests != 0 {
@@ -299,12 +412,12 @@ func ReadSearch(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
 	return searchAcquire(ctx, s, q, googleProvider())
 }
 func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
 	c, err := searchSnapshot(s, q)
 	if err != nil {
 		return nil, err
 	}
+	ctx, cancel := context.WithTimeout(ctx, searchTimeout(c))
+	defer cancel()
 	endpoint := "https://api.tavily.com/search"
 	token := c.Credential
 	body := map[string]any{"query": q.Query, "max_results": q.MaxResults, "search_depth": "basic", "include_answer": false, "include_raw_content": false}
@@ -313,10 +426,18 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 		if e != nil {
 			return nil, ErrSetup
 		}
-		authCtx := context.WithValue(ctx, oauth2.HTTPClient, p.client)
+		// The JWT source reports a transport's failure as text only, so the
+		// token request goes through a transport that remembers a timeout.
+		seen := &timeoutSeen{RoundTripper: p.client.Transport}
+		tokenClient := *p.client
+		tokenClient.Transport = seen
+		authCtx := context.WithValue(ctx, oauth2.HTTPClient, &tokenClient)
 		access, e := cfg.TokenSource(authCtx).Token()
 		if e != nil {
-			return nil, Error("credentials-required")
+			if seen.timedOut.Load() || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, Error("search-timeout")
+			}
+			return nil, searchRequestFailure(e, Error("credentials-required"))
 		}
 		token = access.AccessToken
 		host := "aiplatform.googleapis.com"
@@ -339,7 +460,7 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 	req.Header.Set("Content-Type", "application/json")
 	response, err := p.client.Do(req)
 	if err != nil {
-		return nil, ErrProvider
+		return nil, searchRequestFailure(err, ErrProvider)
 	}
 	defer response.Body.Close()
 	if response.StatusCode == 401 || response.StatusCode == 403 {
@@ -352,7 +473,10 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 		return nil, ErrProvider
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, (2<<20)+1))
-	if err != nil || len(data) > 2<<20 || !utf8.Valid(data) || bytes.Contains(data, []byte(token)) {
+	if err != nil {
+		return nil, searchRequestFailure(err, ErrProvider)
+	}
+	if len(data) > 2<<20 || !utf8.Valid(data) || bytes.Contains(data, []byte(token)) {
 		return nil, ErrProvider
 	}
 	result, err := normalizeSearch(data, c, q)
