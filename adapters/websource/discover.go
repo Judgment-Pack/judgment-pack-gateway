@@ -175,7 +175,7 @@ func discover(ctx context.Context, raw []byte, f fetcher, delay time.Duration) (
 			}
 			row.Status = "failed"
 			row.Reason = readErr.Error()
-			if errors.Is(readErr, errRobots) || errors.Is(readErr, errScope) {
+			if errors.Is(readErr, errRobots) || errors.Is(readErr, errScope) || errors.Is(readErr, ErrRedirectOrigin) {
 				row.Status = "blocked"
 			}
 			if ctx.Err() != nil {

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -190,17 +191,78 @@ func TestPDFUsesLocalExtractionWithoutOCR(t *testing.T) {
 	}
 }
 func TestRedirectResolvesAgainAndPinsTheCheckedAddress(t *testing.T) {
-	f := fixture(t, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "https://other.example.com/", 302) })
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/next", 302) })
 	calls := 0
 	f.lookup = func(_ context.Context, network, host string) ([]netip.Addr, error) {
 		calls++
-		if host == "other.example.com" {
+		if calls > 1 {
 			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		}
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
 	}
 	if _, err := f.read(context.Background(), "https://example.com/start"); !errors.Is(err, ErrPrivate) || calls != 2 {
 		t.Fatal(err, calls)
+	}
+}
+
+func TestRedirectToAnotherOriginIsRefusedBeforeAnyRequest(t *testing.T) {
+	for _, location := range []string{"https://other.example.com/", "https://www.example.com/", "http://example.com/", "https://example.com:8443/", "//other.example.com/x"} {
+		t.Run(location, func(t *testing.T) {
+			asked := 0
+			f := fixture(t, func(w http.ResponseWriter, r *http.Request) { asked++; http.Redirect(w, r, location, 302) })
+			if _, err := f.read(context.Background(), "https://example.com/start"); !errors.Is(err, ErrRedirectOrigin) && !errors.Is(err, ErrURL) || asked != 1 {
+				t.Fatal(err, asked)
+			}
+		})
+	}
+	asked := 0
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		http.Redirect(w, r, "https://other.example.com/", 302)
+	})
+	if _, err := f.read(context.Background(), "https://example.com/start"); err != ErrRedirectOrigin || asked != 1 {
+		t.Fatal(err, asked)
+	}
+}
+
+func TestSameOriginRedirectsAreFollowedWithinTheRequestBound(t *testing.T) {
+	asked := 0
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		if asked <= 5 {
+			http.Redirect(w, r, "https://EXAMPLE.com:443/hop", 302)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("end"))
+	})
+	res, err := f.read(context.Background(), "https://example.com/start")
+	if err != nil || string(res.raw) != "end" || asked != 6 {
+		t.Fatal(err, asked)
+	}
+}
+
+// A body of unknown length that never ends: reading must stop just past
+// MaxBytes, not run to EOF and measure afterwards.
+func TestUnknownLengthBodyIsReadOnlyToTheBound(t *testing.T) {
+	var written atomic.Int64
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		chunk := []byte(strings.Repeat("a", 32<<10))
+		for written.Load() < 8*MaxBytes {
+			n, err := w.Write(chunk)
+			written.Add(int64(n))
+			if err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		}
+	})
+	if _, err := f.read(context.Background(), "https://example.com"); !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
+	}
+	if n := written.Load(); n >= 5*MaxBytes {
+		t.Fatal("body consumed past the bound", n)
 	}
 }
 func TestCompressionAndBrokenUTF8AreNotSilentlyAccepted(t *testing.T) {

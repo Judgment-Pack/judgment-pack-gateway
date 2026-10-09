@@ -27,6 +27,7 @@ var ErrPrivate = errors.New("web-public-only")
 var ErrLimit = errors.New("web-over-limit")
 var ErrMedia = errors.New("web-unsupported-type")
 var ErrRedirect = errors.New("web-redirect-limit")
+var ErrRedirectOrigin = errors.New("web-redirect-origin")
 
 var excluded = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("10.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"), netip.MustParsePrefix("127.0.0.0/8"), netip.MustParsePrefix("169.254.0.0/16"), netip.MustParsePrefix("172.16.0.0/12"), netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("192.88.99.0/24"), netip.MustParsePrefix("192.168.0.0/16"), netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("224.0.0.0/4"), netip.MustParsePrefix("240.0.0.0/4"),
@@ -48,6 +49,13 @@ func publicAddress(ip netip.Addr) bool {
 		}
 	}
 	return true
+}
+
+// sameOrigin reports whether next has the scheme https, the host and the port
+// 443 of the origin the read began at. A redirect hop is followed only then.
+func sameOrigin(origin, next *url.URL) bool {
+	port := next.Port()
+	return next.Scheme == "https" && (port == "" || port == "443") && strings.EqualFold(next.Hostname(), origin.Hostname())
 }
 func admittedURL(raw string) (*url.URL, error) {
 	u, ok := attachment.WebURL(raw)
@@ -154,6 +162,7 @@ func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy)
 	if err != nil {
 		return response{}, err
 	}
+	origin := current
 	transport := &http.Transport{Proxy: nil, DialContext: f.dialPublic, TLSClientConfig: f.tls, DisableKeepAlives: true, DisableCompression: true, MaxResponseHeaderBytes: 32 << 10, TLSHandshakeTimeout: 8 * time.Second, ResponseHeaderTimeout: 10 * time.Second}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
@@ -190,6 +199,9 @@ func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy)
 			current, err = admittedURL(next.String())
 			if err != nil {
 				return response{}, err
+			}
+			if !sameOrigin(origin, current) {
+				return response{}, ErrRedirectOrigin
 			}
 			continue
 		}
