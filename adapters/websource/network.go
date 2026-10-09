@@ -55,7 +55,18 @@ func publicAddress(ip netip.Addr) bool {
 // 443 of the origin the read began at. A redirect hop is followed only then.
 func sameOrigin(origin, next *url.URL) bool {
 	port := next.Port()
-	return next.Scheme == "https" && (port == "" || port == "443") && strings.EqualFold(next.Hostname(), origin.Hostname())
+	if next.Scheme != "https" || port != "" && port != "443" {
+		return false
+	}
+	a, b := origin.Hostname(), next.Hostname()
+	ipA, errA := netip.ParseAddr(a)
+	ipB, errB := netip.ParseAddr(b)
+	if errA == nil || errB == nil {
+		// A literal host is the same origin only as the same parsed address,
+		// whatever its spelling.
+		return errA == nil && errB == nil && ipA.Unmap() == ipB.Unmap()
+	}
+	return strings.EqualFold(a, b)
 }
 func admittedURL(raw string) (*url.URL, error) {
 	u, ok := attachment.WebURL(raw)

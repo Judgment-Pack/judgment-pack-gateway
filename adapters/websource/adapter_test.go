@@ -12,11 +12,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T, h http.HandlerFunc) fetcher {
@@ -242,27 +244,75 @@ func TestSameOriginRedirectsAreFollowedWithinTheRequestBound(t *testing.T) {
 	}
 }
 
-// A body of unknown length that never ends: reading must stop just past
-// MaxBytes, not run to EOF and measure afterwards.
+// A body of unknown length that never ends and never reaches EOF: reading must
+// stop just past MaxBytes. The bytes the client has taken off the connection
+// are counted when the read returns; the slack covers headers, TLS framing and
+// one read buffer, and is far below the 2*MaxBytes+1 of a raised limit.
 func TestUnknownLengthBodyIsReadOnlyToTheBound(t *testing.T) {
-	var written atomic.Int64
 	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		chunk := []byte(strings.Repeat("a", 32<<10))
-		for written.Load() < 8*MaxBytes {
-			n, err := w.Write(chunk)
-			written.Add(int64(n))
-			if err != nil {
+		for {
+			if _, err := w.Write(chunk); err != nil {
 				return
 			}
 			w.(http.Flusher).Flush()
 		}
 	})
-	if _, err := f.read(context.Background(), "https://example.com"); !errors.Is(err, ErrLimit) {
+	var taken atomic.Int64
+	dial := f.dial
+	f.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		c, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &countingConn{Conn: c, n: &taken}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := f.read(ctx, "https://example.com"); !errors.Is(err, ErrLimit) {
 		t.Fatal(err)
 	}
-	if n := written.Load(); n >= 5*MaxBytes {
+	if n := taken.Load(); n > MaxBytes+1+256<<10 {
 		t.Fatal("body consumed past the bound", n)
+	}
+}
+
+type countingConn struct {
+	net.Conn
+	n *atomic.Int64
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// The test certificate cannot name an IPv6 literal, so the origin rule is
+// exercised directly.
+func TestOriginComparisonOfLiteralHostsUsesTheParsedAddress(t *testing.T) {
+	u := func(raw string) *url.URL {
+		p, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	origin := u("https://[2606:4700:4700::1111]/")
+	for raw, want := range map[string]bool{
+		"https://[2606:4700:4700:0:0:0:0:1111]/x": true,
+		"https://[2606:4700:4700::1111]:443/x":    true,
+		"https://[2606:4700:4700::1112]/x":        false,
+		"https://example.com/x":                   false,
+		"http://[2606:4700:4700::1111]/x":         false,
+	} {
+		if sameOrigin(origin, u(raw)) != want {
+			t.Error(raw, want)
+		}
+	}
+	if !sameOrigin(u("https://Example.com/"), u("https://EXAMPLE.com/x")) || sameOrigin(u("https://example.com/"), u("https://8.8.8.8/")) {
+		t.Error("name comparison")
 	}
 }
 func TestCompressionAndBrokenUTF8AreNotSilentlyAccepted(t *testing.T) {
