@@ -21,6 +21,9 @@ const MaxBytes = 4 << 20
 const MaxOutput = 16 << 20
 const Timeout = 45 * time.Second
 
+const responseHeaderTimeout = 10 * time.Second
+const overallRequestTimeout = 30 * time.Second
+
 var ErrURL = errors.New("web-invalid-url")
 var ErrNetwork = errors.New("web-unavailable")
 var ErrPrivate = errors.New("web-public-only")
@@ -102,9 +105,26 @@ func admittedURL(raw string) (*url.URL, error) {
 }
 
 type fetcher struct {
-	lookup func(context.Context, string, string) ([]netip.Addr, error)
-	dial   func(context.Context, string, string) (net.Conn, error)
-	tls    *tls.Config // nil in production; test roots only, never an operator flag.
+	lookup  func(context.Context, string, string) ([]netip.Addr, error)
+	dial    func(context.Context, string, string) (net.Conn, error)
+	tls     *tls.Config // nil in production; test roots only, never an operator flag.
+	network networkOptions
+}
+
+type networkOptions struct {
+	responseHeaderTimeout time.Duration
+	overallTimeout        time.Duration
+}
+
+func (f fetcher) networkTimeouts() networkOptions {
+	options := f.network
+	if options.responseHeaderTimeout == 0 {
+		options.responseHeaderTimeout = responseHeaderTimeout
+	}
+	if options.overallTimeout == 0 {
+		options.overallTimeout = overallRequestTimeout
+	}
+	return options
 }
 
 func newFetcher() fetcher {
@@ -173,10 +193,13 @@ func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy)
 	if err != nil {
 		return response{}, err
 	}
+	options := f.networkTimeouts()
+	ctx, cancel := context.WithTimeout(ctx, options.overallTimeout)
+	defer cancel()
 	origin := current
-	transport := &http.Transport{Proxy: nil, DialContext: f.dialPublic, TLSClientConfig: f.tls, DisableKeepAlives: true, DisableCompression: true, MaxResponseHeaderBytes: 32 << 10, TLSHandshakeTimeout: 8 * time.Second, ResponseHeaderTimeout: 10 * time.Second}
+	transport := &http.Transport{Proxy: nil, DialContext: f.dialPublic, TLSClientConfig: f.tls, DisableKeepAlives: true, DisableCompression: true, MaxResponseHeaderBytes: 32 << 10, TLSHandshakeTimeout: 8 * time.Second, ResponseHeaderTimeout: options.responseHeaderTimeout}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	for redirects := 0; redirects <= 5; redirects++ {
 		if policy.before != nil {
 			if err := policy.before(ctx, current); err != nil {
