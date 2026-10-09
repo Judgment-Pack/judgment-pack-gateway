@@ -12,10 +12,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func fixture(t *testing.T, h http.HandlerFunc) fetcher {
@@ -190,17 +193,126 @@ func TestPDFUsesLocalExtractionWithoutOCR(t *testing.T) {
 	}
 }
 func TestRedirectResolvesAgainAndPinsTheCheckedAddress(t *testing.T) {
-	f := fixture(t, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "https://other.example.com/", 302) })
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/next", 302) })
 	calls := 0
 	f.lookup = func(_ context.Context, network, host string) ([]netip.Addr, error) {
 		calls++
-		if host == "other.example.com" {
+		if calls > 1 {
 			return []netip.Addr{netip.MustParseAddr("127.0.0.1")}, nil
 		}
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
 	}
 	if _, err := f.read(context.Background(), "https://example.com/start"); !errors.Is(err, ErrPrivate) || calls != 2 {
 		t.Fatal(err, calls)
+	}
+}
+
+func TestRedirectToAnotherOriginIsRefusedBeforeAnyRequest(t *testing.T) {
+	for _, location := range []string{"https://other.example.com/", "https://www.example.com/", "http://example.com/", "https://example.com:8443/", "//other.example.com/x"} {
+		t.Run(location, func(t *testing.T) {
+			asked := 0
+			f := fixture(t, func(w http.ResponseWriter, r *http.Request) { asked++; http.Redirect(w, r, location, 302) })
+			if _, err := f.read(context.Background(), "https://example.com/start"); !errors.Is(err, ErrRedirectOrigin) && !errors.Is(err, ErrURL) || asked != 1 {
+				t.Fatal(err, asked)
+			}
+		})
+	}
+	asked := 0
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		http.Redirect(w, r, "https://other.example.com/", 302)
+	})
+	if _, err := f.read(context.Background(), "https://example.com/start"); err != ErrRedirectOrigin || asked != 1 {
+		t.Fatal(err, asked)
+	}
+}
+
+func TestSameOriginRedirectsAreFollowedWithinTheRequestBound(t *testing.T) {
+	asked := 0
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		asked++
+		if asked <= 5 {
+			http.Redirect(w, r, "https://EXAMPLE.com:443/hop", 302)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("end"))
+	})
+	res, err := f.read(context.Background(), "https://example.com/start")
+	if err != nil || string(res.raw) != "end" || asked != 6 {
+		t.Fatal(err, asked)
+	}
+}
+
+// A body of unknown length that never ends and never reaches EOF: reading must
+// stop just past MaxBytes. The bytes the client has taken off the connection
+// are counted when the read returns; the slack covers headers, TLS framing and
+// one read buffer, and is far below the 2*MaxBytes+1 of a raised limit.
+func TestUnknownLengthBodyIsReadOnlyToTheBound(t *testing.T) {
+	f := fixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		chunk := []byte(strings.Repeat("a", 32<<10))
+		for {
+			if _, err := w.Write(chunk); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+		}
+	})
+	var taken atomic.Int64
+	dial := f.dial
+	f.dial = func(ctx context.Context, network, address string) (net.Conn, error) {
+		c, err := dial(ctx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		return &countingConn{Conn: c, n: &taken}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := f.read(ctx, "https://example.com"); !errors.Is(err, ErrLimit) {
+		t.Fatal(err)
+	}
+	if n := taken.Load(); n > MaxBytes+1+256<<10 {
+		t.Fatal("body consumed past the bound", n)
+	}
+}
+
+type countingConn struct {
+	net.Conn
+	n *atomic.Int64
+}
+
+func (c *countingConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+// The test certificate cannot name an IPv6 literal, so the origin rule is
+// exercised directly.
+func TestOriginComparisonOfLiteralHostsUsesTheParsedAddress(t *testing.T) {
+	u := func(raw string) *url.URL {
+		p, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	origin := u("https://[2606:4700:4700::1111]/")
+	for raw, want := range map[string]bool{
+		"https://[2606:4700:4700:0:0:0:0:1111]/x": true,
+		"https://[2606:4700:4700::1111]:443/x":    true,
+		"https://[2606:4700:4700::1112]/x":        false,
+		"https://example.com/x":                   false,
+		"http://[2606:4700:4700::1111]/x":         false,
+	} {
+		if sameOrigin(origin, u(raw)) != want {
+			t.Error(raw, want)
+		}
+	}
+	if !sameOrigin(u("https://Example.com/"), u("https://EXAMPLE.com/x")) || sameOrigin(u("https://example.com/"), u("https://8.8.8.8/")) {
+		t.Error("name comparison")
 	}
 }
 func TestCompressionAndBrokenUTF8AreNotSilentlyAccepted(t *testing.T) {
