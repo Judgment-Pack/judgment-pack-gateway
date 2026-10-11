@@ -154,7 +154,9 @@ destination admitted like any URL, whose origin every later hop is then held to.
 guarantee is unchanged: the address checks and re-resolution on every hop, TLS verification, the
 six-request bound, the timeouts, the header and body bounds and the media checks; no cookie,
 authorization or referrer is sent on any hop; discovery and site-scoped reads follow no policy
-hop. A refusal names the two origins, never a path, a token or a query. Enabling the policy is
+hop. A refusal names the two origins, never a path, a token or a query, and only for a
+destination whose DNS answers are all public; one that is private or mixed is refused as
+`web-public-only` with no member, policy or not. Enabling the policy is
 not evidence about the publisher: a provider choosing the destination makes its content no more
 trustworthy, and the record's `redirectPolicy` says which policy was followed, not that
 following it was right. Under it the reader's address reaches the publisher the result names,

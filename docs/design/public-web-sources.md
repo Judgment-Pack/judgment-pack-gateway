@@ -139,7 +139,11 @@ The destination's origin is then the origin every later hop is held to:
 same-origin redirects at the publisher are followed within the six requests,
 and a second change of origin, a return to the provider or any other
 cross-origin hop is refused as `web-redirect-origin`. An invalid or private
-destination is refused under its own token before the policy is consulted.
+destination is refused under its own token before the policy is consulted:
+the destination of every cross-origin hop is resolved first, and one that does
+not resolve, or whose answers are not all public, is refused as the dial would
+refuse it (`web-unavailable`, `web-public-only`), with or without the policy.
+The dial resolves again, independently, for the hop that is followed.
 Every hop keeps the transport above: TLS verification, the timeouts, the header
 and body bounds, the media checks. The adapter keeps no cookie jar and sends
 no cookie, authorization or referrer header on any hop.
@@ -199,13 +203,18 @@ So `policy` non-null, supported and not enabled says a configuration review can
 change the outcome; `null` says no policy this distribution has would follow
 the hop, and a consumer offers no review. A hard refusal, such as
 `web-invalid-url` or `web-public-only`, never carries the member: it is not a
-configuration choice. The token stays the line's first word, so a consumer that
+configuration choice. A destination whose DNS answers are private, or mixed,
+is such a refusal, so a member only ever names a destination that resolved to
+public addresses alone. The token stays the line's first word, so a consumer that
 reads the first `web-…` word reads the refusal as before. Discovery's per-page
 `reason` stays the bare token.
 
 **Provenance.** A record read under a policy carries
 `provenance.source.redirectPolicy` naming it; a record read without one is
-unchanged byte for byte, without the member. The member is an optional
+unchanged byte for byte, without the member. The producer's check holds a
+record that names `google-grounding` to `requestedUrl` being the grounding
+endpoint exactly as the adapter admits it (`attachment.GroundingRedirectEndpoint`,
+the one predicate both use) and `url` being at another host. The member is an optional
 addition within attachment version `"1"`
 ([attachments](attachments.md#versioning)), signed as the rest of the record is
 (the receipt commits the result); no receipt or signature format changes. The

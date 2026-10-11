@@ -753,7 +753,8 @@ Original bytes are inline base64. A static text snapshot carries no OCR; an
 processor ([below](#document-processing-ocr-under-the-managed-local-plan)).
 An optional `redirectPolicy` (`"google-grounding"`) is present only when the read followed a
 hop to another origin under the operator's redirect policy; the check then holds `requestedUrl`
-to the grounding endpoint's host and `url` to another host
+to the grounding endpoint exactly as the adapter admits it (host, port, path prefix, one
+non-empty token, no query, no userinfo) and `url` to another host
 ([public web sources](public-web-sources.md#operator-redirect-policies)).
 Consumers must reject an unknown source kind and must not reinterpret it as a caller upload. No earlier variant
 or receipt format changes.

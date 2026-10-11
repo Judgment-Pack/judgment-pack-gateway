@@ -74,30 +74,6 @@ func sameOrigin(origin, next *url.URL) bool {
 	return strings.EqualFold(a, b)
 }
 
-// The one endpoint the google-grounding policy follows a redirect from: a
-// Google grounding search result, https on port 443 at exactly this host,
-// whose path is this prefix and one opaque token segment, with no query.
-const (
-	groundingHost   = attachment.GroundingRedirectHost
-	groundingPrefix = "/grounding-api-redirect/"
-)
-
-// groundingEndpoint reports whether u is that endpoint. The host is compared
-// as spelled, lowercase; the token is one non-empty segment with nothing
-// percent-encoded in it; a URL with a query, or an empty one ("?"), is not
-// the endpoint.
-func groundingEndpoint(u *url.URL) bool {
-	if u.Scheme != "https" || u.User != nil || u.Hostname() != groundingHost || u.Port() != "" && u.Port() != "443" || u.RawQuery != "" || u.ForceQuery {
-		return false
-	}
-	escaped := u.EscapedPath()
-	if !strings.HasPrefix(escaped, groundingPrefix) {
-		return false
-	}
-	token := escaped[len(groundingPrefix):]
-	return token != "" && token != "." && token != ".." && !strings.ContainsAny(token, "/%")
-}
-
 // RedirectRefusal is a redirect refused by the origin rule: ErrRedirectOrigin,
 // with the two origins and the redirect policy, if any, under which the hop
 // would have been followed. It holds origins only: never a path, a token, a
@@ -203,11 +179,11 @@ func (f fetcher) networkTimeouts() networkOptions {
 func newFetcher() fetcher {
 	return fetcher{lookup: net.DefaultResolver.LookupNetIP, dial: (&net.Dialer{Timeout: 8 * time.Second}).DialContext}
 }
-func (f fetcher) dialPublic(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || port != "443" {
-		return nil, ErrURL
-	}
+
+// resolvePublic is host's addresses, a literal's own or every DNS answer,
+// held to the public-address rule: a failed lookup is ErrNetwork, and no
+// answer, more than 16, or any one that is not public is ErrPrivate.
+func (f fetcher) resolvePublic(ctx context.Context, host string) ([]netip.Addr, error) {
 	var ips []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
 		ips = []netip.Addr{ip}
@@ -224,6 +200,18 @@ func (f fetcher) dialPublic(ctx context.Context, network, address string) (net.C
 		if !publicAddress(ip) {
 			return nil, ErrPrivate
 		}
+	}
+	return ips, nil
+}
+func (f fetcher) dialPublic(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port != "443" {
+		return nil, ErrURL
+	}
+	// Resolved here, for the dial, whatever was resolved before.
+	ips, err := f.resolvePublic(ctx, host)
+	if err != nil {
+		return nil, err
 	}
 	// The checked numeric address is the exact dial target. DNS is never repeated
 	// by the transport, while HTTP Host and TLS ServerName remain the URL's host.
@@ -315,18 +303,28 @@ func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy)
 			}
 			// Every hop is admitted first, the hop a policy follows included:
 			// an invalid or private destination is refused under its own
-			// token, never presented as a policy's choice.
+			// token, never presented as a policy's choice. A cross-origin
+			// destination is resolved too, below.
 			target, err := admittedURL(next.String())
 			if err != nil {
 				return response{}, err
 			}
 			if !sameOrigin(origin, target) {
+				// A destination that resolves to nothing, or to any address
+				// that is not public, is refused here as the dial would
+				// refuse it, under its own token and with no member: a
+				// refusal never names a destination it could not reach, nor
+				// says a policy would help where it would not. The dial
+				// resolves again, independently, for a hop that is followed.
+				if _, err := f.resolvePublic(ctx, target.Hostname()); err != nil {
+					return response{}, err
+				}
 				// One cross-origin hop may be followed under google-grounding:
 				// the first response of a plain read, from the grounding
 				// endpoint exactly. The publisher's origin is then the one
 				// every later hop is held to, so a second change of origin
 				// and a return to the provider are refused like any other.
-				eligible := policy.policyHops && redirects == 0 && groundingEndpoint(current)
+				eligible := policy.policyHops && redirects == 0 && attachment.GroundingRedirectEndpoint(current)
 				if !eligible || !policy.grounding {
 					refusal := &RedirectRefusal{From: webOrigin(current), To: webOrigin(target)}
 					if eligible {

@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -224,6 +225,13 @@ func TestGroundingRedirectIsFollowedOnceWhenTheOperatorEnablesIt(t *testing.T) {
 		"an empty policy":        func(s map[string]any) { s["redirectPolicy"] = "" },
 		"no change of host":      func(s map[string]any) { s["url"] = "https://vertexaisearch.cloud.google.com/final" },
 		"another requested host": func(s map[string]any) { s["requestedUrl"] = "https://example.org/grounding-api-redirect/AUZIYQ" },
+		// The grounding host, but never the endpoint: the policy cannot
+		// have followed a hop from these.
+		"an unrelated path": func(s map[string]any) { s["requestedUrl"] = "https://vertexaisearch.cloud.google.com/unrelated" },
+		"an empty token": func(s map[string]any) {
+			s["requestedUrl"] = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/"
+		},
+		"a query": func(s map[string]any) { s["requestedUrl"] = groundingURL + "?q=1" },
 	} {
 		var record map[string]any
 		json.Unmarshal(envelope.Result, &record)
@@ -445,8 +453,58 @@ func TestGroundingEndpointShape(t *testing.T) {
 		"https://vertexaisearch.cloud.google.com/grounding-api-redirect/.":      false,
 	} {
 		u, err := url.Parse(raw)
-		if err != nil || groundingEndpoint(u) != want {
+		if err != nil || attachment.GroundingRedirectEndpoint(u) != want {
 			t.Error(raw, want)
+		}
+	}
+}
+
+// A cross-origin destination whose DNS answers are private, or mixed, is
+// refused as the dial would refuse it, whether or not the policy is enabled
+// and on whichever hop: the bare web-public-only, no member, the destination's
+// name nowhere in the line, and no request to it. A refusal never tells a
+// consumer that a configuration review would help where it would not.
+func TestAPrivateDestinationIsAHardRefusalWithOrWithoutThePolicy(t *testing.T) {
+	for _, answers := range [][]string{{"10.0.0.7"}, {"8.8.8.8", "10.0.0.7"}} {
+		for _, options := range []Options{{}, grounding()} {
+			for _, c := range []struct {
+				name, url string
+				routes    map[string]http.HandlerFunc
+				requests  int
+			}{
+				{"grounding hop", groundingURL, nil, 1},
+				{"after the policy hop", groundingURL, map[string]http.HandlerFunc{"vertexaisearch.cloud.google.com": redirect("https://example.com/report"), "example.com": redirect("https://private.example.com/report")}, 2},
+				{"ordinary site", "https://example.com/start", map[string]http.HandlerFunc{"example.com": redirect("https://private.example.com/report")}, 1},
+				{"a later hop", "https://example.com/start", map[string]http.HandlerFunc{"example.com": func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/start" {
+						http.Redirect(w, r, "/next", 302)
+						return
+					}
+					redirect("https://private.example.com/report")(w, r)
+				}}, 2},
+			} {
+				if c.name == "after the policy hop" && len(options.RedirectPolicies) == 0 {
+					continue // without the policy the hop to example.com is refused first
+				}
+				t.Run(fmt.Sprintf("%s/%v/%v", c.name, answers, options.RedirectPolicies), func(t *testing.T) {
+					routes := map[string]http.HandlerFunc{
+						"vertexaisearch.cloud.google.com": redirect("https://private.example.com/report"),
+						"private.example.com":             func(http.ResponseWriter, *http.Request) { t.Error("the private destination was contacted") },
+					}
+					for host, route := range c.routes {
+						routes[host] = route
+					}
+					f, log := hostsFixture(t, routes, map[string][]string{"private.example.com": answers})
+					_, err := readOptions(context.Background(), request(c.url), f, options)
+					var refusal *RedirectRefusal
+					if !errors.Is(err, ErrPrivate) || errors.As(err, &refusal) || len(log.all()) != c.requests || log.to("private.example.com") != 0 {
+						t.Fatal(err, log.all())
+					}
+					if line := RefusalLine(err); line != "web-public-only" || strings.Contains(line, "private.example.com") {
+						t.Fatal(line)
+					}
+				})
+			}
 		}
 	}
 }
