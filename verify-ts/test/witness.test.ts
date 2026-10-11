@@ -25,7 +25,13 @@ test("every witness vector", () => {
   for (const v of vectors) {
     const { keys, files, head } = materializeWitness(v);
     const answer = readWitnessFiles(v.trail, keys, files, head);
-    assert.ok(sameWitnessAnswer(v.expected, answer as unknown as Record<string, unknown>), `${v.name}: ${JSON.stringify(answer)}`);
+    if (!sameWitnessAnswer(v.expected, answer as unknown as Record<string, unknown>)) {
+      // Built only on failure, and bounded: a reader that kept every line
+      // answers with tens of megabytes.
+      const text = JSON.stringify(answer);
+      const cut = text.length > 2000 ? `${text.slice(0, 2000)}... (${text.length - 2000} more characters)` : text;
+      assert.fail(`${v.name}: ${cut}`);
+    }
   }
 });
 

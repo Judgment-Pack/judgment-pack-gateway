@@ -18,6 +18,12 @@ import { corpus, materialize, multiset, newStore, publicKey, sealLine, storeVect
 
 const main = path.join(import.meta.dirname, "..", "src", "main.ts");
 
+// escapes is a JSON string of n two-character escapes, as bytes. Built as a
+// Buffer, outside the V8 heap: under an address-space cap (ulimit -v) the
+// test process's own heap is small, and a string of tens of millions of
+// characters, concatenated and flattened, aborts it.
+const escapes = (n: number): Buffer => Buffer.concat([Buffer.from('"'), Buffer.alloc(2 * n, "\\n"), Buffer.from('"')]);
+
 test("every canon vector", () => {
   const vectors = JSON.parse(fs.readFileSync(path.join(corpus, "canon.json"), "utf8")).vectors;
   assert.ok(vectors.length >= 30);
@@ -151,18 +157,18 @@ test("standard input read a byte at a time fits a small heap", () => {
 // heap, canonicalized whole, and verified inside a receipt.
 test("a string of millions of escapes fits a small heap", () => {
   const heap = "--max-old-space-size=384";
-  const escapes = '"' + "\\n".repeat(33554430) + '"';
-  const canon = spawnSync(process.execPath, [heap, main, "canon"], { input: escapes, maxBuffer: 80 << 20 });
+  const document = escapes(33554430);
+  const canon = spawnSync(process.execPath, [heap, main, "canon"], { input: document, maxBuffer: 80 << 20 });
   assert.equal(canon.status, 0, canon.stderr.toString().slice(0, 400));
-  assert.equal(canon.stdout.length, Buffer.byteLength(escapes));
-  assert.ok(canon.stdout.equals(Buffer.from(escapes)));
+  assert.ok(canon.stdout.equals(document));
 
   const v = storeVectors().find((s) => s.name === "valid-sealed")!;
   const { root, registry } = materialize(v);
   const receipt = path.join(root, "receipts", "s1", "0.json");
   // The receipt, with the rest of it, still within the 64 MiB a receipt may take.
-  const within = '"' + "\\n".repeat(33000000) + '"';
-  fs.writeFileSync(receipt, fs.readFileSync(receipt, "utf8").replace("{", '{"later":' + within + ","));
+  const text = fs.readFileSync(receipt);
+  const open = text.indexOf("{");
+  fs.writeFileSync(receipt, Buffer.concat([text.subarray(0, open + 1), Buffer.from('"later":'), escapes(33000000), Buffer.from(","), text.subarray(open + 1)]));
   const verified = spawnSync(process.execPath, [heap, main, "verify", root, registry, v.authority], { input: publicKey, maxBuffer: 1 << 20 });
   assert.equal(verified.status, 0, verified.stderr.toString().slice(0, 400));
   assert.ok(JSON.parse(verified.stdout.toString()).findings.some((f: { status: string }) => f.status === "signature-mismatch"));
