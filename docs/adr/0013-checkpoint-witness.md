@@ -244,7 +244,7 @@ unknown members, an unaware reader then refuses rather than skips (RFC 0010, "Co
 | `keyId` | as in §1.2 | the witness's key |
 | `signature` | 128 lowercase hexadecimal characters | below |
 
-*Amended 2026-10-12 (#211, #212).* The order of `witnessedAt` is the witness's own rule: it never states a time earlier than the previous statement's for the trail and takes the later of its clock and that time. A reader holds `witnessedAt` to its form and to nothing else, and compares it with no clock and no other statement's.
+*Amended 2026-10-12 (#211).* The order of `witnessedAt` is the witness's own rule: it never states a time earlier than the previous statement's for the trail and takes the later of its clock and that time. A reader holds `witnessedAt` to its form and to nothing else, and compares it with no clock and no other statement's.
 
 A statement at index 7 and sequence 120, its hex elided here, is 608 bytes without its newline
 and 609 as a logged line:
@@ -349,7 +349,7 @@ registration is never in a statement, and changing one is an act of the witness'
 recorded and never served. What registration does not do, stated because a token proves only an
 issuer and a subject:
 
-*Amended 2026-10-12 (#213, #228).* `gateway witness register` also needs `--config`. `register`, `retire` and `repair` act on a stopped witness's files, under the locks a running witness holds, and refuse against a running one. Since #228 a running witness registers and retires trails itself, through `POST /witness/registrations` and `POST /witness/trails/{trail}/retirement` under the operator's token; `repair` has no endpoint and stays offline. A registration is still never in a statement.
+*Amended 2026-10-12 (#212, #228).* `gateway witness register` also needs `--config`. `register`, `retire` and `repair` act on a stopped witness's files, under the locks a running witness holds, and refuse against a running one. Since #228 a running witness registers and retires trails itself, through `POST /witness/registrations` and `POST /witness/trails/{trail}/retirement` under the operator's token; `repair` has no endpoint and stays offline. A registration is still never in a statement.
 
 - **Under `"first-submission"`, another allowed subject can squat.** A customer of the same
   issuer who learns an unregistered trail's identity — from a checkpoint handed to it as a holder,
@@ -376,7 +376,7 @@ recovers it by sending the same checkpoint again, or by reading the trail.
 
 *Amended 2026-10-12 (#212).* The witness's storage runs on Unix only; off Unix a witness is refused at start.
 
-*Amended 2026-10-12 (#212, #213).* The tests hold the order in which syncs are requested and, on Linux, that a sync reaches the kernel (a sync of a pipe answers `EINVAL`, of a file nothing). No test shows that the kernel and its disk then keep the bytes.
+*Amended 2026-10-12 (#212).* The tests hold the order in which syncs are requested and, on Linux, that a sync reaches the kernel (a sync of a pipe answers `EINVAL`, of a file nothing). No test shows that the kernel and its disk then keep the bytes.
 
 **`POST /witness/checkpoints`: submit.**
 
@@ -646,7 +646,7 @@ continuation's two statements are one set, whatever files they came in and in wh
   head than a statement this reader's own earlier reading checked, so it forgot or withholds, or
   the reader supplied a stale head.
 
-*Amended 2026-10-12 (#211, #212; noted on #199).* Read literally, this made the finding unreachable. A head more than one index past every statement supplied is `witness-head-unreached` and is left out of the walk; a head exactly one index past joins the walk as the chain's last statement. A head at an index the chain holds is that statement, by signature.
+*Amended 2026-10-12 (#211; noted on #199).* Read literally, this made the finding unreachable. A head more than one index past every statement supplied is `witness-head-unreached` and is left out of the walk; a head exactly one index past joins the walk as the chain's last statement. A head at an index the chain holds is that statement, by signature.
 
 **Continuing.** A verification with no finding at all, given `--witness-save`, saves a
 **continuation**: `{"continuationVersion":"1","last":<statement>,"latestCheckpoint":<statement>}`,
