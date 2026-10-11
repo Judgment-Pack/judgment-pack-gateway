@@ -142,6 +142,24 @@ name form is for passing a path through, not a secret: a credential placed in th
 environment is in the signer's memory whatever is declared, and this design does not cover that
 configuration — give a source a path to a file its own identity can read.
 
+**The public web source reads one public HTTPS origin, and an operator's redirect policy is the one
+exception.** `adapter-web` admits a URL and every redirect only as HTTPS on port 443 without
+userinfo, at addresses that are public on every DNS answer at the dial, and holds every redirect to
+the requested origin ([public web sources](docs/design/public-web-sources.md)). The operator may
+enable `google-grounding` on the adapter's command line (`--redirect-policies=`, or
+`JPACK_WEB_REDIRECT_POLICIES` for the managed local plan); nothing in a request, a model's output
+or a URL can. It permits exactly one change of origin: from the first response of a plain read of
+`https://vertexaisearch.cloud.google.com/grounding-api-redirect/<token>`, with no query, to a
+destination admitted like any URL, whose origin every later hop is then held to. Every other
+guarantee is unchanged: the address checks and re-resolution on every hop, TLS verification, the
+six-request bound, the timeouts, the header and body bounds and the media checks; no cookie,
+authorization or referrer is sent on any hop; discovery and site-scoped reads follow no policy
+hop. A refusal names the two origins, never a path, a token or a query. Enabling the policy is
+not evidence about the publisher: a provider choosing the destination makes its content no more
+trustworthy, and the record's `redirectPolicy` says which policy was followed, not that
+following it was right. Under it the reader's address reaches the publisher the result names,
+as it reaches any server the reader reads.
+
 **On Unix a source runs in a process group led by an anchor**, a process the gateway starts before
 the source and reaps only after the group has been killed. A group is addressed by its leader's
 pid, and a leader that has been reaped frees a pid another process can take; the anchor holds the

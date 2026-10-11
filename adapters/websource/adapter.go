@@ -25,9 +25,26 @@ var ErrProcessing = errors.New("web-processing-failed")
 // Read consumes exactly {"url":"https://..."}. No headers, credentials,
 // redirects policy, executable, or network overrides are caller-controlled.
 func Read(ctx context.Context, raw []byte) ([]byte, error) {
-	return read(ctx, raw, newFetcher())
+	return ReadWith(ctx, raw, Options{})
+}
+
+// Options are the operator's configuration of the web source, given when the
+// adapter is launched (adapter-web's command line), never by a request.
+type Options struct {
+	// RedirectPolicies are the cross-origin redirect policies the operator
+	// enabled, as connections.ParseWebRedirectPolicies admitted them. None
+	// keeps every hop held to the requested origin.
+	RedirectPolicies []string
+}
+
+// ReadWith is Read under the operator's options.
+func ReadWith(ctx context.Context, raw []byte, options Options) ([]byte, error) {
+	return readOptions(ctx, raw, newFetcher(), options)
 }
 func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
+	return readOptions(ctx, raw, f, Options{})
+}
+func readOptions(ctx context.Context, raw []byte, f fetcher, options Options) ([]byte, error) {
 	if len(raw) > 8192 {
 		return nil, ErrRequest
 	}
@@ -67,7 +84,14 @@ func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
 	defer cancel()
 	started := time.Now()
 	policy := readPolicy{maxBytes: MaxBytes}
-	if req.Site != "" {
+	if req.Site == "" {
+		// Only a plain read may follow a policy hop: a site-scoped read is
+		// held to its site, as discovery is.
+		policy.policyHops = true
+		for _, name := range options.RedirectPolicies {
+			policy.grounding = policy.grounding || name == connections.GoogleGroundingPolicy
+		}
+	} else {
 		site, err := admittedURL(req.Site)
 		if err != nil {
 			return nil, err
@@ -161,7 +185,7 @@ func read(ctx context.Context, raw []byte, f fetcher) ([]byte, error) {
 	}
 	record["document"].(map[string]any)["version"] = digest(data)
 	record["original"] = map[string]any{"retention": "inline", "encoding": "base64", "bytes": base64.StdEncoding.EncodeToString(data)}
-	record["provenance"].(map[string]any)["source"] = attachment.Source{Kind: attachment.SourceWeb, RequestedURL: req.URL, URL: res.url, Version: digest(data), ResponseDigest: digest(res.raw), MediaType: res.media, Format: format}
+	record["provenance"].(map[string]any)["source"] = attachment.Source{Kind: attachment.SourceWeb, RequestedURL: req.URL, URL: res.url, Version: digest(data), ResponseDigest: digest(res.raw), MediaType: res.media, Format: format, RedirectPolicy: res.redirectPolicy}
 	checked, err := canon.EncodeJSON(record)
 	if err != nil || attachment.Check(checked) != nil {
 		return nil, ErrProcessing

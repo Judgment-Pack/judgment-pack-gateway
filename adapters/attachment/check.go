@@ -209,6 +209,14 @@ func (c *checker) shape(v any) {
 			for _, key := range []string{"requestedUrl", "url", "version", "format", "mediaType", "responseDigest"} {
 				sourceMembers[key] = "string"
 			}
+			// An optional member, added within version 1: present only when a
+			// redirect policy was followed, and then one this note names.
+			if policy, present := source["redirectPolicy"]; present {
+				sourceMembers["redirectPolicy"] = "string"
+				if policy != RedirectPolicyGoogleGrounding {
+					c.fail("web-source", "provenance.source.redirectPolicy names no redirect policy version 1 names")
+				}
+			}
 		}
 		c.object("provenance.source", prov["source"], sourceMembers)
 		if prov["ocr"] != nil {

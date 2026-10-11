@@ -26,5 +26,25 @@ func ValidWebSource(s Source) bool {
 	if !a || !b || !regexp.MustCompile(`^sha256:[a-f0-9]{64}$`).MatchString(s.Version) || !regexp.MustCompile(`^sha256:[a-f0-9]{64}$`).MatchString(s.ResponseDigest) {
 		return false
 	}
+	if s.RedirectPolicy != "" && !followedPolicyHop(s) {
+		return false
+	}
 	return s.Format == "static-text-v1" && s.MediaType == "text/html" || s.Format == "original-v1" && (s.MediaType == "text/plain" || s.MediaType == "application/pdf")
+}
+
+// RedirectPolicyGoogleGrounding is the one redirect policy a web source may
+// name: a hop from a Google grounding search result, at GroundingRedirectHost,
+// to the publisher.
+const (
+	RedirectPolicyGoogleGrounding = "google-grounding"
+	GroundingRedirectHost         = "vertexaisearch.cloud.google.com"
+)
+
+// followedPolicyHop holds a source that names a redirect policy to what the
+// policy can have done: requested at the grounding endpoint's host, and read
+// at another.
+func followedPolicyHop(s Source) bool {
+	requested, _ := url.Parse(s.RequestedURL)
+	final, _ := url.Parse(s.URL)
+	return s.RedirectPolicy == RedirectPolicyGoogleGrounding && requested != nil && final != nil && requested.Hostname() == GroundingRedirectHost && !strings.EqualFold(final.Hostname(), requested.Hostname())
 }

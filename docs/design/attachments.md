@@ -632,6 +632,10 @@ Anything else is version `"2"`, written by an adapter that is asked for it, neve
 Changelog:
 
 - `"1"` — this note. Written by `adapter-document` from its first release.
+- `"1"`, addition — `provenance.source.redirectPolicy`, optional, on `kind: "web"`: present
+  only when the read followed a hop to another origin under the operator's redirect policy,
+  naming it (`"google-grounding"`). Written by `adapter-web` from the first release after gateway
+  v0.10.1 ([public web sources](public-web-sources.md#operator-redirect-policies)).
 
 ## The schemas, the check and the examples
 
@@ -747,6 +751,10 @@ plain text and PDFs use `original-v1` with equal response and retained digests.
 Original bytes are inline base64. A static text snapshot carries no OCR; an
 `original-v1` PDF may, when the operator's document-processing settings enable a
 processor ([below](#document-processing-ocr-under-the-managed-local-plan)).
+An optional `redirectPolicy` (`"google-grounding"`) is present only when the read followed a
+hop to another origin under the operator's redirect policy; the check then holds `requestedUrl`
+to the grounding endpoint's host and `url` to another host
+([public web sources](public-web-sources.md#operator-redirect-policies)).
 Consumers must reject an unknown source kind and must not reinterpret it as a caller upload. No earlier variant
 or receipt format changes.
 

@@ -8,19 +8,44 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
-func main() { os.Exit(run()) }
-func run() int {
-	discover := len(os.Args) == 2 && os.Args[1] == "--discover"
-	// --document-processing: a read may run the operator's OCR processor.
-	processing := len(os.Args) == 2 && os.Args[1] == "--document-processing"
-	if len(os.Args) != 1 && !discover && !processing {
+func main() { os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr)) }
+
+// run takes its configuration from the operator's command line alone:
+// --discover, or a read with --document-processing (a read may run the
+// operator's OCR processor) and --redirect-policies=LIST (the cross-origin
+// redirects a read may follow, docs/design/public-web-sources.md). Each at
+// most once, in one word. Discovery follows no redirect policy and refuses
+// the flag rather than ignore it. A list that names a policy this adapter
+// does not support refuses the start, in one sentence, before stdin is read.
+func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	discover, processing, policiesGiven := false, false, false
+	policiesValue := ""
+	for _, arg := range args {
+		switch {
+		case arg == "--discover" && !discover:
+			discover = true
+		case arg == "--document-processing" && !processing:
+			processing = true
+		case strings.HasPrefix(arg, connections.WebRedirectPoliciesFlag) && !policiesGiven:
+			policiesGiven, policiesValue = true, strings.TrimPrefix(arg, connections.WebRedirectPoliciesFlag)
+		default:
+			return 2
+		}
+	}
+	if discover && (processing || policiesGiven) {
 		return 2
 	}
-	raw, err := io.ReadAll(io.LimitReader(os.Stdin, 8193))
+	policies, err := connections.ParseWebRedirectPolicies(policiesValue)
+	if err != nil {
+		fmt.Fprintln(stderr, connections.WebRedirectPolicyRefusal)
+		return 2
+	}
+	raw, err := io.ReadAll(io.LimitReader(stdin, 8193))
 	if err != nil || len(raw) > 8192 {
-		fmt.Fprintln(os.Stderr, "web-invalid-request")
+		fmt.Fprintln(stderr, "web-invalid-request")
 		return 1
 	}
 	var out []byte
@@ -31,13 +56,13 @@ func run() int {
 		if processing {
 			ctx = connections.WithDocumentProcessing(ctx)
 		}
-		out, err = websource.Read(ctx, raw)
+		out, err = websource.ReadWith(ctx, raw, websource.Options{RedirectPolicies: policies})
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(stderr, websource.RefusalLine(err))
 		return 1
 	}
-	if _, err = os.Stdout.Write(out); err != nil {
+	if _, err = stdout.Write(out); err != nil {
 		return 1
 	}
 	return 0

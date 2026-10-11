@@ -222,7 +222,7 @@ func TestRedirectToAnotherOriginIsRefusedBeforeAnyRequest(t *testing.T) {
 		asked++
 		http.Redirect(w, r, "https://other.example.com/", 302)
 	})
-	if _, err := f.read(context.Background(), "https://example.com/start"); err != ErrRedirectOrigin || asked != 1 {
+	if _, err := f.read(context.Background(), "https://example.com/start"); !errors.Is(err, ErrRedirectOrigin) || err.Error() != "web-redirect-origin" || asked != 1 {
 		t.Fatal(err, asked)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"time"
@@ -22,11 +23,12 @@ func run() int {
 	catalog := fs.Bool("catalog", false, "")
 	catalogV3 := fs.Bool("catalog-v3", false, "")
 	localPlan := fs.Bool("local-plan", false, "")
+	sourceCapabilities := fs.Bool("source-capabilities", false, "")
 	disabled := fs.Bool("disabled", false, "")
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
 		return 2
 	}
-	if *catalog || *catalogV3 || *localPlan {
+	if *catalog || *catalogV3 || *localPlan || *sourceCapabilities {
 		// Discovery must never configure a publisher, consume stdin, or create,
 		// lock or write anything. The local plan alone reads custody: whether
 		// the document-processing settings under JPACK_CONNECTIONS_DIR name a
@@ -40,9 +42,21 @@ func run() int {
 		if *catalogV3 {
 			output = connections.ConnectionCatalogV3()
 		}
-		if *localPlan {
-			dir := os.Getenv("JPACK_CONNECTIONS_DIR")
-			output = connections.ConnectionLocalPlanFor(connections.ProcessingConfigured(dir), connections.SearchNeedsLongEnvelope(dir))
+		if *localPlan || *sourceCapabilities {
+			// The plan and the report read the operator's web redirect
+			// policies from the same place, so what the report says is
+			// enabled is what the plan launches the web source with. A list
+			// that names an unknown policy refuses both, in one sentence.
+			policies, err := connections.ParseWebRedirectPolicies(os.Getenv(connections.WebRedirectPoliciesEnv))
+			if err != nil {
+				fmt.Fprintln(os.Stderr, connections.WebRedirectPolicyRefusal)
+				return 2
+			}
+			output = connections.ConnectionSourceCapabilities(policies)
+			if *localPlan {
+				dir := os.Getenv("JPACK_CONNECTIONS_DIR")
+				output = connections.ConnectionLocalPlanFor(connections.ProcessingConfigured(dir), connections.SearchNeedsLongEnvelope(dir)).WithWebRedirectPolicies(policies)
+			}
 		}
 		if json.NewEncoder(os.Stdout).Encode(output) != nil {
 			return 1
