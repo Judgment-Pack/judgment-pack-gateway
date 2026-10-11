@@ -285,8 +285,11 @@ unsign it: the trail is retired and its operator goes on under a new trail. Unde
 `"first-submission"`, any subject the issuer names, and `submitters` allows, can claim a trail
 whose identity it has learned before its operator does. A witness whose log or marks are damaged
 refuses to start, and the rules it recovers by can cost it its key, which is the gateway's key for
-receipts and seals too. Registering a trail, retiring one and repairing the files take a stop of
-the witness, since a running witness holds its files.
+receipts and seals too. An operator's credential — any token the signer's other token-checked
+endpoints take — registers and retires trails on a running witness, at
+`POST /witness/registrations` and `POST /witness/trails/{trail}/retirement`, which a front that
+passes `/witness/` passes too; a submitter's credential cannot, and is refused there as at
+`/seal`. Repairing the files takes a stop of the witness, since a running witness holds its files.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
