@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -23,14 +24,17 @@ type witnessSpec struct {
 	// submitters are the pairs allowed to submit at all, when the member
 	// was given (submittersGiven), even empty; absent, any subject the
 	// configured issuer's tokens name may submit.
-	submitters           []submitterKey
-	submittersGiven      bool
+	submitters      []submitterKey
+	submittersGiven bool
+	// audience is what a submission token names, in place of the engine's
+	// audience: a token naming it opens the witness and nothing else (#214).
+	audience             string
 	trailsPerSubmitter   int
 	submissionsPerMinute int
 }
 
 var witnessMembers = map[string]bool{
-	"log": true, "marks": true, "registration": false, "submitters": false,
+	"log": true, "marks": true, "audience": true, "registration": false, "submitters": false,
 	"trailsPerSubmitter": false, "submissionsPerMinute": false,
 }
 
@@ -50,7 +54,7 @@ var witnessBounds = []struct {
 // log nor a file kept beside it; registration "operator" or
 // "first-submission"; each submitter a closed {issuer, subject} of the
 // configured issuer, none given twice; and the bounds within their ranges.
-func parseWitnessConfig(v value, issuer string) (*witnessSpec, error) {
+func parseWitnessConfig(v value, issuer, engineAudience string) (*witnessSpec, error) {
 	obj, err := requireObject(v, "witness")
 	if err != nil {
 		return nil, err
@@ -67,6 +71,12 @@ func parseWitnessConfig(v value, issuer string) (*witnessSpec, error) {
 	}
 	if err := w.paths.check(); err != nil {
 		return nil, err
+	}
+	if w.audience, err = requireString(obj, "audience"); err != nil || w.audience == "" {
+		return nil, errors.New("witness.audience must be a non-empty string: the audience a submission token names, which is not the engine's")
+	}
+	if w.audience == engineAudience {
+		return nil, errors.New("witness.audience must differ from identity.audience: a submission token names the witness, and the engine's other endpoints refuse it")
 	}
 	if _, present := obj.get("registration"); present {
 		mode, err := requireString(obj, "registration")
@@ -130,6 +140,19 @@ func parseWitnessConfig(v value, issuer string) (*witnessSpec, error) {
 		*b.into(w) = int(n)
 	}
 	return w, nil
+}
+
+// refusesToken says whether a verified token is a submitter's, which every
+// endpoint that is not the witness's refuses (#214): it names the witness's
+// audience, or its issuer and subject are among witness.submitters.
+func (w *witnessSpec) refusesToken(who *caller) bool {
+	if who == nil {
+		return false
+	}
+	if slices.Contains(who.audiences, w.audience) {
+		return true
+	}
+	return w.submittersGiven && containsSubmitter(w.submitters, submitterKey{who.issuer, who.subject})
 }
 
 // files are the witness's files by what they are, in the order a refusal

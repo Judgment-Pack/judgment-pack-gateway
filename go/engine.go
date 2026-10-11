@@ -298,7 +298,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 		if cfg.identity == nil {
 			return engineConfig{}, errors.New("engine configuration: witness needs identity: a submission to a witness is authenticated by a bearer token from the configured issuer")
 		}
-		w, err := parseWitnessConfig(witnessValue, cfg.identity.issuer)
+		w, err := parseWitnessConfig(witnessValue, cfg.identity.issuer, cfg.identity.audience)
 		if err != nil {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}

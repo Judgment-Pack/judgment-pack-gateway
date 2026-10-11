@@ -919,7 +919,7 @@ name. Every answer states its `Content-Length` and carries
 
 | Status | `reason` | When |
 |---|---|---|
-| `400` | `malformed` | a path spelled with any percent-encoding, a `{trail}` out of shape, a query a read does not take or a submission any query, a body out of shape |
+| `400` | `malformed` | a path spelled with any percent-encoding, a `{trail}` out of shape, a query a read does not take or a submission any query, a body out of shape; a spelling the server would otherwise clean (`//`, `/./`, `/../`) or `/witness` without its slash, which the witness answers itself, never by a redirect |
 | `401` | `unauthenticated` | a submission without a valid token, with `WWW-Authenticate: Bearer` |
 | `403` | `not-a-submitter` | a subject the configuration's `submitters` does not name |
 | `403` | `not-registered` | a trail not registered, or registered to another subject: one answer for both, so that a submitter learns nothing of another's registration; and, where the first submission registers, a submitter whose issuer and subject no registration line of 4096 bytes can hold |
@@ -963,6 +963,14 @@ never served. A token establishes an issuer and a subject and nothing more: ever
 of one trail submits under the one subject registered for it, and the witness cannot tell
 the trail's operator from a holder of the operator's credential (§8.8).
 
+**Submission tokens.** A submission's token names the witness's audience (`witness.audience`),
+not the engine's: the witness verifies it as every other endpoint verifies one — issuer, keys and
+validity window alike — under that audience, and refuses a token that names the engine's audience
+alone. A token that names the witness's audience, with or without the engine's, or that is of a
+subject among `witness.submitters`, is refused `401` by every other token-checked endpoint of the
+signer, `/seal` among them, and by the MCP transport, with "a token for the witness is refused
+here": a submitter's credential opens the witness and nothing else.
+
 **Rate.** The witness's operator bounds each submitter — an issuer and a subject — to a number
 of submissions a minute, from 1 to 6000, 60 by default: counted when each arrives, after its
 token and before its body is read, whatever becomes of it, in windows of the witness clock's
@@ -971,8 +979,8 @@ whole minutes, the same for every submitter; past the bound a submission is `429
 submitters, and one not yet counted in a minute that has counted that many is refused alike
 until it turns. The operator bounds the trails each submitter submits for too, from 1 to
 100000, 100 by default: counted as the trails registered to the submitter that hold a
-statement, so that a submission for a trail that holds none is `429` when the submitter has
-that many, and registers nothing.
+statement and are not retired, so that a submission for a trail that holds none is `429` when
+the submitter has that many, and registers nothing; a retirement gives its trail's place back.
 
 **After a failure.** When a statement's append, its sync, its mark or the mark's sync fails,
 or, where the first submission registers, a registration's append or sync, the witness signs nothing more, for any trail, until it restarts and its start-up checks pass

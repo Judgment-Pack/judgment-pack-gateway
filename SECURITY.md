@@ -271,10 +271,11 @@ of one mebibyte and a line of 4096 bytes, each read through its bound and held t
 is read, and 30 seconds to write an answer. Reads are open to anyone who names a trail, and the
 reference bounds no reader's rate. What it does not do: it speaks plain HTTP on a loopback
 address, so reaching it from another host takes a TLS-terminating front the witness's operator
-runs, which is also where reads are bounded and where the signer's other endpoints are kept from
-other hosts: a token a submitter holds is a token of the configured issuer, which every endpoint
-of the signer that takes a token accepts — `/seal` among them — so a front that passes more than
-`/witness/` passes that too; it is one key and one operator, not a multi-tenant service — every trail it
+runs, which is also where reads are bounded. A submitter's token opens the witness and nothing
+else: it names the witness's audience (`witness.audience`), not the engine's, and every other
+token-checked endpoint of the signer — `/seal` among them — and the MCP transport refuse a token
+that names it, or that is of a subject among `witness.submitters`; a front that exposes `/witness/`
+alone is defence in depth, not what keeps the signer's other endpoints from a submitter; it is one key and one operator, not a multi-tenant service — every trail it
 witnesses is signed under the gateway's own seed, the key of its receipts and seals, and its
 submitters are the subjects of one issuer, told apart by nothing else; and **a credential is
 enough to spoil a trail at that witness for good**: whoever holds a token of a trail's registered

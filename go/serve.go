@@ -1365,7 +1365,11 @@ func (g *gatewayService) handler() http.Handler {
 		if g.identity == nil {
 			return nil, true
 		}
-		who, err := bearerCaller(g.identity, r.Header.Get("Authorization"), time.Now())
+		var witness *witnessSpec
+		if g.witness != nil {
+			witness = g.witness.spec
+		}
+		who, err := engineCaller(g.identity, witness, r.Header.Get("Authorization"), time.Now())
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
@@ -1533,12 +1537,62 @@ func (g *gatewayService) handler() http.Handler {
 
 	// A witness's endpoints (witness_serve.go), only where the engine's
 	// configuration makes this signer a witness; elsewhere /witness/ is no
-	// endpoint at all.
-	if g.witness != nil {
-		mux.HandleFunc("/witness/", g.witness.handler(g.identity))
+	// endpoint at all. A witness path is routed as it was received, before
+	// the mux would clean it: an unclean spelling is answered by the witness
+	// in its own form, never by the mux's redirect to the clean one.
+	if g.witness == nil {
+		return mux
 	}
+	witness := g.witness.handler(g.identity)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/witness" || strings.HasPrefix(r.URL.Path, "/witness/") {
+			witness(w, r)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+}
 
-	return mux
+// errWitnessTokenHere is the refusal of a submitter's token -- one naming
+// the witness's audience, or of a subject among witness.submitters -- on
+// every endpoint that is not the witness's (#214).
+var errWitnessTokenHere = errors.New("a token for the witness is refused here")
+
+// engineToken is a token verified for the engine's own endpoints: under the
+// engine's audience, and never a submitter's (#214) -- one naming the
+// witness's audience, with or without the engine's, or of a subject among
+// witness.submitters. A token naming the witness alone fails the engine's
+// audience check first; it is verified again under the witness's audience,
+// so that a submitter is told its token opens the witness and nothing else.
+func engineToken(id *identityConfig, witness *witnessSpec, token string, now time.Time) (*caller, error) {
+	who, err := verifyToken(token, *id, now)
+	if witness == nil {
+		if err != nil {
+			return nil, err
+		}
+		return &who, nil
+	}
+	if err == nil {
+		if witness.refusesToken(&who) {
+			return nil, errWitnessTokenHere
+		}
+		return &who, nil
+	}
+	if errors.Is(err, errNotEngineAudience) {
+		if _, forWitness := verifyTokenFor(token, *id, witness.audience, now); forWitness == nil {
+			return nil, errWitnessTokenHere
+		}
+	}
+	return nil, err
+}
+
+// engineCaller is engineToken on a request's Authorization header.
+func engineCaller(id *identityConfig, witness *witnessSpec, authorization string, now time.Time) (*caller, error) {
+	token := bearerToken(authorization)
+	if token == "" {
+		return nil, errNoBearerToken
+	}
+	return engineToken(id, witness, token, now)
 }
 
 // errNoBearerToken is the refusal of a request that carries no bearer
@@ -1551,11 +1605,17 @@ var errNoBearerToken = errors.New("a bearer token from the configured issuer is 
 // token. It is the one check every authenticated endpoint makes, a
 // witness's submission included.
 func bearerCaller(id *identityConfig, authorization string, now time.Time) (*caller, error) {
+	return bearerCallerFor(id, id.audience, authorization, now)
+}
+
+// bearerCallerFor is bearerCaller under another audience: the witness's,
+// for a submission (witness_serve.go).
+func bearerCallerFor(id *identityConfig, audience, authorization string, now time.Time) (*caller, error) {
 	token := bearerToken(authorization)
 	if token == "" {
 		return nil, errNoBearerToken
 	}
-	who, err := verifyToken(token, *id, now)
+	who, err := verifyTokenFor(token, *id, audience, now)
 	if err != nil {
 		return nil, err
 	}

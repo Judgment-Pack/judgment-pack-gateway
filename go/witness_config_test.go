@@ -28,7 +28,7 @@ func witnessConfigJSON(t *testing.T, base, witness string) string {
 // extra members after them.
 func witnessMember(t *testing.T, base, extra string) string {
 	t.Helper()
-	return `{"log":"` + abs(t, base, "log", "witness.log") + `","marks":"` + abs(t, base, "marks", "witness.marks") + `"` + extra + `}`
+	return `{"log":"` + abs(t, base, "log", "witness.log") + `","marks":"` + abs(t, base, "marks", "witness.marks") + `","audience":"witness:acme"` + extra + `}`
 }
 
 func TestWitnessMemberParses(t *testing.T) {
@@ -65,7 +65,7 @@ func TestWitnessMemberRefusals(t *testing.T) {
 	good := witnessConfigJSON(t, base, witnessMember(t, base, ""))
 	member := func(extra string) string { return witnessConfigJSON(t, base, witnessMember(t, base, extra)) }
 	paths := func(log, marks string) string {
-		return witnessConfigJSON(t, base, `{"log":"`+log+`","marks":"`+marks+`"}`)
+		return witnessConfigJSON(t, base, `{"log":"`+log+`","marks":"`+marks+`","audience":"witness:acme"}`)
 	}
 	logPath := abs(t, base, "log", "witness.log")
 	for _, c := range []struct{ name, text, want string }{
@@ -73,8 +73,12 @@ func TestWitnessMemberRefusals(t *testing.T) {
 		{"no identity", strings.Replace(good, `"identity":{"issuer":"https://issuer.example","audience":"gateway:witness","keys":"`+abs(t, base, "keys.json")+`"},`, ``, 1), "witness needs identity"},
 		{"not an object", witnessConfigJSON(t, base, `[]`), `member "witness" is not an object`},
 		{"an unknown member", member(`,"log2":"x"`), `witness: unknown member "log2"`},
-		{"no log", witnessConfigJSON(t, base, `{"marks":"`+abs(t, base, "m")+`"}`), `witness: missing member "log"`},
-		{"no marks", witnessConfigJSON(t, base, `{"log":"`+logPath+`"}`), `witness: missing member "marks"`},
+		{"no log", witnessConfigJSON(t, base, `{"marks":"`+abs(t, base, "m")+`","audience":"witness:acme"}`), `witness: missing member "log"`},
+		{"no marks", witnessConfigJSON(t, base, `{"log":"`+logPath+`","audience":"witness:acme"}`), `witness: missing member "marks"`},
+		{"no audience", witnessConfigJSON(t, base, `{"log":"`+logPath+`","marks":"`+abs(t, base, "m")+`"}`), `witness: missing member "audience"`},
+		{"an empty audience", witnessConfigJSON(t, base, `{"log":"`+logPath+`","marks":"`+abs(t, base, "m")+`","audience":""}`), "witness.audience must be a non-empty string"},
+		{"an audience not a string", witnessConfigJSON(t, base, `{"log":"`+logPath+`","marks":"`+abs(t, base, "m")+`","audience":7}`), "witness.audience must be a non-empty string"},
+		{"the engine's audience", witnessConfigJSON(t, base, `{"log":"`+logPath+`","marks":"`+abs(t, base, "m")+`","audience":"gateway:witness"}`), "witness.audience must differ from identity.audience"},
 		{"a relative log", paths("witness.log", abs(t, base, "m")), "witness.log must be an absolute path"},
 		{"a marks path not clean", paths(logPath, abs(t, base)+"/marks/../m"), "witness.marks must be a clean path"},
 		{"marks that are the log", paths(logPath, logPath), "are the log or a file kept beside it"},

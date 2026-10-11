@@ -98,6 +98,10 @@ type mcpServer struct {
 	tools    map[string]mcpTool
 	order    []string
 	identity *identityConfig
+	// witness is the witness's configuration where this signer is one: a
+	// submitter's token is refused on this transport as on the HTTP
+	// endpoints (#214).
+	witness  *witnessSpec
 	signer   string // http://listen
 	client   *http.Client
 	now      func() time.Time
@@ -166,6 +170,7 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		cfg:      cfg,
 		tools:    map[string]mcpTool{},
 		identity: identity,
+		witness:  cfg.witness,
 		signer:   "http://" + cfg.listen,
 		// the one destination is the configured signer: a redirect is not
 		// followed, and is answered as the status it is
@@ -1208,6 +1213,6 @@ func (s *mcpServer) verifyBearer(token string) error {
 	if token == "" {
 		return errors.New("a bearer token from the configured issuer is required")
 	}
-	_, err := verifyToken(token, *s.identity, s.now())
+	_, err := engineToken(s.identity, s.witness, token, s.now())
 	return err
 }

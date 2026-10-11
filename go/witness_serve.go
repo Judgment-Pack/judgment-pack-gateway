@@ -28,6 +28,7 @@ import (
 	"math"
 	"mime"
 	"net/http"
+	pathpkg "path"
 	"strconv"
 	"strings"
 	"sync"
@@ -68,6 +69,10 @@ var (
 // witnessService answers the witness's endpoints over a witness log open.
 type witnessService struct {
 	log *witnessLog
+	// spec is the witness's configuration: its audience is what a
+	// submission token names, and refusesToken is what the engine's other
+	// endpoints ask of it (#214).
+	spec *witnessSpec
 	// allowed are the submitters configured; nil when any subject of the
 	// configured issuer may submit.
 	allowed   map[submitterKey]bool
@@ -95,7 +100,7 @@ type witnessService struct {
 // configuration's witness member; what it reports goes to reports.
 func newWitnessService(log *witnessLog, spec *witnessSpec, reports io.Writer) *witnessService {
 	s := &witnessService{
-		log: log, perMinute: spec.submissionsPerMinute, now: time.Now, reports: reports,
+		log: log, spec: spec, perMinute: spec.submissionsPerMinute, now: time.Now, reports: reports,
 		submitting: make(chan struct{}, witnessSubmissionsInFlight),
 		reading:    make(chan struct{}, witnessReadsInFlight),
 		counts:     map[[sha256.Size]byte]int{},
@@ -144,6 +149,10 @@ func (s *witnessService) handler(id *identityConfig) http.HandlerFunc {
 			return
 		}
 		path := r.URL.Path
+		if clean := pathpkg.Clean(path); path == "/witness" || path != clean && !(strings.HasSuffix(path, "/") && path == clean+"/") {
+			witnessRefuse(w, http.StatusBadRequest, witnessReasonMalformed, "a witness path is spelled clean, under /witness/")
+			return
+		}
 		if path == "/witness/checkpoints" {
 			s.submit(w, r, id)
 			return
@@ -247,7 +256,7 @@ func (s *witnessService) submit(w http.ResponseWriter, r *http.Request, id *iden
 		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, "a submission is authenticated, and this engine has no identity configured")
 		return
 	}
-	who, err := bearerCaller(id, r.Header.Get("Authorization"), time.Now())
+	who, err := bearerCallerFor(id, s.spec.audience, r.Header.Get("Authorization"), time.Now())
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, err.Error())
