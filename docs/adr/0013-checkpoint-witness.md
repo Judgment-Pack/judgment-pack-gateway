@@ -793,6 +793,11 @@ runtime prints that chain's checkpoints in the same form.
 - **Desk ADR-0010.** Its §2 HTTPS channel moves the cursor on any 2xx. For a witness, the new Desk
   ADR moves it on a verified statement for the last line sent, and states what a witness statement
   establishes in the manner of ADR-0010 §7's table.
+- **Amended 2026-10-11 (#228, issue #215).** A running witness registers and retires a trail
+  itself, at `POST /witness/registrations` and `POST /witness/trails/{trail}/retirement`, under
+  an operator's token, which is the engine's; a submitter's token is refused there.
+  `gateway witness register` and `retire` still act on a stopped witness only, and repair has no
+  endpoint (SPEC.md §6, "Administration"). The fuller amendment for what shipped is issue #216.
 - **RFC 0012 (draft).** Its scope note places a witness record format, for a currency registry, in
   the runtime, and proposes no change to the gateway. This record is for the runtime's decision
   trail, under ADR-0047 §3, which places the witness in a gateway. It answers the RFC's candidate

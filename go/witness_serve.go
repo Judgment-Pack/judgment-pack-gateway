@@ -1,16 +1,18 @@
 package main
 
-// The checkpoint witness's endpoints (docs/adr/0013-checkpoint-witness.md §4;
-// SPEC.md §6, "Witness endpoints"): a submission of checkpoint lines, and the
-// two open reads of a trail's chain. They are the first surface of this
-// gateway meant to be reached from other hosts by other parties, so every
-// request is held as one from a party nothing is known about: only the
-// method the specification names, a path spelled one way, a query of the
-// members named and digits where a number is meant; a body read through its
-// bound, line by line, each line held to the checkpoint's canonical form as
-// it arrives; a bearer token verified as every other endpoint verifies one,
-// before the body is read; and a bound on what each submitter may cost, on
-// what is in flight, and on how long an answer may take to be written.
+// The checkpoint witness's endpoints (docs/adr/0013-checkpoint-witness.md
+// §4; SPEC.md §6, "Witness endpoints"): a submission of checkpoint lines,
+// the two open reads of a trail's chain, and the two acts of the witness's
+// operator on a running witness, which witness_admin.go answers. They are
+// the first surface of this gateway meant to be reached from other hosts by
+// other parties, so every request is held as one from a party nothing is
+// known about: only the method the specification names, a path spelled one
+// way, a query of the members named and digits where a number is meant; a
+// body read through its bound, line by line, each line held to the
+// checkpoint's canonical form as it arrives; a bearer token verified as
+// every other endpoint verifies one, before the body is read; and a bound on
+// what each submitter may cost, on what is in flight, and on how long an
+// answer may take to be written.
 //
 // What the witness keeps, and in what order, is the storage's
 // (witness_log.go): a statement is answered only once it is published,
@@ -137,6 +139,15 @@ const (
 	witnessReasonInternal      = "internal"
 )
 
+// Sentences more than one endpoint answers with, so that what refuses alike
+// says alike.
+const (
+	witnessStoppedSentence      = "a statement this witness signed could not be kept, so it signs nothing more, for any trail, until it has restarted"
+	witnessRetiredSentence      = "the trail is retired, and the witness accepts nothing more for it"
+	witnessUnknownTrailSentence = "the witness holds no statement for this trail"
+	witnessNoEndpointSentence   = "no witness endpoint is at this path"
+)
+
 // handler is the witness's endpoints, under /witness/, for a signer whose
 // tokens are verified under id.
 func (s *witnessService) handler(id *identityConfig) http.HandlerFunc {
@@ -153,17 +164,24 @@ func (s *witnessService) handler(id *identityConfig) http.HandlerFunc {
 			witnessRefuse(w, http.StatusBadRequest, witnessReasonMalformed, "a witness path is spelled clean, under /witness/")
 			return
 		}
-		if path == "/witness/checkpoints" {
+		switch path {
+		case "/witness/checkpoints":
 			s.submit(w, r, id)
+			return
+		case "/witness/registrations":
+			s.register(w, r, id)
 			return
 		}
 		rest, under := strings.CutPrefix(path, "/witness/trails/")
 		trail, what, two := strings.Cut(rest, "/")
-		if !under || !two || (what != "head" && what != "statements") {
-			witnessRefuse(w, http.StatusNotFound, witnessReasonNotFound, "no witness endpoint is at this path")
-			return
+		switch {
+		case under && two && what == "retirement":
+			s.retire(w, r, id, trail)
+		case !under || !two || (what != "head" && what != "statements"):
+			witnessRefuse(w, http.StatusNotFound, witnessReasonNotFound, witnessNoEndpointSentence)
+		default:
+			s.read(w, r, trail, what)
 		}
-		s.read(w, r, trail, what)
 	}
 }
 
@@ -400,7 +418,7 @@ func (s *witnessService) answer(w http.ResponseWriter, answer witnessAnswer, err
 		fmt.Fprintf(s.reports, "witness: stopped: %v\n", failure)
 		fallthrough
 	case errors.Is(err, errWitnessStopped):
-		witnessRefuse(w, http.StatusServiceUnavailable, witnessReasonStopped, "a statement this witness signed could not be kept, so it signs nothing more, for any trail, until it has restarted")
+		witnessRefuse(w, http.StatusServiceUnavailable, witnessReasonStopped, witnessStoppedSentence)
 		return
 	case errors.Is(err, errWitnessIndexBound):
 		witnessRefuse(w, http.StatusConflict, witnessReasonIndexBound, "the trail's chain is at the largest index a statement holds")
@@ -418,7 +436,7 @@ func (s *witnessService) answer(w http.ResponseWriter, answer witnessAnswer, err
 	case "below-head":
 		witnessRefuse(w, http.StatusConflict, witnessReasonBelowHead, "the last line's sequence is below the latest checkpoint the witness holds for the trail, and not held; the head is given", answer.statements...)
 	case "retired":
-		witnessRefuse(w, http.StatusConflict, witnessReasonRetired, "the trail is retired, and the witness accepts nothing more for it", answer.statements...)
+		witnessRefuse(w, http.StatusConflict, witnessReasonRetired, witnessRetiredSentence, answer.statements...)
 	default:
 		fmt.Fprintf(s.reports, "witness: a submission was answered %q, which has no answer here\n", answer.kind)
 		witnessRefuse(w, http.StatusInternalServerError, witnessReasonInternal, "the submission could not be answered")
@@ -503,7 +521,7 @@ func (s *witnessService) read(w http.ResponseWriter, r *http.Request, trail, wha
 		fmt.Fprintf(s.reports, "witness: a read could not be answered: %v\n", err)
 		witnessRefuse(w, http.StatusInternalServerError, witnessReasonInternal, "the read could not be answered")
 	case !known:
-		witnessRefuse(w, http.StatusNotFound, witnessReasonUnknownTrail, "the witness holds no statement for this trail")
+		witnessRefuse(w, http.StatusNotFound, witnessReasonUnknownTrail, witnessUnknownTrailSentence)
 	default:
 		witnessLines(w, lines)
 	}
