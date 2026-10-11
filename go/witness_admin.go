@@ -12,10 +12,13 @@ package main
 // endpoints verify one (engineCaller), under the engine's audience, so a
 // submitter's token -- one naming the witness's audience, or of a subject
 // among witness.submitters -- is refused here as it is at /seal. With no
-// identity configured there is no operator to tell from anyone, and
-// neither is served. Each takes a place among the submissions in flight,
-// as a submission does, and is answered only once what it wrote is kept: a
-// registration appended and synced, a retirement durable and marked.
+// identity configured each is refused 401, as a submission is. Any token
+// the engine takes is an operator's here, so these two paths belong behind
+// the operator's side of a front, never beside the submission and the reads
+// a front passes to other parties (SPEC.md §6). Each takes a place among
+// the submissions in flight, as a submission does, though no rate counts
+// it, and is answered only once what it wrote is kept: a registration
+// appended and synced, a retirement durable and marked.
 
 import (
 	"bytes"
@@ -51,8 +54,14 @@ type witnessRegistrationAnswer struct {
 // operator is the caller of an operator's act, its token verified as the
 // engine's own endpoints verify one, or false once the refusal is written:
 // 401 for an absent or invalid token, and for a submitter's, with the
-// sentence every endpoint that is not the witness's gives it.
+// sentence every endpoint that is not the witness's gives it; 401 too, as a
+// submission is answered, where no identity is configured.
 func (s *witnessService) operator(w http.ResponseWriter, r *http.Request, id *identityConfig) (*caller, bool) {
+	if id == nil {
+		w.Header().Set("WWW-Authenticate", "Bearer")
+		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, "an operator's act is authenticated, and this engine has no identity configured")
+		return nil, false
+	}
 	who, err := engineCaller(id, s.spec, r.Header.Get("Authorization"), time.Now())
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
@@ -111,12 +120,9 @@ func (s *witnessService) actRefused(w http.ResponseWriter, act string, err error
 // them, since a registration no token could match is refused rather than
 // kept. The registration is appended and synced under the writer lock, and
 // indexed, before it is answered, so the next submission for the trail is
-// judged by it.
+// judged by it; one the same as the trail's holds already is answered alike
+// and appends nothing.
 func (s *witnessService) register(w http.ResponseWriter, r *http.Request, id *identityConfig) {
-	if id == nil {
-		witnessRefuse(w, http.StatusNotFound, witnessReasonNotFound, witnessNoEndpointSentence)
-		return
-	}
 	if r.Method != http.MethodPost {
 		refuseMethod(w, http.MethodPost)
 		return
@@ -176,10 +182,13 @@ func (s *witnessService) register(w http.ResponseWriter, r *http.Request, id *id
 // readRegistration reads a registration's body, a closed object of three
 // strings, and holds it as `gateway witness register` holds its flags: a
 // registration the storage keeps, of the configured issuer and, where the
-// submitters are named, of one of them. It answers the registration, or the
+// submitters are named, of one of them. Each string is read by the
+// gateway's own parser, not encoding/json's, so one that is not UTF-8, or
+// holds a lone surrogate escape, is refused as the command refuses it,
+// never rewritten to U+FFFD and kept. It answers the registration, or the
 // status and the sentence of a refusal.
 func readRegistration(r *http.Request, id *identityConfig, spec *witnessSpec) (witnessRegistration, int, string) {
-	const shape = "a registration is a JSON object of trail, issuer and subject, each a string, and nothing else"
+	const shape = "a registration is a JSON object of trail, issuer and subject, each a string of UTF-8 text with no lone surrogate escape, and nothing else"
 	members, err := requestMembers(r.Body, witnessRegistrationMembers)
 	var tooLarge *http.MaxBytesError
 	switch {
@@ -191,9 +200,15 @@ func readRegistration(r *http.Request, id *identityConfig, spec *witnessSpec) (w
 	var reg witnessRegistration
 	for name, into := range map[string]*string{"trail": &reg.trail, "issuer": &reg.issuer, "subject": &reg.subject} {
 		raw, present := members[name]
-		if !present || json.Unmarshal(raw, into) != nil || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		if !present {
 			return witnessRegistration{}, http.StatusBadRequest, shape
 		}
+		v, err := parseJSONWithin(raw, 1)
+		text, isString := v.(vString)
+		if err != nil || !isString {
+			return witnessRegistration{}, http.StatusBadRequest, shape
+		}
+		*into = string(text)
 	}
 	switch {
 	case !isLowerHexOfLen(reg.trail, 32):
@@ -216,10 +231,6 @@ func readRegistration(r *http.Request, id *identityConfig, spec *witnessSpec) (w
 // nothing signed; a submission for the trail is refused retired from the
 // next request on.
 func (s *witnessService) retire(w http.ResponseWriter, r *http.Request, id *identityConfig, trail string) {
-	if id == nil {
-		witnessRefuse(w, http.StatusNotFound, witnessReasonNotFound, witnessNoEndpointSentence)
-		return
-	}
 	if r.Method != http.MethodPost {
 		refuseMethod(w, http.MethodPost)
 		return

@@ -1483,11 +1483,23 @@ func (w *witnessLog) register(r witnessRegistration) error {
 // (witness_admin.go) goes through it, and so through keepRegistration, the
 // path a first submission's registration takes: appended and synced, then
 // indexed, and only then answered.
+//
+// A registration the same as the one the trail holds appends nothing: it is
+// answered with the one held, which is durable already -- its start synced
+// what it read, and every line since was synced before it was indexed -- so
+// repeating it grows neither the file nor the index. A witness stopped
+// answers it as it answers any other.
 func (w *witnessLog) reregister(r witnessRegistration) (*witnessRegistration, error) {
 	w.writer.Lock()
 	defer w.writer.Unlock()
+	if w.stopped != nil {
+		return nil, errWitnessStopped
+	}
 	var previous *witnessRegistration
 	if old, ok := w.registrations[r.trail]; ok {
+		if old == r {
+			return &old, nil
+		}
 		previous = &old
 	}
 	if err := w.keepRegistration(r); err != nil {

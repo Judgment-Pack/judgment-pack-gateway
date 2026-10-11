@@ -89,9 +89,9 @@ func registeredAs(t *testing.T, rec *httptest.ResponseRecorder) (witnessRegistra
 // A trail registered on a running witness is judged by the next
 // submission: refused before, accepted after; registered again to another
 // subject, the answer names the one it had, the first subject is refused and
-// the second taken; registered again to the same, nothing is said changed.
-// Each registration is the line the command appends, and a restart reads
-// the last.
+// the second taken; registered again to the same, nothing is said changed
+// and nothing is appended. Each registration is the line the command
+// appends, and a restart reads the last.
 func TestWitnessRegistersOnARunningWitness(t *testing.T) {
 	f := newWitnessFixture(t, witnessSpec{})
 	operator := f.operator(t)
@@ -115,12 +115,15 @@ func TestWitnessRegistersOnARunningWitness(t *testing.T) {
 	refusedAs(t, f.submit(t, testTrail, cpLine(testTrail, 2, "a")), http.StatusForbidden, witnessReasonNotRegistered)
 	statementAnswer(t, f.serve(submission(f.token(t, "deliverer-new"), bytes.NewReader(jsonl(cpLine(testTrail, 2, "a"))))))
 
-	same, _ := registeredAs(t, f.serve(registrationRequest(operator, registrationOf(testTrail, witnessIssuer, "deliverer-new"))))
-	if same.ChangedFrom != nil {
-		t.Fatalf("the same registration again is said to change %+v", *same.ChangedFrom)
-	}
 	second := registrationLine(witnessRegistration{trail: testTrail, issuer: witnessIssuer, subject: "deliverer-new"})
-	if got, want := f.tw.read(t, "registrations"), string(first)+string(second)+string(second); got != want {
+	for i := 0; i < 2; i++ {
+		same, _ := registeredAs(t, f.serve(registrationRequest(operator, registrationOf(testTrail, witnessIssuer, "deliverer-new"))))
+		if same.ChangedFrom != nil || same.Subject != "deliverer-new" {
+			t.Fatalf("the same registration again answered %+v", same)
+		}
+	}
+	// repeated, it appends nothing: neither the file nor the index grows
+	if got, want := f.tw.read(t, "registrations"), string(first)+string(second); got != want {
 		t.Fatalf("the registrations kept: %s", firstDifference(want, got))
 	}
 	// a restart reads what was answered
@@ -209,7 +212,7 @@ func TestWitnessLiveRetirementIsTheCommandsStatement(t *testing.T) {
 // refused 401, with WWW-Authenticate: Bearer, a submitter's with "a token for
 // the witness is refused here", and nothing is written; the operator's
 // token is refused by a submission in turn. With no identity configured,
-// neither act is served.
+// each is refused 401, as a submission is, after its method.
 func TestWitnessAdministrationIsTheOperators(t *testing.T) {
 	f := newWitnessFixture(t, witnessSpec{}, testTrail)
 	statementAnswer(t, f.submit(t, testTrail, cpLine(testTrail, 1, "a")))
@@ -257,15 +260,20 @@ func TestWitnessAdministrationIsTheOperators(t *testing.T) {
 	// a submission refuses the operator's token
 	refusedAs(t, f.serve(submission(f.operator(t), bytes.NewReader(jsonl(cpLine(testTrail, 2, "a"))))), http.StatusUnauthorized, witnessReasonToken)
 
-	// no identity: no operator to tell from anyone, and no act is served
+	// no identity, a state the engine refuses to start in: each act is
+	// answered as a submission is, its method first and then 401
 	f.gateway.identity = nil
 	before := f.tw.files(t)
+	refusedAs(t, f.serve(submission(f.token(t, subjectOf(testTrail)), bytes.NewReader(jsonl(cpLine(testTrail, 2, "a"))))), http.StatusUnauthorized, witnessReasonToken)
 	for name, request := range acts {
 		rec := f.serve(request(f.operator(t)))
-		refusedAs(t, rec, http.StatusNotFound, witnessReasonNotFound)
+		refusedAs(t, rec, http.StatusUnauthorized, witnessReasonToken)
+		if rec.Header().Get("WWW-Authenticate") != "Bearer" {
+			t.Fatalf("a %s with no identity: a 401 without WWW-Authenticate: Bearer", name)
+		}
 		get := request(f.operator(t))
 		get.Method = http.MethodGet
-		refusedAs(t, f.serve(get), http.StatusNotFound, witnessReasonNotFound)
+		refusedAs(t, f.serve(get), http.StatusMethodNotAllowed, witnessReasonMethod)
 		if f.tw.files(t) != before {
 			t.Fatalf("a %s with no identity wrote", name)
 		}
@@ -374,13 +382,41 @@ func TestWitnessAdministrationRefusals(t *testing.T) {
 			refusedAs(t, f.serve(register(c.body, nil)), http.StatusBadRequest, witnessReasonMalformed)
 		})
 	}
-	refusedAs(t, f.serve(func() *http.Request {
-		r := httptest.NewRequest(http.MethodPost, "/witness/trails/"+testTrail+"/retirement", strings.NewReader("{}"))
+	// a retirement with a body, of a length stated and of one unstated
+	// (chunked), is refused unread
+	for _, length := range []int64{2, -1} {
+		body := &sentinel{t: t, first: []byte("{}")}
+		r := httptest.NewRequest(http.MethodPost, "/witness/trails/"+testTrail+"/retirement", body)
+		r.ContentLength = length
 		r.Header.Set("Authorization", "Bearer "+operator)
-		return r
-	}()), http.StatusBadRequest, witnessReasonMalformed)
+		refused := refusedAs(t, f.serve(r), http.StatusBadRequest, witnessReasonMalformed)
+		if refused.Error != "a retirement takes no body" || body.read.Load() != 0 {
+			t.Fatalf("a retirement with a body of length %d: %q, the body read %v", length, refused.Error, body.read.Load() != 0)
+		}
+	}
 	if f.tw.files(t) != before {
 		t.Fatal("a refused act wrote")
+	}
+
+	// a string the gateway's parser refuses -- not UTF-8, or a lone
+	// surrogate escape -- is refused, never rewritten to U+FFFD and kept,
+	// where no submitters list would refuse the subject first; a pair of
+	// surrogate escapes is one character, and is kept as it
+	open := newWitnessFixture(t, witnessSpec{}, testTrail)
+	openBefore := open.tw.files(t)
+	for _, subject := range []string{`a\ud800`, `a\udc00b`, "a\xff", "a\xed\xa0\x80"} {
+		body := `{"trail":"` + trailB + `","issuer":"` + witnessIssuer + `","subject":"` + subject + `"}`
+		refused := refusedAs(t, open.serve(registrationRequest(open.operator(t), strings.NewReader(body))), http.StatusBadRequest, witnessReasonMalformed)
+		if !strings.Contains(refused.Error, "UTF-8") {
+			t.Fatalf("subject %q refused with %q", subject, refused.Error)
+		}
+	}
+	if open.tw.files(t) != openBefore {
+		t.Fatal("a registration of a string not UTF-8 wrote")
+	}
+	pair := `{"trail":"` + trailB + `","issuer":"` + witnessIssuer + `","subject":"a\ud83d\ude00"}`
+	if kept, _ := registeredAs(t, open.serve(registrationRequest(open.operator(t), strings.NewReader(pair)))); kept.Subject != "a\U0001F600" {
+		t.Fatalf("a surrogate pair kept as %q", kept.Subject)
 	}
 	// the media type's parameters are not its type
 	r := register(good, func(r *http.Request) { r.Header.Set("Content-Type", "application/json; charset=utf-8") })
@@ -402,6 +438,9 @@ func TestWitnessAdministrationWhileStopped(t *testing.T) {
 	before := f.tw.files(t)
 	refusedAs(t, f.serve(registrationRequest(f.operator(t), registrationOf(trailC, witnessIssuer, "deliverer-c"))), http.StatusServiceUnavailable, witnessReasonStopped)
 	refusedAs(t, f.serve(retirementRequest(f.operator(t), testTrail)), http.StatusServiceUnavailable, witnessReasonStopped)
+	// the registration the trail holds already, too: a stopped witness
+	// answers nothing as if it were not
+	refusedAs(t, f.serve(registrationRequest(f.operator(t), registrationOf(testTrail, witnessIssuer, subjectOf(testTrail)))), http.StatusServiceUnavailable, witnessReasonStopped)
 	if f.tw.files(t) != before || strings.Count(f.reports.String(), "witness: stopped:") != 1 {
 		t.Fatalf("a stopped witness wrote, or told the operator again: %.300s", f.reports.String())
 	}
