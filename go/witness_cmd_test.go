@@ -119,7 +119,8 @@ func TestWitnessActsOnAStoppedWitness(t *testing.T) {
 }
 
 // Each act on a running witness: the witness holds its files, so the act
-// says so and changes nothing; stopped, the same act goes through.
+// says so and changes nothing, register and retire naming the endpoint
+// that does them on a running witness; stopped, the same act goes through.
 func TestWitnessActsOnARunningWitness(t *testing.T) {
 	tw := newTestWitness(t, testTrail)
 	config := witnessEngineFile(t, tw, "")
@@ -137,6 +138,12 @@ func TestWitnessActsOnARunningWitness(t *testing.T) {
 		}
 		if tw.files(t) != before {
 			t.Fatalf("%s on a running witness changed its files", args[0])
+		}
+		// register and retire name where a running witness does them;
+		// repair is done on a stopped witness alone
+		endpoint := map[string]string{"register": "POST /witness/registrations", "retire": "POST /witness/trails/<id>/retirement"}[args[0]]
+		if endpoint != "" && !strings.Contains(errText, "a running witness does this itself at "+endpoint+", under an operator's token") || endpoint == "" && strings.Contains(errText, "POST ") {
+			t.Fatalf("%s on a running witness names %q: %s", args[0], endpoint, errText)
 		}
 	}
 	w.close()
