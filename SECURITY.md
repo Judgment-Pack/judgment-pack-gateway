@@ -4,7 +4,7 @@
 
 This is a **reference gateway**, not a hardened deployment. It is pre-1.0, provides no security,
 compatibility, or support service-level guarantee, binds localhost, has no authorization on its HTTP
-surface beyond a checkpoint witness's registrations and no authentication unless an `identity` is configured (which decides who may call,
+surface beyond a checkpoint witness's registrations and its named operators, and no authentication unless an `identity` is configured (which decides who may call,
 never from where; a token presented off the machine can be replayed), and runs as a single operator holding a single signing identity.
 It must not be used as the sole control for consequential production decisions, and a `/verify` that
 answers `ok` must not be read as a statement that the underlying facts are true — see
@@ -306,25 +306,31 @@ unsign it: the trail is retired and its operator goes on under a new trail. Unde
 `"first-submission"`, any subject the issuer names, and `submitters` allows, can claim a trail
 whose identity it has learned before its operator does. A witness whose log or marks are damaged
 refuses to start, and the rules it recovers by can cost it its key, which is the gateway's key for
-receipts and seals too. **An operator's credential administers the witness**: any token the
-signer's other token-checked endpoints take — an engine-audience token of the configured issuer,
-of any subject not among `witness.submitters` — registers and retires trails on a running
-witness, at `POST /witness/registrations` and `POST /witness/trails/{trail}/retirement`. Whoever
-holds one can retire any trail it names, for good, and move any trail's registration away from
-its submitter, who is then refused. A submitter's credential cannot, and is refused there as at
-`/seal`. So a front for other parties passes `/witness/checkpoints` and the two reads under
+receipts and seals too. **An operator's credential administers the witness**: it registers and
+retires trails on a running witness, at `POST /witness/registrations` and
+`POST /witness/trails/{trail}/retirement`. With `witness.operators`, only the engine-audience
+token of an issuer and subject the list names is an operator's credential there, and any other
+token the engine takes is refused `403`; with the list present and empty, none is, and the
+offline commands remain. Without the list, any token the signer's other token-checked endpoints
+take — an engine-audience token of the configured issuer, of any subject not among
+`witness.submitters` — is, so name the operators. Whoever holds an operator's credential can
+retire any trail it names, for good, and move any trail's registration away from its submitter,
+who is then refused; the list says which callers may, not who holds their tokens, and `/seal`
+and the signer's other endpoints take any token the engine takes either way. A submitter's
+credential cannot, and is refused there as at `/seal`; no operator may also be a submitter. So
+a front for other parties passes `/witness/checkpoints` and the two reads under
 `/witness/trails/{trail}/` only, and keeps those two paths on the operator's side, as it keeps
-the signer's other endpoints: a front that passes all of `/witness/` lets an engine-audience
-token from another host administer the witness. The reference names no narrower operator than
-"any token the engine takes" (#229). Repairing the files takes a stop of the witness, since a
-running witness holds its files.
+the signer's other endpoints, with the list or without it: a front that passes all of
+`/witness/` lets a token from another host administer the witness — any engine-audience token
+without the list, a named operator's with it. Repairing the files takes a stop of the witness,
+since a running witness holds its files.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
 checked. A verifier that reads both from the same untrusted place gets no guarantee.
 
 **Not in scope for this reference:** availability or HA, authenticated transport, access control
-beyond a checkpoint witness's registrations, multi-tenancy, key rotation or custody, rate limiting
+beyond a checkpoint witness's registrations and named operators, multi-tenancy, key rotation or custody, rate limiting
 beyond a witness's bounds on its submitters, and resistance to a local attacker who can
 concurrently rename or replace store ancestors. Run it from a directory whose ownership and write
 permissions you control.

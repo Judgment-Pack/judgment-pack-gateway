@@ -12,10 +12,13 @@ package main
 // endpoints verify one (engineCaller), under the engine's audience, so a
 // submitter's token -- one naming the witness's audience, or of a subject
 // among witness.submitters -- is refused here as it is at /seal. With no
-// identity configured each is refused 401, as a submission is. Any token
-// the engine takes is an operator's here, so these two paths belong behind
-// the operator's side of a front, never beside the submission and the reads
-// a front passes to other parties (SPEC.md §6). Each takes a place among
+// identity configured each is refused 401, as a submission is. Where
+// witness.operators is given, a token so verified is an operator's only when
+// its issuer and subject are among them, and any other is refused 403
+// (#229); where it is not, any token the engine takes is an operator's here.
+// Either way these two paths belong behind the operator's side of a front,
+// never beside the submission and the reads a front passes to other parties
+// (SPEC.md §6). Each takes a place among
 // the submissions in flight, as a submission does, though no rate counts
 // it, and is answered only once what it wrote is kept: a registration
 // appended and synced, a retirement durable and marked.
@@ -52,10 +55,12 @@ type witnessRegistrationAnswer struct {
 }
 
 // operator is the caller of an operator's act, its token verified as the
-// engine's own endpoints verify one, or false once the refusal is written:
+// engine's own endpoints verify one and, where witness.operators is given,
+// its issuer and subject among them; or false once the refusal is written:
 // 401 for an absent or invalid token, and for a submitter's, with the
 // sentence every endpoint that is not the witness's gives it; 401 too, as a
-// submission is answered, where no identity is configured.
+// submission is answered, where no identity is configured; and 403 for a
+// token the engine takes of a caller the list does not name.
 func (s *witnessService) operator(w http.ResponseWriter, r *http.Request, id *identityConfig) (*caller, bool) {
 	if id == nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
@@ -66,6 +71,10 @@ func (s *witnessService) operator(w http.ResponseWriter, r *http.Request, id *id
 	if err != nil {
 		w.Header().Set("WWW-Authenticate", "Bearer")
 		witnessRefuse(w, http.StatusUnauthorized, witnessReasonToken, err.Error())
+		return nil, false
+	}
+	if !s.spec.operates(who) {
+		witnessRefuse(w, http.StatusForbidden, witnessReasonNotOperator, "an operator named by witness.operators is required here")
 		return nil, false
 	}
 	return who, true

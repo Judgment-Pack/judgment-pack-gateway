@@ -150,6 +150,7 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
     "audience": "witness:acme",
     "registration": "operator",
     "submitters": [{ "issuer": "https://login.example", "subject": "desk-acme" }],
+    "operators": [{ "issuer": "https://login.example", "subject": "witness-admin" }],
     "trailsPerSubmitter": 100,
     "submissionsPerMinute": 60
   }
@@ -169,7 +170,16 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   its submitter. `submitters`, when present, is the `{issuer, subject}` pairs allowed to submit
   at all, each issuer `identity.issuer`, none given twice; present and empty, no subject may
   submit, and the witness only serves what it holds; absent, any subject the issuer's tokens
-  name may. `trailsPerSubmitter` (`1` to `100000`, default `100`) bounds the trails registered
+  name may. `operators`, when present, is the `{issuer, subject}` pairs whose engine-audience
+  tokens may register and retire trails on a running witness, at `POST /witness/registrations`
+  and `POST /witness/trails/{trail}/retirement` (SPEC.md §6, "Administration"), each issuer
+  `identity.issuer`, none given twice, and none among `submitters`, since the roles are
+  distinct: a submitter's token opens the witness and nothing else. Any other token the engine
+  takes is refused there `403`. Present and empty, no one may administer the running witness,
+  and `gateway witness register` and `retire` remain for a stopped one; absent, any token the
+  engine takes, of a subject not among `submitters`, may, as it may call `/seal`. Name the
+  operators, and keep both paths on the operator's side of a front either way (SECURITY.md).
+  `trailsPerSubmitter` (`1` to `100000`, default `100`) bounds the trails registered
   to one submitter that hold a statement and are not retired, and `submissionsPerMinute` (`1` to `6000`, default
   `60`) its submissions in a minute. A witness needs `identity`, since a submission is
   authenticated by a bearer token of the configured issuer, and is refused without it; it needs

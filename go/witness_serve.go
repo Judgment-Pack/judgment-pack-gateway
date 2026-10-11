@@ -124,6 +124,7 @@ const (
 	witnessReasonNotFound      = "not-found"
 	witnessReasonToken         = "unauthenticated"
 	witnessReasonNotSubmitter  = "not-a-submitter"
+	witnessReasonNotOperator   = "not-an-operator"
 	witnessReasonNotRegistered = "not-registered"
 	witnessReasonUnknownTrail  = "unknown-trail"
 	witnessReasonConflict      = "conflict"
