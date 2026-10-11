@@ -11,7 +11,9 @@ package main
 // what it is, through its own descriptor, before a byte of it is read, with
 // exactly one name (witnessFiles.hold). A witness running holds them for as
 // long as it runs, so an act on a running witness refuses, says so, and
-// changes nothing; the witness is stopped for it and started again after.
+// changes nothing. A running witness registers and retires a trail itself,
+// for its operator (witness_admin.go), and the refusal of those two acts
+// names where; repair takes a stop of the witness.
 
 import (
 	"encoding/json"
@@ -25,7 +27,10 @@ const witnessUsage = `usage:
   gateway witness verify --log <file> --public-key <file> [--marks <file>]
   gateway witness register --config <engine.json> --trail <id> --issuer <issuer> --subject <subject>
   gateway witness retire --config <engine.json> --trail <id>
-  gateway witness repair --config <engine.json>`
+  gateway witness repair --config <engine.json>
+register, retire and repair act on a stopped witness; a running one registers
+and retires a trail itself, under an operator's token, at
+POST /witness/registrations and POST /witness/trails/<id>/retirement.`
 
 // witnessCommands are the flags each subcommand takes, and whether each is
 // required.
@@ -182,14 +187,29 @@ func witnessStartLine(log *witnessLog, spec *witnessSpec) string {
 	return fmt.Sprintf("witness: %d statements of %d trails under key %s; registration %s; its reads are open to anyone who names a trail", statements, trails, log.keyID, mode)
 }
 
+// witnessLiveActs are the acts a running witness does itself, at an
+// endpoint of its own under an operator's token (witness_admin.go); repair
+// is not among them.
+var witnessLiveActs = map[string]string{
+	"register": "POST /witness/registrations",
+	"retire":   "POST /witness/trails/<id>/retirement",
+}
+
 // witnessHeldSentence is what an act says when a running witness, or
-// another act, holds the files.
-const witnessHeldSentence = "a running witness, or another act on it, holds the witness's files: stop the witness and run this again; nothing was changed"
+// another act, holds the files: for an act a running witness does itself,
+// where it does it.
+func witnessHeldSentence(act string) string {
+	how := "stop the witness and run this again"
+	if endpoint, ok := witnessLiveActs[act]; ok {
+		how = "a running witness does this itself at " + endpoint + ", under an operator's token; or stop the witness and run this again"
+	}
+	return "a running witness, or another act on it, holds the witness's files: " + how + "; nothing was changed"
+}
 
 // witnessActFailed says why an act did nothing, or failed, on stderr.
 func witnessActFailed(stderr io.Writer, act string, err error) int {
 	if errors.Is(err, errWitnessHeld) {
-		fmt.Fprintf(stderr, "witness %s: %s (%v)\n", act, witnessHeldSentence, err)
+		fmt.Fprintf(stderr, "witness %s: %s (%v)\n", act, witnessHeldSentence(act), err)
 		return 1
 	}
 	fmt.Fprintf(stderr, "witness %s: %v\n", act, err)

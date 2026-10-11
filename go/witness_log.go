@@ -6,8 +6,9 @@ package main
 // marked and published, the start-up checks, and the repair their three
 // rules allow. This is the core the witness service is built on: the
 // service (witness_serve.go) answers submissions and serves reads through
-// it, and the commands (witness_cmd.go) register, retire and repair through
-// it with the witness stopped.
+// it, and registers and retires trails through it for the witness's
+// operator while it runs (witness_admin.go); the commands (witness_cmd.go)
+// register, retire and repair through it with the witness stopped.
 //
 // The files, each private to the signer (0600):
 //
@@ -1469,9 +1470,30 @@ func (w *witnessLog) retire(trail string) (witnessAnswer, error) {
 // operator's act, appended and synced under the writer lock, recorded and
 // never served.
 func (w *witnessLog) register(r witnessRegistration) error {
+	_, err := w.reregister(r)
+	return err
+}
+
+// reregister is register, answering the registration the trail had before
+// it, or nil for a trail registered to nobody. That is read under the
+// writer lock from the registrations the witness holds -- every one its
+// start read, and every one written since, each under that lock -- so it is
+// the one the new line replaces, and no read of a file can fail and be
+// taken for none. The operator's registration on a running witness
+// (witness_admin.go) goes through it, and so through keepRegistration, the
+// path a first submission's registration takes: appended and synced, then
+// indexed, and only then answered.
+func (w *witnessLog) reregister(r witnessRegistration) (*witnessRegistration, error) {
 	w.writer.Lock()
 	defer w.writer.Unlock()
-	return w.keepRegistration(r)
+	var previous *witnessRegistration
+	if old, ok := w.registrations[r.trail]; ok {
+		previous = &old
+	}
+	if err := w.keepRegistration(r); err != nil {
+		return nil, err
+	}
+	return previous, nil
 }
 
 func (w *witnessLog) answer(kind string, t *witnessTrail, index int64) (witnessAnswer, error) {
