@@ -140,8 +140,8 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   signer does not demand.
 - `witness`, in a version-6 file, makes the signer a checkpoint witness
   ([ADR-0013](../adr/0013-checkpoint-witness.md); SPEC.md §6, "Witness endpoints", and §8): it
-  then answers `POST /witness/checkpoints` and the two reads of a trail, and keeps what it signs
-  in its own files. A closed object —
+  then answers `POST /witness/checkpoints` and the two reads of a trail, and its operator's two
+  acts, and keeps what it signs in its own files. A closed object —
 
   ```json
   "witness": {
@@ -163,7 +163,8 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   the MCP transport refuse it, as they refuse a token of a subject among `submitters`
   (SECURITY.md). `registration` is
   `"operator"`, the default, under which the witness's operator registers each trail with
-  `gateway witness register` and a submission for a trail nobody registered is refused, or
+  `gateway witness register`, or, on a running witness, at `POST /witness/registrations` (SPEC.md
+  §6, "Administration"), and a submission for a trail nobody registered is refused, or
   `"first-submission"`, under which the first submission accepted for a trail registers it to
   its submitter. `submitters`, when present, is the `{issuer, subject}` pairs allowed to submit
   at all, each issuer `identity.issuer`, none given twice; present and empty, no subject may

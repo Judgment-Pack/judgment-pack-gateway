@@ -274,8 +274,9 @@ address, so reaching it from another host takes a TLS-terminating front the witn
 runs, which is also where reads are bounded. A submitter's token opens the witness and nothing
 else: it names the witness's audience (`witness.audience`), not the engine's, and every other
 token-checked endpoint of the signer — `/seal` among them — and the MCP transport refuse a token
-that names it, or that is of a subject among `witness.submitters`; a front that exposes `/witness/`
-alone is defence in depth, not what keeps the signer's other endpoints from a submitter; it is one key and one operator, not a multi-tenant service — every trail it
+that names it, or that is of a subject among `witness.submitters`; a front that exposes the
+submission and the two reads alone is defence in depth, not what keeps the signer's other
+endpoints from a submitter; it is one key and one operator, not a multi-tenant service — every trail it
 witnesses is signed under the gateway's own seed, the key of its receipts and seals, and its
 submitters are the subjects of one issuer, told apart by nothing else; and **a credential is
 enough to spoil a trail at that witness for good**: whoever holds a token of a trail's registered
@@ -285,11 +286,18 @@ unsign it: the trail is retired and its operator goes on under a new trail. Unde
 `"first-submission"`, any subject the issuer names, and `submitters` allows, can claim a trail
 whose identity it has learned before its operator does. A witness whose log or marks are damaged
 refuses to start, and the rules it recovers by can cost it its key, which is the gateway's key for
-receipts and seals too. An operator's credential — any token the signer's other token-checked
-endpoints take — registers and retires trails on a running witness, at
-`POST /witness/registrations` and `POST /witness/trails/{trail}/retirement`, which a front that
-passes `/witness/` passes too; a submitter's credential cannot, and is refused there as at
-`/seal`. Repairing the files takes a stop of the witness, since a running witness holds its files.
+receipts and seals too. **An operator's credential administers the witness**: any token the
+signer's other token-checked endpoints take — an engine-audience token of the configured issuer,
+of any subject not among `witness.submitters` — registers and retires trails on a running
+witness, at `POST /witness/registrations` and `POST /witness/trails/{trail}/retirement`. Whoever
+holds one can retire any trail it names, for good, and move any trail's registration away from
+its submitter, who is then refused. A submitter's credential cannot, and is refused there as at
+`/seal`. So a front for other parties passes `/witness/checkpoints` and the two reads under
+`/witness/trails/{trail}/` only, and keeps those two paths on the operator's side, as it keeps
+the signer's other endpoints: a front that passes all of `/witness/` lets an engine-audience
+token from another host administer the witness. The reference names no narrower operator than
+"any token the engine takes" (#229). Repairing the files takes a stop of the witness, since a
+running witness holds its files.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
