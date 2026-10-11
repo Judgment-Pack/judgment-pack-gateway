@@ -1244,6 +1244,12 @@ before the network is reached. Hits are leads to read through `web`, not
 documents. Catalog v3 advertises the provider under the protocol `web-search-v1`
 and the local source plan names the source. See
 [configuration, limits and the provider contract](../docs/web-search.md).
+A Google grounding hit is a link to Google's redirect endpoint; `web` follows it
+to the publisher only under the operator's `google-grounding` redirect policy
+(`adapter-web --redirect-policies=google-grounding`, or
+`JPACK_WEB_REDIRECT_POLICIES` for the local plan), and otherwise refuses it as
+`web-redirect-origin`
+([operator redirect policies](../docs/design/public-web-sources.md#operator-redirect-policies)).
 Tests with local servers are not a claim that a live account is accepted.
 
 ### Bounded website exploration
@@ -1256,7 +1262,8 @@ so existing consumers can keep reading individual pages. No credentials are used
 The breadth-first crawl follows `<a>` and `<area>` links, resolves the first
 HTML base URL, removes fragments, and stays on the exact HTTPS origin (not sibling
 subdomains). Every request and redirect passes the existing public-DNS/numeric-dial
-checks. It sends no cookies or authorization and does not execute JavaScript,
+checks, and no redirect policy applies: `--discover` refuses `--redirect-policies`.
+It sends no cookies or authorization and does not execute JavaScript,
 enumerate sitemaps, or follow external links. Robots.txt must be readable or return
 an ordinary 4xx absence; 401, 403, 429, 5xx, malformed rules, and unsupported media
 stop exploration. Redirects of robots.txt also stay on the same origin. Matching

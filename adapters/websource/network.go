@@ -4,8 +4,10 @@ package websource
 
 import (
 	"adapters/attachment"
+	"adapters/connections"
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -71,6 +73,53 @@ func sameOrigin(origin, next *url.URL) bool {
 	}
 	return strings.EqualFold(a, b)
 }
+
+// RedirectRefusal is a redirect refused by the origin rule: ErrRedirectOrigin,
+// with the two origins and the redirect policy, if any, under which the hop
+// would have been followed. It holds origins only: never a path, a token, a
+// query or credentials.
+type RedirectRefusal struct {
+	// From is the origin of the response that redirected, To the origin of
+	// its Location, each "https://" and the host as the URL spelled it,
+	// lowercase, an IPv6 literal in brackets.
+	From, To string
+	// Policy names the supported policy whose eligibility this hop meets in
+	// this read, which the operator's configuration did not enable; empty
+	// when no supported policy covers the hop, so that enabling one would
+	// change nothing.
+	Policy string
+}
+
+func (r *RedirectRefusal) Error() string { return ErrRedirectOrigin.Error() }
+func (r *RedirectRefusal) Unwrap() error { return ErrRedirectOrigin }
+
+// maxRefusalLine is the most of a source's standard error the reference
+// gateway carries into its refusal (go/serve.go, maxSourceFailureText). A
+// refusal line within it arrives whole.
+const maxRefusalLine = 200
+
+// RefusalLine is what adapter-web writes on standard error for err: the
+// error's token, and for a redirect refused by the origin rule, one space and
+// the canonical JSON object {"redirect":{"from","permitted","policy","to"}},
+// when the whole line fits within maxRefusalLine bytes; past that, the token
+// alone. The token stays the line's first word, as consumers read it.
+func RefusalLine(err error) string {
+	var refusal *RedirectRefusal
+	if !errors.As(err, &refusal) {
+		return err.Error()
+	}
+	var policy any
+	if refusal.Policy != "" {
+		policy = refusal.Policy
+	}
+	member, merr := json.Marshal(map[string]any{"redirect": map[string]any{"from": refusal.From, "permitted": false, "policy": policy, "to": refusal.To}})
+	line := ErrRedirectOrigin.Error() + " " + string(member)
+	if merr != nil || len(line) > maxRefusalLine {
+		return ErrRedirectOrigin.Error()
+	}
+	return line
+}
+
 func admittedURL(raw string) (*url.URL, error) {
 	u, ok := attachment.WebURL(raw)
 	if !ok {
@@ -130,11 +179,11 @@ func (f fetcher) networkTimeouts() networkOptions {
 func newFetcher() fetcher {
 	return fetcher{lookup: net.DefaultResolver.LookupNetIP, dial: (&net.Dialer{Timeout: 8 * time.Second}).DialContext}
 }
-func (f fetcher) dialPublic(ctx context.Context, network, address string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil || port != "443" {
-		return nil, ErrURL
-	}
+
+// resolvePublic is host's addresses, a literal's own or every DNS answer,
+// held to the public-address rule: a failed lookup is ErrNetwork, and no
+// answer, more than 16, or any one that is not public is ErrPrivate.
+func (f fetcher) resolvePublic(ctx context.Context, host string) ([]netip.Addr, error) {
 	var ips []netip.Addr
 	if ip, err := netip.ParseAddr(host); err == nil {
 		ips = []netip.Addr{ip}
@@ -151,6 +200,18 @@ func (f fetcher) dialPublic(ctx context.Context, network, address string) (net.C
 		if !publicAddress(ip) {
 			return nil, ErrPrivate
 		}
+	}
+	return ips, nil
+}
+func (f fetcher) dialPublic(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || port != "443" {
+		return nil, ErrURL
+	}
+	// Resolved here, for the dial, whatever was resolved before.
+	ips, err := f.resolvePublic(ctx, host)
+	if err != nil {
+		return nil, err
 	}
 	// The checked numeric address is the exact dial target. DNS is never repeated
 	// by the transport, while HTTP Host and TLS ServerName remain the URL's host.
@@ -175,6 +236,9 @@ type response struct {
 	url    string
 	tls    *tls.ConnectionState
 	status int
+	// redirectPolicy names the policy under which a cross-origin hop was
+	// followed, or is empty when every hop held to the requested origin.
+	redirectPolicy string
 }
 
 // readPolicy is internal to the adapter: callers cannot choose network rules.
@@ -183,6 +247,12 @@ type readPolicy struct {
 	maxBytes  int
 	remaining *int
 	robots    bool
+	// policyHops is true for a plain read, the one read a redirect policy
+	// can apply to; discovery and site-scoped reads follow no policy hop and
+	// name none in a refusal. grounding is the operator's google-grounding
+	// policy, enabled for this read; it is read only where policyHops is.
+	policyHops bool
+	grounding  bool
 }
 
 func (f fetcher) read(ctx context.Context, rawURL string) (response, error) {
@@ -200,6 +270,7 @@ func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy)
 	transport := &http.Transport{Proxy: nil, DialContext: f.dialPublic, TLSClientConfig: f.tls, DisableKeepAlives: true, DisableCompression: true, MaxResponseHeaderBytes: 32 << 10, TLSHandshakeTimeout: 8 * time.Second, ResponseHeaderTimeout: options.responseHeaderTimeout}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	followed := ""
 	for redirects := 0; redirects <= 5; redirects++ {
 		if policy.before != nil {
 			if err := policy.before(ctx, current); err != nil {
@@ -230,13 +301,41 @@ func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy)
 			if err != nil {
 				return response{}, ErrURL
 			}
-			current, err = admittedURL(next.String())
+			// Every hop is admitted first, the hop a policy follows included:
+			// an invalid or private destination is refused under its own
+			// token, never presented as a policy's choice. A cross-origin
+			// destination is resolved too, below.
+			target, err := admittedURL(next.String())
 			if err != nil {
 				return response{}, err
 			}
-			if !sameOrigin(origin, current) {
-				return response{}, ErrRedirectOrigin
+			if !sameOrigin(origin, target) {
+				// A destination that resolves to nothing, or to any address
+				// that is not public, is refused here as the dial would
+				// refuse it, under its own token and with no member: a
+				// refusal never names a destination it could not reach, nor
+				// says a policy would help where it would not. The dial
+				// resolves again, independently, for a hop that is followed.
+				if _, err := f.resolvePublic(ctx, target.Hostname()); err != nil {
+					return response{}, err
+				}
+				// One cross-origin hop may be followed under google-grounding:
+				// the first response of a plain read, from the grounding
+				// endpoint exactly. The publisher's origin is then the one
+				// every later hop is held to, so a second change of origin
+				// and a return to the provider are refused like any other.
+				eligible := policy.policyHops && redirects == 0 && attachment.GroundingRedirectEndpoint(current)
+				if !eligible || !policy.grounding {
+					refusal := &RedirectRefusal{From: webOrigin(current), To: webOrigin(target)}
+					if eligible {
+						refusal.Policy = connections.GoogleGroundingPolicy
+					}
+					return response{}, refusal
+				}
+				origin = target
+				followed = connections.GoogleGroundingPolicy
 			}
+			current = target
 			continue
 		}
 		if policy.robots && res.StatusCode != 200 && res.TLS != nil && len(res.TLS.VerifiedChains) > 0 {
@@ -276,7 +375,7 @@ func (f fetcher) readWith(ctx context.Context, rawURL string, policy readPolicy)
 		if len(raw) == 0 && !policy.robots || len(raw) > limit {
 			return response{}, ErrLimit
 		}
-		return response{raw: raw, media: media, url: current.String(), tls: res.TLS, status: res.StatusCode}, nil
+		return response{raw: raw, media: media, url: current.String(), tls: res.TLS, status: res.StatusCode, redirectPolicy: followed}, nil
 	}
 	return response{}, ErrRedirect
 }

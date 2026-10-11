@@ -121,6 +121,10 @@ type Source struct {
 	FileID         string `json:"fileId,omitempty"`
 	Version        string `json:"version,omitempty"`
 	MediaType      string `json:"mediaType,omitempty"`
+	// RedirectPolicy, on a web source, names the operator's redirect policy
+	// under which the read followed a hop from the requested origin to
+	// another; absent when every hop held to the requested origin.
+	RedirectPolicy string `json:"redirectPolicy,omitempty"`
 }
 
 // OCR is the provenance of applied OCR answers.

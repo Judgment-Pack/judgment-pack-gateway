@@ -21,7 +21,10 @@ A/AAAA answer must pass; at most 16 answers and four numeric connection attempts
 are accepted. The transport dials a checked numeric address while keeping the
 original HTTP Host and TLS hostname. It does not resolve that address again.
 Redirects undergo the same checks; at most five redirects follow the initial
-request. Proxy environment variables, cookies, and authorization are not used.
+request. Every redirect is also held to the requested origin: a hop to another
+scheme, host or port is refused as `web-redirect-origin` before it is requested
+(#224), unless an operator's [redirect policy](#operator-redirect-policies)
+covers that one hop. Proxy environment variables, cookies, and authorization are not used.
 TLS verification is mandatory. There is no production insecure-test override.
 
 The total operation deadline is 45 seconds, or 140 seconds when the adapter is
@@ -59,7 +62,10 @@ The new `provenance.source` variant has exactly:
 - `version`, SHA-256 of retained bytes, equal to `document.id` and
   `document.version`;
 - `format: "static-text-v1"` for HTML converted to `text/plain`, or
-  `"original-v1"` for unchanged plain text/PDF.
+  `"original-v1"` for unchanged plain text/PDF;
+- and, only when a read followed a cross-origin hop under an operator's
+  redirect policy, `redirectPolicy` naming it (`"google-grounding"`); see the
+  [consumer contract](#consumer-contract).
 
 The original is inline base64. For original-v1, responseDigest also equals the
 retained digest. HTML's responseDigest identifies fetched bytes that are not
@@ -75,6 +81,147 @@ the retained result, including any query parameters. Users should attach public
 links, not secret-bearing URLs. A receipt verifies the signed adapter report and
 byte lineage; it does not establish publisher authority, accuracy, or completeness.
 
+## Operator redirect policies
+
+A redirect policy is a named, fixed exception to the origin rule that the
+operator enables for the web source. This distribution supports one,
+`google-grounding`: a Google grounding search result is a link to
+`https://vertexaisearch.cloud.google.com/grounding-api-redirect/<token>`, which
+answers with a redirect to the publisher, and without the policy every such
+link is refused as `web-redirect-origin`.
+
+### Configuration
+
+The policies are the adapter's command line, the operator's declaration of the
+source: `adapter-web --redirect-policies=LIST`, where LIST is policy names
+separated by single commas, given once, in one word. A gateway operator writes
+it into the source (`--source "web=adapter-web --redirect-policies=google-grounding"`).
+Under the managed local plan, `gateway-connections --local-plan` adds
+`--redirect-policies=LIST` to the `web` source's arguments while
+`JPACK_WEB_REDIRECT_POLICIES`, in the environment the companion is asked with,
+names a policy; unset or empty, the plan is byte for byte the plan without it.
+`web-discovery` is never given the flag, and `adapter-web --discover` refuses it.
+
+An empty LIST is no policy. A name this distribution does not support, a name
+given twice, whitespace or an empty item refuses the list whole, never read as
+a smaller one: the adapter refuses to start (exit 2) with the one line
+`web-redirect-policy-unknown: …` on standard error, before it reads the request,
+and the companion refuses `--local-plan` and `--source-capabilities` the same
+way, so a desk does not start a local gateway on a list it cannot follow.
+
+Nothing a request, a model's output or a URL carries can enable a policy. The
+request stays exactly `{url}` or `{url, site}`; a request with any other member
+is refused as `web-invalid-request` before any network request.
+
+**Activation.** The adapter is started for each acquisition, reads its command
+line then and keeps nothing between reads. A gateway fixes a source's command
+line when it starts, and a desk reads the plan when it starts its local
+gateway, so enabling or removing a policy takes effect at that gateway's next
+start, from its first read.
+
+### `google-grounding`
+
+One change of origin is followed, and only when all of these hold:
+
+- the read is a plain read: discovery and a site-scoped read (`site`) follow no
+  policy hop, held to one origin as before;
+- the requested URL is exactly the grounding endpoint: `https`, the host
+  `vertexaisearch.cloud.google.com` spelled in lowercase, port 443 implicit or
+  explicit, a path of `/grounding-api-redirect/` and one non-empty segment with
+  no `/`, nothing percent-encoded and not `.` or `..`, and no query (an empty
+  `?` included);
+- the hop is the redirect of the first response, before any other redirect;
+- its destination is admitted as any requested URL is (https, port 443, no
+  userinfo, a name or literal that passes the address rules, every DNS answer
+  public at the dial), and is another origin.
+
+The destination's origin is then the origin every later hop is held to:
+same-origin redirects at the publisher are followed within the six requests,
+and a second change of origin, a return to the provider or any other
+cross-origin hop is refused as `web-redirect-origin`. An invalid or private
+destination is refused under its own token before the policy is consulted:
+the destination of every cross-origin hop is resolved first, and one that does
+not resolve, or whose answers are not all public, is refused as the dial would
+refuse it (`web-unavailable`, `web-public-only`), with or without the policy.
+The dial resolves again, independently, for the hop that is followed.
+Every hop keeps the transport above: TLS verification, the timeouts, the header
+and body bounds, the media checks. The adapter keeps no cookie jar and sends
+no cookie, authorization or referrer header on any hop.
+
+**What it establishes, and what it does not.** Enabling the policy is the
+operator's acceptance that a grounding result may lead the reader on to the
+publisher it names. It is not evidence about the publisher: the provider
+choosing the destination does not make that page authoritative, accurate or
+complete, and the record says which policy was followed, not that following it
+was right. A read under the policy discloses the token in the requested URL to
+the provider, and the reader's address to the provider and the publisher, as
+any read discloses it to the server it reads.
+
+## Consumer contract
+
+What a consumer such as Desk reads about redirect policies, in three places.
+
+**The configuration report.** `gateway-connections --source-capabilities`
+writes one JSON object on stdout:
+
+```json
+{"version":1,"sources":[{"id":"web","redirectPolicies":{"supported":["google-grounding"],"enabled":[]}}]}
+```
+
+`supported` is what an operator of this distribution can enable; `enabled` is
+what `JPACK_WEB_REDIRECT_POLICIES` in the companion's environment enables, read
+exactly as `--local-plan` reads it, so a report and a plan asked with the same
+environment agree. It is read from the verified installed companion, like the
+catalog and the plan, and creates, locks and writes nothing; with another
+discovery flag, or a list it cannot follow, it exits 2. It is a document of its
+own because readers of the catalog and the plan hold their members closed.
+
+**The refusal.** `adapter-web` writes one line on standard error. For a redirect
+refused by the origin rule, the token is followed by one space and a JSON
+object:
+
+```text
+web-redirect-origin {"redirect":{"from":"https://vertexaisearch.cloud.google.com","permitted":false,"policy":"google-grounding","to":"https://example.com"}}
+```
+
+The reference gateway answers `/acquire` with `400` and
+`{"error": "source failed: " + the first 200 bytes of the source's standard error}`
+(`go/serve.go`), and the adapter writes the member only when the whole line is
+at most 200 bytes, so a member arrives whole or not at all; past that the line
+is the token alone. Members, in code-point order:
+
+- `from`, `to`: the origin of the response that redirected and of its
+  `Location`, `https://` and the host as the URL spelled it, in lowercase, an
+  IPv6 literal in brackets. Never a path, a token, a query or credentials;
+- `policy`: the supported policy whose eligibility this hop meets in this read
+  and which the operator's configuration does not enable, or `null` when no
+  supported policy covers the hop;
+- `permitted`: `false`, since the configuration in force did not permit the
+  hop.
+
+So `policy` non-null, supported and not enabled says a configuration review can
+change the outcome; `null` says no policy this distribution has would follow
+the hop, and a consumer offers no review. A hard refusal, such as
+`web-invalid-url` or `web-public-only`, never carries the member: it is not a
+configuration choice. A destination whose DNS answers are private, or mixed,
+is such a refusal, so a member only ever names a destination that resolved to
+public addresses alone. The token stays the line's first word, so a consumer that
+reads the first `web-…` word reads the refusal as before. Discovery's per-page
+`reason` stays the bare token.
+
+**Provenance.** A record read under a policy carries
+`provenance.source.redirectPolicy` naming it; a record read without one is
+unchanged byte for byte, without the member. The producer's check holds a
+record that names `google-grounding` to `requestedUrl` being the grounding
+endpoint exactly as the adapter admits it (`attachment.GroundingRedirectEndpoint`,
+the one predicate both use) and `url` being at another host. The member is an optional
+addition within attachment version `"1"`
+([attachments](attachments.md#versioning)), signed as the rest of the record is
+(the receipt commits the result); no receipt or signature format changes. The
+acquisition statement keeps its three members, `method`, `requestedUrl` and
+`url`. `requestedUrl` is the grounding link as requested, `url` the publisher's
+page that answered.
+
 ## Discovery
 
 `gateway-connections --catalog` advances to **version 2** and adds `sources`.
@@ -89,5 +236,8 @@ provider in the connection broker and no invented connect/disconnect operation.
 Local TLS fixtures exercise redirect identities, headers/cookies, public/private
 DNS mixtures, numeric dialing, redirect re-resolution, private IP/special IPv6
 refusals, cancellation, size/MIME/charset/compression limits, static HTML content,
-plain originals, and text/scanned PDF extraction. Attachment tests reject invalid
+plain originals, and text/scanned PDF extraction. A fixture serving several
+virtual hosts behind synthetic DNS holds the redirect policy: the default
+refusal with one request, the one permitted hop with no cookie, credential or
+referrer on any hop, and each hop it does not cover refused under its token. Attachment tests reject invalid
 web identities; CI validates actual producer output against the published schema.

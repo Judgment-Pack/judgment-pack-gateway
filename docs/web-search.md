@@ -68,7 +68,11 @@ as an HTTPS URL of at most 4,096 bytes that names a host, carries no user
 information, and names no port or the port written `443`; any other is left
 out. It may name any host, and need not be the address of the page it leads to.
 Whoever reads it applies the reader's own admission of public addresses and of
-each redirect.
+each redirect. A Google hit is a link to Google's grounding redirect endpoint,
+which the `web` source follows to the publisher only under the operator's
+`google-grounding` redirect policy
+([public web sources](design/public-web-sources.md#operator-redirect-policies)).
+A hit does not enable it.
 
 Connections are checked before and after the request. Changing or removing a
 connection invalidates an in-flight response. A durable per-connection daily

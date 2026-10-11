@@ -564,6 +564,11 @@
                     "static-text-v1",
                     "original-v1"
                   ]
+                },
+                "redirectPolicy": {
+                  "enum": [
+                    "google-grounding"
+                  ]
                 }
               }
             },

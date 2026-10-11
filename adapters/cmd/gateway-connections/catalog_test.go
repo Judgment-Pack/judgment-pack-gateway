@@ -4,6 +4,7 @@ import (
 	"adapters/connections"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -43,7 +44,7 @@ func TestCatalogCLIHasNoAccountOrFilesystemPrerequisite(t *testing.T) {
 }
 
 func TestExtendedDiscoveryModesHaveNoAccountPrerequisite(t *testing.T) {
-	for _, mode := range []string{"--catalog-v3", "--local-plan"} {
+	for _, mode := range []string{"--catalog-v3", "--local-plan", "--source-capabilities"} {
 		for _, extra := range [][]string{nil, {"--catalog"}, {"--provider", "gmail"}, {"--state-dir", "private"}, {"--disabled"}, {"extra"}} {
 			flags := append([]string{mode}, extra...)
 			cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCatalogCLIHelper$", "--"}, flags...)...)
@@ -197,5 +198,59 @@ func TestEachRequestGetsItsDeadline(t *testing.T) {
 		if left := time.Until(deadline); !ok || left > c.want || left < c.want-time.Second {
 			t.Errorf("%s %s: %v left, want %v", c.provider, c.method, left, c.want)
 		}
+	}
+}
+
+// The plan and the capability report read the operator's web redirect
+// policies from the same variable: absent or empty, the plan is main's and
+// nothing is enabled; google-grounding, the web source is launched with it
+// and the report says so; an unknown name refuses both with one sentence and
+// no output.
+func TestTheOperatorsRedirectPoliciesReachThePlanAndTheReport(t *testing.T) {
+	ask := func(mode string, env ...string) ([]byte, string, error) {
+		t.Helper()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCatalogCLIHelper$", "--", mode)
+		cmd.Env = []string{"GATEWAY_CATALOG_HELPER=1"}
+		for _, kv := range os.Environ() {
+			if !strings.HasPrefix(kv, "JPACK_CONNECTIONS_DIR=") && !strings.HasPrefix(kv, connections.WebRedirectPoliciesEnv+"=") {
+				cmd.Env = append(cmd.Env, kv)
+			}
+		}
+		cmd.Env = append(cmd.Env, env...)
+		cmd.Dir = t.TempDir()
+		var stderr strings.Builder
+		cmd.Stderr = &stderr
+		raw, err := cmd.Output()
+		return raw, stderr.String(), err
+	}
+	main, _ := json.Marshal(connections.ConnectionLocalPlanWith(false))
+	none, _ := json.Marshal(connections.ConnectionSourceCapabilities(nil))
+	enabled, _ := json.Marshal(connections.ConnectionSourceCapabilities([]string{"google-grounding"}))
+	withPolicy, _ := json.Marshal(connections.ConnectionLocalPlanWith(false).WithWebRedirectPolicies([]string{"google-grounding"}))
+	for _, c := range []struct {
+		env          []string
+		plan, report string
+	}{
+		{nil, string(main), string(none)},
+		{[]string{"JPACK_WEB_REDIRECT_POLICIES="}, string(main), string(none)},
+		{[]string{"JPACK_WEB_REDIRECT_POLICIES=google-grounding"}, string(withPolicy), string(enabled)},
+	} {
+		if raw, _, err := ask("--local-plan", c.env...); err != nil || string(raw) != c.plan+"\n" {
+			t.Errorf("%v plan: %s %v", c.env, raw, err)
+		}
+		if raw, _, err := ask("--source-capabilities", c.env...); err != nil || string(raw) != c.report+"\n" {
+			t.Errorf("%v report: %s %v", c.env, raw, err)
+		}
+	}
+	for _, mode := range []string{"--local-plan", "--source-capabilities"} {
+		raw, said, err := ask(mode, "JPACK_WEB_REDIRECT_POLICIES=any-origin")
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || len(raw) != 0 || said != connections.WebRedirectPolicyRefusal+"\n" {
+			t.Errorf("%s with an unknown policy: %q %q %v", mode, raw, said, err)
+		}
+	}
+	// The catalogs do not read it.
+	if raw, _, err := ask("--catalog-v3", "JPACK_WEB_REDIRECT_POLICIES=any-origin"); err != nil || len(raw) == 0 {
+		t.Error("the catalog read the redirect policies", err)
 	}
 }

@@ -19,4 +19,10 @@ for key, value in [('version', 'unversioned'), ('responseDigest', 'bad'), ('form
 bad = copy.deepcopy(record)
 bad['provenance']['source']['cookie'] = 'must-not-be-present'
 assert not validator.is_valid(bad), 'credential member accepted'
+# redirectPolicy is optional and closed: present only when a redirect policy
+# was followed, and then a policy the schema names.
+for value in ('', 'any-origin', None):
+    bad = copy.deepcopy(record)
+    bad['provenance']['source']['redirectPolicy'] = value
+    assert not validator.is_valid(bad), 'unknown redirect policy accepted'
 print('PASS: web producer record and required source members')
