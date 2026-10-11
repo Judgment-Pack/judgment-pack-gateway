@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended 2026-10-12
 date: 2026-10-05
 deciders: maintainer
 ---
@@ -11,6 +11,8 @@ decision-trail checkpoints as later work that "needs a design of its own". This 
 design. The maintainer accepted it on 2026-10-05, after four cross-vendor design review rounds
 whose records are on its pull request, with the answers recorded under "The maintainer's
 answers". Nothing in it is built yet.
+
+*Amended 2026-10-12 (issue #216).* The gateway pull requests #211, #212 and #213, with #214 and #228, and the runtime's PR 4 (judgment-pack-runtime#228) are delivered and released in gateway v0.11.0. They settled points this record left open or states differently. No decision above is reversed. Each passage concerned has an amendment paragraph beside it that begins "Amended 2026-10-12", and the delivery table marks rows 1 to 4 delivered.
 
 **What it was checked against.** Gateway `main` at `9a95e7f`. Runtime `v0.26.0` at `1d38cda`.
 Desk `main` at `3a8450a`. The specification repository's `main` at `a902dc7`, for RFC 0010 and
@@ -242,6 +244,8 @@ unknown members, an unaware reader then refuses rather than skips (RFC 0010, "Co
 | `keyId` | as in §1.2 | the witness's key |
 | `signature` | 128 lowercase hexadecimal characters | below |
 
+*Amended 2026-10-12 (#211, #212).* The order of `witnessedAt` is the witness's own rule: it never states a time earlier than the previous statement's for the trail and takes the later of its clock and that time. A reader holds `witnessedAt` to its form and to nothing else, and compares it with no clock and no other statement's.
+
 A statement at index 7 and sequence 120, its hex elided here, is 608 bytes without its newline
 and 609 as a logged line:
 
@@ -334,6 +338,8 @@ else; today an engine with no platform is refused (`go/engine.go:1118`). The wit
 signer, which holds the seed and stays standard-library-only (ADR-0001); its endpoints are the
 signer's.
 
+*Amended 2026-10-12 (#213, #214).* A submission token names a `witness.audience`, a required member that must differ from `identity.audience`; the witness refuses a token that names the engine's audience alone. Every other token-checked endpoint of the signer and the MCP transport refuse a token that names the witness's audience, or whose subject is among `submitters`. A submitter's token therefore opens the witness and nothing else. Issue #216 had recorded the opposite, that the other endpoints accept it; the rule above is what shipped.
+
 **Registration.** A trail is registered to exactly one issuer and subject before anything is
 signed for it. Under `"operator"`, the witness's operator registers it with `gateway witness
 register --trail <id> --issuer <issuer> --subject <subject>`, and a submission for an unregistered
@@ -342,6 +348,8 @@ its submitter. Either way a submission for a trail registered to another subject
 registration is never in a statement, and changing one is an act of the witness's operator,
 recorded and never served. What registration does not do, stated because a token proves only an
 issuer and a subject:
+
+*Amended 2026-10-12 (#213, #228).* `gateway witness register` also needs `--config`. `register`, `retire` and `repair` act on a stopped witness's files, under the locks a running witness holds, and refuse against a running one. Since #228 a running witness registers and retires trails itself, through `POST /witness/registrations` and `POST /witness/trails/{trail}/retirement` under the operator's token; `repair` has no endpoint and stays offline. A registration is still never in a statement.
 
 - **Under `"first-submission"`, another allowed subject can squat.** A customer of the same
   issuer who learns an unregistered trail's identity — from a checkpoint handed to it as a holder,
@@ -365,6 +373,10 @@ sign, make durable, mark, publish. The witness publishes only marked statements,
 no mark names was never published: that is what "demonstrably unpublished" means below. A marked
 statement may go unacknowledged — a lost response, or a crash after the mark — and the submitter
 recovers it by sending the same checkpoint again, or by reading the trail.
+
+*Amended 2026-10-12 (#212).* The witness's storage runs on Unix only; off Unix a witness is refused at start.
+
+*Amended 2026-10-12 (#212, #213).* The tests hold the order in which syncs are requested and, on Linux, that a sync reaches the kernel (a sync of a pipe answers `EINVAL`, of a file nothing). No test shows that the kernel and its disk then keep the bytes.
 
 **`POST /witness/checkpoints`: submit.**
 
@@ -402,6 +414,10 @@ recovers it by sending the same checkpoint again, or by reading the trail.
     registered to another subject, `413` over the bound, and `429` over `submissionsPerMinute`, or
     for a new trail over `trailsPerSubmitter`.
 
+*Amended 2026-10-12 (#213, SPEC.md §6).* A `409` reason `index-bound` exists that the list above does not name: the trail's chain is at index 2⁵³−2, the largest a statement holds. No test reaches it.
+
+*Amended 2026-10-12 (#213).* After a write failure stops the writer, the witness answers every submission `503` (`stopped`) until it restarts, resubmissions of an already acknowledged checkpoint included. The same holds for an operator's act through the two endpoints below.
+
 **`GET /witness/trails/{trail}/head`.** The trail's last statement, `application/jsonl`, exactly
 as logged. `404` for a trail the witness holds nothing for. `{trail}` must be 32 lowercase hex, or
 `400`.
@@ -410,11 +426,15 @@ as logged. `404` for a trail the witness holds nothing for. `{trail}` must be 32
 (default 0), at most `n` (1 to 1000, default 1000), in index order, exactly as logged. A verifier
 asks again from the next index until it reaches the head's.
 
+*Amended 2026-10-12 (#228, issue #229).* Two operator endpoints are served beside the submission: `POST /witness/registrations` (a JSON object of `trail`, `issuer` and `subject`; `200` with `changedFrom`, the registration it replaced, or `null`) and `POST /witness/trails/{trail}/retirement` (no body; `200` with the retirement statement). They verify the token under the engine's audience, as `/seal` does, and a submitter's token is `401`. The witness tells its operator from a submitter by a token's audience and subject alone, so any token the engine's other token-checked endpoints take, of a subject not among `submitters`, administers the witness today. The reference names no narrower operator; an operators list is issue #229. A party that exposes the witness passes only the submission and the two reads on the other-host side.
+
 **Both reads are open,** like `/registry` and `/publickey`: a verifier holds no token. Knowing a
 trail's identity is what lets one read it, and no endpoint lists trails. They serve only marked
 statements of a log the witness checked when it started, and never bytes a repair set aside. The
 reference bounds no read. A party that exposes a witness puts it behind the TLS-terminating front
 `engine-config.md` already requires for any other host, and bounds reads there.
+
+*Amended 2026-10-12 (#213).* The reference bounds how many reads it answers at once, 64, past which a read is `503` with `Retry-After: 1`, and how long any answer may take to be written, 30 seconds from the moment its request is handled. It bounds no reader's rate, since a read carries no identity; that stays with the front.
 
 **What the witness stores, and in what order.**
 
@@ -488,6 +508,8 @@ rules allow and nothing else.
    whose chains begin at index 0 for trails registered anew. The old key signs nothing more. Its
    chains stay readable under its pin, as historical readings from the statements readers kept.
    Under question 6's shared key, that is a new key for the gateway's receipts and seals too.
+
+*Amended 2026-10-12 (#212).* Where this rule and delivery row 2 differ, for more than one unmarked statement or one before the log's end, the row was followed: the start is refused, and no new key is made.
 
 **The cost, accepted.** Last bytes in the marks file cost a key, even when only a crash in the
 middle of a mark's append left them. That is accepted because the marks file is small, about 200
@@ -624,6 +646,8 @@ continuation's two statements are one set, whatever files they came in and in wh
   head than a statement this reader's own earlier reading checked, so it forgot or withholds, or
   the reader supplied a stale head.
 
+*Amended 2026-10-12 (#211, #212; noted on #199).* Read literally, this made the finding unreachable. A head more than one index past every statement supplied is `witness-head-unreached` and is left out of the walk; a head exactly one index past joins the walk as the chain's last statement. A head at an index the chain holds is that statement, by signature.
+
 **Continuing.** A verification with no finding at all, given `--witness-save`, saves a
 **continuation**: `{"continuationVersion":"1","last":<statement>,"latestCheckpoint":<statement>}`,
 the last statement it read, of any kind, and the latest checkpoint statement at or before it,
@@ -730,10 +754,10 @@ One pull request each, in this order.
 
 | # | Repository | What | Needs |
 |---|---|---|---|
-| 1 | gateway | `SPEC.md` gains the witness statement (format, key rule and equation, coverage, chain, what it establishes) and §6 rows for the endpoints. `corpus/witness/` vectors: valid chains, a chain beginning late, equivocation, a head unreached, a non-canonical key, a small-order key, a signature only the cofactored check accepts, `S` of L or more, and the bounds at and one past each limit. The same PR teaches `gateway conform` and verify-ts to read them, with the corpus README's stated counts, so no vector lands unread | this record accepted; a cross-vendor review (public-surface, documented-claim, conformance, security) |
-| 2 | gateway | The witness log, marks, registrations, statement signing in the order sign, durable, marked, published, start-up checks and repair in the core module, and `gateway witness verify`. Recovery vectors: a stale valid backup behind the marks, refused; an acknowledged last statement cut short, refused; a retirement erased by a stale restoration, refused; a restored log copy that passes every start-up check against intact marks, accepted with no repair; a whole unmarked last statement with the marks file ending cleanly, its mark completed; a whole unmarked last statement missing only its newline, its newline and mark completed and no index released; a whole unmarked last statement that fails the checks, a new key and nothing written; torn last bytes of the log with the marks file ending cleanly, set aside and their index released; a torn published mark with a stale backup log, `S[k]` a retirement, a new key; torn or unterminated last bytes of the marks file from a crash mid-append, a new key; a lost marks file, and a damaged or unreadable mark line that is not its last bytes, a new key; both files not ending cleanly, a new key; more than one unmarked statement, or an unmarked statement before the log's end, refused; an append, sync or mark failure on one trail, stopping signing on another trail until restart; one crash under the writer lock with two trails submitting, at most one file not ending cleanly | 1 |
-| 3 | gateway | The engine's `witness` member at the next `engineVersion`, `gateway witness register` and `retire`, the endpoints, bounds, and `SECURITY.md`'s scope line for them | 2; questions 2, 3, 4, 6 and 10 |
-| 4 | runtime | `audit verify --witness`, `--witness-head`, `--witness-resume`, `--witness-save`, `--witness-key` and `--require-countersigned-through`; the chain rule, continuations, the bounds, the `countersigned` coverage, the findings and sentences; the vectors of PR 1 in its tests, and determination 6's vectors read whole and in steps and of the continuation's own rules; a guide section | 1 (the format and vectors), not the service; questions 8, 9 and 11 |
+| 1 | gateway | `SPEC.md` gains the witness statement (format, key rule and equation, coverage, chain, what it establishes) and §6 rows for the endpoints. `corpus/witness/` vectors: valid chains, a chain beginning late, equivocation, a head unreached, a non-canonical key, a small-order key, a signature only the cofactored check accepts, `S` of L or more, and the bounds at and one past each limit. The same PR teaches `gateway conform` and verify-ts to read them, with the corpus README's stated counts, so no vector lands unread | this record accepted; a cross-vendor review (public-surface, documented-claim, conformance, security) *Amended 2026-10-12: delivered, #211.* |
+| 2 | gateway | The witness log, marks, registrations, statement signing in the order sign, durable, marked, published, start-up checks and repair in the core module, and `gateway witness verify`. Recovery vectors: a stale valid backup behind the marks, refused; an acknowledged last statement cut short, refused; a retirement erased by a stale restoration, refused; a restored log copy that passes every start-up check against intact marks, accepted with no repair; a whole unmarked last statement with the marks file ending cleanly, its mark completed; a whole unmarked last statement missing only its newline, its newline and mark completed and no index released; a whole unmarked last statement that fails the checks, a new key and nothing written; torn last bytes of the log with the marks file ending cleanly, set aside and their index released; a torn published mark with a stale backup log, `S[k]` a retirement, a new key; torn or unterminated last bytes of the marks file from a crash mid-append, a new key; a lost marks file, and a damaged or unreadable mark line that is not its last bytes, a new key; both files not ending cleanly, a new key; more than one unmarked statement, or an unmarked statement before the log's end, refused; an append, sync or mark failure on one trail, stopping signing on another trail until restart; one crash under the writer lock with two trails submitting, at most one file not ending cleanly | 1 *Amended 2026-10-12: delivered, #212.* |
+| 3 | gateway | The engine's `witness` member at the next `engineVersion`, `gateway witness register` and `retire`, the endpoints, bounds, and `SECURITY.md`'s scope line for them | 2; questions 2, 3, 4, 6 and 10 *Amended 2026-10-12: delivered, #213, with #214 and #228.* |
+| 4 | runtime | `audit verify --witness`, `--witness-head`, `--witness-resume`, `--witness-save`, `--witness-key` and `--require-countersigned-through`; the chain rule, continuations, the bounds, the `countersigned` coverage, the findings and sentences; the vectors of PR 1 in its tests, and determination 6's vectors read whole and in steps and of the continuation's own rules; a guide section | 1 (the format and vectors), not the service; questions 8, 9 and 11 *Amended 2026-10-12: delivered, judgment-pack-runtime#228.* |
 | 5 | desk | A new Desk ADR for a witness as a holder: ADR-0010 §2's HTTPS channel to the witness's form; the cursor moved only by a `checkpoint` statement that verifies under the pinned key, held to `CheckPublicKey`, and whose checkpoint is the last line sent (trail, sequence and digest); the statements kept; the panel passing `--witness` and a head it fetched | 3 and 4 released; questions 5 and 7 |
 | 6 | desk | Its implementation, as ADR-0010's delivery PR 10 | 5; Desk's pins moved |
 
