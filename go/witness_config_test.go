@@ -38,25 +38,36 @@ func TestWitnessMemberParses(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := cfg.witness
-	if w == nil || w.firstSubmission || w.submittersGiven || w.submitters != nil || w.trailsPerSubmitter != 100 || w.submissionsPerMinute != 60 ||
+	if w == nil || w.firstSubmission || w.submittersGiven || w.submitters != nil || w.operatorsGiven || w.operators != nil || w.trailsPerSubmitter != 100 || w.submissionsPerMinute != 60 ||
 		w.paths.log != filepath.Join(base, "log", "witness.log") || w.paths.marks != filepath.Join(base, "marks", "witness.marks") {
 		t.Fatalf("the defaults: %+v", w)
 	}
 	cfg, err = parseEngineConfig([]byte(witnessConfigJSON(t, base, witnessMember(t, base,
-		`,"registration":"first-submission","submitters":[{"issuer":"https://issuer.example","subject":"deliverer-a"},{"issuer":"https://issuer.example","subject":"deliverer-b"}],"trailsPerSubmitter":100000,"submissionsPerMinute":6000`))))
+		`,"registration":"first-submission","submitters":[{"issuer":"https://issuer.example","subject":"deliverer-a"},{"issuer":"https://issuer.example","subject":"deliverer-b"}],`+
+			`"operators":[{"issuer":"https://issuer.example","subject":"operator-1"}],"trailsPerSubmitter":100000,"submissionsPerMinute":6000`))))
 	if err != nil {
 		t.Fatal(err)
 	}
 	w = cfg.witness
-	if !w.firstSubmission || !w.submittersGiven || len(w.submitters) != 2 || w.submitters[1].subject != "deliverer-b" || w.trailsPerSubmitter != 100000 || w.submissionsPerMinute != 6000 {
+	if !w.firstSubmission || !w.submittersGiven || len(w.submitters) != 2 || w.submitters[1].subject != "deliverer-b" || w.trailsPerSubmitter != 100000 || w.submissionsPerMinute != 6000 ||
+		!w.operatorsGiven || len(w.operators) != 1 || w.operators[0] != (submitterKey{"https://issuer.example", "operator-1"}) {
 		t.Fatalf("every member given, at the bounds' tops: %+v", w)
 	}
-	cfg, err = parseEngineConfig([]byte(witnessConfigJSON(t, base, witnessMember(t, base, `,"registration":"operator","submitters":[],"trailsPerSubmitter":1,"submissionsPerMinute":1`))))
+	cfg, err = parseEngineConfig([]byte(witnessConfigJSON(t, base, witnessMember(t, base, `,"registration":"operator","submitters":[],"operators":[],"trailsPerSubmitter":1,"submissionsPerMinute":1`))))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if w = cfg.witness; w.firstSubmission || !w.submittersGiven || len(w.submitters) != 0 || w.trailsPerSubmitter != 1 || w.submissionsPerMinute != 1 {
-		t.Fatalf("submitters present and empty, the bounds at their floors: %+v", w)
+	if w = cfg.witness; w.firstSubmission || !w.submittersGiven || len(w.submitters) != 0 || !w.operatorsGiven || len(w.operators) != 0 || w.trailsPerSubmitter != 1 || w.submissionsPerMinute != 1 {
+		t.Fatalf("submitters and operators present and empty, the bounds at their floors: %+v", w)
+	}
+	// operators with no submitters list: an operator's subject is not
+	// held against the submitters, since none is named
+	cfg, err = parseEngineConfig([]byte(witnessConfigJSON(t, base, witnessMember(t, base, `,"operators":[{"issuer":"https://issuer.example","subject":"operator-1"},{"issuer":"https://issuer.example","subject":"operator-2"}]`))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w = cfg.witness; w.submittersGiven || !w.operatorsGiven || len(w.operators) != 2 || w.operators[1].subject != "operator-2" {
+		t.Fatalf("operators without submitters: %+v", w)
 	}
 }
 
@@ -94,6 +105,16 @@ func TestWitnessMemberRefusals(t *testing.T) {
 		{"a submitter with an empty issuer", member(`,"submitters":[{"issuer":"","subject":"a"}]`), "witness.submitters[0].issuer must be a non-empty string"},
 		{"a submitter of another issuer", member(`,"submitters":[{"issuer":"https://other.example","subject":"a"}]`), "names issuer \"https://other.example\", which is not identity.issuer"},
 		{"a submitter twice", member(`,"submitters":[{"issuer":"https://issuer.example","subject":"a"},{"issuer":"https://issuer.example","subject":"a"}]`), `witness.submitters[1] names subject "a" again`},
+		{"operators not an array", member(`,"operators":{}`), "witness.operators must be an array of {issuer, subject}"},
+		{"an operator not an object", member(`,"operators":["operator-1"]`), "witness.operators[0] must be an object {issuer, subject}"},
+		{"an operator with another member", member(`,"operators":[{"issuer":"https://issuer.example","subject":"o","role":"x"}]`), `witness.operators[0]: unknown member "role"`},
+		{"an operator without a subject", member(`,"operators":[{"issuer":"https://issuer.example"}]`), `witness.operators[0]: missing member "subject"`},
+		{"an operator with an empty subject", member(`,"operators":[{"issuer":"https://issuer.example","subject":""}]`), "witness.operators[0].subject must be a non-empty string"},
+		{"an operator with an empty issuer", member(`,"operators":[{"issuer":"","subject":"o"}]`), "witness.operators[0].issuer must be a non-empty string"},
+		{"an operator of another issuer", member(`,"operators":[{"issuer":"https://other.example","subject":"o"}]`), `witness.operators[0] names issuer "https://other.example", which is not identity.issuer; this engine accepts tokens of that issuer alone`},
+		{"an operator twice", member(`,"operators":[{"issuer":"https://issuer.example","subject":"o"},{"issuer":"https://issuer.example","subject":"o"}]`), `witness.operators[1] names subject "o" again`},
+		{"an operator among the submitters", member(`,"submitters":[{"issuer":"https://issuer.example","subject":"a"}],"operators":[{"issuer":"https://issuer.example","subject":"o"},{"issuer":"https://issuer.example","subject":"a"}]`),
+			`witness.operators[1] names subject "a", which is among witness.submitters; an operator and a submitter are distinct roles, since a submitter's token opens the witness and nothing else`},
 		{"trailsPerSubmitter 0", member(`,"trailsPerSubmitter":0`), "witness.trailsPerSubmitter 0 is outside 1 to 100000"},
 		{"trailsPerSubmitter one past", member(`,"trailsPerSubmitter":100001`), "witness.trailsPerSubmitter 100001 is outside 1 to 100000"},
 		{"submissionsPerMinute 0", member(`,"submissionsPerMinute":0`), "witness.submissionsPerMinute 0 is outside 1 to 6000"},

@@ -280,6 +280,106 @@ func TestWitnessAdministrationIsTheOperators(t *testing.T) {
 	}
 }
 
+// The operators list (#229): where witness.operators is given, both acts
+// are a named operator's. A token the engine takes of a caller the list does
+// not name is refused 403 not-an-operator, with its sentence, before a byte
+// of a body is read, and nothing is written; so is every caller where the
+// list is present and empty. A listed submitter's token, and a listed
+// operator's naming the witness's audience too, are still 401 with "a token
+// for the witness is refused here", and no token 401. A listed operator
+// registers and retires, and a submission refuses its token, which names
+// the engine's audience alone. With the list absent, any token the engine
+// takes administers, as before.
+func TestWitnessAdministrationIsTheNamedOperators(t *testing.T) {
+	spec := witnessSpec{
+		submittersGiven: true, submitters: []submitterKey{{witnessIssuer, "deliverer-a"}, {witnessIssuer, subjectOf(testTrail)}},
+		operatorsGiven: true, operators: []submitterKey{{witnessIssuer, "operator-1"}},
+	}
+	f := newWitnessFixture(t, spec, testTrail)
+	statementAnswer(t, f.submit(t, testTrail, cpLine(testTrail, 1, "a")))
+	nobody := spec
+	nobody.operators = nil
+	empty := newWitnessFixture(t, nobody, testTrail)
+	statementAnswer(t, empty.submit(t, testTrail, cpLine(testTrail, 1, "a")))
+	const notAnOperator = "an operator named by witness.operators is required here"
+	acts := map[string]func(token string) (*http.Request, *sentinel){
+		"registration": func(token string) (*http.Request, *sentinel) {
+			body := &sentinel{t: t}
+			return registrationRequest(token, body), body
+		},
+		"retirement": func(token string) (*http.Request, *sentinel) { return retirementRequest(token, testTrail), nil },
+	}
+	for name, request := range acts {
+		for _, c := range []struct {
+			name     string
+			f        *witnessFixture
+			token    string
+			status   int
+			reason   string
+			sentence string
+		}{
+			{"an unlisted engine token", f, f.operatorToken(t, "operator-2", witnessEngineAudience), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
+			{"an engine token under an empty list", empty, empty.operator(t), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
+			// a subject is matched exactly: not by case, not as a prefix
+			{"a listed subject in another case", f, f.operatorToken(t, "Operator-1", witnessEngineAudience), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
+			{"a listed subject with a suffix", f, f.operatorToken(t, "operator-1x", witnessEngineAudience), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
+			{"a listed submitter's engine token", f, f.operatorToken(t, "deliverer-a", witnessEngineAudience), http.StatusUnauthorized, witnessReasonToken, errWitnessTokenHere.Error()},
+			{"a listed submitter's own token", f, f.token(t, "deliverer-a"), http.StatusUnauthorized, witnessReasonToken, errWitnessTokenHere.Error()},
+			{"a listed operator's token of both audiences", f, f.operatorToken(t, "operator-1", []string{witnessEngineAudience, witnessAudience}), http.StatusUnauthorized, witnessReasonToken, errWitnessTokenHere.Error()},
+			{"no token", f, "", http.StatusUnauthorized, witnessReasonToken, errNoBearerToken.Error()},
+		} {
+			t.Run(name+"/"+c.name, func(t *testing.T) {
+				before := c.f.tw.files(t)
+				r, body := request(c.token)
+				rec := c.f.serve(r)
+				refused := refusedAs(t, rec, c.status, c.reason)
+				if refused.Error != c.sentence {
+					t.Fatalf("refused with %q, want %q", refused.Error, c.sentence)
+				}
+				h := rec.Header()
+				if h.Get("Content-Length") != strconv.Itoa(rec.Body.Len()) || h.Get("Cache-Control") != "no-store" {
+					t.Fatalf("Content-Length %q for %d bytes, Cache-Control %q", h.Get("Content-Length"), rec.Body.Len(), h.Get("Cache-Control"))
+				}
+				if (h.Get("WWW-Authenticate") == "Bearer") != (c.status == http.StatusUnauthorized) {
+					t.Fatalf("a %d with WWW-Authenticate %q", c.status, h.Get("WWW-Authenticate"))
+				}
+				if body != nil && body.read.Load() != 0 {
+					t.Fatal("the body was read before the refusal")
+				}
+				if c.f.tw.files(t) != before {
+					t.Fatal("a refused act wrote")
+				}
+			})
+		}
+	}
+
+	// the listed operator registers, and the registration is judged by the
+	// next submission
+	operator := f.operator(t)
+	registeredAs(t, f.serve(registrationRequest(operator, registrationOf(trailB, witnessIssuer, "deliverer-a"))))
+	statementAnswer(t, f.serve(submission(f.token(t, "deliverer-a"), bytes.NewReader(jsonl(cpLine(trailB, 1, "a"))))))
+	// and retires, the answer's length stated and not stored
+	rec := f.serve(retirementRequest(operator, testTrail))
+	if st := statementOf(t, statementAnswer(t, rec)); st.kind != "retirement" || st.trail != testTrail {
+		t.Fatalf("the listed operator's retirement is a %s of %s", st.kind, st.trail)
+	}
+	if h := rec.Header(); h.Get("Content-Length") != strconv.Itoa(rec.Body.Len()) || h.Get("Cache-Control") != "no-store" {
+		t.Fatalf("a retirement answered with Content-Length %q for %d bytes, Cache-Control %q", h.Get("Content-Length"), rec.Body.Len(), h.Get("Cache-Control"))
+	}
+	// a submission refuses the listed operator's token, as any operator's
+	refusedAs(t, f.serve(submission(operator, bytes.NewReader(jsonl(cpLine(trailB, 2, "a"))))), http.StatusUnauthorized, witnessReasonToken)
+
+	// with the list absent, a token the engine takes of any subject not
+	// among the submitters administers, the one refused above included
+	absent := spec
+	absent.operatorsGiven, absent.operators = false, nil
+	open := newWitnessFixture(t, absent, testTrail)
+	statementAnswer(t, open.submit(t, testTrail, cpLine(testTrail, 1, "a")))
+	anyone := open.operatorToken(t, "operator-2", witnessEngineAudience)
+	registeredAs(t, open.serve(registrationRequest(anyone, registrationOf(trailB, witnessIssuer, "deliverer-a"))))
+	statementAnswer(t, open.serve(retirementRequest(anyone, testTrail)))
+}
+
 // What each act refuses before it writes: a method not named, with Allow; a
 // query; a registration of another media type, a length past the bound, a
 // body out of shape or one no token could match -- another issuer, a

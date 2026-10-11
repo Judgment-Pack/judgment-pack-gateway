@@ -906,17 +906,18 @@ other parties is to pass those three and no other path of the signer. It keeps t
 two acts, `/witness/registrations` and `/witness/trails/{trail}/retirement`, on the operator's
 side, as it keeps the signer's other endpoints: a submitter's token is a token of the
 configured issuer, which the signer's other endpoints that take a token take as well, and the
-operator's acts take any token the engine takes (below, "Administration"), so a front that
-passes all of `/witness/` lets an engine-audience token from another host administer the
-witness.
+operator's acts take any token the engine takes, or, where `witness.operators` is given, the
+token of an operator it names (below, "Administration"), so a front that passes all of
+`/witness/` lets an engine-audience token from another host administer the witness — any such
+token without the list, and a named operator's with it.
 
 | Method | Path | Body / result |
 |--------|------|---------------|
 | POST | `/witness/checkpoints` | Submit. The body is `application/jsonl`: one or more checkpoint lines (§8.1) as `jpack audit checkpoint --since` prints them, each in its canonical form and ended by a newline, all of one trail, their sequences strictly increasing; at most 1 MiB (1048576 bytes), this gateway's request bound, and each line at most 4096 bytes, its newline not counted. A bearer token is required, and the trail must be registered to the token's issuer and subject (below). **Only the last line is signed**: the earlier lines are compared with what the witness holds, for conflicts, and otherwise discarded, and with them the evidence of what they said. `200`, `application/jsonl`: a `checkpoint` statement for the last line — the one already held for the same trail, sequence and digest, so that sending a checkpoint again gives the same statement and appends nothing, or a new one at the chain's next index. `409` with `reason` `"conflict"` and `statements`, two JSON strings each holding a statement's exact line: the `checkpoint` statement the witness holds at a line's sequence, and the `conflict` statement recording another digest offered for it — the first offered for that sequence, made durable and marked when it is made, which acknowledges nothing of the digest just sent. `409` with `reason` `"below-head"`, with the head statement, when the last line's sequence is below the latest checkpoint statement's and not held. `409` with `reason` `"retired"`, with the retirement statement. `400` for a body out of shape, `401` without a valid token, `403` for a subject the witness does not allow, or a trail not registered or registered to another subject, `413` over a bound, `415` for a body of another type, and `429` over the submitter's rate or, for a trail that holds no statement yet, over its number of trails. `503` when a statement signed could not be kept, after which the witness signs nothing more, for any trail, until it has restarted. |
 | GET | `/witness/trails/{trail}/head` | The trail's last statement (§8.5), `application/jsonl`, exactly as the witness keeps it. `400` for a `{trail}` that is not 32 lowercase hexadecimal characters; `404` for a trail the witness holds nothing for, which reads as a trail never submitted (§8.8). |
 | GET | `/witness/trails/{trail}/statements?from=<index>&limit=<n>` | The trail's statements from index `from` (0 when absent), at most `limit` of them (1 to 1000, 1000 when absent), in index order, `application/jsonl`, each exactly as the witness keeps it; none, from an index past the head's. `400` for a `{trail}` or a query out of shape, `404` as for the head. A reader asks again from the next index until it reaches the head's. |
-| POST | `/witness/registrations` | The operator registers a trail, or changes its registration (below, "Administration"). The body is `application/json`, an object of exactly `trail`, `issuer` and `subject`, each a string, at most 1 MiB: the issuer the configuration's `identity.issuer` and, where `submitters` is given, the subject one of them, since a registration no token could match is refused rather than kept. `200`, `application/json`: `{"trail", "issuer", "subject", "changedFrom"}`, `changedFrom` the `{"issuer", "subject"}` the trail was registered to before, when that was another, and `null` otherwise; a registration the same as the one the trail holds is answered alike, and appends nothing. Each string is UTF-8 text with no lone surrogate escape, refused rather than rewritten. `400` for a body out of shape or a registration no token could match, `401` without an operator's token, `413` over the bound, `415` for a body of another type, `503` when the witness is stopped. |
-| POST | `/witness/trails/{trail}/retirement` | The operator retires the trail (below, "Administration"). No body. `200`, `application/jsonl`: the trail's `retirement` statement, the last of its chain, repeating its latest witnessed checkpoint, as the head serves it from then on. `409` with `reason` `"retired"`, with the retirement statement, for a trail retired already, and nothing is signed; `404` for a trail the witness holds no statement for. `400` for a `{trail}` out of shape or a request with a body, `401` without an operator's token, `503` when the witness is stopped. |
+| POST | `/witness/registrations` | The operator registers a trail, or changes its registration (below, "Administration"). The body is `application/json`, an object of exactly `trail`, `issuer` and `subject`, each a string, at most 1 MiB: the issuer the configuration's `identity.issuer` and, where `submitters` is given, the subject one of them, since a registration no token could match is refused rather than kept. `200`, `application/json`: `{"trail", "issuer", "subject", "changedFrom"}`, `changedFrom` the `{"issuer", "subject"}` the trail was registered to before, when that was another, and `null` otherwise; a registration the same as the one the trail holds is answered alike, and appends nothing. Each string is UTF-8 text with no lone surrogate escape, refused rather than rewritten. `400` for a body out of shape or a registration no token could match, `401` without an engine-audience token or with a submitter's, or where no identity is configured, `403` for one of a caller `witness.operators` does not name, `413` over the bound, `415` for a body of another type, `503` when the witness is stopped. |
+| POST | `/witness/trails/{trail}/retirement` | The operator retires the trail (below, "Administration"). No body. `200`, `application/jsonl`: the trail's `retirement` statement, the last of its chain, repeating its latest witnessed checkpoint, as the head serves it from then on. `409` with `reason` `"retired"`, with the retirement statement, for a trail retired already, and nothing is signed; `404` for a trail the witness holds no statement for. `400` for a `{trail}` out of shape or a request with a body, `401` without an engine-audience token or with a submitter's, or where no identity is configured, `403` for one of a caller `witness.operators` does not name, `503` when the witness is stopped. |
 
 **Answers.** A statement is answered `200`, `Content-Type: application/jsonl`, each statement
 its canonical form (§8.2) exactly as the witness keeps it, ended by a newline. A refusal is
@@ -929,8 +930,9 @@ name. Every answer states its `Content-Length` and carries
 | Status | `reason` | When |
 |---|---|---|
 | `400` | `malformed` | a path spelled with any percent-encoding, a `{trail}` out of shape, a query a read does not take or a submission or an operator's act any query, a body out of shape, a registration no token could match, a retirement with a body; a spelling the server would otherwise clean (`//`, `/./`, `/../`) or `/witness` without its slash, which the witness answers itself, never by a redirect |
-| `401` | `unauthenticated` | a submission without a valid token, or an operator's act without an operator's token (below), with `WWW-Authenticate: Bearer` |
+| `401` | `unauthenticated` | a submission without a valid token, or an operator's act without a valid engine-audience token or with a submitter's (below), with `WWW-Authenticate: Bearer` |
 | `403` | `not-a-submitter` | a subject the configuration's `submitters` does not name |
+| `403` | `not-an-operator` | an operator's act under an engine-audience token whose issuer and subject the configuration's `operators`, where given, does not name (below) |
 | `403` | `not-registered` | a trail not registered, or registered to another subject: one answer for both, so that a submitter learns nothing of another's registration; and, where the first submission registers, a submitter whose issuer and subject no registration line of 4096 bytes can hold |
 | `404` | `not-found` | a path under `/witness/` that is no endpoint |
 | `404` | `unknown-trail` | a trail the witness holds no statement for |
@@ -984,17 +986,27 @@ here": a submitter's credential opens the witness and nothing else.
 **Administration.** On a running witness, its operator registers a trail, or changes its
 registration, and retires a trail at the two endpoints the table names. Each takes an
 operator's token: a token the signer's other token-checked endpoints take, verified as they
-verify one, under the engine's audience (`identity.audience`). The witness tells its operator
-from a submitter by that alone, so any such token is the operator's here, as it is at `/seal`:
-whoever holds an engine-audience token of the configured issuer, of any subject not among
-`witness.submitters`, can at these two paths retire any trail it names, which nothing undoes,
-and register any trail to any subject the configuration allows, taking it from the submitter it
-was registered to, who is then refused `not-registered`. That is why a front for other parties
-does not pass them (above). A submitter's token — one naming the witness's audience, with or
-without the engine's, or of a subject among `witness.submitters` — cannot register or retire
-anything: it is refused `401` with "a token for the witness is refused here", and a submission
-refuses an operator's token in turn, since it names the engine's audience alone. Each act is
-decided, before a byte of a body is read, on its method, its query and its token; then a
+verify one, under the engine's audience (`identity.audience`), and, where the configuration
+gives `witness.operators`, of an issuer and subject the list names. A token the engine takes of
+a caller the list does not name is refused `403` `not-an-operator`, with "an operator named by
+witness.operators is required here"; a list present and empty names no one, so no token
+administers the running witness, and the commands (below, "The witness's operator's acts")
+remain for a stopped one. Where the list is absent, the witness tells its operator from a
+submitter by the token's audience and subject alone, so any such token is the operator's here,
+as it is at `/seal`: whoever holds an engine-audience token of the configured issuer, of any
+subject not among `witness.submitters`, can at these two paths retire any trail it names, which
+nothing undoes, and register any trail to any subject the configuration allows, taking it from
+the submitter it was registered to, who is then refused `not-registered`. A named operator's
+token can do the same, and so can whoever holds it: the list says which callers may, not who
+holds their credentials, and the signer's other endpoints, `/seal` among them, take any token
+the engine takes as before. That is why a front for other parties does not pass the two paths,
+with the list or without it (above). A submitter's token — one naming the witness's audience,
+with or without the engine's, or of a subject among `witness.submitters` — cannot register or
+retire anything: it is refused `401` with "a token for the witness is refused here", and a
+submission refuses an operator's token in turn, since it names the engine's audience alone. No
+operator may be among `witness.submitters`, so the two roles stay apart. Each act is decided,
+before a byte of a body is read, on its method, its query, its token and, where the list is
+given, whether it names the token's caller; then a
 registration on its type and the length it states, and a retirement on its trail and on having
 no body; then on a place among the submissions in flight, its caller counted by issuer and
 subject as a submitter is there. No rate counts it: the submitter's rate (below) counts
