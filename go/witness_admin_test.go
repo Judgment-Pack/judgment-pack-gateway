@@ -320,6 +320,9 @@ func TestWitnessAdministrationIsTheNamedOperators(t *testing.T) {
 		}{
 			{"an unlisted engine token", f, f.operatorToken(t, "operator-2", witnessEngineAudience), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
 			{"an engine token under an empty list", empty, empty.operator(t), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
+			// a subject is matched exactly: not by case, not as a prefix
+			{"a listed subject in another case", f, f.operatorToken(t, "Operator-1", witnessEngineAudience), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
+			{"a listed subject with a suffix", f, f.operatorToken(t, "operator-1x", witnessEngineAudience), http.StatusForbidden, witnessReasonNotOperator, notAnOperator},
 			{"a listed submitter's engine token", f, f.operatorToken(t, "deliverer-a", witnessEngineAudience), http.StatusUnauthorized, witnessReasonToken, errWitnessTokenHere.Error()},
 			{"a listed submitter's own token", f, f.token(t, "deliverer-a"), http.StatusUnauthorized, witnessReasonToken, errWitnessTokenHere.Error()},
 			{"a listed operator's token of both audiences", f, f.operatorToken(t, "operator-1", []string{witnessEngineAudience, witnessAudience}), http.StatusUnauthorized, witnessReasonToken, errWitnessTokenHere.Error()},

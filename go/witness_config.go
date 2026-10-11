@@ -182,7 +182,10 @@ func witnessPairs(obj *vObject, name, issuer string) ([]submitterKey, bool, erro
 // operates says whether a caller whose token the engine's own endpoints
 // take may administer the running witness (#229): where witness.operators
 // is given, its issuer and subject are among them; where it is not, any
-// such caller may.
+// such caller may. The pair is matched exactly. Its issuer half is defence in
+// depth: verifyToken takes only identity.issuer's tokens, and witnessPairs
+// only pairs of identity.issuer, so a verified caller and a listed pair
+// always share the issuer.
 func (w *witnessSpec) operates(who *caller) bool {
 	return !w.operatorsGiven || containsSubmitter(w.operators, submitterKey{who.issuer, who.subject})
 }
