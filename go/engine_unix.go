@@ -63,6 +63,15 @@ func openRegular(path string) (*os.File, error) {
 	return file, nil
 }
 
+// deviceOf is the device a path is on, as stat(2) reports it.
+func deviceOf(path string) (uint64, error) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0, err
+	}
+	return uint64(st.Dev), nil
+}
+
 // osEngineHost is the operating system as the engine's host.
 func osEngineHost() engineHost {
 	return engineHost{
@@ -76,5 +85,6 @@ func osEngineHost() engineHost {
 		executable:       executableFacts,
 		lookPath:         exec.LookPath,
 		executableFormat: readNativeExecutable,
+		device:           deviceOf,
 	}
 }

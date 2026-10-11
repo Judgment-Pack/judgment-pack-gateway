@@ -74,7 +74,7 @@ func lockWitnessFile(file *os.File, flock func(fd int, how int) error) error {
 		return err
 	}
 	if errors.Is(lockErr, syscall.EWOULDBLOCK) {
-		return errors.New("is held by another witness, through this name or another")
+		return errWitnessHeld
 	}
 	if lockErr != nil {
 		return fmt.Errorf("could not be locked: %v", lockErr)

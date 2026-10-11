@@ -20,7 +20,7 @@ func TestWitnessKeepsNoFilesOffUnix(t *testing.T) {
 	if _, err := repairWitnessLog(witnessConfig{paths: paths}); !errors.Is(err, errWitnessFilesNotKept) {
 		t.Errorf("repair: %v", err)
 	}
-	if err := registerWitnessTrail(paths, witnessRegistration{trail: "7d1f3b5a9c2e4f6a8b0d2c4e6f8a1b3c", issuer: "i", subject: "s"}, witnessIO{}); !errors.Is(err, errWitnessFilesNotKept) {
+	if _, err := registerWitnessTrail(paths, witnessRegistration{trail: "7d1f3b5a9c2e4f6a8b0d2c4e6f8a1b3c", issuer: "i", subject: "s"}, witnessIO{}); !errors.Is(err, errWitnessFilesNotKept) {
 		t.Errorf("register: %v", err)
 	}
 }

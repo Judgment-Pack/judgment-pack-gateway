@@ -387,7 +387,7 @@ func (r *recoveryRun) step(step recoveryStep) {
 		r.trace.reset()
 	case step.Offline != nil:
 		r.closeLog()
-		err := registerWitnessTrail(r.paths, witnessRegistration{trail: step.Offline.Trail, issuer: step.Offline.Issuer, subject: step.Offline.Subject}, r.trace.wrap(wio))
+		_, err := registerWitnessTrail(r.paths, witnessRegistration{trail: step.Offline.Trail, issuer: step.Offline.Issuer, subject: step.Offline.Subject}, r.trace.wrap(wio))
 		if err != nil {
 			r.failf("registerOffline: %v", err)
 		}

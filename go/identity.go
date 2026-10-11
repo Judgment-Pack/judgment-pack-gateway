@@ -42,7 +42,16 @@ type caller struct {
 	issuer      string
 	subject     string
 	tokenDigest string
+	// audiences is every audience the token named, as verified. A
+	// witness's audience among them marks a submission token, which the
+	// engine's other endpoints refuse (witnessSpec.refusesToken, #214).
+	audiences []string
 }
+
+// errNotEngineAudience is the refusal of a token that names an audience
+// other than the engine's: serve.go asks, before it is reported, whether
+// the token is a submitter's (#214).
+var errNotEngineAudience = errors.New("token does not name this engine as its audience")
 
 // tokenLeeway is how far a token's validity window is stretched, for
 // clocks that disagree by a little.
@@ -293,6 +302,13 @@ func segment(what, s string) ([]byte, error) {
 // issuer and audience, within its validity window. Every refusal is one
 // reason, and none of them repeats the token.
 func verifyToken(token string, id identityConfig, now time.Time) (caller, error) {
+	return verifyTokenFor(token, id, id.audience, now)
+}
+
+// verifyTokenFor is verifyToken under another audience than the engine's:
+// the witness's, which a submission token names (SPEC.md §6, "Witness
+// endpoints"). The issuer, the keys and the validity window are the same.
+func verifyTokenFor(token string, id identityConfig, audience string, now time.Time) (caller, error) {
 	if len(token) > maxTokenBytes {
 		return caller{}, errors.New("token is longer than a token")
 	}
@@ -358,8 +374,11 @@ func verifyToken(token string, id identityConfig, now time.Time) (caller, error)
 	if err != nil {
 		return caller{}, fmt.Errorf("token audience is not a string or an array of strings")
 	}
-	if !slices.Contains(audiences, id.audience) {
-		return caller{}, errors.New("token does not name this engine as its audience")
+	if !slices.Contains(audiences, audience) {
+		if audience == id.audience {
+			return caller{}, errNotEngineAudience
+		}
+		return caller{}, errors.New("token does not name this witness as its audience")
 	}
 	subject, _, err := member(claims, "sub")
 	if err != nil {
@@ -386,7 +405,7 @@ func verifyToken(token string, id identityConfig, now time.Time) (caller, error)
 		return caller{}, errors.New("token is not yet valid")
 	}
 	sum := sha256.Sum256([]byte(token))
-	return caller{issuer: issuer, subject: subject, tokenDigest: "sha256:" + hex.EncodeToString(sum[:])}, nil
+	return caller{issuer: issuer, subject: subject, tokenDigest: "sha256:" + hex.EncodeToString(sum[:]), audiences: audiences}, nil
 }
 
 // verifySignature checks a JWS signature with the key's algorithm.

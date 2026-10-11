@@ -81,7 +81,7 @@ func subjectOf(trail string) string { return "deliverer-" + trail[:4] }
 
 func (tw *testWitness) register(t *testing.T, trail string) {
 	t.Helper()
-	if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trail, issuer: witnessIssuer, subject: subjectOf(trail)}, tw.io(osWitnessIO())); err != nil {
+	if _, err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trail, issuer: witnessIssuer, subject: subjectOf(trail)}, tw.io(osWitnessIO())); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -732,7 +732,9 @@ func TestWitnessCrashMatrix(t *testing.T) {
 			if err := w.register(witnessRegistration{trail: trailC[:31] + "1", issuer: witnessIssuer, subject: "x"}); !errors.Is(err, errWitnessStopped) {
 				t.Fatalf("a registration after the failure: %v", err)
 			}
-			if a, err := w.submit(witnessIssuer, subjectOf(trailB), [][]byte{cpLine(trailB, 5, "a")}); err != nil || a.kind != "held" {
+			// not even a statement it holds: the head a line falls below,
+			// or the statement held, may no longer be what the restart serves
+			if _, err := w.submit(witnessIssuer, subjectOf(trailB), [][]byte{cpLine(trailB, 5, "a")}); !errors.Is(err, errWitnessStopped) {
 				t.Fatalf("a held statement after the failure: %v", err)
 			}
 			if head, _, _ := w.head(testTrail); c.step != "publish" && !bytes.Equal(head, headBefore) {
@@ -919,7 +921,7 @@ func TestWitnessRepairInterruptedIsRepairedAgain(t *testing.T) {
 func TestWitnessRegistersOffline(t *testing.T) {
 	tw := newTestWitness(t, testTrail)
 	tw.write(t, "registrations", tw.read(t, "registrations")+`{"issu`)
-	if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
+	if _, err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
 		t.Error("a registration was appended to registrations that do not end cleanly")
 	}
 }
@@ -1258,7 +1260,7 @@ func TestWitnessRegistrationFailsAtEveryStep(t *testing.T) {
 						err = w.register(r)
 					case "offline":
 						w.close()
-						err = registerWitnessTrail(tw.paths, r, tw.io(faulty))
+						_, err = registerWitnessTrail(tw.paths, r, tw.io(faulty))
 					}
 					if !*fired || err == nil {
 						t.Fatalf("the fault fired %v; the registration answered %v", *fired, err)
@@ -1310,7 +1312,7 @@ func TestWitnessWritesOnlyLinesItsReaderReads(t *testing.T) {
 				}
 				w.close()
 			} else {
-				err = registerWitnessTrail(tw.paths, r, tw.io(osWitnessIO()))
+				_, err = registerWitnessTrail(tw.paths, r, tw.io(osWitnessIO()))
 			}
 			switch {
 			case length <= witnessLineLimit && err != nil:
@@ -1676,7 +1678,7 @@ func TestWitnessEveryAppendSettlesItsTailFirst(t *testing.T) {
 		tw := newTestWitness(t, testTrail)
 		tw.write(t, "registrations", tw.read(t, "registrations")+`{"torn`)
 		before := tw.read(t, "registrations")
-		if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
+		if _, err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
 			t.Fatal("an offline registration after last bytes")
 		}
 		if tw.read(t, "registrations") != before {

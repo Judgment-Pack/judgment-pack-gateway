@@ -121,7 +121,7 @@ func TestWitnessOneWriterHoldsTheFiles(t *testing.T) {
 	if _, err := tw.repair(osWitnessIO()); err == nil {
 		t.Fatal("a repair while the witness runs")
 	}
-	if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
+	if _, err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
 		t.Fatal("an offline registration while the witness runs")
 	}
 	w.close()
@@ -254,7 +254,7 @@ func TestWitnessFilesHaveOneName(t *testing.T) {
 			if _, err := tw.repair(osWitnessIO()); err == nil {
 				t.Fatal("repair with a file of two names")
 			}
-			if err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
+			if _, err := registerWitnessTrail(tw.paths, witnessRegistration{trail: trailB, issuer: witnessIssuer, subject: "b"}, tw.io(osWitnessIO())); err == nil {
 				t.Fatal("an offline registration with a file of two names")
 			}
 		})
