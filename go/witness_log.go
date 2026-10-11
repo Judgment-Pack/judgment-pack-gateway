@@ -1146,8 +1146,8 @@ type witnessConfig struct {
 	io witnessIO
 	// trailsPerSubmitter bounds the trails a submitter submits for: a
 	// submission whose trail holds no statement yet is refused when the
-	// trails registered to its submitter that hold one are this many. Zero
-	// bounds nothing.
+	// trails registered to its submitter that hold one and are not retired
+	// are this many. Zero bounds nothing.
 	trailsPerSubmitter int
 }
 
@@ -1258,7 +1258,8 @@ type witnessLog struct {
 	// a test's way of failing at that step.
 	published func() error
 	// trailsPerSubmitter is witnessConfig's; submitterTrails counts, by
-	// submitter, the trails registered to it that hold a statement. Both are
+	// submitter, the trails registered to it that hold a statement and are
+	// not retired. Both are
 	// read and changed under the writer lock.
 	trailsPerSubmitter int
 	submitterTrails    map[submitterKey]int
@@ -1316,7 +1317,8 @@ func openWitnessLog(cfg witnessConfig) (*witnessLog, error) {
 	}
 	counts := map[submitterKey]int{}
 	for trail, t := range j.trails {
-		if r, ok := j.registrations[trail]; ok && t.last != nil {
+		// a retired trail is no longer one its submitter submits for
+		if r, ok := j.registrations[trail]; ok && t.last != nil && !t.retired() {
 			counts[submitterKey{r.issuer, r.subject}]++
 		}
 	}
@@ -1515,7 +1517,7 @@ func (w *witnessLog) keepRegistration(r witnessRegistration) error {
 	}
 	// a trail that holds statements moves, in the counts, to the submitter
 	// it is now registered to
-	if t := w.trails[r.trail]; t != nil && w.submitterTrails != nil {
+	if t := w.trails[r.trail]; t != nil && !t.retired() && w.submitterTrails != nil {
 		if old, ok := w.registrations[r.trail]; ok {
 			w.countTrail(submitterKey{old.issuer, old.subject}, -1)
 		}
@@ -1588,9 +1590,15 @@ func (w *witnessLog) signAndKeep(kind, checkpoint string, t *witnessTrail) ([]by
 	w.index.Lock()
 	trailIn(w.trails, st.trail).admit(st, offset, len(line))
 	w.index.Unlock()
-	// a trail's first statement makes it one of its submitter's trails
-	if r, ok := w.registrations[st.trail]; ok && st.index == 0 && w.submitterTrails != nil {
-		w.countTrail(submitterKey{r.issuer, r.subject}, 1)
+	// a trail's first statement makes it one of its submitter's trails,
+	// and its retirement gives the place back: nobody submits for it again
+	if r, ok := w.registrations[st.trail]; ok && w.submitterTrails != nil {
+		switch {
+		case st.index == 0:
+			w.countTrail(submitterKey{r.issuer, r.subject}, 1)
+		case st.kind == "retirement":
+			w.countTrail(submitterKey{r.issuer, r.subject}, -1)
+		}
 	}
 	if err := w.published(); err != nil {
 		w.stopped = witnessFailure{"publish", err}
@@ -2063,56 +2071,73 @@ func (f *witnessFiles) readBack(from int64, label string, file *os.File, start, 
 	return nil
 }
 
-// registerWitnessTrail registers a trail while the witness is not running:
+// registerWitnessTrail registers a trail while the witness is not running,
+// and returns the registration the trail had before, if any, so the operator
+// is told what the command changed. It registers
 // under its locks, to registrations that end cleanly, whatever the log
 // holds. A registration is harmless to the log: it is how a witness whose
 // start-up found a trail with no registration is given one. What it read
 // is made durable before it appends, and its line is held to the
 // registrations' reader before a byte of it is written.
-func registerWitnessTrail(paths witnessPaths, r witnessRegistration, wio witnessIO) error {
+func registerWitnessTrail(paths witnessPaths, r witnessRegistration, wio witnessIO) (*witnessRegistration, error) {
 	if err := r.check(); err != nil {
-		return err
+		return nil, err
 	}
 	line := registrationLine(r)
 	if err := admitWitnessLine("registration", line[:len(line)-1]); err != nil {
-		return err
+		return nil, err
 	}
 	files, err := holdWitnessFiles(paths, wio)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer files.close()
 	wio = files.io
+	var previous *witnessRegistration
 	if files.registrations != nil {
 		wio.note("read", "registrations")
 		info, err := files.registrations.Stat()
 		if err != nil {
-			return fmt.Errorf("witness registrations: %w", err)
+			return nil, fmt.Errorf("witness registrations: %w", err)
 		}
 		if size := info.Size(); size > 0 {
 			lastByte := make([]byte, 1)
 			if _, err := files.registrations.ReadAt(lastByte, size-1); err != nil {
-				return fmt.Errorf("witness registrations: %w", err)
+				return nil, fmt.Errorf("witness registrations: %w", err)
 			}
 			if lastByte[0] != '\n' {
-				return errors.New("witness: the registrations do not end cleanly; repair sets their last bytes aside first")
+				return nil, errors.New("witness: the registrations do not end cleanly; repair sets their last bytes aside first")
+			}
+			// the trail's current registration is its last whole line; a
+			// read that fails refuses the command rather than mis-saying
+			// what it changed
+			err := scanLines(io.NewSectionReader(files.registrations, 0, size), witnessLineLimit, func(line []byte, number, start, end int64, ended, over bool) error {
+				if ended && !over {
+					if p, ok := parseRegistration(line); ok && p.trail == r.trail {
+						previous = &p
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				return nil, fmt.Errorf("witness registrations: %w", err)
 			}
 		}
 	}
 	if err := files.syncRead(); err != nil {
-		return err
+		return nil, err
 	}
 	if files.registrations == nil {
 		if files.registrations, err = files.createHeld("registrations", files.logDir, files.logName+registrationsSuffix); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := wio.appendTo("registrations", files.registrations, line); err != nil {
-		return fmt.Errorf("witness registrations: %w", err)
+		return nil, fmt.Errorf("witness registrations: %w", err)
 	}
 	if err := wio.sync("registrations", files.registrations); err != nil {
-		return fmt.Errorf("witness registrations: %w", err)
+		return nil, fmt.Errorf("witness registrations: %w", err)
 	}
 	wio.note("registered", "")
-	return nil
+	return previous, nil
 }

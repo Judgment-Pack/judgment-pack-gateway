@@ -147,6 +147,7 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   "witness": {
     "log": "/var/lib/witness/log/witness.log",
     "marks": "/var/lib/witness-marks/witness.marks",
+    "audience": "witness:acme",
     "registration": "operator",
     "submitters": [{ "issuer": "https://login.example", "subject": "desk-acme" }],
     "trailsPerSubmitter": 100,
@@ -156,7 +157,11 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
 
   — whose `log` and `marks` are required, each an absolute, clean path: the log, with the
   registrations (`<log>.registrations`) and what a repair sets aside (`<log>.set-aside`) beside
-  it, and the marks, which may be neither the log nor a file beside it. `registration` is
+  it, and the marks, which may be neither the log nor a file beside it. `audience`, required, is what
+  a submission token names in place of the engine's `identity.audience`, and must differ from it: a
+  token naming it opens the witness and nothing else, and every other token-checked endpoint and
+  the MCP transport refuse it, as they refuse a token of a subject among `submitters`
+  (SECURITY.md). `registration` is
   `"operator"`, the default, under which the witness's operator registers each trail with
   `gateway witness register` and a submission for a trail nobody registered is refused, or
   `"first-submission"`, under which the first submission accepted for a trail registers it to
@@ -164,7 +169,7 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   at all, each issuer `identity.issuer`, none given twice; present and empty, no subject may
   submit, and the witness only serves what it holds; absent, any subject the issuer's tokens
   name may. `trailsPerSubmitter` (`1` to `100000`, default `100`) bounds the trails registered
-  to one submitter that hold a statement, and `submissionsPerMinute` (`1` to `6000`, default
+  to one submitter that hold a statement and are not retired, and `submissionsPerMinute` (`1` to `6000`, default
   `60`) its submissions in a minute. A witness needs `identity`, since a submission is
   authenticated by a bearer token of the configured issuer, and is refused without it; it needs
   no platform, so a configuration whose `platforms` is empty starts as a witness and nothing
@@ -201,7 +206,8 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   `issuer`, naming `audience`, within its validity window with thirty seconds' leeway — or is
   refused `401` with one reason and never the token; `/publickey` and `/registry` stay open,
   since a verifier fetches its anchors there and holds no token. A witness's submission carries
-  one verified the same way, and its two reads stay open, as `/registry` does. A receipt then carries
+  one verified the same way but under `witness.audience`, which the engine's own endpoints refuse
+  in turn; its two reads stay open, as `/registry` does. A receipt then carries
   `caller: {issuer, subject, tokenDigest}` (SPEC.md §1.2a). The key file is read once, when
   the engine starts; a key not in it is a key the engine does not know.
 - `platforms` maps an operator-chosen name — with `/history` or `/live` appended, the `source`

@@ -214,10 +214,15 @@ func witnessRegister(flags map[string]string, stdout, stderr io.Writer) int {
 	if cfg.witness.submittersGiven && !containsSubmitter(cfg.witness.submitters, submitterKey{r.issuer, r.subject}) {
 		return witnessActFailed(stderr, "register", fmt.Errorf("subject %q is not among witness.submitters, so no submission of it is taken; nothing was changed", requestText(r.subject)))
 	}
-	if err := registerWitnessTrail(cfg.witness.paths, r, witnessIO{}); err != nil {
+	previous, err := registerWitnessTrail(cfg.witness.paths, r, witnessIO{})
+	if err != nil {
 		return witnessActFailed(stderr, "register", err)
 	}
-	fmt.Fprintf(stdout, "registered trail %s to subject %q of issuer %q\n", r.trail, requestText(r.subject), requestText(r.issuer))
+	if previous != nil && (previous.issuer != r.issuer || previous.subject != r.subject) {
+		fmt.Fprintf(stdout, "registered trail %s to subject %q of issuer %q, changed from subject %q of issuer %q\n", r.trail, requestText(r.subject), requestText(r.issuer), requestText(previous.subject), requestText(previous.issuer))
+	} else {
+		fmt.Fprintf(stdout, "registered trail %s to subject %q of issuer %q\n", r.trail, requestText(r.subject), requestText(r.issuer))
+	}
 	return 0
 }
 

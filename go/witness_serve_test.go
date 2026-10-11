@@ -36,6 +36,10 @@ import (
 
 const witnessAudience = "gateway:witness"
 
+// witnessEngineAudience is the engine's own audience in these fixtures: a
+// token naming it is an operator's, not a submitter's (#214).
+const witnessEngineAudience = "gateway:signer"
+
 // witnessFixture is a witness open behind a signer's handler, a token issuer
 // the signer trusts, and the witness's reports.
 type witnessFixture struct {
@@ -77,7 +81,7 @@ func edIssuer(t *testing.T) (*testIssuer, identityConfig) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &testIssuer{edPub: public, edPriv: private}, identityConfig{issuer: witnessIssuer, audience: witnessAudience, keys: keys}
+	return &testIssuer{edPub: public, edPriv: private}, identityConfig{issuer: witnessIssuer, audience: witnessEngineAudience, keys: keys}
 }
 
 // newWitnessFixture is a witness whose trails are registered as given, its
@@ -91,6 +95,9 @@ func newWitnessFixture(t *testing.T, spec witnessSpec, trails ...string) *witnes
 	}
 	if spec.submissionsPerMinute == 0 {
 		spec.submissionsPerMinute = 6000
+	}
+	if spec.audience == "" {
+		spec.audience = witnessAudience
 	}
 	spec.paths = tw.paths
 	cfg := tw.config()
@@ -571,7 +578,8 @@ func TestWitnessRateBounds(t *testing.T) {
 // A submitter's trails: a submission for a trail that holds no statement is
 // refused when the trails registered to its submitter that hold one are at
 // the bound, before it registers anything; a trail it holds already goes
-// on; and a trail moved to another submitter is counted as that one's.
+// on; a trail moved to another submitter is counted as that one's; and a
+// retired trail is counted as nobody's, now and after a restart.
 func TestWitnessTrailsPerSubmitter(t *testing.T) {
 	f := newWitnessFixture(t, witnessSpec{firstSubmission: true, trailsPerSubmitter: 2})
 	token := f.token(t, "deliverer")
@@ -595,7 +603,15 @@ func TestWitnessTrailsPerSubmitter(t *testing.T) {
 	fourth := "0f1e2d3c4b5a69788796a5b4c3d2e1f0"
 	statementAnswer(t, post(fourth, 1))
 	refusedAs(t, f.serve(submission(f.token(t, "another"), bytes.NewReader(jsonl(cpLine("ffffffffffffffffffffffffffffffff", 1, "a"))))), http.StatusTooManyRequests, witnessReasonTrails)
-	// the counts are the files': a restart counts the same
+	// a retired trail gives its place back: nobody submits for it again
+	if _, err := f.log.retire(testTrail); err != nil {
+		t.Fatal(err)
+	}
+	fifth := "1f2e3d4c5b6a79889786a5b4c3d2e1f0"
+	statementAnswer(t, post(fifth, 1))
+	refusedAs(t, post("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", 1), http.StatusTooManyRequests, witnessReasonTrails)
+	// the counts are the files': a restart counts the same, a retired
+	// trail not among them
 	f.log.close()
 	f.tw.trace.reset()
 	cfg := f.tw.config()
@@ -860,9 +876,19 @@ func TestWitnessReads(t *testing.T) {
 		{statements + "?limit=1001", http.StatusBadRequest, witnessReasonMalformed},
 		{statements + fmt.Sprintf("?from=%d", int64(maxWitnessInteger)+1), http.StatusBadRequest, witnessReasonMalformed},
 		{statements + "?from=12345678901234567", http.StatusBadRequest, witnessReasonMalformed},
+		// spellings the mux would have cleaned and answered with its own
+		// redirect are the witness's to refuse, in its form (SPEC.md §6)
+		{"/witness//trails/" + testTrail + "/head", http.StatusBadRequest, witnessReasonMalformed},
+		{"/witness/trails/x/../" + testTrail + "/head", http.StatusBadRequest, witnessReasonMalformed},
+		{"/witness/./trails/" + testTrail + "/head", http.StatusBadRequest, witnessReasonMalformed},
+		{"/witness", http.StatusBadRequest, witnessReasonMalformed},
 	} {
 		t.Run(c.path, func(t *testing.T) {
-			refusedAs(t, get(c.path), c.status, c.reason)
+			rec := get(c.path)
+			refusedAs(t, rec, c.status, c.reason)
+			if rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Content-Length") == "" {
+				t.Fatalf("a refusal without no-store or a Content-Length: %v", rec.Header())
+			}
 		})
 	}
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodHead, http.MethodDelete} {
@@ -1160,5 +1186,79 @@ func TestWitnessOverARealListener(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || !bytes.Equal(head, signed) {
 		t.Fatalf("the head read answered %d, the statement signed %v", resp.StatusCode, bytes.Equal(head, signed))
+	}
+}
+
+// A submission token opens the witness and nothing else (#214): it names the
+// witness's audience, not the engine's, and every other token-checked
+// endpoint and the MCP transport refuse it, as they refuse a token of a
+// subject among witness.submitters; an operator's token, naming the engine,
+// is refused by the witness in turn.
+func TestWitnessTokenOpensTheWitnessAndNothingElse(t *testing.T) {
+	f := newWitnessFixture(t, witnessSpec{}, testTrail)
+	exp := time.Now().Add(time.Hour).Unix()
+	mint := func(subject string, aud any) string {
+		return f.issuer.mint(t, "ed-1", nil, map[string]any{"iss": witnessIssuer, "sub": subject, "aud": aud, "exp": exp})
+	}
+	submitter := mint(subjectOf(testTrail), witnessAudience)
+	both := mint(subjectOf(testTrail), []string{witnessEngineAudience, witnessAudience})
+	operator := mint("operator-1", witnessEngineAudience)
+	engine := func(token, path string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}"))
+		r.Header.Set("Authorization", "Bearer "+token)
+		r.Header.Set("Content-Type", "application/json")
+		return f.serve(r)
+	}
+	for _, path := range []string{"/seal", "/acquire", "/act", "/verify"} {
+		for name, token := range map[string]string{"the witness's audience": submitter, "both audiences": both} {
+			rec := engine(token, path)
+			if rec.Code != http.StatusUnauthorized || rec.Header().Get("WWW-Authenticate") != "Bearer" || !strings.Contains(rec.Body.String(), errWitnessTokenHere.Error()) {
+				t.Fatalf("%s with %s: %d %q, want 401 %q", path, name, rec.Code, rec.Body.String(), errWitnessTokenHere.Error())
+			}
+		}
+		if rec := engine(operator, path); rec.Code == http.StatusUnauthorized {
+			t.Fatalf("%s refuses the operator's token: %q", path, rec.Body.String())
+		}
+	}
+	// the witness takes the submitter's token and one naming both audiences,
+	// and refuses the operator's, which names the engine alone
+	statementAnswer(t, f.serve(submission(submitter, bytes.NewReader(jsonl(cpLine(testTrail, 1, "a"))))))
+	statementAnswer(t, f.serve(submission(both, bytes.NewReader(jsonl(cpLine(testTrail, 2, "a"))))))
+	if refused := refusedAs(t, f.serve(submission(operator, bytes.NewReader(jsonl(cpLine(testTrail, 3, "a"))))), http.StatusUnauthorized, witnessReasonToken); !strings.Contains(refused.Error, "does not name this witness as its audience") {
+		t.Fatalf("the operator's token at the witness: %q", refused.Error)
+	}
+	// an unclean spelling of the submission path is the witness's refusal too
+	r := httptest.NewRequest(http.MethodPost, "/witness/./checkpoints", bytes.NewReader(jsonl(cpLine(testTrail, 3, "a"))))
+	r.Header.Set("Authorization", "Bearer "+submitter)
+	r.Header.Set("Content-Type", "application/jsonl")
+	refusedAs(t, f.serve(r), http.StatusBadRequest, witnessReasonMalformed)
+
+	// a listed submitter is refused elsewhere whatever audience its token names
+	listed := newWitnessFixture(t, witnessSpec{submittersGiven: true, submitters: []submitterKey{{witnessIssuer, "deliverer-a"}}}, testTrail)
+	asListed := listed.issuer.mint(t, "ed-1", nil, map[string]any{"iss": witnessIssuer, "sub": "deliverer-a", "aud": witnessEngineAudience, "exp": exp})
+	asOther := listed.issuer.mint(t, "ed-1", nil, map[string]any{"iss": witnessIssuer, "sub": "operator-2", "aud": witnessEngineAudience, "exp": exp})
+	seal := func(token string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(http.MethodPost, "/seal", strings.NewReader("{}"))
+		r.Header.Set("Authorization", "Bearer "+token)
+		return listed.serve(r)
+	}
+	if rec := seal(asListed); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), errWitnessTokenHere.Error()) {
+		t.Fatalf("/seal with a listed submitter's engine token: %d %q", rec.Code, rec.Body.String())
+	}
+	if rec := seal(asOther); rec.Code == http.StatusUnauthorized {
+		t.Fatalf("/seal refuses an unlisted subject's engine token: %q", rec.Body.String())
+	}
+
+	// the MCP transport verifies the same way
+	mcp := &mcpServer{identity: f.gateway.identity, witness: f.svc.spec, now: time.Now}
+	if err := mcp.verifyBearer(submitter); err == nil || err.Error() != errWitnessTokenHere.Error() {
+		t.Fatalf("the MCP transport with a submission token: %v", err)
+	}
+	if err := mcp.verifyBearer(operator); err != nil {
+		t.Fatalf("the MCP transport with the operator's token: %v", err)
+	}
+	mcp.identity, mcp.witness = listed.gateway.identity, listed.svc.spec
+	if err := mcp.verifyBearer(asListed); err == nil || err.Error() != errWitnessTokenHere.Error() {
+		t.Fatalf("the MCP transport with a listed submitter's token: %v", err)
 	}
 }

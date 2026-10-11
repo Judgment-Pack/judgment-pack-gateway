@@ -32,7 +32,7 @@ func witnessEngineFile(t *testing.T, tw *testWitness, extra string) string {
 		`"registry":"` + filepath.Join(dir, "registry.jsonl") + `","decisionRecords":"` + filepath.Join(dir, "decisions") + `","listen":"127.0.0.1:8787",` +
 		`"catalog":"` + filepath.Join(dir, "catalog") + `",` +
 		`"identity":{"issuer":"` + witnessIssuer + `","audience":"gateway:witness","keys":"` + filepath.Join(dir, "keys.json") + `"},` +
-		`"witness":{"log":"` + tw.paths.log + `","marks":"` + tw.paths.marks + `"` + extra + `},"platforms":{}}`
+		`"witness":{"log":"` + tw.paths.log + `","marks":"` + tw.paths.marks + `","audience":"witness:acme"` + extra + `},"platforms":{}}`
 	path := filepath.Join(dir, "engine.json")
 	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
@@ -264,5 +264,26 @@ func TestServeConfigOpensTheWitnessBeforeTheStore(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(filepath.Dir(config), made)); err == nil {
 			t.Fatalf("the %s was made before the witness was refused", made)
 		}
+	}
+}
+
+// register says what it changed: a trail registered again to another
+// subject names the one it had, and one registered again to the same says
+// nothing more than "registered".
+func TestWitnessRegisterSaysWhatItChanged(t *testing.T) {
+	tw := newTestWitness(t)
+	config := witnessEngineFile(t, tw, "")
+	first := subjectOf(testTrail)
+	if code, out, errText := act("register", "--config", config, "--trail", testTrail, "--issuer", witnessIssuer, "--subject", first); code != 0 || !strings.Contains(out, "registered trail") || strings.Contains(out, "changed from") {
+		t.Fatalf("first register: %d %s %s", code, out, errText)
+	}
+	if code, out, errText := act("register", "--config", config, "--trail", testTrail, "--issuer", witnessIssuer, "--subject", first); code != 0 || strings.Contains(out, "changed from") {
+		t.Fatalf("the same registration again: %d %s %s", code, out, errText)
+	}
+	if code, out, errText := act("register", "--config", config, "--trail", testTrail, "--issuer", witnessIssuer, "--subject", "deliverer-b"); code != 0 || !strings.Contains(out, `changed from subject "`+first+`" of issuer "`+witnessIssuer+`"`) {
+		t.Fatalf("a changed registration: %d %s %s", code, out, errText)
+	}
+	if code, out, errText := act("register", "--config", config, "--trail", trailB, "--issuer", witnessIssuer, "--subject", "deliverer-b"); code != 0 || strings.Contains(out, "changed from") {
+		t.Fatalf("another trail, new: %d %s %s", code, out, errText)
 	}
 }
