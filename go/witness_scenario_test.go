@@ -149,15 +149,16 @@ func TestReceiptNamesTheWitnessScenario(t *testing.T) {
 	// reading, and a reading that resumes from it fetches only what follows
 	// its last statement, here nothing, and the runtime holds the saved
 	// checkpoint to the trail again.
-	continuation := filepath.Join(t.TempDir(), "continuation")
-	if saved := sc.fetch(t, g, recordFile, true, nil, nil, "--witness-save", continuation); saved.Exit == nil || *saved.Exit != 0 {
+	continuations := filepath.Join(t.TempDir(), "continuations")
+	saved := sc.fetch(t, g, recordFile, true, nil, nil, "--witness-save", continuations)
+	if saved.Exit == nil || *saved.Exit != 0 || saved.Continuation == "" {
 		t.Fatalf("a reading that saves its continuation: %+v", saved)
 	}
-	if data, err := os.ReadFile(continuation); err != nil || len(data) == 0 {
+	if data, err := os.ReadFile(filepath.Join(continuations, saved.Continuation)); err != nil || len(data) == 0 {
 		t.Fatalf("no continuation was saved: %v", err)
 	}
-	resumed := sc.fetch(t, g, recordFile, true, nil, nil, "--witness-resume", continuation)
-	if resumed.Outcome != fetchRead || resumed.Exit == nil || *resumed.Exit != 0 {
+	resumed := sc.fetch(t, g, recordFile, true, nil, nil, "--witness-resume", continuations, "--witness-save", continuations)
+	if resumed.Outcome != fetchRead || resumed.Exit == nil || *resumed.Exit != 0 || !strings.Contains(string(resumed.Report), `"began":"continued"`) {
 		t.Fatalf("a reading resumed from its continuation: %+v\n%s", resumed, resumed.Report)
 	}
 

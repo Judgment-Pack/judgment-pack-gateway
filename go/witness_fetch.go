@@ -17,6 +17,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -36,10 +37,12 @@ const witnessFetchUsage = `usage:
   gateway witness fetch --store <dir> --registry <file> --authority <label> --public-key <file>
       [--decision-records <dir>] --record <file> --trail <file> --runtime <path> --out <dir>
       [--witness-key <file>]... [--statements <file>]... [--allow-loopback]
-      [--require-countersigned-through <sequence>] [--witness-save <file>] [--witness-resume <file>]
+      [--require-countersigned-through <sequence>] [--witness-save <dir>] [--witness-resume <dir>]
 --public-key is the operator's gateway key, pinned out of band; --witness-key a witness key
 the reader pinned; --statements statements the reader kept, read when a witness named cannot
-be reached; --out a new directory the fetched statements, head and key are written to.`
+be reached or answers outside its form; --out a new directory the fetched statements, head and
+key are written to; --witness-save and --witness-resume directories of continuations, one file
+for each witness named, by its trail, origin and key identifier.`
 
 // The reading's bounds: an answer of the witness's taken whole within these,
 // and the statements a reading takes (SPEC.md §8.7).
@@ -57,6 +60,8 @@ const (
 	sentenceServedKey   = "The key was served at an origin the operator's gateway named, so this reading is as independent of the operator as the operator's choice of witness."
 	sentenceUnreachable = "The witness the receipts name could not be reached."
 	sentenceRefused     = "The witness the receipts name holds nothing for this trail."
+	sentenceRefusedRead = "The witness the receipts name refused the read; its answer is given as it gave it, and nothing is credited."
+	sentenceNotOfForm   = "The witness the receipts name answered outside its form (%s), so nothing it answered was read."
 	sentenceNoPin       = "No key the reader pinned is the one the receipts name, so nothing was read."
 	sentenceNoneHeld    = "The reader holds no statements of this witness, so nothing was read."
 	sentenceKeyNotNamed = "The origin the receipts name serves another key than the one they name, or none the key rule takes, so nothing from it was read."
@@ -67,6 +72,7 @@ const (
 const (
 	fetchRead          = "read"
 	fetchUnreachable   = "unreachable"
+	fetchNotOfForm     = "answer-not-of-form"
 	fetchRefused       = "refused"
 	fetchKeyNotNamed   = "witness-key-not-named"
 	fetchOriginRefused = "witness-origin-refused"
@@ -78,7 +84,9 @@ type witnessFetchOptions struct {
 	record, trail, runtime, out                            string
 	witnessKeys, statements                                []string
 	allowLoopback                                          bool
-	requireThrough, save, resume                           string
+	// save and resume are directories of continuations, one file for
+	// each witness named (continuationName).
+	requireThrough, save, resume string
 }
 
 // witnessFetchReport is what the command prints: the record's trail, and a
@@ -101,17 +109,24 @@ type witnessFetchReading struct {
 	// Head is whether a head the witness served was handed to the runtime:
 	// a reading with one is current, without one historical.
 	Head bool `json:"head"`
-	// Refusal is the witness's own answer, verbatim, when it refused.
-	Refusal   *witnessFetchRefusal `json:"refusal,omitempty"`
-	Sentences []string             `json:"sentences"`
+	// Refusal is the witness's own answer, verbatim, when it refused, and
+	// at which read.
+	Refusal *witnessFetchRefusal `json:"refusal,omitempty"`
+	// Continuation is the name of this witness's continuation file in the
+	// directories --witness-resume and --witness-save name, when either is
+	// given.
+	Continuation string   `json:"continuation,omitempty"`
+	Sentences    []string `json:"sentences"`
 	// Report is the runtime's report, its bytes as it wrote them, and Exit
 	// its exit status; both null when the runtime was not run.
 	Report json.RawMessage `json:"report"`
 	Exit   *int            `json:"exit"`
 }
 
-// witnessFetchRefusal is a witness's refusal as it gave it.
+// witnessFetchRefusal is a witness's refusal as it gave it, and the read it
+// refused: "publickey", "head" or "statements".
 type witnessFetchRefusal struct {
+	At     string `json:"at"`
 	Status int    `json:"status"`
 	Reason string `json:"reason"`
 	Error  string `json:"error"`
@@ -200,6 +215,34 @@ func parseWitnessFetch(args []string) (witnessFetchOptions, error) {
 	return o, nil
 }
 
+// continuationName is the file, in the directories --witness-resume and
+// --witness-save name, that holds one witness's continuation: one for each
+// {trail, origin, keyId}, so that after a change of witness each reading
+// resumes from and saves its own, never another witness's.
+func continuationName(named witnessTriple) string {
+	sum := sha256.Sum256([]byte(named.Trail + "\n" + named.Origin + "\n" + named.KeyID))
+	return hex.EncodeToString(sum[:]) + ".continuation"
+}
+
+// continuationDirectories holds --witness-resume to a directory that is
+// there and makes --witness-save's when it is not.
+func continuationDirectories(o witnessFetchOptions) error {
+	if o.resume != "" {
+		if info, err := os.Stat(o.resume); err != nil || !info.IsDir() {
+			return fmt.Errorf("--witness-resume names a directory of continuations, and %s is not one", o.resume)
+		}
+	}
+	if o.save != "" {
+		if err := os.MkdirAll(o.save, 0o700); err != nil {
+			return fmt.Errorf("--witness-save: %v", err)
+		}
+		if info, err := os.Stat(o.save); err != nil || !info.IsDir() {
+			return fmt.Errorf("--witness-save names a directory of continuations, and %s is not one", o.save)
+		}
+	}
+	return nil
+}
+
 // cmdWitnessFetch is `gateway witness fetch`. It exits 0 whenever it gave a
 // report, whatever the report says (SPEC.md §5a.2: the verdict is the
 // JSON), 1 when it could not give one, and 2 for its usage.
@@ -238,6 +281,9 @@ func witnessFetch(o witnessFetchOptions) (*witnessFetchReport, error) {
 		return nil, err
 	}
 	if err := makeFetchOut(o.out); err != nil {
+		return nil, err
+	}
+	if err := continuationDirectories(o); err != nil {
 		return nil, err
 	}
 	raw, err := os.ReadFile(o.publicKey)
@@ -356,10 +402,15 @@ func readNamedWitness(o witnessFetchOptions, named witnessTriple, namedAt []stri
 		}
 	}
 	if key == nil {
-		served, outcome := servedWitnessKey(named)
-		switch outcome {
+		served, answer := servedWitnessKey(named)
+		switch answer.outcome {
 		case fetchUnreachable:
 			return done(fetchUnreachable, sentenceUnreachable, sentenceNoPin)
+		case fetchNotOfForm:
+			return done(fetchNotOfForm, fmt.Sprintf(sentenceNotOfForm, answer.why), sentenceNoPin)
+		case fetchRefused:
+			reading.Refusal = answer.refusal
+			return done(fetchRefused, sentenceRefusedRead)
 		case fetchKeyNotNamed:
 			return done(fetchKeyNotNamed, sentenceKeyNotNamed)
 		}
@@ -371,58 +422,84 @@ func readNamedWitness(o witnessFetchOptions, named witnessTriple, namedAt []stri
 	if err := os.WriteFile(keyPath, []byte(hex.EncodeToString(key)+"\n"), 0o600); err != nil {
 		return reading, err
 	}
-	// Step 4: the head, then the statements, with no token and no redirect.
-	head, refusal, outcome := fetchWitnessHead(named)
-	if outcome == fetchRefused {
-		reading.Refusal = refusal
-		return done(fetchRefused, sentenceRefused)
+	// This witness's own continuation, by {trail, origin, keyId}: resumed
+	// from when the reader holds one, saved to when it asks.
+	var resume, save string
+	if o.resume != "" || o.save != "" {
+		reading.Continuation = continuationName(named)
 	}
-	var statements []byte
-	if outcome == fetchRead {
-		from, err := resumeIndex(o.resume)
+	if o.resume != "" {
+		if _, err := os.Stat(filepath.Join(o.resume, reading.Continuation)); err == nil {
+			resume = filepath.Join(o.resume, reading.Continuation)
+		}
+	}
+	if o.save != "" {
+		save = filepath.Join(o.save, reading.Continuation)
+	}
+	// Step 4: the head, then the statements from index 0 or after the
+	// continuation, with no token and no redirect. A refusal of any of these
+	// reads ends the reading, quoted, with nothing credited and the runtime
+	// not run; no answer, or an answer outside its form, leaves the reader
+	// what it holds.
+	head := fetchWitnessHead(named)
+	answer := head
+	var statements witnessFetchAnswer
+	if head.outcome == fetchRead {
+		from, err := resumeIndex(resume)
 		if err != nil {
 			return reading, err
 		}
-		if statements, outcome = fetchWitnessStatements(named, from); outcome != fetchRead {
-			head = nil
+		statements = fetchWitnessStatements(named, from)
+		answer = statements
+	}
+	if answer.outcome == fetchRefused {
+		reading.Refusal = answer.refusal
+		if answer.refusal.Reason == "unknown-trail" {
+			return done(fetchRefused, sentenceRefused)
 		}
+		return done(fetchRefused, sentenceRefusedRead)
 	}
 	args := []string{"audit", "verify", "--format", "json", "--trail", o.trail, "--witness-key", keyPath}
-	if outcome == fetchRead {
+	if answer.outcome == fetchRead {
 		statementsPath, headPath := filepath.Join(dir, "statements.jsonl"), filepath.Join(dir, "head.jsonl")
-		if err := os.WriteFile(statementsPath, statements, 0o600); err != nil {
+		if err := os.WriteFile(statementsPath, statements.body, 0o600); err != nil {
 			return reading, err
 		}
-		if err := os.WriteFile(headPath, head, 0o600); err != nil {
+		if err := os.WriteFile(headPath, head.body, 0o600); err != nil {
 			return reading, err
 		}
 		args = append(args, "--witness", statementsPath, "--witness-head", headPath)
 		reading.Head = true
 	} else {
-		// Unreachable: the statements the reader kept, under its pin, read
-		// as far as supplied; with no pin there is no key, and nothing read.
-		reading.Sentences = append(reading.Sentences, sentenceUnreachable)
+		// No answer, or an answer outside its form: the statements the
+		// reader kept, under its pin, read as far as supplied; with no pin
+		// there is no key, and nothing is read.
+		if answer.outcome == fetchUnreachable {
+			reading.Sentences = append(reading.Sentences, sentenceUnreachable)
+		} else {
+			reading.Sentences = append(reading.Sentences, fmt.Sprintf(sentenceNotOfForm, answer.why))
+		}
 		if reading.Key == nil || *reading.Key != "pinned" {
 			reading.Key = nil
 			os.Remove(keyPath)
-			return done(fetchUnreachable, sentenceNoPin)
+			return done(answer.outcome, sentenceNoPin)
 		}
 		if len(o.statements) == 0 {
-			return done(fetchUnreachable, sentenceNoneHeld)
+			return done(answer.outcome, sentenceNoneHeld)
 		}
 		for _, held := range o.statements {
 			args = append(args, "--witness", held)
 		}
-		reading.Outcome = fetchUnreachable
+		reading.Outcome = answer.outcome
 	}
 	if o.requireThrough != "" {
 		args = append(args, "--require-countersigned-through", o.requireThrough)
 	}
-	if o.resume != "" {
-		args = append(args, "--witness-resume", o.resume)
+	if resume != "" {
+		args = append(args, "--witness-resume", resume)
 	}
-	if o.save != "" {
-		args = append(args, "--witness-save", o.save)
+	if save != "" {
+		args = append(args, "--witness-save", save)
 	}
 	// Step 5: the runtime's reading, which is the reading.
 	out, exit, err := witnessRuntime(o.runtime, args)
@@ -442,72 +519,127 @@ func readNamedWitness(o witnessFetchOptions, named witnessTriple, namedAt []stri
 
 func keySource(s string) *string { return &s }
 
+// witnessFetchAnswer is what one read of the witness's came to: read, with
+// its body; refused, with the refusal as given; unreachable, when no
+// answer came; or an answer outside its form, and why.
+type witnessFetchAnswer struct {
+	outcome string
+	body    []byte
+	refusal *witnessFetchRefusal
+	why     string
+}
+
+// classifyWitnessAnswer is a read's answer: no answer is unreachable; a
+// status other than 200 answered as the witness answers a refusal (SPEC.md
+// §6, "Answers": application/json, an object whose reason and error are
+// strings) is a refusal, its status, reason and sentence kept as given; a
+// 200 of the type the read expects is read, its body for the caller to hold
+// to its form; anything else -- a redirect, another status or type, a body
+// past its bound -- is an answer outside its form.
+func classifyWitnessAnswer(at string, status int, contentType string, body []byte, err error, want string) witnessFetchAnswer {
+	switch {
+	case errors.Is(err, errPastBound):
+		return witnessFetchAnswer{outcome: fetchNotOfForm, why: "the " + at + " answer is past its bound"}
+	case err != nil:
+		return witnessFetchAnswer{outcome: fetchUnreachable}
+	case status == http.StatusOK && contentType == want:
+		return witnessFetchAnswer{outcome: fetchRead, body: body}
+	case status != http.StatusOK && contentType == "application/json":
+		var refusal struct {
+			Reason *string `json:"reason"`
+			Error  *string `json:"error"`
+		}
+		if json.Unmarshal(body, &refusal) == nil && refusal.Reason != nil && refusal.Error != nil && *refusal.Reason != "" {
+			return witnessFetchAnswer{outcome: fetchRefused, refusal: &witnessFetchRefusal{At: at, Status: status, Reason: *refusal.Reason, Error: *refusal.Error}}
+		}
+	}
+	return witnessFetchAnswer{outcome: fetchNotOfForm, why: fmt.Sprintf("the %s answer is status %d of type %q", at, status, contentType)}
+}
+
 // servedWitnessKey is the key the named origin serves at /publickey, held to
-// the key rule and to the identifier the receipts name: unreachable for no
-// answer, a redirect, or an answer not of its form; witness-key-not-named
-// for a key the rule refuses or of another identifier.
-func servedWitnessKey(named witnessTriple) ([]byte, string) {
+// the key rule and to the identifier the receipts name: the answer
+// classified as every read's is (classifyWitnessAnswer), and
+// witness-key-not-named for a key the rule refuses or of another
+// identifier.
+func servedWitnessKey(named witnessTriple) ([]byte, witnessFetchAnswer) {
 	status, contentType, body, err := witnessGet(named.Origin+"/publickey", maxWitnessSmallAnswer)
-	if err != nil || status != http.StatusOK || contentType != "application/json" {
-		return nil, fetchUnreachable
+	answer := classifyWitnessAnswer("publickey", status, contentType, body, err, "application/json")
+	if answer.outcome != fetchRead {
+		return nil, answer
 	}
 	var document struct {
 		PublicKey string `json:"publicKey"`
 	}
 	if json.Unmarshal(body, &document) != nil || !isLowerHexOfLen(document.PublicKey, 64) {
-		return nil, fetchUnreachable
+		return nil, witnessFetchAnswer{outcome: fetchNotOfForm, why: "the publickey answer names no key of 64 lowercase hexadecimal characters"}
 	}
 	key, _ := hex.DecodeString(document.PublicKey)
 	if witnessKeyRefusal(key) != "" || keyIDFor(key) != named.KeyID {
-		return nil, fetchKeyNotNamed
+		return nil, witnessFetchAnswer{outcome: fetchKeyNotNamed}
 	}
-	return ed25519.PublicKey(key), ""
+	return ed25519.PublicKey(key), answer
 }
 
-// fetchWitnessHead is the trail's head as the witness serves it; or its
-// refusal, verbatim, when it holds nothing for the trail; or unreachable.
-func fetchWitnessHead(named witnessTriple) ([]byte, *witnessFetchRefusal, string) {
-	status, contentType, body, err := witnessGet(named.Origin+"/witness/trails/"+named.Trail+"/head", maxWitnessSmallAnswer)
-	switch {
-	case err != nil:
-		return nil, nil, fetchUnreachable
-	case status == http.StatusOK && contentType == "application/jsonl":
-		return body, nil, fetchRead
-	case status == http.StatusNotFound && contentType == "application/json":
-		var refusal witnessFetchRefusal
-		if json.Unmarshal(body, &refusal) == nil && refusal.Reason == "unknown-trail" {
-			refusal.Status = status
-			return nil, &refusal, fetchRefused
-		}
+// statementLinesOfForm is whether a body is statement lines as a witness
+// serves them (SPEC.md §6): each of §8.2's form, ended by a newline, none
+// empty. It holds the form and nothing else: a signature, a key and a trail
+// are the runtime's to read, and their findings stay its own.
+func statementLinesOfForm(body []byte) bool {
+	if len(body) > 0 && body[len(body)-1] != '\n' {
+		return false
 	}
-	return nil, nil, fetchUnreachable
+	for rest := body; len(rest) > 0; {
+		i := bytes.IndexByte(rest, '\n')
+		if _, ok := parseWitnessStatement(rest[:i]); !ok {
+			return false
+		}
+		rest = rest[i+1:]
+	}
+	return true
+}
+
+// fetchWitnessHead is the trail's head as the witness serves it, held to its
+// form: exactly one statement line of §8.2's form.
+func fetchWitnessHead(named witnessTriple) witnessFetchAnswer {
+	status, contentType, body, err := witnessGet(named.Origin+"/witness/trails/"+named.Trail+"/head", maxWitnessSmallAnswer)
+	answer := classifyWitnessAnswer("head", status, contentType, body, err, "application/jsonl")
+	if answer.outcome == fetchRead && (bytes.Count(body, []byte{'\n'}) != 1 || !statementLinesOfForm(body)) {
+		return witnessFetchAnswer{outcome: fetchNotOfForm, why: "the head is not one statement line of SPEC.md §8.2's form"}
+	}
+	return answer
 }
 
 // fetchWitnessStatements is the trail's statements from index from, a page
 // at a time until a page is short, within SPEC.md §8.7's bounds: at most
 // the statements and the bytes one reading takes, past which the runtime
-// refuses the reading rather than read part of it.
-func fetchWitnessStatements(named witnessTriple, from int64) ([]byte, string) {
+// refuses the reading rather than read part of it. A refusal of any page,
+// the first or a later one, is the answer, and what the pages before it
+// gave is not read.
+func fetchWitnessStatements(named witnessTriple, from int64) witnessFetchAnswer {
 	var all []byte
 	count := 0
 	for {
 		url := fmt.Sprintf("%s/witness/trails/%s/statements?from=%d&limit=%d", named.Origin, named.Trail, from, witnessFetchPage)
-		status, contentType, body, err := witnessGet(url, maxWitnessBytes-len(all)+1)
-		if err != nil || status != http.StatusOK || contentType != "application/jsonl" || len(all)+len(body) > maxWitnessBytes {
-			return nil, fetchUnreachable
+		status, contentType, body, err := witnessGet(url, maxWitnessBytes-len(all))
+		answer := classifyWitnessAnswer("statements", status, contentType, body, err, "application/jsonl")
+		if answer.outcome != fetchRead {
+			return answer
+		}
+		if !statementLinesOfForm(body) {
+			return witnessFetchAnswer{outcome: fetchNotOfForm, why: "a statements page is not statement lines of SPEC.md §8.2's form"}
 		}
 		lines := bytes.Count(body, []byte{'\n'})
-		if len(body) > 0 && body[len(body)-1] != '\n' {
-			return nil, fetchUnreachable
-		}
 		all = append(all, body...)
 		count += lines
 		from += int64(lines)
 		if lines < witnessFetchPage || count > maxWitnessStatements {
-			return all, fetchRead
+			return witnessFetchAnswer{outcome: fetchRead, body: all}
 		}
 	}
 }
+
+// errPastBound is an answer longer than the read takes.
+var errPastBound = errors.New("an answer past its bound")
 
 // witnessGet is one GET of the witness's, with no token, no redirect
 // followed, and the body read whole within its bound.
@@ -522,7 +654,7 @@ func witnessGet(url string, limit int) (int, string, []byte, error) {
 		return 0, "", nil, err
 	}
 	if len(body) > limit {
-		return 0, "", nil, errors.New("an answer past its bound")
+		return 0, "", nil, errPastBound
 	}
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	return resp.StatusCode, mediaType, body, nil
