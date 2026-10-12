@@ -1,0 +1,39 @@
+{
+  "name": "v3-witness-two-for-one-trail",
+  "note": "Two acquisitions of one trail, the first naming one witness and the second, minted after the operator changed it, another (ADR-0014, question 11): the second's origin is http on a loopback address, which the form admits. Both are ok, and the report's witnesses name both for the trail, each a triple of its own.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "artifacts/d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5": "{\"n\":1,\"session\":\"s2\"}",
+    "receipts/s2/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"servedAt\":\"2026-09-12T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"d33a25ebccde11a31698f6b3cdc70ac39a30ae4eae435bd8a8896ae2b203e5f27ede1cd0c31315b234aa5876c7b7c5e835e7f4832dc71a1993944452ccf74f02\",\"source\":\"corpus\",\"witness\":{\"keyId\":\"cb05c9fac26332f9abc5f4f50b47e39e\",\"origin\":\"https://witness.example:443\",\"trail\":\"7a11c0de5eed0f0e7a11c0de5eed0f0e\"}}\n",
+    "receipts/s2/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:bf6d217f657955ce528caa8dd3545cdebfaebbee04b0eb722ae728c03ef45247\",\"name\":\"adapter-airbyte\",\"version\":\"1.0\"},\"endpoint\":\"warehouse.internal:443\",\"observedAt\":\"2026-09-12T00:00:00Z\",\"peerIdentity\":\"tls:sha256:1d76a93eb9c311853f02996ac10ce16fea227707a934b9969c7b3cec36f04d44\",\"schema\":\"sha256:16e8b56cff0ee20f52f80a3f32b1d72a64a83642b928850f9dc54afb7908a628\",\"shape\":\"airbyte\",\"snapshot\":\"state bookmark 8812041\",\"statement\":\"sha256:7866ee98e98c007521b0fa75b25e680613e6457c8d7b4cbefc3720b7847e6f71\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:346046b91ceeff003b6fb70e103e07fc1ef54220a7cf31d9f8bc73dfca06324e\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"d33a25ebccde11a31698f6b3cdc70ac39a30ae4eae435bd8a8896ae2b203e5f27ede1cd0c31315b234aa5876c7b7c5e835e7f4832dc71a1993944452ccf74f02\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5\",\"servedAt\":\"2026-09-12T00:00:05Z\",\"sessionId\":\"s2\",\"signature\":\"54617ac526bbd5c308a9282583f1ba23539d9ba7738a5204c13659747b5bdba57abf99b5922540be010e4a28a8de26ebf6089d72342d36ac59949980c181270b\",\"source\":\"corpus\",\"witness\":{\"keyId\":\"eaffb2d9fb00afd9ae8ddd9ec24f839e\",\"origin\":\"http://127.0.0.1:8443\",\"trail\":\"7a11c0de5eed0f0e7a11c0de5eed0f0e\"}}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-09-12T00:00:01Z\",\"sessionId\":\"s2\",\"signature\":\"33c22c1d588cff03e38a83679fa9dbfb62f2a2e086ae1c33b4496dfe12dad8c88f72930916e54d2a8a16c5a5803e4d0366d1dd5fc1667909fa702aa80ed8e503\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s2",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s2",
+        "status": "ok"
+      }
+    ],
+    "witnesses": [
+      {
+        "keyId": "cb05c9fac26332f9abc5f4f50b47e39e",
+        "origin": "https://witness.example:443",
+        "trail": "7a11c0de5eed0f0e7a11c0de5eed0f0e"
+      },
+      {
+        "keyId": "eaffb2d9fb00afd9ae8ddd9ec24f839e",
+        "origin": "http://127.0.0.1:8443",
+        "trail": "7a11c0de5eed0f0e7a11c0de5eed0f0e"
+      }
+    ]
+  }
+}

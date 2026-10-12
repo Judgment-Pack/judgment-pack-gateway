@@ -318,12 +318,34 @@ retire any trail it names, for good, and move any trail's registration away from
 who is then refused; the list says which callers may, not who holds their tokens, and `/seal`
 and the signer's other endpoints take any token the engine takes either way. A submitter's
 credential cannot, and is refused there as at `/seal`; no operator may also be a submitter. So
-a front for other parties passes `/witness/checkpoints` and the two reads under
-`/witness/trails/{trail}/` only, and keeps those two paths on the operator's side, as it keeps
+a front for other parties passes `/witness/checkpoints`, the two reads under
+`/witness/trails/{trail}/` and `GET /publickey`, which a reader with no pinned key holds to the
+key identifier a receipt names (below), only, and keeps those two paths on the operator's side, as it keeps
 the signer's other endpoints, with the list or without it: a front that passes all of
 `/witness/` lets a token from another host administer the witness — any engine-audience token
 without the list, a named operator's with it. Repairing the files takes a stop of the witness,
 since a running witness holds its files.
+
+**A receipt may name the witness its trail is registered with** ([ADR-0014](docs/adr/0014-a-receipt-names-the-witness.md);
+[`SPEC.md`](SPEC.md) §1.2a, `witness`, and §6, "Reading the witness a receipt names"). The member
+is the operator's gateway's word and no more. On a receipt that verifies under the operator's
+gateway key, it establishes that the holder of that key, minting the receipt at its `servedAt`,
+named this origin and this key identifier for this trail. It does not establish that the witness
+holds anything for the trail or registered it, that a checkpoint was submitted, that the chain is
+countersigned, that the origin serves the key named, that the witness is independent of the
+operator, who chose it, or anything about the operator's honesty; and a receipt without it does
+not establish that the trail has no witness. Only the operator's configuration names a witness
+(`witnessedBy`, `--witnessed-by`), and the gateway refuses its own key as one, since a gateway
+whose key the operator can use is no witness against the operator; a request names at most a
+trail, and an acquisition's trail is the request's, so a caller can name another trail than the
+record that will cite the receipt — the witness named is still the configuration's for that trail,
+and a reader holds it to the record's own trail. A reader never takes the witness's key from a
+receipt, which names a key and carries none: it uses its own pin whose identifier the receipt
+names, or else the key the named origin serves at `/publickey`, held to that identifier and the key
+rule, and a reading under a served key is as independent of the operator as the operator's choice
+of witness. With `witnessedBy` given, `/act` reads the `trail` of every record it finds, whatever
+its tool's policy. The receipt records no token, no registration's issuer or subject, and nothing
+of the witness but its origin and key identifier.
 
 **The registry closes replay and rollback only relative to a verifier that trusts the gateway's
 registry over the store.** The anchor must be fetched from the key holder, not from the store being
