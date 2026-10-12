@@ -413,14 +413,17 @@ func holdToPolicy(data []byte, claimed decision, cites []citation, arguments val
 
 // recordClaims is what the verifier reads of a decision record an action
 // receipt names (SPEC.md §4 step 8): whether it is a runtime evaluation
-// record at all, and if so the pack digest and the citations it states --
-// citesRead false when its cites is not of the shape, which no action's
-// citations match.
+// record at all, and if so the pack digest, the citations and the trail it
+// states -- citesRead false when its cites is not of the shape, which no
+// action's citations match.
+// trail is the record's trail member as a string, "" when it has none,
+// which a witness named on the action is held to (ADR-0014).
 type recordClaims struct {
 	understood bool
 	packDigest string
 	cites      []citation
 	citesRead  bool
+	trail      string
 }
 
 func recordClaimsOf(data []byte) recordClaims {
@@ -429,5 +432,6 @@ func recordClaimsOf(data []byte) recordClaims {
 		return recordClaims{}
 	}
 	cites, err := record.citations()
-	return recordClaims{understood: true, packDigest: record.packDigest, cites: cites, citesRead: err == nil}
+	trail, _ := memberString(record.obj, "trail")
+	return recordClaims{understood: true, packDigest: record.packDigest, cites: cites, citesRead: err == nil, trail: trail}
 }

@@ -145,11 +145,13 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	if exact {
 		wanted, exactWanted = nil, map[string]bool{recordHex: true}
 	}
-	// The record's bytes are kept only for a tool held to a policy: the
-	// bytes that hashed to the digest, which are then the bytes judged.
+	// The record's bytes are kept only for a tool held to a policy, and
+	// for a gateway that names a witness for some trail (ADR-0014), which
+	// reads the record's trail: the bytes that hashed to the digest, which
+	// are then the bytes judged and read.
 	var recorded []byte
 	hooks := decisionWalk{exact: exactWanted}
-	if policy != nil {
+	if policy != nil || len(g.witnessedBy) > 0 {
 		hooks.onWanted = func(_ string, _ bool, data []byte) { recorded = append([]byte(nil), data...) }
 	}
 	// For a policy that requires a signed record, the walk also notes every
@@ -277,6 +279,15 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	// absent for a tool the operator holds to none.
 	if policy != nil {
 		action.set("policy", vString(policy.digest))
+	}
+	// The witness the configuration names for the trail of the record
+	// found, read from the bytes whose digest matched (ADR-0014): absent
+	// when the record is no runtime evaluation record of a trail, or the
+	// configuration names no witness for its trail.
+	if len(g.witnessedBy) > 0 {
+		if member := g.witnessMember(recordTrail(recorded)); member != nil {
+			core.set("witness", member)
+		}
 	}
 	called := newObject()
 	called.set("shape", vString("mcp"))

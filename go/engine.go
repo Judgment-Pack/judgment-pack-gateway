@@ -30,15 +30,16 @@ import (
 // (docs/design/tool-descriptors.md), version 4 a platform's optional
 // `decisionPolicy` (docs/adr/0011-hold-a-write-to-its-decision.md), and
 // version 5 a decision policy's optional `requireSignedRecord`
-// (docs/adr/0012-hold-a-write-to-a-signed-record.md), and version 6 the
-// optional `witness` (docs/adr/0013-checkpoint-witness.md): a file of an earlier
+// (docs/adr/0012-hold-a-write-to-a-signed-record.md), version 6 the
+// optional `witness` (docs/adr/0013-checkpoint-witness.md), and version 7
+// the optional `witnessedBy` (docs/adr/0014-a-receipt-names-the-witness.md): a file of an earlier
 // version without the member still loads, and one with it is refused by
 // name, as any member a version does not have. connect raises a file to
 // version 3 exactly when the entry it writes carries a pin, and otherwise
 // leaves the version as it found it; it never lowers one.
-const engineVersion = "6"
+const engineVersion = "7"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -77,6 +78,9 @@ type engineConfig struct {
 	// witness makes the signer a checkpoint witness (ADR-0013); nil when the
 	// configuration has none.
 	witness *witnessSpec
+	// witnessedBy names the witness each trail is registered with, which a
+	// receipt minted for the trail names (ADR-0014); nil when none is.
+	witnessedBy map[string]namedWitness
 }
 
 // mcpConfig is the `mcp` member (docs/design/mcp-server.md): where the MCP
@@ -217,7 +221,7 @@ var engineMembers = map[string]bool{
 	"engineVersion": true, "authority": true, "seed": true, "store": true, "registry": true,
 	"decisionRecords": true, "listen": true, "catalog": true, "platforms": true,
 	"runtime": false, "adapters": false, "rootSigner": false, "hostRuntime": false, "identity": false,
-	"mcp": false, "witness": false,
+	"mcp": false, "witness": false, "witnessedBy": false,
 }
 
 var platformMembers = map[string]bool{
@@ -242,7 +246,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
@@ -306,6 +310,13 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
 		}
 		cfg.witness = w
+	}
+	if witnessedByValue, present := obj.get("witnessedBy"); present {
+		named, err := parseWitnessedBy(witnessedByValue, version)
+		if err != nil {
+			return engineConfig{}, fmt.Errorf("engine configuration: %v", err)
+		}
+		cfg.witnessedBy = named
 	}
 	cfg.runtime = "docker"
 	if _, present := obj.get("runtime"); present {
@@ -1680,7 +1691,7 @@ func holdDirectory(dir string, uid int, fileOwner func(string) (fileOwnership, e
 // engineServeOptions is what `serve` runs for a configuration: the derived
 // sources, the receipt version the design assumes, and the defaults.
 func engineServeOptions(cfg engineConfig, sources map[string]sourceSpec, identity *identityConfig) serveOptions {
-	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords}
+	return serveOptions{sources: sources, maxSourceOutput: defaultMaxSourceOutput, maxRequest: maxRequestBody, receiptVersion: receiptVersion3, identity: identity, decisionRecords: cfg.decisionRecords, witnessedBy: cfg.witnessedBy}
 }
 
 // maxKeySetBytes bounds the issuer's key file.

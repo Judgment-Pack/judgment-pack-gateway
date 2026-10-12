@@ -77,6 +77,9 @@ type defective struct {
 	// Record makes a finding of every record step 8 does not compare.
 	ignoreRecordClaims bool
 	compareEveryRecord bool
+	// ignoreWitness reads nothing of a receipt's witness member (ADR-0014):
+	// no form held, no trail compared, no witness reported.
+	ignoreWitness bool
 }
 
 func (defective) label() string { return "defective" }
@@ -98,7 +101,108 @@ func (d defective) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (d defective) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+func (d defective) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, error) {
+	if d.ignoreWitness {
+		ok, findings, err := d.verifyIgnoringWitness(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		return ok, findings, nil, err
+	}
+	ok, findings, err := d.verifyFindings(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	if err != nil {
+		return false, nil, nil, err
+	}
+	_, _, witnesses, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	return ok, findings, witnesses, err
+}
+
+// verifyIgnoringWitness is the reference run over a copy of the store whose
+// receipts have their witness member taken out before they are judged, and
+// judged as if it were not there: a verifier written before the member, as
+// far as its form, its trail and the report go.
+func (d defective) verifyIgnoringWitness(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+	rep, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	if err != nil {
+		return false, nil, err
+	}
+	sessions, err := listSessions(storeRoot)
+	if err != nil {
+		return false, nil, err
+	}
+	// A receipt refused only for its witness member's form is graded as the
+	// ladder grades it without the member.
+	regraded := map[string]string{}
+	for _, sessionID := range sessions {
+		dir := filepath.Join(storeRoot, "receipts", sessionID)
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+			if err != nil {
+				continue
+			}
+			v, err := parseJSON(data)
+			obj, isObject := v.(*vObject)
+			if err != nil || !isObject {
+				continue
+			}
+			if _, named := obj.get("witness"); !named {
+				continue
+			}
+			if _, err := witnessMemberOf(mustGet(obj, "witness")); err == nil {
+				continue
+			}
+			stripped := newObject()
+			for _, name := range obj.names {
+				if name != "witness" {
+					member, _ := obj.get(name)
+					stripped.set(name, member)
+				}
+			}
+			r, err := receiptFrom(stripped)
+			if err != nil {
+				continue
+			}
+			// the signature covers the member, so without it the receipt
+			// is judged by its signature as it stands
+			status := "signature-mismatch"
+			sig, _ := hex.DecodeString(r.signature)
+			r.obj = obj
+			if len(sig) == 64 && ed25519.Verify(publicKey, r.signingInput(), sig) {
+				status = "ok"
+			}
+			regraded[sessionID+"/"+e.Name()] = fmt.Sprintf("%d %s", r.callIndex, status)
+		}
+	}
+	ok := true
+	var findings []map[string]any
+	for _, f := range rep.Findings {
+		if f["status"] == "decision-trail-mismatch" {
+			continue
+		}
+		encoded, _ := json.Marshal(f)
+		var asMap map[string]any
+		_ = json.Unmarshal(encoded, &asMap)
+		if file, isFile := asMap["file"].(string); isFile {
+			if graded, found := regraded[fmt.Sprint(asMap["sessionId"])+"/"+file]; found {
+				var index int64
+				var status string
+				fmt.Sscanf(graded, "%d %s", &index, &status)
+				asMap = map[string]any{"sessionId": asMap["sessionId"], "callIndex": float64(index), "status": status}
+			}
+		}
+		if asMap["status"] != "ok" {
+			ok = false
+		}
+		findings = append(findings, asMap)
+	}
+	return ok, findings, nil
+}
+
+func mustGet(obj *vObject, name string) value {
+	v, _ := obj.get(name)
+	return v
+}
+
+// verifyFindings is the defective verdict of every fault but the witness's.
+func (d defective) verifyFindings(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
 	if d.ignoreRecordClaims || d.compareEveryRecord {
 		// Every other check intact. Ignoring the claims: the record found is
 		// never read for what it says of the pack and the citations.
@@ -137,7 +241,7 @@ func (d defective) verify(storeRoot, registryPath, authority, decisionRecords st
 		// Every ladder and registry check intact; SPEC.md §4 steps 5 and 6
 		// never run -- a verifier that treats an action receipt's citations
 		// and decision record as decoration.
-		ok, findings, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		ok, findings, _, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
 		if err != nil {
 			return false, nil, err
 		}
@@ -157,7 +261,8 @@ func (d defective) verify(storeRoot, registryPath, authority, decisionRecords st
 		return ok, kept, nil
 	}
 	if !d.ignoreAnchor {
-		return inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		ok, findings, _, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		return ok, findings, err
 	}
 	// Every receipt checked, the registry anchor ignored -- the exact gap this
 	// gateway exists to close.
@@ -267,6 +372,23 @@ func TestCorpusCatchesAVerifierThatMisreadsTheRecordAnActionNames(t *testing.T) 
 	for _, missed := range []string{"v3-decision-record-not-compared", "v3-action-valid"} {
 		if !strings.Contains(joined, missed) {
 			t.Fatalf("corpus did not catch a verifier comparing a record it does not understand (%s):\n%s", missed, joined)
+		}
+	}
+}
+
+// A verifier that reads nothing of a receipt's witness member -- one
+// written before the member, as far as the member goes -- must be caught:
+// the vectors of ADR-0014 exist for exactly that verifier. It takes a
+// member out of its form for one in it, compares no trail, and reports no
+// witness.
+func TestCorpusCatchesAVerifierThatIgnoresTheWitnessMember(t *testing.T) {
+	joined := failuresFor(t, defective{ignoreWitness: true})
+	for _, missed := range []string{
+		"v3-witness-origin-http-off-loopback", "v3-witness-origin-with-path", "v3-witness-key-id-upper-case",
+		"v3-witness-decision-trail-mismatch", "v3-witness-named", "v3-witness-two-for-one-trail",
+	} {
+		if !strings.Contains(joined, missed+":") {
+			t.Fatalf("corpus did not catch a verifier ignoring the witness member (%s):\n%s", missed, joined)
 		}
 	}
 }
