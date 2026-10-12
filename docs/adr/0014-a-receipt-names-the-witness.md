@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted, 2026-10-13
 date: 2026-10-12
 deciders: maintainer
 ---
@@ -283,6 +283,9 @@ tool held to no policy reads nothing of its record, is narrowed: with `witnessed
 the record's `trail`. Desk ADR-0012's witness, pin and origin rule are the values named.
 
 ## Questions for the maintainer
+
+*Answered 2026-10-13 by the maintainer: all eleven as proposed. The proposed answers below are the decisions.*
+
 
 1. **A member on each receipt, or a binding receipt per trail?** **Proposed:** a member (A); a
    binding kind is version 4, which fails the whole store for every released verifier.
