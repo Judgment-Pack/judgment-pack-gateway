@@ -147,6 +147,7 @@ Two forms recur and are named once:
 | `caller` | `{ "issuer": string, "subject": string, "tokenDigest": "sha256:" + hex }`, or `null` |
 | `acquisition` | object (below); present exactly when `kind` is `"acquisition"` |
 | `action` | object (below); present exactly when `kind` is `"action"` |
+| `witness` | object (below) — **optional**, on either kind |
 
 `argumentsDigest` does not exist in version 3.
 
@@ -327,6 +328,49 @@ The receipt carries the policy's digest and never the policy. A verifier checks
 the member's form and nothing else: it holds no configuration to recompute the
 digest against.
 
+**`witness`** — optional: the witness the gateway's operator named for a trail
+(`docs/adr/0014-a-receipt-names-the-witness.md`), so that a verifier holding a
+decision record and its receipts can find the checkpoint witness of §8 its trail
+is registered with. A top-level object:
+
+| Member | Form | Meaning |
+|---|---|---|
+| `origin` | `"https://"` or `"http://"`, a host in lowercase, `":"` and a port in decimal from 1 to 65535 with no leading zero, and nothing after it; at most 2048 characters | where the witness serves §6's paths, at its root |
+| `keyId` | 32 lowercase hexadecimal characters, derived as §1.2 derives one | the witness's key: the `keyId` its statements carry (§8.2) |
+| `trail` | 32 lowercase hexadecimal characters | the trail the gateway named the witness for |
+
+A host is a name — labels of lowercase letters, digits and hyphens joined by single
+dots, an IPv4 address among them — or an IPv6 address of lowercase hexadecimal and
+colons in brackets. `"http://"` is the form only with a loopback address written as
+one: an IPv4 address of `127.0.0.0/8` in dotted decimal, each part from 0 to 255 with
+no leading zero, or `[::1]`. The member is signed with every other member, and the
+time it names the witness at is the receipt's `servedAt`. The gateway sets it from its
+operator's configuration (`docs/design/engine-config.md`, `witnessedBy`) and from
+nothing a request carries: on an action receipt, when the record the action was found
+on (§6, `/act`) is a runtime evaluation record (§4 step 8) whose `trail` is 32
+lowercase hexadecimal characters and the configuration names a witness for that
+trail, its `trail` being the record's; on an acquisition receipt, when the request
+names a `trail` (§6) the configuration names a witness for. A seal (§3) never carries
+it. It records no token, no digest of one, and no registration's issuer or subject: a
+registration is served nowhere (§6), a receipt included. A receipt of a trail the
+configuration names no witness for is the receipt it was before the member existed. A
+verifier written before the member tolerates it, as it tolerates any signed member it
+does not know, and reports no witness.
+
+**What `witness` establishes.** On a receipt that verifies under the operator's
+gateway key: that the holder of that key, minting the receipt at its `servedAt`, named
+this origin and this key identifier for this trail. It does not establish that the
+witness holds anything for the trail or registered it, that a checkpoint was
+submitted, that the chain is countersigned, that the origin serves the key named, that
+the witness is independent of the operator, who chose it, or anything about the
+operator's honesty. On an action receipt whose record is compared (§4 step 8), it
+establishes too that the action was minted on a record of that trail, and not where in
+the trail the record is: the trail copy shows that. A receipt without the member
+establishes nothing, and not that the trail has no witness. What a chain then read
+establishes is §8.8's, under the key the reader used; with a key the origin served
+rather than one the reader pinned, no independence beyond the operator's choice of
+witness.
+
 **What the signature covers** — `"judgment-pack-gateway/receipt/3:"` followed by
 `canon` of the receipt object with **the receipt's own top-level `signature`
 member removed and every other member retained** — every nested member
@@ -361,7 +405,7 @@ statuses of the ladder and do not replace it.)
 
 | Order | Status | Condition |
 |---|---|---|
-| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"` — and never a relational one |
+| 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms — and never a relational one |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
 | 3 | `key-mismatch` | `keyId` is not the verifier's own key id |
 | 4 | `signature-mismatch` | the signature does not verify over the input §1.2 or §1.2a defines for the receipt's version |
@@ -593,7 +637,10 @@ not rest on the HTTP layer alone.
      aside — where a record with no `cites` member has none, and one whose `cites`
      is not an array of objects of the shape §1.2a gives `action.cites`, its
      members held to the canonical domain, matches no set → otherwise
-     **`decision-cites-mismatch`**.
+     **`decision-cites-mismatch`**;
+   - for a receipt carrying `witness`, its `trail` member must be the string
+     `witness.trail` → otherwise **`decision-trail-mismatch`**, a record with
+     no `trail` member included.
 
    A record step 6 found that is not a runtime evaluation record — not one JSON
    object, of another `recordVersion`, a graph composite, one without a pack
@@ -604,7 +651,7 @@ not rest on the HTTP layer alone.
 
 Steps 5, 6 and 8 each report once per action receipt, as `{sessionId,
 callIndex, status}` with the action receipt's own session and index, beside that
-receipt's `ok`; any of them may fire for one receipt, step 8 both of its
+receipt's `ok`; any of them may fire for one receipt, step 8 each of its
 findings, and each is independent of the others and of every other finding.
 Step 7 reports once per citing record, as `{recordDigest, status}`, independent
 of every other finding and of whether any action receipt names that record.
@@ -617,9 +664,18 @@ step 8's `decision-record-not-compared`. An observation is not a finding: it
 never makes `ok` false, a consumer's verdict (§5a) does not read it, and a
 report with none may leave the member out.
 
+**Witnesses.** A report carries, beside them, a member `witnesses` when a
+receipt whose ladder status is `ok` carries `witness` (§1.2a): an array of the
+distinct `{trail, origin, keyId}` those receipts name, each once, whatever
+receipts name it; absent when none does. Like an observation it is never part of
+`ok`, and unlike one the corpus compares it, as a set (§7). It is what the
+receipts' signer named, not a reading of any witness: a reader takes it only from
+a verdict it acts on (§5a.1), and reads a chain from it as §6 says ("Reading the
+witness a receipt names").
+
 `ok` is true only if the inline verify passed **and** no registry finding fired
-**and** no citation, decision-record, decision-pack, decision-cites or
-record-citation finding fired.
+**and** no citation, decision-record, decision-pack, decision-cites,
+decision-trail or record-citation finding fired.
 
 The verifier must obtain the registry from the gateway (the key holder), **not** from
 the untrusted store. That is the whole point: the anchor's authority comes from being
@@ -830,7 +886,7 @@ Localhost, JSON, standard library only.
 
 | Method | Path        | Body / result |
 |--------|-------------|---------------|
-| POST   | `/acquire`  | `{session, source, arguments}` → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. |
+| POST   | `/acquire`  | `{session, source, arguments, trail}`, `trail` optional → runs the configured source, attests, chains, retains; returns `{result, receipt}` — `{result, receipt, salts}` for a version 3 receipt, below — where `receipt` is the complete receipt object of §1.2 — every member, `keyId` and `signature` included, the same object written under `receipts/<session>/<index>.json`. The response body is ordinary JSON, not the receipt's canonical form: a caller checking the signature canonicalizes the receipt per §1.1 first — a caller holding the binary has `gateway canon` for exactly that — and then applies the coverage rule of §1.2 or §1.2a according to the receipt's `receiptVersion`. No receipt is accepted from the caller. `session` must be a flat token (§3a) or the call is refused `400` before the source runs, and a sealed session is refused `400` before the source runs too — sealed by this gateway process, or, for a session this process does not hold in memory, sealed in the registry (§3) as §4 loads it: a seal whose `keyId` is the gateway's own and whose signature verifies under its public key, an empty registry and any discarded line establishing no seal — so a seal stays final across a restart. For such a session, a registry that cannot be read (§4.1) is a refusal too, never taken for the absence of a seal — and so is a registry that is not there, since the gateway made it when it started (§3); a session this process holds is judged by its own record of the seals it wrote, and a seal whose writing failed after the record may have reached the registry leaves that session sealed. |
 | POST   | `/seal`     | `{session}` → seals the session's final count; returns the seal record. |
 
 A gateway minting version 3 receipts answers `/acquire` with `{result, receipt,
@@ -839,7 +895,16 @@ carries, named by the commitment's label without its colon — `args` always, an
 `statement` exactly when `acquisition.statement` is not `null` — each a 32-byte
 salt in lowercase hex (§1.2a), returned here and nowhere else. Every `/acquire`
 receipt is of kind
-`"acquisition"`. `POST /act` mints one of kind `"action"` (the engine of
+`"acquisition"`. A request may name `trail`, a trail identity of 32 lowercase
+hexadecimal characters, and nothing else in that member — null, another type or
+another form is refused `400` — for a receipt that names the witness the gateway's
+operator names for that trail (§1.2a, `witness`); a trail the configuration names
+no witness for is refused `400` before the source runs. A request names a trail and
+never a witness, an origin or a key: those are the configuration's. The trail is the
+request's: a caller can name another trail than the record that will cite the
+receipt, and the witness named is still the configuration's for the trail named,
+which a reader holds to the record's own trail ("Reading the witness a receipt
+names", below). `POST /act` mints one of kind `"action"` (the engine of
 `docs/adr/0001-one-engine-four-processes.md`, described in
 `docs/design/executor.md`): from an authenticated request naming a platform's
 write tool, the decision record the write relies on and the receipts that
@@ -847,7 +912,9 @@ record relied on, after the engine has found the cited receipts in its own
 store under its own key and the record under its decision-record directory —
 the standard §4 applies — and, for a tool its operator holds to a decision
 policy, after it has held the record and the request to that policy (§1.2a
-`policy`). The format was specified before the surface so that a verifier
+`policy`). When its operator names a witness for a trail (§1.2a, `witness`), the
+gateway reads the found record's `trail` too, from the bytes whose digest matched,
+whatever the tool, and names that trail's witness on the receipt. The format was specified before the surface so that a verifier
 written then verifies what is minted now. `gateway verify` takes
 `--decision-records <dir>` for §4 steps 5 to 8.
 | GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 step 8 has any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. |
@@ -902,7 +969,9 @@ under `/witness/`. They are the signer's, on the same loopback address as every 
 endpoint. Three of them — the submission, `/witness/checkpoints`, and the two reads under
 `/witness/trails/{trail}/` — are the first meant to be reached from other hosts by other
 parties: through the TLS-terminating front that address requires (`SECURITY.md`). A front for
-other parties is to pass those three and no other path of the signer. It keeps the operator's
+other parties is to pass those three and `GET /publickey`, open already, which a reader with no
+pinned key fetches and holds to the key identifier a receipt names (below, "Reading the witness a
+receipt names"), and no other path of the signer. It keeps the operator's
 two acts, `/witness/registrations` and `/witness/trails/{trail}/retirement`, on the operator's
 side, as it keeps the signer's other endpoints: a submitter's token is a token of the
 configured issuer, which the signer's other endpoints that take a token take as well, and the
@@ -1072,6 +1141,71 @@ a running witness says so, changes nothing and exits `1`; `register` and `retire
 the endpoint at which the running witness does the same ("Administration"), and repairing the
 files alone takes a stop of the witness.
 
+### Reading the witness a receipt names
+
+A receipt may name the witness its trail is registered with (§1.2a, `witness`;
+`docs/adr/0014-a-receipt-names-the-witness.md`). A verifier's report lists what the receipts
+that passed name (§4, `witnesses`); a reader then reads the chain, after a verdict it acts on
+(§5a.1), online, in these steps, which no vector holds — the corpus holds the member and the
+report, and this surface has one implementation, held by its tests and an end-to-end scenario in
+CI:
+
+1. It takes each `{trail, origin, keyId}` whose trail is the record's; with none, "No receipt
+   names a witness for this trail." Several, after a change of witness, are each read and
+   reported apart.
+2. It holds `origin` to `https`; to `http`, at a loopback address, only when the reader asks, for
+   its own machine and for tests — otherwise **`witness-origin-refused`**, and nothing is read.
+3. The key is the reader's pinned key whose identifier is `keyId`; otherwise the `publicKey` of
+   `GET <origin>/publickey`, no redirect followed, held to §8.4's rule and to `keyId` — otherwise
+   **`witness-key-not-named`**, and nothing from that origin is read. The report says which. The
+   key is never the receipt's: a receipt names a key and carries none (§5).
+4. It fetches `GET <origin>/witness/trails/{trail}/head`, held to its form — exactly one
+   statement line of §8.2's form, ended by a newline — then `/witness/trails/{trail}/statements?from=`
+   from index 0, or after this witness's own continuation, a page at a time until a page is
+   short, each page statement lines of that form, within §8.7, with no token and no redirect.
+   The form is all it holds: a signature, a key or a trail that is wrong is the runtime's
+   finding, never the reader's.
+5. It runs the runtime's reader, `jpack audit verify --trail <file> --witness-key <key> --witness
+   <statements> --witness-head <head>`, with `--witness-resume`, `--witness-save` and
+   `--require-countersigned-through` as the reader chooses, a continuation of each witness's own,
+   by its `{trail, origin, keyId}`, so that after a change of witness one witness's continuation
+   is never handed to another's reading. The runtime's report — `countersigned`, its `witness`
+   section, its sentences — is the reading.
+
+When the witness cannot be reached — no answer, a timeout — or answers outside its form — a
+redirect, a status or a type a read does not take, a head or a page not of the form above — the
+runtime reads, without a head, the statements the reader holds, under its pin, and the reading is
+historical, as far as supplied; with no pin there is no key, and with none held nothing is read.
+The reading says which: "The witness the receipts name could not be reached.", or that it
+answered outside its form, and how. When it refuses a read — the head or any page of
+statements, the first or a later one, answered as §6's "Answers" give a refusal — nothing is
+read and nothing credited, the runtime is not run whatever the reader holds, and the refusal's
+status, reason and sentence are given as it gave them, with the read it refused. A `404`
+`unknown-trail` reads as a trail never submitted (§8.8): "The witness the receipts name holds
+nothing for this trail." When it serves another key than the one named, the
+reading is `witness-key-not-named`; statements of its own under the key named are
+`witness-signature-invalid` to the runtime, the key named being the only one supplied. Two fixed
+sentences join every reading: "The operator's gateway named this witness for this trail under its
+own key at T; that is not a statement of the witness.", T each `servedAt` of the receipts naming
+it; and, for a served key, "The key was served at an origin the operator's gateway named, so this
+reading is as independent of the operator as the operator's choice of witness."
+
+`gateway witness fetch --store <dir> --registry <file> --authority <label> --public-key <file>
+[--decision-records <dir>] --record <file> --trail <file> --runtime <path> --out <dir>
+[--witness-key <file>]... [--statements <file>]... [--allow-loopback]
+[--require-countersigned-through <sequence>] [--witness-save <dir>] [--witness-resume <dir>]`
+is this reference's reader: it verifies the store as `gateway verify` does, under the operator's
+gateway key pinned out of band, refuses to read anything unless the verdict is `ok`, takes the
+record's trail from the record (a runtime evaluation record, one line), writes what it fetched and
+the key it used under `--out`, and prints `{trail, witnesses}`, each reading its `origin`, `keyId`,
+`namedAt`, `key` (`"pinned"`, `"served"` or `null`), `outcome` (`read`, `unreachable`,
+`answer-not-of-form`, `refused`, `witness-key-not-named` or `witness-origin-refused`), whether a
+head was handed over, the witness's `refusal` as given (`at`, `status`, `reason`, `error`), the
+name of its `continuation` in the directories `--witness-resume` and `--witness-save` name, the
+sentences, and the runtime's `report` as it wrote it, with its `exit`. It
+exits `0` whenever it gave a report, as `gateway verify` does (§5a.2). The runtime is named by its
+path, version 0.28.0 or later.
+
 ## 7. Conformance
 
 An implementation of this specification is checked against the frozen vectors in
@@ -1087,7 +1221,7 @@ refusal and finding §8 names.
 
 `gateway conform` runs them, and `--impl CMD` drives any other implementation
 through a small process contract, so an implementation in any language can answer
-to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Observations (§4) are not compared.
+to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Observations (§4) are not compared; witnesses (§4) are, as a set.
 
 One question this specification does not settle, surfaced by building the
 corpus and recorded in [`corpus/README.md`](corpus/README.md): the order of

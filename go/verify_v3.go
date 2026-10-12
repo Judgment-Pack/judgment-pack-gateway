@@ -97,6 +97,15 @@ func validateVersion3(obj *vObject, r *receipt) error {
 	default:
 		return fmt.Errorf("kind %q is neither acquisition nor action", kind)
 	}
+	// The witness the receipt names (ADR-0014): optional, on either kind,
+	// and of its form when present.
+	if witnessV, present := obj.get("witness"); present {
+		naming, err := witnessMemberOf(witnessV)
+		if err != nil {
+			return err
+		}
+		r.witness = naming
+	}
 	r.kind = kind
 	return nil
 }

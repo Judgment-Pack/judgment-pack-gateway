@@ -54,21 +54,21 @@ The file is read through the same strict parser the gateway uses for everything 
 duplicate member names refused, integers only, unknown members refused by name. A misspelled
 key is an error, never an intention silently dropped. `engineVersion`, `authority`, `seed`,
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
-`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp` and `witness` are optional; within a
+`runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness` and `witnessedBy` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
 `descriptors` and `decisionPolicy` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"6"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
-  platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, and version
-  6 `witness`. A file of an earlier version still loads without the member and is refused by
-  name with it.
+  `"1"` to `"7"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
+  6 `witness`, and version 7 `witnessedBy`. A file of an earlier version still loads without the
+  member and is refused by name with it.
   `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and
   otherwise leaves the version as it found it — it never lowers one — so a signer older than
   version 3 goes on reading every file `connect` has not pinned. (ADR-0007 named version 4 for
   its `services` member, which is not built; ADR-0011 gave 4 to `decisionPolicy`, ADR-0012 gave
-  5 to `requireSignedRecord`, ADR-0013 gave 6 to `witness`, and `services` takes the next
-  version when it is built.)
+  5 to `requireSignedRecord`, ADR-0013 gave 6 to `witness`, ADR-0014 gave 7 to `witnessedBy`,
+  and `services` takes the next version when it is built.)
 - `decisionPolicy`, in a version-4 file, holds the platform's write tools to their decisions
   ([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md), [executor.md](executor.md)): an
   object keyed by write tool name, each value a policy —
@@ -188,6 +188,37 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   decision-record directory. The witness signs with the gateway's own seed, under a prefix of
   its own (SPEC.md §8.3): a party that wants the witness's key apart from its receipts' runs a
   second engine with a seed of its own. `connect` keeps the member, its values unchanged.
+- `witnessedBy`, in a version-7 file, names the checkpoint witness each trail is registered
+  with, so that a receipt minted for the trail names it
+  ([ADR-0014](../adr/0014-a-receipt-names-the-witness.md); SPEC.md §1.2a, `witness`, and §6,
+  "Reading the witness a receipt names") —
+
+  ```json
+  "witnessedBy": {
+    "51ef4497ecf27d34c3f56ef0e6efa16c": {
+      "origin": "https://witness.example:443",
+      "publicKey": "…64 lowercase hexadecimal characters…"
+    }
+  }
+  ```
+
+  an object keyed by trail identity, 32 lowercase hexadecimal characters, each value exactly
+  `origin` and `publicKey`. `origin` is where the witness serves its paths, at its root:
+  `https://`, a host in lowercase, `:` and an explicit port, nothing after it, or `http://` at a
+  loopback address written as one (`127.0.0.0/8` in dotted decimal, or `[::1]`). `publicKey` is the
+  witness's key, pinned from the witness's operator as a verifier pins one, held to the key rule
+  (SPEC.md §8.4); the receipt names it by its `keyId` and never carries it. An action receipt
+  names the witness of its record's trail, read from the record's bytes — with `witnessedBy`
+  given, `/act` reads one member, `trail`, of every record it finds, whatever its tool's policy —
+  and an acquisition receipt the witness of the trail its request names in `trail`, which is
+  refused when no witness is named for it; no request names a witness or a key. The engine
+  refuses to start on a trail out of form, an origin out of form, a key the rule refuses, a trail
+  given twice, and a witness whose key is the engine's own, compared by the key's bytes: a
+  gateway whose key the operator can use is no witness against the operator. A change takes a
+  restart; receipts minted before it keep naming what was configured then. It is not `witness`,
+  which makes this signer a witness; a gateway may carry both. `gateway serve` without a
+  configuration takes the same as `--witnessed-by TRAIL=ORIGIN,PUBLICKEY`, repeatable, for
+  version 3 receipts only. `connect` keeps the member, its values unchanged.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
   takes today, named.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an

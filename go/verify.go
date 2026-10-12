@@ -45,6 +45,13 @@ type report struct {
 	// it (SPEC.md §4 step 8): absent when there are none, and never a
 	// part of ok.
 	Observations []finding `json:"observations,omitempty"`
+	// Witnesses are the distinct witnesses named by receipts whose ladder
+	// status is ok (ADR-0014; SPEC.md §4): absent when none is, and never a
+	// part of ok. A reader takes them only from a verdict it acts on.
+	Witnesses []witnessTriple `json:"witnesses,omitempty"`
+	// namedAt is, for each of them, when the receipts naming it were
+	// minted, earliest first; the reader's report says so (witness fetch).
+	namedAt map[witnessTriple][]string
 }
 
 func (r *report) marshal() ([]byte, error) {
@@ -83,6 +90,10 @@ type receipt struct {
 	// exactRecord is decision.recordBytes "exact": the record is the
 	// candidate whose exact bytes hash to recordDigest (§4 step 6).
 	exactRecord bool
+	// witness is the witness the receipt names (ADR-0014), nil when it
+	// names none; servedAt is when it was minted, the time it names it at.
+	witness  *witnessNaming
+	servedAt string
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {
@@ -110,7 +121,7 @@ func receiptFrom(obj *vObject) (*receipt, error) {
 		{"resultDigest", &r.resultDigest},
 		{"signature", &r.signature},
 		{"source", new(string)},
-		{"servedAt", new(string)},
+		{"servedAt", &r.servedAt},
 	} {
 		if *f.dst, err = str(f.name); err != nil {
 			return nil, err
@@ -656,7 +667,7 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 	}
 	counts := map[string]int64{}
 	signatures := map[string]map[string]string{}
-	var actions []*receipt
+	var actions, naming []*receipt
 	for _, sessionID := range sessions {
 		result, err := verifySession(storeRoot, sessionID, authority, publicKey)
 		if err != nil {
@@ -665,8 +676,10 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		counts[sessionID] = result.count
 		signatures[sessionID] = result.signatures
 		actions = append(actions, result.actions...)
+		naming = append(naming, result.named...)
 		rep.Findings = append(rep.Findings, result.findings...)
 	}
+	rep.witnessesNamed(naming)
 
 	seals, sealOrder, err := loadSealsOf(registryPath, publicKey, registryRequired)
 	if err != nil {
@@ -803,6 +816,13 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-cites-mismatch",
 			})
 		}
+		// ADR-0014: a witness named on an action is named for the trail of
+		// the record it was minted on.
+		if r.witness != nil && claims.trail != r.witness.trail {
+			rep.Findings = append(rep.Findings, finding{
+				"sessionId": r.sessionID, "callIndex": r.callIndex, "status": "decision-trail-mismatch",
+			})
+		}
 	}
 
 	rep.Findings = append(rep.Findings, recordFindings...)
@@ -814,6 +834,35 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		}
 	}
 	return rep, nil
+}
+
+// witnessesNamed sets the report's witnesses (SPEC.md §4): the distinct
+// {trail, origin, keyId} the receipts that passed the ladder name, in a
+// fixed order, and when each was named.
+func (r *report) witnessesNamed(receipts []*receipt) {
+	r.namedAt = map[witnessTriple][]string{}
+	for _, receipt := range receipts {
+		t := witnessTriple{Trail: receipt.witness.trail, Origin: receipt.witness.origin, KeyID: receipt.witness.keyID}
+		if _, seen := r.namedAt[t]; !seen {
+			r.Witnesses = append(r.Witnesses, t)
+		}
+		if !contains(r.namedAt[t], receipt.servedAt) {
+			r.namedAt[t] = append(r.namedAt[t], receipt.servedAt)
+		}
+	}
+	sort.Slice(r.Witnesses, func(i, j int) bool {
+		a, b := r.Witnesses[i], r.Witnesses[j]
+		if a.Trail != b.Trail {
+			return a.Trail < b.Trail
+		}
+		if a.Origin != b.Origin {
+			return a.Origin < b.Origin
+		}
+		return a.KeyID < b.KeyID
+	})
+	for _, times := range r.namedAt {
+		sort.Strings(times)
+	}
 }
 
 // listSessions enumerates the session directories under the store's receipts
@@ -857,6 +906,8 @@ type sessionResult struct {
 	count      int64
 	signatures map[string]string
 	actions    []*receipt
+	// named are the receipts that passed the ladder and name a witness.
+	named []*receipt
 }
 
 func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*sessionResult, error) {
@@ -908,6 +959,9 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 			valid = append(valid, r)
 			if r.kind == "action" {
 				result.actions = append(result.actions, r)
+			}
+			if r.witness != nil {
+				result.named = append(result.named, r)
 			}
 		}
 	}

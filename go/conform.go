@@ -127,13 +127,18 @@ type storeVector struct {
 	Expected       struct {
 		OK       bool             `json:"ok"`
 		Findings []map[string]any `json:"findings"`
+		// Witnesses are SPEC.md §4's witnesses, compared as a set; absent
+		// means none (ADR-0014).
+		Witnesses []map[string]any `json:"witnesses"`
 	} `json:"expected"`
 }
 
 // implementation is either this binary's own code or another process.
 type implementation interface {
 	canon(source string) ([]byte, bool)
-	verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error)
+	// verify answers ok, the findings, and the witnesses the report names
+	// (SPEC.md §4).
+	verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, error)
 	// witness reads one chain of witness statements (SPEC.md §8.6) from
 	// files, and answers with the verdict the process contract gives.
 	witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error)
@@ -152,23 +157,30 @@ func (inProcess) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+func (inProcess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, error) {
 	rep, err := verifyWithRegistryAndRecords(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 	raw, err := rep.marshal()
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
+	return decodeVerdict(raw)
+}
+
+// decodeVerdict reads a verdict as the process contract gives it: ok, the
+// findings, and the witnesses, absent when none.
+func decodeVerdict(raw []byte) (bool, []map[string]any, []map[string]any, error) {
 	var decoded struct {
-		OK       bool             `json:"ok"`
-		Findings []map[string]any `json:"findings"`
+		OK        bool             `json:"ok"`
+		Findings  []map[string]any `json:"findings"`
+		Witnesses []map[string]any `json:"witnesses"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
-	return decoded.OK, decoded.Findings, nil
+	return decoded.OK, decoded.Findings, decoded.Witnesses, nil
 }
 
 func (inProcess) witness(trail string, keyPaths, statementPaths []string, headPath string) (map[string]any, error) {
@@ -199,7 +211,7 @@ func (s subprocess) canon(source string) ([]byte, bool) {
 	return stdout.Bytes(), true
 }
 
-func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, error) {
+func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, error) {
 	args := append(s.argv[1:], "verify", storeRoot, registryPath, authority)
 	if decisionRecords != "" {
 		// The process contract's optional fourth argument (corpus/README.md):
@@ -211,16 +223,9 @@ func (s subprocess) verify(storeRoot, registryPath, authority, decisionRecords s
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
-		return false, nil, fmt.Errorf("verify produced no verdict: %s", stderr.String())
+		return false, nil, nil, fmt.Errorf("verify produced no verdict: %s", stderr.String())
 	}
-	var decoded struct {
-		OK       bool             `json:"ok"`
-		Findings []map[string]any `json:"findings"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &decoded); err != nil {
-		return false, nil, err
-	}
-	return decoded.OK, decoded.Findings, nil
+	return decodeVerdict(stdout.Bytes())
 }
 
 // witnessArgs is the process contract's `witness` command line
@@ -260,6 +265,22 @@ func sortedFindings(findings []map[string]any) []string {
 	for _, f := range findings {
 		encoded, _ := json.Marshal(f)
 		out = append(out, string(encoded))
+	}
+	sort.Strings(out)
+	return out
+}
+
+// witnessSet renders the witnesses a report names for comparison, as a set
+// (SPEC.md §4): order and repetition aside.
+func witnessSet(witnesses []map[string]any) []string {
+	seen := map[string]bool{}
+	for _, w := range witnesses {
+		encoded, _ := json.Marshal(w)
+		seen[string(encoded)] = true
+	}
+	out := make([]string, 0, len(seen))
+	for w := range seen {
+		out = append(out, w)
 	}
 	sort.Strings(out)
 	return out
@@ -402,10 +423,15 @@ func runCorpus(corpusDir string, impl implementation) ([]string, corpusCounts, e
 		if err != nil {
 			return nil, counts, err
 		}
-		ok, findings, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, publicKey)
+		ok, findings, witnesses, err := impl.verify(storeRoot, registryPath, vector.Authority, decisionRecords, publicKey)
 		os.RemoveAll(root)
 		if err != nil {
 			return nil, counts, err
+		}
+		if want, have := witnessSet(vector.Expected.Witnesses), witnessSet(witnesses); strings.Join(want, "|") != strings.Join(have, "|") {
+			failures = append(failures, fmt.Sprintf(
+				"store %s: witnesses disagree\n    expected: %v\n    produced: %v",
+				vector.Name, want, have))
 		}
 		if ok != vector.Expected.OK {
 			failures = append(failures, fmt.Sprintf("store %s: expected ok=%v, got ok=%v",

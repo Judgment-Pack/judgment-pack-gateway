@@ -208,6 +208,10 @@ type gatewayService struct {
 	// witness answers the witness's endpoints when the engine's
 	// configuration makes this signer a witness (ADR-0013); nil otherwise.
 	witness *witnessService
+	// witnessedBy is the witness the operator names for each trail
+	// (ADR-0014), which a receipt minted for that trail names in its
+	// witness member; empty, no receipt names one. No request sets it.
+	witnessedBy map[string]namedWitness
 }
 
 // startHook runs between making the store and opening the registry; a test
@@ -555,7 +559,7 @@ func limitBodyTo(w http.ResponseWriter, r *http.Request, limit int64) {
 // gateway half-reads is an envelope a caller and this gateway disagree
 // about, and what is signed or sealed is decided by the disagreement.
 var (
-	acquireRequestMembers = map[string]bool{"session": true, "source": true, "arguments": true}
+	acquireRequestMembers = map[string]bool{"session": true, "source": true, "arguments": true, "trail": true}
 	actRequestMembers     = map[string]bool{"session": true, "platform": true, "tool": true, "arguments": true, "decision": true, "cites": true}
 	sealRequestMembers    = map[string]bool{"session": true}
 )
@@ -635,6 +639,21 @@ func requestMembers(r io.Reader, allowed map[string]bool) (map[string]json.RawMe
 	return members, nil
 }
 
+// requestTrail reads /acquire's optional trail member (ADR-0014): absent,
+// "", and present, a trail identity, 32 lowercase hexadecimal characters,
+// or the request is refused -- null and every other value among them.
+func requestTrail(members map[string]json.RawMessage) (string, error) {
+	raw, present := members["trail"]
+	if !present {
+		return "", nil
+	}
+	v, err := parseJSON(raw)
+	if s, isString := v.(vString); err == nil && isString && isLowerHexOfLen(string(s), 32) {
+		return string(s), nil
+	}
+	return "", errors.New("trail must be a trail identity, 32 lowercase hexadecimal characters")
+}
+
 // memberText reads a string-valued member of a request envelope, or "" when
 // the envelope does not carry it and when it carries it as null -- which is
 // what the endpoint's own refusal then speaks about, as it did when these
@@ -654,6 +673,15 @@ func memberText(members map[string]json.RawMessage, name string) (string, error)
 }
 
 func (g *gatewayService) acquire(sessionID, source string, arguments value, who *caller) (map[string]any, error) {
+	return g.acquireForTrail(sessionID, source, "", arguments, who)
+}
+
+// acquireForTrail is an acquisition whose request named a trail, or ""
+// when it named none (ADR-0014): the receipt names the witness the
+// configuration names for that trail, and a trail it names none for is
+// refused before the source runs. A request names a trail and never a
+// witness or a key.
+func (g *gatewayService) acquireForTrail(sessionID, source, trail string, arguments value, who *caller) (map[string]any, error) {
 	if err := requireSession(sessionID); err != nil {
 		return nil, badRequest{err} // refuse before running anything
 	}
@@ -662,6 +690,9 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 		// A write source is the executor's alone (executor.md): a read
 		// that writes is not a read, and /acquire names no such source.
 		return nil, badRequest{fmt.Errorf("unknown source: %s", requestText(source))}
+	}
+	if trail != "" && g.witnessMember(trail) == nil {
+		return nil, badRequest{errors.New("trail: this gateway names no witness for the trail the request names; a request names a trail only where the operator's configuration names a witness for it")}
 	}
 	if spec.shape != "" && g.receiptVersion != receiptVersion3 {
 		return nil, fmt.Errorf("source %s is an adapter and needs receipt version 3", source)
@@ -770,6 +801,12 @@ func (g *gatewayService) acquire(sessionID, source string, arguments value, who 
 			core.set("caller", identity)
 		}
 		salts = map[string]any{"args": hex.EncodeToString(salt)}
+		// The witness the configuration names for the trail the request
+		// named, signed with the rest (ADR-0014); absent otherwise, and the
+		// receipt is then the one minted before the member existed.
+		if member := g.witnessMember(trail); member != nil {
+			core.set("witness", member)
+		}
 		if adapterEnvelope == nil {
 			core.set("acquisition", commandAcquisition(spec, adapterDigest, observedAt))
 		} else {
@@ -1412,7 +1449,12 @@ func (g *gatewayService) handler() http.Handler {
 			}
 			arguments = parsed
 		}
-		out, err := g.acquire(session, source, arguments, who)
+		trail, err := requestTrail(body)
+		if err != nil {
+			fail(w, badRequest{err})
+			return
+		}
+		out, err := g.acquireForTrail(session, source, trail, arguments, who)
 		if err != nil {
 			fail(w, err)
 			return

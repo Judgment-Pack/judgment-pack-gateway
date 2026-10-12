@@ -134,10 +134,10 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 31 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 40 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
-§4 step 6. They cover: a valid sealed version 3 session; an action receipt whose
+§4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
 citation and decision record both resolve; `citation-unresolved` for a wrong
 signature; `malformed` for the right signature cited in another case, since a
 cited signature has the form §1.2a gives it; `decision-record-mismatch`,
@@ -168,6 +168,28 @@ only and unterminated piece of its file, is found exactly and compared —
 file whole and compares nothing; a line of `0x0D` alone is a candidate under
 the exact reading, where step 6's leaves an empty piece; and a `recordBytes` of
 another value is `malformed`.
+
+Nine hold the `witness` member (§1.2a, §4;
+`docs/adr/0014-a-receipt-names-the-witness.md`), each named `v3-witness-*`: an
+acquisition and an action naming one witness for one trail, the action's record
+a runtime evaluation record of that trail, both `ok` and the witness reported
+once; two witnesses named for one trail after a change, the second at a loopback
+address over `http`, both reported; a receipt naming a witness that fails the
+ladder (`artifact-missing`), which names nothing; an action whose record is of
+another trail than its witness names, `decision-trail-mismatch` beside its `ok`;
+`malformed` for an `http` origin off loopback, for an origin with a path and for
+a `keyId` in upper case; `signature-mismatch` for the member added after signing;
+and the member on a seal, which a seal does not sign, so the seal loads by its
+four members and names nothing. The witnesses are keys the witness vectors
+already name, the base point times 1 and times 2, so no secret beyond `TEST-SEED`
+is in the corpus.
+
+**`witnesses`.** A vector whose report names witnesses gives them in `expected`
+as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them
+with the implementation's as a **set**, order and repetition aside; a vector
+without the member expects none, and an implementation that reports none leaves
+the member out. Unlike observations, they are compared: a verifier that does
+not read the member reports none, and those vectors catch it.
 
 They are as frozen as the rest and were written against the specification, not
 against an implementation: no implementation answered them when they were
@@ -350,7 +372,8 @@ this one:
 - `CMD verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
   — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
   stdout: `{"ok": bool, "findings": [...]}`, and optionally the
-  `observations` member of `SPEC.md` §4, which the runner does not read. Exit 0
+  `observations` member of `SPEC.md` §4, which the runner does not read, and the
+  `witnesses` member, which it compares as a set (above). Exit 0
   whenever a verdict was produced; a *failing* verdict is still exit 0. The fourth argument is the
   decision-record directory of `SPEC.md` §4 step 6; the runner passes it
   exactly when the vector carries a `decisionRecords` map, materialized with
@@ -364,7 +387,8 @@ this one:
   among them. Exit 0 whenever an answer was given; non-zero when none could be, which the
   runner reports as an implementation that could not answer, never as a refusal.
 
-Findings are compared as a **multiset**: order is not normative.
+Findings are compared as a **multiset**: order is not normative. Witnesses are
+compared as a set.
 
 ## Two implementations again
 

@@ -28,9 +28,11 @@ const witnessUsage = `usage:
   gateway witness register --config <engine.json> --trail <id> --issuer <issuer> --subject <subject>
   gateway witness retire --config <engine.json> --trail <id>
   gateway witness repair --config <engine.json>
+  gateway witness fetch --store <dir> --registry <file> --authority <label> --public-key <file> ...
 register, retire and repair act on a stopped witness; a running one registers
 and retires a trail itself, under an operator's token, at
-POST /witness/registrations and POST /witness/trails/<id>/retirement.`
+POST /witness/registrations and POST /witness/trails/<id>/retirement. fetch reads
+the witness a decision record's receipts name (gateway witness fetch, alone, says how).`
 
 // witnessCommands are the flags each subcommand takes, and whether each is
 // required.
@@ -42,6 +44,9 @@ var witnessCommands = map[string]map[string]bool{
 }
 
 func cmdWitness(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "fetch" {
+		return cmdWitnessFetch(args[1:], stdout, stderr)
+	}
 	if len(args) == 0 || witnessCommands[args[0]] == nil {
 		fmt.Fprintln(stderr, witnessUsage)
 		return 2

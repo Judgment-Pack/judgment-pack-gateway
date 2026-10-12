@@ -20,8 +20,11 @@ cd go && go build -o gateway . && ./gateway conform --impl ../verify-ts/impl
 exiting 1 for a document outside the domain and 2 for one past what it reads;
 `impl verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
 reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
-with `"observations": […]` after the findings when §4 step 8 has any, exiting 0
-whenever it reached a verdict and 2 when it could not.
+with `"observations": […]` after the findings when §4 step 8 has any, and
+`"witnesses": […]` after them when a receipt that passed names a witness (§1.2a,
+§4; ADR-0014), exiting 0 whenever it reached a verdict and 2 when it could not.
+The `witness` member was added to it by the author of the reference's change, as
+`action.policy` was: a second body of code, not a second reading of the text.
 `impl witness --trail <hex> --witness-key <file>... [--witness <file>]...
 [--witness-head <file>]` reads a chain of witness statements (§8.6) and writes
 its answer — a refusal, findings, or what the chain says — exiting 0 whenever it

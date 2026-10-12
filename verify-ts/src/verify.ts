@@ -51,7 +51,18 @@ export type Finding = ReadonlyArray<readonly [string, string | number | bigint |
 // A verdict's findings are made again each time they are read, from what
 // verification kept, so none is held for the verdict to be written; so are
 // its observations (§4 step 8), which are no part of ok.
-export type Verdict = { readonly ok: boolean; readonly findings: Iterable<Finding>; readonly observations: Iterable<Finding> };
+// Its witnesses are the distinct witnesses named by the receipts that
+// passed the ladder (§4, ADR-0014), no part of ok either.
+export type Verdict = {
+  readonly ok: boolean;
+  readonly findings: Iterable<Finding>;
+  readonly observations: Iterable<Finding>;
+  readonly witnesses: Iterable<Witness>;
+};
+
+// A witness a receipt names: the trail it is named for, where it serves,
+// and its key's identifier.
+export type Witness = { readonly trail: string; readonly origin: string; readonly keyId: string };
 
 // A receipt file as the ladder judged it, kept as no more than the rest of
 // verification reads of it, each kept string its own and none long, so no
@@ -69,13 +80,26 @@ type Judged = {
   // pack it names and its citations as a set (citesKey).
   // exact is decision.recordBytes "exact": the record is found by a line's
   // exact bytes (§4 step 6).
-  readonly action?: { readonly recordDigest: string; readonly bytes: string; readonly packDigest: string; readonly citesKey: string; readonly exact: boolean };
+  // witnessTrail is the trail an action's witness member names, which
+  // the record found is held to (§4 step 8).
+  readonly action?: {
+    readonly recordDigest: string;
+    readonly bytes: string;
+    readonly packDigest: string;
+    readonly citesKey: string;
+    readonly exact: boolean;
+    readonly witnessTrail?: string;
+  };
+  // For a version 3 receipt that passed and names a witness: the witness.
+  readonly witness?: Witness;
 };
 
 // Claims is what §4 step 8 reads of a record an action names, when it is a
 // runtime evaluation record: the pack digest it states, and its citations
 // as a set -- null when its cites is not of the shape, which matches no set.
-type Claims = { readonly packDigest: string; readonly citesKey: string | null };
+// Its trail is the record's trail member, null when it has none that is a
+// string.
+type Claims = { readonly packDigest: string; readonly citesKey: string | null; readonly trail: string | null };
 
 // citesKey names a set of citations: the SHA-256 of each distinct one's
 // three members, a line each, the lines sorted. No member holds a line
@@ -313,6 +337,11 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
       : prevValue?.type === "string" && prevValue.value.length <= 128
         ? { kind: "string", value: own(prevValue.value) }
         : { kind: "other" };
+  const named = version === "3" ? member(receipt, "witness") : undefined;
+  const witness: Witness | undefined =
+    named?.type === "object"
+      ? { trail: own(str(member(named, "trail"))!), origin: own(str(member(named, "origin"))!), keyId: own(str(member(named, "keyId"))!) }
+      : undefined;
   let action: Judged["action"];
   if (version === "3" && str(member(receipt, "kind")) === "action") {
     const act = member(receipt, "action") as ObjectValue;
@@ -323,9 +352,17 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
       packDigest: own(str(member(decision, "packDigest"))!),
       citesKey: citesKey(citations(member(act, "cites")!)!),
       exact: member(decision, "recordBytes") !== undefined,
+      ...(witness && { witnessTrail: witness.trail }),
     };
   }
-  return { file, status: "ok", callIndex, chain: { version: own(version), signature: own(signature), prev }, ...(action && { action }) };
+  return {
+    file,
+    status: "ok",
+    callIndex,
+    chain: { version: own(version), signature: own(signature), prev },
+    ...(action && { action }),
+    ...(witness && { witness }),
+  };
 }
 
 type Seal = { readonly sessionId: string; readonly finalCount: bigint };
@@ -418,7 +455,13 @@ export function verifyStore(
         throw new NoVerdict(`receipt ${session}/${file} holds more than ${maxValues} values`);
       });
       stems.set(file.slice(0, -".json".length), citedSignature(parsed));
-      judged.push(judge(parsed, sha256Hex(bytes), root, session, file, key, keyId, authority));
+      const j = judge(parsed, sha256Hex(bytes), root, session, file, key, keyId, authority);
+      // A witness named is kept beside the bound receiptCost covers: its
+      // origin may be 2048 characters.
+      if (j.witness !== undefined) {
+        budget.charge(entryCost + size(j.witness.origin) + size(j.witness.trail) + size(j.witness.keyId), "the witnesses the receipts name");
+      }
+      judged.push(j);
       testHooks.sample?.("receipt");
     }
     sessions.set(session, judged);
@@ -532,7 +575,7 @@ export function verifyStore(
       if (wanted.has(key) && !kept.has(key)) {
         const read = recordClaims(record);
         if (read !== null) {
-          budget.charge(entryCost + size(key) + size(read.packDigest) + size(read.citesKey ?? ""), "the claims of the decision records named");
+          budget.charge(entryCost + size(key) + size(read.packDigest) + size(read.citesKey ?? "") + size(read.trail ?? ""), "the claims of the decision records named");
           kept.set(key, read);
         }
       }
@@ -640,6 +683,15 @@ export function verifyStore(
             ["status", "decision-cites-mismatch"],
           ];
         }
+        // ADR-0014: a witness named on an action is named for the trail of
+        // the record it was minted on.
+        if (j.action.witnessTrail !== undefined && c.trail !== j.action.witnessTrail) {
+          yield [
+            ["sessionId", session],
+            ["callIndex", j.callIndex!],
+            ["status", "decision-trail-mismatch"],
+          ];
+        }
       }
     }
     // §4 step 4: each sealed session the store does not hold.
@@ -672,13 +724,34 @@ export function verifyStore(
       }
     }
   }
+  // The witnesses the receipts that passed name, each once (ADR-0014).
+  function* witnesses(): Generator<Witness> {
+    const seen = new Set<string>();
+    for (const judged of sessions.values()) {
+      for (const j of judged) {
+        if (j.witness === undefined) {
+          continue;
+        }
+        const key = `${j.witness.trail}\n${j.witness.origin}\n${j.witness.keyId}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          yield j.witness;
+        }
+      }
+    }
+  }
   // The verdict is ok when every finding's status is; an observation is no
-  // part of it.
+  // part of it, and neither is a witness named.
   let ok = true;
   for (const f of findings()) {
     ok &&= f.some(([name, value]) => name === "status" && value === "ok");
   }
-  return { ok, findings: { [Symbol.iterator]: findings }, observations: { [Symbol.iterator]: observations } };
+  return {
+    ok,
+    findings: { [Symbol.iterator]: findings },
+    observations: { [Symbol.iterator]: observations },
+    witnesses: { [Symbol.iterator]: witnesses },
+  };
 }
 
 // recordClaims is §4 step 8's reading of a record: its claims when it is a
@@ -702,7 +775,8 @@ function recordClaims(record: Value | null): Claims | null {
     const cited = canonical(cites) !== null ? citations(cites) : null;
     key = cited === null ? null : citesKey(cited);
   }
-  return { packDigest: own(packDigest), citesKey: key };
+  const trail = str(member(record, "trail"));
+  return { packDigest: own(packDigest), citesKey: key, trail: trail === undefined || trail.length > 64 ? null : own(trail) };
 }
 
 // hasLoneSurrogate is whether any string in the value, a member's name
@@ -799,11 +873,16 @@ export function writeVerdict(v: Verdict, write: (text: string) => void): void {
     first = false;
   }
   // The findings' close is written with the first observation, so a
-  // verdict with none is written as it always was.
+  // verdict with none is written as it always was; so are the witnesses.
   let observed = false;
   for (const o of v.observations) {
     write((observed ? "," : `],"observations":[`) + entry(o));
     observed = true;
+  }
+  let named = false;
+  for (const w of v.witnesses) {
+    write((named ? "," : `],"witnesses":[`) + JSON.stringify({ trail: w.trail, origin: w.origin, keyId: w.keyId }));
+    named = true;
   }
   write("]}\n");
 }

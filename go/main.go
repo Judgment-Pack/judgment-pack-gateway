@@ -10,6 +10,7 @@ package main
 //	gateway conform [--impl CMD] [--corpus DIR]
 //	gateway witness verify --log <file> --public-key <file> [--marks <file>]
 //	gateway witness register|retire|repair --config <engine.json> ...
+//	gateway witness fetch --store <dir> --registry <file> ... --record <file> --trail <file> --runtime <path> --out <dir>
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 //	gateway version
@@ -252,6 +253,18 @@ func loadSeed(path string) ([]byte, error) {
 // buildService is the part of cmdServe between a parsed command line and a
 // listening socket, separated so the wiring can be checked without one.
 func buildService(storeRoot string, seed []byte, authority, registryPath string, opts serveOptions) (*gatewayService, error) {
+	// A witness named for a trail (ADR-0014) is held before anything is
+	// made: never this gateway's own key, by the key's bytes, and only
+	// where receipts are of version 3.
+	if len(opts.witnessedBy) > 0 {
+		if len(seed) != ed25519.SeedSize {
+			return nil, fmt.Errorf("seed is not %d bytes", ed25519.SeedSize)
+		}
+		own := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+		if err := holdWitnessedBy(opts.witnessedBy, own, opts.receiptVersion); err != nil {
+			return nil, err
+		}
+	}
 	service, err := newGatewayService(storeRoot, seed, authority, registryPath, opts.sources)
 	if err != nil {
 		return nil, err
@@ -263,6 +276,7 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	service.receiptVersion = opts.receiptVersion
 	service.identity = opts.identity
 	service.decisionRecords = opts.decisionRecords
+	service.witnessedBy = opts.witnessedBy
 	return service, nil
 }
 
@@ -431,6 +445,9 @@ type serveOptions struct {
 	// (executor.md). Empty when serve was not started from a
 	// configuration, and every /act is then refused.
 	decisionRecords string
+	// witnessedBy is the witness named for each trail (ADR-0014), from the
+	// configuration's witnessedBy or --witnessed-by.
+	witnessedBy map[string]namedWitness
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
@@ -473,7 +490,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 		return serveOptions{}, "usage: gateway serve --config <engine.json> | gateway serve <store> <seedfile> <authority> <registry> " +
 			"[--source NAME=CMD ...] [--source-env NAME=KEY[=VALUE] ...] [--source-user NAME=USER ...] " +
 			"[--source-shape NAME=airbyte|mcp|http] [--source-max-output BYTES] [--source-timeout NAME=SECONDS ...] " +
-			"[--max-request BYTES] [--receipt-version 2|3] [--port N]", false
+			"[--max-request BYTES] [--receipt-version 2|3] [--witnessed-by TRAIL=ORIGIN,PUBLICKEY ...] [--port N]", false
 	}
 
 	opts := serveOptions{
@@ -509,6 +526,22 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 			}
 			opts.receiptVersion = rest[i+1]
 			versionSeen = true
+			i++
+		case rest[i] == "--witnessed-by":
+			if i+1 >= len(rest) {
+				return opts, "--witnessed-by requires a following TRAIL=ORIGIN,PUBLICKEY value", false
+			}
+			trail, named, err := parseWitnessedByFlag(rest[i+1])
+			if err != nil {
+				return opts, err.Error(), false
+			}
+			if opts.witnessedBy == nil {
+				opts.witnessedBy = map[string]namedWitness{}
+			}
+			if _, twice := opts.witnessedBy[trail]; twice {
+				return opts, fmt.Sprintf("--witnessed-by names trail %s twice", trail), false
+			}
+			opts.witnessedBy[trail] = named
 			i++
 		case rest[i] == "--source-env":
 			if i+1 >= len(rest) {
@@ -672,6 +705,9 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 		}
 		spec.timeout = timeout
 		opts.sources[name] = spec
+	}
+	if len(opts.witnessedBy) > 0 && opts.receiptVersion != receiptVersion3 {
+		return opts, "--witnessed-by needs --receipt-version 3: the member that names a witness is a version 3 member", false
 	}
 	for name, shape := range pendingShape {
 		spec, declared := opts.sources[name]
