@@ -1159,22 +1159,30 @@ CI:
    `GET <origin>/publickey`, no redirect followed, held to §8.4's rule and to `keyId` — otherwise
    **`witness-key-not-named`**, and nothing from that origin is read. The report says which. The
    key is never the receipt's: a receipt names a key and carries none (§5).
-4. It fetches `GET <origin>/witness/trails/{trail}/head`, then
-   `/witness/trails/{trail}/statements?from=` from index 0, or after the reader's own
-   continuation, a page at a time until a page is short, within §8.7, with no token and no
-   redirect.
+4. It fetches `GET <origin>/witness/trails/{trail}/head`, held to its form — exactly one
+   statement line of §8.2's form, ended by a newline — then `/witness/trails/{trail}/statements?from=`
+   from index 0, or after this witness's own continuation, a page at a time until a page is
+   short, each page statement lines of that form, within §8.7, with no token and no redirect.
+   The form is all it holds: a signature, a key or a trail that is wrong is the runtime's
+   finding, never the reader's.
 5. It runs the runtime's reader, `jpack audit verify --trail <file> --witness-key <key> --witness
    <statements> --witness-head <head>`, with `--witness-resume`, `--witness-save` and
-   `--require-countersigned-through` as the reader chooses. The runtime's report —
-   `countersigned`, its `witness` section, its sentences — is the reading.
+   `--require-countersigned-through` as the reader chooses, a continuation of each witness's own,
+   by its `{trail, origin, keyId}`, so that after a change of witness one witness's continuation
+   is never handed to another's reading. The runtime's report — `countersigned`, its `witness`
+   section, its sentences — is the reading.
 
-When the witness cannot be reached — no answer, a timeout, a redirect, an answer not of its
-form — the runtime reads, without a head, the statements the reader holds, under its pin, and the
-reading is historical, as far as supplied; with no pin there is no key, and with none held
-nothing is read. Either way: "The witness the receipts name could not be reached." When it
-answers `404` `unknown-trail`, which reads as a trail never submitted (§8.8), nothing is read and
-nothing credited, its reason and sentence are given as it gave them, and: "The witness the
-receipts name holds nothing for this trail." When it serves another key than the one named, the
+When the witness cannot be reached — no answer, a timeout — or answers outside its form — a
+redirect, a status or a type a read does not take, a head or a page not of the form above — the
+runtime reads, without a head, the statements the reader holds, under its pin, and the reading is
+historical, as far as supplied; with no pin there is no key, and with none held nothing is read.
+The reading says which: "The witness the receipts name could not be reached.", or that it
+answered outside its form, and how. When it refuses a read — the head or any page of
+statements, the first or a later one, answered as §6's "Answers" give a refusal — nothing is
+read and nothing credited, the runtime is not run whatever the reader holds, and the refusal's
+status, reason and sentence are given as it gave them, with the read it refused. A `404`
+`unknown-trail` reads as a trail never submitted (§8.8): "The witness the receipts name holds
+nothing for this trail." When it serves another key than the one named, the
 reading is `witness-key-not-named`; statements of its own under the key named are
 `witness-signature-invalid` to the runtime, the key named being the only one supplied. Two fixed
 sentences join every reading: "The operator's gateway named this witness for this trail under its
@@ -1185,14 +1193,16 @@ reading is as independent of the operator as the operator's choice of witness."
 `gateway witness fetch --store <dir> --registry <file> --authority <label> --public-key <file>
 [--decision-records <dir>] --record <file> --trail <file> --runtime <path> --out <dir>
 [--witness-key <file>]... [--statements <file>]... [--allow-loopback]
-[--require-countersigned-through <sequence>] [--witness-save <file>] [--witness-resume <file>]`
+[--require-countersigned-through <sequence>] [--witness-save <dir>] [--witness-resume <dir>]`
 is this reference's reader: it verifies the store as `gateway verify` does, under the operator's
 gateway key pinned out of band, refuses to read anything unless the verdict is `ok`, takes the
 record's trail from the record (a runtime evaluation record, one line), writes what it fetched and
 the key it used under `--out`, and prints `{trail, witnesses}`, each reading its `origin`, `keyId`,
-`namedAt`, `key` (`"pinned"`, `"served"` or `null`), `outcome` (`read`, `unreachable`, `refused`,
-`witness-key-not-named` or `witness-origin-refused`), whether a head was handed over, the witness's
-`refusal` as given, the sentences, and the runtime's `report` as it wrote it, with its `exit`. It
+`namedAt`, `key` (`"pinned"`, `"served"` or `null`), `outcome` (`read`, `unreachable`,
+`answer-not-of-form`, `refused`, `witness-key-not-named` or `witness-origin-refused`), whether a
+head was handed over, the witness's `refusal` as given (`at`, `status`, `reason`, `error`), the
+name of its `continuation` in the directories `--witness-resume` and `--witness-save` name, the
+sentences, and the runtime's `report` as it wrote it, with its `exit`. It
 exits `0` whenever it gave a report, as `gateway verify` does (§5a.2). The runtime is named by its
 path, version 0.28.0 or later.
 
