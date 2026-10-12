@@ -60,6 +60,8 @@ test("every store vector", () => {
     const verdict = JSON.parse(verdictText(verifyStore(root, registry, v.authority, decisionRecords, publicKey)));
     assert.equal(verdict.ok, v.expected.ok, v.name);
     assert.deepEqual(multiset(verdict.findings), multiset(v.expected.findings), v.name);
+    // the witnesses the receipts name, as a set (ADR-0014); absent is none
+    assert.deepEqual([...new Set(multiset(verdict.witnesses ?? []))], [...new Set(multiset(v.expected.witnesses ?? []))], v.name);
   }
 });
 

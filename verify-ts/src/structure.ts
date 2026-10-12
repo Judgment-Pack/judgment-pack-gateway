@@ -4,6 +4,8 @@
 // the previous receipt, whether a citation resolves, whether a digest
 // matches bytes, is each checked at its own stage.
 
+import { isIPv6 } from "node:net";
+
 import { member, negative } from "./json.ts";
 import type { ObjectValue, Value } from "./json.ts";
 import { citations, isFlatToken } from "./citations.ts";
@@ -127,6 +129,65 @@ function isAction(v: Value | undefined): boolean {
   );
 }
 
+// isWitnessOrigin is the form of a witness's origin (§1.2a, ADR-0014):
+// "https://" or "http://", a host in lowercase, ":" and a port in decimal
+// with no leading zero, from 1 to 65535, and nothing after; "http" only
+// with a loopback address written as one -- an IPv4 address of
+// 127.0.0.0/8 in dotted decimal, or [::1] -- and at most 2048 characters.
+// A host is a name of lowercase letters, digits and hyphens in labels
+// joined by single dots, or an IPv6 address of lowercase hexadecimal and
+// colons in brackets.
+export function isWitnessOrigin(s: string): boolean {
+  if (s.length > 2048) {
+    return false;
+  }
+  const scheme = /^(https?):\/\/(.*)$/s.exec(s);
+  if (scheme === null) {
+    return false;
+  }
+  const rest = scheme[2]!;
+  const colon = rest.lastIndexOf(":");
+  if (colon < 0) {
+    return false;
+  }
+  const host = rest.slice(0, colon);
+  const port = rest.slice(colon + 1);
+  if (!/^[1-9][0-9]{0,4}$/.test(port) || Number(port) > 65535) {
+    return false;
+  }
+  if (scheme[1] === "http") {
+    if (host === "[::1]") {
+      return true;
+    }
+    const octets = /^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/.exec(host);
+    return octets !== null && octets[1] === "127" && octets.slice(2).every((o) => Number(o) <= 255);
+  }
+  if (/^[a-z0-9-]+(\.[a-z0-9-]+)*$/.test(host)) {
+    return true;
+  }
+  return /^\[[0-9a-f:]+\]$/.test(host) && isIPv6(host.slice(1, -1));
+}
+
+// isWitness is the witness member's form (§1.2a): an object whose origin
+// is a witness's origin and whose keyId and trail are each 32 lowercase
+// hexadecimal characters. A member it does not name is tolerated.
+function isWitness(v: Value | undefined): boolean {
+  if (v?.type !== "object") {
+    return false;
+  }
+  const origin = member(v, "origin");
+  const keyId = member(v, "keyId");
+  const trail = member(v, "trail");
+  return (
+    isString(origin) &&
+    isWitnessOrigin(origin.value) &&
+    isString(keyId) &&
+    /^[0-9a-f]{32}$/.test(keyId.value) &&
+    isString(trail) &&
+    /^[0-9a-f]{32}$/.test(trail.value)
+  );
+}
+
 // structureV3 is order 1 for a version 3 receipt (§1.2a): every structural
 // constraint it states. A member it does not name is tolerated at any
 // depth, a signed one being the signer's own -- but for argumentsDigest,
@@ -139,6 +200,7 @@ export function structureV3(r: ObjectValue): boolean {
   const caller = member(r, "caller");
   const acquisition = member(r, "acquisition");
   const action = member(r, "action");
+  const witness = member(r, "witness");
   if (
     !isString(sessionId) ||
     !isFlatToken(sessionId.value) ||
@@ -156,6 +218,8 @@ export function structureV3(r: ObjectValue): boolean {
     !isDigest(member(r, "argumentsCommitment")) ||
     !(caller?.type === "null" || isIdentity(caller)) ||
     member(r, "argumentsDigest") !== undefined ||
+    // the witness the receipt names: optional, of its form when present
+    (witness !== undefined && !isWitness(witness)) ||
     !isString(kind)
   ) {
     return false;
