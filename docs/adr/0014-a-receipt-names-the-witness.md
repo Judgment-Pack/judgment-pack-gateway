@@ -1,5 +1,5 @@
 ---
-status: accepted, 2026-10-13
+status: accepted, 2026-10-12
 date: 2026-10-12
 deciders: maintainer
 ---
@@ -284,7 +284,7 @@ the record's `trail`. Desk ADR-0012's witness, pin and origin rule are the value
 
 ## Questions for the maintainer
 
-*Answered 2026-10-13 by the maintainer: all eleven as proposed. The proposed answers below are the decisions.*
+*Answered 2026-10-12 by the maintainer: all eleven as proposed. The proposed answers below are the decisions.*
 
 
 1. **A member on each receipt, or a binding receipt per trail?** **Proposed:** a member (A); a
