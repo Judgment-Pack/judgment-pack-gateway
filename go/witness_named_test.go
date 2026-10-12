@@ -90,10 +90,13 @@ func TestWitnessOriginForm(t *testing.T) {
 }
 
 // engineWithWitnessedBy is an engine configuration carrying witnessedBy
-// at the version given; nothing in it is resolved by the parse.
-func engineWithWitnessedBy(version, witnessedBy string) string {
-	return `{"engineVersion":"` + version + `","authority":"gateway:test","seed":"/srv/engine/gateway.seed","store":"/srv/engine/store",` +
-		`"registry":"/srv/engine/registry.jsonl","decisionRecords":"/srv/engine/decisions","listen":"127.0.0.1:8787","catalog":"/srv/engine/catalog",` +
+// at the version given; nothing in it is resolved by the parse, and every
+// path is absolute on the platform the test runs on.
+func engineWithWitnessedBy(t *testing.T, version, witnessedBy string) string {
+	t.Helper()
+	base := t.TempDir()
+	return `{"engineVersion":"` + version + `","authority":"gateway:test","seed":"` + abs(t, base, "gateway.seed") + `","store":"` + abs(t, base, "store") + `",` +
+		`"registry":"` + abs(t, base, "registry.jsonl") + `","decisionRecords":"` + abs(t, base, "decisions") + `","listen":"127.0.0.1:8787","catalog":"` + abs(t, base, "catalog") + `",` +
 		`"witnessedBy":` + witnessedBy + `,"platforms":{}}`
 }
 
@@ -105,7 +108,7 @@ func TestWitnessedByConfiguration(t *testing.T) {
 		return `{"` + namedTrail + `":{"origin":"` + origin + `","publicKey":"` + key + `"}}`
 	}
 	good := entry("https://witness.example:443", witnessKey)
-	cfg, err := parseEngineConfig([]byte(engineWithWitnessedBy("7", good)))
+	cfg, err := parseEngineConfig([]byte(engineWithWitnessedBy(t, "7", good)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,17 +118,17 @@ func TestWitnessedByConfiguration(t *testing.T) {
 	}
 	smallOrder := "0100000000000000000000000000000000000000000000000000000000000000"
 	for _, tc := range []struct{ name, text, want string }{
-		{"version 6", engineWithWitnessedBy("6", good), "witnessedBy is a version-7 member; engineVersion 6 has no witnessedBy"},
-		{"not an object", engineWithWitnessedBy("7", `[]`), "witnessedBy must be an object keyed by trail identity"},
-		{"a trail out of form", engineWithWitnessedBy("7", `{"`+strings.ToUpper(namedTrail)+`":{"origin":"https://witness.example:443","publicKey":"`+witnessKey+`"}}`), "names a trail that is not 32 lowercase hexadecimal characters"},
-		{"an entry not an object", engineWithWitnessedBy("7", `{"`+namedTrail+`":"https://witness.example:443"}`), "must be an object of origin and publicKey"},
-		{"a member missing", engineWithWitnessedBy("7", `{"`+namedTrail+`":{"origin":"https://witness.example:443"}}`), "publicKey"},
-		{"a member unknown", engineWithWitnessedBy("7", `{"`+namedTrail+`":{"origin":"https://witness.example:443","publicKey":"`+witnessKey+`","token":"x"}}`), "token"},
-		{"an origin with a path", engineWithWitnessedBy("7", entry("https://witness.example:443/w", witnessKey)), "origin is not https://<host>:<port>"},
-		{"http off loopback", engineWithWitnessedBy("7", entry("http://witness.example:80", witnessKey)), "origin is not https://<host>:<port>"},
-		{"a key in upper case", engineWithWitnessedBy("7", entry("https://witness.example:443", strings.ToUpper(witnessKeyTwo))), "publicKey is not a key of 64 lowercase hexadecimal characters"},
-		{"a key of small order", engineWithWitnessedBy("7", entry("https://witness.example:443", smallOrder)), "publicKey names a key that is of small order"},
-		{"a trail given twice", engineWithWitnessedBy("7", `{"`+namedTrail+`":{"origin":"https://a.example:443","publicKey":"`+witnessKey+`"},"`+namedTrail+`":{"origin":"https://b.example:443","publicKey":"`+witnessKey+`"}}`), "duplicate"},
+		{"version 6", engineWithWitnessedBy(t, "6", good), "witnessedBy is a version-7 member; engineVersion 6 has no witnessedBy"},
+		{"not an object", engineWithWitnessedBy(t, "7", `[]`), "witnessedBy must be an object keyed by trail identity"},
+		{"a trail out of form", engineWithWitnessedBy(t, "7", `{"`+strings.ToUpper(namedTrail)+`":{"origin":"https://witness.example:443","publicKey":"`+witnessKey+`"}}`), "names a trail that is not 32 lowercase hexadecimal characters"},
+		{"an entry not an object", engineWithWitnessedBy(t, "7", `{"`+namedTrail+`":"https://witness.example:443"}`), "must be an object of origin and publicKey"},
+		{"a member missing", engineWithWitnessedBy(t, "7", `{"`+namedTrail+`":{"origin":"https://witness.example:443"}}`), "publicKey"},
+		{"a member unknown", engineWithWitnessedBy(t, "7", `{"`+namedTrail+`":{"origin":"https://witness.example:443","publicKey":"`+witnessKey+`","token":"x"}}`), "token"},
+		{"an origin with a path", engineWithWitnessedBy(t, "7", entry("https://witness.example:443/w", witnessKey)), "origin is not https://<host>:<port>"},
+		{"http off loopback", engineWithWitnessedBy(t, "7", entry("http://witness.example:80", witnessKey)), "origin is not https://<host>:<port>"},
+		{"a key in upper case", engineWithWitnessedBy(t, "7", entry("https://witness.example:443", strings.ToUpper(witnessKeyTwo))), "publicKey is not a key of 64 lowercase hexadecimal characters"},
+		{"a key of small order", engineWithWitnessedBy(t, "7", entry("https://witness.example:443", smallOrder)), "publicKey names a key that is of small order"},
+		{"a trail given twice", engineWithWitnessedBy(t, "7", `{"`+namedTrail+`":{"origin":"https://a.example:443","publicKey":"`+witnessKey+`"},"`+namedTrail+`":{"origin":"https://b.example:443","publicKey":"`+witnessKey+`"}}`), "duplicate"},
 	} {
 		if _, err := parseEngineConfig([]byte(tc.text)); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%s: %v, want %q", tc.name, err, tc.want)
@@ -517,8 +520,8 @@ func TestReceiptsOfTrailsWithNoWitnessAreTodays(t *testing.T) {
 // platform's entry renders the file again, and the witness named for a
 // trail is in it as it was, still the configuration's.
 func TestConnectKeepsWitnessedBy(t *testing.T) {
-	text := engineWithWitnessedBy("7", `{"`+namedTrail+`":{"origin":"https://witness.example:443","publicKey":"`+witnessKey+`"}}`)
-	out, err := renderPlatformEntry([]byte(text), connectRequest{platform: "warehouse", credentials: map[string]string{"live": "/run/secrets/warehouse"}, user: "engine-warehouse"}, "postgres@sha256:"+strings.Repeat("a", 64), "")
+	text := engineWithWitnessedBy(t, "7", `{"`+namedTrail+`":{"origin":"https://witness.example:443","publicKey":"`+witnessKey+`"}}`)
+	out, err := renderPlatformEntry([]byte(text), connectRequest{platform: "warehouse", credentials: map[string]string{"live": filepath.Join(t.TempDir(), "warehouse")}, user: "engine-warehouse"}, "postgres@sha256:"+strings.Repeat("a", 64), "")
 	if err != nil {
 		t.Fatal(err)
 	}
