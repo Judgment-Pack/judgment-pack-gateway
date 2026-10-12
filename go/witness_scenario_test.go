@@ -145,6 +145,22 @@ func TestReceiptNamesTheWitnessScenario(t *testing.T) {
 	}
 	countersigned(t, "the scenario", read.Report, n, "current")
 
+	// Read in steps, as a reader continues: a continuation saved by this
+	// reading, and a reading that resumes from it fetches only what follows
+	// its last statement, here nothing, and the runtime holds the saved
+	// checkpoint to the trail again.
+	continuation := filepath.Join(t.TempDir(), "continuation")
+	if saved := sc.fetch(t, g, recordFile, true, nil, nil, "--witness-save", continuation); saved.Exit == nil || *saved.Exit != 0 {
+		t.Fatalf("a reading that saves its continuation: %+v", saved)
+	}
+	if data, err := os.ReadFile(continuation); err != nil || len(data) == 0 {
+		t.Fatalf("no continuation was saved: %v", err)
+	}
+	resumed := sc.fetch(t, g, recordFile, true, nil, nil, "--witness-resume", continuation)
+	if resumed.Outcome != fetchRead || resumed.Exit == nil || *resumed.Exit != 0 {
+		t.Fatalf("a reading resumed from its continuation: %+v\n%s", resumed, resumed.Report)
+	}
+
 	// A key W does not hold: G naming W's origin with another key. With no
 	// pin, witness-key-not-named and nothing read; with the key named
 	// pinned, W's statements under it are witness-signature-invalid.

@@ -530,7 +530,10 @@ func witnessGet(url string, limit int) (int, string, []byte, error) {
 
 // resumeIndex is the index after the last statement a continuation the
 // reader's own earlier reading saved holds, or 0 with none: the reading
-// then fetches only what follows it, as the runtime reads only that.
+// then fetches only what follows it, as the runtime reads only that. The
+// continuation is the runtime's -- {"continuationVersion": "1", "last",
+// "latestCheckpoint"}, each a statement as signed -- and this reader takes
+// last's index from it and nothing else; the runtime checks the rest.
 func resumeIndex(path string) (int64, error) {
 	if path == "" {
 		return 0, nil
@@ -539,14 +542,20 @@ func resumeIndex(path string) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("--witness-resume: %v", err)
 	}
-	last := int64(-1)
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		if st, ok := parseWitnessStatement(bytes.TrimSpace(line)); ok && st.index > last {
-			last = st.index
-		}
+	refusal := errors.New("--witness-resume: the continuation is not one this reader can read the last statement's index from")
+	v, err := parseJSON(bytes.TrimSpace(data))
+	continuation, isObject := v.(*vObject)
+	if err != nil || !isObject {
+		return 0, refusal
 	}
-	if last < 0 {
-		return 0, errors.New("--witness-resume: the continuation holds no statement this reader can read an index from")
+	lastV, _ := continuation.get("last")
+	last, isObject := lastV.(*vObject)
+	if !isObject {
+		return 0, refusal
 	}
-	return last + 1, nil
+	index, ok := witnessInteger(last, "index", 0)
+	if !ok {
+		return 0, refusal
+	}
+	return index + 1, nil
 }
