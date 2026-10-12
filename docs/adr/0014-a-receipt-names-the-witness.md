@@ -251,8 +251,8 @@ for the member appended after signing.
 | # | Repository | What | Needs |
 |---|---|---|---|
 | 1 | gateway | This record | the maintainer's answers |
-| 2 | gateway | `SPEC.md` §1.2a, §1.4, §4 step 8 and `witnesses`, §6 (`trail` on `/acquire`, `/act`, the front's `/publickey`, the online steps), §7; the vectors of determination 6 in `gateway conform` and verify-ts, with the corpus README's counts; `witnessedBy`, `--witnessed-by`, `gateway witness fetch`. One cross-vendor round: public-surface, documented-claim, conformance, security | 1 |
-| 3 | gateway | The scenario of determination 6 in CI, in row 2's release, so the member never ships unexercised | 2 |
+| 2 | gateway | `SPEC.md` §1.2a, §1.4, §4 step 8 and `witnesses`, §6 (`trail` on `/acquire`, `/act`, the front's `/publickey`, the online steps), §7; the vectors of determination 6 in `gateway conform` and verify-ts, with the corpus README's counts; `witnessedBy`, `--witnessed-by`, `gateway witness fetch`. One cross-vendor round: public-surface, documented-claim, conformance, security | 1 *Built in #242, with row 3.* |
+| 3 | gateway | The scenario of determination 6 in CI, in row 2's release, so the member never ships unexercised | 2 *Built in #242, with row 2: one pull request, so the member is never merged unexercised.* |
 | 4 | runtime | Nothing: its reader reads what row 2's fetch writes | — |
 | 5 | desk | An amendment to Desk ADR-0012 §1 and its build: the managed gateway named from `witness.json`, `trail` on its acquisitions, the comparison with an external gateway's `witnesses`, the panel's triples; pins moved to row 2's release | 2 and 3 released |
 
