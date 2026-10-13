@@ -11,7 +11,9 @@ import (
 	"strings"
 )
 
-// What connect does with the descriptors a platform's live check captured
+// What connect does with the descriptors a platform's described operation's
+// check captured -- the live operation's, or, for a binding with no live
+// operation, the write operation's (describedOperation) --
 // (docs/design/tool-descriptors.md): it reads them from the report
 // strictly, says of each allowed tool what was captured or why it fell
 // back, compares them with the snapshot the entry pinned before, and says
@@ -71,7 +73,7 @@ func readCapture(report []byte, platform, ref string, live *operation) (liveCapt
 	c.fallbacks, c.unlisted, c.dropped = lenient.Check.Fallbacks, lenient.Check.FallbacksUnlisted, lenient.Check.DescriptorsDropped
 	for _, f := range c.fallbacks {
 		if f.Allowed != nil && (*f.Allowed < 0 || *f.Allowed >= len(live.tools)) {
-			return c, errors.New("descriptors: a fallback names no tool the live operation allows")
+			return c, errors.New("descriptors: a fallback names no tool the described operation allows")
 		}
 	}
 	value, present := check.get("descriptors")
@@ -94,7 +96,7 @@ func readCapture(report []byte, platform, ref string, live *operation) (liveCapt
 	}
 	for _, name := range c.snap.names {
 		if !allowed[name] {
-			return c, errors.New("descriptors: the snapshot holds a tool the live operation does not allow")
+			return c, errors.New("descriptors: the snapshot holds a tool the described operation does not allow")
 		}
 	}
 	return c, nil
@@ -359,6 +361,9 @@ func restartLines(previous, next platformConfig) []string {
 	}
 	if previous.write != next.write {
 		signer = append(signer, "the write flag")
+	}
+	if !reflect.DeepEqual(previous.parameters, next.parameters) {
+		signer = append(signer, "the parameters")
 	}
 	switch {
 	case len(signer) > 0:

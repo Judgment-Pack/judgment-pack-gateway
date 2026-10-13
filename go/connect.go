@@ -33,8 +33,11 @@ type connectRequest struct {
 	user        string
 	endpoint    string
 	environment []string // KEY=VALUE
-	write       bool
-	replace     bool
+	// parameters fill the binding's placeholders (--parameter NAME=VALUE,
+	// engineVersion 8); none given on --replace keeps the entry's own.
+	parameters []string
+	write      bool
+	replace    bool
 	// noDescriptors has the live check capture nothing, for a deployment
 	// whose descriptors are confidential beyond what screening finds
 	// (docs/design/tool-descriptors.md): the entry is written without a pin.
@@ -69,7 +72,7 @@ const (
 	checkMaxOutput = 1 << 20
 )
 
-const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <operation>=<path>... --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace] [--no-descriptors]\n       gateway connect --config <engine.json> --preview-descriptors <platform>"
+const connectUsage = "usage: gateway connect --config <engine.json> <platform> --binding <name> --credentials-file <operation>=<path>... --user <name> [--endpoint HOST] [--environment KEY=VALUE]... [--parameter NAME=VALUE]... [--write] [--replace] [--no-descriptors]\n       gateway connect --config <engine.json> --preview-descriptors <platform>"
 
 // cmdConnect writes a platform entry into the engine's configuration:
 // after holding the configuration it would produce to every refusal
@@ -183,6 +186,7 @@ func parseConnectArgs(args []string) (connectRequest, string, bool) {
 	fs.StringVar(&req.user, "user", "", "")
 	fs.StringVar(&req.endpoint, "endpoint", "", "")
 	fs.Func("environment", "", func(s string) error { req.environment = append(req.environment, s); return nil })
+	fs.Func("parameter", "", func(s string) error { req.parameters = append(req.parameters, s); return nil })
 	fs.BoolVar(&req.write, "write", false, "")
 	fs.BoolVar(&req.replace, "replace", false, "")
 	fs.BoolVar(&req.noDescriptors, "no-descriptors", false, "")
@@ -208,7 +212,7 @@ func parseConnectArgs(args []string) (connectRequest, string, bool) {
 	// A preview reads the configuration and names the platform with the
 	// flag; it takes nothing that would be written.
 	if req.preview != "" {
-		if req.config == "" || req.platform != "" || req.binding != "" || len(req.credentials) > 0 || req.user != "" || req.replace || req.write || req.noDescriptors {
+		if req.config == "" || req.platform != "" || req.binding != "" || len(req.credentials) > 0 || req.user != "" || req.replace || req.write || req.noDescriptors || len(req.parameters) > 0 {
 			return req, connectUsage, false
 		}
 		return req, "", true
@@ -276,6 +280,16 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if err != nil {
 		return out, err
 	}
+	// The parameters the binding's templates are filled with: those given,
+	// or, on --replace with none given, the entry's own, which connect
+	// keeps as it keeps a decision policy. The binding judged and checked
+	// is the resolved one, as serve resolves it.
+	if len(entry.parameters) == 0 && previous != nil {
+		entry.parameters = previous.parameters
+	}
+	if b, err = resolveParameters(b, entry.parameters, ref); err != nil {
+		return out, fmt.Errorf("platform %s: %v", req.platform, err)
+	}
 	// A decision policy is the operator's own writing, and connect has no
 	// flag for it: the entry replaced keeps it (ADR-0011), and a
 	// replacement it would no longer fit -- no write, or a write binding
@@ -299,21 +313,29 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		written.credentials[op] = path
 	}
 	written.environment = append([]string(nil), entry.environment...)
+	written.parameters = entry.parameters
 	// The configuration as it would be, held to every refusal serve
 	// applies, and to the size serve reads, before anything is asked.
 	candidate := cfg
 	candidate.platforms = append(append([]platformConfig(nil), cfg.platforms...), entry)
 	sort.Slice(candidate.platforms, func(i, j int) bool { return candidate.platforms[i].name < candidate.platforms[j].name })
 	bindings[req.platform] = b
-	// The live check captures descriptors unless the operator said not
-	// to; the size is judged with a pin in the entry, which is what it
-	// holds if anything is captured.
-	capturing := b.live != nil && !req.noDescriptors
+	// The described operation's check captures descriptors unless the
+	// operator said not to: the live operation's, or, for a binding with no
+	// live operation, the write operation's of a platform that allows
+	// writes (describedOperation). The size is judged with a pin in the
+	// entry, which is what it holds if anything is captured.
+	described := describedOperation(b, entry.write)
+	capturing := described != nil && !req.noDescriptors
+	captureSource := req.platform + "/live"
+	if b.live == nil {
+		captureSource = req.platform + "/write"
+	}
 	placeholder := ""
 	if capturing {
 		placeholder = "sha256:" + strings.Repeat("0", 64)
 	}
-	text, err := renderPlatformEntry(data, req, ref, placeholder)
+	text, err := renderPlatformEntry(data, req, ref, placeholder, entry.parameters)
 	if err != nil {
 		return out, err
 	}
@@ -362,14 +384,14 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		}
 	}
 	sort.Strings(names)
-	live := req.platform + "/live"
 	var captured liveCapture
 	for _, name := range names {
 		spec := sources[name]
-		if name == live && capturing {
-			// Only the live operation's check captures: a write
-			// operation's may run under other credentials, against
-			// another server. Each flag and its value as one word.
+		if name == captureSource && capturing {
+			// Only the described operation's check captures: where there is
+			// a live operation, a write operation's check may run under
+			// other credentials, against another server. Each flag and its
+			// value as one word.
 			spec.check = append(append([]string(nil), spec.check...), "--descriptors-platform="+req.platform, "--descriptors-binding="+ref)
 		}
 		report, err := check(ctx, spec)
@@ -381,11 +403,11 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 			return out, fmt.Errorf("%s: %v", name, err)
 		}
 		out.answers = append(out.answers, name+": "+answer)
-		if name == live && capturing {
-			if captured, err = readCapture(report, req.platform, ref, b.live); err != nil {
+		if name == captureSource && capturing {
+			if captured, err = readCapture(report, req.platform, ref, described); err != nil {
 				return out, fmt.Errorf("%s: %v", name, err)
 			}
-			for _, line := range captureLines(captured, b.live) {
+			for _, line := range captureLines(captured, described) {
 				out.answers = append(out.answers, name+": "+line)
 			}
 		}
@@ -400,7 +422,7 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		}
 		defer held.Close()
 	}
-	if text, err = renderPlatformEntry(data, req, ref, pin); err != nil {
+	if text, err = renderPlatformEntry(data, req, ref, pin, entry.parameters); err != nil {
 		return out, err
 	}
 	if _, err := parseEngineConfig(text); err != nil {
@@ -411,17 +433,21 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	if previous != nil && previous.descriptors != "" && capturing {
 		prior, err := file.readPinnedSnapshot(previous.descriptors)
 		if err != nil {
-			out.answers = append(out.answers, live+": descriptors: the previous snapshot does not verify against its pin, so nothing is compared: "+err.Error())
+			out.answers = append(out.answers, captureSource+": descriptors: the previous snapshot does not verify against its pin, so nothing is compared: "+err.Error())
 		} else {
 			var allowedBefore map[string]bool
-			if before, err := loadBinding(cfg.catalog, previous.binding); err == nil && before.live != nil {
-				allowedBefore = map[string]bool{}
-				for _, tool := range before.live.tools {
-					allowedBefore[tool] = true
+			if before, err := loadBinding(cfg.catalog, previous.binding); err == nil {
+				if before, err = resolveParameters(before, previous.parameters, previous.binding); err == nil {
+					if op := describedOperation(before, previous.write); op != nil {
+						allowedBefore = map[string]bool{}
+						for _, tool := range op.tools {
+							allowedBefore[tool] = true
+						}
+					}
 				}
 			}
-			for _, line := range compareLines(&prior, allowedBefore, captured, b.live) {
-				out.answers = append(out.answers, live+": "+line)
+			for _, line := range compareLines(&prior, allowedBefore, captured, described) {
+				out.answers = append(out.answers, captureSource+": "+line)
 			}
 		}
 	}
@@ -483,7 +509,7 @@ func newPlatformEntry(req connectRequest, ref string, b binding, account func(na
 	// Everything written into the file is written as JSON text, which
 	// carries only valid UTF-8: a byte that is not would come back as a
 	// different path, or name.
-	for _, s := range append([]string{req.platform, req.binding, req.user, req.endpoint}, req.environment...) {
+	for _, s := range append(append([]string{req.platform, req.binding, req.user, req.endpoint}, req.environment...), req.parameters...) {
 		if !utf8.ValidString(s) {
 			return p, errors.New("a request value is not valid UTF-8; it could not be written as given")
 		}
@@ -518,6 +544,22 @@ func newPlatformEntry(req connectRequest, ref string, b binding, account func(na
 		}
 		seen[key] = true
 		p.environment = append(p.environment, key+"="+value)
+	}
+	for _, pair := range req.parameters {
+		name, value, ok := strings.Cut(pair, "=")
+		if !ok {
+			return p, fmt.Errorf("parameter %q is not NAME=VALUE", requestText(pair))
+		}
+		if _, twice := p.parameters[name]; twice {
+			return p, fmt.Errorf("parameter %s is given twice", requestText(name))
+		}
+		if err := parameterProblem(name, value); err != nil {
+			return p, err
+		}
+		if p.parameters == nil {
+			p.parameters = map[string]string{}
+		}
+		p.parameters[name] = value
 	}
 	uid, home, err := account(req.user)
 	if err != nil {
@@ -664,10 +706,13 @@ func describeCheck(shape string, report []byte) (string, error) {
 //
 // An entry that pins a snapshot is a version-3 member, so a file of an
 // earlier version is raised to version 3 exactly when the entry carries a
-// pin; otherwise its version stays as it was found, and a later one is
-// never lowered. The entry replaced keeps its decisionPolicy as written,
-// which connect has no flag for (ADR-0011).
-func renderPlatformEntry(data []byte, req connectRequest, ref, pin string) ([]byte, error) {
+// pin, and parameters are a version-8 member, so it is raised to version 8
+// exactly when the entry carries them; otherwise its version stays as it
+// was found, and a later one is never lowered. The entry replaced keeps its
+// decisionPolicy as written, which connect has no flag for (ADR-0011);
+// parameters are the ones connect resolved the binding with, the entry's
+// own on --replace when none were given.
+func renderPlatformEntry(data []byte, req connectRequest, ref, pin string, parameters map[string]string) ([]byte, error) {
 	v, err := parseJSON(data)
 	if err != nil {
 		return nil, fmt.Errorf("engine configuration: %v", err)
@@ -709,6 +754,21 @@ func renderPlatformEntry(data []byte, req connectRequest, ref, pin string) ([]by
 	}
 	if req.write {
 		entry.set("write", vBool(true))
+	}
+	if len(parameters) > 0 {
+		names := make([]string, 0, len(parameters))
+		for name := range parameters {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		given := newObject()
+		for _, name := range names {
+			given.set(name, vString(parameters[name]))
+		}
+		entry.set("parameters", given)
+		if version, _ := memberString(obj, "engineVersion"); !versionAtLeast(version, "8") {
+			obj.set("engineVersion", vString("8"))
+		}
 	}
 	if pin != "" {
 		entry.set("descriptors", vString(pin))

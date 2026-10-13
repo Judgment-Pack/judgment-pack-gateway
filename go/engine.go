@@ -32,14 +32,17 @@ import (
 // version 5 a decision policy's optional `requireSignedRecord`
 // (docs/adr/0012-hold-a-write-to-a-signed-record.md), version 6 the
 // optional `witness` (docs/adr/0013-checkpoint-witness.md), and version 7
-// the optional `witnessedBy` (docs/adr/0014-a-receipt-names-the-witness.md): a file of an earlier
-// version without the member still loads, and one with it is refused by
-// name, as any member a version does not have. connect raises a file to
-// version 3 exactly when the entry it writes carries a pin, and otherwise
-// leaves the version as it found it; it never lowers one.
-const engineVersion = "7"
+// the optional `witnessedBy` (docs/adr/0014-a-receipt-names-the-witness.md),
+// and version 8 a platform's optional `parameters`, which fill a remote
+// binding's templates (binding_template.go; ADR-0015, amended 2026-10-13):
+// a file of an earlier version without the member still loads, and one with
+// it is refused by name, as any member a version does not have. connect raises a file to
+// version 3 exactly when the entry it writes carries a pin, and to version 8
+// exactly when it carries parameters, and otherwise leaves the version as it
+// found it; it never lowers one.
+const engineVersion = "8"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -131,6 +134,10 @@ type platformConfig struct {
 	// policies are the decision policies the operator holds write tools
 	// to (ADR-0011), by tool; nil when the platform carries none.
 	policies map[string]*decisionPolicy
+	// parameters fill the placeholders of the platform's remote binding
+	// (engineVersion 8, binding_template.go): a tenant's part of a URL and
+	// of a tool's name, never a secret; nil when the platform gives none.
+	parameters map[string]string
 }
 
 // identitySpec is the identity member as written: the token issuer, the
@@ -237,7 +244,7 @@ var engineMembers = map[string]bool{
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
 	"endpoint": false, "environment": false, "write": false, "descriptors": false,
-	"decisionPolicy": false,
+	"decisionPolicy": false, "parameters": false,
 }
 
 // parseEngineConfig holds the file to the shape the design note states.
@@ -256,7 +263,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", "7", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
@@ -485,9 +492,40 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, err
 			}
 		}
+		if parametersValue, present := p.get("parameters"); present {
+			if !versionAtLeast(version, "8") {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: parameters is a version-8 member; engineVersion %s has no parameters", name, version)
+			}
+			if pc.parameters, err = parsePlatformParameters(parametersValue); err != nil {
+				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: %v", name, err)
+			}
+		}
 		cfg.platforms = append(cfg.platforms, pc)
 	}
 	return cfg, nil
+}
+
+// parsePlatformParameters reads a platform's parameters: an object of at
+// least one string value, each name and value of its form
+// (parameterProblem). Whether each fills a placeholder of the platform's
+// binding is judged where the binding is read (resolveParameters).
+func parsePlatformParameters(v value) (map[string]string, error) {
+	obj, ok := v.(*vObject)
+	if !ok || len(obj.names) == 0 {
+		return nil, errors.New("parameters, when present, is an object of at least one string value")
+	}
+	parameters := map[string]string{}
+	for _, name := range obj.names {
+		value, ok := memberString(obj, name)
+		if !ok {
+			return nil, fmt.Errorf("parameters.%s must be a string", requestText(name))
+		}
+		if err := parameterProblem(name, value); err != nil {
+			return nil, err
+		}
+		parameters[name] = value
+	}
+	return parameters, nil
 }
 
 // parseMCPConfig holds the `mcp` member to the note's shape: a loopback
@@ -773,8 +811,10 @@ func parseBinding(data []byte) (binding, error) {
 			return binding{}, fmt.Errorf("unknown operation %q", name)
 		}
 	}
-	if b.history == nil && b.live == nil {
-		return binding{}, errors.New("no history or live operation")
+	// A binding may state a write operation alone: a platform whose reads
+	// are a connection's, and whose writes go through the executor.
+	if b.history == nil && b.live == nil && b.write == nil {
+		return binding{}, errors.New("no operation")
 	}
 	return b, nil
 }
@@ -844,6 +884,14 @@ func parseOperation(op *vObject, name string) (operation, error) {
 			if !ok || s == "" || strings.Contains(string(s), ",") {
 				return o, fmt.Errorf("operation %s: tools must be non-empty names without commas", name)
 			}
+			// A remote server's tool may name a placeholder its platform's
+			// parameters fill (binding_template.go); an image's tools are
+			// names as written.
+			if o.url != "" {
+				if _, err := templatePlaceholders(string(s)); err != nil {
+					return o, fmt.Errorf("operation %s: a tool %v", name, err)
+				}
+			}
 			o.tools = append(o.tools, string(s))
 		}
 		// The probe is the tool a check calls once to establish that the
@@ -910,10 +958,23 @@ func parseRemoteServer(server *vObject, name string, o *operation) error {
 		return err
 	}
 	var err error
-	if o.url, err = requireString(server, "url"); err != nil || !isRemoteEndpoint(o.url) {
+	if o.url, err = requireString(server, "url"); err != nil {
 		return fmt.Errorf("operation %s: server.url must be https, or http at a loopback address written as one, with no user, query or fragment", name)
 	}
-	if err := urlParses(o.url); err != nil {
+	// A URL may be a template whose placeholders a platform's parameters
+	// fill (binding_template.go): held here to the template's rules, and,
+	// once resolved, to the endpoint form, before the engine starts.
+	placeholders, err := templatePlaceholders(o.url)
+	if err != nil {
+		return fmt.Errorf("operation %s: server.url %v", name, err)
+	}
+	if len(placeholders) > 0 {
+		if err := urlTemplateProblem(o.url); err != nil {
+			return fmt.Errorf("operation %s: server.url, a template, %v", name, err)
+		}
+	} else if !isRemoteEndpoint(o.url) {
+		return fmt.Errorf("operation %s: server.url must be https, or http at a loopback address written as one, with no user, query or fragment", name)
+	} else if err := urlParses(o.url); err != nil {
 		return fmt.Errorf("operation %s: server.url %v", name, err)
 	}
 	if o.bearer, err = requireString(server, "bearer"); err != nil || o.bearer == "" || strings.ContainsAny(o.bearer, "\n\x00") {
@@ -1847,13 +1908,21 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
+		// The binding's templates, filled with the platform's parameters:
+		// what every source is derived from, and what a policy's tool and
+		// a receipt's endpoint name, is the resolved binding.
+		if b, err = resolveParameters(b, p.parameters, p.binding); err != nil {
+			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
 		if err := credentialsMatch(p.credentials, b, p.write); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
-		// A snapshot is of the live operation's tools; a binding without
-		// one has none to pin.
-		if p.descriptors != "" && b.live == nil {
-			return nil, fmt.Errorf("platform %s: descriptors pins a snapshot of a live MCP operation, and binding %s has none", p.name, p.binding)
+		// A snapshot is of the described operation's tools -- the live
+		// operation's, or, for a binding with none, the write operation's
+		// of a platform that allows writes; a binding with neither has none
+		// to pin.
+		if p.descriptors != "" && describedOperation(b, p.write) == nil {
+			return nil, fmt.Errorf("platform %s: descriptors pins a snapshot of a live MCP operation, or of the write operation of a binding with no live one, and binding %s offers the platform neither", p.name, p.binding)
 		}
 		if err := policiesMatch(*p, b); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
@@ -1861,6 +1930,20 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		bindings[p.name] = b
 	}
 	return bindings, nil
+}
+
+// describedOperation is the operation whose check captures a platform's
+// tool descriptors (docs/design/tool-descriptors.md): the live operation;
+// or, for a binding with no live operation, its write operation, when the
+// platform allows writes; nil when there is neither.
+func describedOperation(b binding, write bool) *operation {
+	if b.live != nil {
+		return b.live
+	}
+	if b.write != nil && write {
+		return b.write
+	}
+	return nil
 }
 
 // policiesMatch holds a platform's decision policies to its binding: each

@@ -563,4 +563,15 @@ func TestActNarrowsTheExecutorToTheRequestedTool(t *testing.T) {
 	if strings.Join(spec.argv, " ") != "adapter-mcp "+image+" --tools=update,delete --endpoint=h -- --tools=all --verbose" || len(spec.tools) != 2 {
 		t.Fatalf("the binding's own source is untouched: %+v", spec)
 	}
+	// A remote write-back binding's executor (issue #248): the resolved URL,
+	// the bearer member and --error-results stay; the tools are the one
+	// asked for, whatever else the binding names.
+	url := "--url=https://mcp.dev.azure.com/example-org"
+	remote := sourceSpec{argv: []string{"adapter-mcp", url, "--credentials=/run/secrets/boards-write", "--bearer=token", "--tools=wit_work_item_write,wit_work_item_comment_write,wit_work_item_link_write", "--error-results"},
+		tools: []string{"wit_work_item_write", "wit_work_item_comment_write", "wit_work_item_link_write"}, shape: "mcp", endpoint: "https://mcp.dev.azure.com/example-org"}
+	narrowed = narrowTools(remote, "wit_work_item_comment_write")
+	if strings.Join(narrowed.argv, " ") != "adapter-mcp "+url+" --credentials=/run/secrets/boards-write --bearer=token --tools=wit_work_item_comment_write --error-results" ||
+		strings.Join(narrowed.tools, ",") != "wit_work_item_comment_write" || narrowed.endpoint != remote.endpoint {
+		t.Fatalf("the remote executor narrowed: %+v", narrowed)
+	}
 }

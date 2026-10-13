@@ -38,6 +38,49 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 				t.Fatalf("catalog/%s: %+v is not a versioned, pinned, licensed image", e.Name(), op)
 			}
 		}
+		// No remote write is sent under the read-only header a server
+		// honours: a write needs it absent, and a binding that sent it would
+		// ask the server to refuse every write it is pointed at.
+		if b.write != nil {
+			for _, h := range b.write.headers {
+				if header, _, _ := strings.Cut(h, "="); strings.EqualFold(header, "X-MCP-Readonly") {
+					t.Fatalf("catalog/%s: the write operation sends %s", e.Name(), h)
+				}
+			}
+		}
+		for _, op := range []*operation{b.live, b.write} {
+			if op != nil && op.url != "" && (op.licence == "" || op.bearer == "") {
+				t.Fatalf("catalog/%s: a remote operation states its licence and the credentials member it sends: %+v", e.Name(), op)
+			}
+		}
+		switch name {
+		case "azure-devops":
+			// The organization's remote MCP server, for writes alone: the
+			// three work-item write tools the server lists (catalog/README.md),
+			// no read tool, no read-only header; reads are the connection's.
+			if b.history != nil || b.live != nil || b.write == nil || b.write.url != "https://mcp.dev.azure.com/{organization}" || b.write.bearer != "token" || len(b.write.headers) != 0 ||
+				strings.Join(b.write.tools, ",") != "wit_work_item_write,wit_work_item_comment_write,wit_work_item_link_write" {
+				t.Fatalf("catalog/azure-devops.json: the remote server's work-item write tools: %+v", b.write)
+			}
+		case "databricks":
+			// A Unity Catalog function's managed MCP server, for writes alone:
+			// its one tool, named for the function; no SQL server, since a
+			// decision could then authorize an arbitrary statement.
+			if b.history != nil || b.live != nil || b.write == nil || b.write.url != "https://{workspace}/api/2.0/mcp/functions/{catalog}/{schema}/{function}" || b.write.bearer != "token" || len(b.write.headers) != 0 ||
+				strings.Join(b.write.tools, ",") != "{catalog}__{schema}__{function}" {
+				t.Fatalf("catalog/databricks.json: one Unity Catalog function's tool: %+v", b.write)
+			}
+		}
+		for _, op := range []*operation{b.live, b.write} {
+			if op == nil || op.url == "" {
+				continue
+			}
+			for _, tool := range op.tools {
+				if strings.Contains(strings.ToLower(tool), "sql") || strings.Contains(strings.ToLower(op.url), "/mcp/sql") {
+					t.Fatalf("catalog/%s: %s names raw SQL, which no decision policy can bind argument by argument", e.Name(), tool)
+				}
+			}
+		}
 		if name == "postgres" {
 			// Live through DBHub, which connects as it starts (so no probe) and answers SQL as JSON text; the
 			// operator's read-only role, not the server, holds the live operation to reading (catalog/README.md).
@@ -53,5 +96,55 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("the catalog ships no binding")
+	}
+}
+
+// The write-back bindings, pinned by the digests of their files as they
+// ship and filled with example parameters, derive the executor a
+// configuration would run: the resolved URL, the bearer member, the write
+// tools and --error-results, and no template; a template with a placeholder
+// of another form is refused.
+func TestTheWriteBackBindingsResolveAsShipped(t *testing.T) {
+	catalog := filepath.Join("..", "catalog")
+	for _, tc := range []struct {
+		name, parameters, url, tools string
+	}{
+		{"azure-devops", `{"organization":"example-org"}`, "https://mcp.dev.azure.com/example-org", "wit_work_item_write,wit_work_item_comment_write,wit_work_item_link_write"},
+		{"databricks", `{"workspace":"dbc-example.cloud.databricks.com","catalog":"main","schema":"decisions","function":"record_approval"}`, "https://dbc-example.cloud.databricks.com/api/2.0/mcp/functions/main/decisions/record_approval", "main__decisions__record_approval"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(catalog, tc.name+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := tc.name + "@" + digestOf(string(data))
+			b, err := loadBinding(catalog, ref)
+			if err != nil {
+				t.Fatalf("the shipped file loads under its digest %s: %v", ref, err)
+			}
+			v, err := parseJSON([]byte(tc.parameters))
+			if err != nil {
+				t.Fatal(err)
+			}
+			parameters, err := parsePlatformParameters(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if b, err = resolveParameters(b, parameters, ref); err != nil {
+				t.Fatal(err)
+			}
+			cfg := engineConfig{runtime: "docker", platforms: []platformConfig{{name: "p", credentials: map[string]string{"write": "/run/secrets/p-write"}, user: "engine-p", home: "/home/engine-p", write: true}}}
+			write := deriveSources(cfg, map[string]binding{"p": b})["p/write"]
+			want := "adapter-mcp --url=" + tc.url + " --credentials=/run/secrets/p-write --bearer=token --tools=" + tc.tools + " --error-results"
+			if strings.Join(write.argv, " ") != want || write.endpoint != tc.url || strings.Join(write.tools, ",") != tc.tools {
+				t.Fatalf("%s: derived %q (endpoint %q), want %q", ref, write.argv, write.endpoint, want)
+			}
+			t.Logf("%s resolves to %s", ref, write.endpoint)
+			// A placeholder of another form in the shipped template is refused.
+			bad := strings.Replace(string(data), "/{", "/{X", 1)
+			if _, err := parseBinding([]byte(bad)); err == nil || !strings.Contains(err.Error(), "which is not a parameter's name") {
+				t.Fatalf("a disallowed placeholder: %v", err)
+			}
+		})
 	}
 }
