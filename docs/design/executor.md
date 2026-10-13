@@ -234,7 +234,12 @@ A target that refuses the write is a response like any other — the receipt rec
 refusal bytes: the executor is started with `--error-results`, under which `adapter-mcp`
 envelopes a tool result that reports an error as the result of the call, where for a read the
 same result is a failed acquisition — and an executor that cannot reach the target mints
-nothing.
+nothing. Only a tool result the adapter accepts is receipted, one that reports an error
+(`isError: true`) included. An answer that fails the protocol after the call was sent — an HTTP
+error status, a JSON-RPC error in place of a result, a result the adapter refuses, such as one
+that repeats the credential — mints nothing either, although the target answered and may have
+applied the write: the session's count stands, and the requester learns of it as a failed action,
+not from a receipt.
 
 ## The write-back platforms
 
@@ -254,8 +259,10 @@ unless it cites a verifying judgment, and, for a tool held to a policy, unless t
 (`action.decision`, `action.cites`, and, for a tool held to a policy, `action.policy`, the policy
 whose checks held at that moment); what was sent (`argumentsCommitment` and `action.request`,
 salted commitments over the arguments and the canonical request); to which endpoint, the resolved
-URL, and which tool (`action.tool`); and what the target answered, its refusal included, by
-`resultDigest`. The credential is named by the configuration and not by the receipt: the
+URL, and which tool (`action.tool`); and what the target answered, by `resultDigest`: a tool
+result the adapter accepted, a refusal reported as one (`isError: true`) included. An HTTP error
+status or a JSON-RPC error answered after the call was sent is no such result and mints nothing,
+though the target may have applied the write. The credential is named by the configuration and not by the receipt: the
 operation's credentials file and the member the binding sends, `token`, under a binding whose
 digest the configuration pins. The receipt carries no TLS identity for a write
 ([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md), question 2): the

@@ -510,7 +510,9 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	var visit func(listedTool) error
 	if cfg.Descriptors != nil {
 		capturedAt := now().UTC().Truncate(time.Second).Format(stampLayout)
-		if capture, err = newCapturer(*cfg.Descriptors, initialized, secrets, capturedAt); err != nil {
+		// A remote server's snapshot names the URL it was reached at; a
+		// server this adapter runs names none (cfg.URL is "").
+		if capture, err = newCapturer(*cfg.Descriptors, initialized, secrets, capturedAt, cfg.URL); err != nil {
 			return finish(nil, err)
 		}
 		visit = func(tool listedTool) error {

@@ -398,7 +398,7 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		if err != nil {
 			return out, fmt.Errorf("%s: %v", name, err)
 		}
-		answer, err := describeCheck(spec.shape, report)
+		answer, err := describeCheck(spec.shape, report, remoteURL(spec.argv))
 		if err != nil {
 			return out, fmt.Errorf("%s: %v", name, err)
 		}
@@ -640,9 +640,26 @@ func failedCheck(report []byte) (string, bool) {
 	return check.Message, true
 }
 
+// remoteURL is the URL an mcp source's command line gives a remote server,
+// --url=, as the engine resolved it; "" for a server the adapter runs.
+func remoteURL(argv []string) string {
+	for _, arg := range argv {
+		if arg == "--" {
+			break
+		}
+		if url, ok := strings.CutPrefix(arg, "--url="); ok {
+			return url
+		}
+	}
+	return ""
+}
+
 // describeCheck reads an adapter's report and says what the platform
-// answered, in one line for the operator.
-func describeCheck(shape string, report []byte) (string, error) {
+// answered, in one line for the operator. url is the remote server's URL
+// the source was given, "" for a server the adapter runs: the endpoint the
+// report names must be that one, and the line names it, so the operator
+// reads which tenant's server answered.
+func describeCheck(shape string, report []byte, url string) (string, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(report, &top); err != nil || len(top) != 1 || len(top["check"]) == 0 {
 		return "", errors.New("the adapter's report is not a check report")
@@ -660,6 +677,7 @@ func describeCheck(shape string, report []byte) (string, error) {
 			Version string `json:"version"`
 		} `json:"server"`
 		ProtocolVersion string   `json:"protocolVersion"`
+		Endpoint        string   `json:"endpoint"`
 		Tools           []string `json:"tools"`
 		Probe           *struct {
 			Tool     string `json:"tool"`
@@ -684,11 +702,21 @@ func describeCheck(shape string, report []byte) (string, error) {
 		if check.ProtocolVersion == "" {
 			return "", errors.New("the adapter's report names no protocol version")
 		}
+		if check.Endpoint != url {
+			if url == "" {
+				return "", fmt.Errorf("the adapter reports the endpoint %q for a server it runs, which has none", requestText(check.Endpoint))
+			}
+			return "", fmt.Errorf("the adapter reports the endpoint %q, and the source was given %q; nothing it captured is kept", requestText(check.Endpoint), requestText(url))
+		}
 		server := strings.TrimSpace(check.Server.Name + " " + check.Server.Version)
 		if server == "" {
 			server = "an unnamed server"
 		}
-		line := who + ": server " + server + ", protocol " + check.ProtocolVersion + ", tools " + strings.Join(check.Tools, ", ")
+		line := who + ": "
+		if url != "" {
+			line += "endpoint " + url + ", "
+		}
+		line += "server " + server + ", protocol " + check.ProtocolVersion + ", tools " + strings.Join(check.Tools, ", ")
 		if check.Probe != nil {
 			if !check.Probe.Answered {
 				return "", fmt.Errorf("the probe %q did not answer", check.Probe.Tool)

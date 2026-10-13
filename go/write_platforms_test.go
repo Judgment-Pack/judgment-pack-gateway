@@ -29,16 +29,19 @@ import (
 // own process: it issues a session and holds every later request to it,
 // lists the tools it is given, and answers a call by echoing what it was
 // sent -- or, when refuse is set, once, as a target refusing the write, an
-// error result -- and refuses every write it is sent under the read-only
-// header, as the Azure DevOps server's read-only mode would. It records
+// error result; or, while failure is set, as a failure of the protocol
+// after the call: an HTTP error status, a JSON-RPC error, or a result that
+// repeats the bearer -- and refuses every write it is sent under the
+// read-only header, as the Azure DevOps server's read-only mode would. It records
 // every request: the verb, the path, the JSON-RPC method, the read-only
 // header and the bearer.
 type writeStandIn struct {
 	*httptest.Server
-	tools  string
-	mu     sync.Mutex
-	seen   []standInRequest
-	refuse bool
+	tools   string
+	mu      sync.Mutex
+	seen    []standInRequest
+	refuse  bool
+	failure string // "http", "rpc" or "echo"; "" answers the call
 }
 
 type standInRequest struct {
@@ -63,6 +66,7 @@ func newWriteStandIn(t *testing.T, tools string) *writeStandIn {
 		if refuse {
 			s.refuse = false
 		}
+		failure := s.failure
 		s.mu.Unlock()
 		if m.Method != "initialize" && r.Header.Get("Mcp-Session-Id") != "write-session" {
 			http.Error(w, "unknown session", http.StatusNotFound)
@@ -74,6 +78,18 @@ func newWriteStandIn(t *testing.T, tools string) *writeStandIn {
 		}
 		if len(m.ID) == 0 {
 			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if m.Method == "tools/call" && failure != "" {
+			w.Header().Set("Content-Type", "application/json")
+			switch failure {
+			case "http":
+				http.Error(w, "write-secret-token", http.StatusServiceUnavailable)
+			case "rpc":
+				io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(m.ID)+`,"error":{"code":-32000,"message":"failed"}}`)
+			case "echo":
+				io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(m.ID)+`,"result":{"content":[{"type":"text","text":"write-secret-token"}]}}`)
+			}
 			return
 		}
 		var result string
@@ -312,6 +328,8 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 				name, body, step string
 			}
 			refusals := []refusal{
+				{"a tool the binding does not name", strings.Replace(request(wp.arguments, digest(good), packA, signature), `"tool":"`+wp.tool+`"`, `"tool":"unlisted"`, 1), "tool"},
+				{"no judgment cited", strings.Replace(request(wp.arguments, digest(good), packA, signature), `"cites":[{"sessionId":"wb","callIndex":0,"signature":"`+signature+`"}]`, `"cites":[]`, 1), "cites"},
 				{"a citation the store does not hold", request(wp.arguments, digest(good), packA, strings.Repeat("e", 128)), "cites"},
 				{"a record the directory does not hold", request(wp.arguments, "sha256:"+strings.Repeat("0", 64), packA, signature), "decision"},
 				{"a record no trusted key signed", request(wp.arguments, digest(unsigned), packA, signature), "policy-signed"},
@@ -374,6 +392,38 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 			if result := refused["result"].(map[string]any); result["isError"] != true || !strings.Contains(string(mustJSON(t, result)), "the revision has changed") {
 				t.Fatalf("the receipt's result is the target's refusal bytes: %v", result)
 			}
+			// A failure of the protocol after the call was sent -- an HTTP
+			// error status, a JSON-RPC error, a result that repeats the bearer
+			// -- is no answer to receipt: the call went once, nothing is minted,
+			// the session's count stands, and the bearer is in no answer.
+			index := func() int64 {
+				service.mu.Lock()
+				defer service.mu.Unlock()
+				return service.sessions["wb"].index
+			}
+			for _, failure := range []string{"http", "rpc", "echo"} {
+				stand.forget()
+				stand.mu.Lock()
+				stand.failure = failure
+				stand.mu.Unlock()
+				before := index()
+				code, body := authed(t, server, "/act", request(wp.arguments, digest(good), packA, signature), token)
+				if code == http.StatusOK || body["receipt"] != nil || index() != before || strings.Contains(string(mustJSON(t, body)), "write-secret-token") {
+					t.Fatalf("a %s failure is not receipted and leaks nothing: %d %v", failure, code, body)
+				}
+				calls := 0
+				for _, r := range stand.requests() {
+					if r.method == "tools/call" {
+						calls++
+					}
+				}
+				if calls != 1 {
+					t.Fatalf("a %s failure: the write was sent %d times", failure, calls)
+				}
+			}
+			stand.mu.Lock()
+			stand.failure = ""
+			stand.mu.Unlock()
 			if code, body := authed(t, server, "/seal", `{"session":"wb"}`, token); code != http.StatusOK {
 				t.Fatalf("seal: %d %v", code, body)
 			}
@@ -601,6 +651,12 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 			if len(asked) != 1 || !contains(asked[0].argv, "--url="+stand.URL+wp.path) || !contains(asked[0].check, "--descriptors-platform="+wp.platform) {
 				t.Fatalf("one check, of the write operation at the resolved URL, asked to capture: %+v", asked)
 			}
+			// What connect prints names the endpoint the check reached, as
+			// resolved, and never the bearer.
+			answers := strings.Join(out.answers, "\n")
+			if !strings.Contains(answers, wp.platform+"/write: adapter-mcp") || !strings.Contains(answers, "endpoint "+stand.URL+wp.path+", server write-standin 1.0") || strings.Contains(answers, "write-secret-token") {
+				t.Fatalf("connect names the resolved endpoint and no bearer: %q", out.answers)
+			}
 			cfg, bindings, err := loadEngineConfig(f.config, stubAccounts(stubUsers))
 			if err != nil {
 				t.Fatal(err)
@@ -613,8 +669,11 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 			if err != nil {
 				t.Fatal(err)
 			}
+			if strings.Contains(string(kept), "write-secret-token") {
+				t.Fatal("the snapshot holds the bearer")
+			}
 			snap, err := parseSnapshot(kept)
-			if err != nil || len(snap.names) == 0 || snap.tools[wp.tool].inputSchemaText == nil || snap.platform != wp.platform {
+			if err != nil || len(snap.names) == 0 || snap.tools[wp.tool].inputSchemaText == nil || snap.platform != wp.platform || snap.endpoint != stand.URL+wp.path {
 				t.Fatalf("the snapshot holds the write tools as the server described them: %v %s", err, kept)
 			}
 			// The frontend reads and verifies it at start, and lists no
@@ -696,14 +755,135 @@ func TestTheWriteBackPlatformsLiveCheck(t *testing.T) {
 			if _, err := readCapture(report, "live", ref, b.write); err != nil {
 				t.Fatalf("the live capture: %v", err)
 			}
-			t.Logf("live check of %s answered: %s", b.write.url, describeOrRaw(report))
+			t.Logf("live check of %s answered: %s", b.write.url, describeOrRaw(report, b.write.url))
 		})
 	}
 }
 
-func describeOrRaw(report []byte) string {
-	if line, err := describeCheck("mcp", report); err == nil {
+func describeOrRaw(report []byte, url string) string {
+	if line, err := describeCheck("mcp", report, url); err == nil {
 		return line
 	}
 	return string(report)
+}
+
+// A descriptor pin is of the server at the endpoint it was captured at
+// (cross-vendor round 1 on #257): a binding's digest pins its template and
+// not its tenant, so for each write-back platform a snapshot captured for
+// one organization or workspace is served while the platform's parameters
+// resolve to it, and refused at the frontend's start, with a sentence
+// naming the rule, once they resolve elsewhere; a remote server's snapshot
+// that names no endpoint is refused too.
+func TestADescriptorPinIsOfTheResolvedEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		catalog, tool, parameter, changed string
+		parameters                        map[string]string
+	}{
+		{"azure-devops", "wit_work_item_write", "organization", "other-org", map[string]string{"organization": "example-org"}},
+		{"databricks", "main__decisions__record_approval", "workspace", "dbc-other.cloud.databricks.com",
+			map[string]string{"workspace": "dbc-example.cloud.databricks.com", "catalog": "main", "schema": "decisions", "function": "record_approval"}},
+	} {
+		t.Run(tc.catalog, func(t *testing.T) {
+			text := shippedCatalogFile(t, tc.catalog)
+			ref := tc.catalog + "@" + digestOf(text)
+			template, err := parseBinding([]byte(text))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resolved, err := resolveParameters(template, tc.parameters, ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshotAt := func(endpoint string) []byte {
+				member := ""
+				if endpoint != "" {
+					member = `"endpoint":"` + endpoint + `",`
+				}
+				v, err := parseJSON([]byte(`{"binding":"` + ref + `",` + member + `"capturedAt":"2026-10-13T01:02:03Z","platform":"tickets","policy":1,"tools":{"` + tc.tool + `":{"description":"The tenant's own tool"}}}`))
+				if err != nil {
+					t.Fatal(err)
+				}
+				return canon(v)
+			}
+			f := newServedFixture(t, snapshotAt(resolved.write.url))
+			p := &f.cfg.platforms[0]
+			p.binding, p.write, p.parameters = ref, true, tc.parameters
+			f.bindings["tickets"] = resolved
+			if _, err := readServedPlatforms(f.config, f.cfg, f.bindings); err != nil {
+				t.Fatalf("the pin of the endpoint the parameters resolve to: %v", err)
+			}
+			moved := map[string]string{}
+			for name, value := range tc.parameters {
+				moved[name] = value
+			}
+			moved[tc.parameter] = tc.changed
+			if f.bindings["tickets"], err = resolveParameters(template, moved, ref); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readServedPlatforms(f.config, f.cfg, f.bindings); err == nil || !strings.Contains(err.Error(), "now reaches") || !strings.Contains(err.Error(), "captured anew with connect --replace") {
+				t.Fatalf("a pin of another tenant's server: %v", err)
+			}
+			p.descriptors = f.write(t, snapshotAt(""))
+			f.bindings["tickets"] = resolved
+			if _, err := readServedPlatforms(f.config, f.cfg, f.bindings); err == nil || !strings.Contains(err.Error(), "names no endpoint") {
+				t.Fatalf("a remote server's pin that names no endpoint: %v", err)
+			}
+		})
+	}
+}
+
+// A parameter's value stays in the segment its template puts it in
+// (cross-vendor round 1 on #257): nothing that is empty, dots alone, or
+// carries a separator of a path, a host, a port, a scheme, a query, a
+// fragment, an escape or the tools list is a value, and a value of the
+// form resolves into the organization's segment and nowhere else.
+func TestAParameterValueStaysInItsSegment(t *testing.T) {
+	b, err := parseBinding([]byte(shippedCatalogFile(t, "azure-devops")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"", ".", "..", "...", "a/b", `a\b`, "%2e%2e", "x?y", "x#y", "x:y", "x@y", "https://other", "x,y", "x y"} {
+		if err := parameterProblem("organization", v); err == nil {
+			t.Errorf("%q is taken as a value", v)
+		}
+	}
+	for _, v := range []string{"example-org", "example..org", "a_b", "a.b", "-a"} {
+		if err := parameterProblem("organization", v); err != nil {
+			t.Fatal(err)
+		}
+		r, err := resolveParameters(b, map[string]string{"organization": v}, "azure-devops@sha256:"+strings.Repeat("0", 64))
+		if err != nil || r.write.url != "https://mcp.dev.azure.com/"+v {
+			t.Fatalf("%q resolves to %v: %v", v, r.write, err)
+		}
+	}
+}
+
+// connect holds the endpoint an adapter's check reports to the URL the
+// source was given (cross-vendor round 1 on #257), refusing a check that
+// names another, and names it in what it prints; a server the adapter runs
+// reports none.
+func TestConnectHoldsTheReportedEndpointToTheResolvedOne(t *testing.T) {
+	report := func(endpoint string) []byte {
+		member := ""
+		if endpoint != "" {
+			member = `"transport":"http","endpoint":"` + endpoint + `",`
+		}
+		return []byte(`{"check":{"status":"succeeded","adapter":{"name":"adapter-mcp","version":"0","digest":"sha256:ab"},` + member + `"server":{"name":"srv","version":"1"},"protocolVersion":"2025-06-18","tools":["wit_work_item_write"]}}`)
+	}
+	url := "https://mcp.dev.azure.com/example-org"
+	if line, err := describeCheck("mcp", report(url), url); err != nil || line != "adapter-mcp:0 (sha256:ab): endpoint "+url+", server srv 1, protocol 2025-06-18, tools wit_work_item_write" {
+		t.Fatalf("the resolved endpoint named: %q %v", line, err)
+	}
+	for _, tc := range []struct{ reported, given, want string }{
+		{"https://mcp.dev.azure.com/other-org", url, `and the source was given "` + url + `"`},
+		{"", url, `and the source was given "` + url + `"`},
+		{url, "", "for a server it runs, which has none"},
+	} {
+		if _, err := describeCheck("mcp", report(tc.reported), tc.given); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("reported %q, given %q: %v", tc.reported, tc.given, err)
+		}
+	}
+	if got := remoteURL([]string{"adapter-mcp", "--url=" + url, "--tools=a", "--", "--url=https://elsewhere.example/"}); got != url {
+		t.Fatalf("the source's own --url, not the server's arguments: %q", got)
+	}
 }

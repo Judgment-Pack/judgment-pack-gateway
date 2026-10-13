@@ -359,7 +359,8 @@ func TestRemoteOutputBound(t *testing.T) {
 // A check over HTTP: the handshake, the server's name and version, the
 // tool list held to the same rules, and the transport, the endpoint and
 // the TLS identity reported; nothing called, the session id nowhere; and
-// descriptors captured as for stdio.
+// descriptors captured as for stdio, the snapshot naming the endpoint it
+// was captured at, so a pin is of that one server.
 func TestRemoteCheckReportsTheServerAndItsTools(t *testing.T) {
 	srv, cfg := remote(t, true, fakemcp.Script{})
 	cfg.Tools = []string{"query"}
@@ -380,8 +381,9 @@ func TestRemoteCheckReportsTheServerAndItsTools(t *testing.T) {
 			Protocol     string            `json:"protocolVersion"`
 			Tools        []string          `json:"tools"`
 			Descriptors  struct {
-				Server map[string]string          `json:"server"`
-				Tools  map[string]json.RawMessage `json:"tools"`
+				Endpoint string                     `json:"endpoint"`
+				Server   map[string]string          `json:"server"`
+				Tools    map[string]json.RawMessage `json:"tools"`
 			} `json:"descriptors"`
 		} `json:"check"`
 	}
@@ -395,7 +397,7 @@ func TestRemoteCheckReportsTheServerAndItsTools(t *testing.T) {
 		c.Protocol != "2025-06-18" || strings.Join(c.Tools, ",") != "query" {
 		t.Fatalf("report: %s", out)
 	}
-	if c.Descriptors.Server["name"] != "fake-remote-mcp" || c.Descriptors.Tools["query"] == nil {
+	if c.Descriptors.Server["name"] != "fake-remote-mcp" || c.Descriptors.Tools["query"] == nil || c.Descriptors.Endpoint != srv.URL {
 		t.Fatalf("descriptors captured as for stdio: %s", out)
 	}
 	if got := strings.Join(srv.Methods(), " "); got != "initialize notifications/initialized tools/list DELETE" {

@@ -54,11 +54,16 @@ func (t DescriptorTarget) refusal() error {
 	return nil
 }
 
-// snapshot is what connect keeps: the platform, the binding it pins, when
-// the check ran, the display policy the candidates passed, the server's
-// identity when it passed, and the tools with a candidate that passed.
+// snapshot is what connect keeps: the platform, the binding it pins, the
+// endpoint a remote server was reached at, when the check ran, the display
+// policy the candidates passed, the server's identity when it passed, and
+// the tools with a candidate that passed. The endpoint is the URL the check
+// was given, as the engine resolved it from the platform's parameters, so a
+// pin is of one tenant's server; a server the adapter runs has none, and
+// its snapshot is the bytes it was before the member existed.
 type snapshot struct {
 	Binding    string                  `json:"binding"`
+	Endpoint   string                  `json:"endpoint,omitempty"`
 	CapturedAt string                  `json:"capturedAt"`
 	Platform   string                  `json:"platform"`
 	Policy     int                     `json:"policy"`
@@ -120,8 +125,8 @@ const overBudget = "over the platform's budget: a snapshot of at most 327680 byt
 // it stands before any tool is added. When that alone passes the
 // snapshot's bound -- a platform or binding so long -- no tool is
 // admitted, and the report carries no snapshot and says why.
-func newCapturer(target DescriptorTarget, info initializeResult, secrets []string, capturedAt string) (*capturer, error) {
-	c := &capturer{secrets: secrets, snap: snapshot{Binding: target.Binding, CapturedAt: capturedAt, Platform: target.Platform, Policy: displayPolicy, Tools: map[string]capturedTool{}}}
+func newCapturer(target DescriptorTarget, info initializeResult, secrets []string, capturedAt, endpoint string) (*capturer, error) {
+	c := &capturer{secrets: secrets, snap: snapshot{Binding: target.Binding, Endpoint: endpoint, CapturedAt: capturedAt, Platform: target.Platform, Policy: displayPolicy, Tools: map[string]capturedTool{}}}
 	if r := checkIdentity(info.name, info.version, secrets); r != nil {
 		// A refused identity is omitted, and nothing names the server.
 		c.fallBack(fallback{Part: partServer, Reason: r.reason()})

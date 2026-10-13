@@ -603,7 +603,9 @@ the environment `serve` would give it: `adapter-airbyte --check` runs the connec
 and lists its tools, failing when a tool the binding names is not offered, and calls the
 binding's `probe` once when a live operation names one; a write operation accepts no probe,
 and its check calls no tool. What each answered
-is printed, one line per operation; the first that cannot answer ends the connect with the
+is printed, one line per operation, a remote server's line naming the URL it was given as the
+parameters resolved it — and the endpoint the adapter reports must be that URL, or the connect
+ends and nothing it captured is kept; the first that cannot answer ends the connect with the
 adapter's reason. Nothing is acquired and no receipt is minted. An image the runtime does not
 hold yet is pulled during the check, which is why a check is given five minutes. An
 acquisition has less: the adapter gives its work twenty seconds, its default, since the engine
@@ -618,8 +620,10 @@ allowed tools' descriptions and input schemas and the server's identity
 screening finds. `connect` reads the capture strictly from the report and says, for each allowed
 tool, what was captured or why it fell back. A capture holding a tool is kept as an immutable
 snapshot in `<file>.descriptors/`, named by its digest, before any configuration names it, and
-the entry pins it. A capture of no tool pins nothing, and `--replace` without a pin removes the
-member. With `--replace`, `connect` compares the capture with the snapshot the entry pinned
+the entry pins it. A remote server's snapshot names the endpoint it was captured at, and is
+served only while the platform's operation resolves to that endpoint: a changed parameter
+needs a new capture ([tool-descriptors.md](tool-descriptors.md)). A capture of no tool pins
+nothing, and `--replace` without a pin removes the member. With `--replace`, `connect` compares the capture with the snapshot the entry pinned
 before, once that verifies against its pin. It then says which processes must restart: the MCP
 server alone when only the descriptors' pin changed, and both when anything the signer reads
 changed. `--preview-descriptors <platform>` writes nothing: it renders what the MCP server would

@@ -353,7 +353,14 @@ digest, `<64 lowercase hex>.json`:
 ```
 
 Every member is required except `server`, and a tool's `description` or `inputSchemaText`. A
-tool with neither is not listed. `capturedAt` is RFC 3339 in UTC, to the second. The platform's
+tool with neither is not listed. `capturedAt` is RFC 3339 in UTC, to the second. A remote
+server's snapshot also carries `endpoint`, the URL its check reached as the platform's
+parameters resolved it (#257, after its first cross-vendor round); a server the adapter runs
+carries none, so its snapshots are the bytes they were. A binding's digest pins its template and
+not its tenant, so `connect` at capture and the frontend at its start hold `endpoint` to the URL
+the platform's operation resolves to then, and refuse a snapshot of another endpoint, or a remote
+server's snapshot that names none: a changed organization or workspace is captured anew with
+`connect --replace`. The platform's
 entry pins the snapshot with a new member, `"descriptors": "sha256:<hex>"`, and the file's name
 derives from that pin.
 
@@ -426,8 +433,9 @@ configuration loading the signer shares. For each snapshot, in order:
    pin before anything parses them;
 4. it decodes strictly (members, types, duplicates, UTF-8, trailing content), and checks that
    `platform`, `binding` and `policy` are the entry's name, the entry's pin and a policy it
-   implements, that `capturedAt` is well-formed, and that its tools are among the binding's live
-   tools;
+   implements, that `capturedAt` is well-formed, that its tools are among the binding's live
+   tools, and, for a remote server, that `endpoint` is the URL the platform's operation resolves
+   to;
 5. it checks that every candidate passes the display policy, the grammar and the limits again.
    The frontend holds no credentials, so it cannot repeat the secret screening; that screening
    happened in the adapter, which did.

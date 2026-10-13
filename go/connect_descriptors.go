@@ -90,6 +90,9 @@ func readCapture(report []byte, platform, ref string, live *operation) (liveCapt
 	if c.snap.platform != platform || c.snap.binding != ref {
 		return c, errors.New("descriptors: the snapshot is not of this platform and binding")
 	}
+	if err := snapshotEndpointProblem(c.snap, live); err != nil {
+		return c, fmt.Errorf("descriptors: %v", err)
+	}
 	allowed := map[string]bool{}
 	for _, tool := range live.tools {
 		allowed[tool] = true

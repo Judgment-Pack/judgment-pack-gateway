@@ -197,6 +197,11 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 	if snap.platform != p.name || snap.binding != p.binding {
 		return nil, errors.New("the snapshot is not of this platform and binding")
 	}
+	// And of the server the platform reaches now: a remote server's
+	// snapshot is held to the endpoint its parameters resolve to.
+	if err := snapshotEndpointProblem(snap, described); err != nil {
+		return nil, err
+	}
 	allowed := map[string]bool{}
 	for _, tool := range described.tools {
 		allowed[tool] = true
