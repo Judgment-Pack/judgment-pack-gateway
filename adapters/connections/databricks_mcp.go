@@ -222,18 +222,40 @@ func databricksUnescape(text string) string {
 	return b.String()
 }
 
-// databricksSpells reports whether text spells a secret: as written, or
-// once its JSON escapes are decoded, as many times over as they nest (four
-// at most) -- a server's text may hold JSON of its own, whose escapes a
-// reader decodes.
+// databricksSpellPasses bounds how many times a text's escapes are decoded,
+// and databricksSpellBytes how long a text is decoded at all. Each pass
+// decodes every escape once and never lengthens the text; one level of
+// nesting can cost as little as five bytes ("\u005cu005c…"), so a text
+// may still be changing at the last pass. A text still changing then, or
+// longer than the bound, is held to spell a secret.
+const (
+	databricksSpellPasses = 32
+	databricksSpellBytes  = MaxOutputBytes
+)
+
+// databricksSpells reports whether text spells a secret: as written, or once
+// its JSON escapes are decoded, as many times over as they nest -- a
+// server's text may hold JSON of its own, whose escapes a reader decodes --
+// to the point where decoding changes nothing. A text that would need more
+// than databricksSpellPasses passes, or is longer than databricksSpellBytes,
+// is held to spell one: what a reader could decode from it is not known.
 func databricksSpells(text string, secrets []string) bool {
+	if len(joinSecrets(secrets)) == 0 {
+		return false
+	}
+	if len(text) > databricksSpellBytes {
+		return true
+	}
 	for round := 0; ; round++ {
 		if databricksLeaks([]byte(text), secrets) {
 			return true
 		}
 		next := databricksUnescape(text)
-		if next == text || round == 4 {
+		if next == text {
 			return false
+		}
+		if round == databricksSpellPasses {
+			return true
 		}
 		text = next
 	}
@@ -564,15 +586,16 @@ func databricksMCPList(ctx context.Context, client *mcphttp.Client, secrets []st
 // each whole secret replaced, and a sentence that would still spell one not
 // reported.
 func databricksMCPOutward(err error, secrets []string) error {
-	text, ok := databricksScreened(err.Error(), secrets)
-	switch {
-	case !ok:
-		return Error("provider-unavailable: the MCP server's refusal would repeat the credential or its session id, and is not reported")
-	case text != err.Error():
-		return Error(databricksClip(text))
+	screened := outward(err, secrets, databricksMCPUnreported)
+	if screened != err && screened != databricksMCPUnreported && screened != withheld {
+		return Error(databricksClip(screened.Error()))
 	}
-	return err
+	return screened
 }
+
+// databricksMCPUnreported is an MCP read's refusal whose own text would
+// repeat a credential or the session id.
+const databricksMCPUnreported = Error("provider-unavailable: the MCP server's refusal would repeat the credential or its session id, and is not reported")
 
 // databricksMCPAcquire is one mcp read: one session with the server the
 // request names, under the connection's credential, after a token request
@@ -586,7 +609,7 @@ func databricksMCPOutward(err error, secrets []string) error {
 // the TLS peer it came from, and the tool's declared output schema. The
 // session id is in none of it, nor in any error.
 func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c DatabricksConnection, q DatabricksRequest) (out []byte, err error) {
-	secrets := c.secrets(databricksHeld(s, c))
+	secrets := joinSecrets(c.secrets(databricksHeld(s, c)), databricksActive(s))
 	defer func() {
 		if err != nil {
 			out, err = nil, databricksMCPOutward(err, secrets)
@@ -599,7 +622,7 @@ func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c Databric
 		return nil, ErrRequest
 	}
 	carries := func(secrets []string) bool {
-		return databricksCarries(arguments, secrets) || databricksLeaks([]byte(q.Tool), secrets) || databricksLeaks([]byte(q.Server), secrets)
+		return databricksCarries(arguments, secrets) || databricksSpells(q.Tool, secrets) || databricksSpells(q.Server, secrets)
 	}
 	if carries(secrets) {
 		return nil, databricksInRequest
@@ -608,7 +631,7 @@ func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c Databric
 	if err != nil {
 		return nil, err
 	}
-	secrets = c.secrets(bearer)
+	secrets = joinSecrets(c.secrets(bearer), databricksActive(s))
 	if carries(secrets) {
 		return nil, databricksInRequest
 	}
@@ -731,9 +754,10 @@ func (p provider) databricksMCPTest(ctx context.Context, s *Store, id, revision 
 	if err != nil {
 		return nil, err
 	}
+	active := databricksActive(s)
 	reports := []databricksMCPReport{}
 	for _, server := range c.MCP {
-		report, secrets := p.databricksMCPProbe(ctx, c, server, bearer)
+		report, secrets := p.databricksMCPProbe(ctx, c, server, bearer, active)
 		reports = append(reports, report.screened(secrets))
 	}
 	return reports, nil
@@ -741,9 +765,9 @@ func (p provider) databricksMCPTest(ctx context.Context, s *Store, id, revision 
 
 // databricksMCPProbe is one server's part of a test, and the secrets its
 // report is held against.
-func (p provider) databricksMCPProbe(ctx context.Context, c DatabricksConnection, server DatabricksMCPServer, bearer string) (databricksMCPReport, []string) {
+func (p provider) databricksMCPProbe(ctx context.Context, c DatabricksConnection, server DatabricksMCPServer, bearer string, active []string) (databricksMCPReport, []string) {
 	report := databricksMCPReport{Server: server.Server, Offered: []string{}, NotOffered: []string{}}
-	secrets := c.secrets(bearer)
+	secrets := joinSecrets(c.secrets(bearer), active)
 	client, err := p.databricksMCPOpen(c, server, bearer)
 	if err != nil {
 		report.Error = databricksMCPRefusal(server.Server, err, secrets).Error()

@@ -89,6 +89,9 @@ func run() int {
 	if *provider == "databricks" {
 		open = connections.OpenDatabricksStore
 	}
+	if *provider == "azure-devops" {
+		open = connections.OpenAzureDevOpsStore
+	}
 	if *provider == "document-processing" {
 		open = connections.OpenProcessingStore
 	}
@@ -120,6 +123,9 @@ func run() int {
 	}
 	if *provider == "databricks" {
 		b = connections.NewDatabricks(s, *disabled)
+	}
+	if *provider == "azure-devops" {
+		b = connections.NewAzureDevOps(s, *disabled)
 	}
 	if *provider == "document-processing" {
 		b = connections.NewProcessing(s, *disabled)

@@ -34,6 +34,7 @@ type provider struct {
 	obsidian                 bool
 	s3                       bool
 	databricks               bool
+	azureDevOps              bool
 }
 
 func google() provider {
@@ -253,6 +254,9 @@ func (p provider) kind() string {
 	}
 	if p.databricks {
 		return "databricks"
+	}
+	if p.azureDevOps {
+		return "azure-devops"
 	}
 	if p.obsidian {
 		return "obsidian"

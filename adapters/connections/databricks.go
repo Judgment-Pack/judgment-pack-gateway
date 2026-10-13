@@ -428,6 +428,9 @@ func databricksProvider() provider {
 	p.databricks = true
 	p.auth, p.token, p.revoke, p.api = "", "", "", ""
 	p.client.Transport.(*http.Transport).ResponseHeaderTimeout = 0
+	// Nothing is decompressed: no compression is asked for, so the bound is
+	// held to the bytes received.
+	p.client.Transport.(*http.Transport).DisableCompression = true
 	p.client.Timeout = (DatabricksMaxWaitSeconds + databricksMarginSeconds + databricksMintSeconds) * time.Second
 	return p
 }
@@ -442,12 +445,15 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 		rows := []databricksRow{}
 		err := b.store.locked(func(v *state) error {
 			if v.Databricks != nil {
+				active := databricksActiveOf(v)
 				for _, c := range v.Databricks.Connections {
 					ready := c.valid()
-					// A server or a tool that would spell a credential, the
-					// configured one or a token held for it, is not reported:
-					// configure refuses one, and a held token is checked here.
-					if c.mcpSpells(databricksTokensOf(v.Databricks.Tokens, c.ID)) {
+					// A server or a tool that would spell a credential custody
+					// holds, any connection's or any token held, is not
+					// reported: configure refuses one, and a held token is
+					// checked here. The answer as a whole is screened once more
+					// on its way out (Broker.Handle).
+					if c.mcpSpells(active) {
 						c.MCP, ready = nil, false
 					}
 					c.Token, c.ClientSecret = "", ""
@@ -501,6 +507,13 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 				}
 			}
 			if index < 0 && (q.Revision != "" || len(v.Databricks.Connections) >= databricksConnections) {
+				return ErrRequest
+			}
+			// Its own text is held against every credential custody holds --
+			// any connection's, any token held, its earlier one among them --
+			// and its own.
+			b.pending = joinSecrets([]string{q.Token, q.ClientSecret})
+			if q.textSpells(joinSecrets(databricksActiveOf(v), b.pending)) {
 				return ErrRequest
 			}
 			if q.gatewayScopeMissing() {
@@ -568,6 +581,54 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 		return map[string]any{"ok": ok, "mcp": reports}, nil
 	}
 	return nil, ErrRequest
+}
+
+// databricksUnreported is a refusal whose own text would repeat a
+// credential.
+const databricksUnreported = Error("provider-unavailable: the workspace's refusal would repeat the credential, and is not reported")
+
+// databricksActiveOf is every credential custody holds for the provider's
+// connections: each one's personal access token or client secret, and each
+// token held. Requests, answers and outgoing text are held against all of
+// them, not only the credential of the connection a request names.
+func databricksActiveOf(v *state) []string {
+	all := []string{}
+	if v.Databricks != nil {
+		for _, c := range v.Databricks.Connections {
+			all = append(all, c.Token, c.ClientSecret)
+		}
+		for _, t := range v.Databricks.Tokens {
+			all = append(all, t.Access)
+		}
+	}
+	return joinSecrets(all)
+}
+
+// databricksActive is databricksActiveOf as custody stands, and nothing
+// where custody cannot be read.
+func databricksActive(s *Store) []string {
+	var active []string
+	s.locked(func(v *state) error {
+		active = databricksActiveOf(v)
+		return nil
+	})
+	return active
+}
+
+// textSpells reports whether the connection's own text -- everything but
+// its secrets -- spells one of secrets.
+func (c DatabricksConnection) textSpells(secrets []string) bool {
+	texts := []string{c.ID, c.Name, c.Workspace, c.Warehouse, c.ClientID, c.Scope, c.Catalog, c.Schema, c.WaitSeconds, c.ResultBytes}
+	for _, server := range c.MCP {
+		texts = append(texts, server.Server)
+		texts = append(texts, server.Tools...)
+	}
+	for _, text := range texts {
+		if databricksSpells(text, secrets) {
+			return true
+		}
+	}
+	return false
 }
 func databricksWithout(tokens []databricksToken, id string) []databricksToken {
 	out := []databricksToken{}
@@ -899,6 +960,9 @@ func (p provider) databricksSend(ctx context.Context, method, target string, bod
 	if len(raw) > bound {
 		return nil, nil, tooLarge
 	}
+	if encoding := response.Header.Get("Content-Encoding"); response.Uncompressed || encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return nil, nil, Error("provider-unavailable: the workspace's answer is encoded, and this connection reads only what it asked for, which is not")
+	}
 	if !json.Valid(raw) {
 		return nil, nil, Error("provider-unavailable: the workspace's answer is not JSON")
 	}
@@ -941,7 +1005,13 @@ func databricksStatement(raw []byte, wait int, elapsed time.Duration, secrets []
 	if !okState || !okMessage || !okTruncated || !okChunks || !okIndex || !okNext || !okLink {
 		return "", malformed
 	}
-	message = databricksRedact(message, secrets)
+	// Every whole credential is replaced; a message that would still spell
+	// one, its escapes decoded to the end, is not repeated at all.
+	if redacted, ok := databricksScreened(message, secrets); ok {
+		message = redacted
+	} else {
+		message = "the workspace's message repeats the credential, and is not reported"
+	}
 	if len(message) > databricksMessageBytes {
 		message = clipSearchText(message, databricksMessageBytes) + "…"
 	}
@@ -982,7 +1052,7 @@ func (q DatabricksRequest) carries(secrets []string) bool {
 		}
 	}
 	for _, field := range fields {
-		if databricksLeaks([]byte(field), secrets) {
+		if databricksSpells(field, secrets) {
 			return true
 		}
 	}
@@ -1042,7 +1112,14 @@ func (q DatabricksRequest) check(c DatabricksConnection) (DatabricksRequest, err
 	return q, ErrRequest
 }
 
-func ReadDatabricks(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
+func ReadDatabricks(ctx context.Context, s *Store, raw []byte) (out []byte, err error) {
+	// What is written out is held against every active credential, a
+	// refusal before the connection is read among it.
+	defer func() {
+		if err != nil {
+			out, err = nil, outward(err, databricksActive(s), databricksUnreported)
+		}
+	}()
 	var q DatabricksRequest
 	if decode(raw, &q) != nil {
 		return nil, ErrRequest
@@ -1058,7 +1135,14 @@ func ReadDatabricks(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
 // statement the gateway commits to, the statement_id the API returned (a
 // listing names none, and has the digest of the answer as received), and
 // the TLS peer the answer came from.
-func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p provider) ([]byte, error) {
+func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p provider) (out []byte, err error) {
+	// Every error is held once more against every credential custody holds
+	// as it stands when the read ends, a token minted for it among them.
+	defer func() {
+		if err != nil {
+			out, err = nil, outward(err, databricksActive(s), databricksUnreported)
+		}
+	}()
 	c, err := databricksSnapshot(s, q.Connection, q.Revision)
 	if err != nil {
 		return nil, err
@@ -1071,14 +1155,14 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 	}
 	// The configured secret and any token held for it are known before a
 	// token is asked for; a token minted now is known only after.
-	if q.carries(c.secrets(databricksHeld(s, c))) {
+	if q.carries(joinSecrets(c.secrets(databricksHeld(s, c)), databricksActive(s))) {
 		return nil, databricksInRequest
 	}
 	bearer, err := p.databricksBearer(ctx, s, c)
 	if err != nil {
 		return nil, err
 	}
-	secrets := c.secrets(bearer)
+	secrets := joinSecrets(c.secrets(bearer), databricksActive(s))
 	if q.carries(secrets) {
 		return nil, databricksInRequest
 	}
@@ -1165,7 +1249,7 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 		return nil, ErrRequest
 	}
 	acquisition := map[string]any{"adapter": identity, "endpoint": endpoint, "statement": string(statement), "snapshot": snapshot, "peerIdentity": peer(response), "schema": nil, "upstreamToken": nil, "observedAt": observed}
-	out, err := canon.EncodeJSON(map[string]any{"acquisition": acquisition, "result": json.RawMessage(result)})
+	out, err = canon.EncodeJSON(map[string]any{"acquisition": acquisition, "result": json.RawMessage(result)})
 	if err != nil {
 		return nil, ErrProvider
 	}
@@ -1191,6 +1275,6 @@ func databricksTest(ctx context.Context, s *Store, id, revision string, p provid
 	}
 	rctx, cancel := context.WithTimeout(ctx, databricksListSeconds*time.Second)
 	defer cancel()
-	_, _, err = p.databricksSend(rctx, "GET", c.Workspace+"/api/2.1/unity-catalog/catalogs?max_results=1", nil, bearer, 1<<20, c.secrets(bearer), databricksListSeconds)
+	_, _, err = p.databricksSend(rctx, "GET", c.Workspace+"/api/2.1/unity-catalog/catalogs?max_results=1", nil, bearer, 1<<20, joinSecrets(c.secrets(bearer), databricksActive(s)), databricksListSeconds)
 	return err
 }

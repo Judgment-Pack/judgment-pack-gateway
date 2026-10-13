@@ -3,13 +3,16 @@
 package connections
 
 import (
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -201,10 +204,17 @@ func TestDatabricksARequestCarryingTheCredentialIsNotSent(t *testing.T) {
 	fields["token"] = "dapi&marker=0123456789"
 	es, _, ec, _ := dbFixture(t, fields)
 	refused("an encoded cursor", es, DatabricksRequest{Connection: ec.ID, Revision: ec.Revision, Read: "catalog", List: "catalogs", PageToken: "after-dapi&marker=0123456789"}, "dapi&marker=0123456789")
-	// A default the operator configured is sent too.
-	fields = dbTokenFields()
-	fields["catalog"] = dbPAT
-	ds, _, dc, _ := dbFixture(t, fields)
+	// A default the operator configured is sent too. Configure now refuses
+	// one that spells the credential (round 1 of #255), so this one is
+	// written into custody by another hand.
+	if _, b, _, _ := dbFixture(t, dbTokenFields()); dbConfigure(b, map[string]string{"id": "other", "name": "Other", "workspace-url": dbWorkspace, "warehouse-id": dbWarehouse, "auth": "token", "token": dbPAT, "catalog": dbPAT}) != ErrRequest {
+		t.Fatal("configure took a catalog that spells the credential")
+	}
+	ds, _, dc, _ := dbFixture(t, dbTokenFields())
+	ds.locked(func(v *state) error {
+		v.Databricks.Connections[0].Catalog = dbPAT
+		return ds.write("state.json", v)
+	})
 	refused("a configured catalog", ds, dbStatementRead(dc, "SELECT 1"), dbPAT)
 	// A service principal: its secret before a token is asked for, the
 	// token it holds before another is, and one minted now before the
@@ -381,5 +391,149 @@ func TestDatabricksTheCursorIsCommittedAndAWorkspaceChangeDropsTheToken(t *testi
 	sc = dbConnection(t, ss, sc.ID)
 	if _, err := databricksAcquire(context.Background(), ss, dbStatementRead(sc, "SELECT 1"), mint); err != nil || mints.Load() != 2 {
 		t.Fatal("a token was used across workspaces", err, mints.Load())
+	}
+}
+
+// The fixes of the Azure DevOps provider's cross-vendor round (round 1 of
+// #255) that land in what this provider shares with it, held here.
+
+// Escapes nested past the old four passes are decoded to the end: a
+// credential under them is found in a result, in a statement before it is
+// sent, and in a failed statement's message, which is then not repeated.
+func TestDatabricksEscapesNestedPastAnyPassBoundAreHeld(t *testing.T) {
+	for _, k := range []struct {
+		name   string
+		fields map[string]string
+		secret string
+	}{{"personal access token", dbTokenFields(), dbPAT}, {"client secret", dbPrincipalFields(), dbSecret}, {"minted token", dbPrincipalFields(), dbMinted}} {
+		s, _, c, _ := dbFixture(t, k.fields)
+		for form, nested := range map[string]string{"the round's nesting": adoReviewNested(k.secret), "thirty levels": adoNested(k.secret, 30)} {
+			quoted, _ := json.Marshal(nested)
+			var api atomic.Int32
+			answer := dbSucceeded(`[` + string(quoted) + `]`)
+			p := dbThrough(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/oidc/v1/token" {
+					return dbAnswer(r, 200, dbMintedAnswer), nil
+				}
+				api.Add(1)
+				return dbAnswer(r, 200, answer), nil
+			})
+			if out, err := databricksAcquire(context.Background(), s, dbStatementRead(c, "SELECT 1"), p); out != nil || err == nil || err.Error() != "provider-unavailable: the workspace's answer repeats the credential, and is not kept" {
+				t.Errorf("%s under %s in a result: %v", k.name, form, err)
+			}
+			before := api.Load()
+			if out, err := databricksAcquire(context.Background(), s, dbStatementRead(c, "SELECT '"+nested+"'"), p); out != nil || err != databricksInRequest || api.Load() != before {
+				t.Errorf("%s under %s in a statement: %v", k.name, form, err)
+			}
+			message, _ := json.Marshal("near " + nested)
+			answer = `{"statement_id":"` + dbStatement + `","status":{"state":"FAILED","error":{"error_code":"BAD_REQUEST","message":` + string(message) + `}}}`
+			if _, err := databricksAcquire(context.Background(), s, dbStatementRead(c, "SELECT 1"), p); err == nil || err.Error() != "statement-failed: the workspace's message repeats the credential, and is not reported" {
+				t.Errorf("%s under %s in a failure's message: %.120q", k.name, form, err)
+			}
+		}
+	}
+}
+
+// Every credential custody holds for the provider is held out of every other
+// connection's text, statements and results: connection A's personal access
+// token, client secret or held token is refused in connection B's name, in
+// B's statement and in B's answer, and status does not repeat it.
+func TestDatabricksEveryCredentialCustodyHoldsIsHeldOut(t *testing.T) {
+	for _, k := range []struct {
+		name   string
+		fields map[string]string
+		secret string
+	}{{"personal access token", dbTokenFields(), dbPAT}, {"client secret", dbPrincipalFields(), dbSecret}, {"held token", dbPrincipalFields(), dbMinted}} {
+		s, b, a, dir := dbFixture(t, k.fields)
+		if k.secret == dbMinted {
+			s.locked(func(v *state) error {
+				v.Databricks.Tokens = []databricksToken{{a.ID, a.Revision, dbMinted, time.Now().Add(time.Hour).Unix()}}
+				return s.write("state.json", v)
+			})
+		}
+		other := map[string]string{"id": "second", "name": "Second " + k.secret, "workspace-url": dbWorkspace, "warehouse-id": dbWarehouse, "auth": "token", "token": "dapi-other-synthetic-0000"}
+		if err := dbConfigure(b, other); err != ErrRequest || bytes.Contains(dbState(t, dir), []byte(`"second"`)) {
+			t.Errorf("%s as another connection's name: %v", k.name, err)
+		}
+		other["name"] = "Second"
+		if err := dbConfigure(b, other); err != nil {
+			t.Fatal(err)
+		}
+		c := dbConnection(t, s, "second")
+		var api atomic.Int32
+		p := dbThrough(func(r *http.Request) (*http.Response, error) {
+			api.Add(1)
+			return dbAnswer(r, 200, dbSucceeded(`["`+k.secret+`"]`)), nil
+		})
+		if out, err := databricksAcquire(context.Background(), s, dbStatementRead(c, "SELECT '"+k.secret+"'"), p); out != nil || err != databricksInRequest || api.Load() != 0 {
+			t.Errorf("%s in another connection's statement: %v, %d requests", k.name, err, api.Load())
+		}
+		if out, err := databricksAcquire(context.Background(), s, dbStatementRead(c, "SELECT 1"), p); out != nil || err == nil || err.Error() != "provider-unavailable: the workspace's answer repeats the credential, and is not kept" {
+			t.Errorf("%s in another connection's answer: %v", k.name, err)
+		}
+		status, err := b.Handle(context.Background(), "status", []byte(`{}`))
+		raw, _ := json.Marshal(status)
+		if err != nil || bytes.Contains(raw, []byte(k.secret)) {
+			t.Errorf("%s in status: %s %v", k.name, raw, err)
+		}
+	}
+}
+
+// The bound is held to the bytes received: compression is neither asked for
+// nor undone, an answer announced past the bound is refused unread, and one
+// that names an encoding is refused.
+func TestDatabricksTheBoundIsOnTheBytesReceived(t *testing.T) {
+	var padded, small bytes.Buffer
+	for range 3000 {
+		z := gzip.NewWriter(&padded)
+		z.Close()
+	}
+	for _, buffer := range []*bytes.Buffer{&padded, &small} {
+		z := gzip.NewWriter(buffer)
+		z.Write([]byte(dbSucceeded(`["1"]`)))
+		z.Close()
+	}
+	for _, k := range []struct {
+		entity *bytes.Buffer
+		want   string
+	}{
+		{&padded, "result-too-large: the workspace's answer is larger than the connection's bound of 65536 bytes"},
+		{&small, "provider-unavailable: the workspace's answer is encoded, and this connection reads only what it asked for, which is not"},
+	} {
+		p := databricksProvider()
+		transport := p.client.Transport.(*http.Transport)
+		var asked string
+		transport.DialTLSContext = func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go func() {
+				defer server.Close()
+				req, err := http.ReadRequest(bufio.NewReader(server))
+				if err != nil {
+					return
+				}
+				asked = req.Header.Get("Accept-Encoding")
+				req.Body.Close()
+				fmt.Fprintf(server, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", k.entity.Len())
+				server.Write(k.entity.Bytes())
+			}()
+			return client, nil
+		}
+		response, body, err := p.databricksSend(context.Background(), "GET", dbWorkspace+"/api/2.1/unity-catalog/catalogs?max_results=0", nil, dbPAT, 65536, []string{dbPAT}, 30)
+		transport.CloseIdleConnections()
+		if response != nil || body != nil || err == nil || err.Error() != k.want || asked != "" {
+			t.Errorf("%d-byte entity: %v, Accept-Encoding %q", k.entity.Len(), err, asked)
+		}
+	}
+}
+
+// A control answer whose fixed words would spell a credential is not
+// written.
+func TestDatabricksFixedWordsAreScreenedToo(t *testing.T) {
+	fields := dbTokenFields()
+	fields["token"] = "defaultWaitSeconds"
+	_, b, _, _ := dbFixture(t, fields)
+	if out, err := b.Handle(context.Background(), "status", []byte(`{}`)); out != nil || err != unwritten {
+		raw, _ := json.Marshal(out)
+		t.Fatalf("status %s %v", raw, err)
 	}
 }

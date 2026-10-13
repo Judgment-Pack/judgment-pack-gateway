@@ -50,6 +50,9 @@ func LookupProvider(id string) (Descriptor, bool) {
 	if id == "databricks" {
 		return databricksDescriptor(), true
 	}
+	if id == "azure-devops" {
+		return azureDevOpsDescriptor(), true
+	}
 	for _, provider := range ConnectionCatalog().Providers {
 		if provider.ID == id {
 			return provider, true
