@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -124,7 +125,15 @@ func TestGatewaySpawnsTheMCPAdapterRemoteFormEndToEnd(t *testing.T) {
 		t.Fatalf("acquire failed: %d %v", code, first)
 	}
 	acquisition := first["receipt"].(map[string]any)["acquisition"].(map[string]any)
-	self, _ := os.ReadFile(adapter)
+	// The binary as built: on Windows the build wrote adapter-mcp.exe.
+	exe := adapter
+	if runtime.GOOS == "windows" {
+		exe += ".exe"
+	}
+	self, err := os.ReadFile(exe)
+	if err != nil {
+		t.Fatal(err)
+	}
 	selfSum := sha256.Sum256(self)
 	leaf := sha256.Sum256(remote.Certificate().Raw)
 	adapterOut := acquisition["adapter"].(map[string]any)
