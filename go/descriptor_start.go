@@ -138,8 +138,9 @@ func (d *servedDirectory) Close() {
 
 // readServedPlatform reads one pinned snapshot from the open directory.
 func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p platformConfig, b binding) (*servedPlatform, error) {
-	if b.live == nil {
-		return nil, errors.New("the binding has no live operation to describe")
+	described := describedOperation(b, p.write)
+	if described == nil {
+		return nil, errors.New("the binding has no live operation to describe, nor a write operation of a binding with no live one")
 	}
 	name := strings.TrimPrefix(p.descriptors, "sha256:") + ".json"
 	// 2. The file, opened relative to the directory, following no link,
@@ -186,8 +187,9 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 		return nil, fmt.Errorf("%s/%s does not digest to its pin", dirName, name)
 	}
 	// 4. Strictly decoded, and the snapshot of this entry: its platform,
-	// its binding, a policy this engine implements, and tools its live
-	// operation allows.
+	// its binding, a policy this engine implements, and tools its described
+	// operation allows -- the live operation's, or the write operation's of
+	// a binding with no live one (describedOperation).
 	snap, err := parseSnapshot(data)
 	if err != nil {
 		return nil, err
@@ -195,8 +197,13 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 	if snap.platform != p.name || snap.binding != p.binding {
 		return nil, errors.New("the snapshot is not of this platform and binding")
 	}
+	// And of the server the platform reaches now: a remote server's
+	// snapshot is held to the endpoint its parameters resolve to.
+	if err := snapshotEndpointProblem(snap, described); err != nil {
+		return nil, err
+	}
 	allowed := map[string]bool{}
-	for _, tool := range b.live.tools {
+	for _, tool := range described.tools {
 		allowed[tool] = true
 	}
 	// 5. Every candidate passes the display policy, the grammar and the
@@ -215,7 +222,7 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 	together := 0
 	for _, tool := range snap.names {
 		if !allowed[tool] {
-			return nil, errors.New("the snapshot holds a tool the live operation does not allow")
+			return nil, errors.New("the snapshot holds a tool the described operation does not allow")
 		}
 		candidates := snap.tools[tool]
 		var t servedTool

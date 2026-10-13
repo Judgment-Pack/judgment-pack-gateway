@@ -407,7 +407,7 @@ func TestADescriptorsPinIsAVersion3MemberOfALiveBinding(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(cfg.platforms[0].credentials, "live")
-	if _, err := resolveEngineConfig(&cfg, stubAccounts(stubUsers)); err == nil || !strings.Contains(err.Error(), "has none") {
+	if _, err := resolveEngineConfig(&cfg, stubAccounts(stubUsers)); err == nil || !strings.Contains(err.Error(), "offers the platform neither") {
 		t.Fatalf("%v", err)
 	}
 }
@@ -628,7 +628,7 @@ func TestFallbacksAreMatchedByPosition(t *testing.T) {
 	}
 	f = newConnectFixture(t, twoToolBinding, ``)
 	f.capturedExtra = `"fallbacks":[{"tool":"x","allowed":2,"part":"tool","reason":"r"}],`
-	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "names no tool the live operation allows") {
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || !strings.Contains(err.Error(), "names no tool the described operation allows") {
 		t.Fatalf("%v", err)
 	}
 }

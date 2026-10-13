@@ -563,4 +563,51 @@ func TestActNarrowsTheExecutorToTheRequestedTool(t *testing.T) {
 	if strings.Join(spec.argv, " ") != "adapter-mcp "+image+" --tools=update,delete --endpoint=h -- --tools=all --verbose" || len(spec.tools) != 2 {
 		t.Fatalf("the binding's own source is untouched: %+v", spec)
 	}
+	// A remote write-back binding's executor (issue #248): the resolved URL,
+	// the bearer member and --error-results stay; the tools are the one
+	// asked for, whatever else the binding names.
+	url := "--url=https://mcp.dev.azure.com/example-org"
+	remote := sourceSpec{argv: []string{"adapter-mcp", url, "--credentials=/run/secrets/boards-write", "--bearer=token", "--tools=wit_work_item_write,wit_work_item_comment_write,wit_work_item_link_write", "--error-results"},
+		tools: []string{"wit_work_item_write", "wit_work_item_comment_write", "wit_work_item_link_write"}, shape: "mcp", endpoint: "https://mcp.dev.azure.com/example-org"}
+	narrowed = narrowTools(remote, "wit_work_item_comment_write")
+	if strings.Join(narrowed.argv, " ") != "adapter-mcp "+url+" --credentials=/run/secrets/boards-write --bearer=token --tools=wit_work_item_comment_write --error-results" ||
+		strings.Join(narrowed.tools, ",") != "wit_work_item_comment_write" || narrowed.endpoint != remote.endpoint {
+		t.Fatalf("the remote executor narrowed: %+v", narrowed)
+	}
+	// And the executor /act starts is the narrowed one: the source's
+	// command line, as the started process saw it, names the one tool.
+	service, server := testService(t)
+	started := filepath.Join(t.TempDir(), "argv")
+	t.Setenv(envSourceArgv, started)
+	env, _ := goodEnvelope()
+	t.Setenv(envSourceEnvelope, envelopeText(t, env))
+	remote.argv[0], remote.env = os.Args[0], helperEnv
+	service.sources["boards/write"] = remote
+	service.decisionRecords = t.TempDir()
+	issuer := newIssuer(t)
+	id := identityFor(t, issuer)
+	service.identity = &id
+	token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
+	code, first := authed(t, server, "/acquire", `{"session":"act-n","source":"screening","arguments":{"q":"example"}}`, token)
+	if code != http.StatusOK {
+		t.Fatalf("acquire: %d %v", code, first)
+	}
+	signature := first["receipt"].(map[string]any)["signature"].(string)
+	line := `{"kind":"evaluation","cites":[{"sessionId":"act-n","callIndex":0,"signature":"` + signature + `"}]}`
+	if err := os.WriteFile(filepath.Join(service.decisionRecords, "evaluations.jsonl"), []byte(line+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"session":"act-n","platform":"boards","tool":"wit_work_item_comment_write","arguments":{"action":"add","workItemId":42,"text":"approved"},` +
+		`"decision":{"recordDigest":"sha256:` + hexOf([]byte(line)) + `","packDigest":"sha256:` + strings.Repeat("b", 64) + `"},` +
+		`"cites":[{"sessionId":"act-n","callIndex":0,"signature":"` + signature + `"}]}`
+	if code, acted := authed(t, server, "/act", body, token); code != http.StatusOK {
+		t.Fatalf("act: %d %v", code, acted)
+	}
+	argv, err := os.ReadFile(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.ReplaceAll(string(argv), "\n", " "); got != url+" --credentials=/run/secrets/boards-write --bearer=token --tools=wit_work_item_comment_write --error-results" {
+		t.Fatalf("the executor /act started: %q", got)
+	}
 }

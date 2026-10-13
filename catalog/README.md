@@ -67,3 +67,107 @@ keep the spelling. Both captures are kept as fixtures, as the reasons for the ru
 ELv2 (the Elastic License 2.0) forbids providing the connector to third parties as a
 managed service; an operator hosting the engine for others should read it before enabling
 the history operation, which is why the licence is in the binding at all.
+
+## azure-devops
+
+| Operation | Artifact | Pinned | Licence | Where the licence is stated |
+|---|---|---|---|---|
+| `write` | the organization's remote Azure DevOps MCP server, `https://mcp.dev.azure.com/{organization}`, over Streamable HTTP | the URL template and the transport, by the file's digest; there is no image | hosted service: the operator's own service terms | the engine pulls and runs nothing of the server; its use is under the terms of the operator's own subscription |
+
+A write-back platform (issue #248): the binding states a `write` operation and nothing else, since
+a platform's reads of Azure DevOps are the connection's
+([connection-catalog.md](../docs/design/connection-catalog.md#azure-devops-version-3)). The
+platform gives the `organization` parameter (engine configuration version 8), and the URL is
+"a hosted version of the Azure DevOps MCP Server" that clients reach "by using streamable HTTP
+transport" at `https://mcp.dev.azure.com/{organization}`
+([set up the remote Azure DevOps MCP Server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server),
+dated 2026-09-21). The `write` credentials file is `{"token": "…"}`: a Microsoft Entra access
+token of a person, or of a principal, the operator holds for writes, sent as the bearer. "The
+remote MCP Server uses Microsoft Entra ID (OAuth) for authentication. Personal access tokens
+(PATs) aren't supported for the remote server"
+([troubleshoot the remote server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server-troubleshooting),
+dated 2026-07-31). Its scopes must allow the write: `vso.work_write`, "Work items (read and
+write)", "the ability to read, create, and update work items"
+([OAuth scopes](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/oauth#available-scopes),
+dated 2025-07-14), and "OAuth scopes don't override the permissions of the signed-in user"
+(set up the remote server). The engine mints and renews no token.
+
+The tools are the server's three work-item write tools, each a grouped dispatcher whose `action`
+argument chooses the operation; the page marks every one of these actions not read-only:
+
+| Tool | Actions (set up the remote server, 2026-09-21) |
+|---|---|
+| `wit_work_item_write` | `create`, `update` ("Update fields on a work item"), `update_batch`, `add_child` |
+| `wit_work_item_comment_write` | `add` ("Add a comment to a work item"), `update` |
+| `wit_work_item_link_write` | `link` ("Link two work items"), `unlink`, `link_to_pull_request`, `add_artifact_link` |
+
+The page gives no argument shapes. The open-source server it is "a hosted version" of gives them
+(`src/tools/work-items.ts` and `docs/TOOLSET.md` in `microsoft/azure-devops-mcp`, read
+2026-10-13): `wit_work_item_write` `update` takes `id` and `updates`, JSON Patch operations of
+`op`, `path` and `value`, and for "a safe read-modify-write, prepend a test operation on `/rev`
+with value set to the numeric revision … Azure DevOps rejects the entire update if the current
+revision differs"; `create` takes `workItemType` and `fields`; `update_batch` takes
+`batchUpdates`, each naming its own work item; `wit_work_item_comment_write` `add` takes
+`workItemId` and `text`; `wit_work_item_link_write` `link` takes `updates` of `id`, `linkToId`
+and `type`; every tool takes an optional `project`. "The remote and local servers might be at
+different versions" (troubleshoot the remote server), so the remote server's own input schemas
+are what `connect` captures through the write operation's check, at the resolved URL, and what an
+operator writes a policy against ([engine-config.md](../docs/design/engine-config.md), "The
+write-back platforms", has one for `wit_work_item_write`: it binds the whole arguments to the
+write the record states, since `bind` cannot fix `action` or refuse an operation it does not
+name).
+
+**No read-only header.** "Use the `X-MCP-Readonly` header to restrict the server to read-only
+operations" (set up the remote server): the connection sends it on its reads, and a write needs
+it absent, so this binding sends no header at all, and `go test` holds every catalog file's write
+operation to sending none. The credential's scopes and its identity's permissions are what bound
+a write, and the decision policy is what holds each one to its decision.
+
+The organization's local MCP server (the npm package `@azure-devops/mcp`, over stdio) is not a
+catalog entry: the catalog pins images, and the engine authors no binding of a server the
+operator installs; an operator runs it as a source under `adapter-mcp`
+([adapters/README.md](../adapters/README.md)). Whether the catalog ships one is #259.
+
+## databricks
+
+| Operation | Artifact | Pinned | Licence | Where the licence is stated |
+|---|---|---|---|---|
+| `write` | one Unity Catalog function's managed MCP server, `https://{workspace}/api/2.0/mcp/functions/{catalog}/{schema}/{function}`, over Streamable HTTP | the URL template, the tool's template and the transport, by the file's digest; there is no image | hosted service: the operator's own service terms | the engine pulls and runs nothing of the server; its use is under the terms of the operator's own subscription |
+
+A write-back platform (issue #248): a write is a Unity Catalog function the workspace's owners
+wrote, called through its managed MCP server, so that every argument is a named parameter a
+decision policy can bind; the platform's reads are the connection's
+([connection-catalog.md](../docs/design/connection-catalog.md#databricks-version-3)). The URL
+is the pattern Databricks lists for the server,
+`https://<workspace-hostname>/api/2.0/mcp/functions/{catalog}/{schema}/{function_name}`, with the
+OAuth scope `unity-catalog`; the server "exposes the custom Python and SQL functions you register
+in Unity Catalog as predefined tools for agents to call, with access governed by Unity Catalog
+permissions" ([Unity Catalog functions MCP server](https://docs.databricks.com/aws/en/agents/mcp-tools/uc-functions),
+updated 2026-10-07; the same URL in [Databricks-provided MCPs](https://docs.databricks.com/aws/en/agents/mcp-tools/built-in-mcp-services),
+updated 2026-10-08), and "calling an existing function requires `EXECUTE` on it"
+([create agent tools using Unity Catalog functions](https://docs.databricks.com/aws/en/agents/custom-agents/create-custom-tool),
+updated 2026-10-07). The platform gives four parameters: `workspace`, the workspace's host, held
+to the host forms the Databricks connection accepts (one to three lowercase labels under
+`.cloud.databricks.com`, `.cloud.databricks.us`, `.cloud.databricks.mil`, `.gcp.databricks.com`
+or `.azuredatabricks.net`, not the account console's), so no parameter can point the template off
+a workspace; and `catalog`, `schema` and `function`, the function's three-part name. The `write`
+credentials file is `{"token": "…"}`, a Databricks access token of the identity the operator
+holds for writes, with `EXECUTE` on the function; the engine mints and renews none.
+
+The tool is the one the server offers for the function, `{catalog}__{schema}__{function}`, and
+its arguments are the function's named parameters. None of the reference pages above names the
+tool or its arguments; they say only that the server exposes functions as tools. The name and
+the arguments are what Databricks' own examples call: at `…/api/2.0/mcp/functions/system/ai`,
+`call_tool("system__ai__python_exec", {"code": …})`, the built-in `system.ai.python_exec` with
+its one parameter, `code`, and the same form for a function of one's own, the three-part name
+joined by two underscores (`genai-agents/foundation/03-tools-and-data-access/references/managed-mcp-servers.md`
+in Databricks' `vibe-coding-workshop-template` repository, last changed 2026-06-06). `connect`'s
+check of the write operation fails when the server offers no tool by that name, and captures the
+function's input schema, which is what a policy's pointers are written against.
+
+**Raw SQL is no write tool.** The binding names no SQL server and no tool that takes a
+statement: a decision could then authorize an arbitrary statement, which no policy can bind
+argument by argument, since a statement's meaning is in its text. A function whose body runs a
+statement it is given is raw SQL by another name, and its author is the one to refuse it. (The
+`postgres` binding above predates this platform, and its `write` operation names `execute_sql`,
+which takes a statement; the same limit holds for it, and #260 is to decide what becomes of it.)

@@ -619,13 +619,13 @@ func TestFormatValueIsCanonicalOrderIndented(t *testing.T) {
 }
 
 func TestDescribeCheckShapes(t *testing.T) {
-	if got, err := describeCheck("mcp", []byte(`{"check":{"status":"succeeded","adapter":{"name":"npx","version":"","digest":"sha256:ab"},"server":{"name":"","version":""},"protocolVersion":"2024-11-05","tools":[]}}`)); err != nil || got != "npx (sha256:ab): server an unnamed server, protocol 2024-11-05, tools " {
+	if got, err := describeCheck("mcp", []byte(`{"check":{"status":"succeeded","adapter":{"name":"npx","version":"","digest":"sha256:ab"},"server":{"name":"","version":""},"protocolVersion":"2024-11-05","tools":[]}}`), ""); err != nil || got != "npx (sha256:ab): server an unnamed server, protocol 2024-11-05, tools " {
 		t.Fatalf("a command without a version, a server without a name: %q %v", got, err)
 	}
-	if _, err := describeCheck("http", []byte(airbyteReport)); err == nil || !strings.Contains(err.Error(), `no check for shape "http"`) {
+	if _, err := describeCheck("http", []byte(airbyteReport), ""); err == nil || !strings.Contains(err.Error(), `no check for shape "http"`) {
 		t.Fatalf("an unknown shape: %v", err)
 	}
-	if _, err := describeCheck("airbyte", []byte(`{"check":{"adapter":{"name":"a","digest":"d"},"status":"succeeded"},"extra":1}`)); err == nil {
+	if _, err := describeCheck("airbyte", []byte(`{"check":{"adapter":{"name":"a","digest":"d"},"status":"succeeded"},"extra":1}`), ""); err == nil {
 		t.Fatal("a report with more than the check is not a check report")
 	}
 	// A failed report says why; anything else is not one.
@@ -744,11 +744,11 @@ func TestConnectJudgesTheSeedAsServeDoes(t *testing.T) {
 
 func TestDescribeCheckReportsTheProbe(t *testing.T) {
 	report := `{"check":{"status":"succeeded","adapter":{"name":"crystaldba/postgres-mcp","version":"0.3.0","digest":"` + testImageDigest + `"},"server":{"name":"postgres-mcp","version":"0.3.0"},"protocolVersion":"2025-03-26","tools":["list_schemas"],"probe":{"tool":"list_schemas","answered":true}}}`
-	got, err := describeCheck("mcp", []byte(report))
+	got, err := describeCheck("mcp", []byte(report), "")
 	if err != nil || !strings.HasSuffix(got, "tools list_schemas; list_schemas answered") {
 		t.Fatalf("%q %v", got, err)
 	}
-	if _, err := describeCheck("mcp", []byte(strings.Replace(report, `"answered":true`, `"answered":false`, 1))); err == nil || !strings.Contains(err.Error(), `the probe "list_schemas" did not answer`) {
+	if _, err := describeCheck("mcp", []byte(strings.Replace(report, `"answered":true`, `"answered":false`, 1)), ""); err == nil || !strings.Contains(err.Error(), `the probe "list_schemas" did not answer`) {
 		t.Fatalf("a probe that did not answer: %v", err)
 	}
 }

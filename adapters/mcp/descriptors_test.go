@@ -595,7 +595,7 @@ func TestADescriptionWrittenPastSixTimesItsBoundIsNotDecoded(t *testing.T) {
 // field redacted and cut, the list within its bound, the rest counted --
 // while the listing runs, not after it.
 func TestFallbacksAreCutAsTheyAreRecorded(t *testing.T) {
-	c, err := newCapturer(DescriptorTarget{Platform: "tickets", Binding: testBinding}, initializeResult{name: "srv", version: "1"}, []string{"hunter2"}, "2026-09-15T00:00:00Z")
+	c, err := newCapturer(DescriptorTarget{Platform: "tickets", Binding: testBinding}, initializeResult{name: "srv", version: "1"}, []string{"hunter2"}, "2026-09-15T00:00:00Z", "")
 	if err != nil {
 		t.Fatal(err)
 	}

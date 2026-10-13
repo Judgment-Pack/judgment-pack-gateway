@@ -521,7 +521,7 @@ func TestReceiptsOfTrailsWithNoWitnessAreTodays(t *testing.T) {
 // trail is in it as it was, still the configuration's.
 func TestConnectKeepsWitnessedBy(t *testing.T) {
 	text := engineWithWitnessedBy(t, "7", `{"`+namedTrail+`":{"origin":"https://witness.example:443","publicKey":"`+witnessKey+`"}}`)
-	out, err := renderPlatformEntry([]byte(text), connectRequest{platform: "warehouse", credentials: map[string]string{"live": filepath.Join(t.TempDir(), "warehouse")}, user: "engine-warehouse"}, "postgres@sha256:"+strings.Repeat("a", 64), "")
+	out, err := renderPlatformEntry([]byte(text), connectRequest{platform: "warehouse", credentials: map[string]string{"live": filepath.Join(t.TempDir(), "warehouse")}, user: "engine-warehouse"}, "postgres@sha256:"+strings.Repeat("a", 64), "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

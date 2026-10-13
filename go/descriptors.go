@@ -26,8 +26,12 @@ const (
 )
 
 type snapshot struct {
-	platform   string
-	binding    string
+	platform string
+	binding  string
+	// endpoint is the URL a remote server's check reached, as the platform's
+	// parameters resolved it; "" for a server the adapter runs, whose
+	// snapshot names none.
+	endpoint   string
 	capturedAt string
 	server     *snapshotServer // nil when the identity fell back
 	tools      map[string]snapshotTool
@@ -44,7 +48,27 @@ type snapshotTool struct {
 
 var capturedAtForm = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$`)
 
-var snapshotMembers = map[string]bool{"binding": true, "capturedAt": true, "platform": true, "policy": true, "tools": true, "server": false}
+var snapshotMembers = map[string]bool{"binding": true, "capturedAt": true, "platform": true, "policy": true, "tools": true, "server": false, "endpoint": false}
+
+// snapshotEndpointProblem is why a snapshot does not describe the server
+// the platform's described operation reaches, or nil. A remote server's
+// snapshot names the URL its check reached, and that must be the URL the
+// platform's parameters resolve to now: a binding's digest pins its
+// template and not its tenant, so a platform whose organization or
+// workspace changed would otherwise serve another tenant's descriptors for
+// the server it now reaches. A server the adapter runs is named by the
+// binding's pinned image, and its snapshot names no endpoint.
+func snapshotEndpointProblem(s snapshot, described *operation) error {
+	switch {
+	case described.url == "" && s.endpoint != "":
+		return fmt.Errorf("the snapshot describes the remote server at %q, and the platform's operation runs a server of its own; capture its descriptors anew with connect --replace", requestText(s.endpoint))
+	case described.url != "" && s.endpoint == "":
+		return fmt.Errorf("the snapshot names no endpoint, and the platform's operation reaches the remote server at %q; a remote server's descriptors are pinned with the endpoint they were captured at, so capture them anew with connect --replace", requestText(described.url))
+	case s.endpoint != described.url:
+		return fmt.Errorf("the snapshot describes the server at %q, and the platform's operation now reaches %q: descriptors are pinned with the resolved endpoint they were captured at, so an endpoint that changed, a parameter's change among them, is captured anew with connect --replace", requestText(s.endpoint), requestText(described.url))
+	}
+	return nil
+}
 
 // parseSnapshot holds a snapshot's bytes to the note's shape: at most
 // maxSnapshotBytes, one strict JSON value -- valid UTF-8, no lone
@@ -77,6 +101,11 @@ func parseSnapshot(data []byte) (snapshot, error) {
 	}
 	if s.binding, err = requireString(obj, "binding"); err != nil || !isBindingRef(s.binding) {
 		return snapshot{}, errors.New("snapshot: binding is not name@sha256:<64 hex>")
+	}
+	if _, present := obj.get("endpoint"); present {
+		if s.endpoint, err = requireString(obj, "endpoint"); err != nil || !isRemoteEndpoint(s.endpoint) {
+			return snapshot{}, errors.New("snapshot: endpoint is not a remote server's endpoint")
+		}
 	}
 	if s.capturedAt, err = requireString(obj, "capturedAt"); err != nil || !capturedAtForm.MatchString(s.capturedAt) {
 		return snapshot{}, errors.New("snapshot: capturedAt is not RFC 3339 in UTC, to the second")

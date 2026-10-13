@@ -26,8 +26,12 @@ func previewDescriptors(configPath string, cfg engineConfig, bindings map[string
 		return "", fmt.Errorf("platform %s is not configured", platform)
 	}
 	b := bindings[platform]
-	if b.live == nil {
+	described := describedOperation(b, entry.write)
+	if described == nil {
 		return "", fmt.Errorf("platform %s has no live operation, so the MCP server lists no tool of it", platform)
+	}
+	if b.live == nil {
+		return previewWriteDescriptors(configPath, cfg, bindings, *entry, described)
 	}
 	only := cfg
 	only.platforms = []platformConfig{*entry}
@@ -51,6 +55,45 @@ func previewDescriptors(configPath string, cfg engineConfig, bindings map[string
 		fmt.Fprintf(&sb, "tool %s\n  description:\n", previewEscape(t.name))
 		for _, line := range strings.Split(describePlatformTool(t, served[platform]), "\n") {
 			sb.WriteString("  | " + previewEscape(line) + "\n")
+		}
+		sb.WriteString("  inputSchema:\n  | " + previewEscape(string(schema)) + "\n")
+	}
+	return sb.String(), nil
+}
+
+// previewWriteDescriptors renders what connect captured of the write tools
+// of a platform whose binding has no live operation: the MCP server lists
+// none of them, since it calls /acquire alone and a write is made through
+// /act, so the preview renders each tool's captured description and the
+// schema as the server would project it, and says that nothing serves them
+// as tools.
+func previewWriteDescriptors(configPath string, cfg engineConfig, bindings map[string]binding, entry platformConfig, write *operation) (string, error) {
+	only := cfg
+	only.platforms = []platformConfig{entry}
+	served, err := readServedPlatforms(configPath, only, bindings)
+	if err != nil {
+		return "", err
+	}
+	platform := entry.name
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "preview: platform %s has no live operation, so the MCP server lists no tool of it; its write tools are called through /act alone, and what connect captured of them is rendered below; every character outside printable ASCII is escaped\n", previewEscape(platform))
+	if entry.descriptors == "" {
+		sb.WriteString("preview: the platform pins no snapshot, so nothing of its write tools was captured\n")
+	}
+	tools := append([]string(nil), write.tools...)
+	sort.Strings(tools)
+	for _, tool := range tools {
+		t := mcpTool{name: platform + "." + tool, platform: platform, tool: tool, binding: entry.binding}
+		schema, err := json.Marshal(servedSchema(t, served[platform]))
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(&sb, "write tool %s\n", previewEscape(tool))
+		if sp := served[platform]; sp != nil && sp.tools[tool].description != nil {
+			sb.WriteString("  description, in the platform's server's own words, as captured:\n")
+			for _, line := range strings.Split(*sp.tools[tool].description, "\n") {
+				sb.WriteString("  | " + previewEscape(line) + "\n")
+			}
 		}
 		sb.WriteString("  inputSchema:\n  | " + previewEscape(string(schema)) + "\n")
 	}
