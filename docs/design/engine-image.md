@@ -208,8 +208,10 @@ service the host cannot read is what makes that acceptable. **3** is not pursued
 the adapter's behaviour depend on which connector language it met.
 
 MCP servers are pulled the same way, as pinned container images run as sibling processes, and
-the adapter speaks to them over stdio — a container's or a command's; a remote server reached
-over HTTPS with a token the adapter holds is not in this release, and is future work. `npx`-style
+the adapter speaks to them over stdio — a container's or a command's. A remote server reached
+over HTTPS with a token the adapter holds is the adapter's remote form
+([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)), for which nothing is
+pulled. `npx`-style
 installation at run time is refused: nothing runs that was not pinned by digest.
 
 ## What `verify` reads

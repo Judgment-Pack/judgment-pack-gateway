@@ -310,8 +310,8 @@ this needs, version 3, is normative in [SPEC.md §1.2a](SPEC.md) with vectors un
 [docs/design/receipt-v3.md](docs/design/receipt-v3.md). The adapters are in
 [adapters/](adapters/README.md): `adapter-airbyte`, a pinned connector image run through
 the operator's container runtime, one page of one stream per acquisition;
-`adapter-mcp`, a client of a vendor's MCP server over stdio, one tool call per
-acquisition; and `adapter-http`, one request over TLS to an endpoint the operator fixed —
+`adapter-mcp`, a client of a vendor's MCP server over stdio or, at a URL the operator
+fixes, over Streamable HTTP, one tool call per acquisition; and `adapter-http`, one request over TLS to an endpoint the operator fixed —
 a search provider's JSON API, a reader service that renders a page or a PDF as text — with
 a credential the adapter holds, one request per acquisition — wired to `serve` with
 `--source-shape NAME=airbyte`, `NAME=mcp` and `NAME=http`. That a record reached through

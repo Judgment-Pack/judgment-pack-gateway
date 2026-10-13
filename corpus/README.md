@@ -134,7 +134,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 40 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 49 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -183,6 +183,18 @@ and the member on a seal, which a seal does not sign, so the seal loads by its
 four members and names nothing. The witnesses are keys the witness vectors
 already name, the base point times 1 and times 2, so no secret beyond `TEST-SEED`
 is in the corpus.
+
+Nine hold what a remote MCP server adds to an acquisition (§1.2a, §6 shape `mcp`;
+`docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md`), each named
+`v3-mcp-remote-*`: a sealed session of two, one over TLS with an `https` endpoint
+and a `tls:sha256:` peer identity and one over plaintext at a loopback address with
+a null one, both `ok`; `malformed` for a `transport` outside its one value, for an
+`http` endpoint at a name, for an endpoint with a user, for a peer identity in upper
+case, for a null peer identity over TLS, for `transport` without `server`, and for
+the two on shape `http`; and a `server` carrying a member beside its two, which a
+verifier tolerates as it tolerates any signed member it does not know, `ok`. Every
+one is signed with its members, so what each holds is the member's form and not the
+signature.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them

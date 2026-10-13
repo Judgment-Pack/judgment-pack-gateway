@@ -242,7 +242,9 @@ func validateAcquisition(v value) error {
 	if _, err := requireString(obj, "observedAt"); err != nil {
 		return fmt.Errorf("acquisition: %w", err)
 	}
-	return nil
+	// What a remote MCP server adds (ADR-0015), held to its form; another
+	// member of server is tolerated, as any member a verifier does not know.
+	return remoteMembersProblem(obj, shape, false)
 }
 
 // validateAction holds an action object to §1.2a and fills in what the

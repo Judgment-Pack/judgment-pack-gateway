@@ -1,0 +1,20 @@
+{
+  "name": "v3-mcp-remote-server-member-tolerated",
+  "note": "A remote acquisition whose server carries a member beside name and version: a verifier tolerates a member it does not know at any depth, since a signed one is the signer's own (§6), so the receipt is ok; the signer refuses such an envelope, which is no concern of the verifier's.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580": "{\"n\":0,\"session\":\"s-remote\"}",
+    "receipts/s-remote/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:a22c061264d59629ff4720ce714d9e4089f905eb2b7573963fab2dc3a8b782cd\",\"name\":\"adapter-mcp\",\"version\":\"0\"},\"endpoint\":\"https://mcp.example/api/mcp\",\"observedAt\":\"2026-10-13T00:00:00Z\",\"peerIdentity\":\"tls:sha256:bbcc0315e014e772aeb06e92c05f3f2a798a71c23657d638f43ce638b3713727\",\"schema\":null,\"server\":{\"name\":\"example-remote\",\"vendor\":\"example\",\"version\":\"1.4.0\"},\"shape\":\"mcp\",\"snapshot\":null,\"statement\":\"sha256:b111c6e1d318f203063e5c16bab43c108326af0aa2f7b65760c95547a43dbe52\",\"transport\":\"http\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:5cf145a7c4b85171a8b8a7b69e5f79c97e841f966a3ec30b4de5a4ec3c89be29\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580\",\"servedAt\":\"2026-10-13T00:00:00Z\",\"sessionId\":\"s-remote\",\"signature\":\"c6ca14233ebed838a58d955fff8d1596f15bba8212a81e3fbb3201c933d27ac3e95d02001c74b5e4acbe50cc937fa31708806451669ff23d9676a5a889affd01\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-10-13T00:00:01Z\",\"sessionId\":\"s-remote\",\"signature\":\"0d1559eb68a804b9c97c370a8a4171cb79a253cd9b891b1b5f22766b116a951a04109c7e8327641f43197e3c5556bfa63f8ed3857b0e4b513a1c911411947f0a\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s-remote",
+        "status": "ok"
+      }
+    ]
+  }
+}

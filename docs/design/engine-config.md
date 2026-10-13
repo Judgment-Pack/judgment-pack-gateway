@@ -283,6 +283,14 @@ way:
 | `<platform>/live` | `adapter-mcp` | `--image=<live.server.image> --credentials=<credentials.live.file> --runtime=<runtime> --tools=<live.tools, comma-joined> [--endpoint=<endpoint>] [-- <live.server.args>]` |
 | `<platform>/write` | `adapter-mcp` | `--image=<write.server.image> --credentials=<credentials.write.file> --runtime=<runtime> --tools=<write.tools, comma-joined> --error-results [--endpoint=<endpoint>] [-- <write.server.args>]` — derived only for a platform whose configuration sets `write: true`; it is what the executor runs ([executor.md](executor.md)) and never a source `/acquire` may name |
 
+For an operation whose binding names a remote server (below), `live` and `write` are derived
+as `--url=<server.url> --credentials=<credentials.<operation>.file> --bearer=<server.bearer>
+[--header=<NAME=VALUE>]... --tools=<tools, comma-joined>`, with `--error-results` after the
+tools for `write`, and the probe for `live` as above: no runtime, no `--endpoint` — the URL is
+the endpoint the receipt names, and for a write the action receipt's `action.tool.endpoint`
+([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)) — and no server
+arguments.
+
 Every flag and its value are one word, `flag=value`: a value that is `--` on its own would be
 the delimiter the adapter splits its line at, and a tool, an endpoint or a runtime can be so
 named.
@@ -477,7 +485,19 @@ each naming its shape, the pinned artifact that serves it, the tools it may call
 licence of the artifact it pulls. An `mcp` entry's `server.args`, when present, are the
 server's own arguments inside its container — the mode a server runs in, say — each one word
 as written: the engine builds the adapter's command line and splits nothing, and the adapter
-hands them to the runtime after the image. Its `probe`, when present, is `{"tool", "failure"?}`: `tool` is one of its `tools`
+hands them to the runtime after the image. An `mcp` entry's `server` may instead name a remote
+server reached over Streamable HTTP
+([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)):
+`{"url": "https://…", "bearer": "MEMBER", "headers": ["NAME=VALUE", …]}`, exactly those, `headers`
+optional and the other two required. `url` is held to the endpoint form `SPEC.md` §1.2a gives a
+remote server — `https`, or `http` at a loopback address written as one; no user, query or
+fragment — since the receipt will carry it; `bearer` is the member of the operation's
+credentials file sent as `Authorization: Bearer`, so the platform names a credentials file for
+that operation as for any other; and each header is a name and a value the adapter would accept
+as a fixed header — a credential's, the protocol's, and the ones the client and the transport
+write are refused here, before the engine starts. A remote server has no image to pin: what the receipt names it by is its URL and the TLS
+identity its answer came under, and the binding's digest pins the URL. The engine passes no
+`--ca-file`, so a remote server's certificate chains to the system's roots. Its `probe`, when present, is `{"tool", "failure"?}`: `tool` is one of its `tools`
 that a check calls once with no arguments — a server that starts and lists its tools without a
 working connection to its platform answers the handshake all the same, and the probe is what
 establishes the connection — and `failure`, when present, is the text such an answer begins

@@ -152,8 +152,8 @@ the adapter's canonicalizer answers to the same frozen vectors as the core's
 ## adapter-mcp
 
 A client of a [Model Context Protocol](https://modelcontextprotocol.io) server reached over
-stdio — the servers vendors now publish for their own systems — that calls **one tool** per
-acquisition: the tool's whole result as the result, and the acquisition as the adapter
+stdio, or over Streamable HTTP at a URL (the remote form, below) — the servers vendors now
+publish for their own systems — that calls **one tool** per acquisition: the tool's whole result as the result, and the acquisition as the adapter
 recorded it. It is meant for live reads at decision time; writes belong to the executor,
 later. **The adapter cannot tell a read tool from a write tool**: an offered tool of any name
 is callable with the configured credentials, and a read tool given a write statement runs
@@ -183,7 +183,7 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   env file in its private mount; a command gets them beside the adapter's own environment,
   which is what the operator declared and what a launcher like `npx` needs. The file is at
   most 1 MiB and is held to exact member names with a duplicate refused, so every value in it
-  is one the redactor knows; each member is an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`,
+  is one the redactor knows; for a server the adapter runs, each member is an environment variable name (`[A-Za-z_][A-Za-z0-9_]*`,
   since an env file drops a line that begins with `#` or whitespace) with a string value
   holding no newline, carriage return or NUL, since an env file is read by lines and a
   carriage return before the newline is dropped with it — a value the container would see
@@ -193,7 +193,8 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   any server starts.
 - `--check` starts the server with the credentials, completes the handshake and lists its
   tools, then reports on stdout — `{"check": {"adapter", "server": {"name", "version"},
-  "protocolVersion", "tools"}}` — calling nothing and reading no stdin. A tool named by
+  "protocolVersion", "tools"}}`, with `"transport": "http"`, `"endpoint"` and, over TLS,
+  `"peerIdentity"` after `adapter` for a remote server — calling nothing and reading no stdin. A tool named by
   `--tools` that the server does not offer fails the check, so a binding that names a tool
   the pinned server lacks is found out when the platform is connected, not at the first
   acquisition. A server that starts and lists its tools without a working connection to its
@@ -224,6 +225,64 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   while both hold; and `fallbacks`, each tool and part not captured with the reason, at most
   64 KiB with the rest counted in `fallbacksUnlisted`.
 
+**The remote form.** `--url` names a server reached over
+[Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports),
+instead of an image or a command, and is exclusive with both: given together, or with words
+after `--`, they are refused before anything is read
+([ADR-0015](../docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)).
+
+```
+gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
+  --source tickets='adapter-mcp --url https://mcp.example.com/api/mcp --credentials /run/secrets/tickets --bearer TICKETS_TOKEN --header X-MCP-Readonly=true --tools get_ticket' \
+  --source-shape tickets=mcp
+```
+
+- `--url` is held as `adapter-http` holds its endpoint, a little narrower: `https`, or `http`
+  at a loopback address written as one (127.0.0.0/8 in dotted decimal, or `[::1]` — a name such
+  as `localhost` is not one, since what it resolves to is not in the text); no user, no query,
+  no fragment; at most 2048 bytes of printable ASCII, the scheme in lower case. It is used
+  exactly as written, nothing appended. A redirect is never followed: the server's `3xx` fails
+  the call, named by its status and never by its location.
+- `--bearer MEMBER` names the member of the `--credentials` file sent as
+  `Authorization: Bearer`. The file is a JSON object of strings, held as above; nothing else of
+  it is sent, and every value in it is redacted from what the adapter reports. The credential is
+  never on a command line, and never in an error, a log, the envelope or the report; an answer
+  that repeats it, as written or escaped, is refused before anything of it is read.
+  `--credentials` without `--bearer` is refused — a credentials file with no use is a mistake —
+  and a server that takes no credential is given neither.
+- `--header NAME=VALUE` is sent on every request as written and may be given more than once.
+  `Authorization`, `Proxy-Authorization` and `Cookie` are refused (a credential's place is the
+  credentials file), and so are the protocol's (`Mcp-Session-Id`, `Mcp-Protocol-Version`,
+  `Last-Event-ID`) and the ones the client and the transport write (`Content-Type`, `Accept`,
+  `Content-Length`, `Host`, `Transfer-Encoding`, `Connection`, `Accept-Encoding`). A read-only
+  header the server honours — Azure DevOps' `X-MCP-Readonly`, say — is the operator's to send,
+  and is the server's promise: nothing in the record claims it.
+- `--ca-file` is a PEM file whose certificates are the only roots trusted for the server,
+  instead of the system's, as `adapter-http` has it.
+- One session per invocation: `initialize` — held to the same rules as over stdio — then
+  `notifications/initialized`, the tool list, the one `tools/call` (or, for `--check`, the list
+  and the probe), and the session ended with a `DELETE`. The session id the server issues
+  (`Mcp-Session-Id`) is the client's: sent on every later request, and recorded nowhere. An
+  answer may be JSON or an event stream; each is read no further than `--max-output` or 8 MiB,
+  whichever is larger, and a tool's result is then held to `--max-output` as over stdio. A
+  request the server makes of the client is answered as over stdio. A body that is not a JSON-RPC
+  message, of another content type, a response to another request, or a status outside `2xx` —
+  the server's refusal, named by its status — fails the call; a JSON-RPC error is reported in
+  the server's words, redacted.
+- `--tools`, `--check`, `--probe`, `--probe-failure`, the descriptors capture, `--error-results`,
+  `--max-output` and the result's reading are the stdio form's, unchanged. `--endpoint` is
+  refused beside `--url`, which is the endpoint the receipt records, and `--runtime` is not used.
+  `--timeout` bounds the call, and ending the session takes up to five seconds more.
+
+What a remote acquisition establishes: that an endpoint at that URL, presenting that TLS
+identity, answered that tool call with those arguments with those bytes, at that time, under the
+operator's credential, where one is configured (the record itself does not say whether one was
+sent) — byte lineage from that endpoint, and nothing about whether
+the bytes are true. What it does not: that the tool read rather than wrote (the adapter cannot
+tell, and `--tools` is the only thing that keeps a source to reads); that the server is honest or
+is the vendor's; that the name and version it gave itself are its own; or anything the session
+carried beyond the one call.
+
 The request, as canonical arguments on stdin:
 
 ```json
@@ -237,15 +296,17 @@ What the envelope carries, and so what the receipt records:
 
 | Member | From |
 |---|---|
-| `adapter` | the pinned image: name, tag, digest; for a command, the command as configured, the version the server reports of itself (redacted, as a diagnostic is), and the digest of the executable |
-| `endpoint` | `--endpoint`, or `null` |
+| `adapter` | the pinned image: name, tag, digest; for a command, the command as configured, the version the server reports of itself (redacted, as a diagnostic is), and the digest of the executable; for a remote server, this adapter: `adapter-mcp`, its version, and the digest of its own executable |
+| `endpoint` | `--endpoint`, or `null`; for a remote server, the URL as configured |
 | `statement` | the call — tool and arguments — which the gateway commits to under a salt |
 | `snapshot` | `null`: the protocol offers no bookmark |
-| `peerIdentity` | `null`: a server over stdio establishes no transport identity |
+| `peerIdentity` | `null`: a server over stdio establishes no transport identity; for a remote server, `tls:sha256:` the digest of the leaf certificate the call's answer came under, `null` over plaintext loopback |
 | `schema` | the digest of the tool's declared output schema, canonicalized per §1.1 with any non-integer number carried as its decimal text; `null` when the tool declares none, which most do today — the descriptor's name, title, description and annotations are presentation, not schema |
 | `upstreamToken` | `null` |
 | `observedAt` | when the tool's answer was read |
 | `result` | the tool's whole result — content, structured content — carried into the canon domain; no `page` |
+| `transport` | for a remote server only: `"http"`; absent over stdio, whose envelope is what it was before the remote form |
+| `server` | for a remote server only: `{"name", "version"}` as its `initialize` answer gave them, redacted as a diagnostic is; absent over stdio |
 
 The handshake is `initialize` — refused unless the server answers with a protocol version
 this client speaks (2025-06-18, 2025-03-26 or 2024-11-05), a tools capability, and a

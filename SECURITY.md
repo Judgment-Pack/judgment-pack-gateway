@@ -120,6 +120,24 @@ adapter-shape receipt to the program that produced it takes the operator's own r
 was configured as that source, until the engine configuration and its release make that record
 (ADR-0002 records this as open).
 
+**A remote MCP server is a network party that holds the operator's credential for the
+connection** ([ADR-0015](docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)).
+`adapter-mcp --url` sends the member of its credentials file that `--bearer` names, and nothing
+else of the file, to the one URL the operator fixed — `https`, or `http` at a loopback address
+written as one — follows no redirect, and refuses an answer that repeats the credential; the
+server holds it for as long as it holds the connection, and what it does with it is bounded by
+what the platform lets that credential do, not by the adapter. **The adapter cannot tell a read
+tool from a write tool**, over HTTP as over stdio: `--tools` is the only thing that keeps a source
+to reads, so the tools a binding's `live` operation names are the operator's statement of what may
+be called, and a credential the platform holds to reading is what makes that statement true. A
+read-only header the server honours, given with `--header`, is the server's promise and nothing
+the receipt claims. The record names the URL, the TLS identity the answer came under and the name
+and version the server gave itself; it does not say the tool read rather than wrote, that the
+server is honest or the vendor's, or anything the session carried. The session id the server
+issues is the client's alone and is in no record. For a write, the executor is the same adapter
+and the same rules: the write credential goes to the URL its binding names, after the decision
+policy has held the write, and a write the policy refuses reaches no server.
+
 **Version 2's arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
 keyed digest of the canonical arguments, with no per-receipt salt. The keying stops a party that only
 holds receipts from brute-forcing a small argument space; it does not stop a party that can also

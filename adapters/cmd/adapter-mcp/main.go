@@ -1,8 +1,9 @@
 // Command adapter-mcp is the gateway's MCP-shaped adapter, spawned by
 // `gateway serve` as a source declared with `--source-shape NAME=mcp`
 // (SPEC.md §6). It reads the canonical arguments on stdin -- which tool,
-// with what arguments -- calls that tool on the configured server over
-// stdio, and writes one envelope on stdout.
+// with what arguments -- calls that tool on the configured server, over
+// stdio or, for a remote server given by --url, over Streamable HTTP, and
+// writes one envelope on stdout.
 package main
 
 import (
@@ -21,17 +22,28 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
 }
 
+// headerList is a flag given once per header.
+type headerList []string
+
+func (h *headerList) String() string     { return strings.Join(*h, ",") }
+func (h *headerList) Set(v string) error { *h = append(*h, v); return nil }
+
 func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("adapter-mcp", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	image := fs.String("image", "", "pinned server image, name[:tag]@sha256:<64 hex>; or give a local server command after --")
-	credentials := fs.String("credentials", "", "path of a JSON object of strings that become the server's environment")
+	image := fs.String("image", "", "pinned server image, name[:tag]@sha256:<64 hex>; or give a local server command after --, or a remote server's --url")
+	url := fs.String("url", "", "a remote server reached over Streamable HTTP, used as written: https, or http at a loopback address written as one; no user, no query, no fragment")
+	bearer := fs.String("bearer", "", "with --url, the member of the --credentials file sent as Authorization: Bearer")
+	var headers headerList
+	fs.Var(&headers, "header", "with --url, NAME=VALUE sent on every request as written; may be given more than once; a credential's header and the protocol's are refused")
+	caFile := fs.String("ca-file", "", "with --url, a PEM file whose certificates are the only roots trusted for the server, instead of the system's")
+	credentials := fs.String("credentials", "", "path of a JSON object of strings that become the server's environment; with --url, the object whose --bearer member is sent")
 	runtime := fs.String("runtime", "docker", "container runtime command for --image: docker or podman")
 	endpoint := fs.String("endpoint", "", "the host the server reaches, as the operator names it; recorded as the receipt's endpoint")
 	tools := fs.String("tools", "", "the only tools a request may name, comma-separated; all offered when empty")
 	errorResults := fs.Bool("error-results", false, "envelope a tool result that reports an error as the result of the call instead of failing: what an executor needs, since a target's refusal of a write is a response to receipt")
 	maxOutput := fs.Int64("max-output", 1<<20, "bound on the envelope in bytes; keep it at or below the gateway's --source-max-output")
-	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; the adapter's cleanup wait budget for stopping the server is nine seconds on top of it for an --image server, seven for a server command given after --. The gateway's source timeout (thirty seconds by default, or the --source-timeout given that source) starts before the adapter does, so keep this plus that budget under it, with further margin for that start and for the adapter's report: the margin is what a call reaching this deadline needs to be reported rather than killed")
+	timeout := fs.Duration("timeout", 20*time.Second, "time allowed for the call; the adapter's cleanup wait budget for stopping the server is nine seconds on top of it for an --image server, seven for a server command given after --, five for ending a --url server's session. The gateway's source timeout (thirty seconds by default, or the --source-timeout given that source) starts before the adapter does, so keep this plus that budget under it, with further margin for that start and for the adapter's report: the margin is what a call reaching this deadline needs to be reported rather than killed")
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
 	probe := fs.String("probe", "", "with --check, a tool to call once with no arguments, so a server that lists its tools without reaching its platform is found out; its result is read for an error and discarded")
 	probeFailure := fs.String("probe-failure", "", "with --probe, text the probe's answer begins with when the platform was not reached, for a server that answers its own failure as ordinary text")
@@ -53,11 +65,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "adapter-mcp: a server command or a server's arguments follow --; nothing else is positional")
 		return 2
 	}
-	if *image == "" && len(positional) == 0 {
-		fmt.Fprintln(stderr, "usage: adapter-mcp (--image REF@sha256:HEX [-- SERVER ARGS...] | [options] -- CMD ARGS...) [--check] [--credentials FILE] [--runtime docker|podman] [--endpoint HOST] [--tools A,B] [--max-output BYTES] [--timeout D]")
+	if *image == "" && *url == "" && len(positional) == 0 {
+		fmt.Fprintln(stderr, "usage: adapter-mcp (--image REF@sha256:HEX [-- SERVER ARGS...] | --url https://HOST/PATH [--bearer MEMBER] [--header NAME=VALUE]... [--ca-file PEM] | [options] -- CMD ARGS...) [--check] [--credentials FILE] [--runtime docker|podman] [--endpoint HOST] [--tools A,B] [--max-output BYTES] [--timeout D]")
 		return 2
 	}
-	cfg := mcp.Config{Runtime: *runtime, Image: *image, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
+	cfg := mcp.Config{Runtime: *runtime, Image: *image, URL: *url, Bearer: *bearer, Headers: headers, CAFile: *caFile, Credentials: *credentials, Endpoint: *endpoint, MaxOutput: *maxOutput}
 	if *image != "" {
 		cfg.Args = positional
 	} else {
@@ -78,6 +90,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	if *descriptorsPlatform != "" {
 		cfg.Descriptors = &mcp.DescriptorTarget{Platform: *descriptorsPlatform, Binding: *descriptorsBinding}
+	}
+	// The form is held before anything is read -- the request, the
+	// credentials -- so a configuration naming two servers, or a remote
+	// one off its rules, is refused with stdin untouched.
+	if err := cfg.Refusal(); err != nil {
+		fmt.Fprintln(stderr, "adapter-mcp:", err)
+		if *check {
+			stdout.Write(mcp.FailedCheck(err.Error()))
+		}
+		return 1
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()

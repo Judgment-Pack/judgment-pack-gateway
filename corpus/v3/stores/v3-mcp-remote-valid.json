@@ -1,0 +1,27 @@
+{
+  "name": "v3-mcp-remote-valid",
+  "note": "A sealed session of two acquisitions from a remote MCP server (ADR-0015): the first over TLS, its endpoint an https URL and its peer identity tls:sha256: and 64 lowercase hex; the second over plaintext at a loopback address written as one, its peer identity null. Each carries transport \"http\" and server, the name and version the server gave itself, beside the eight members every acquisition has.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580": "{\"n\":0,\"session\":\"s-remote\"}",
+    "artifacts/dd8f4ff7d516111f1c2e7ec6e80fe3047970563a82ba9e89b9903d6e4dfe5cf8": "{\"n\":1,\"session\":\"s-remote\"}",
+    "receipts/s-remote/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:a22c061264d59629ff4720ce714d9e4089f905eb2b7573963fab2dc3a8b782cd\",\"name\":\"adapter-mcp\",\"version\":\"0\"},\"endpoint\":\"https://mcp.example/api/mcp\",\"observedAt\":\"2026-10-13T00:00:00Z\",\"peerIdentity\":\"tls:sha256:bbcc0315e014e772aeb06e92c05f3f2a798a71c23657d638f43ce638b3713727\",\"schema\":null,\"server\":{\"name\":\"example-remote\",\"version\":\"1.4.0\"},\"shape\":\"mcp\",\"snapshot\":null,\"statement\":\"sha256:b111c6e1d318f203063e5c16bab43c108326af0aa2f7b65760c95547a43dbe52\",\"transport\":\"http\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:5cf145a7c4b85171a8b8a7b69e5f79c97e841f966a3ec30b4de5a4ec3c89be29\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580\",\"servedAt\":\"2026-10-13T00:00:00Z\",\"sessionId\":\"s-remote\",\"signature\":\"a5559f385178b5402d96d16814bd214bfd619bd2249487851cfac0e8cc809657efe76ff379ef7c0900213bde491c807dfada8c5eb9b6ea406d47f7330e6bb603\",\"source\":\"corpus\"}\n",
+    "receipts/s-remote/1.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:a22c061264d59629ff4720ce714d9e4089f905eb2b7573963fab2dc3a8b782cd\",\"name\":\"adapter-mcp\",\"version\":\"0\"},\"endpoint\":\"http://127.0.0.1:8080/mcp\",\"observedAt\":\"2026-10-13T00:00:00Z\",\"peerIdentity\":null,\"schema\":null,\"server\":{\"name\":\"example-remote\",\"version\":\"1.4.0\"},\"shape\":\"mcp\",\"snapshot\":null,\"statement\":\"sha256:b111c6e1d318f203063e5c16bab43c108326af0aa2f7b65760c95547a43dbe52\",\"transport\":\"http\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:92ed19f9a12b624d40167ddf2e5f9fac3fff30924add5f244675ed8bf6d28d30\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":\"a5559f385178b5402d96d16814bd214bfd619bd2249487851cfac0e8cc809657efe76ff379ef7c0900213bde491c807dfada8c5eb9b6ea406d47f7330e6bb603\",\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:dd8f4ff7d516111f1c2e7ec6e80fe3047970563a82ba9e89b9903d6e4dfe5cf8\",\"servedAt\":\"2026-10-13T00:00:00Z\",\"sessionId\":\"s-remote\",\"signature\":\"91197a2fb4aa39157190a5b7fa13141c1e6eb285fb7569e908d47a0343f6daf9fa62a5d3a9123a5b7b5fa844b749ffdb10e62b907252ab014025c608a208b807\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-10-13T00:00:01Z\",\"sessionId\":\"s-remote\",\"signature\":\"0479997404a9e7e2a9c257876a240c9dbbb776717eaa9f82a048df1affe762e57087a4e52b4ef1a6eb6becaff795c94e8aca354f1cc1aee0a3b3070daba7800e\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s-remote",
+        "status": "ok"
+      },
+      {
+        "callIndex": 1,
+        "sessionId": "s-remote",
+        "status": "ok"
+      }
+    ]
+  }
+}

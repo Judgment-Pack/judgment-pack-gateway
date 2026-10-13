@@ -14,16 +14,26 @@ import (
 
 	"adapters/internal/containers"
 	"adapters/internal/redact"
+	"adapters/mcphttp"
 )
 
-// server is a running MCP server reached over stdio: a pinned image in the
-// operator's container runtime, or a local command.
+// server is the MCP server a conversation is held with: a running server
+// reached over stdio -- a pinned image in the operator's container
+// runtime, or a local command -- or a remote one reached over Streamable
+// HTTP (remote.go), whose client is remote.
 type server struct {
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
+	rpc       conversation
 	stop      func() error
 	firstLine func() string
 	identity  adapterIdentity
+	remote    *mcphttp.Client
+}
+
+// stdioConversation is JSON-RPC over a started server's stdio.
+type stdioConversation struct{ *client }
+
+func (s stdioConversation) initialized(_ context.Context, _ string) error {
+	return s.notify("notifications/initialized", map[string]any{})
 }
 
 // startServer starts the server the configuration names with the
@@ -57,7 +67,7 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		if err != nil {
 			return nil, err
 		}
-		return &server{stdin: c.Stdin, stdout: c.Stdout, stop: c.Stop, firstLine: c.FirstLine,
+		return &server{rpc: stdioConversation{newClient(c.Stdin, c.Stdout)}, stop: c.Stop, firstLine: c.FirstLine,
 			identity: adapterIdentity{Name: image.Name, Version: image.Version, Digest: image.Digest}}, nil
 	}
 	path, err := exec.LookPath(cfg.Command[0])
@@ -139,7 +149,7 @@ func startServer(ctx context.Context, cfg Config, env, secrets []string) (*serve
 		// the credentials.
 		return killDescendants()
 	}
-	return &server{stdin: stdin, stdout: stdout, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
+	return &server{rpc: stdioConversation{newClient(stdin, stdout)}, stop: stop, firstLine: func() string { return stderr.firstLine(redactor) },
 		identity: adapterIdentity{Name: cfg.Command[0], Digest: digest}}, nil
 }
 
@@ -206,6 +216,6 @@ func (b *boundedBuffer) firstLine(redactor func(string, bool) string) string {
 }
 
 // errNoServer is a configuration that names no server to run, or two.
-// The command spells the pair as the operator gives it: --image, or a
-// server command after --.
-var errNoServer = errors.New("exactly one of --image and a server command after -- names the server")
+// The command spells the three as the operator gives them: --image,
+// --url, or a server command after --.
+var errNoServer = errors.New("exactly one of --image, --url and a server command after -- names the server")
