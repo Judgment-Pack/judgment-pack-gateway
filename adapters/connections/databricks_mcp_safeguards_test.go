@@ -30,6 +30,9 @@ type dbMCPTransport struct {
 	redirect                              bool
 	oversize, path                        string
 	requests, calls, lists                int
+	// onWrongPath, when set, receives a wrong-path report instead of the
+	// test failing: the proof that the fixture reports one.
+	onWrongPath func(string)
 }
 
 func (x *dbMCPTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -49,8 +52,14 @@ func (x *dbMCPTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	if r.URL.Path == "/oidc/v1/token" {
 		return answer(200, dbMintedAnswer), nil
 	}
-	if strings.HasPrefix(r.URL.Path, "/api/2.0/mcp/") && x.path != "" && r.URL.Path != x.path {
-		x.t.Fatal("another MCP endpoint:", r.URL.Path)
+	// Every MCP request, on any server kind, is held to the configured path:
+	// only the token request (above) and the workspace API's GET (answered
+	// below) are not MCP requests.
+	if r.Method != "GET" && x.path != "" && r.URL.EscapedPath() != x.path {
+		if x.onWrongPath == nil {
+			x.t.Fatal("another MCP endpoint:", r.URL.EscapedPath())
+		}
+		x.onWrongPath(r.URL.EscapedPath())
 	}
 	bearer := x.c.Token
 	if bearer == "" {
@@ -434,5 +443,49 @@ func TestDatabricksMCPATestAnswerNeverCarriesTheSessionID(t *testing.T) {
 	raw, _ := json.Marshal(answer)
 	if err != nil || !bytes.HasSuffix(raw, []byte(`"ok":true}`)) || bytes.Contains(raw, []byte(dbSession)) {
 		t.Fatalf("test %s %v", raw, err)
+	}
+}
+
+// The fixture's endpoint assertion is active on every server kind, the
+// Unity Gateway's /ai-gateway/ paths included: given a wrong expected path
+// it reports the first MCP request, and the right one it reports nothing.
+func TestDatabricksMCPFixtureReportsAWrongExpectedPath(t *testing.T) {
+	wrong := map[string]string{
+		"/api/2.0/mcp/sql":                         "/api/2.0/mcp/genie/other",
+		"/api/2.0/mcp/genie/" + dbSpace:            "/api/2.0/mcp/sql",
+		"/api/2.0/mcp/functions/main/finance/rate": "/api/2.0/mcp/functions/main/finance/other",
+		"/api/2.0/mcp/ai-search/main/docs/chunks":  "/api/2.0/mcp/ai-search/main/docs/other",
+		dbGatewayPath:                              "/ai-gateway/mcp-services/system.ai.other",
+	}
+	servers := map[string]string{
+		"/api/2.0/mcp/sql": dbServers()[0].Server, "/api/2.0/mcp/genie/" + dbSpace: dbServers()[1].Server,
+		"/api/2.0/mcp/functions/main/finance/rate": dbServers()[2].Server, "/api/2.0/mcp/ai-search/main/docs/chunks": dbServers()[3].Server,
+		dbGatewayPath: dbGateway,
+	}
+	for right, expected := range wrong {
+		fields, list := dbTokenFields(), dbServers()
+		if right == dbGatewayPath {
+			fields, list = dbGatewayPrincipal(), dbGatewayServers()
+		}
+		s, _, c, _ := dbMCPFixture(t, fields, list)
+		for _, path := range []string{right, expected} {
+			var reported []string
+			x := &dbMCPTransport{t: t, c: c, path: path, session: dbSession, onWrongPath: func(p string) { reported = append(reported, p) }}
+			var tool string
+			for _, server := range list {
+				if server.Server == servers[right] {
+					tool = server.Tools[0]
+				}
+			}
+			databricksAcquire(context.Background(), s, dbMCPRead(c, servers[right], tool, `{"query":"sample"}`), dbMCPThrough(x))
+			if (path == right) != (len(reported) == 0) {
+				t.Errorf("%s expected as %s: reported %v", right, path, reported)
+			}
+			for _, p := range reported {
+				if p != right {
+					t.Errorf("%s: reported %q, not the path asked for", right, p)
+				}
+			}
+		}
 	}
 }
