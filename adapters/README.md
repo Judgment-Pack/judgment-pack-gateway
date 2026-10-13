@@ -1322,7 +1322,7 @@ connection's SQL warehouse, or one page of a Unity Catalog listing. Catalog v3
 advertises the provider under the protocol `databricks-v1` (`status`,
 `configure`, `test`, `disconnect`; `auth` `client-credentials`), and the local
 source plan names the source `databricks` with 60 seconds. The managed MCP
-servers are a later profile.
+servers are its MCP profile (below).
 
 `configure` takes the connection's `id`, its `revision` (empty to create, the
 current one to change it), a `name`, and the setup fields: `workspace-url`,
@@ -1430,6 +1430,166 @@ The tests answer from an in-process TLS server; a live check runs only where
 `JPACK_DATABRICKS_LIVE_WORKSPACE` and its companions name a workspace, and is
 otherwise skipped. They are not a claim that a live workspace accepts the
 requests or answers as recorded.
+
+### Databricks connections (MCP profile)
+
+A Databricks connection may also enable the workspace's managed MCP servers,
+which Databricks now lists as the legacy workspace endpoints of its
+[Databricks-provided MCPs](https://docs.databricks.com/aws/en/agents/mcp-tools/built-in-mcp-services)
+(updated 2026-10-08): each an endpoint under the workspace, reached over
+Streamable HTTP ([authentication and networking](https://docs.databricks.com/aws/en/agents/mcp-tools/authentication-networking),
+updated 2026-10-07), and available once a workspace administrator has enabled
+**Managed MCP Servers** on the workspace's Previews page; and the MCP services
+registered in Unity Catalog that Databricks' Unity Gateway serves, which
+Databricks now recommends (below). `configure` takes
+`mcp`, the servers the connection enables, each a `server` by its name and
+`tools`, the names a read may call on it (none, when the list is empty or left
+out):
+
+| `server` | Endpoint under the workspace | Scope the server's page names |
+|---|---|---|
+| `sql` | `/api/2.0/mcp/sql` | `sql` |
+| `genie:<space id>` | `/api/2.0/mcp/genie/<space id>` | `genie` |
+| `functions:<catalog>.<schema>.<function>` | `/api/2.0/mcp/functions/<catalog>/<schema>/<function>` | `unity-catalog` |
+| `ai-search:<catalog>.<schema>.<index>` | `/api/2.0/mcp/ai-search/<catalog>/<schema>/<index>` | `ai-search` |
+| `unity-gateway:<catalog>.<schema>.<service>` | `/ai-gateway/mcp-services/<catalog>.<schema>.<service>` | `ai-gateway` |
+
+The endpoints and scopes are those of Databricks' pages for
+[Databricks SQL](https://docs.databricks.com/aws/en/agents/mcp-tools/databricks-sql)
+(updated 2026-10-08), the [Genie Agent](https://docs.databricks.com/aws/en/agents/mcp-tools/genie-agent),
+[Unity Catalog functions](https://docs.databricks.com/aws/en/agents/mcp-tools/uc-functions)
+and [AI Search](https://docs.databricks.com/aws/en/agents/mcp-tools/ai-search)
+(each updated 2026-10-07). A space id is 32 lowercase hexadecimal characters,
+as the [Genie API](https://docs.databricks.com/api/workspace/genie/startconversation)
+writes one (no date shown); each Unity Catalog name is held to the API
+profile's name form and written into the path as a path segment,
+percent-encoded where it must be. A Unity Catalog functions server is one
+function, as the page shows it; AI Search is what Databricks formerly called
+vector search, and the former `vector-search` prefix is not taken. A tool's
+name is 1 to 128 ASCII letters, digits, `_`, `-` and `.`, the form the
+[MCP specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names)
+says a name should take. A server's name or a tool that carries the
+connection's credential, as written or in JSON escapes, is refused, and so is
+a name that holds `*`: a name is a name, never a pattern. A connection enables
+at most 16 servers, each with at most 32 tools.
+
+**Unity Gateway services.** `unity-gateway:<catalog>.<schema>.<service>` is an
+MCP service registered in Unity Catalog, reached at
+`/ai-gateway/mcp-services/<catalog>.<schema>.<service>` under the workspace
+([authentication and networking](https://docs.databricks.com/aws/en/agents/mcp-tools/authentication-networking),
+[MCP service reference](https://docs.databricks.com/aws/en/ai-gateway/mcp-service-reference),
+each updated 2026-10-07). Databricks recommends these for new work: "For new
+Genie One and Databricks SQL connections, use the `system.ai` MCPs", and lists
+the four endpoints above as legacy workspace endpoints behind the Managed MCP
+Servers preview ([Databricks-provided MCPs](https://docs.databricks.com/aws/en/agents/mcp-tools/built-in-mcp-services),
+updated 2026-10-08). A service is either one Databricks provides under
+`system.ai` (`genie_one_mcp`, `dbsql`, `web_search`, `sandbox`, and connectors
+to Slack, GitHub, Atlassian, Google Drive, Calendar and Gmail, and Microsoft
+365) or an external MCP server an account registers from a Unity Catalog HTTP
+connection ([register an external MCP server](https://docs.databricks.com/aws/en/ai-gateway/register-mcp-service),
+updated 2026-10-07). So a service may be an external connector, and it may
+write: no page says any service is read-only, Databricks states that the SQL
+service "permits reads and writes by default"
+([Databricks SQL](https://docs.databricks.com/aws/en/agents/mcp-tools/databricks-sql),
+updated 2026-10-08), and the connection claims nothing about it. Only a
+service the operator enables by its exact name is reached; the connection
+neither discovers nor lists the workspace's services. Its tool calls are made
+under the `ai-gateway` OAuth scope ("MCP tool calls use `ai-gateway`"): a
+service principal enables one only where its configured `scope` names
+`ai-gateway` (`all-apis`, the scope a blank one asks for, is not taken for it),
+and `configure` refuses otherwise as `scope-required`. A personal access token
+is accepted, which the page puts as "for local testing". Calling a service
+takes `EXECUTE` on it and `USE CATALOG` and `USE SCHEMA` on its parent
+([govern an MCP](https://docs.databricks.com/aws/en/ai-gateway/govern-mcp-service),
+updated 2026-10-08). Everything below holds for a service as for the other
+servers.
+
+```json
+{"id":"lake","revision":"<64-hex>","name":"Lake","workspace-url":"https://example.cloud.databricks.com","warehouse-id":"0123456789abcdef","auth":"token","token":"","mcp":[{"server":"sql","tools":["execute_sql"]},{"server":"genie:01f0a1b2c3d4e5f60718293a4b5c6d7e","tools":[]},{"server":"functions:main.finance.exchange_rate","tools":["main__finance__exchange_rate"]},{"server":"unity-gateway:system.ai.dbsql","tools":["execute_sql"]}]}
+```
+
+The credential is the API profile's, sent as `Authorization: Bearer`: the
+personal access token, which the legacy workspace endpoints accept, or the
+service principal's access token, minted and held as for the API profile. A
+service principal's `scope` must name what each server's page names; whether
+`all-apis` covers the MCP servers, no page states.
+
+A read, on `adapter-sources`' stdin:
+
+```json
+{"connection":"lake","revision":"<64-hex>","read":"mcp","server":"functions:main.finance.exchange_rate","tool":"main__finance__exchange_rate","arguments":{"currency":"EUR"}}
+```
+
+A read is one session with the server: `initialize`, `tools/list` until the
+tool is found (its descriptor names its output schema), one `tools/call` with
+the arguments as given, and the session's end. The `initialize` answer is read
+by the connection itself, by its members' exact names: a `protocolVersion` of
+2025-11-25, 2025-06-18 or 2025-03-26, `capabilities` with `tools`, and
+`serverInfo` with a `name` and a `version`; so is each `tools/list` page
+(`tools`, `nextCursor`, each tool's `name`), at most 32 pages, a cursor given
+twice refused. The arguments are an object
+(`{}` when left out) in the canonical domain: a whole number within ±2^53, and
+no fraction, which is sent as a string. Refused before anything is sent: a
+server the connection does not enable (`server-not-enabled`); a tool not on
+that server's list (`tool-not-allowed`); and arguments, a tool or a server that
+carry the connection's credential, as written or in escapes
+(`credential-in-request`). A tool on the list that the server does not offer
+is `tool-not-offered`, and nothing is called. Nothing is retried, and no
+redirect is followed. An answer other than 2xx is named by its status, in the
+API profile's words (401 `credentials-required`, 403 `permission-denied`, 429
+`rate-limited`, another 4xx `request-refused`, otherwise
+`provider-unavailable`); a JSON-RPC error is `provider-unavailable` with the
+server's message; a result whose `isError` is true is `tool-error` with its
+text. In each, every whole credential is replaced by `[redacted]` before the
+text is cut to 4,096 bytes; a text that still spells a credential or the
+session id once its own JSON escapes are decoded is not reported, and the
+refusal says so in words of its own. A result larger than the connection's
+`max-result-bytes` is `result-too-large`, and each answer is read no further
+than that bound and 64 KiB, or 8 MiB where that is larger. Every answer
+(`initialize`, each `tools/list` page, the call) is screened, before anything
+of it is read, for the credential, the token in use and the session id the
+server issued, as written or in escapes, and one that repeats any of them is
+refused: nothing of the read is kept. The members a read is decided by (the result's `content`,
+`structuredContent` and `isError`, each content item's `type` and `text`, the
+descriptor's `name` and `outputSchema`) are read by their exact names, and an
+answer that also names one of them in another case is refused. A read has 50
+seconds.
+
+The result is the tool's result as `adapter-mcp`'s remote form reads a
+source's (`mcp.ToolResult`), in canonical form. The acquisition names the
+server's endpoint as configured; the read as the statement the gateway commits
+to (connection, revision, `read: "mcp"`, the server, its endpoint, the tool and
+the arguments); the digest of the result as received as the snapshot; the TLS
+peer the result came from; and the tool's declared output schema, digested, or
+`null` where it declares none. The session id is in none of it. The source is
+still declared `http`: SPEC.md §1.2a holds `transport` and `server` to shape
+`mcp`, so an `adapter-sources` read records the eight members alone, the
+transport being in the statement's `read` and the endpoint's path.
+
+`test {id, revision}` makes the API profile's one request, then reaches each
+server the connection enables: `initialize` and `tools/list`, 15 seconds each,
+and no tool called. It answers `{"ok", "mcp": [{"server", "ok", "offered",
+"notOffered", "error"}]}`: the names each server offers (each cut to 128
+bytes, every credential replaced), the names on its list it does not offer, or
+why it could not be read; `ok` is true when every server was read. A
+connection that enables no server answers as the API profile does. `status`
+lists each connection's servers and their tools, and never a credential. Each
+field of a test's answer and each error is held once more against the
+credential, the token and the session id before it is written: each whole one
+replaced, and a field that would still spell one written as `[redacted]`.
+
+What a read establishes, and what it does not, is in [the connection
+catalog](../docs/design/connection-catalog.md#databricks-version-3). In
+particular, the identity's grants and the tools list are what keep this
+profile to reads: Databricks states that the Genie Agent server does not write
+to tables, while the SQL server runs what it is sent under the identity's
+permissions, a Unity Catalog function does what its body does, and a Unity
+Gateway service is whatever MCP service was registered under that name, an
+external connector among them, which may write. The tests
+answer from the in-process Streamable HTTP fake; a live check runs only where
+`JPACK_DATABRICKS_LIVE_WORKSPACE`, `JPACK_DATABRICKS_LIVE_MCP_SERVER` and
+`JPACK_DATABRICKS_LIVE_MCP_TOOL` name a workspace's server, and is otherwise
+skipped.
 
 ### Bounded website exploration
 

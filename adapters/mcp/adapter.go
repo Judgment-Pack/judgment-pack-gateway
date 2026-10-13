@@ -771,7 +771,7 @@ func parseToolResult(raw json.RawMessage, errorResults bool) ([]byte, error) {
 			// acquisition; an executor's is the target's answer to a write,
 			// enveloped and receipted as the response it is (ErrorResults).
 			if !errorResults {
-				return nil, fmt.Errorf("the tool reported an error: %s", textOf(content))
+				return nil, &ToolError{Text: textOf(content)}
 			}
 		case "false":
 		default:

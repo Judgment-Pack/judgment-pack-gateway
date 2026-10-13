@@ -1010,7 +1010,7 @@ func TestDatabricksCatalogAndPlan(t *testing.T) {
 	if strings.Join(d.Operations, ",") != "status,configure,disconnect,test" {
 		t.Fatal(d.Operations)
 	}
-	every, _ := json.Marshal(DatabricksConnection{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n"})
+	every, _ := json.Marshal(DatabricksConnection{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", nil})
 	for _, field := range d.Setup {
 		if (field.Type == "password") != (field.Key == "token" || field.Key == "client-secret") {
 			t.Error("field type", field.Key, field.Type)
