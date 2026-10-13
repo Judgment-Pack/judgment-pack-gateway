@@ -1,10 +1,11 @@
 // Package mcp is the gateway's MCP-shaped adapter: a client of a Model
-// Context Protocol server reached over stdio -- a pinned server image in
-// the operator's container runtime, or a local command -- that calls one
-// tool and writes the envelope SPEC.md §6 states on stdout: the tool's
-// result as the result, and the acquisition as this adapter recorded it.
-// It holds the server's credentials and never the signing seed, and it
-// imports nothing of the core module.
+// Context Protocol server -- reached over stdio, a pinned server image in
+// the operator's container runtime or a local command, or over Streamable
+// HTTP, a remote server at a URL the operator fixed -- that calls one tool
+// and writes the envelope SPEC.md §6 states on stdout: the tool's result as
+// the result, and the acquisition as this adapter recorded it. It holds the
+// server's credentials and never the signing seed, and it imports nothing
+// of the core module.
 package mcp
 
 import (
@@ -39,8 +40,24 @@ type Config struct {
 	// follows the image on the runtime's command line. A command carries
 	// its own, and Args with Command is refused.
 	Args []string
+	// URL is a remote server reached over Streamable HTTP, instead of an
+	// image or a command: https, or http at a loopback address written as
+	// one, with no user, query or fragment, used exactly as written.
+	URL string
+	// Bearer names the credentials member a remote server is sent as
+	// "Authorization: Bearer"; a remote server that takes no credential is
+	// given neither it nor a credentials file.
+	Bearer string
+	// Headers are NAME=VALUE pairs sent to a remote server on every
+	// request as written: a read-only header the server honours, say,
+	// which is the server's promise and nothing this adapter claims.
+	Headers []string
+	// CAFile, for a remote server, is a PEM file whose certificates are
+	// the only roots trusted for it, instead of the system's.
+	CAFile string
 	// Credentials is the path of a JSON object of strings that become the
-	// server's environment; empty for a server that needs none.
+	// server's environment; empty for a server that needs none. For a
+	// remote server, the object whose member Bearer names is sent.
 	Credentials string
 	// Endpoint is the host the server reaches as the operator names it,
 	// recorded as the receipt's endpoint; empty records null.
@@ -184,12 +201,48 @@ func credentialsEnv(path string) (env []string, secrets []string, err error) {
 	return env, redact.SecretsOf(data), nil
 }
 
+// Refusal is why the configuration names no one server to call, or nil:
+// exactly one of an image, a command and a URL, each with only what its
+// form takes. It reads nothing -- not the request, not the credentials --
+// so a configuration refused is refused before anything is read.
+func (cfg Config) Refusal() error {
+	if cfg.URL != "" {
+		return cfg.remoteRefusal()
+	}
+	if err := cfg.stdioRefusal(); err != nil {
+		return err
+	}
+	return cfg.serverRefusal()
+}
+
+// start reaches the server the configuration names: a stdio server it
+// starts with the credentials as its environment, or a remote one it opens
+// a client for with the credential as its bearer. The secrets are every
+// value of the credentials file, for redaction.
+func start(ctx context.Context, cfg Config) (*server, []string, error) {
+	if cfg.URL != "" {
+		return openRemote(cfg)
+	}
+	env, secrets, err := credentialsEnv(cfg.Credentials)
+	if err != nil {
+		return nil, nil, err
+	}
+	srv, err := startServer(ctx, cfg, env, secrets)
+	return srv, secrets, err
+}
+
+// conversation is one side of an MCP session: JSON-RPC over the stdio of a
+// server this adapter started, or Streamable HTTP to a remote one.
+type conversation interface {
+	// call sends a request and returns its result as the server wrote it.
+	call(ctx context.Context, method string, params any) (json.RawMessage, error)
+	// initialized ends the handshake at the protocol version accepted.
+	initialized(ctx context.Context, protocol string) error
+}
+
 // Acquire calls the requested tool once and returns the envelope.
 func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
-	if (cfg.Image == "") == (len(cfg.Command) == 0) {
-		return nil, errNoServer
-	}
-	if err := cfg.serverRefusal(); err != nil {
+	if err := cfg.Refusal(); err != nil {
 		return nil, err
 	}
 	if cfg.MaxOutput < 1 {
@@ -198,12 +251,11 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if len(cfg.Tools) > 0 && !contains(cfg.Tools, req.Tool) {
 		return nil, fmt.Errorf("tool %q is not one this source may call: %v", req.Tool, cfg.Tools)
 	}
-	env, secrets, err := credentialsEnv(cfg.Credentials)
+	srv, secrets, err := start(ctx, cfg)
 	if err != nil {
-		return nil, err
-	}
-	srv, err := startServer(ctx, cfg, env, secrets)
-	if err != nil {
+		if secrets != nil {
+			return nil, errors.New(redact.Redact(err.Error(), secrets))
+		}
 		return nil, err
 	}
 	// Every exit passes here: the server is stopped, a container that
@@ -239,7 +291,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		}
 		return nil, errors.New(redact.Redact(message, secrets))
 	}
-	rpc := newClient(srv.stdin, srv.stdout)
+	rpc := srv.rpc
 	// The handshake: a version this client speaks, a server that offers
 	// tools, and this client done negotiating.
 	raw, err := rpc.call(ctx, "initialize", map[string]any{
@@ -254,7 +306,7 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return finish(nil, err)
 	}
-	if err := rpc.notify("notifications/initialized", map[string]any{}); err != nil {
+	if err := rpc.initialized(ctx, initialized.protocol); err != nil {
 		return fail(err)
 	}
 	identity := srv.identity
@@ -289,10 +341,18 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	if err != nil {
 		return finish(nil, err)
 	}
+	// A remote server is named by its URL, the TLS identity the answer
+	// came under, and what it said of itself, redacted as the stdio form's
+	// version of a command is.
+	var reached *remoteAcquisition
+	if srv.remote != nil {
+		reached = &remoteAcquisition{endpoint: cfg.URL, peer: srv.remote.PeerIdentity(),
+			server: serverIdentity{Name: redact.Redact(initialized.name, secrets), Version: redact.Redact(initialized.version, secrets)}}
+	}
 	if err := srv.stop(); err != nil {
 		return nil, errors.New(redact.Redact(err.Error(), secrets))
 	}
-	out, err := buildEnvelope(cfg, identity, req, schema, result, observedAt)
+	out, err := buildEnvelope(cfg, identity, req, schema, result, observedAt, reached)
 	if err != nil {
 		return nil, errors.New(redact.Redact(err.Error(), secrets))
 	}
@@ -324,13 +384,19 @@ func (cfg Config) serverRefusal() error {
 // most maxReportList bytes with what passes it counted, so the report
 // stays within reportBound with any snapshot inside it.
 type checkReport struct {
-	Status          string          `json:"status"`
-	Adapter         adapterIdentity `json:"adapter"`
-	Server          serverIdentity  `json:"server"`
-	ProtocolVersion string          `json:"protocolVersion"`
-	Tools           []string        `json:"tools"`
-	ToolsUnlisted   int             `json:"toolsUnlisted,omitempty"`
-	Probe           *probeReport    `json:"probe,omitempty"`
+	Status  string          `json:"status"`
+	Adapter adapterIdentity `json:"adapter"`
+	// Transport, Endpoint and PeerIdentity are a remote server's: "http",
+	// its URL, and the TLS identity it answered under; a stdio server's
+	// report carries none of them.
+	Transport       string         `json:"transport,omitempty"`
+	Endpoint        string         `json:"endpoint,omitempty"`
+	PeerIdentity    *string        `json:"peerIdentity,omitempty"`
+	Server          serverIdentity `json:"server"`
+	ProtocolVersion string         `json:"protocolVersion"`
+	Tools           []string       `json:"tools"`
+	ToolsUnlisted   int            `json:"toolsUnlisted,omitempty"`
+	Probe           *probeReport   `json:"probe,omitempty"`
 	// Descriptors is the snapshot in its canonical form, as connect
 	// writes it.
 	Descriptors        json.RawMessage `json:"descriptors,omitempty"`
@@ -365,7 +431,7 @@ type serverIdentity struct {
 // binding that names a tool the pinned server lacks is found out when the
 // platform is connected, not at the first acquisition.
 func Check(ctx context.Context, cfg Config) ([]byte, error) {
-	if err := cfg.serverRefusal(); err != nil {
+	if err := cfg.Refusal(); err != nil {
 		return nil, err
 	}
 	if cfg.Descriptors != nil {
@@ -373,12 +439,14 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 			return nil, err
 		}
 	}
-	env, secrets, err := credentialsEnv(cfg.Credentials)
-	if err != nil {
-		return nil, err
+	if cfg.URL != "" && cfg.MaxOutput < 1 {
+		return nil, errors.New("max-output must be positive")
 	}
-	srv, err := startServer(ctx, cfg, env, secrets)
+	srv, secrets, err := start(ctx, cfg)
 	if err != nil {
+		if secrets != nil {
+			return nil, errors.New(redact.Redact(err.Error(), secrets))
+		}
 		return nil, err
 	}
 	finish := func(out []byte, err error) ([]byte, error) {
@@ -405,7 +473,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		}
 		return nil, errors.New(redact.Redact(message, secrets))
 	}
-	rpc := newClient(srv.stdin, srv.stdout)
+	rpc := srv.rpc
 	raw, err := rpc.call(ctx, "initialize", map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
@@ -418,7 +486,7 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if err != nil {
 		return finish(nil, err)
 	}
-	if err := rpc.notify("notifications/initialized", map[string]any{}); err != nil {
+	if err := rpc.initialized(ctx, initialized.protocol); err != nil {
 		return fail(err)
 	}
 	// A listing that is captured is pinned, and held to what pinning
@@ -503,6 +571,14 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		Server:          serverIdentity{Name: reportField(initialized.name, secrets), Version: reportField(initialized.version, secrets)},
 		ProtocolVersion: capField(initialized.protocol),
 		Probe:           probe,
+	}
+	if srv.remote != nil {
+		// The endpoint as the operator fixed it, and the identity the last
+		// answer came under; the session id is the client's alone.
+		report.Transport, report.Endpoint = "http", cfg.URL
+		if peer := srv.remote.PeerIdentity(); peer != "" {
+			report.PeerIdentity = &peer
+		}
 	}
 	report.Tools, report.ToolsUnlisted = capList(redacted, maxReportList)
 	if probe != nil {
@@ -696,7 +772,7 @@ func parseToolResult(raw json.RawMessage, errorResults bool) ([]byte, error) {
 
 // findTool pages through tools/list until the tool is found; when it is
 // not, the names seen come back with the error.
-func findTool(ctx context.Context, rpc *client, name string) (json.RawMessage, []string, error) {
+func findTool(ctx context.Context, rpc conversation, name string) (json.RawMessage, []string, error) {
 	var names []string
 	params := map[string]any{}
 	for page := 0; page < maxToolPages; page++ {
@@ -728,7 +804,7 @@ func findTool(ctx context.Context, rpc *client, name string) (json.RawMessage, [
 // fails on a cursor seen twice, or on a name offered twice anywhere in it,
 // even with the same descriptor: a listing that does either cannot be
 // pinned.
-func listTools(ctx context.Context, rpc *client, pinned bool, visit func(listedTool) error) ([]string, error) {
+func listTools(ctx context.Context, rpc conversation, pinned bool, visit func(listedTool) error) ([]string, error) {
 	names := []string{}
 	// A cursor is remembered by its digest, and only by a pinned listing:
 	// a server's cursor may be megabytes, and only the one to send next
@@ -778,7 +854,7 @@ type listedTool struct {
 
 // toolPage is one page of tools/list: the tools it names and the cursor
 // of the next page, empty on the last.
-func toolPage(ctx context.Context, rpc *client, params map[string]any) ([]listedTool, string, error) {
+func toolPage(ctx context.Context, rpc conversation, params map[string]any) ([]listedTool, string, error) {
 	raw, err := rpc.call(ctx, "tools/list", params)
 	if err != nil {
 		return nil, "", err
@@ -914,6 +990,22 @@ type acquisition struct {
 	Schema        *string         `json:"schema"`
 	UpstreamToken *string         `json:"upstreamToken"`
 	ObservedAt    string          `json:"observedAt"`
+	// Transport and Server are present exactly when the server was
+	// reached over HTTP (SPEC.md §6, shape mcp): "http", and the server's
+	// name and version as its initialize answer gave them. A stdio
+	// server's envelope carries neither, and is what it was before them.
+	Transport *string         `json:"transport,omitempty"`
+	Server    *serverIdentity `json:"server,omitempty"`
+}
+
+// remoteAcquisition is what a remote server's acquisition records in place
+// of the server an image or a command names: its URL as configured, the
+// TLS identity the answer came under ("" over plaintext loopback), and
+// what it said of itself.
+type remoteAcquisition struct {
+	endpoint string
+	peer     string
+	server   serverIdentity
 }
 
 type envelope struct {
@@ -927,8 +1019,11 @@ type envelope struct {
 // tool's declared output schema digested as the schema (null when it
 // declares none), and null for what a server reached over stdio cannot tell
 // it: a snapshot, the peer's identity, any token the upstream produced. A
-// tool call is one result, never a page.
-func buildEnvelope(cfg Config, identity adapterIdentity, req Request, schema, result []byte, observedAt string) ([]byte, error) {
+// remote server is recorded by its transport, its URL as the endpoint, the
+// TLS identity it answered under as the peer's, and the name and version
+// it gave itself, with this adapter as the adapter. A tool call is one
+// result, never a page.
+func buildEnvelope(cfg Config, identity adapterIdentity, req Request, schema, result []byte, observedAt string, reached *remoteAcquisition) ([]byte, error) {
 	statement, err := canon.EncodeJSON(map[string]any{"tool": req.Tool, "arguments": req.Arguments})
 	if err != nil {
 		return nil, err
@@ -944,6 +1039,14 @@ func buildEnvelope(cfg Config, identity adapterIdentity, req Request, schema, re
 	}
 	if cfg.Endpoint != "" {
 		acq.Endpoint = ptr(cfg.Endpoint)
+	}
+	if reached != nil {
+		acq.Transport = ptr("http")
+		acq.Endpoint = ptr(reached.endpoint)
+		acq.Server = &reached.server
+		if reached.peer != "" {
+			acq.PeerIdentity = ptr(reached.peer)
+		}
 	}
 	out, err := canon.EncodeJSON(envelope{Acquisition: acq, Result: json.RawMessage(result)})
 	if err != nil {

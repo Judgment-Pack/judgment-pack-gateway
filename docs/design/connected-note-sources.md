@@ -71,7 +71,9 @@ responses, negotiates protocol versions, echoes session IDs, and serves no model
 sampling, roots, or elicitation. It does not fall back to the legacy two-endpoint
 SSE transport. A lost/incomplete stream fails the operation. Transport support is
 reusable; adding arbitrary URLs or another OAuth issuer requires another reviewed
-provider profile. The existing stdio MCP adapter is unchanged.
+provider profile. The existing stdio MCP adapter is unchanged. (Since ADR-0015, `adapter-mcp`'s
+remote form opens the same client on a URL the operator fixes, with a bearer from its
+credentials file; the Notion profile here is unchanged by it.)
 
 Tool permission is a fixed allowlist: `notion-get-tool-access`, `notion-search`,
 `notion-ai-search`, `notion-fetch`. Tool descriptions and read-only annotations do

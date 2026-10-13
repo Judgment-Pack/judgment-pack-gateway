@@ -159,8 +159,18 @@ type operation struct {
 	shape string
 	image string
 	args  []string // the server's own arguments inside its container (mcp)
-	tools []string
-	probe string // a tool a check calls once to reach the platform (mcp)
+	// url is a remote server's endpoint, instead of an image (mcp,
+	// ADR-0015): the adapter reaches it over Streamable HTTP, and the
+	// receipt names it as the endpoint.
+	url string
+	// bearer is the member of the operation's credentials file a remote
+	// server is sent as its bearer credential.
+	bearer string
+	// headers are NAME=VALUE pairs sent to a remote server on every
+	// request: a read-only header it honours, say, the server's promise.
+	headers []string
+	tools   []string
+	probe   string // a tool a check calls once to reach the platform (mcp)
 	// probeFailure is text the probe's answer begins with when the
 	// platform was not reached, for a server that answers its own failure
 	// as ordinary text.
@@ -798,10 +808,13 @@ func parseOperation(op *vObject, name string) (operation, error) {
 		if err != nil {
 			return o, fmt.Errorf("operation %s: %v", name, err)
 		}
-		if err := exactlyMembers(server, map[string]bool{"image": true, "args": false}, "operation "+name+" server"); err != nil {
+		if _, remote := server.get("url"); remote {
+			if err := parseRemoteServer(server, name, &o); err != nil {
+				return o, err
+			}
+		} else if err := exactlyMembers(server, map[string]bool{"image": true, "args": false}, "operation "+name+" server"); err != nil {
 			return o, err
-		}
-		if o.image, err = requireString(server, "image"); err != nil || !isPinnedImage(o.image) {
+		} else if o.image, err = requireString(server, "image"); err != nil || !isPinnedImage(o.image) {
 			return o, fmt.Errorf("operation %s: server.image must be pinned, name[:tag]@sha256:<64 hex>", name)
 		}
 		if argsValue, present := server.get("args"); present {
@@ -873,6 +886,69 @@ func parseOperation(op *vObject, name string) (operation, error) {
 	return o, nil
 }
 
+// remoteHeaderName is a header's name as a token; reservedRemoteHeaders
+// are the names adapter-mcp refuses as a fixed header -- a credential's,
+// the protocol's, the client's and the transport's -- refused in a binding
+// before the engine starts rather than at every run.
+var (
+	remoteHeaderName      = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+$`)
+	reservedRemoteHeaders = map[string]bool{
+		"authorization": true, "proxy-authorization": true, "cookie": true, "mcp-session-id": true, "mcp-protocol-version": true,
+		"last-event-id": true, "content-type": true, "accept": true, "content-length": true, "host": true,
+		"transfer-encoding": true, "connection": true, "accept-encoding": true,
+	}
+)
+
+// parseRemoteServer holds an mcp operation's remote server to its shape
+// (ADR-0015): exactly url, bearer and, optionally, headers; the url of a
+// remote server's endpoint form, which the receipt will carry; bearer the
+// member of the operation's credentials file sent as the credential, which
+// a platform's credentials name a file for; and each header NAME=VALUE of
+// a name an operator may fix.
+func parseRemoteServer(server *vObject, name string, o *operation) error {
+	if err := exactlyMembers(server, map[string]bool{"url": true, "bearer": true, "headers": false}, "operation "+name+" server"); err != nil {
+		return err
+	}
+	var err error
+	if o.url, err = requireString(server, "url"); err != nil || !isRemoteEndpoint(o.url) {
+		return fmt.Errorf("operation %s: server.url must be https, or http at a loopback address written as one, with no user, query or fragment", name)
+	}
+	if err := urlParses(o.url); err != nil {
+		return fmt.Errorf("operation %s: server.url %v", name, err)
+	}
+	if o.bearer, err = requireString(server, "bearer"); err != nil || o.bearer == "" || strings.ContainsAny(o.bearer, "\n\x00") {
+		return fmt.Errorf("operation %s: server.bearer names the credentials member sent as the bearer", name)
+	}
+	if headersValue, present := server.get("headers"); present {
+		headers, ok := headersValue.(vArray)
+		if !ok || len(headers) == 0 {
+			return fmt.Errorf("operation %s: server.headers, when present, is a non-empty array of NAME=VALUE", name)
+		}
+		for _, h := range headers {
+			pair, ok := h.(vString)
+			header, value, isPair := strings.Cut(string(pair), "=")
+			if !ok || !isPair || !remoteHeaderName.MatchString(header) || strings.ContainsAny(value, "\r\n\x00") {
+				return fmt.Errorf("operation %s: server.headers must be NAME=VALUE with a header name", name)
+			}
+			if reservedRemoteHeaders[strings.ToLower(header)] {
+				return fmt.Errorf("operation %s: server.headers names %s, which is not one an operator fixes", name, header)
+			}
+			o.headers = append(o.headers, string(pair))
+		}
+	}
+	return nil
+}
+
+// urlParses is why a remote server's URL, already of its form, is not one
+// a client can reach, or nil.
+func urlParses(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" || u.Hostname() == "" {
+		return errors.New("is not an absolute URL of a host")
+	}
+	return nil
+}
+
 // imageReference is the shape of an image's name[:tag], as the adapters
 // hold it: registry with an optional port, path components and a tag,
 // each beginning with a letter or digit, so nothing a binding names as an
@@ -912,10 +988,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
 		}
 		if b.live != nil {
-			argv := []string{adapter("adapter-mcp"), "--image=" + b.live.image, "--credentials=" + p.credentials["live"], "--runtime=" + cfg.runtime, "--tools=" + strings.Join(b.live.tools, ",")}
-			if p.endpoint != "" {
-				argv = append(argv, "--endpoint="+p.endpoint)
-			}
+			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint)
 			// Each as one word, flag=value: a value of "--" as its own word
 			// would be the delimiter the adapter splits its line at.
 			var check []string
@@ -938,17 +1011,42 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		if b.write != nil && p.write {
 			// --error-results: a target's refusal of a write is a response
 			// to receipt, not a read that did not happen (executor.md).
-			argv := []string{adapter("adapter-mcp"), "--image=" + b.write.image, "--credentials=" + p.credentials["write"], "--runtime=" + cfg.runtime, "--tools=" + strings.Join(b.write.tools, ","), "--error-results"}
-			if p.endpoint != "" {
-				argv = append(argv, "--endpoint="+p.endpoint)
-			}
+			argv := mcpServerArgv(adapter("adapter-mcp"), *b.write, p.credentials["write"], cfg.runtime, p.endpoint, "--error-results")
 			if len(b.write.args) > 0 {
 				argv = append(append(argv, "--"), b.write.args...)
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: p.endpoint, policies: p.policies}
+			// What the action receipt names as the tool's endpoint: the
+			// platform's, for a server the adapter runs; a remote server's
+			// URL, which is where the write went (ADR-0015).
+			endpoint := p.endpoint
+			if b.write.url != "" {
+				endpoint = b.write.url
+			}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, policies: p.policies}
 		}
 	}
 	return sources
+}
+
+// mcpServerArgv is adapter-mcp's command line for an mcp operation, up to
+// the server's own arguments: the pinned image run by the runtime, with
+// the platform's endpoint recorded, or a remote server's URL with the
+// member of the credentials file it is sent and its fixed headers -- no
+// runtime, and no endpoint but the URL, which the receipt records. extra
+// follows the tools.
+func mcpServerArgv(adapter string, op operation, credentials, runtime, endpoint string, extra ...string) []string {
+	if op.url != "" {
+		argv := []string{adapter, "--url=" + op.url, "--credentials=" + credentials, "--bearer=" + op.bearer}
+		for _, h := range op.headers {
+			argv = append(argv, "--header="+h)
+		}
+		return append(append(argv, "--tools="+strings.Join(op.tools, ",")), extra...)
+	}
+	argv := append([]string{adapter, "--image=" + op.image, "--credentials=" + credentials, "--runtime=" + runtime, "--tools=" + strings.Join(op.tools, ",")}, extra...)
+	if endpoint != "" {
+		argv = append(argv, "--endpoint="+endpoint)
+	}
+	return argv
 }
 
 // preflightPaths is why serve could not make what the configuration

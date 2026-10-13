@@ -193,3 +193,105 @@ func TestRunKeepsAServersNameOffTheTerminal(t *testing.T) {
 		}
 	}
 }
+
+// The remote form from the command line: --url with the credential named
+// by --bearer, fixed headers given one per --header, the server's roots in
+// --ca-file. The credential, the other member of its file and the session
+// id reach nothing the command writes -- not the envelope, not the report,
+// not a refusal on stdout or stderr -- and a configuration refused for its
+// form is refused with stdin unread.
+func TestRunRemote(t *testing.T) {
+	const bearer, other, session = "bearer-marker-91ab", "other-marker-c3d2", "session-marker-77e1"
+	dir := t.TempDir()
+	srv := fakemcp.NewHTTP(true, fakemcp.Script{Session: session})
+	defer srv.Close()
+	ca := filepath.Join(dir, "ca.pem")
+	if err := srv.WriteCA(ca); err != nil {
+		t.Fatal(err)
+	}
+	credentials := filepath.Join(dir, "credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"TOKEN":"`+bearer+`","OTHER":"`+other+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	clean := func(what string, texts ...string) {
+		t.Helper()
+		for _, text := range texts {
+			for _, marker := range []string{bearer, other, session} {
+				if strings.Contains(text, marker) {
+					t.Fatalf("%s carries %q: %s", what, marker, text)
+				}
+			}
+		}
+	}
+	base := []string{"--url", srv.URL, "--ca-file", ca, "--credentials", credentials, "--bearer", "TOKEN", "--tools", "query", "--header", "X-MCP-Readonly=true", "--header", "X-Other=1"}
+	var stdout, stderr bytes.Buffer
+	if code := run(base, strings.NewReader(`{"tool":"query","arguments":{"sql":"select 1"}}`), &stdout, &stderr); code != 0 {
+		t.Fatalf("exit %d: %s", code, stderr.String())
+	}
+	if out := stdout.String(); !strings.HasPrefix(out, `{"acquisition":{"adapter":{"name":"adapter-mcp","version":"0","digest":"sha256:`) ||
+		!strings.Contains(out, `"endpoint":"`+srv.URL+`"`) || !strings.Contains(out, `"peerIdentity":"tls:sha256:`) ||
+		!strings.HasSuffix(strings.SplitN(out, `"result"`, 2)[0], `"transport":"http","server":{"name":"fake-remote-mcp","version":"2.0"}},`) {
+		t.Fatalf("envelope: %s", out)
+	}
+	clean("the envelope", stdout.String(), stderr.String())
+	for _, r := range srv.Requests() {
+		if r.Header.Get("X-MCP-Readonly") != "true" || r.Header.Get("X-Other") != "1" || r.Header.Get("Authorization") != "Bearer "+bearer {
+			t.Fatalf("each request carries the fixed headers and the bearer: %v", r.Header)
+		}
+	}
+	stdout.Reset()
+	if code := run(append([]string{"--check"}, base...), strings.NewReader(""), &stdout, &stderr); code != 0 ||
+		!strings.Contains(stdout.String(), `"transport":"http","endpoint":"`+srv.URL+`","peerIdentity":"tls:sha256:`) {
+		t.Fatalf("check: exit %d %s %s", code, stdout.String(), stderr.String())
+	}
+	clean("the report", stdout.String(), stderr.String())
+	// Refused for the form, before stdin is read and before anything is
+	// sent; a check writes its failed report beside the reason.
+	sent := len(srv.Requests())
+	for _, tc := range []struct {
+		args []string
+		want string
+	}{
+		{append(append([]string{}, base...), "--image", "x/y:1@"+digest), "exactly one of --image, --url"},
+		{append(append([]string{}, base...), "--", os.Args[0]), "takes no command and no arguments"},
+		{append(append([]string{}, base...), "--header", "Authorization=Bearer "+other), "is a credential's"},
+		{[]string{"--url", "http://mcp.example/mcp", "--credentials", credentials, "--bearer", "TOKEN"}, "http is accepted at a loopback address"},
+		{[]string{"--url", srv.URL, "--credentials", credentials}, "--bearer names no member"},
+		{[]string{"--bearer", "TOKEN", "--credentials", credentials, "--", os.Args[0]}, "are for a remote server, given by --url"},
+	} {
+		for _, check := range []bool{false, true} {
+			args := tc.args
+			if check {
+				args = append([]string{"--check"}, args...)
+			}
+			stdout.Reset()
+			stderr.Reset()
+			stdin := strings.NewReader(`{"tool":"query"}`)
+			code := run(args, stdin, &stdout, &stderr)
+			if code != 1 || !strings.Contains(stderr.String(), tc.want) || stdin.Len() != len(`{"tool":"query"}`) {
+				t.Fatalf("%v: exit %d, stdin left %d: %s", args, code, stdin.Len(), stderr.String())
+			}
+			if check != strings.HasPrefix(stdout.String(), `{"check":{"message":`) {
+				t.Fatalf("%v: stdout %q", args, stdout.String())
+			}
+			clean("a refusal", stdout.String(), stderr.String())
+		}
+	}
+	if len(srv.Requests()) != sent {
+		t.Fatal("a configuration refused for its form sent a request")
+	}
+	// Refused by the server, in its own words, redacted.
+	srv.Set(func(s *fakemcp.Script) { s.Refuse = `{"code":-32000,"message":"denied for ` + other + `"}` })
+	for _, check := range []bool{false, true} {
+		args := base
+		if check {
+			args = append([]string{"--check", "--probe", "query"}, base...)
+		}
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(args, strings.NewReader(`{"tool":"query"}`), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "denied for [redacted]") {
+			t.Fatalf("a server's refusal: exit %d %s", code, stderr.String())
+		}
+		clean("a server's refusal", stdout.String(), stderr.String())
+	}
+}

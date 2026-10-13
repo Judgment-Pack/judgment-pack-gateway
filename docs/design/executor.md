@@ -177,7 +177,8 @@ its contents.
 ## The executor
 
 The platform's `write` binding is a catalog entry ([catalog/README.md](../../catalog/README.md))
-naming the same MCP server image the live operation uses, pinned by digest, with the
+naming the same MCP server image the live operation uses, pinned by digest — or a remote server
+by its URL ([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)) — with the
 credentials file the configuration names for the `write` operation. The engine derives
 `<platform>/write` exactly as it derives `<platform>/live`
 ([engine-config.md](engine-config.md)): `adapter-mcp`, spawned as the platform's user with the
@@ -198,7 +199,7 @@ and `resultDigest` names them. The engine then mints one receipt in the session 
 | `action.requester` | the token identity again — the one who asked, named where the action is |
 | `action.decision`, `action.cites` | as given; `action.decision.recordBytes` is `"exact"` for a tool whose policy requires a signed record, and absent otherwise |
 | `action.policy` | for a tool with a decision policy, `"sha256:"` and the SHA-256 of the canonical form of the policy object as configured; absent for a tool with none |
-| `action.tool` | `{"shape": "mcp", "endpoint": <binding endpoint or null>, "name": <tool>}` |
+| `action.tool` | `{"shape": "mcp", "endpoint": <the platform's endpoint or null; a remote server's URL>, "name": <tool>}` |
 | `action.request` | a salted commitment over the canonical request sent to the executor, salt returned |
 | `action.adapter` | from the envelope, as `acquisition.adapter` is |
 | `action.observedAt` | when the target answered, from the envelope |

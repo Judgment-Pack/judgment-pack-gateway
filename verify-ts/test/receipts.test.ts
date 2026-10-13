@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 
 import { readChunk } from "../src/inputs.ts";
+import { isRemoteEndpoint } from "../src/structure.ts";
 import { verifyStore } from "../src/verify.ts";
 import { acquisitionV3, actionV3, authority, keyId, multiset, newStore, publicKey, put, receiptV2, resultDigest, sealLine, signed, tempDir, verdictText } from "./support.ts";
 import type { Receipt, Store } from "./support.ts";
@@ -91,6 +92,69 @@ test("a version 3 receipt tolerates members it does not name, at any depth", () 
     r.caller = { issuer: "i", subject: "s", tokenDigest: resultDigest, claims: {} };
   });
   assert.deepEqual(alone(text), passes);
+});
+
+// remote is an acquisition from a remote MCP server (§1.2a, ADR-0015): the
+// eight members, transport and server, an https endpoint and the TLS
+// identity the answer came under.
+function remote(r: any): void {
+  r.acquisition.transport = "http";
+  r.acquisition.server = { name: "example-remote", version: "1.4.0" };
+  r.acquisition.endpoint = "https://mcp.example/api/mcp";
+  r.acquisition.peerIdentity = "tls:" + resultDigest;
+}
+
+test("what a remote MCP server adds to an acquisition is held to its form", () => {
+  assert.deepEqual(alone(edited(acquisitionV3(), remote)), passes, "over TLS");
+  const loopback = (r: any) => {
+    remote(r);
+    r.acquisition.endpoint = "http://127.0.0.1:8080/mcp";
+    r.acquisition.peerIdentity = null;
+  };
+  assert.deepEqual(alone(edited(acquisitionV3(), loopback)), passes, "in the clear on loopback");
+  assert.deepEqual(alone(edited(acquisitionV3(), (r) => (remote(r), (r.acquisition.server.vendor = "x")))), passes, "a member of server it does not name");
+  const cases: [string, (r: any) => void][] = [
+    ["transport without server", (r) => (remote(r), delete r.acquisition.server)],
+    ["server without transport", (r) => (remote(r), delete r.acquisition.transport)],
+    ["a transport outside its value", (r) => (remote(r), (r.acquisition.transport = "sse"))],
+    ["a transport null", (r) => (remote(r), (r.acquisition.transport = null))],
+    ["a server that is a string", (r) => (remote(r), (r.acquisition.server = "example-remote"))],
+    ["a server without its version", (r) => (remote(r), delete r.acquisition.server.version)],
+    ["a server whose name is a number", (r) => (remote(r), (r.acquisition.server.name = 1))],
+    ["on shape http", (r) => (remote(r), (r.acquisition.shape = "http"))],
+    ["a null endpoint", (r) => (remote(r), (r.acquisition.endpoint = null))],
+    ["an endpoint of another form", (r) => (remote(r), (r.acquisition.endpoint = "warehouse.internal:5432"))],
+    ["http at a name", (r) => (loopback(r), (r.acquisition.endpoint = "http://mcp.example/mcp"))],
+    ["http at localhost", (r) => (loopback(r), (r.acquisition.endpoint = "http://localhost:8080/mcp"))],
+    ["an endpoint with a user", (r) => (remote(r), (r.acquisition.endpoint = "https://operator@mcp.example/mcp"))],
+    ["an endpoint with a query", (r) => (remote(r), (r.acquisition.endpoint = "https://mcp.example/mcp?k=v"))],
+    ["no identity over TLS", (r) => (remote(r), (r.acquisition.peerIdentity = null))],
+    ["an identity in upper case", (r) => (remote(r), (r.acquisition.peerIdentity = ("tls:" + resultDigest).toUpperCase()))],
+    ["an identity of another kind", (r) => (remote(r), (r.acquisition.peerIdentity = "spiffe://example/mcp"))],
+    ["an identity in the clear", (r) => (loopback(r), (r.acquisition.peerIdentity = "tls:" + resultDigest))],
+  ];
+  for (const [name, edit] of cases) {
+    assert.deepEqual(alone(edited(acquisitionV3(), edit)), malformed, name);
+  }
+});
+
+test("a remote server's endpoint form answers as the reference's does", () => {
+  for (const ok of [
+    "https://mcp.example/mcp", "https://mcp.example:8443/api/2.0/mcp/functions/a/b", "https://127.0.0.1:9/mcp", "https://MCP.example/x",
+    "http://127.0.0.1/mcp", "http://127.0.0.1:8080/mcp", "http://127.255.0.9:1", "http://[::1]:65535/x", "http://[::1]/", "https://h",
+  ]) {
+    assert.equal(isRemoteEndpoint(ok), true, ok);
+  }
+  for (const bad of [
+    "", "mcp.example/mcp", "HTTPS://mcp.example/mcp", "wss://mcp.example/mcp", "https://", "https:///mcp",
+    "http://mcp.example/mcp", "http://localhost:8080/mcp", "http://128.0.0.1/mcp", "http://127.0.0.01/mcp", "http://127.0.0/mcp",
+    "http://127.0.0.1:0/mcp", "http://127.0.0.1:080/mcp", "http://127.0.0.1:65536/mcp", "http://127.0.0.1:/mcp", "http://[::2]/mcp",
+    "http://[0:0:0:0:0:0:0:1]/mcp", "http://[::1]x/mcp", "http://[::1]:/mcp",
+    "https://user@mcp.example/mcp", "https://user:pw@mcp.example/mcp", "https://mcp.example/mcp?key=x", "https://mcp.example/mcp?",
+    "https://mcp.example/mcp#x", "https://mcp.example/a b", "https://mcp.example/\u00e9", "https://mcp.example/" + "a".repeat(2048),
+  ]) {
+    assert.equal(isRemoteEndpoint(bad), false, bad);
+  }
 });
 
 test("a version 3 signature is 128 lowercase hex characters", () => {

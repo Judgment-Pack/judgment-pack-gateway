@@ -1,0 +1,20 @@
+{
+  "name": "v3-mcp-remote-peer-identity-upper-case",
+  "note": "A remote acquisition over TLS whose peer identity is in upper case: the form is tls:sha256: and 64 lowercase hexadecimal characters (§1.2a). Signed, and malformed at order 1.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580": "{\"n\":0,\"session\":\"s-remote\"}",
+    "receipts/s-remote/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:a22c061264d59629ff4720ce714d9e4089f905eb2b7573963fab2dc3a8b782cd\",\"name\":\"adapter-mcp\",\"version\":\"0\"},\"endpoint\":\"https://mcp.example/api/mcp\",\"observedAt\":\"2026-10-13T00:00:00Z\",\"peerIdentity\":\"TLS:SHA256:BBCC0315E014E772AEB06E92C05F3F2A798A71C23657D638F43CE638B3713727\",\"schema\":null,\"server\":{\"name\":\"example-remote\",\"version\":\"1.4.0\"},\"shape\":\"mcp\",\"snapshot\":null,\"statement\":\"sha256:b111c6e1d318f203063e5c16bab43c108326af0aa2f7b65760c95547a43dbe52\",\"transport\":\"http\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:5cf145a7c4b85171a8b8a7b69e5f79c97e841f966a3ec30b4de5a4ec3c89be29\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580\",\"servedAt\":\"2026-10-13T00:00:00Z\",\"sessionId\":\"s-remote\",\"signature\":\"0f7358ecd10d56fb3e474febb7c2dbad20909877fca47cb8d23fb730d3efd36965f6e57ad541661624e862263b9f15d15bbfe03ccbe22a30bf77a87ee2aae108\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-10-13T00:00:01Z\",\"sessionId\":\"s-remote\",\"signature\":\"0d1559eb68a804b9c97c370a8a4171cb79a253cd9b891b1b5f22766b116a951a04109c7e8327641f43197e3c5556bfa63f8ed3857b0e4b513a1c911411947f0a\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "file": "0.json",
+        "sessionId": "s-remote",
+        "status": "malformed"
+      }
+    ]
+  }
+}

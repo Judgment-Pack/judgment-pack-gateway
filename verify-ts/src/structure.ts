@@ -78,6 +78,101 @@ function isAdapter(v: Value | undefined): boolean {
 
 const shapes = new Set(["airbyte", "mcp", "http", "command"]);
 
+// isRemoteEndpoint is the form of a remote MCP server's endpoint (§1.2a,
+// ADR-0015): at most 2048 characters, each from U+0021 to U+007E;
+// "https://" or "http://" first; no "?" and no "#"; an authority -- what
+// follows "//" up to the first "/" or the end -- that is not empty and
+// holds no "@"; and, after "http://", an authority that is a loopback
+// address written as one, an IPv4 address of 127.0.0.0/8 in dotted decimal
+// or [::1], with ":" and a port in decimal from 1 to 65535 with no leading
+// zero, or no port.
+export function isRemoteEndpoint(s: string): boolean {
+  if (s.length === 0 || s.length > 2048 || !/^[\x21-\x7e]+$/.test(s) || /[?#]/.test(s)) {
+    return false;
+  }
+  const scheme = /^(https?):\/\/(.*)$/s.exec(s);
+  if (scheme === null) {
+    return false;
+  }
+  const rest = scheme[2]!;
+  const slash = rest.indexOf("/");
+  const authority = slash < 0 ? rest : rest.slice(0, slash);
+  if (authority === "" || authority.includes("@")) {
+    return false;
+  }
+  return scheme[1] === "https" || isLoopbackAuthority(authority);
+}
+
+// isLoopbackAuthority is a loopback address written as one, with a port
+// or without.
+function isLoopbackAuthority(authority: string): boolean {
+  let host = authority;
+  let port: string | null = null;
+  if (authority.startsWith("[")) {
+    const end = authority.indexOf("]");
+    if (end < 0) {
+      return false;
+    }
+    host = authority.slice(0, end + 1);
+    const rest = authority.slice(end + 1);
+    if (rest !== "") {
+      if (!rest.startsWith(":")) {
+        return false;
+      }
+      port = rest.slice(1);
+    }
+  } else {
+    const colon = authority.indexOf(":");
+    if (colon >= 0) {
+      host = authority.slice(0, colon);
+      port = authority.slice(colon + 1);
+    }
+  }
+  if (port !== null && (!/^[1-9][0-9]{0,4}$/.test(port) || Number(port) > 65535)) {
+    return false;
+  }
+  if (host === "[::1]") {
+    return true;
+  }
+  const octets = /^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/.exec(host);
+  return octets !== null && octets[1] === "127" && octets.slice(2).every((o) => Number(o) <= 255);
+}
+
+// remoteHolds is what a remote MCP server adds to an acquisition (§1.2a,
+// ADR-0015), held to its form, or true when neither member is there:
+// transport and server together, on shape mcp alone; transport "http";
+// server an object of a string name and a string version, another member
+// of it tolerated; the endpoint of a remote server's form; and the peer
+// identity "tls:sha256:" and 64 lowercase hex after "https://", null after
+// "http://".
+function remoteHolds(v: ObjectValue): boolean {
+  const transport = member(v, "transport");
+  const server = member(v, "server");
+  if (transport === undefined && server === undefined) {
+    return true;
+  }
+  const shape = member(v, "shape");
+  const endpoint = member(v, "endpoint");
+  const peer = member(v, "peerIdentity");
+  if (
+    !isString(transport) ||
+    transport.value !== "http" ||
+    server?.type !== "object" ||
+    !isString(member(server, "name")) ||
+    !isString(member(server, "version")) ||
+    !isString(shape) ||
+    shape.value !== "mcp" ||
+    !isString(endpoint) ||
+    !isRemoteEndpoint(endpoint.value)
+  ) {
+    return false;
+  }
+  if (endpoint.value.startsWith("https://")) {
+    return isString(peer) && /^tls:sha256:[0-9a-f]{64}$/.test(peer.value);
+  }
+  return peer?.type === "null";
+}
+
 function isAcquisition(v: Value | undefined): boolean {
   if (v?.type !== "object") {
     return false;
@@ -95,7 +190,8 @@ function isAcquisition(v: Value | undefined): boolean {
     nullableDigest(member(v, "schema")) &&
     nullableString(member(v, "upstreamToken")) &&
     (pageItems === undefined || (pageItems.type === "array" && pageItems.items.every(isDigest))) &&
-    isString(member(v, "observedAt"))
+    isString(member(v, "observedAt")) &&
+    remoteHolds(v)
   );
 }
 

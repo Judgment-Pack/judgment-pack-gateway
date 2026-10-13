@@ -1,0 +1,20 @@
+{
+  "name": "v3-mcp-remote-on-another-shape",
+  "note": "An acquisition of shape http carrying transport and server, each of its form: the two are members of shape mcp alone (§1.2a). Signed, and malformed at order 1.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580": "{\"n\":0,\"session\":\"s-remote\"}",
+    "receipts/s-remote/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:a22c061264d59629ff4720ce714d9e4089f905eb2b7573963fab2dc3a8b782cd\",\"name\":\"adapter-mcp\",\"version\":\"0\"},\"endpoint\":\"https://mcp.example/api/mcp\",\"observedAt\":\"2026-10-13T00:00:00Z\",\"peerIdentity\":\"tls:sha256:bbcc0315e014e772aeb06e92c05f3f2a798a71c23657d638f43ce638b3713727\",\"schema\":null,\"server\":{\"name\":\"example-remote\",\"version\":\"1.4.0\"},\"shape\":\"http\",\"snapshot\":null,\"statement\":\"sha256:b111c6e1d318f203063e5c16bab43c108326af0aa2f7b65760c95547a43dbe52\",\"transport\":\"http\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:5cf145a7c4b85171a8b8a7b69e5f79c97e841f966a3ec30b4de5a4ec3c89be29\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580\",\"servedAt\":\"2026-10-13T00:00:00Z\",\"sessionId\":\"s-remote\",\"signature\":\"68ac69ad3175899cd65a882960cff6454275b0ae7103ad03a752050d26ee5feadea2fd19947a22d32f36fccfd43629d4c84ee4075205eeebcc8a0f9d958c9a0f\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-10-13T00:00:01Z\",\"sessionId\":\"s-remote\",\"signature\":\"0d1559eb68a804b9c97c370a8a4171cb79a253cd9b891b1b5f22766b116a951a04109c7e8327641f43197e3c5556bfa63f8ed3857b0e4b513a1c911411947f0a\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "file": "0.json",
+        "sessionId": "s-remote",
+        "status": "malformed"
+      }
+    ]
+  }
+}

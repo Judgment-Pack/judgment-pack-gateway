@@ -5,6 +5,8 @@
 // the test scripted, and misbehaving as told -- and, started as a runtime
 // with `run`, records what it was asked and then acts as the server; `kill`
 // and `inspect` answer as a runtime would for a container that is gone.
+// HTTPServer (http.go) stands in for a remote server, over Streamable HTTP
+// in the test's own process.
 package fakemcp
 
 import (

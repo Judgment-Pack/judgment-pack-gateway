@@ -743,6 +743,11 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 	var adapterEnvelope *envelope
 	if spec.shape != "" {
 		adapterEnvelope, err = parseEnvelope(result)
+		if err == nil {
+			// Only an mcp adapter reaches a remote server (ADR-0015); the
+			// members' forms are parseEnvelope's.
+			err = remoteMembersOnShape(adapterEnvelope.acquisition, spec.shape)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("source %s: the adapter's result is not an envelope: %v", source, err)
 		}
@@ -1085,12 +1090,17 @@ type envelope struct {
 var envelopeMembers = map[string]bool{
 	"adapter": true, "endpoint": true, "statement": true, "snapshot": true,
 	"peerIdentity": true, "schema": true, "upstreamToken": true, "observedAt": true,
+	// What an mcp adapter that reached its server over HTTP adds (ADR-0015):
+	// both or neither, held to their forms below.
+	"transport": true, "server": true,
 }
 
 // parseEnvelope holds an adapter's stdout to SPEC.md §6 exactly: the three
-// envelope members and no other, the eight acquisition members and no other,
-// each of its stated type and form. Anything else is a refusal, never a
-// member silently dropped or defaulted.
+// envelope members and no other, the eight acquisition members -- and the
+// two a remote MCP server adds, together -- and no other, each of its
+// stated type and form. Anything else is a refusal, never a member silently
+// dropped or defaulted. Which shape may report the two is the source's to
+// say (adapterAcquisition).
 func parseEnvelope(v value) (*envelope, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
@@ -1157,6 +1167,9 @@ func parseEnvelope(v value) (*envelope, error) {
 	if text, ok := memberString(acquisition, "statement"); ok {
 		e.statement = &text
 	}
+	if err := remoteMembersProblem(acquisition, "mcp", true); err != nil {
+		return nil, err
+	}
 	observedAt, err := requireString(acquisition, "observedAt")
 	if err != nil {
 		return nil, err
@@ -1182,6 +1195,13 @@ func adapterAcquisition(shape string, e *envelope) (*vObject, []byte, error) {
 	for _, name := range []string{"adapter", "endpoint", "snapshot", "peerIdentity", "schema", "upstreamToken", "observedAt"} {
 		v, _ := e.acquisition.get(name)
 		a.set(name, v)
+	}
+	// A remote MCP server's transport and its own name and version, as the
+	// adapter reported them (ADR-0015); absent for every other source.
+	for _, name := range []string{"transport", "server"} {
+		if v, present := e.acquisition.get(name); present {
+			a.set(name, v)
+		}
 	}
 	a.set("shape", vString(shape))
 	var salt []byte

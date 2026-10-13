@@ -508,7 +508,7 @@ func TestEachPageIsJudgedBeforeTheNextIsAsked(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer srv.stop()
-	rpc := newClient(srv.stdin, srv.stdout)
+	rpc := srv.rpc
 	if _, err := rpc.call(ctx, "initialize", map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "0"}}); err != nil {
 		t.Fatal(err)
 	}
@@ -674,7 +674,7 @@ func TestCursorsAreNotKept(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rpc := newClient(srv.stdin, srv.stdout)
+		rpc := srv.rpc
 		if _, err := rpc.call(ctx, "initialize", map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "0"}}); err != nil {
 			t.Fatal(err)
 		}

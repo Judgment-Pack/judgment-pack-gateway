@@ -1,14 +1,18 @@
 // Package mcphttp implements bounded Streamable HTTP for gateway companions.
 // It serves no sampling, roots, elicitation, or other server-initiated requests.
-// The caller supplies a reviewed endpoint and an explicit tool allowlist.
+// The caller supplies a reviewed endpoint and an explicit tool allowlist:
+// New for a connection's own client, Open for adapter-mcp's remote form.
 package mcphttp
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net"
@@ -29,12 +33,191 @@ var ErrUnauthorized = errors.New("reconnect-required")
 var ErrLimit = errors.New("provider-response-too-large")
 var ErrTool = errors.New("tool-not-allowed")
 
+// Error is one of the errors above with what happened in words: the status
+// a server answered, the error it answered with, the reason an answer was
+// not read. It is what errors.Is matches as its kind, so a caller that maps
+// the kinds reads it as before. Its text never carries the credential, nor a
+// redirect's location: an answer that repeats the credential is refused
+// before anything of it is read into an error.
+type Error struct {
+	Kind   error
+	Detail string
+}
+
+func (e *Error) Error() string { return e.Detail }
+func (e *Error) Unwrap() error { return e.Kind }
+
+func fault(kind error, format string, args ...any) error {
+	return &Error{Kind: kind, Detail: fmt.Sprintf(format, args...)}
+}
+
 // Client is used serially within one operation. Credentials never occur in errors.
 type Client struct {
 	endpoint, token, session, version string
 	allowed                           map[string]bool
 	http                              *http.Client
 	next                              int
+	// anyTool is a client opened without a tool list (Open): its caller
+	// holds the allowlist, and the client lets a call name any tool.
+	anyTool bool
+	// headers are sent on every request before the client's own, which a
+	// fixed header cannot replace.
+	headers http.Header
+	// limit bounds each answer; MaxResponse for New.
+	limit int64
+	// requestLimit bounds each request this client sends: 64 KiB for New,
+	// and for Open what a request on adapter-mcp's stdin may hold, 1 MiB,
+	// with room for the message around it.
+	requestLimit int
+	// peer is the TLS identity the last answer to a request came under,
+	// "tls:sha256:" and the digest of the leaf certificate; "" over
+	// plaintext.
+	peer string
+}
+
+// Options is how Open configures a client for adapter-mcp's remote form.
+type Options struct {
+	// Token, when given, is sent as "Authorization: Bearer"; a server that
+	// takes no credential is given none.
+	Token string
+	// Headers are sent on every request as given. The caller holds them to
+	// their names: a credential's header, and the headers this client
+	// writes itself, are not among them.
+	Headers http.Header
+	// MaxResponse bounds each answer; zero is MaxResponse.
+	MaxResponse int64
+	// Tools are the only tools a call may name; nil lets a call name any
+	// tool, the caller holding its own allowlist.
+	Tools []string
+}
+
+// EndpointProblem is why endpoint is not one a client is opened on, or nil:
+// https, or http at a loopback address written as one -- an IPv4 address
+// of 127.0.0.0/8 in dotted decimal, or [::1] -- since a credential sent in
+// the clear is a credential given away; no user, no query, no fragment; at
+// most 2048 bytes of printable ASCII. The endpoint is used as written.
+func EndpointProblem(endpoint string) error {
+	if endpoint == "" || len(endpoint) > 2048 {
+		return errors.New("the url is empty or longer than 2048 bytes")
+	}
+	for i := 0; i < len(endpoint); i++ {
+		if endpoint[i] < 0x21 || endpoint[i] > 0x7e {
+			return errors.New("the url carries a byte outside printable ASCII")
+		}
+	}
+	rest, plain := "", false
+	switch {
+	case strings.HasPrefix(endpoint, "https://"):
+		rest = endpoint[len("https://"):]
+	case strings.HasPrefix(endpoint, "http://"):
+		rest, plain = endpoint[len("http://"):], true
+	default:
+		return errors.New("the url must begin https:// (or http:// at a loopback address), in lower case")
+	}
+	if strings.ContainsAny(endpoint, "?#") {
+		return errors.New("the url carries a query or a fragment; it is used as written, and a credential's place is the credentials file")
+	}
+	authority, _, _ := strings.Cut(rest, "/")
+	if authority == "" {
+		return errors.New("the url names no host")
+	}
+	if strings.Contains(authority, "@") {
+		return errors.New("the url carries a user: a credential's place is the credentials file")
+	}
+	if plain && !LoopbackAuthority(authority) {
+		return errors.New("the url must be https; http is accepted at a loopback address written as one (127.0.0.0/8 in dotted decimal, or [::1]) only, since a credential sent in the clear is a credential given away")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return errors.New("the url is not an absolute URL of a host")
+	}
+	return nil
+}
+
+// LoopbackAuthority reports whether authority -- a URL's host, with its
+// port when it has one -- is a loopback address written as one: an IPv4
+// address of 127.0.0.0/8 in dotted decimal, each part 0 to 255 with no
+// leading zero, or [::1]; a port, when given, in decimal from 1 to 65535
+// with no leading zero. A name is not one, localhost included: what a name
+// resolves to is not in the text.
+func LoopbackAuthority(authority string) bool {
+	host, port := authority, ""
+	if strings.HasPrefix(authority, "[::1]") {
+		host, port = "[::1]", strings.TrimPrefix(authority, "[::1]")
+		if port != "" && !strings.HasPrefix(port, ":") {
+			return false
+		}
+		port = strings.TrimPrefix(port, ":")
+		if strings.HasSuffix(authority, ":") {
+			return false
+		}
+	} else if h, p, found := strings.Cut(authority, ":"); found {
+		if p == "" {
+			return false
+		}
+		host, port = h, p
+	}
+	if port != "" && !decimalIn(port, 1, 65535) {
+		return false
+	}
+	if host == "[::1]" {
+		return true
+	}
+	parts := strings.Split(host, ".")
+	if len(parts) != 4 || parts[0] != "127" {
+		return false
+	}
+	for _, part := range parts {
+		if !decimalIn(part, 0, 255) {
+			return false
+		}
+	}
+	return true
+}
+
+// decimalIn: digits only, no leading zero, within [low, high].
+func decimalIn(s string, low, high int) bool {
+	if s == "" || len(s) > 5 || (len(s) > 1 && s[0] == '0') {
+		return false
+	}
+	n := 0
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n >= low && n <= high
+}
+
+// Open is a client for adapter-mcp's remote form: the endpoint as
+// EndpointProblem holds it, a bearer token only when one is given, fixed
+// headers, a bound on each answer, and redirects never followed whatever
+// the transport says.
+func Open(endpoint string, opts Options, transport *http.Client) (*Client, error) {
+	if err := EndpointProblem(endpoint); err != nil {
+		return nil, &Error{Kind: ErrProtocol, Detail: err.Error()}
+	}
+	if len(opts.Token) > 8192 || strings.ContainsAny(opts.Token, "\r\n\x00") {
+		return nil, fault(ErrProtocol, "the credential is not one a header can carry")
+	}
+	if transport == nil {
+		transport = HTTPClient()
+	}
+	h := *transport
+	h.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	limit := opts.MaxResponse
+	if limit <= 0 {
+		limit = MaxResponse
+	}
+	c := &Client{endpoint: endpoint, token: opts.Token, allowed: map[string]bool{}, http: &h, headers: opts.Headers.Clone(), limit: limit, requestLimit: 2 << 20, anyTool: opts.Tools == nil}
+	for _, name := range opts.Tools {
+		if name == "" {
+			return nil, ErrTool
+		}
+		c.allowed[name] = true
+	}
+	return c, nil
 }
 
 func HTTPClient() *http.Client {
@@ -58,7 +241,7 @@ func New(endpoint, token string, allowed []string, transport *http.Client) (*Cli
 	h := *transport
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	h.Timeout = 45 * time.Second
-	c := &Client{endpoint: endpoint, token: token, allowed: map[string]bool{}, http: &h}
+	c := &Client{endpoint: endpoint, token: token, allowed: map[string]bool{}, http: &h, limit: MaxResponse, requestLimit: 64 << 10}
 	for _, name := range allowed {
 		if name == "" || len(name) > 128 {
 			return nil, ErrTool
@@ -88,11 +271,43 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return err
 }
 func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawMessage, error) {
-	if c.version == "" || !c.allowed[name] {
+	if c.version == "" || !(c.allowed[name] || c.anyTool && name != "") {
 		return nil, ErrTool
 	}
 	return c.call(ctx, "tools/call", map[string]any{"name": name, "arguments": args})
 }
+
+// Request sends one request other than a tool call and returns its result
+// as the server wrote it: initialize first, which is answered with the
+// session the server issues, then, once Negotiated, anything the caller
+// reads for itself -- tools/list a page at a time. A tool call goes through
+// CallTool, which holds the allowlist.
+func (c *Client) Request(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if method == "tools/call" {
+		return nil, ErrTool
+	}
+	if (method == "initialize") != (c.version == "") {
+		return nil, fault(ErrProtocol, "%s is not a request for this point of the session", method)
+	}
+	return c.call(ctx, method, params)
+}
+
+// Negotiated records the protocol version the caller accepted from the
+// server's answer to initialize, which every later request names, and then
+// tells the server the client is initialized.
+func (c *Client) Negotiated(ctx context.Context, version string) error {
+	if c.version != "" || version == "" {
+		return fault(ErrProtocol, "the session was negotiated already")
+	}
+	c.version = version
+	_, err := c.post(ctx, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, 0)
+	return err
+}
+
+// PeerIdentity is the TLS identity the last answer to a request came
+// under -- "tls:sha256:" and the SHA-256 of the leaf certificate the server
+// presented -- or "" when it came over plaintext.
+func (c *Client) PeerIdentity() string { return c.peer }
 
 // Tools lists only explicitly allowed tools. Tool annotations never grant permission.
 func (c *Client) Tools(ctx context.Context) (map[string]json.RawMessage, error) {
@@ -153,15 +368,20 @@ func (c *Client) Close(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	c.headers(req)
+	c.setHeaders(req)
 	resp, err := c.http.Do(req)
 	if err == nil {
 		resp.Body.Close()
 	}
 	c.session = ""
 }
-func (c *Client) headers(r *http.Request) {
-	r.Header.Set("Authorization", "Bearer "+c.token)
+func (c *Client) setHeaders(r *http.Request) {
+	for name, values := range c.headers {
+		r.Header[name] = append([]string(nil), values...)
+	}
+	if c.token != "" {
+		r.Header.Set("Authorization", "Bearer "+c.token)
+	}
 	r.Header.Set("Accept", "application/json, text/event-stream")
 	r.Header.Set("Content-Type", "application/json")
 	if c.session != "" {
@@ -177,77 +397,101 @@ func (c *Client) call(ctx context.Context, method string, params any) (json.RawM
 }
 func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage, error) {
 	raw, err := json.Marshal(message)
-	if err != nil || len(raw) > 64<<10 {
-		return nil, ErrLimit
+	if err != nil || len(raw) > c.requestLimit {
+		return nil, fault(ErrLimit, "the request exceeds %d bytes", c.requestLimit)
 	}
 	req, err := http.NewRequestWithContext(ctx, "POST", c.endpoint, bytes.NewReader(raw))
 	if err != nil {
 		return nil, ErrProtocol
 	}
-	c.headers(req)
+	c.setHeaders(req)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, ErrUnavailable
+		if ctx.Err() != nil {
+			return nil, fault(ErrUnavailable, "the server did not answer in time: %v", ctx.Err())
+		}
+		// The transport's reason, without the URL it wraps it in: the URL
+		// is the operator's, and the reason is what says why.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, fault(ErrUnavailable, "the server could not be reached: %v", err)
 	}
 	defer resp.Body.Close()
+	status := fmt.Sprintf("%d %s", resp.StatusCode, http.StatusText(resp.StatusCode))
 	if resp.StatusCode == 401 {
-		return nil, ErrUnauthorized
+		return nil, fault(ErrUnauthorized, "the server answered %s", status)
+	}
+	// A redirect is an answer from another resource than the one the
+	// operator fixed, and following one would carry the credential there.
+	// It is named by its status alone: the location is the server's.
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return nil, fault(ErrUnavailable, "the server answered %s, a redirect, which is not followed", status)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, ErrUnavailable
+		return nil, fault(ErrUnavailable, "the server answered %s", status)
 	}
 	if id == 0 {
 		if resp.StatusCode != 202 {
-			return nil, ErrProtocol
+			return nil, fault(ErrProtocol, "the server answered a notification with %s, not 202 Accepted", status)
 		}
 		return nil, nil
 	}
-	if resp.ContentLength > MaxResponse {
-		return nil, ErrLimit
+	// The identity this answer came under: the one a result is read from
+	// is the one a caller records.
+	c.peer = ""
+	if resp.TLS != nil && len(resp.TLS.PeerCertificates) > 0 {
+		sum := sha256.Sum256(resp.TLS.PeerCertificates[0].Raw)
+		c.peer = "tls:sha256:" + hex.EncodeToString(sum[:])
+	}
+	if resp.ContentLength > c.limit {
+		return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
 	}
 	if c.version == "" {
 		session := resp.Header.Get("Mcp-Session-Id")
 		if len(session) > 1024 {
-			return nil, ErrProtocol
+			return nil, fault(ErrProtocol, "the server issued a session id longer than 1024 bytes")
 		}
 		for _, r := range session {
 			if r < 0x21 || r > 0x7e {
-				return nil, ErrProtocol
+				return nil, fault(ErrProtocol, "the server issued a session id outside visible ASCII")
 			}
 		}
 		c.session = session
 	}
 	media, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil {
-		return nil, ErrProtocol
+		return nil, fault(ErrProtocol, "the server's answer names no content type a client reads")
 	}
 	if media == "application/json" {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, MaxResponse+1))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, c.limit+1))
 		if err != nil {
-			return nil, ErrUnavailable
+			return nil, fault(ErrUnavailable, "the server's answer could not be read whole")
 		}
-		if len(body) > MaxResponse {
-			return nil, ErrLimit
+		if int64(len(body)) > c.limit {
+			return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
 		}
 		result, done, err := c.message(ctx, body, id)
 		if !done && err == nil {
-			return nil, ErrProtocol
+			return nil, fault(ErrProtocol, "the server's answer is not the response to the request")
 		}
 		return result, err
 	}
 	if media != "text/event-stream" {
-		return nil, ErrProtocol
+		// The type is the server's text, and is not repeated.
+		return nil, fault(ErrProtocol, "the server's answer is of a content type that is neither application/json nor text/event-stream")
 	}
 	// Bound the entire stream, including comments/notifications, not just its result.
-	limited := &io.LimitedReader{R: resp.Body, N: MaxResponse + 1}
+	limited := &io.LimitedReader{R: resp.Body, N: c.limit + 1}
 	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 4096), MaxResponse)
+	scanner.Buffer(make([]byte, 4096), int(min(c.limit, 1<<30)))
 	var event bytes.Buffer
 	events := 0
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if limited.N <= 0 {
-			return nil, ErrLimit
+			return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
 		}
 		if len(line) == 0 {
 			if event.Len() == 0 {
@@ -255,7 +499,7 @@ func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage
 			}
 			events++
 			if events > 64 {
-				return nil, ErrLimit
+				return nil, fault(ErrLimit, "the server's answer carries more than 64 events")
 			}
 			result, done, err := c.message(ctx, bytes.TrimSuffix(event.Bytes(), []byte{'\n'}), id)
 			event.Reset()
@@ -267,29 +511,35 @@ func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage
 		if bytes.HasPrefix(line, []byte("data:")) {
 			value := bytes.TrimPrefix(line, []byte("data:"))
 			value = bytes.TrimPrefix(value, []byte(" "))
-			if event.Len()+len(value)+1 > MaxResponse {
-				return nil, ErrLimit
+			if int64(event.Len()+len(value)+1) > c.limit {
+				return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
 			}
 			event.Write(value)
 			event.WriteByte('\n')
 		}
 	}
 	if limited.N <= 0 {
-		return nil, ErrLimit
+		return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
 	}
-	return nil, ErrProtocol // Incomplete events and disconnected streams are not success.
+	// Incomplete events and disconnected streams are not success.
+	return nil, fault(ErrProtocol, "the server's event stream ended before the response")
 }
 func (c *Client) message(ctx context.Context, body []byte, id int) (json.RawMessage, bool, error) {
-	if bytes.Contains(body, []byte(c.token)) {
-		return nil, false, ErrProtocol
+	// An answer that repeats the credential is refused before anything of
+	// it is read: a token is never carried into a result or an error.
+	if c.token != "" && bytes.Contains(body, []byte(c.token)) {
+		return nil, false, fault(ErrProtocol, "the server's answer repeats the credential")
 	}
 	normalized, err := canon.Canonicalize(body, canon.CarryNumbersAsText)
-	if err != nil || bytes.Contains(normalized, []byte(c.token)) {
-		return nil, false, ErrProtocol
+	if err != nil {
+		return nil, false, fault(ErrProtocol, "the server's answer is not a JSON message in the canonical domain")
+	}
+	if c.token != "" && bytes.Contains(normalized, []byte(c.token)) {
+		return nil, false, fault(ErrProtocol, "the server's answer repeats the credential")
 	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil || string(m["jsonrpc"]) != `"2.0"` {
-		return nil, false, ErrProtocol
+		return nil, false, fault(ErrProtocol, "the server's answer is not a JSON-RPC 2.0 message")
 	}
 	if method, ok := m["method"]; ok {
 		var name string
@@ -317,15 +567,22 @@ func (c *Client) message(ctx context.Context, body []byte, id int) (json.RawMess
 		return nil, false, nil
 	}
 	if string(m["id"]) != strconv.Itoa(id) {
-		return nil, false, ErrProtocol
+		return nil, false, fault(ErrProtocol, "the server answered another request than the one sent")
 	}
 	result, ok := m["result"]
-	_, fault := m["error"]
-	if ok == fault {
-		return nil, false, ErrProtocol
+	rpcError, failed := m["error"]
+	if ok == failed {
+		return nil, false, fault(ErrProtocol, "the server's response carries both a result and an error, or neither")
 	}
-	if fault {
-		return nil, false, ErrUnavailable
+	if failed {
+		// The server's refusal in its own words, as the stdio form reports
+		// one: its message and its code.
+		var e struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		}
+		json.Unmarshal(rpcError, &e)
+		return nil, false, fault(ErrUnavailable, "the server answered with an error: %s (code %d)", e.Message, e.Code)
 	}
 	return result, true, nil
 }

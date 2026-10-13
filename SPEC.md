@@ -194,11 +194,41 @@ gateway's boundary. It does not prove that they approved what was asked for.
 | `upstreamToken` | string or `null` | an integrity token the upstream itself produced, carried verbatim when one exists; `null` when the upstream vouches for nothing |
 | `pageItems` | array of `"sha256:" + hex` — **optional** | for a page, the digest of each item's canonical bytes in order; absent for a single result |
 | `observedAt` | string | when the adapter received the bytes, as the adapter recorded it; `servedAt` remains the gateway's own stamp. For the `"command"` shape, which records nothing, it is the gateway's own stamp of the moment it had read the source's output in full, never later than `servedAt` |
+| `transport` | the string `"http"` — **optional** | present exactly when an `"mcp"` adapter reached a remote server over Streamable HTTP (below; §6); absent for a server reached over stdio and for every other shape |
+| `server` | `{ "name": string, "version": string }` — **optional** | the name and version the remote server gave itself in its `initialize` answer; present exactly when `transport` is |
 
 `upstreamToken` and `shape` are the honest-bounds members: a receipt never lets
 a source that vouches for itself and a source that vouches for nothing read the
 same, and never lets bytes attested through a bare command read as bytes whose
 acquisition was recorded.
+
+**A remote MCP server** (`docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md`).
+`transport` and `server` are present together or not at all, and only on shape
+`"mcp"`; with them, `endpoint` and `peerIdentity` are held to the forms that follow.
+`endpoint` is a string of at most 2048 characters, each from U+0021 to U+007E,
+beginning `"https://"` or `"http://"`, with no `?` and no `#`, whose authority — what
+follows `//` up to the first `/` or the end — is not empty and holds no `@`; after
+`"http://"`, the authority is a loopback address written as one, an IPv4 address of
+`127.0.0.0/8` in dotted decimal with each part from 0 to 255 and no leading zero, or
+`[::1]`, followed by `":"` and a port in decimal from 1 to 65535 with no leading zero,
+or by nothing. `peerIdentity` is `"tls:sha256:"` followed by exactly 64 lowercase
+hexadecimal characters after `"https://"`, and `null` after `"http://"`, where no
+transport identity is established. A `transport` of another value, a `server` that is
+not an object of a string `name` and a string `version`, one of the two without the
+other, the two on another shape, or an `endpoint` or a `peerIdentity` out of these
+forms, is `malformed`. A member of `server` beside those two is tolerated, as any
+signed member a verifier does not know is. A verifier written before the members
+tolerates them and holds them to nothing.
+
+**What a remote acquisition establishes.** As every adapter record, it is the
+adapter's testimony under the gateway's signature (below): that an endpoint at that
+URL, presenting that TLS identity, answered that tool call — committed in
+`statement` — with the bytes `resultDigest` names, at `observedAt`, to a client
+holding the operator's credential for it. It does not establish that the bytes are
+true; that the tool read rather than wrote, which nothing at the client can tell;
+that the server is honest, or the vendor's, or that the name and version it gave
+itself are its own; or anything the session carried beyond the one call. The
+credential is in no member, and neither is the session the server issued.
 
 **Where the members come from.** For the `"command"` shape the gateway records
 what it alone can: the command as its adapter, `null` for every member a
@@ -230,7 +260,7 @@ target's response bytes, retained like any artifact.
 | `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex, "recordBytes": "exact" }`, `recordBytes` **optional** | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest; `recordBytes`, how the gateway found the record (below) |
 | `cites` | array of `{ "sessionId": flat token (§3a), "callIndex": non-negative integer, "signature": signature }` | the acquisition receipts the requester says the decision record relied on |
 | `policy` | `"sha256:" + hex` — **optional** | the decision policy the gateway held the action to before it was sent, by digest (below); absent when its operator held the tool to none |
-| `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string }` | what was called, named as `acquisition` names its adapter |
+| `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string }` | what was called, named as `acquisition` names its adapter; for a write to a remote MCP server, `endpoint` is the server's URL |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it |
 | `observedAt` | string | when the target answered |
@@ -937,10 +967,12 @@ object whose members are exactly `acquisition`, `result` and, optionally, `page`
   as `result`.
 - `acquisition` is an object whose members are exactly `adapter`, `endpoint`,
   `statement`, `snapshot`, `peerIdentity`, `schema`, `upstreamToken` and
-  `observedAt`, each of the type and form §1.2a states for the receipt member of
-  that name, except that `statement` is the statement text itself — the query,
-  resource path or tool call — as a string, or `null`; `adapter` carries exactly
-  `name`, `version` and `digest`; and `observedAt` is of the form
+  `observedAt` — and, from a source declared `mcp` whose adapter reached a remote
+  server, `transport` and `server` besides (below) — each of the type and form §1.2a
+  states for the receipt member of that name, except that `statement` is the
+  statement text itself — the query, resource path or tool call — as a string, or
+  `null`; `adapter` carries exactly `name`, `version` and `digest`, and `server`
+  exactly `name` and `version`; and `observedAt` is of the form
   `YYYY-MM-DDThh:mm:ssZ` — UTC, whole seconds, the form `servedAt` takes — which
   is what this gateway accepts from an adapter, beyond the string a verifier
   checks for. It carries neither `shape` nor `pageItems`. (A
@@ -949,6 +981,24 @@ object whose members are exactly `acquisition`, `result` and, optionally, `page`
   ask for.)
 - `page`, when present, is `true`, and `result` is then an array of items: the
   receipt carries `pageItems`, the digest of each item's canonical form, in order.
+
+**Shape `mcp`, by transport.** `adapter-mcp` reaches its server over stdio — a pinned
+image or a local command — or over Streamable HTTP at a URL the operator fixed
+(`docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md`). Over stdio the
+envelope carries the eight members and no others: `adapter` names the image, or the
+command with the version the server gave itself and the digest of its executable;
+`endpoint` is the host the operator named, or `null`; `peerIdentity` is `null`. For a
+remote server it carries the eight and `transport` and `server`: `adapter` names
+`adapter-mcp` itself, with the digest of its own executable; `endpoint` is the URL as
+configured; `peerIdentity` is the identity of the TLS peer whose answer carried the
+tool's result, or `null` over plaintext loopback; `transport` is `"http"`; and
+`server` is the name and version the server gave itself, each held to its form as
+§1.2a states. In both, `statement` is the call, `snapshot` and `upstreamToken` are
+`null`, and `schema` is the tool's declared output schema, digested, or `null`. The
+credential the adapter sends a remote server is never in the envelope, and neither
+is the session id the server issues: both are the adapter's alone. An envelope
+whose `transport` and `server` depart from §1.2a's forms, or that carries them from a
+source declared with another shape, is refused like any other departure.
 
 The gateway refuses an envelope that departs from this in any way — not an object,
 a member missing or unlisted at either level, a member of another type or form,
