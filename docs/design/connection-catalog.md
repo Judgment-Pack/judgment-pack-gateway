@@ -120,7 +120,7 @@ and the [Statement Execution API tutorial](https://docs.databricks.com/aws/en/de
 [functions](https://docs.databricks.com/api/workspace/functions/list)), and
 [OAuth machine-to-machine authentication](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
 (updated 2026-10-12); the pages that show no date were read on 2026-10-13.
-The managed MCP servers are a separate profile, not described here.
+The managed MCP servers are the MCP profile, below.
 
 **What a read establishes.** A read's receipt establishes that the adapter
 received these bytes from that workspace endpoint, under the TLS identity the
@@ -134,6 +134,38 @@ rather than wrote. Nothing in the connection holds a statement to reading: the
 statement is sent as given, and the SQL warehouse's and Unity Catalog's grants
 on the identity are what keep this profile to reads. An operator who wants
 reads only gives the identity read privileges only.
+
+**The MCP profile.** A connection may also enable the workspace's managed MCP
+servers (`mcp` in `configure`): the Databricks SQL server, a Genie space's,
+a Unity Catalog function's and an AI Search index's, each an endpoint under
+the workspace that Databricks lists among the legacy workspace endpoints of
+its [Databricks-provided MCPs](https://docs.databricks.com/aws/en/agents/mcp-tools/built-in-mcp-services)
+(updated 2026-10-08), with the tools a read may call on it. A read is one
+tool call over Streamable HTTP under the same credential, made by
+`adapter-sources`; the companion's `test` lists each server's tools and calls
+none. The servers, the request, the bounds and the refusals are in the
+[adapters README](../../adapters/README.md#databricks-connections-mcp-profile).
+
+**What an MCP read establishes.** A read's receipt establishes that the
+adapter received these bytes from that server's endpoint under the workspace,
+under the TLS identity the receipt names, for that tool and those arguments,
+at that time, sent under the credential the operator configured for the
+connection.
+
+**What it does not establish.** That the answer is true or current, or that
+the tool read rather than wrote. Databricks states of the
+[Genie Agent server](https://docs.databricks.com/aws/en/agents/mcp-tools/genie-agent)
+(updated 2026-10-07): "Read-only. The Genie Agent MCP server queries data; it
+doesn't write to your tables." Of [Databricks SQL](https://docs.databricks.com/aws/en/agents/mcp-tools/databricks-sql)
+(updated 2026-10-08) it states that "The MCP permits reads and writes by
+default", and of the workspace endpoint this profile reaches that it "uses the
+Managed MCP Servers workspace preview and underlying resource permissions": the
+SQL server runs what it is sent, as far as the identity may. A
+[Unity Catalog function](https://docs.databricks.com/aws/en/agents/mcp-tools/uc-functions)
+(updated 2026-10-07) does what its body does, "with access governed by Unity
+Catalog permissions". The identity's grants and the connection's tools list
+are what keep this profile to reads; nothing in the connection holds a tool
+call to reading, and the arguments are sent as given.
 
 ## Public URL sources (version 2)
 

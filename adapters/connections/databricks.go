@@ -57,7 +57,8 @@ const (
 
 // DatabricksConnection is what configure takes and custody holds. Its
 // member names are the setup fields' keys, and its values are text, as a
-// form sends them.
+// form sends them; mcp alone is a list, which the setup form does not yet
+// carry.
 type DatabricksConnection struct {
 	ID           string `json:"id"`
 	Revision     string `json:"revision"`
@@ -73,6 +74,9 @@ type DatabricksConnection struct {
 	Schema       string `json:"schema,omitempty"`
 	WaitSeconds  string `json:"wait-seconds,omitempty"`
 	ResultBytes  string `json:"max-result-bytes,omitempty"`
+	// MCP is the managed MCP servers the connection enables, each with the
+	// tools a read may call on it (databricks_mcp.go).
+	MCP []DatabricksMCPServer `json:"mcp,omitempty"`
 }
 
 // databricksToken is an access token minted for a service principal, held
@@ -106,6 +110,11 @@ type DatabricksRequest struct {
 	Schema     string                `json:"schema,omitempty"`
 	PageToken  string                `json:"pageToken,omitempty"`
 	MaxResults int                   `json:"maxResults,omitempty"`
+	// Server, Tool and Arguments are an mcp read's: the managed MCP server
+	// by its name, the tool, and its arguments, an object.
+	Server    string          `json:"server,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 // DatabricksParameter is a named parameter marker's value, sent as the
@@ -252,7 +261,7 @@ func databricksScopeValid(scope string) bool {
 	return true
 }
 func (c DatabricksConnection) valid() bool {
-	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !databricksWarehouse.MatchString(c.Warehouse) || c.wait() < 0 || c.resultBound() < 0 {
+	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !databricksWarehouse.MatchString(c.Warehouse) || c.wait() < 0 || c.resultBound() < 0 || !databricksMCPValid(c.MCP) {
 		return false
 	}
 	if workspace, ok := DatabricksWorkspace(c.Workspace); !ok || workspace != c.Workspace {
@@ -443,6 +452,7 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 		limits := map[string]int{
 			"defaultWaitSeconds": DatabricksDefaultWaitSeconds, "minWaitSeconds": DatabricksMinWaitSeconds, "maxWaitSeconds": DatabricksMaxWaitSeconds,
 			"defaultResultBytes": DatabricksDefaultResultBytes, "minResultBytes": DatabricksMinResultBytes, "maxResultBytes": DatabricksMaxResultBytes,
+			"maxMCPServers": databricksMCPServers, "maxMCPTools": databricksMCPTools,
 		}
 		return map[string]any{"version": 1, "provider": "databricks", "connections": rows, "limits": limits}, err
 	case "configure":
@@ -452,6 +462,12 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 		}
 		if workspace, ok := DatabricksWorkspace(q.Workspace); ok {
 			q.Workspace = workspace
+		}
+		// A server's list left out is an empty one: no tool may be called.
+		for i := range q.MCP {
+			if q.MCP[i].Tools == nil {
+				q.MCP[i].Tools = []string{}
+			}
 		}
 		err := b.store.locked(func(v *state) error {
 			if v.Databricks == nil {
@@ -526,8 +542,20 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 		}
 		// An explicit action: one request, the first catalog of the
 		// listing, whose content is never returned. It starts no warehouse.
-		err := databricksTest(ctx, b.store, q.ID, q.Revision, b.provider)
-		return map[string]bool{"ok": err == nil}, err
+		// Then each MCP server the connection enables: initialize and its
+		// tools, and no tool called.
+		if err := databricksTest(ctx, b.store, q.ID, q.Revision, b.provider); err != nil {
+			return map[string]bool{"ok": false}, err
+		}
+		reports, err := b.provider.databricksMCPTest(ctx, b.store, q.ID, q.Revision)
+		if err != nil || reports == nil {
+			return map[string]bool{"ok": err == nil}, err
+		}
+		ok := true
+		for _, report := range reports {
+			ok = ok && report.OK
+		}
+		return map[string]any{"ok": ok, "mcp": reports}, nil
 	}
 	return nil, ErrRequest
 }
@@ -956,6 +984,12 @@ func (q DatabricksRequest) carries(secrets []string) bool {
 const databricksInRequest = Error("credential-in-request: a request may not carry the connection's credential, which is sent only as its authorization; the request was not sent")
 
 func (q DatabricksRequest) check(c DatabricksConnection) (DatabricksRequest, error) {
+	if q.Read == "mcp" {
+		return q.checkMCP(c)
+	}
+	if q.Server != "" || q.Tool != "" || q.Arguments != nil {
+		return q, ErrRequest
+	}
 	if q.Catalog == "" && q.Schema == "" {
 		q.Catalog, q.Schema = c.Catalog, c.Schema
 	}
@@ -1021,6 +1055,9 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 	}
 	if q, err = q.check(c); err != nil {
 		return nil, err
+	}
+	if q.Read == "mcp" {
+		return p.databricksMCPAcquire(ctx, s, c, q)
 	}
 	// The configured secret and any token held for it are known before a
 	// token is asked for; a token minted now is known only after.
