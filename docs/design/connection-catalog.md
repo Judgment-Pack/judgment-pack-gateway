@@ -216,7 +216,7 @@ organization-level REST APIs "accept either URL form" is
 [work with organization URLs](https://learn.microsoft.com/en-us/azure/devops/extend/develop/work-with-urls)
 (dated 2026-04-03); the throttling headers are
 [rate and usage limits](https://learn.microsoft.com/en-us/azure/devops/integrate/concepts/rate-limits)
-(dated 2025-09-15). The MCP profile is a later change.
+(dated 2025-09-15).
 
 **What a read establishes.** A read's receipt establishes that the adapter
 received these bytes from that organization's endpoint, under the TLS identity
@@ -242,6 +242,48 @@ dated 2026-09-10): a query's answer says nothing of whether it is complete.
 Global personal access tokens stop working on December 1, 2026, by the same
 page on personal access tokens; a connection configured with one stops reading
 then.
+
+**The MCP profile.** A connection may also enable its organization's remote
+MCP server (`mcp` in `configure`, the server `remote`), "a hosted version of
+the Azure DevOps MCP Server" at `https://mcp.dev.azure.com/{organization}`,
+reached "by using streamable HTTP transport"
+([set up the remote Azure DevOps MCP Server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server),
+dated 2026-09-21), with the tools a read may call on it. The endpoint is built
+from the configured organization URL. The credential is the connection's
+access token (`auth` `bearer`): "Personal access tokens (PATs) aren't
+supported for the remote server"
+([troubleshoot the remote server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server-troubleshooting),
+dated 2026-07-31), and the pages document a user's token only, with delegated
+permissions on the Azure DevOps MCP application; no page states that an
+application-only token is taken, so the companion mints none. Each request
+carries the server's read-only header, `X-MCP-Readonly: true`, unless the
+operator turns it off for the server (`readOnlyHeader: "off"`). A read is one
+tool call over Streamable HTTP, made by `adapter-sources`; the companion's
+`test` lists the server's tools and calls none. The request, the bounds and
+the refusals are in the
+[adapters README](../../adapters/README.md#azure-devops-connections-mcp-profile).
+The organization's local MCP server (the npm package `@azure-devops/mcp`) is
+not a connection: the connections run no third-party server process, and the
+README documents it as an operator-level source under `adapter-mcp`.
+
+**What an MCP read establishes.** A read's receipt establishes that the
+adapter received these bytes from that organization's MCP endpoint, under the
+TLS identity the receipt names, for that tool and those arguments, at that
+time, sent under the access token the operator configured for the connection,
+acting with that token's scopes and its user's permissions.
+
+**What it does not establish.** That the answer is true or current, or that
+the tool read rather than wrote. The read-only header is the server's promise:
+the page offers it "to restrict the server to read-only operations", and the
+connection neither checks nor records what a tool did. Most tools are grouped
+dispatchers whose `action` argument chooses the operation, and the page marks
+each action read-only or not; the tools list holds tool names, so a tool on
+it may be called with any action it takes, and the arguments are sent as
+given. What keeps this profile to reads is the tools list and the token's
+permissions: "Grant read scopes when the client uses only read-only MCP
+tools", and "OAuth scopes don't override the permissions of the signed-in
+user. An MCP operation succeeds only when both the application scope and the
+user's Azure DevOps permissions allow it" (set up the remote server).
 
 ## Public URL sources (version 2)
 

@@ -250,6 +250,28 @@ error), that the credential's scopes are what the operator intends, or that a ca
 wrote: the connection makes only the reads it names, but a token with write scopes would let another
 use of it write, and Microsoft's guidance is to select only the scopes a task requires; for this
 profile that is Work Items, Code and Build, each Read.
+Its MCP profile reaches the organization's remote MCP server, `https://mcp.dev.azure.com/{organization}`,
+built from the configured organization URL and never from a request, over Streamable HTTP under the
+connection's access token (Microsoft documents no personal access token for it, and a user's token
+only; the companion mints none). Each request carries the server's read-only header,
+`X-MCP-Readonly: true`, unless the operator turns it off for the server, and the token is held to its
+expiry immediately before each one. A tool off the connection's list, and arguments, a tool or a
+server carrying any credential custody holds, are refused before anything is sent; a tool named
+with one is refused by `configure`; no redirect is followed; compression is neither asked for nor
+undone and an answer naming an encoding is refused; every answer (`initialize`, each tool listing
+page, the call) that repeats a credential or the session id the server issued, as written or as
+decoded, is refused before anything of it is read; the handshake, the listing and the result are
+read by their members' exact names; a refusal's or a failed tool's text has every credential
+replaced before it is cut, and is not reported where it still spells one; and every error, test
+field and status field is held once more against them and the session id, which is in no record,
+error or report. Its receipt establishes the bytes from that organization's MCP endpoint, under the
+TLS identity it names, for that tool and those arguments, at that time, under the configured token
+acting with its user's permissions. It does not establish that the answer is true or that the tool
+read rather than wrote: the read-only header is the server's promise, which the connection neither
+checks nor records, a listed tool may be called with any action it takes, and the tools list and
+the token's permissions are what keep the profile to reads. The organization's local MCP server is
+no connection: the connections run no third-party server process, and an operator runs it as a
+source under `adapter-mcp`, whose own rules then hold.
 
 **On Unix a source runs in a process group led by an anchor**, a process the gateway starts before
 the source and reaps only after the group has been killed. A group is addressed by its leader's
