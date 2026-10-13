@@ -1426,6 +1426,20 @@ what it does not, is in [the connection catalog](../docs/design/connection-catal
 In particular, a statement is sent as given: the warehouse's and Unity
 Catalog's grants on the identity are what keep this profile to reads.
 
+Since the Azure DevOps provider's first review round (#255), the screens the
+two providers share hold here as there: every request, answer and outgoing
+text is held against every credential custody holds for the principal (each
+connection's personal access token or client secret, and each token held, not
+only the connection a read names); escapes are decoded as deeply as they nest,
+to the point where decoding changes nothing, and a text still changing after
+32 passes is held to carry one; `configure` refuses a connection whose own
+text (its name, workspace, warehouse, client id, scope, catalog, schema,
+bounds, servers or tools) spells one; a `FAILED` or `CANCELED` message that
+still spells one once its whole ones are replaced is not repeated; every
+control answer is held once more as a whole; and compression is neither asked
+for nor undone, so the result bound is on the bytes received, and an answer
+that names a `Content-Encoding` is refused.
+
 The tests answer from an in-process TLS server; a live check runs only where
 `JPACK_DATABRICKS_LIVE_WORKSPACE` and its companions name a workspace, and is
 otherwise skipped. They are not a claim that a live workspace accepts the
@@ -1619,8 +1633,9 @@ current one to change it), a `name`, and the setup fields:
   lowercase. Nothing else is taken: no user information, port, path past the
   organization (a single trailing `/` is dropped), query, fragment, escape or
   trailing dot.
-- `project`: the project's id, or its name as the same page holds it: at most
-  64 characters, no control or surrogate character, none of
+- `project`: the project's id, or its name as the same page holds a
+  project's ("Must not contain more than 64 Unicode characters"): at most
+  64 characters, a bound of its own, no control or surrogate character, none of
   `\ / : * ? " ' < > ; # $ { } , + = [ ] |`, not `_` first nor `.` first or
   last. It is written into each path as a path segment.
 - `auth`: `token` with `token`, a personal access token; or `bearer` with
@@ -1702,13 +1717,20 @@ names an item not asked for, or one twice, is refused; and the two answers must
 come under one TLS identity. A `workitems.get` of more than 200 ids is refused
 as `ids-bound-exceeded` before anything is sent.
 
-Paging is the caller's. A page of pipelines answers the next continuation token
-in its `x-ms-continuationtoken` header, which the reference page does not name
-(it names the request's `continuationToken` only; the service's client
-libraries read that header): the result carries it as `continuationToken` (or
-`null`) beside the page, held to a cursor's form, and the caller sends it back
-as `cursor`. Commits and pull requests page by `skip` and `top`. No page is
-followed by the connection.
+Paging is the caller's. The connection takes a page of pipelines to answer
+the next continuation token in its `x-ms-continuationtoken` header: the
+reference page names only the request's `continuationToken`, and the header is
+Microsoft's Python client's (`azure-devops` 7.1.0b4:
+[`client.py`](https://github.com/microsoft/azure-devops-python-api/blob/86c9a559fc4ab309df21e674b236a542f9e77f89/azure-devops/azure/devops/client.py),
+`_continuation_token_header_key = 'X-MS-ContinuationToken'`, and
+[`v7_1/git/git_client_base.py`](https://github.com/microsoft/azure-devops-python-api/blob/86c9a559fc4ab309df21e674b236a542f9e77f89/azure-devops/azure/devops/v7_1/git/git_client_base.py),
+`get_policy_configurations`, `response.headers.get('x-ms-continuationtoken')`;
+that client's `list_pipelines` sends `continuationToken` and reads no token
+back). **This is not verified against a live organization.** The result
+carries the header's value as `continuationToken` (or `null`) beside the page,
+held to a cursor's form and screened as an answer is, and the caller sends it
+back as `cursor`. Commits and pull requests page by `skip` and `top`. No page
+is followed by the connection.
 
 Nothing is retried. A 429 is `rate-limited`, and a 503 `provider-unavailable`,
 each with the wait its `Retry-After` header asks for (seconds or a date) and
@@ -1721,12 +1743,20 @@ a 403 `permission-denied`, another 4xx `request-refused`, a 5xx
 `provider-unavailable`, and another 2xx (an organization may answer 203 with a
 sign-in page) `provider-unavailable`, each naming the status and the error type
 the body gives in its `typeKey` (read by that exact name, held to an
-identifier's form), never the API's message, which may repeat what was sent. A
-redirect is refused after one request and not followed; an answer over the
-connection's bound is `result-too-large`, read no further than a byte past it
-(and not at all when its length is announced past it); an answer that is not
-JSON is refused. Each request has 25 seconds, so the two of a query-and-get
-end inside the adapter's 55.
+identifier's form), never the API's message, which may repeat what was sent.
+No reference page documents the error body; `typeKey` is the member
+Microsoft's Python client reads it by (`azure-devops` 7.1.0b4:
+[`_models.py`](https://github.com/microsoft/azure-devops-python-api/blob/86c9a559fc4ab309df21e674b236a542f9e77f89/azure-devops/azure/devops/_models.py),
+`WrappedException`, `'type_key': {'key': 'typeKey'}` beside `message` and
+`typeName`, deserialized in `client.py`'s `_handle_error`). **This is not
+verified against a live organization.** A redirect is refused after one
+request and not followed. Compression is neither asked for nor undone, so the
+bound is on the bytes as received: an answer over the connection's bound is
+`result-too-large`, read no further than a byte past it (and not at all when
+its length is announced past it), and an answer that names a
+`Content-Encoding` is refused; an answer that is not JSON is refused. Each
+request has 25 seconds, so the two of a query-and-get end inside the
+adapter's 55.
 
 The credential is sent only as the request's `Authorization` header: a
 personal access token as HTTP basic authentication with an empty user name,
@@ -1736,14 +1766,23 @@ personal access token as HTTP basic authentication with an empty user name,
 when the request is made and stored nowhere; an access token as `Bearer`, as
 [service principals and managed identities](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/service-principal-managed-identity)
 (dated 2026-09-21) states it. An access token at or within a minute of its
-configured expiry is refused as `credentials-expired` before any request. The
-token, its basic authentication value and the access token are the secrets
-held out of every record, error, status and test answer:
+configured expiry is refused as `credentials-expired`, checked immediately
+before every request, so a query-and-get whose second request would go within
+the minute is refused whole. The token, its basic authentication value and the
+access token of every connection custody holds for the principal (not only
+the one a request names; during a change, the connection's earlier
+credential and its new one) are the secrets held out of every record, error,
+status and test answer:
 
+- "As decoded" means a text's JSON escapes decoded again and again, as
+  deeply as they nest, to the point where decoding changes nothing; a text
+  still changing after 32 passes (one level can cost five bytes), or longer
+  than 16 MiB, is held to spell a secret.
 - A request whose query, fields, repository, path, version, status or cursor
-  spells one, as written or in JSON escapes, is refused as
-  `credential-in-request` before it is sent; the body and the URL as they would
-  be sent are screened once more.
+  spells one, as written or as decoded, is refused as `credential-in-request`
+  before it is sent; the body and the URL as they would be sent are screened
+  once more. A `test` is held to the same screens as a read: its request
+  before it is sent, its answer after.
 - Every answer is screened for each, in its bytes and as decoded (every
   string, number and member name, a string's own escapes, and a string that is
   itself JSON), before anything of it is read: one that spells one is refused,
@@ -1755,10 +1794,14 @@ held out of every record, error, status and test answer:
   their exact names: an answer that also names one of them in another case, or
   twice, is refused.
 - A threshold an organization names has every whole secret replaced before it
-  is cut to 256 bytes; every error, and every field of a status row, is held
-  once more against the secrets as a whole sentence, each whole one replaced,
-  and one that would still spell one once its escapes are decoded is not
-  reported.
+  is cut to 256 bytes, and is not named at all where it would still spell one;
+  `configure` refuses a connection whose own text spells any of them
+  (`credential-in-configuration`); every field of a status row is held against
+  them; and every error and every control answer (`status`, `configure`,
+  `test`, `disconnect`), fixed words included, is held once more as a whole:
+  each whole secret replaced, a sentence that would still spell one replaced
+  by one that says so, and where that too would spell one, an error with no
+  text written.
 
 The result is the API's answer as received, carried into the canon domain (a
 number outside it as its literal text): for `pipelines.list`,
@@ -1769,8 +1812,8 @@ the result. The acquisition names:
 
 | Member | Value |
 |---|---|
-| `endpoint` | the organization URL and the path of the answer the snapshot digests, no query (for a query-and-get with items, the work items endpoint) |
-| `statement` | `connection`, `revision`, `provider`, `project`, `read`, and the first request as sent: `method`, `endpoint`, `query` (every parameter, `api-version` among them) and, for a query, `body`; a query-and-get adds `then`, the second request's `method`, `endpoint` and `fields` |
+| `endpoint` | the URL of the answer the snapshot digests, as it was requested, its query included (for a query-and-get with items, the second request's URL with its ids) |
+| `statement` | `connection`, `revision`, `provider`, `project`, `read`, and the first request as sent: `method`, `endpoint`, `query` (every parameter, `api-version` among them) and, for a query, `body`; a query-and-get adds `fields`, and `then`, the second request as sent (`method`, `endpoint`, and `query`: the ids in the order sent, the fields, `api-version`), or `null` where the query found none |
 | `snapshot` | the digest of the answer as received (the items' answer for a query-and-get that read items) |
 | `peerIdentity` | `tls:sha256:` of the verified leaf certificate |
 | `schema`, `upstreamToken` | `null`: no answer carries a schema, and a work item's `rev` or an ETag is a version, not an integrity token the organization vouches with; revisions stay in the result |
@@ -1785,7 +1828,10 @@ The tests answer from an in-process TLS server; a live check runs only where
 `JPACK_AZURE_DEVOPS_LIVE_ORGANIZATION`, `JPACK_AZURE_DEVOPS_LIVE_PROJECT` and
 `JPACK_AZURE_DEVOPS_LIVE_TOKEN` name an organization, and is otherwise skipped.
 They are not a claim that a live organization accepts the requests or answers
-as recorded.
+as recorded; in particular, neither the `x-ms-continuationtoken` header of a
+pipelines page nor the `typeKey` of an error body, each taken from Microsoft's
+Python client and from no reference page, has been seen from a live
+organization.
 
 ### Bounded website exploration
 

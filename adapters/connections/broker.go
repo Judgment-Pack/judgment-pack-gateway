@@ -47,6 +47,9 @@ type Broker struct {
 	provider      provider
 	disabled      bool
 	active        *flow
+	// pending is the credentials a configure was given that custody does
+	// not hold, before or after: its answer is held against them too.
+	pending []string
 }
 
 func New(s *Store, disabled bool) *Broker {
@@ -67,9 +70,19 @@ func (b *Broker) cancel() {
 		b.active.URL = ""
 	}
 }
-func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage) (out any, err error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	// A provider that holds credentials writes no answer, and no error, that
+	// repeats one held for the principal, before the operation or after it.
+	if b.provider.azureDevOps || b.provider.databricks {
+		before := b.activeSecrets()
+		b.pending = nil
+		defer func() {
+			out, err = outwardAnswer(out, err, joinSecrets(before, b.activeSecrets(), b.pending))
+			b.pending = nil
+		}()
+	}
 	if len(raw) == 0 {
 		raw = []byte("{}")
 	}
@@ -226,6 +239,18 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	default:
 		return nil, ErrRequest
 	}
+}
+
+// activeSecrets is every credential the provider's custody holds for the
+// principal, for a provider that holds them.
+func (b *Broker) activeSecrets() []string {
+	switch {
+	case b.provider.azureDevOps:
+		return azureDevOpsActive(b.store)
+	case b.provider.databricks:
+		return databricksActive(b.store)
+	}
+	return nil
 }
 func (b *Broker) start() (FlowResult, error) {
 	if b.active != nil && b.active.State == "pending" && time.Now().Before(b.active.until) {

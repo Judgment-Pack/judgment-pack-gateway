@@ -48,14 +48,18 @@ const (
 	AzureDevOpsMaxTop = 20000
 	// AzureDevOpsMaxPage bounds a page of commits, pull requests or
 	// pipelines, which the API states no bound for.
-	AzureDevOpsMaxPage       = 1000
-	azureDevOpsDefaultTop    = 200
-	azureDevOpsDefaultPage   = 100
-	azureDevOpsQueryChars    = 32000
-	azureDevOpsMaxFields     = 64
-	azureDevOpsConnections   = 6
-	azureDevOpsErrorBytes    = 64 << 10
-	azureDevOpsResourceBytes = 256
+	AzureDevOpsMaxPage     = 1000
+	azureDevOpsDefaultTop  = 200
+	azureDevOpsDefaultPage = 100
+	azureDevOpsQueryChars  = 32000
+	azureDevOpsMaxFields   = 64
+	// A project's name, and a Git repository's, is at most 64 characters, as
+	// the naming restrictions state each.
+	azureDevOpsProjectChars    = 64
+	azureDevOpsRepositoryChars = 64
+	azureDevOpsConnections     = 6
+	azureDevOpsErrorBytes      = 64 << 10
+	azureDevOpsResourceBytes   = 256
 	// azureDevOpsSeconds bounds each request: the two of a query-and-get fit
 	// inside the adapter's 55 seconds.
 	azureDevOpsSeconds = 25
@@ -172,14 +176,14 @@ func AzureDevOpsOrganization(raw string) (string, bool) {
 }
 
 // azureDevOpsName holds a project's or a repository's name to the form the
-// naming restrictions state: 1 to 64 characters, no control or surrogate
-// character, none of the forbidden ones, not an underscore first nor a
-// period first or last. An id (a GUID) is taken too.
-func azureDevOpsName(s, forbidden string) bool {
+// naming restrictions state for it: 1 to most characters, no control or
+// surrogate character, none of the forbidden ones, not an underscore first
+// nor a period first or last. An id (a GUID) is taken too.
+func azureDevOpsName(s, forbidden string, most int) bool {
 	if azureDevOpsGUID.MatchString(s) {
 		return true
 	}
-	if !utf8.ValidString(s) || s == "" || utf8.RuneCountInString(s) > 64 || strings.ContainsAny(s, forbidden) || strings.HasPrefix(s, "_") || strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
+	if !utf8.ValidString(s) || s == "" || utf8.RuneCountInString(s) > most || strings.ContainsAny(s, forbidden) || strings.HasPrefix(s, "_") || strings.HasPrefix(s, ".") || strings.HasSuffix(s, ".") {
 		return false
 	}
 	for _, r := range s {
@@ -296,10 +300,34 @@ func (c AzureDevOpsConnection) secrets() []string {
 	return out
 }
 
+// azureDevOpsActiveOf is every credential custody holds for the provider's
+// connections: each one's token and its basic value, or its access token.
+// Every request, answer and outgoing text is held against all of them, not
+// only the credential of the connection a request names.
+func azureDevOpsActiveOf(v *state) []string {
+	all := []string{}
+	if v.AzureDevOps != nil {
+		for _, c := range v.AzureDevOps.Connections {
+			all = append(all, c.secrets()...)
+		}
+	}
+	return joinSecrets(all)
+}
+
+// azureDevOpsActive is azureDevOpsActiveOf as custody stands, and nothing
+// where custody cannot be read.
+func azureDevOpsActive(s *Store) []string {
+	var active []string
+	s.locked(func(v *state) error {
+		active = azureDevOpsActiveOf(v)
+		return nil
+	})
+	return active
+}
+
 // spells reports whether the connection's own text -- its id, name,
-// organization URL, project, expiry or bound -- spells its credential.
-func (c AzureDevOpsConnection) spells() bool {
-	secrets := c.secrets()
+// organization URL, project, expiry or bound -- spells one of secrets.
+func (c AzureDevOpsConnection) spells(secrets []string) bool {
 	for _, text := range []string{c.ID, c.Name, c.Organization, c.Project, c.ExpiresAt, c.ResultBytes} {
 		if databricksSpells(text, secrets) {
 			return true
@@ -309,7 +337,7 @@ func (c AzureDevOpsConnection) spells() bool {
 }
 
 func (c AzureDevOpsConnection) valid() bool {
-	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !azureDevOpsName(c.Project, azureDevOpsProjectForbidden) || c.resultBound() < 0 || c.spells() {
+	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !azureDevOpsName(c.Project, azureDevOpsProjectForbidden, azureDevOpsProjectChars) || c.resultBound() < 0 || c.spells(c.secrets()) {
 		return false
 	}
 	if organization, ok := AzureDevOpsOrganization(c.Organization); !ok || organization != c.Organization {
@@ -365,12 +393,14 @@ func NewAzureDevOps(s *Store, disabled bool) *Broker {
 
 // azureDevOpsProvider is the Google transport without its header cutoff: a
 // query may answer only when it has run. Each request has a deadline of its
-// own; no redirect is followed and no proxy used.
+// own; no redirect is followed and no proxy used. Nothing is decompressed:
+// no compression is asked for, so the bound is held to the bytes received.
 func azureDevOpsProvider() provider {
 	p := google()
 	p.azureDevOps = true
 	p.auth, p.token, p.revoke, p.api = "", "", "", ""
 	p.client.Transport.(*http.Transport).ResponseHeaderTimeout = 0
+	p.client.Transport.(*http.Transport).DisableCompression = true
 	p.client.Timeout = (azureDevOpsSeconds + 5) * time.Second
 	return p
 }
@@ -389,8 +419,9 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 		rows := []azureDevOpsRow{}
 		err := b.store.locked(func(v *state) error {
 			if v.AzureDevOps != nil {
+				active := azureDevOpsActiveOf(v)
 				for _, c := range v.AzureDevOps.Connections {
-					rows = append(rows, c.row())
+					rows = append(rows, c.row(active))
 				}
 			}
 			return nil
@@ -438,7 +469,10 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 			if index < 0 && (q.Revision != "" || len(v.AzureDevOps.Connections) >= azureDevOpsConnections) {
 				return ErrRequest
 			}
-			if q.spells() {
+			// Its own text is held against every credential custody holds,
+			// the connection's earlier one among them, and its own.
+			b.pending = q.secrets()
+			if q.spells(joinSecrets(azureDevOpsActiveOf(v), q.secrets())) {
 				return azureDevOpsInConfiguration
 			}
 			if !q.valid() {
@@ -492,12 +526,12 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 }
 
 // row is the connection as status reports it: no credential, and a
-// connection whose own text would spell its credential -- which configure
-// refuses -- reported with that text replaced, and not ready.
-func (c AzureDevOpsConnection) row() azureDevOpsRow {
+// connection whose own text would spell a credential custody holds -- which
+// configure refuses -- reported with that text replaced, and not ready. The
+// answer as a whole is screened once more on its way out (Broker.Handle).
+func (c AzureDevOpsConnection) row(secrets []string) azureDevOpsRow {
 	ready := c.valid() && !c.expired()
-	secrets := c.secrets()
-	if c.spells() {
+	if c.spells(secrets) {
 		ready = false
 		for _, text := range []*string{&c.ID, &c.Name, &c.Organization, &c.Project, &c.ExpiresAt, &c.ResultBytes} {
 			if databricksSpells(*text, secrets) {
@@ -509,11 +543,13 @@ func (c AzureDevOpsConnection) row() azureDevOpsRow {
 	return azureDevOpsRow{c, ready}
 }
 
-// azureDevOpsSnapshot is the connection a request names, as it stands.
-func azureDevOpsSnapshot(s *Store, id, revision string) (AzureDevOpsConnection, error) {
+// azureDevOpsSnapshot is the connection a request names, as it stands, and
+// every credential custody holds beside it.
+func azureDevOpsSnapshot(s *Store, id, revision string) (AzureDevOpsConnection, []string, error) {
 	var found AzureDevOpsConnection
+	var active []string
 	if !searchID.MatchString(id) || !opaque.MatchString(revision) {
-		return found, ErrRequest
+		return found, nil, ErrRequest
 	}
 	err := s.locked(func(v *state) error {
 		if v.Disabled {
@@ -530,13 +566,13 @@ func azureDevOpsSnapshot(s *Store, id, revision string) (AzureDevOpsConnection, 
 				if !c.valid() {
 					return ErrSetup
 				}
-				found = c
+				found, active = c, joinSecrets(azureDevOpsActiveOf(v), c.secrets())
 				return nil
 			}
 		}
 		return ErrConnect
 	})
-	return found, err
+	return found, active, err
 }
 
 // azureDevOpsCurrent refuses an answer to a connection that was changed,
@@ -595,7 +631,9 @@ func azureDevOpsTypeKey(raw []byte) string {
 
 // azureDevOpsResource is the threshold a rate limit names in its
 // X-RateLimit-Resource header, which the service says to show a person:
-// printable text, every whole secret replaced, then cut to its bound.
+// printable text, every whole secret replaced, then cut to its bound. A
+// threshold that would still spell one, its escapes decoded, is not named
+// at all: cut, it could leave part of one.
 func azureDevOpsResource(header http.Header, secrets []string) string {
 	resource := header.Get("X-RateLimit-Resource")
 	for i := 0; i < len(resource); i++ {
@@ -604,6 +642,9 @@ func azureDevOpsResource(header http.Header, secrets []string) string {
 		}
 	}
 	resource = databricksRedact(resource, secrets)
+	if databricksSpells(resource, secrets) {
+		return ""
+	}
 	if len(resource) > azureDevOpsResourceBytes {
 		resource = clipSearchText(resource, azureDevOpsResourceBytes) + "…"
 	}
@@ -650,9 +691,15 @@ func azureDevOpsRefusal(status int, header http.Header, raw []byte, secrets []st
 
 // azureDevOpsSend makes one request and returns the JSON body of a 200
 // within the bound, read no further than a byte past it, or the refusal.
-// The Authorization header is built here, from the connection, and kept
-// nowhere else.
+// An access token is held to its expiry here, immediately before every
+// request. The Authorization header is built here, from the connection, and
+// kept nowhere else. The bound is on the bytes as received: compression is
+// neither asked for nor undone, and an answer that names an encoding is
+// refused.
 func (p provider) azureDevOpsSend(ctx context.Context, c AzureDevOpsConnection, method, target string, body []byte, bound int, secrets []string) (*http.Response, []byte, error) {
+	if c.expired() {
+		return nil, nil, azureDevOpsExpired
+	}
 	ctx, cancel := context.WithTimeout(ctx, azureDevOpsSeconds*time.Second)
 	defer cancel()
 	var reader io.Reader
@@ -695,6 +742,9 @@ func (p provider) azureDevOpsSend(ctx context.Context, c AzureDevOpsConnection, 
 	if len(raw) > bound {
 		return nil, nil, tooLarge
 	}
+	if encoding := response.Header.Get("Content-Encoding"); response.Uncompressed || encoding != "" && !strings.EqualFold(encoding, "identity") {
+		return nil, nil, Error("provider-unavailable: the organization's answer is encoded, and this connection reads only what it asked for, which is not")
+	}
 	if !json.Valid(raw) {
 		return nil, nil, Error("provider-unavailable: the organization's answer is not JSON")
 	}
@@ -705,19 +755,17 @@ func (p provider) azureDevOpsSend(ctx context.Context, c AzureDevOpsConnection, 
 // in escapes: nothing of it is read or kept.
 const azureDevOpsRepeats = Error("provider-unavailable: the organization's answer repeats the credential, and is not kept")
 
+// azureDevOpsUnreported is a refusal whose own text would repeat a
+// credential.
+const azureDevOpsUnreported = Error("provider-unavailable: the organization's refusal would repeat the credential, and is not reported")
+
 // azureDevOpsOutward is an error the connection reports, held once more
-// against the credential as a whole sentence: each whole secret replaced,
-// and a sentence that would still spell one, once its escapes are decoded,
-// not reported.
+// against every active credential as a whole sentence (outward): each whole
+// secret replaced; a sentence that would still spell one, once its escapes
+// are decoded, not reported; and where the sentence saying so would spell
+// one too, nothing written.
 func azureDevOpsOutward(err error, secrets []string) error {
-	text, ok := databricksScreened(err.Error(), secrets)
-	switch {
-	case !ok:
-		return Error("provider-unavailable: the organization's refusal would repeat the credential, and is not reported")
-	case text != err.Error():
-		return Error(text)
-	}
-	return err
+	return outward(err, secrets, azureDevOpsUnreported)
 }
 
 // check holds a request to its read's form: the members the read takes, each
@@ -819,11 +867,11 @@ func (q AzureDevOpsRequest) check() (AzureDevOpsRequest, error) {
 		if q.Recursion == "" {
 			q.Recursion = "oneLevel"
 		}
-		ok = azureDevOpsName(q.Repository, azureDevOpsRepositoryForbidden) && azureDevOpsPath(q.Path) && (q.Recursion == "none" || q.Recursion == "oneLevel" || q.Recursion == "full") && version()
+		ok = azureDevOpsName(q.Repository, azureDevOpsRepositoryForbidden, azureDevOpsRepositoryChars) && azureDevOpsPath(q.Path) && (q.Recursion == "none" || q.Recursion == "oneLevel" || q.Recursion == "full") && version()
 	case "repos.commits":
-		ok = azureDevOpsName(q.Repository, azureDevOpsRepositoryForbidden) && page(azureDevOpsDefaultPage, AzureDevOpsMaxPage) && (q.Path == "" || azureDevOpsPath(q.Path)) && version()
+		ok = azureDevOpsName(q.Repository, azureDevOpsRepositoryForbidden, azureDevOpsRepositoryChars) && page(azureDevOpsDefaultPage, AzureDevOpsMaxPage) && (q.Path == "" || azureDevOpsPath(q.Path)) && version()
 	case "pullrequests.list":
-		ok = azureDevOpsName(q.Repository, azureDevOpsRepositoryForbidden) && page(azureDevOpsDefaultPage, AzureDevOpsMaxPage) && (q.Status == "" || q.Status == "active" || q.Status == "abandoned" || q.Status == "completed" || q.Status == "all")
+		ok = azureDevOpsName(q.Repository, azureDevOpsRepositoryForbidden, azureDevOpsRepositoryChars) && page(azureDevOpsDefaultPage, AzureDevOpsMaxPage) && (q.Status == "" || q.Status == "active" || q.Status == "abandoned" || q.Status == "completed" || q.Status == "all")
 	case "pipelines.list":
 		ok = page(azureDevOpsDefaultPage, AzureDevOpsMaxPage) && (q.Cursor == "" || databricksPrintable(q.Cursor, 1, 4096))
 	case "pipelines.runs":
@@ -1036,7 +1084,14 @@ func azureDevOpsContinuation(header http.Header) (any, error) {
 	return values[0], nil
 }
 
-func ReadAzureDevOps(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
+func ReadAzureDevOps(ctx context.Context, s *Store, raw []byte) (out []byte, err error) {
+	// What is written out is held against every active credential, a
+	// refusal before the connection is read among it.
+	defer func() {
+		if err != nil {
+			out, err = nil, azureDevOpsOutward(err, azureDevOpsActive(s))
+		}
+	}()
 	var q AzureDevOpsRequest
 	if decode(raw, &q) != nil {
 		return nil, ErrRequest
@@ -1045,22 +1100,22 @@ func ReadAzureDevOps(ctx context.Context, s *Store, raw []byte) ([]byte, error) 
 }
 
 // azureDevOpsAcquire is one read. The request is held to its form and
-// screened for the credential before anything is sent; every answer is
-// screened for it, as written and as decoded, before anything of it is read.
-// The envelope's result is the API's answer as received, carried into the
-// canon domain (a number outside it as its literal text): for
-// pipelines.list with the continuation token the page answered, and for
-// workitems.query-and-get the query's answer, whose ids are those read, and
-// the items' answer. Its acquisition names the endpoint of the answer the
-// snapshot digests, the request as the statement the gateway commits to, and
-// the TLS peer the answer came from. Every error is screened once more on its
-// way out.
+// screened, before anything is sent, for every credential custody holds for
+// the provider; every answer is screened for them, as written and as
+// decoded, before anything of it is read. The envelope's result is the
+// API's answer as received, carried into the canon domain (a number outside
+// it as its literal text): for pipelines.list with the continuation token
+// the page answered, and for workitems.query-and-get the query's answer,
+// whose ids are those read, and the items' answer. Its acquisition names the
+// URL of the answer the snapshot digests, query and all; the requests as the
+// statement the gateway commits to, the second request's ids among them; and
+// the TLS peer the answer came from. Every error is screened once more on
+// its way out.
 func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p provider) (out []byte, err error) {
-	c, err := azureDevOpsSnapshot(s, q.Connection, q.Revision)
+	c, secrets, err := azureDevOpsSnapshot(s, q.Connection, q.Revision)
 	if err != nil {
 		return nil, err
 	}
-	secrets := c.secrets()
 	defer func() {
 		if err != nil {
 			out, err = nil, azureDevOpsOutward(err, secrets)
@@ -1103,7 +1158,7 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 	if err != nil {
 		return nil, Error("provider-unavailable: the organization's answer is JSON outside the canonical domain")
 	}
-	endpoint, snapshot, peerIdentity := first.endpoint, digest(data), peer(response)
+	endpoint, snapshot, peerIdentity := first.target(), digest(data), peer(response)
 	result := json.RawMessage(answer)
 	switch q.Read {
 	case "pipelines.list":
@@ -1123,20 +1178,23 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 		if !azureDevOpsWithinBound(len(ids), q.Top) {
 			return nil, Error(fmt.Sprintf("ids-bound-exceeded: the query answered %d work items, more than the %d this read takes in one request; the items were not read", len(ids), q.Top))
 		}
-		then := map[string]any{"method": "GET", "endpoint": c.Organization + "/" + url.PathEscape(c.Project) + "/_apis/wit/workitems", "fields": q.Fields}
+		// The fields are committed whether or not a second request is made;
+		// the second request, when it is, is committed as it is sent.
+		record["fields"] = q.Fields
 		if q.Fields == nil {
-			then["fields"] = []string{}
+			record["fields"] = []string{}
 		}
-		record["then"] = then
+		record["then"] = nil
 		var items any
 		if len(ids) > 0 {
-			second := azureDevOpsCall{method: "GET", endpoint: then["endpoint"].(string), query: map[string]string{"api-version": AzureDevOpsAPIVersion, "ids": azureDevOpsJoin(ids)}}
+			second := azureDevOpsCall{method: "GET", endpoint: c.Organization + "/" + url.PathEscape(c.Project) + "/_apis/wit/workitems", query: map[string]string{"api-version": AzureDevOpsAPIVersion, "ids": azureDevOpsJoin(ids)}}
 			if len(q.Fields) > 0 {
 				second.query["fields"] = strings.Join(q.Fields, ",")
 			}
 			if second.carries(secrets) {
 				return nil, azureDevOpsInRequest
 			}
+			record["then"] = map[string]any{"method": second.method, "endpoint": second.endpoint, "query": second.query}
 			response, data, err := p.azureDevOpsSend(ctx, c, second.method, second.target(), nil, bound, secrets)
 			if err != nil {
 				return nil, err
@@ -1157,7 +1215,7 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 				return nil, Error("provider-unavailable: the organization's answer is JSON outside the canonical domain")
 			}
 			observed = time.Now().UTC().Format("2006-01-02T15:04:05Z")
-			endpoint, snapshot, items = second.endpoint, digest(data), json.RawMessage(kept)
+			endpoint, snapshot, items = second.target(), digest(data), json.RawMessage(kept)
 		}
 		encoded, err := canon.EncodeJSON(map[string]any{"query": json.RawMessage(answer), "items": items})
 		if err != nil {
@@ -1200,25 +1258,35 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 const azureDevOpsTestQuery = "SELECT [System.Id] FROM WorkItems WHERE [System.TeamProject] = @project"
 
 // azureDevOpsTest is a connection test: one query for at most one work item
-// of the project, and nothing of its answer kept.
+// of the project, held to a read's screens -- the request screened before it
+// is sent, the access token's expiry checked immediately before, the answer
+// screened as written and as decoded -- and nothing of the answer kept. Its
+// answer and its error are screened once more on the way out
+// (Broker.Handle).
 func azureDevOpsTest(ctx context.Context, s *Store, id, revision string, p provider) (err error) {
-	c, err := azureDevOpsSnapshot(s, id, revision)
+	c, secrets, err := azureDevOpsSnapshot(s, id, revision)
 	if err != nil {
 		return err
 	}
-	secrets := c.secrets()
 	defer func() {
 		if err != nil {
 			err = azureDevOpsOutward(err, secrets)
 		}
 	}()
-	if c.expired() {
-		return azureDevOpsExpired
-	}
-	k, err := AzureDevOpsRequest{Read: "workitems.query", Query: azureDevOpsTestQuery, Top: 1}.call(c)
+	q := AzureDevOpsRequest{Read: "workitems.query", Query: azureDevOpsTestQuery, Top: 1}
+	k, err := q.call(c)
 	if err != nil {
 		return err
 	}
-	_, _, err = p.azureDevOpsSend(ctx, c, k.method, k.target(), k.body, 1<<20, secrets)
-	return err
+	if q.carries(secrets) || k.carries(secrets) {
+		return azureDevOpsInRequest
+	}
+	_, data, err := p.azureDevOpsSend(ctx, c, k.method, k.target(), k.body, 1<<20, secrets)
+	if err != nil {
+		return err
+	}
+	if databricksCarries(data, secrets) {
+		return azureDevOpsRepeats
+	}
+	return nil
 }

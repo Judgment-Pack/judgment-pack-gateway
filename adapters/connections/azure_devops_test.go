@@ -218,7 +218,8 @@ func adoState(t *testing.T, dir string) []byte {
 }
 
 // adoRead is one of the reads, the requests it makes, and the answer its
-// snapshot digests, from the endpoint it names.
+// snapshot digests, from the URL of the last of them, which the record
+// names (query and all).
 type adoRead struct {
 	q        AzureDevOpsRequest
 	lines    []string
@@ -325,6 +326,14 @@ func TestAzureDevOpsEachReadIsItsDocumentedRequest(t *testing.T) {
 			if err != nil {
 				t.Fatal(k.q.Read, "the envelope is not of the signer's form:", err)
 			}
+			// The record names the URL the snapshot's answer came from, its
+			// query included.
+			_, last, _ := strings.Cut(k.lines[len(k.lines)-1], " ")
+			if url := form.organization + strings.TrimPrefix(last, form.prefix); !strings.HasPrefix(url, k.endpoint+"?") {
+				t.Fatalf("%s: the read's last request is not of its endpoint: %s", k.q.Read, url)
+			} else {
+				k.endpoint = url
+			}
 			a := e.Acquisition
 			if a.Adapter.Name != "adapter-sources" || !canon.IsDigestString(a.Adapter.Digest) || a.Endpoint == nil || *a.Endpoint != k.endpoint || a.Snapshot == nil || *a.Snapshot != digest([]byte(k.answer)) ||
 				a.PeerIdentity == nil || *a.PeerIdentity != f.peer() || a.Schema != nil || a.UpstreamToken != nil {
@@ -406,7 +415,7 @@ func TestAzureDevOpsEmptyAnswersAreResults(t *testing.T) {
 		}
 		if k.q.Read == "workitems.query-and-get" {
 			want := adoCanonical(t, map[string]any{"query": json.RawMessage(emptyQuery), "items": nil})
-			if !bytes.Equal(e.Result, want) || *e.Acquisition.Snapshot != digest([]byte(emptyQuery)) || *e.Acquisition.Endpoint != adoOrganization+"/"+adoProject+"/_apis/wit/wiql" {
+			if !bytes.Equal(e.Result, want) || *e.Acquisition.Snapshot != digest([]byte(emptyQuery)) || *e.Acquisition.Endpoint != adoOrganization+"/"+adoProject+"/_apis/wit/wiql?$top=200&api-version=7.1" {
 				t.Errorf("an empty query: %s %+v", e.Result, e.Acquisition)
 			}
 		}
@@ -682,7 +691,7 @@ func TestAzureDevOpsQueryAndGetReadsTheIDsTheQueryAnswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *e.Acquisition.Snapshot != digest([]byte(items(200))) || *e.Acquisition.Endpoint != adoOrganization+"/"+adoProject+"/_apis/wit/workitems" {
+	if *e.Acquisition.Snapshot != digest([]byte(items(200))) || *e.Acquisition.Endpoint != adoOrganization+"/"+adoProject+"/_apis/wit/workitems?api-version=7.1&fields=System.Title,System.State&ids="+azureDevOpsJoin(asked) {
 		t.Fatalf("%+v", e.Acquisition)
 	}
 	var result struct{ Query, Items json.RawMessage }
@@ -691,14 +700,19 @@ func TestAzureDevOpsQueryAndGetReadsTheIDsTheQueryAnswered(t *testing.T) {
 		t.Fatal("the result does not hold both answers")
 	}
 	members, _ := agreement.Statement(e)
+	// The statement commits the query, its bound, the fields, and the
+	// second request as it was sent: its ids in order, its fields and its
+	// API version.
 	var then struct {
 		Method, Endpoint string
-		Fields           []string
+		Query            map[string]string
 	}
+	var fields []string
 	json.Unmarshal(members["then"], &then)
-	if string(members["method"]) != `"POST"` || !strings.Contains(string(members["body"]), "ORDER BY [System.Id] DESC") || !strings.Contains(string(members["query"]), `"$top":"200"`) ||
-		then.Method != "GET" || then.Endpoint != adoOrganization+"/"+adoProject+"/_apis/wit/workitems" || strings.Join(then.Fields, ",") != "System.Title,System.State" {
-		t.Fatalf("statement %s %s %s %s", members["method"], members["body"], members["query"], members["then"])
+	json.Unmarshal(members["fields"], &fields)
+	if string(members["method"]) != `"POST"` || !strings.Contains(string(members["body"]), "ORDER BY [System.Id] DESC") || !strings.Contains(string(members["query"]), `"$top":"200"`) || strings.Join(fields, ",") != "System.Title,System.State" ||
+		then.Method != "GET" || then.Endpoint != adoOrganization+"/"+adoProject+"/_apis/wit/workitems" || len(then.Query) != 3 || then.Query["ids"] != azureDevOpsJoin(asked) || then.Query["fields"] != "System.Title,System.State" || then.Query["api-version"] != "7.1" {
+		t.Fatalf("statement %s %s %s %s %s", members["method"], members["body"], members["query"], members["fields"], members["then"])
 	}
 	// One past the bound: refused after the query, and nothing else asked.
 	answering(wiql(201), items(201))

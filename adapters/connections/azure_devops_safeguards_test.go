@@ -3,17 +3,22 @@
 package connections
 
 import (
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The safeguards the Databricks provider's review rounds asked of a
@@ -361,6 +366,350 @@ func TestAzureDevOpsTheTwoAnswersComeUnderOneTLSIdentity(t *testing.T) {
 		sum := sha256.Sum256([]byte(k.second))
 		if err != nil || v.Acquisition.PeerIdentity != "tls:sha256:"+hex.EncodeToString(sum[:]) {
 			t.Errorf("%s: %v %s", k.second, err, v.Acquisition.PeerIdentity)
+		}
+	}
+}
+
+// The cross-vendor round's probes (round 1, at 5f451bd), adopted as
+// regressions: each asserted a defect, and now asserts its fix.
+
+// adoNested hides each character of s under levels of escapes, as a reader
+// decoding the text level by level would find it: \ spelling the
+// backslash of the next level, each level costing five bytes.
+func adoNested(s string, levels int) string {
+	var b strings.Builder
+	for _, r := range s {
+		b.WriteString(`\`)
+		b.WriteString(strings.Repeat("u005c", levels))
+		fmt.Fprintf(&b, "u%04x", r)
+	}
+	return b.String()
+}
+
+// adoReviewNested is the round's own nesting: the escaped secret with every
+// backslash written as \, eight times over.
+func adoReviewNested(secret string) string {
+	text := adoEscaped(secret)
+	for range 8 {
+		text = strings.ReplaceAll(text, `\`, `\`)
+	}
+	return text
+}
+
+// A test is held to a read's screens: a request that would carry a
+// credential is not sent, and an answer that repeats one, in escapes, is
+// refused; the test answers not ok.
+func TestAzureDevOpsATestIsScreenedAsAReadIs(t *testing.T) {
+	fields := adoTokenFields()
+	fields["token"] = "System.Id"
+	s, b, c, _ := adoFixture(t, fields)
+	calls := 0
+	b.provider = adoThrough(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return adoAnswer(r, 200, `{"workItems":[]}`, "peer"), nil
+	})
+	answer, err := b.Handle(context.Background(), "test", []byte(`{"id":"board","revision":"`+c.Revision+`"}`))
+	if err != azureDevOpsInRequest || calls != 0 || answer.(map[string]bool)["ok"] {
+		t.Fatalf("a test carrying the credential: %v %v, %d requests", answer, err, calls)
+	}
+	if out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "workitems.query", Query: azureDevOpsTestQuery, Top: 1}, b.provider); out != nil || err != azureDevOpsInRequest {
+		t.Fatal("the read the test makes was not refused", err)
+	}
+	for _, fields := range []map[string]string{adoTokenFields(), adoBearerFields()} {
+		_, b, c, _ := adoFixture(t, fields)
+		for name, secret := range adoSecrets(fields) {
+			for form, echo := range map[string]string{"escaped": adoEscaped(secret), "nested": adoReviewNested(secret)} {
+				b.provider = adoThrough(func(r *http.Request) (*http.Response, error) {
+					return adoAnswer(r, 200, `{"workItems":[],"echo":"`+echo+`"}`, "peer"), nil
+				})
+				answer, err := b.Handle(context.Background(), "test", []byte(`{"id":"board","revision":"`+c.Revision+`"}`))
+				if err != azureDevOpsRepeats || answer.(map[string]bool)["ok"] {
+					t.Errorf("%s %s in a test's answer: %v %v", form, name, answer, err)
+				}
+			}
+		}
+	}
+}
+
+// Every credential custody holds for the provider is held out of every other
+// connection's text, requests and results: connection A's token, its basic
+// value or its access token is refused as connection B's name, in B's query,
+// and in B's answer.
+func TestAzureDevOpsEveryCredentialCustodyHoldsIsHeldOut(t *testing.T) {
+	for _, fields := range []map[string]string{adoTokenFields(), adoBearerFields()} {
+		for name, secret := range adoSecrets(fields) {
+			s, b, _, dir := adoFixture(t, fields)
+			other := adoTokenFields()
+			other["id"], other["name"], other["token"] = "second", "Board "+secret, "OtherSyntheticPAT987654321"
+			if err := adoConfigure(b, other); err != azureDevOpsInConfiguration || bytes.Contains(adoState(t, dir), []byte(`"second"`)) {
+				t.Errorf("%s as another connection's name: %v", name, err)
+			}
+			other["name"] = "Second"
+			if err := adoConfigure(b, other); err != nil {
+				t.Fatal(err)
+			}
+			c := adoConnection(t, s, "second")
+			calls := 0
+			p := adoThrough(func(r *http.Request) (*http.Response, error) {
+				calls++
+				return adoAnswer(r, 200, `{"count":1,"value":[{"echo":"`+secret+`"}]}`, "peer"), nil
+			})
+			if out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "workitems.query", Query: "SELECT '" + secret + "'"}, p); out != nil || err != azureDevOpsInRequest || calls != 0 {
+				t.Errorf("%s in another connection's query: %v, %d requests", name, err, calls)
+			}
+			if out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "repos.list"}, p); out != nil || err != azureDevOpsRepeats {
+				t.Errorf("%s in another connection's answer: %v", name, err)
+			}
+			status, err := b.Handle(context.Background(), "status", []byte(`{}`))
+			raw, _ := json.Marshal(status)
+			if err != nil || bytes.Contains(raw, []byte(secret)) {
+				t.Errorf("%s in status: %s %v", name, raw, err)
+			}
+		}
+	}
+}
+
+// Escapes nested past the old four passes are decoded to the end: a
+// credential under them is found in an answer, in a query and in an error's
+// threshold, and the threshold is not named.
+func TestAzureDevOpsEscapesNestedPastAnyPassBoundAreHeld(t *testing.T) {
+	for _, fields := range []map[string]string{adoTokenFields(), adoBearerFields()} {
+		s, _, c, _ := adoFixture(t, fields)
+		for name, secret := range adoSecrets(fields) {
+			for form, nested := range map[string]string{"the round's nesting": adoReviewNested(secret), "five levels": adoNested(secret, 5), "thirty levels": adoNested(secret, 30)} {
+				answer, _ := json.Marshal(map[string]string{"echo": nested})
+				calls := 0
+				p := adoThrough(func(r *http.Request) (*http.Response, error) {
+					calls++
+					return adoAnswer(r, 200, string(answer), "peer"), nil
+				})
+				if out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "repos.list"}, p); out != nil || err != azureDevOpsRepeats {
+					t.Errorf("%s under %s in an answer: %v", name, form, err)
+				}
+				before := calls
+				if out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "workitems.query", Query: "SELECT '" + nested + "'"}, p); out != nil || err != azureDevOpsInRequest || calls != before {
+					t.Errorf("%s under %s in a query: %v", name, form, err)
+				}
+				refusing := adoThrough(func(r *http.Request) (*http.Response, error) {
+					a := adoAnswer(r, 429, ``, "peer")
+					a.Header.Set("X-RateLimit-Resource", nested)
+					return a, nil
+				})
+				if _, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "repos.list"}, refusing); err == nil || err.Error() != "rate-limited: the organization answered 429; it was not retried" {
+					t.Errorf("%s under %s in a threshold: %.120q", name, form, err)
+				}
+			}
+		}
+	}
+}
+
+// An access token is held to its expiry immediately before every request: a
+// query-and-get whose second request would go within the minute is refused,
+// and nothing of it is kept.
+func TestAzureDevOpsTheBearerIsCheckedBeforeEverySend(t *testing.T) {
+	fields := adoBearerFields()
+	fields["expires-at"] = time.Now().Add(62 * time.Second).UTC().Format(time.RFC3339)
+	s, _, c, _ := adoFixture(t, fields)
+	calls := 0
+	p := adoThrough(func(r *http.Request) (*http.Response, error) {
+		calls++
+		time.Sleep(2500 * time.Millisecond)
+		return adoAnswer(r, 200, `{"workItems":[{"id":12}]}`, "peer"), nil
+	})
+	out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "workitems.query-and-get", Query: "SELECT [System.Id] FROM WorkItems"}, p)
+	if out != nil || err != azureDevOpsExpired || calls != 1 {
+		t.Fatalf("%v, %d requests", err, calls)
+	}
+}
+
+// The statement commits the second request as it was sent, so two reads of
+// one query that read different items commit differently; and the record
+// names the URL the snapshot's answer came from, query and all.
+func TestAzureDevOpsTheStatementCommitsTheSecondRequest(t *testing.T) {
+	s, _, c, _ := adoFixture(t, adoTokenFields())
+	statements := []string{}
+	for _, id := range []int{12, 99} {
+		urls := []string{}
+		p := adoThrough(func(r *http.Request) (*http.Response, error) {
+			urls = append(urls, r.URL.String())
+			body := fmt.Sprintf(`{"workItems":[{"id":%d}]}`, id)
+			if len(urls) == 2 {
+				body = fmt.Sprintf(`{"value":[{"id":%d}]}`, id)
+			}
+			return adoAnswer(r, 200, body, "peer"), nil
+		})
+		out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "workitems.query-and-get", Query: "SELECT [System.Id] FROM WorkItems", Fields: []string{"System.Title"}}, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var v struct {
+			Acquisition struct{ Endpoint, Statement string }
+		}
+		json.Unmarshal(out, &v)
+		statements = append(statements, v.Acquisition.Statement)
+		if len(urls) != 2 || v.Acquisition.Endpoint != urls[1] || !strings.Contains(v.Acquisition.Statement, fmt.Sprintf(`"then":{"endpoint":"%s/%s/_apis/wit/workitems","method":"GET","query":{"api-version":"7.1","fields":"System.Title","ids":"%d"}}`, adoOrganization, adoProject, id)) {
+			t.Fatalf("%d: the record names %s, the second request was %v: %s", id, v.Acquisition.Endpoint, urls, v.Acquisition.Statement)
+		}
+	}
+	if statements[0] == statements[1] {
+		t.Fatal("two reads of different items committed alike")
+	}
+}
+
+// A project is held to the 64 characters the naming restrictions give a
+// project, at the bound and one past; an escape in its name stays its own
+// text in the path.
+func TestAzureDevOpsAProjectIsHeldToItsOwnBound(t *testing.T) {
+	_, b, _, _ := adoFixture(t, adoTokenFields())
+	for project, ok := range map[string]bool{strings.Repeat("a", 64): true, strings.Repeat("é", 64): true, strings.Repeat("a", 65): false, strings.Repeat("é", 65): false} {
+		fields := adoTokenFields()
+		fields["id"], fields["project"] = "other", project
+		if err := adoConfigure(b, fields); (err == nil) != ok {
+			t.Errorf("%d characters: %v", len([]rune(project)), err)
+		}
+		if ok {
+			s := b.store
+			c := adoConnection(t, s, "other")
+			b.Handle(context.Background(), "disconnect", []byte(`{"id":"other","revision":"`+c.Revision+`"}`))
+		}
+	}
+	for project, path := range map[string]string{"encoded%2Fsegment": "/encoded%252Fsegment/", "%2e%2e": "/%252e%252e/"} {
+		fields := adoTokenFields()
+		fields["project"] = project
+		_, _, c, _ := adoFixture(t, fields)
+		k, _ := (AzureDevOpsRequest{Read: "repos.list"}).call(c)
+		if !strings.HasPrefix(k.target(), adoOrganization+path+"_apis/") {
+			t.Errorf("%q: %s", project, k.target())
+		}
+	}
+}
+
+// Fixed words are screened as the rest is: a status whose own words would
+// spell a credential is not written, a threshold spelling one in escapes is
+// not named, and where even the sentence that says so would spell one,
+// nothing is written.
+func TestAzureDevOpsFixedWordsAreScreenedToo(t *testing.T) {
+	fields := adoTokenFields()
+	fields["token"] = "azure-devops"
+	_, b, _, _ := adoFixture(t, fields)
+	if out, err := b.Handle(context.Background(), "status", []byte(`{}`)); out != nil || err != unwritten {
+		raw, _ := json.Marshal(out)
+		t.Fatalf("status %s %v", raw, err)
+	}
+	fields = adoTokenFields()
+	fields["token"] = "provider-unavailable"
+	s, _, c, _ := adoFixture(t, fields)
+	p := adoThrough(func(r *http.Request) (*http.Response, error) {
+		a := adoAnswer(r, 429, `{}`, "peer")
+		a.Header.Set("X-RateLimit-Resource", adoEscaped(c.Token))
+		return a, nil
+	})
+	if _, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "repos.list"}, p); err == nil || strings.Contains(err.Error(), c.Token) {
+		t.Fatal(err)
+	}
+	// The ladder: as it is, redacted, the fallback, and nothing.
+	secrets := []string{"provider-unavailable"}
+	for _, k := range []struct{ in, want string }{
+		{"request-refused: the organization answered 404", "request-refused: the organization answered 404"},
+		{"provider-unavailable: near", "[redacted]: near"},
+		{"rate-limited: near " + adoEscaped("provider-unavailable"), ""},
+	} {
+		if got := azureDevOpsOutward(Error(k.in), secrets); got.Error() != k.want {
+			t.Errorf("%q: %q", k.in, got)
+		}
+	}
+	if got := azureDevOpsOutward(Error("rate-limited: near "+adoEscaped(adoPAT)), []string{adoPAT}); got != azureDevOpsUnreported {
+		t.Errorf("the fallback: %q", got)
+	}
+}
+
+// The bound is held to the bytes received: compression is neither asked for
+// nor undone, an answer whose announced length is past the bound is refused
+// unread, and one that names an encoding is refused.
+func TestAzureDevOpsTheBoundIsOnTheBytesReceived(t *testing.T) {
+	fields := adoTokenFields()
+	fields["max-result-bytes"] = "65536"
+	_, _, c, _ := adoFixture(t, fields)
+	var padded, small bytes.Buffer
+	for range 3000 {
+		z := gzip.NewWriter(&padded)
+		z.Close()
+	}
+	for _, buffer := range []*bytes.Buffer{&padded, &small} {
+		z := gzip.NewWriter(buffer)
+		z.Write([]byte(`{"value":[]}`))
+		z.Close()
+	}
+	for _, k := range []struct {
+		entity *bytes.Buffer
+		want   string
+	}{
+		{&padded, "result-too-large: the organization's answer is larger than the connection's bound of 65536 bytes"},
+		{&small, "provider-unavailable: the organization's answer is encoded, and this connection reads only what it asked for, which is not"},
+	} {
+		p := azureDevOpsProvider()
+		transport := p.client.Transport.(*http.Transport)
+		var asked string
+		transport.DialTLSContext = func(context.Context, string, string) (net.Conn, error) {
+			client, server := net.Pipe()
+			go func() {
+				defer server.Close()
+				req, err := http.ReadRequest(bufio.NewReader(server))
+				if err != nil {
+					return
+				}
+				asked = req.Header.Get("Accept-Encoding")
+				req.Body.Close()
+				fmt.Fprintf(server, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", k.entity.Len())
+				server.Write(k.entity.Bytes())
+			}()
+			return client, nil
+		}
+		response, body, err := p.azureDevOpsSend(context.Background(), c, "GET", c.Organization+"/"+adoProject+"/_apis/git/repositories?api-version=7.1", nil, c.resultBound(), c.secrets())
+		transport.CloseIdleConnections()
+		if response != nil || body != nil || err == nil || err.Error() != k.want || asked != "" {
+			t.Errorf("%d-byte entity: %v, Accept-Encoding %q", k.entity.Len(), err, asked)
+		}
+	}
+	if padded.Len() <= 65536 || small.Len() > 65536 {
+		t.Fatal("fixture sizes", padded.Len(), small.Len())
+	}
+}
+
+// What reads keep and refuse otherwise holds: each read's requests are its
+// documented ones under the configured host and authorization, a 200 that
+// asks for a wait is kept, and every other status is refused after one
+// request without the API's message.
+func TestAzureDevOpsReadsKeepWhatTheyShouldAndRefuseTheRest(t *testing.T) {
+	s, _, c, _ := adoFixture(t, adoTokenFields())
+	for _, read := range adoReads(c, "/example") {
+		calls := []string{}
+		p := adoThrough(func(r *http.Request) (*http.Response, error) {
+			calls = append(calls, r.Method+" "+r.URL.RequestURI())
+			if r.URL.Host != "dev.azure.com" || r.URL.Scheme != "https" || r.Header.Get("Authorization") != "Basic "+adoBasic {
+				t.Error("wrong destination or authorization", r.URL, r.Header.Get("Authorization"))
+			}
+			a := adoAnswer(r, 200, adoNormal(r), "peer")
+			a.Header.Set("Retry-After", "10")
+			return a, nil
+		})
+		out, err := azureDevOpsAcquire(context.Background(), s, read.q, p)
+		if err != nil || out == nil || fmt.Sprint(calls) != fmt.Sprint(read.lines) {
+			t.Fatalf("%s: %v %v, want %v", read.q.Read, err, calls, read.lines)
+		}
+	}
+	for _, status := range []int{302, 307, 429, 503, 401, 403, 404} {
+		calls := 0
+		p := adoThrough(func(r *http.Request) (*http.Response, error) {
+			calls++
+			a := adoAnswer(r, status, `{"typeKey":"SyntheticFailure","message":"not safe to repeat"}`, "peer")
+			a.Header.Set("Location", "https://another.example/elsewhere")
+			a.Header.Set("Retry-After", "7")
+			return a, nil
+		})
+		out, err := azureDevOpsAcquire(context.Background(), s, AzureDevOpsRequest{Connection: c.ID, Revision: c.Revision, Read: "repos.list"}, p)
+		if err == nil || out != nil || calls != 1 || strings.Contains(err.Error(), "not safe to repeat") {
+			t.Fatalf("status %d: %v, %d requests", status, err, calls)
 		}
 	}
 }
