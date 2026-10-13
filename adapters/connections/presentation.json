@@ -537,5 +537,149 @@
       "zh-Hant": "結果上限位元組數（65536–15728640，預設 8388608）",
       "yue-Hant": "結果上限位元組數（65536–15728640，預設 8388608）"
     }
+  },
+  "azure-devops": {
+    "name": "Azure DevOps",
+    "icon": "",
+    "description": {
+      "en": "Work items, repositories and pipelines of one project",
+      "fr": "Éléments de travail, dépôts et pipelines d’un projet",
+      "es": "Elementos de trabajo, repositorios y canalizaciones de un proyecto",
+      "de": "Arbeitselemente, Repositorys und Pipelines eines Projekts",
+      "it": "Elementi di lavoro, repository e pipeline di un progetto",
+      "pt-PT": "Itens de trabalho, repositórios e pipelines de um projeto",
+      "pt-BR": "Itens de trabalho, repositórios e pipelines de um projeto",
+      "ko": "한 프로젝트의 작업 항목, 리포지토리 및 파이프라인",
+      "ja": "1 つのプロジェクトの作業項目、リポジトリ、パイプライン",
+      "zh-Hans": "一个项目的工作项、存储库和管道",
+      "zh-Hant": "一個專案的工作項目、存放庫和管線",
+      "yue-Hant": "一個專案嘅工作項目、存放庫同管線"
+    },
+    "instructions": {
+      "en": "Enter the organization URL (https://dev.azure.com/… or https://….visualstudio.com), the project, and the authentication: token, with a personal access token, or bearer, with a Microsoft Entra access token and its expiry. Every read runs with that credential's scopes and its identity's permissions: issue a token with read scopes only (Work Items, Code and Build, Read). The credential stays on this computer. Disconnecting does not revoke it in Azure DevOps.",
+      "fr": "Saisissez l’URL de l’organisation (https://dev.azure.com/… ou https://….visualstudio.com), le projet et l’authentification : token, avec un jeton d’accès personnel, ou bearer, avec un jeton d’accès Microsoft Entra et son expiration. Chaque lecture s’exécute avec les étendues de cet identifiant et les autorisations de son identité : émettez un jeton limité aux étendues de lecture (Work Items, Code et Build, Read). L’identifiant reste sur cet ordinateur. La déconnexion ne le révoque pas dans Azure DevOps.",
+      "es": "Introduce la URL de la organización (https://dev.azure.com/… o https://….visualstudio.com), el proyecto y la autenticación: token, con un token de acceso personal, o bearer, con un token de acceso de Microsoft Entra y su caducidad. Cada lectura se ejecuta con los ámbitos de esa credencial y los permisos de su identidad: emite un token solo con ámbitos de lectura (Work Items, Code y Build, Read). La credencial permanece en este equipo. Desconectar no la revoca en Azure DevOps.",
+      "de": "Gib die Organisations-URL (https://dev.azure.com/… oder https://….visualstudio.com), das Projekt und die Authentifizierung an: token mit einem persönlichen Zugriffstoken oder bearer mit einem Microsoft-Entra-Zugriffstoken und seiner Ablaufzeit. Jeder Lesezugriff läuft mit den Bereichen dieser Anmeldeinformation und den Berechtigungen ihrer Identität: Stelle ein Token nur mit Lesebereichen aus (Work Items, Code und Build, Read). Die Anmeldeinformation bleibt auf diesem Computer. Das Trennen widerruft sie in Azure DevOps nicht.",
+      "it": "Inserisci l’URL dell’organizzazione (https://dev.azure.com/… o https://….visualstudio.com), il progetto e l’autenticazione: token, con un token di accesso personale, oppure bearer, con un token di accesso Microsoft Entra e la sua scadenza. Ogni lettura viene eseguita con gli ambiti di quella credenziale e le autorizzazioni della sua identità: emetti un token con soli ambiti di lettura (Work Items, Code e Build, Read). La credenziale resta su questo computer. La disconnessione non la revoca in Azure DevOps.",
+      "pt-PT": "Introduza o URL da organização (https://dev.azure.com/… ou https://….visualstudio.com), o projeto e a autenticação: token, com um token de acesso pessoal, ou bearer, com um token de acesso do Microsoft Entra e a respetiva validade. Cada leitura é executada com os âmbitos dessa credencial e as permissões da sua identidade: emita um token só com âmbitos de leitura (Work Items, Code e Build, Read). A credencial fica neste computador. Desligar não a revoga no Azure DevOps.",
+      "pt-BR": "Informe a URL da organização (https://dev.azure.com/… ou https://….visualstudio.com), o projeto e a autenticação: token, com um token de acesso pessoal, ou bearer, com um token de acesso do Microsoft Entra e sua validade. Cada leitura é executada com os escopos dessa credencial e as permissões da identidade dela: emita um token só com escopos de leitura (Work Items, Code e Build, Read). A credencial fica neste computador. Desconectar não a revoga no Azure DevOps.",
+      "ko": "조직 URL(https://dev.azure.com/… 또는 https://….visualstudio.com), 프로젝트, 인증 방식을 입력하세요. token은 개인용 액세스 토큰을, bearer는 Microsoft Entra 액세스 토큰과 만료 시간을 사용합니다. 모든 읽기는 해당 자격 증명의 범위와 그 ID의 권한으로 실행되므로 읽기 범위만 있는 토큰(Work Items, Code, Build의 Read)을 발급하세요. 자격 증명은 이 컴퓨터에 보관됩니다. 연결을 해제해도 Azure DevOps에서 취소되지 않습니다.",
+      "ja": "組織 URL（https://dev.azure.com/… または https://….visualstudio.com）、プロジェクト、認証方式を入力してください。token は個人用アクセス トークン、bearer は Microsoft Entra アクセス トークンとその有効期限を使います。すべての読み取りはその資格情報のスコープとその ID の権限で実行されるため、読み取りスコープのみ（Work Items、Code、Build の Read）のトークンを発行してください。資格情報はこのコンピューターに保存されます。接続を解除しても Azure DevOps では取り消されません。",
+      "zh-Hans": "输入组织 URL（https://dev.azure.com/… 或 https://….visualstudio.com）、项目和身份验证方式：token 使用个人访问令牌，bearer 使用 Microsoft Entra 访问令牌及其到期时间。每次读取都以该凭据的范围和其身份的权限运行：请签发仅有读取范围的令牌（Work Items、Code 和 Build 的 Read）。凭据保存在这台电脑上。断开连接不会在 Azure DevOps 中撤销它。",
+      "zh-Hant": "輸入組織 URL（https://dev.azure.com/… 或 https://….visualstudio.com）、專案和驗證方式：token 使用個人存取權杖，bearer 使用 Microsoft Entra 存取權杖及其到期時間。每次讀取都以該認證的範圍和其身分的權限執行：請簽發僅有讀取範圍的權杖（Work Items、Code 和 Build 的 Read）。認證保存在這部電腦上。中斷連線不會在 Azure DevOps 中撤銷它。",
+      "yue-Hant": "輸入組織 URL（https://dev.azure.com/… 或者 https://….visualstudio.com）、專案同驗證方式：token 用個人存取權杖，bearer 用 Microsoft Entra 存取權杖同佢嘅到期時間。每次讀取都以呢個認證嘅範圍同佢身分嘅權限執行：請簽發淨係有讀取範圍嘅權杖（Work Items、Code 同 Build 嘅 Read）。認證保留喺呢部電腦。中斷連線唔會喺 Azure DevOps 撤銷佢。"
+    }
+  },
+  "azure-devops-organization-url": {
+    "description": {
+      "en": "Organization URL (https://dev.azure.com/… or https://….visualstudio.com)",
+      "fr": "URL de l’organisation (https://dev.azure.com/… ou https://….visualstudio.com)",
+      "es": "URL de la organización (https://dev.azure.com/… o https://….visualstudio.com)",
+      "de": "Organisations-URL (https://dev.azure.com/… oder https://….visualstudio.com)",
+      "it": "URL dell’organizzazione (https://dev.azure.com/… o https://….visualstudio.com)",
+      "pt-PT": "URL da organização (https://dev.azure.com/… ou https://….visualstudio.com)",
+      "pt-BR": "URL da organização (https://dev.azure.com/… ou https://….visualstudio.com)",
+      "ko": "조직 URL(https://dev.azure.com/… 또는 https://….visualstudio.com)",
+      "ja": "組織 URL（https://dev.azure.com/… または https://….visualstudio.com）",
+      "zh-Hans": "组织 URL（https://dev.azure.com/… 或 https://….visualstudio.com）",
+      "zh-Hant": "組織 URL（https://dev.azure.com/… 或 https://….visualstudio.com）",
+      "yue-Hant": "組織 URL（https://dev.azure.com/… 或者 https://….visualstudio.com）"
+    }
+  },
+  "azure-devops-project": {
+    "description": {
+      "en": "Project (name or ID)",
+      "fr": "Projet (nom ou ID)",
+      "es": "Proyecto (nombre o ID)",
+      "de": "Projekt (Name oder ID)",
+      "it": "Progetto (nome o ID)",
+      "pt-PT": "Projeto (nome ou ID)",
+      "pt-BR": "Projeto (nome ou ID)",
+      "ko": "프로젝트(이름 또는 ID)",
+      "ja": "プロジェクト（名前または ID）",
+      "zh-Hans": "项目（名称或 ID）",
+      "zh-Hant": "專案（名稱或 ID）",
+      "yue-Hant": "專案（名稱或者 ID）"
+    }
+  },
+  "azure-devops-auth": {
+    "description": {
+      "en": "Authentication: token or bearer",
+      "fr": "Authentification : token ou bearer",
+      "es": "Autenticación: token o bearer",
+      "de": "Authentifizierung: token oder bearer",
+      "it": "Autenticazione: token o bearer",
+      "pt-PT": "Autenticação: token ou bearer",
+      "pt-BR": "Autenticação: token ou bearer",
+      "ko": "인증: token 또는 bearer",
+      "ja": "認証: token または bearer",
+      "zh-Hans": "身份验证：token 或 bearer",
+      "zh-Hant": "驗證：token 或 bearer",
+      "yue-Hant": "驗證：token 或者 bearer"
+    }
+  },
+  "azure-devops-token": {
+    "description": {
+      "en": "Personal access token (for token)",
+      "fr": "Jeton d’accès personnel (pour token)",
+      "es": "Token de acceso personal (para token)",
+      "de": "Persönliches Zugriffstoken (für token)",
+      "it": "Token di accesso personale (per token)",
+      "pt-PT": "Token de acesso pessoal (para token)",
+      "pt-BR": "Token de acesso pessoal (para token)",
+      "ko": "개인용 액세스 토큰(token용)",
+      "ja": "個人用アクセス トークン（token 用）",
+      "zh-Hans": "个人访问令牌（用于 token）",
+      "zh-Hant": "個人存取權杖（用於 token）",
+      "yue-Hant": "個人存取權杖（token 用）"
+    }
+  },
+  "azure-devops-access-token": {
+    "description": {
+      "en": "Microsoft Entra access token (for bearer)",
+      "fr": "Jeton d’accès Microsoft Entra (pour bearer)",
+      "es": "Token de acceso de Microsoft Entra (para bearer)",
+      "de": "Microsoft-Entra-Zugriffstoken (für bearer)",
+      "it": "Token di accesso Microsoft Entra (per bearer)",
+      "pt-PT": "Token de acesso do Microsoft Entra (para bearer)",
+      "pt-BR": "Token de acesso do Microsoft Entra (para bearer)",
+      "ko": "Microsoft Entra 액세스 토큰(bearer용)",
+      "ja": "Microsoft Entra アクセス トークン（bearer 用）",
+      "zh-Hans": "Microsoft Entra 访问令牌（用于 bearer）",
+      "zh-Hant": "Microsoft Entra 存取權杖（用於 bearer）",
+      "yue-Hant": "Microsoft Entra 存取權杖（bearer 用）"
+    }
+  },
+  "azure-devops-expires-at": {
+    "description": {
+      "en": "Access token expiry (RFC 3339, for bearer)",
+      "fr": "Expiration du jeton d’accès (RFC 3339, pour bearer)",
+      "es": "Caducidad del token de acceso (RFC 3339, para bearer)",
+      "de": "Ablaufzeit des Zugriffstokens (RFC 3339, für bearer)",
+      "it": "Scadenza del token di accesso (RFC 3339, per bearer)",
+      "pt-PT": "Validade do token de acesso (RFC 3339, para bearer)",
+      "pt-BR": "Validade do token de acesso (RFC 3339, para bearer)",
+      "ko": "액세스 토큰 만료 시간(RFC 3339, bearer용)",
+      "ja": "アクセス トークンの有効期限（RFC 3339、bearer 用）",
+      "zh-Hans": "访问令牌到期时间（RFC 3339，用于 bearer）",
+      "zh-Hant": "存取權杖到期時間（RFC 3339，用於 bearer）",
+      "yue-Hant": "存取權杖到期時間（RFC 3339，bearer 用）"
+    }
+  },
+  "azure-devops-max-result-bytes": {
+    "description": {
+      "en": "Result limit in bytes (65536–15728640, default 8388608)",
+      "fr": "Limite du résultat en octets (65536–15728640, 8388608 par défaut)",
+      "es": "Límite del resultado en bytes (65536–15728640, 8388608 de forma predeterminada)",
+      "de": "Ergebnisgrenze in Byte (65536–15728640, Standard 8388608)",
+      "it": "Limite del risultato in byte (65536–15728640, predefinito 8388608)",
+      "pt-PT": "Limite do resultado em bytes (65536–15728640, predefinição 8388608)",
+      "pt-BR": "Limite do resultado em bytes (65536–15728640, padrão 8388608)",
+      "ko": "결과 한도(바이트, 65536–15728640, 기본값 8388608)",
+      "ja": "結果の上限バイト数（65536～15728640、既定は 8388608）",
+      "zh-Hans": "结果上限字节数（65536–15728640，默认 8388608）",
+      "zh-Hant": "結果上限位元組數（65536–15728640，預設 8388608）",
+      "yue-Hant": "結果上限位元組數（65536–15728640，預設 8388608）"
+    }
   }
 }

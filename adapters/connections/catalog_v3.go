@@ -70,7 +70,7 @@ func ConnectionCatalogV3() CatalogV3 {
 		}
 		out.Providers = append(out.Providers, d)
 	}
-	out.Providers = append(out.Providers, s3Catalog(presentation), searchCatalog(presentation), databricksCatalog(presentation))
+	out.Providers = append(out.Providers, s3Catalog(presentation), searchCatalog(presentation), databricksCatalog(presentation), azureDevOpsCatalog(presentation))
 	out.Sources = append(out.Sources, SourceDescriptor{"web-search", "query", []string{"application/vnd.jpack.web-search+json"}, 1 << 20})
 	for i := range out.Providers {
 		if storageProvider(out.Providers[i].ID) {
@@ -140,6 +140,8 @@ func ConnectionLocalPlanFor(processing, longSearch bool) LocalPlan {
 		{"aws-s3", "adapter-sources", []string{"--provider", "aws-s3", "--principal", "desk-local"}, "command", 60, true},
 		// A statement waits at most 50 seconds, inside the adapter's 55.
 		{"databricks", "adapter-sources", []string{"--provider", "databricks", "--principal", "desk-local"}, "http", 60, true},
+		// A read is at most two requests of 25 seconds, inside the adapter's 55.
+		{"azure-devops", "adapter-sources", []string{"--provider", "azure-devops", "--principal", "desk-local"}, "http", 60, true},
 	}}
 	if processing {
 		for i := range plan.Sources {

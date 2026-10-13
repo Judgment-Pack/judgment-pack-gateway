@@ -52,6 +52,8 @@ func run() int {
 		open, read = connections.OpenS3Store, connections.ReadS3
 	case "databricks":
 		open, read = connections.OpenDatabricksStore, connections.ReadDatabricks
+	case "azure-devops":
+		open, read = connections.OpenAzureDevOpsStore, connections.ReadAzureDevOps
 	default:
 		return 2
 	}
@@ -67,6 +69,9 @@ func run() int {
 	} // a 1024-byte key may be JSON-escaped up to sixfold
 	if *provider == "databricks" {
 		limit = 64 << 10 // a statement of 32 KiB, escaped, and its parameters
+	}
+	if *provider == "azure-devops" {
+		limit = 64 << 10 // a query of 32,000 characters, and its fields
 	}
 	raw, err := io.ReadAll(io.LimitReader(os.Stdin, int64(limit+1)))
 	if err != nil || len(raw) > limit {

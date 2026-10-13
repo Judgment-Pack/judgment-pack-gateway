@@ -106,6 +106,9 @@ type state struct {
 	// Databricks is held only in the databricks namespace, which an
 	// earlier release never opens.
 	Databricks *databricksState `json:"databricks,omitempty"`
+	// AzureDevOps is held only in the azure-devops namespace, which an
+	// earlier release never opens.
+	AzureDevOps *azureDevOpsState `json:"azure-devops,omitempty"`
 }
 type Store struct{ root *os.Root }
 

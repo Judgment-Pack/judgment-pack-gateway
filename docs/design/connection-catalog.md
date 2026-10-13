@@ -35,7 +35,7 @@ Example descriptor, within `{ "version": 2, "providers": [...], "sources": [...]
 - `id`: stable provider identifier, not a user-supplied module name.
 - `auth`: `oauth` or `local-folder` describes the existing consent flow.
   In catalog version 3, `credentials` is secrets typed into the setup form
-  and used as given (Amazon S3, web search), and `client-credentials`
+  and used as given (Amazon S3, web search, Azure DevOps), and `client-credentials`
   (Databricks) is a setup form that carries either a token used as given or
   an OAuth client's id and secret, which the companion exchanges at the
   provider's token endpoint by the client-credentials grant for a
@@ -46,8 +46,8 @@ Example descriptor, within `{ "version": 2, "providers": [...], "sources": [...]
 - `selection`: `mail-search` or `source-search` names an existing
   wire contract. It is not a component name, URL, or executable to load.
   `browser-picker` was Drive's until ADR-0010, and no provider has it.
-  `none` (Databricks) is no search or selection: a read names what it reads
-  in the source's request.
+  `none` (Databricks, Azure DevOps) is no search or selection: a read names
+  what it reads in the source's request.
 - `queryRequired`: search needs nonempty input. False permits initial bounded
   browsing; it does not imply unbounded account search.
 - `operations`: companion control methods, also used by the broker to refuse
@@ -182,6 +182,66 @@ the kind. The service list, the tools list and the identity's grants
 (`EXECUTE` on the service, [govern an MCP](https://docs.databricks.com/aws/en/ai-gateway/govern-mcp-service),
 updated 2026-10-08) are the only things that keep this profile to reads, and
 the operator enables a service knowing what it is.
+
+## Azure DevOps (version 3)
+
+Catalog version 3 advertises `azure-devops` with the protocol
+`azure-devops-v1`: `status`, `configure`, `test` and `disconnect` over up to
+six named connections, each to one project of one organization's REST API. Its
+`auth` is `credentials`, its registration `form`, its selection `none`. The
+setup fields are the organization URL (`https://dev.azure.com/{organization}`
+or `https://{organization}.visualstudio.com`), the project (its name or id),
+the authentication, the credential, and the result bound. The authentication
+is one of two values:
+
+- `token`: a personal access token, sent as HTTP basic authentication with an
+  empty user name, as [use personal access tokens](https://learn.microsoft.com/en-us/azure/devops/organizations/accounts/use-personal-access-tokens-to-authenticate)
+  (dated 2026-09-21) states it.
+- `bearer`: a Microsoft Entra access token the operator pastes with its expiry,
+  sent as a bearer token, as [service principals and managed identities](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/service-principal-managed-identity)
+  (dated 2026-09-21) states it. The companion mints nothing and renews
+  nothing; a token at or within a minute of its expiry is refused before any
+  request.
+
+Reads are made by `adapter-sources --provider azure-devops` (source
+`azure-devops`, shape `http`, record `azure-devops-api-v1`), never by the
+companion, whose `test` makes one request, a query for at most one of the
+project's work items, and answers only whether it succeeded. The reads (work
+items by a WIQL query, by id, or both as one acquisition; repositories, a
+repository's items, commits and pull requests; pipelines, a pipeline's runs,
+one run), the bounds and the refusals are in the
+[adapters README](../../adapters/README.md#azure-devops-connections-api-profile),
+with the REST API reference pages (version 7.1) each is made as. That
+organization-level REST APIs "accept either URL form" is
+[work with organization URLs](https://learn.microsoft.com/en-us/azure/devops/extend/develop/work-with-urls)
+(dated 2026-04-03); the throttling headers are
+[rate and usage limits](https://learn.microsoft.com/en-us/azure/devops/integrate/concepts/rate-limits)
+(dated 2025-09-15). The MCP profile is a later change.
+
+**What a read establishes.** A read's receipt establishes that the adapter
+received these bytes from that organization's endpoint, under the TLS identity
+the receipt names, for that query or listing, at that time, sent under the
+credential the operator configured for the connection, acting with that
+credential's scopes and its identity's permissions.
+
+**What it does not establish.** That a work item is current or complete; that
+the credential's scopes are what the operator intends; or that a call read
+rather than wrote. The connection makes only the reads it names, each a `GET`
+but the WIQL query, which the API takes as a `POST`; the query is sent as
+given. What keeps this profile to reads is the credential: Microsoft's guidance
+is to "Select only the scopes required for the intended tasks" and, where a
+personal access token is used, to "use an organization-scoped PAT with the
+minimum scopes and shortest practical lifetime" (use personal access tokens,
+dated 2026-09-21). For this profile those scopes are Work Items (Read), Code
+(Read) and Build (Read), `vso.work`, `vso.code` and `vso.build` in the
+[scopes](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/oauth#available-scopes)
+(dated 2025-07-14); an operator who wants reads only issues a token with read
+scopes only. A query's results are "truncated at 20,000 items - no error is
+shown" ([work tracking limits](https://learn.microsoft.com/en-us/azure/devops/organizations/settings/work/object-limits),
+dated 2026-09-10): a query's answer says nothing of whether it is complete.
+Global personal access tokens stop working on December 1, 2026, by the same
+page on personal access tokens; a connection configured with one stops reading
+then.
 
 ## Public URL sources (version 2)
 

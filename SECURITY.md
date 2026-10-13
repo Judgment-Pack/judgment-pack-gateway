@@ -214,6 +214,31 @@ body does, and a Unity Gateway service is any MCP service registered in Unity Ca
 connector among them, which may write and which the connection claims nothing about; so the
 service list, the tools list and the identity's grants are what keep the profile to reads.
 
+**An Azure DevOps connection reads as the credential its operator configured, and only that
+credential's scopes keep it to reads** ([connection catalog](docs/design/connection-catalog.md#azure-devops-version-3)).
+A read is one request, or for a query-and-get two, to one project of an organization's REST API, over
+HTTPS to `dev.azure.com/{organization}` or `{organization}.visualstudio.com` and nothing else, with
+no redirect followed, no proxy and nothing retried. The personal access token, its basic
+authentication value, or the Microsoft Entra access token the operator pasted, stays in the
+companion's private custody; the `Authorization` header is built from it when a request is made and
+is stored nowhere. None of them is in any receipt, record, status, test answer, error or log line: a
+request that carries one, in its query, fields, repository, path, version or cursor, as written or in
+escapes, is refused before it is sent; an answer (or a continuation token) that repeats one, as
+written or in JSON escapes, is refused before anything of it is read; a configured name or project
+that spells one is refused by `configure`; a threshold an organization names has every whole one
+replaced before it is cut; and every error and status field is held once more against them. The
+members a read is decided by (a query's work items and their ids, an items answer's ids, an error's
+type) are read by their exact names, and the ids of a query-and-get's second request are the ids
+its query answered, at most 200. An access token at or within a minute of its configured expiry is
+not sent; the connection mints none. A read's receipt establishes the bytes from that organization's
+endpoint, under the TLS identity it names, for that query or listing, at that time, under the
+configured credential, acting with its scopes and its identity's permissions. It does not establish
+that a work item is current or complete (a query's results are truncated at 20,000 items without an
+error), that the credential's scopes are what the operator intends, or that a call read rather than
+wrote: the connection makes only the reads it names, but a token with write scopes would let another
+use of it write, and Microsoft's guidance is to select only the scopes a task requires; for this
+profile that is Work Items, Code and Build, each Read.
+
 **On Unix a source runs in a process group led by an anchor**, a process the gateway starts before
 the source and reaps only after the group has been killed. A group is addressed by its leader's
 pid, and a leader that has been reaped frees a pid another process can take; the anchor holds the

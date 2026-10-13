@@ -114,6 +114,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if b.provider.databricks {
 		return b.databricksOperation(ctx, method, raw)
 	}
+	if b.provider.azureDevOps {
+		return b.azureDevOpsOperation(ctx, method, raw)
+	}
 	switch method {
 	case "status":
 		var empty struct{}

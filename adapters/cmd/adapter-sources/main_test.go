@@ -90,7 +90,7 @@ func TestSourcesCLIConsumesOnlyTheSelectedGrant(t *testing.T) {
 func TestTheLongSearchEnvelopeIsWebSearchsAlone(t *testing.T) {
 	dir := t.TempDir()
 	os.Chmod(dir, 0700)
-	for _, provider := range []string{"notion", "obsidian", "aws-s3", "databricks"} {
+	for _, provider := range []string{"notion", "obsidian", "aws-s3", "databricks", "azure-devops"} {
 		args, _ := json.Marshal([]string{"adapter-sources", "--state-dir", dir, "--principal", "fixture", "--provider", provider, "--long-search"})
 		cmd := exec.Command(os.Args[0], "-test.run=^TestSourcesCLIHelper$")
 		cmd.Env = append(os.Environ(), "SOURCES_CLI_HELPER=1", "SOURCES_CLI_ARGS="+string(args))
