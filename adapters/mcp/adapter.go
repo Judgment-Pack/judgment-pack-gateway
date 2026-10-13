@@ -299,6 +299,10 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": clientName, "version": "0"},
 	})
+	// A remote server's session id, once its header is read, is redacted
+	// from everything reported as the credentials are: it is the client's
+	// alone, and no diagnostic or report carries it.
+	secrets = srv.sessionSecret(secrets)
 	if err != nil {
 		return fail(err)
 	}
@@ -442,6 +446,12 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	if cfg.URL != "" && cfg.MaxOutput < 1 {
 		return nil, errors.New("max-output must be positive")
 	}
+	// The probe is one of the tools this source may call, judged before
+	// the server is started or reached: a check that would call another
+	// sends nothing, the credential included.
+	if cfg.Probe != "" && len(cfg.Tools) > 0 && !contains(cfg.Tools, cfg.Probe) {
+		return nil, fmt.Errorf("probe %q is not one this source may call: %v", cfg.Probe, cfg.Tools)
+	}
 	srv, secrets, err := start(ctx, cfg)
 	if err != nil {
 		if secrets != nil {
@@ -479,6 +489,10 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": clientName, "version": "0"},
 	})
+	// A remote server's session id, once its header is read, is redacted
+	// from everything reported as the credentials are: it is the client's
+	// alone, and no diagnostic or report carries it.
+	secrets = srv.sessionSecret(secrets)
 	if err != nil {
 		return fail(err)
 	}
@@ -522,12 +536,9 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	}
 	var probe *probeReport
 	if cfg.Probe != "" {
-		// The probe is one of the tools this source may call, offered by
-		// the server, and it must answer without an error: a connection
-		// the server could not make is what it answers with.
-		if len(cfg.Tools) > 0 && !contains(cfg.Tools, cfg.Probe) {
-			return finish(nil, fmt.Errorf("probe %q is not one this source may call: %v", cfg.Probe, cfg.Tools))
-		}
+		// The probe, one of the tools this source may call (above), is
+		// offered by the server, and it must answer without an error: a
+		// connection the server could not make is what it answers with.
 		if !contains(names, cfg.Probe) {
 			return finish(nil, fmt.Errorf("probe %q is not one the server offers: %v", cfg.Probe, names))
 		}

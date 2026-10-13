@@ -127,8 +127,9 @@ refuses it in an envelope. The members are optional members of version 3, as `ac
 
 It establishes byte lineage from that endpoint under that TLS identity: that an endpoint at that
 URL, presenting that certificate, answered that tool call with those arguments with the bytes the
-receipt names, at that time, to a client holding the operator's credential — as the adapter's
-testimony under the gateway's signature, which is what every adapter record is.
+receipt names, at that time, under the operator's credential, where one is configured (the
+record itself does not say whether one was sent) — as the adapter's testimony under the gateway's
+signature, which is what every adapter record is.
 
 It does not establish that the bytes are true; that the tool read rather than wrote, which the
 adapter cannot tell (`--tools` is the only thing that keeps a source to reads); that the server is

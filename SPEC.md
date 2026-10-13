@@ -223,8 +223,9 @@ tolerates them and holds them to nothing.
 **What a remote acquisition establishes.** As every adapter record, it is the
 adapter's testimony under the gateway's signature (below): that an endpoint at that
 URL, presenting that TLS identity, answered that tool call — committed in
-`statement` — with the bytes `resultDigest` names, at `observedAt`, to a client
-holding the operator's credential for it. It does not establish that the bytes are
+`statement` — with the bytes `resultDigest` names, at `observedAt`, under the
+operator's credential, where one is configured; the record itself does not say whether
+one was sent. It does not establish that the bytes are
 true; that the tool read rather than wrote, which nothing at the client can tell;
 that the server is honest, or the vendor's, or that the name and version it gave
 itself are its own; or anything the session carried beyond the one call. The

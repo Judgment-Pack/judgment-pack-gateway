@@ -280,6 +280,33 @@ func TestRunRemote(t *testing.T) {
 	if len(srv.Requests()) != sent {
 		t.Fatal("a configuration refused for its form sent a request")
 	}
+	// A probe outside --tools is refused before the server is reached.
+	stdout.Reset()
+	stderr.Reset()
+	probe := []string{"--check", "--url", srv.URL, "--ca-file", ca, "--credentials", credentials, "--bearer", "TOKEN", "--tools=lookup", "--probe=delete"}
+	if code := run(probe, strings.NewReader(""), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), `probe "delete" is not one this source may call: [lookup]`) ||
+		!strings.HasPrefix(stdout.String(), `{"check":{"message":"probe \"delete\" is not one this source may call: [lookup]","status":"failed"}}`) {
+		t.Fatalf("a probe outside --tools: exit %d %s %s", code, stdout.String(), stderr.String())
+	}
+	if len(srv.Requests()) != sent {
+		t.Fatal("a probe outside --tools sent a request")
+	}
+	// A server reflecting its session id: refused, and the id is in
+	// nothing written.
+	srv.Set(func(s *fakemcp.Script) { s.Result = `{"content":[{"type":"text","text":"session ` + session + `"}]}` })
+	for _, check := range []bool{false, true} {
+		args := base
+		if check {
+			args = append([]string{"--check", "--probe", "query"}, base...)
+		}
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(args, strings.NewReader(`{"tool":"query"}`), &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "repeats its session id") {
+			t.Fatalf("a reflected session id: exit %d %s", code, stderr.String())
+		}
+		clean("a reflected session id", stdout.String(), stderr.String())
+	}
+	srv.Set(func(s *fakemcp.Script) { s.Result = "" })
 	// Refused by the server, in its own words, redacted.
 	srv.Set(func(s *fakemcp.Script) { s.Refuse = `{"code":-32000,"message":"denied for ` + other + `"}` })
 	for _, check := range []bool{false, true} {

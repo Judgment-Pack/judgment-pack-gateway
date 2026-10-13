@@ -69,6 +69,9 @@ type Client struct {
 	// and for Open what a request on adapter-mcp's stdin may hold, 1 MiB,
 	// with room for the message around it.
 	requestLimit int
+	// refuseSession is a client opened by Open: an answer that repeats the
+	// session id is refused, since its caller records what it reads.
+	refuseSession bool
 	// peer is the TLS identity the last answer to a request came under,
 	// "tls:sha256:" and the digest of the leaf certificate; "" over
 	// plaintext.
@@ -210,7 +213,7 @@ func Open(endpoint string, opts Options, transport *http.Client) (*Client, error
 	if limit <= 0 {
 		limit = MaxResponse
 	}
-	c := &Client{endpoint: endpoint, token: opts.Token, allowed: map[string]bool{}, http: &h, headers: opts.Headers.Clone(), limit: limit, requestLimit: 2 << 20, anyTool: opts.Tools == nil}
+	c := &Client{endpoint: endpoint, token: opts.Token, allowed: map[string]bool{}, http: &h, headers: opts.Headers.Clone(), limit: limit, requestLimit: 2 << 20, anyTool: opts.Tools == nil, refuseSession: true}
 	for _, name := range opts.Tools {
 		if name == "" {
 			return nil, ErrTool
@@ -303,6 +306,10 @@ func (c *Client) Negotiated(ctx context.Context, version string) error {
 	_, err := c.post(ctx, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, 0)
 	return err
 }
+
+// SessionID is the session id the server issued, "" before initialize or
+// when it issued none: for a caller's redaction set, never for a record.
+func (c *Client) SessionID() string { return c.session }
 
 // PeerIdentity is the TLS identity the last answer to a request came
 // under -- "tls:sha256:" and the SHA-256 of the leaf certificate the server
@@ -536,6 +543,14 @@ func (c *Client) message(ctx context.Context, body []byte, id int) (json.RawMess
 	}
 	if c.token != "" && bytes.Contains(normalized, []byte(c.token)) {
 		return nil, false, fault(ErrProtocol, "the server's answer repeats the credential")
+	}
+	// Nor is the session id the server issued -- the initialize answer's
+	// own body included, its header read first -- carried into a result or
+	// an error: a client opened for a caller that records what it reads
+	// refuses an answer that repeats it, as written or as decoded. A
+	// connection's own client (New) keeps its answers as they were.
+	if c.refuseSession && c.session != "" && (bytes.Contains(body, []byte(c.session)) || bytes.Contains(normalized, []byte(c.session))) {
+		return nil, false, fault(ErrProtocol, "the server's answer repeats its session id")
 	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil || string(m["jsonrpc"]) != `"2.0"` {

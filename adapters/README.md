@@ -275,8 +275,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   `--timeout` bounds the call, and ending the session takes up to five seconds more.
 
 What a remote acquisition establishes: that an endpoint at that URL, presenting that TLS
-identity, answered that tool call with those arguments with those bytes, at that time, to a client
-holding the operator's credential — byte lineage from that endpoint, and nothing about whether
+identity, answered that tool call with those arguments with those bytes, at that time, under the
+operator's credential, where one is configured (the record itself does not say whether one was
+sent) — byte lineage from that endpoint, and nothing about whether
 the bytes are true. What it does not: that the tool read rather than wrote (the adapter cannot
 tell, and `--tools` is the only thing that keeps a source to reads); that the server is honest or
 is the vendor's; that the name and version it gave itself are its own; or anything the session

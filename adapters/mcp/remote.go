@@ -39,6 +39,13 @@ const (
 	maxBearer = 8192
 )
 
+// token68 is RFC 6750's form of a bearer token (§2.1, the b64token of
+// RFC 7235's token68): letters, digits and "-._~+/", then "=" padding.
+// Held to it, a credential holds no quote, backslash or control character,
+// so the form a server could echo it in is the form it was sent in, and
+// the client's refusal of an answer that repeats it finds it there.
+var token68 = regexp.MustCompile(`^[A-Za-z0-9._~+/-]+=*$`)
+
 var (
 	headerName = regexp.MustCompile(`^[A-Za-z0-9!#$%&'*+.^_` + "`" + `|~-]+$`)
 	// reservedHeaders are the request headers a fixed --header may not set:
@@ -145,8 +152,8 @@ func bearerOf(cfg Config) (token string, secrets []string, err error) {
 	if err := json.Unmarshal(raw, &token); err != nil {
 		return "", nil, errors.New("a credentials member is not a string")
 	}
-	if token == "" || len(token) > maxBearer || strings.ContainsAny(token, "\r\n\x00") {
-		return "", nil, errors.New("the member --bearer names has a value a header cannot carry")
+	if len(token) > maxBearer || !token68.MatchString(token) {
+		return "", nil, fmt.Errorf("the member --bearer names is not a bearer token of RFC 6750's form (token68: letters, digits and -._~+/, at least one, then = padding; at most %d bytes), so nothing is sent", maxBearer)
 	}
 	return token, redact.SecretsOf(data), nil
 }
@@ -232,6 +239,17 @@ func openRemote(cfg Config) (*server, []string, error) {
 		return nil
 	}
 	return &server{rpc: remoteConversation{client}, stop: stop, firstLine: func() string { return "" }, identity: identity, remote: client}, secrets, nil
+}
+
+// sessionSecret is secrets with a remote server's session id among them,
+// once the server has issued one; secrets as they are otherwise.
+func (s *server) sessionSecret(secrets []string) []string {
+	if s.remote != nil {
+		if session := s.remote.SessionID(); session != "" {
+			return append(secrets, session)
+		}
+	}
+	return secrets
 }
 
 // remoteConversation is the conversation over Streamable HTTP: the

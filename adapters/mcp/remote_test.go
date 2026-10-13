@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"adapters/internal/fakemcp"
+	"adapters/internal/redact"
 )
 
 // The remote form's markers: the credential --bearer sends, another member
@@ -436,5 +437,119 @@ func TestRemoteHandshakeIsHeldToTheStdioRules(t *testing.T) {
 		if r.Header.Get("Mcp-Session-Id") != "" {
 			t.Fatalf("a session id sent that the server never issued: %v", r.Header)
 		}
+	}
+}
+
+// The bearer is held to RFC 6750's token68 form when it is read: a value
+// with a quote, a backslash or a control character -- one a server could
+// echo in a form the client's refusal would not find -- or an empty one is
+// refused before anything is sent, by a sentence that names the rule and
+// not the value; a token68 token is sent as it is.
+func TestRemoteBearerIsHeldToToken68(t *testing.T) {
+	for _, tc := range []struct{ name, json string }{
+		{"a quote", `"tok\"en-` + otherMarker + `"`},
+		{"a backslash", `"tok\\en-` + otherMarker + `"`},
+		{"a tab", `"tok\ten-` + otherMarker + `"`},
+		{"a newline", `"tok\nen-` + otherMarker + `"`},
+		{"a space", `"tok en-` + otherMarker + `"`},
+		{"padding inside", `"tok=en-` + otherMarker + `"`},
+		{"empty", `""`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv, cfg := remote(t, true, fakemcp.Script{})
+			if err := os.WriteFile(cfg.Credentials, []byte(`{"TOKEN":`+tc.json+`}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, run := range []func() error{
+				func() error { _, err := Acquire(within(t), cfg, query("select 1")); return err },
+				func() error { _, err := Check(within(t), cfg); return err },
+			} {
+				err := run()
+				if err == nil || !strings.Contains(err.Error(), "is not a bearer token of RFC 6750's form (token68") {
+					t.Fatalf("want the token68 refusal, got %v", err)
+				}
+				noMarker(t, "the refusal", err.Error())
+			}
+			if n := len(srv.Requests()); n != 0 {
+				t.Fatalf("%d request(s) sent with a bearer out of its form", n)
+			}
+		})
+	}
+	srv, cfg := remote(t, true, fakemcp.Script{})
+	const token = "Ab9.-_~+/xyz=="
+	if err := os.WriteFile(cfg.Credentials, []byte(`{"TOKEN":"`+token+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Acquire(within(t), cfg, query("select 1")); err != nil {
+		t.Fatalf("a token68 bearer: %v", err)
+	}
+	for _, r := range srv.Requests() {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("the token68 bearer as it is: %q", r.Header.Get("Authorization"))
+		}
+	}
+}
+
+// A check's probe is held to --tools before the server is reached: a
+// probe the source may not call sends nothing, the bearer included.
+func TestRemoteCheckRefusesAProbeOutsideTheToolsBeforeAnythingIsSent(t *testing.T) {
+	srv, cfg := remote(t, true, fakemcp.Script{})
+	cfg.Tools, cfg.Probe = []string{"lookup"}, "delete"
+	if _, err := Check(within(t), cfg); err == nil || err.Error() != `probe "delete" is not one this source may call: [lookup]` {
+		t.Fatalf("a probe outside --tools: %v", err)
+	}
+	if n := len(srv.Requests()); n != 0 {
+		t.Fatalf("%d request(s) sent for a probe the source may not call", n)
+	}
+}
+
+// A server that reflects the session id it issued -- in a result, in an
+// error's text, in its initialize answer -- has that answer refused, so
+// the id reaches neither the envelope nor a diagnostic nor a report.
+func TestRemoteSessionIdIsNeverCarried(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script fakemcp.Script
+	}{
+		{"in a result", fakemcp.Script{Result: `{"content":[{"type":"text","text":"your session is ` + sessionMarker + `"}]}`}},
+		{"in a result, escaped", fakemcp.Script{Result: `{"content":[{"type":"text","text":"your session is s` + sessionMarker[1:] + `"}]}`}},
+		{"in an error's text", fakemcp.Script{Refuse: `{"code":-32000,"message":"session ` + sessionMarker + ` has expired"}`}},
+		{"in the initialize answer", fakemcp.Script{ServerInfo: `{"name":"` + sessionMarker + `","version":"1"}`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfg := remote(t, true, tc.script)
+			out, err := Acquire(within(t), cfg, query("select 1"))
+			if err == nil || !strings.Contains(err.Error(), "repeats its session id") {
+				t.Fatalf("want the session refusal, got %s %v", out, err)
+			}
+			noMarker(t, "the refusal", err.Error())
+			cfg.Tools, cfg.Probe = []string{"query"}, "query"
+			report, err := Check(within(t), cfg)
+			if err == nil {
+				t.Fatalf("a check whose probe or handshake reflects the session succeeded: %s", report)
+			}
+			noMarker(t, "the check's refusal", err.Error(), string(FailedCheck(err.Error())))
+		})
+	}
+}
+
+// Behind the client's refusal, the adapter's redaction set holds the
+// session id once initialize has been answered, so a diagnostic or a
+// report that carried it would carry it redacted.
+func TestRemoteSessionIdIsInTheRedactionSet(t *testing.T) {
+	_, cfg := remote(t, true, fakemcp.Script{})
+	srv, secrets, err := openRemote(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.stop()
+	if got := srv.sessionSecret(secrets); len(got) != len(secrets) {
+		t.Fatalf("a session id before the server issued one: %q", got)
+	}
+	if _, err := srv.rpc.call(within(t), "initialize", map[string]any{"protocolVersion": protocolVersion, "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "0"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := redact.Redact("the session "+sessionMarker+" ended", srv.sessionSecret(secrets)); strings.Contains(got, sessionMarker) {
+		t.Fatalf("the session id is not redacted: %s", got)
 	}
 }
