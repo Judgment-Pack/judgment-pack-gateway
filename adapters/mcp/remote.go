@@ -35,6 +35,20 @@ const (
 	// past it the bounded read's sentinel byte would overflow, and a bound
 	// that large is not a bound.
 	maxOutputCeiling = 1 << 40
+	// callOverhead is what a tool call's answer may hold beyond the result
+	// the output bound holds: the JSON-RPC envelope, the framing of an event
+	// stream (up to 64 events), and a server's comments and notifications
+	// ahead of the response. The answer's whole body is read no further than
+	// --max-output and this, and a result is then held to --max-output alone.
+	callOverhead = 64 << 10
+	// initializeLimit bounds the whole answer to initialize, which
+	// --max-output does not bound: a name, a version, capabilities and the
+	// server's instructions.
+	initializeLimit = 1 << 20
+	// listLimit bounds the whole answer to one page of tools/list, which
+	// --max-output does not bound either; the pages together stay within
+	// maxToolPages of it.
+	listLimit = mcphttp.MaxResponse
 	// maxBearer is the longest credential the client sends.
 	maxBearer = 8192
 )
@@ -183,10 +197,11 @@ func ownIdentity() (adapterIdentity, error) {
 
 // openRemote reads the credential and the roots, and opens the client a
 // remote conversation goes through: nothing is sent yet. Each answer is
-// read no further than the output bound or mcphttp.MaxResponse, whichever
-// is larger, so a tool list longer than a small output bound is still
-// read; the tool's result is held to the output bound after, as the stdio
-// form holds it.
+// read no further than its own limit, before any of it is parsed: a tool
+// call's, the output bound and callOverhead; initialize's, initializeLimit;
+// a page of the tool list's, listLimit, so a tool list longer than a small
+// output bound is still read. The tool's result is held to the output bound
+// after, as the stdio form holds it.
 func openRemote(cfg Config) (*server, []string, error) {
 	headers, err := fixedHeaders(cfg.Headers)
 	if err != nil {
@@ -220,8 +235,8 @@ func openRemote(cfg Config) (*server, []string, error) {
 	if err != nil {
 		return nil, secrets, err
 	}
-	limit := max(cfg.MaxOutput, mcphttp.MaxResponse)
-	client, err := mcphttp.Open(cfg.URL, mcphttp.Options{Token: token, Headers: headers, MaxResponse: limit, Tools: cfg.Tools}, &http.Client{Transport: transport})
+	client, err := mcphttp.Open(cfg.URL, mcphttp.Options{Token: token, Headers: headers, MaxResponse: cfg.MaxOutput + callOverhead,
+		InitializeLimit: initializeLimit, ListLimit: listLimit, CallLimit: cfg.MaxOutput + callOverhead, Tools: cfg.Tools}, &http.Client{Transport: transport})
 	if err != nil {
 		return nil, secrets, err
 	}

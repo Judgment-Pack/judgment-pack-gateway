@@ -251,3 +251,94 @@ func TestStatusesAreNamed(t *testing.T) {
 		}
 	}
 }
+
+// A message the server writes at exactly its limit is read; one byte more is
+// refused before any of it is parsed -- the client's screen, handed each
+// message it goes on to read, is not handed it -- and the refusal names the
+// limit of that kind of answer: initialize's, a tool list page's, a tool
+// call's, as JSON and as an event stream.
+func TestAnswerLimitsAreHeldBeforeParsing(t *testing.T) {
+	const initialize, list, call = 300, 400, 500
+	var size int
+	var garbage bool // the last byte is no JSON
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		json.NewDecoder(r.Body).Decode(&request)
+		if r.Method == "DELETE" || request.ID == 0 {
+			w.WriteHeader(202)
+			return
+		}
+		result := map[string]string{"initialize": `{"protocolVersion":"2025-06-18"}`, "tools/list": `{"tools":[]}`, "tools/call": `{"content":[]}`}[request.Method]
+		message := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`, request.ID, result)
+		var out string
+		if r.Header.Get("X-Events") != "" {
+			// "data: " and the blank line after are part of the stream.
+			out = "data: " + message + strings.Repeat(" ", size-len(message)-len("data: ")-2)
+			if garbage {
+				out = out[:len(out)-1] + "x"
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, out+"\n\n")
+			return
+		}
+		out = message + strings.Repeat(" ", size-len(message))
+		if garbage {
+			out = out[:len(out)-1] + "x"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Flushed in two, so the body is chunked and carries no length the
+		// client could refuse it by before reading.
+		io.WriteString(w, out[:1])
+		w.(http.Flusher).Flush()
+		io.WriteString(w, out[1:])
+	}))
+	defer server.Close()
+	for _, events := range []bool{false, true} {
+		screened := 0
+		headers := http.Header{}
+		if events {
+			headers.Set("X-Events", "1")
+		}
+		c, err := Open(server.URL, Options{Headers: headers, MaxResponse: 100000, InitializeLimit: initialize, ListLimit: list, CallLimit: call,
+			Screen: func([]byte, string) bool { screened++; return false }}, server.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		step := func(name string, limit int, run func() error) {
+			t.Helper()
+			size, garbage = limit, false
+			before := screened
+			if err := run(); err != nil {
+				t.Fatalf("%s at its limit (events %v): %v", name, events, err)
+			}
+			if screened != before+1 {
+				t.Fatalf("%s at its limit is read once: %d", name, screened-before)
+			}
+			// Past the limit the body is still valid JSON, so only the order of
+			// the checks -- the screen is handed a message after it is parsed --
+			// shows whether it was read.
+			size, garbage = limit+1, false
+			before = screened
+			err := run()
+			if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), fmt.Sprintf("exceeds the bound of %d bytes", limit)) {
+				t.Fatalf("%s one byte past its limit (events %v): %v", name, events, err)
+			}
+			if screened != before {
+				t.Fatalf("%s past its limit was read", name)
+			}
+		}
+		// initialize may be repeated until negotiated; the session id is not
+		// recorded by this server, so a second one is a fresh request.
+		step("initialize", initialize, func() error { _, err := c.Request(ctx, "initialize", map[string]any{}); return err })
+		size, garbage = initialize, false
+		if err := c.Negotiated(ctx, "2025-06-18"); err != nil {
+			t.Fatal(err)
+		}
+		step("tools/list", list, func() error { _, err := c.Request(ctx, "tools/list", map[string]any{}); return err })
+		step("tools/call", call, func() error { _, err := c.CallTool(ctx, "any", map[string]any{}); return err })
+	}
+}

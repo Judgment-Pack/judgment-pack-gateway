@@ -263,8 +263,12 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   `notifications/initialized`, the tool list, the one `tools/call` (or, for `--check`, the list
   and the probe), and the session ended with a `DELETE`. The session id the server issues
   (`Mcp-Session-Id`) is the client's: sent on every later request, and recorded nowhere. An
-  answer may be JSON or an event stream; each is read no further than `--max-output` or 8 MiB,
-  whichever is larger, and a tool's result is then held to `--max-output` as over stdio. A
+  answer may be JSON or an event stream; each is read no further than a limit of its kind, before
+  any of it is parsed, and an answer one byte past its limit is refused with a sentence naming it:
+  a tool call's is `--max-output` and 64 KiB (the JSON-RPC envelope, an event stream's framing, and
+  a server's comments and notifications ahead of the response), `initialize`'s is 1 MiB and each
+  page of the tool list's is 8 MiB, neither bounded by `--max-output`. A tool's result is then held
+  to `--max-output` as over stdio. A
   request the server makes of the client is answered as over stdio. A body that is not a JSON-RPC
   message, of another content type, a response to another request, or a status outside `2xx` —
   the server's refusal, named by its status — fails the call; a JSON-RPC error is reported in
