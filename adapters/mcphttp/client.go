@@ -76,6 +76,8 @@ type Client struct {
 	// "tls:sha256:" and the digest of the leaf certificate; "" over
 	// plaintext.
 	peer string
+	// screen is the caller's Options.Screen, or nil.
+	screen func(message []byte, session string) bool
 }
 
 // Options is how Open configures a client for adapter-mcp's remote form.
@@ -92,6 +94,14 @@ type Options struct {
 	// Tools are the only tools a call may name; nil lets a call name any
 	// tool, the caller holding its own allowlist.
 	Tools []string
+	// Screen, when given, is handed each complete message the server
+	// answers with -- a JSON body, or one event of a stream -- and the
+	// session id the server issued ("" before it issues one), after the
+	// client's own checks and before any member of it is read or acted on;
+	// a message it reports true for is refused, and nothing of it is read.
+	// A caller that holds credentials this client does not know -- other
+	// connections', a client secret -- screens for them here.
+	Screen func(message []byte, session string) bool
 }
 
 // EndpointProblem is why endpoint is not one a client is opened on, or nil:
@@ -213,7 +223,7 @@ func Open(endpoint string, opts Options, transport *http.Client) (*Client, error
 	if limit <= 0 {
 		limit = MaxResponse
 	}
-	c := &Client{endpoint: endpoint, token: opts.Token, allowed: map[string]bool{}, http: &h, headers: opts.Headers.Clone(), limit: limit, requestLimit: 2 << 20, anyTool: opts.Tools == nil, refuseSession: true}
+	c := &Client{endpoint: endpoint, token: opts.Token, allowed: map[string]bool{}, http: &h, headers: opts.Headers.Clone(), limit: limit, requestLimit: 2 << 20, anyTool: opts.Tools == nil, refuseSession: true, screen: opts.Screen}
 	for _, name := range opts.Tools {
 		if name == "" {
 			return nil, ErrTool
@@ -551,6 +561,11 @@ func (c *Client) message(ctx context.Context, body []byte, id int) (json.RawMess
 	// connection's own client (New) keeps its answers as they were.
 	if c.refuseSession && c.session != "" && (bytes.Contains(body, []byte(c.session)) || bytes.Contains(normalized, []byte(c.session))) {
 		return nil, false, fault(ErrProtocol, "the server's answer repeats its session id")
+	}
+	// Nor anything the caller's screen finds in the whole message, before
+	// any member of it is read.
+	if c.screen != nil && c.screen(body, c.session) {
+		return nil, false, fault(ErrProtocol, "the server's answer repeats the credential or its session id, and is not kept")
 	}
 	var m map[string]json.RawMessage
 	if json.Unmarshal(body, &m) != nil || string(m["jsonrpc"]) != `"2.0"` {

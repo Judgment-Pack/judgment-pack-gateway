@@ -553,22 +553,26 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 		// the MCP server takes is issued for its own application, and no page
 		// says the API takes that token or the server the API's.
 		err := azureDevOpsTest(ctx, b.store, q.ID, q.Revision, b.provider)
-		reports, mcpErr := b.provider.azureDevOpsMCPTest(ctx, b.store, q.ID, q.Revision)
+		reports, held, mcpErr := b.provider.azureDevOpsMCPTest(ctx, b.store, q.ID, q.Revision)
 		if reports == nil {
 			if err == nil {
 				err = mcpErr
 			}
 			return map[string]bool{"ok": err == nil}, err
 		}
+		// The API's error was written before the server issued its session
+		// id: it is held to the session id now, as the whole answer is,
+		// fixed member names and all; an answer that would still spell one is
+		// not written (databricksMCPAnswer).
 		api := map[string]any{"ok": err == nil}
 		if err != nil {
-			api["error"] = err.Error()
+			api["error"] = outward(err, held, azureDevOpsUnreported).Error()
 		}
 		ok := err == nil
 		for _, report := range reports {
 			ok = ok && report.OK
 		}
-		return map[string]any{"ok": ok, "api": api, "mcp": reports}, nil
+		return databricksMCPAnswer(map[string]any{"ok": ok, "api": api, "mcp": reports}, held)
 	}
 	return nil, ErrRequest
 }
@@ -796,7 +800,7 @@ func (p provider) azureDevOpsSend(ctx context.Context, c AzureDevOpsConnection, 
 	if len(raw) > bound {
 		return nil, nil, tooLarge
 	}
-	if encoding := response.Header.Get("Content-Encoding"); response.Uncompressed || encoding != "" && !strings.EqualFold(encoding, "identity") {
+	if azureDevOpsEncoded(response) {
 		return nil, nil, Error("provider-unavailable: the organization's answer is encoded, and this connection reads only what it asked for, which is not")
 	}
 	if !json.Valid(raw) {

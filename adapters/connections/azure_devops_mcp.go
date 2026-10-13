@@ -134,11 +134,30 @@ func (q AzureDevOpsRequest) checkMCP(c AzureDevOpsConnection) error {
 	return databricksNotAllowed
 }
 
+// azureDevOpsEncoded reports whether an answer is encoded: the transport
+// undid an encoding, or a Content-Encoding header -- any of them, each of
+// its comma-separated codings -- names one other than identity, which
+// names none (in any case, around spaces). Nothing asks for an encoding, so
+// the bounds are on the bytes received.
+func azureDevOpsEncoded(response *http.Response) bool {
+	if response.Uncompressed {
+		return true
+	}
+	for _, value := range response.Header.Values("Content-Encoding") {
+		for _, coding := range strings.Split(value, ",") {
+			if !strings.EqualFold(strings.TrimSpace(coding), "identity") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // azureDevOpsMCPGuard is the transport each request of an MCP session goes
 // through: the access token is held to its expiry immediately before every
-// request, and an answer that names a content encoding is refused, since
-// none was asked for and the bound is on the bytes received. What it
-// refused is kept for the refusal's words.
+// request, the session's end included, and an encoded answer is refused
+// (azureDevOpsEncoded). What it refused is kept: a session whose guard
+// refused anything, its end among it, keeps nothing.
 type azureDevOpsMCPGuard struct {
 	next    http.RoundTripper
 	c       AzureDevOpsConnection
@@ -154,7 +173,7 @@ func (g *azureDevOpsMCPGuard) RoundTrip(r *http.Request) (*http.Response, error)
 	if err != nil {
 		return nil, err
 	}
-	if encoding := response.Header.Get("Content-Encoding"); response.Uncompressed || encoding != "" && !strings.EqualFold(encoding, "identity") {
+	if azureDevOpsEncoded(response) {
 		response.Body.Close()
 		g.refused = azureDevOpsMCPEncoded
 		return nil, azureDevOpsMCPEncoded
@@ -178,8 +197,10 @@ func (g *azureDevOpsMCPGuard) refusal(err error, secrets []string) error {
 // server's list as the only tools a call may name, each answer read no
 // further than the result bound and the room a message takes around it, or
 // the client's own bound where that is larger; every request through the
-// guard.
-func (p provider) azureDevOpsMCPOpen(c AzureDevOpsConnection, server AzureDevOpsMCPServer) (*mcphttp.Client, *azureDevOpsMCPGuard, error) {
+// guard, and every whole message the server answers with screened for
+// secrets and the session id before any member of it is read
+// (databricksMCPScreen).
+func (p provider) azureDevOpsMCPOpen(c AzureDevOpsConnection, server AzureDevOpsMCPServer, secrets []string) (*mcphttp.Client, *azureDevOpsMCPGuard, error) {
 	guard := &azureDevOpsMCPGuard{next: p.client.Transport, c: c}
 	headers := http.Header{}
 	if server.ReadOnlyHeader != azureDevOpsReadOnlyOff {
@@ -187,7 +208,7 @@ func (p provider) azureDevOpsMCPOpen(c AzureDevOpsConnection, server AzureDevOps
 		headers[azureDevOpsReadOnlyHeader] = []string{azureDevOpsReadOnlyValue}
 	}
 	limit := max(int64(c.resultBound())+azureDevOpsErrorBytes, mcphttp.MaxResponse)
-	client, err := mcphttp.Open(c.mcpEndpoint(), mcphttp.Options{Token: c.AccessToken, Headers: headers, MaxResponse: limit, Tools: append([]string{}, server.Tools...)}, &http.Client{Transport: guard, Timeout: p.client.Timeout})
+	client, err := mcphttp.Open(c.mcpEndpoint(), mcphttp.Options{Token: c.AccessToken, Headers: headers, MaxResponse: limit, Tools: append([]string{}, server.Tools...), Screen: databricksMCPScreen(secrets)}, &http.Client{Transport: guard, Timeout: p.client.Timeout})
 	return client, guard, err
 }
 
@@ -216,7 +237,7 @@ func (p provider) azureDevOpsMCPAcquire(ctx context.Context, s *Store, c AzureDe
 	if databricksCarries(arguments, secrets) || databricksSpells(q.Tool, secrets) || databricksSpells(q.Server, secrets) {
 		return nil, azureDevOpsInRequest
 	}
-	client, guard, err := p.azureDevOpsMCPOpen(c, server)
+	client, guard, err := p.azureDevOpsMCPOpen(c, server, secrets)
 	if err != nil {
 		return nil, guard.refusal(err, secrets)
 	}
@@ -257,6 +278,13 @@ func (p provider) azureDevOpsMCPAcquire(ctx context.Context, s *Store, c AzureDe
 	if err != nil {
 		return nil, err
 	}
+	// The session is ended before anything of it is kept: its end is a
+	// request like the others, and one the guard refused -- the token within
+	// its minute -- leaves nothing of the read.
+	databricksMCPClose(ctx, client)
+	if guard.refused != nil {
+		return nil, guard.refused
+	}
 	if err = azureDevOpsCurrent(s, c); err != nil {
 		return nil, err
 	}
@@ -290,18 +318,23 @@ func (p provider) azureDevOpsMCPAcquire(ctx context.Context, s *Store, c AzureDe
 
 // azureDevOpsMCPTest reaches the server the connection enables: initialize
 // and its tools, and nothing called. It is nil for a connection that enables
-// none, or whose connection could not be read, with the reason.
-func (p provider) azureDevOpsMCPTest(ctx context.Context, s *Store, id, revision string) ([]databricksMCPReport, error) {
+// none, or whose connection could not be read, with the reason. It returns
+// too every secret the reports were held against, the session id the server
+// issued among them, to which the whole answer a test writes is held once
+// more: the broker's final screen knows no session id.
+func (p provider) azureDevOpsMCPTest(ctx context.Context, s *Store, id, revision string) ([]databricksMCPReport, []string, error) {
 	c, secrets, err := azureDevOpsSnapshot(s, id, revision)
 	if err != nil || len(c.MCP) == 0 {
-		return nil, err
+		return nil, nil, err
 	}
 	reports := []databricksMCPReport{}
+	held := secrets
 	for _, server := range c.MCP {
-		report, held := p.azureDevOpsMCPProbe(ctx, c, server, secrets)
-		reports = append(reports, report.screened(held))
+		report, used := p.azureDevOpsMCPProbe(ctx, c, server, secrets)
+		reports = append(reports, report.screened(used))
+		held = joinSecrets(held, used)
 	}
-	return reports, nil
+	return reports, held, nil
 }
 
 // azureDevOpsMCPProbe is the server's part of a test, and the secrets its
@@ -309,7 +342,7 @@ func (p provider) azureDevOpsMCPTest(ctx context.Context, s *Store, id, revision
 // connection's list it does not, or why it could not be read.
 func (p provider) azureDevOpsMCPProbe(ctx context.Context, c AzureDevOpsConnection, server AzureDevOpsMCPServer, secrets []string) (databricksMCPReport, []string) {
 	report := databricksMCPReport{Server: server.Server, Offered: []string{}, NotOffered: []string{}}
-	client, guard, err := p.azureDevOpsMCPOpen(c, server)
+	client, guard, err := p.azureDevOpsMCPOpen(c, server, secrets)
 	if err != nil {
 		report.Error = guard.refusal(err, secrets).Error()
 		return report, secrets
@@ -327,6 +360,14 @@ func (p provider) azureDevOpsMCPProbe(ctx context.Context, c AzureDevOpsConnecti
 			names = append(names, name)
 			return false, nil
 		})
+	}
+	// The session is ended before the server is reported read: an end the
+	// guard refused fails the report.
+	if err == nil {
+		databricksMCPClose(ctx, client)
+		if guard.refused != nil {
+			err = guard.refused
+		}
 	}
 	if err != nil {
 		report.Error = guard.refusal(err, secrets).Error()

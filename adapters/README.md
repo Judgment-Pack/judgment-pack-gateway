@@ -1438,7 +1438,7 @@ bounds, servers or tools) spells one; a `FAILED` or `CANCELED` message that
 still spells one once its whole ones are replaced is not repeated; every
 control answer is held once more as a whole; and compression is neither asked
 for nor undone, so the result bound is on the bytes received, and an answer
-that names a `Content-Encoding` is refused.
+that names a `Content-Encoding` other than `identity` (in any case) is refused.
 
 The tests answer from an in-process TLS server; a live check runs only where
 `JPACK_DATABRICKS_LIVE_WORKSPACE` and its companions name a workspace, and is
@@ -1559,11 +1559,18 @@ text is cut to 4,096 bytes; a text that still spells a credential or the
 session id once its own JSON escapes are decoded is not reported, and the
 refusal says so in words of its own. A result larger than the connection's
 `max-result-bytes` is `result-too-large`, and each answer is read no further
-than that bound and 64 KiB, or 8 MiB where that is larger. Every answer
-(`initialize`, each `tools/list` page, the call) is screened, before anything
-of it is read, for the credential, the token in use and the session id the
-server issued, as written or in escapes, and one that repeats any of them is
-refused: nothing of the read is kept. The members a read is decided by (the result's `content`,
+than that bound and 64 KiB, or 8 MiB where that is larger. Each whole message
+the server answers with (`initialize`, each `tools/list` page, the call; a
+JSON body, or each event of a stream, a notification or a request of the
+server's among them) is screened, envelope and every member, before any
+member of it is read or acted on, for the credential, the token in use, every
+credential custody holds for the provider and the session id the server
+issued, as written or as decoded to the point where decoding changes nothing,
+and one that repeats any of them is refused: nothing of the read is kept
+(since #256's first review round, which found that a member beside the
+result was screened by the client for its own token and session id only). A
+server's text is therefore read only where it spells none of them; the
+replacement before the cut is the words' own guard. The members a read is decided by (the result's `content`,
 `structuredContent` and `isError`, each content item's `type` and `text`, the
 descriptor's `name` and `outputSchema`) are read by their exact names, and an
 answer that also names one of them in another case is refused. A read has 50
@@ -1585,9 +1592,14 @@ server the connection enables: `initialize` and `tools/list`, 15 seconds each,
 and no tool called. It answers `{"ok", "mcp": [{"server", "ok", "offered",
 "notOffered", "error"}]}`: the names each server offers (each cut to 128
 bytes, every credential replaced), the names on its list it does not offer, or
-why it could not be read; `ok` is true when every server was read. A
-connection that enables no server answers as the API profile does. `status`
-lists each connection's servers and their tools, and never a credential. Each
+why it could not be read; `ok` is true when every server was read. The whole
+answer is held once more to every secret its reports were held to, each
+session id the servers issued among them, which the broker's final screen
+does not know: one that would still spell a session id where nothing can be
+replaced (as a member's name) is not written, and a refusal of fixed words
+is. A connection that enables no server answers as the API profile does.
+`status` lists each connection's servers and their tools, and never a
+credential. Each
 field of a test's answer and each error is held once more against the
 credential, the token and the session id before it is written: each whole one
 replaced, and a field that would still spell one written as `[redacted]`.
@@ -1754,8 +1766,10 @@ verified against a live organization.** A redirect is refused after one
 request and not followed. Compression is neither asked for nor undone, so the
 bound is on the bytes as received: an answer over the connection's bound is
 `result-too-large`, read no further than a byte past it (and not at all when
-its length is announced past it), and an answer that names a
-`Content-Encoding` is refused; an answer that is not JSON is refused. Each
+its length is announced past it), and an answer whose `Content-Encoding`
+names anything but `identity` is refused (each header, each comma-separated
+coding, in any case; `identity` names no encoding, and an empty value is not
+it), as is one the transport undid; an answer that is not JSON is refused. Each
 request has 25 seconds, so the two of a query-and-get end inside the
 adapter's 55.
 
@@ -1907,7 +1921,9 @@ schema (these are the names the local server's `wit_work_item` takes at
 2.10.0). A read is one session with the server, as
 the [Databricks MCP profile](#databricks-connections-mcp-profile) makes one,
 under the same rules: `initialize` and each `tools/list` page read by the
-connection by their members' exact names; one `tools/call`; the session's end.
+connection by their members' exact names; one `tools/call`; the session's end,
+which is a request like the others and comes before anything of the read is
+kept: an end the guard refuses (the token within its minute) leaves nothing.
 Refused before anything is sent: a server the connection does not enable
 (`server-not-enabled`), a tool not on its list (`tool-not-allowed`), a read
 out of its form, an access token at or within a minute of its expiry
@@ -1922,13 +1938,18 @@ words for its status (401 `credentials-required`, 403 `permission-denied`,
 server's message, and a result whose `isError` is true is `tool-error` with
 its text, each with every whole credential replaced before it is cut to 4,096
 bytes, and not reported at all where it still spells a credential or the
-session id once its own escapes are decoded. Every answer is screened, before
-anything of it is read, for every credential custody holds for the provider
-and the session id the server issued, as written and decoded to the point
-where decoding changes nothing; one that repeats any of them is refused, and
-nothing of the read is kept. Compression is neither asked for nor undone, and
-an answer that names a `Content-Encoding` is refused, so the bounds are on
-the bytes received: the tool's result is held to `max-result-bytes`
+session id once its own escapes are decoded. Each whole message the server
+answers with (a JSON body, or each event of a stream, its envelope and every
+member, a notification of the server's among them) is screened, before any
+member of it is read or acted on, for every credential custody holds for the
+provider and the session id the server issued, as written and decoded to the
+point where decoding changes nothing; one that repeats any of them is
+refused, and nothing of the read is kept, so a server's text is read only
+where it spells none. Compression is neither asked for nor undone, and an
+answer whose `Content-Encoding` names anything but `identity` is refused
+(each header, each comma-separated coding, in any case; `identity` names no
+encoding, and an empty value is not it), as is one the transport undid, so
+the bounds are on the bytes received: the tool's result is held to `max-result-bytes`
 (`result-too-large`), and each answer is read no further than that and
 64 KiB, or 8 MiB where that is larger. A read has 50 seconds. Every error is
 held once more against the credentials and the session id before it is
@@ -1955,9 +1976,16 @@ statement's `read` and the endpoint.
 server: `initialize` and `tools/list` (15 seconds), and no tool called. For a
 connection that enables the server it answers `{"ok", "api": {"ok",
 "error"}, "mcp": [{"server", "ok", "offered", "notOffered", "error"}]}`,
-each profile reported on its own; `ok` is true when both were read. A
-connection that enables no server answers as the API profile does. `status`
-lists the server, its tools and its `readOnlyHeader`, never a credential; a
+each profile reported on its own; `ok` is true when both were read. A server
+whose session's end the guard refused is reported as not read. The whole
+answer, the API's error and the fixed member names included, is held once
+more to every secret the server's report was held to, its session id among
+them (the API's error was written before the session existed, and the
+broker's final screen does not know it): each whole one replaced, and an
+answer that would still spell one, as a member's name, not written; a
+refusal of fixed words is written instead. A connection that enables no
+server answers as the API profile does. `status` lists the server, its
+tools and its `readOnlyHeader`, never a credential; a
 list that would spell a credential custody holds is not reported, and its
 connection is not ready.
 

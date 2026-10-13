@@ -206,8 +206,10 @@ on it, over Streamable HTTP under the same credential (a service principal's sco
 `ai-gateway` for a Unity Gateway service): a server or a tool named with the credential is refused by `configure`; a tool outside
 the list, and arguments, a tool or a server carrying the credential, are refused before anything is
 sent; no redirect is followed; every answer (`initialize`, each tool listing page, the call) that
-repeats the credential, the token in use or the session id the server issued, as written or in
-escapes, is refused before anything of it is read; the handshake and the listing are read by their
+repeats the credential, the token in use, any credential custody holds or the session id the server
+issued, as written or in escapes, is refused before anything of it is read, the whole message,
+envelope and every member, since the Azure DevOps MCP profile's first review round (#256), and a
+test's whole answer is held to each session id and not written where it would still spell one; the handshake and the listing are read by their
 members' exact names; a refusal's or a failed tool's text has every credential replaced before it is
 cut to its bound, and is not reported at all where it still spells one once its own JSON escapes are
 decoded; and every error, test field and status field is held once more against the credential, the
@@ -258,9 +260,12 @@ only; the companion mints none). Each request carries the server's read-only hea
 expiry immediately before each one. A tool off the connection's list, and arguments, a tool or a
 server carrying any credential custody holds, are refused before anything is sent; a tool named
 with one is refused by `configure`; no redirect is followed; compression is neither asked for nor
-undone and an answer naming an encoding is refused; every answer (`initialize`, each tool listing
-page, the call) that repeats a credential or the session id the server issued, as written or as
-decoded, is refused before anything of it is read; the handshake, the listing and the result are
+undone and an answer whose `Content-Encoding` names anything but `identity` is refused; the
+session's end is a request like the others and comes before anything is kept, so an end the expiry
+refuses leaves nothing; every whole message (`initialize`, each tool listing page, the call, each
+event of a stream), envelope and every member, that repeats a credential or the session id the
+server issued, as written or as decoded, is refused before any member of it is read; a test's whole
+answer is held to the session id too, and not written where it would still spell it; the handshake, the listing and the result are
 read by their members' exact names; a refusal's or a failed tool's text has every credential
 replaced before it is cut, and is not reported where it still spells one; and every error, test
 field and status field is held once more against them and the session id, which is in no record,
