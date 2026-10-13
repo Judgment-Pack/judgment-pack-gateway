@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted, 2026-10-13
 date: 2026-10-13
 deciders: maintainer
 ---
@@ -186,6 +186,8 @@ optional signed member of version 3, and its origin rule the precedent for a loo
 written as one.
 
 ## Questions for the maintainer
+
+*Answered 2026-10-13 by the maintainer: both as proposed. The proposed answers below are the decisions.*
 
 1. **Where a tenant's URL lives.** A binding pins the URL, so a server whose URL names the tenant
    (a Databricks workspace, an Azure DevOps organisation) takes a binding per tenant. **Proposed:**
