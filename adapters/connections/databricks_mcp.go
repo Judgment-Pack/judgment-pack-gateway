@@ -13,6 +13,7 @@ import (
 	"adapters/internal/canon"
 	"adapters/mcp"
 	"adapters/mcphttp"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -25,6 +26,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf16"
 )
 
 const (
@@ -40,6 +43,8 @@ const (
 	// databricksMCPOffered bounds the tool names a test reports of a server.
 	databricksMCPOffered = 1024
 	databricksMCPName    = 128
+	// databricksMCPPages bounds a tools/list, as adapter-mcp bounds one.
+	databricksMCPPages = 32
 )
 
 // DatabricksMCPServer is one managed MCP server a connection enables, by
@@ -116,6 +121,117 @@ func databricksMCPValid(servers []DatabricksMCPServer) bool {
 	return true
 }
 
+// databricksUnescape decodes each JSON escape in text once -- \uXXXX, a
+// surrogate pair as one character, and \" \\ \/ \b \f \n \r \t -- and leaves
+// any other backslash as written.
+func databricksUnescape(text string) string {
+	if !strings.Contains(text, `\`) {
+		return text
+	}
+	hex4 := func(at int) (rune, bool) {
+		if at+4 > len(text) {
+			return 0, false
+		}
+		n, err := strconv.ParseUint(text[at:at+4], 16, 16)
+		return rune(n), err == nil
+	}
+	var b strings.Builder
+	for i := 0; i < len(text); i++ {
+		if text[i] != '\\' || i+1 == len(text) {
+			b.WriteByte(text[i])
+			continue
+		}
+		switch e := text[i+1]; e {
+		case '"', '\\', '/':
+			b.WriteByte(e)
+		case 'b':
+			b.WriteByte('\b')
+		case 'f':
+			b.WriteByte('\f')
+		case 'n':
+			b.WriteByte('\n')
+		case 'r':
+			b.WriteByte('\r')
+		case 't':
+			b.WriteByte('\t')
+		case 'u':
+			r, ok := hex4(i + 2)
+			if !ok {
+				b.WriteByte('\\')
+				continue
+			}
+			i += 4
+			if utf16.IsSurrogate(r) && i+7 < len(text) && text[i+2] == '\\' && text[i+3] == 'u' {
+				if low, ok := hex4(i + 4); ok {
+					if pair := utf16.DecodeRune(r, low); pair != unicode.ReplacementChar {
+						r = pair
+						i += 6
+					}
+				}
+			}
+			b.WriteRune(r)
+		default:
+			b.WriteByte('\\')
+			continue
+		}
+		i++
+	}
+	return b.String()
+}
+
+// databricksSpells reports whether text spells a secret: as written, or
+// once its JSON escapes are decoded, as many times over as they nest (four
+// at most) -- a server's text may hold JSON of its own, whose escapes a
+// reader decodes.
+func databricksSpells(text string, secrets []string) bool {
+	for round := 0; ; round++ {
+		if databricksLeaks([]byte(text), secrets) {
+			return true
+		}
+		next := databricksUnescape(text)
+		if next == text || round == 4 {
+			return false
+		}
+		text = next
+	}
+}
+
+// databricksScreened is text the connection writes out -- an error, a field
+// of a test's or a status's answer -- with every whole secret replaced; ok
+// is false where it still spells one, whose text is then not written.
+func databricksScreened(text string, secrets []string) (string, bool) {
+	text = databricksRedact(text, secrets)
+	return text, !databricksSpells(text, secrets)
+}
+
+// mcpSpells reports whether a server's name or a tool on its list spells
+// the connection's configured credential, or one of others.
+func (c DatabricksConnection) mcpSpells(others []string) bool {
+	secrets := append([]string{c.Token, c.ClientSecret}, others...)
+	for _, server := range c.MCP {
+		if databricksSpells(server.Server, secrets) {
+			return true
+		}
+		for _, tool := range server.Tools {
+			if databricksSpells(tool, secrets) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// databricksTokensOf is every token held for the connection.
+func databricksTokensOf(tokens []databricksToken, id string) []string {
+	out := []string{}
+	for _, t := range tokens {
+		if t.Connection == id {
+			out = append(out, t.Access)
+		}
+	}
+	return out
+}
+
 // mcpServer is the server of that name the connection enables.
 func (c DatabricksConnection) mcpServer(name string) (DatabricksMCPServer, bool) {
 	for _, server := range c.MCP {
@@ -188,6 +304,14 @@ func databricksMCPRefusal(server string, err error, secrets []string) error {
 		detail = failure.Detail
 	} else if errors.Is(err, mcphttp.ErrProtocol) {
 		detail = "the server's answer is not of the form the protocol states"
+	}
+	// The client's words may hold the server's (a JSON-RPC error's message),
+	// which may hold JSON of its own: a detail that spells a secret once
+	// its escapes are decoded is not repeated at all.
+	if redacted, ok := databricksScreened(detail, secrets); ok {
+		detail = redacted
+	} else {
+		detail = "the server's text repeats the credential or its session id, and is not reported"
 	}
 	word, after := "provider-unavailable", ""
 	if errors.Is(err, mcphttp.ErrLimit) {
@@ -276,7 +400,11 @@ func databricksToolAnswer(raw []byte, bound int, secrets []string) ([]byte, erro
 	result, err := mcp.ToolResult(raw)
 	var failed *mcp.ToolError
 	if errors.As(err, &failed) {
-		return nil, Error(databricksClip("tool-error: " + databricksRedact(failed.Text, secrets)))
+		text, ok := databricksScreened(failed.Text, secrets)
+		if !ok {
+			return nil, Error("tool-error: the tool reported an error whose text repeats the credential or its session id; the text is not reported")
+		}
+		return nil, Error(databricksClip("tool-error: " + text))
 	}
 	if err != nil {
 		return nil, Error(databricksClip("provider-unavailable: the MCP server's answer is not a tool result: " + databricksRedact(err.Error(), secrets)))
@@ -287,16 +415,140 @@ func databricksToolAnswer(raw []byte, bound int, secrets []string) ([]byte, erro
 	return result, nil
 }
 
+// databricksMCPRepeats is an answer that spells a secret or the session id.
+var databricksMCPRepeats = errors.New("the server's answer repeats the credential or its session id, and is not kept")
+
+// databricksMCPVersions are the protocol versions the client speaks, as
+// mcphttp's own initialize accepts them.
+var databricksMCPVersions = map[string]bool{"2025-11-25": true, "2025-06-18": true, "2025-03-26": true}
+
+// databricksMCPInitialize is the session's handshake, read here rather than
+// by mcphttp's Initialize, whose decoder folds case: the answer is screened
+// for every secret and the session id the server issued with it, raw and
+// decoded, before anything of it is read; then held to an initialize
+// result's shape by the exact names of its members -- a protocolVersion this
+// client speaks, capabilities with tools, serverInfo with a name and a
+// version -- an answer that also names one of them in another case refused.
+// It returns secrets with the session id among them.
+func databricksMCPInitialize(ctx context.Context, client *mcphttp.Client, secrets []string) ([]string, error) {
+	raw, err := client.Request(ctx, "initialize", map[string]any{"protocolVersion": "2025-11-25", "capabilities": map[string]any{}, "clientInfo": map[string]string{"name": "judgment-pack-gateway", "version": "1"}})
+	secrets = databricksMCPSecrets(secrets, client)
+	if err != nil {
+		return secrets, err
+	}
+	if databricksCarries(raw, secrets) {
+		return secrets, databricksMCPRepeats
+	}
+	malformed := errors.New("initialize: the server's answer is not an initialize result of the protocol's form, or names a member it is read by in another case")
+	if _, err := canon.Canonicalize(raw, canon.CarryNumbersAsText); err != nil {
+		return secrets, malformed
+	}
+	top, ok := databricksMembers(raw, "protocolVersion", "capabilities", "serverInfo")
+	if !ok || !canon.IsObject(top["capabilities"]) || !canon.IsObject(top["serverInfo"]) {
+		return secrets, malformed
+	}
+	capabilities, ok1 := databricksMembers(top["capabilities"], "tools")
+	info, ok2 := databricksMembers(top["serverInfo"], "name", "version")
+	var version, name, serverVersion string
+	hasVersion, ok3 := databricksField(top, "protocolVersion", &version)
+	hasName, ok4 := databricksField(info, "name", &name)
+	hasServerVersion, ok5 := databricksField(info, "version", &serverVersion)
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !hasVersion || !hasName || name == "" || !hasServerVersion || !canon.IsObject(capabilities["tools"]) {
+		return secrets, malformed
+	}
+	if !databricksMCPVersions[version] {
+		return secrets, errors.New("initialize: the server speaks a protocol version this client does not")
+	}
+	return secrets, client.Negotiated(ctx, version)
+}
+
+// databricksMCPList pages the server's tools/list: each page screened for
+// every secret and the session id, raw and decoded, before anything of it
+// is read, and read by the exact names of the members it is decided by --
+// tools, nextCursor, each tool's name -- a page that also names one in
+// another case refused. visit is handed each tool's name and descriptor in
+// order, and ends the listing by returning true. At most 32 pages; a
+// cursor given twice is refused.
+func databricksMCPList(ctx context.Context, client *mcphttp.Client, secrets []string, visit func(name string, descriptor json.RawMessage) (bool, error)) error {
+	malformed := errors.New("tools/list: the server's answer is not a tool list of the protocol's form, or names a member it is read by in another case")
+	params := map[string]any{}
+	cursors := map[string]bool{}
+	for page := 0; page < databricksMCPPages; page++ {
+		raw, err := client.Request(ctx, "tools/list", params)
+		if err != nil {
+			return err
+		}
+		if databricksCarries(raw, secrets) {
+			return databricksMCPRepeats
+		}
+		if _, err := canon.Canonicalize(raw, canon.CarryNumbersAsText); err != nil {
+			return malformed
+		}
+		members, ok := databricksMembers(raw, "tools", "nextCursor")
+		var tools []json.RawMessage
+		var next string
+		_, okNext := databricksField(members, "nextCursor", &next)
+		if !ok || !okNext || !bytes.HasPrefix(bytes.TrimSpace(members["tools"]), []byte("[")) || json.Unmarshal(members["tools"], &tools) != nil {
+			return malformed
+		}
+		for _, tool := range tools {
+			head, ok := databricksMembers(tool, "name", "outputSchema")
+			var name string
+			present, okName := databricksField(head, "name", &name)
+			if !ok || !canon.IsObject(tool) || !okName || !present || name == "" {
+				return malformed
+			}
+			if done, err := visit(name, tool); done || err != nil {
+				return err
+			}
+		}
+		if next == "" {
+			return nil
+		}
+		if cursors[digest([]byte(next))] {
+			return errors.New("tools/list: the server gave a cursor it had given before")
+		}
+		cursors[digest([]byte(next))] = true
+		params = map[string]any{"cursor": next}
+	}
+	return fmt.Errorf("tools/list did not end within %d pages", databricksMCPPages)
+}
+
+// databricksMCPOutward is an error the connection reports, held once more
+// against every secret it knows of -- the configured credential, the token
+// in use, and the session id once issued -- as a whole sentence, since a
+// server's name is the operator's text and the session id the server's:
+// each whole secret replaced, and a sentence that would still spell one not
+// reported.
+func databricksMCPOutward(err error, secrets []string) error {
+	text, ok := databricksScreened(err.Error(), secrets)
+	switch {
+	case !ok:
+		return Error("provider-unavailable: the MCP server's refusal would repeat the credential or its session id, and is not reported")
+	case text != err.Error():
+		return Error(databricksClip(text))
+	}
+	return err
+}
+
 // databricksMCPAcquire is one mcp read: one session with the server the
 // request names, under the connection's credential, after a token request
 // where a service principal holds no token it may use. The arguments, the
 // tool and the server's name are screened for every credential before
-// anything is sent. The envelope's result is the tool's result in
-// canonical form; its acquisition names the server's endpoint as
-// configured, the read as the statement the gateway commits to, the digest
-// of the result as received, the TLS peer it came from, and the tool's
-// declared output schema. The session id is in none of it.
-func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c DatabricksConnection, q DatabricksRequest) ([]byte, error) {
+// anything is sent, and every answer -- initialize, each tools/list page,
+// the call -- for every credential and the session id before it is read.
+// The envelope's result is the tool's result in canonical form; its
+// acquisition names the server's endpoint as configured, the read as the
+// statement the gateway commits to, the digest of the result as received,
+// the TLS peer it came from, and the tool's declared output schema. The
+// session id is in none of it, nor in any error.
+func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c DatabricksConnection, q DatabricksRequest) (out []byte, err error) {
+	secrets := c.secrets(databricksHeld(s, c))
+	defer func() {
+		if err != nil {
+			out, err = nil, databricksMCPOutward(err, secrets)
+		}
+	}()
 	server, _ := c.mcpServer(q.Server)
 	endpoint := c.Workspace + databricksMCPPath(server.Server)
 	arguments, err := canon.Canonicalize(q.Arguments, canon.RefuseNumbers)
@@ -306,14 +558,14 @@ func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c Databric
 	carries := func(secrets []string) bool {
 		return databricksCarries(arguments, secrets) || databricksLeaks([]byte(q.Tool), secrets) || databricksLeaks([]byte(q.Server), secrets)
 	}
-	if carries(c.secrets(databricksHeld(s, c))) {
+	if carries(secrets) {
 		return nil, databricksInRequest
 	}
 	bearer, err := p.databricksBearer(ctx, s, c)
 	if err != nil {
 		return nil, err
 	}
-	secrets := c.secrets(bearer)
+	secrets = c.secrets(bearer)
 	if carries(secrets) {
 		return nil, databricksInRequest
 	}
@@ -324,17 +576,22 @@ func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c Databric
 	rctx, cancel := context.WithTimeout(ctx, databricksMCPSeconds*time.Second)
 	defer cancel()
 	defer databricksMCPClose(ctx, client)
-	err = client.Initialize(rctx)
-	secrets = databricksMCPSecrets(secrets, client)
+	secrets, err = databricksMCPInitialize(rctx, client, secrets)
 	if err != nil {
 		return nil, databricksMCPRefusal(server.Server, err, secrets)
 	}
-	descriptor, err := mcp.OfferedTool(rctx, client, q.Tool)
-	if errors.Is(err, mcp.ErrNotOffered) {
+	var descriptor json.RawMessage
+	err = databricksMCPList(rctx, client, secrets, func(name string, tool json.RawMessage) (bool, error) {
+		if name == q.Tool {
+			descriptor = tool
+		}
+		return descriptor != nil, nil
+	})
+	if err != nil {
+		return nil, databricksMCPRefusal(server.Server, err, secrets)
+	}
+	if descriptor == nil {
 		return nil, Error("tool-not-offered: the MCP server " + server.Server + " does not offer the tool the read names; nothing was called")
-	}
-	if err != nil {
-		return nil, databricksMCPRefusal(server.Server, err, secrets)
 	}
 	schema, err := databricksMCPSchema(descriptor)
 	if err != nil {
@@ -371,7 +628,7 @@ func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c Databric
 		return nil, ErrRequest
 	}
 	acquisition := map[string]any{"adapter": identity, "endpoint": endpoint, "statement": string(statement), "snapshot": digest(raw), "peerIdentity": peerIdentity, "schema": schema, "upstreamToken": nil, "observedAt": observed}
-	out, err := canon.EncodeJSON(map[string]any{"acquisition": acquisition, "result": json.RawMessage(result)})
+	out, err = canon.EncodeJSON(map[string]any{"acquisition": acquisition, "result": json.RawMessage(result)})
 	if err != nil {
 		return nil, ErrProvider
 	}
@@ -395,6 +652,30 @@ type databricksMCPReport struct {
 	Error      string   `json:"error,omitempty"`
 }
 
+// screened is the report held against every secret, the session id
+// included, field by field: each whole secret replaced, and a field that
+// would still spell one written as [redacted], an error as a sentence that
+// names none.
+func (r databricksMCPReport) screened(secrets []string) databricksMCPReport {
+	field := func(text string) string {
+		if out, ok := databricksScreened(text, secrets); ok {
+			return out
+		}
+		return "[redacted]"
+	}
+	out := databricksMCPReport{Server: field(r.Server), OK: r.OK, Offered: []string{}, NotOffered: []string{}}
+	for _, name := range r.Offered {
+		out.Offered = append(out.Offered, field(name))
+	}
+	for _, name := range r.NotOffered {
+		out.NotOffered = append(out.NotOffered, field(name))
+	}
+	if r.Error != "" {
+		out.Error = databricksMCPOutward(Error(r.Error), secrets).Error()
+	}
+	return out
+}
+
 // databricksMCPTest reaches each server the connection enables: initialize
 // and its tools, and nothing called. It is nil for a connection that
 // enables none.
@@ -409,40 +690,43 @@ func (p provider) databricksMCPTest(ctx context.Context, s *Store, id, revision 
 	}
 	reports := []databricksMCPReport{}
 	for _, server := range c.MCP {
-		reports = append(reports, p.databricksMCPProbe(ctx, c, server, bearer))
+		report, secrets := p.databricksMCPProbe(ctx, c, server, bearer)
+		reports = append(reports, report.screened(secrets))
 	}
 	return reports, nil
 }
 
-func (p provider) databricksMCPProbe(ctx context.Context, c DatabricksConnection, server DatabricksMCPServer, bearer string) databricksMCPReport {
+// databricksMCPProbe is one server's part of a test, and the secrets its
+// report is held against.
+func (p provider) databricksMCPProbe(ctx context.Context, c DatabricksConnection, server DatabricksMCPServer, bearer string) (databricksMCPReport, []string) {
 	report := databricksMCPReport{Server: server.Server, Offered: []string{}, NotOffered: []string{}}
 	secrets := c.secrets(bearer)
 	client, err := p.databricksMCPOpen(c, server, bearer)
 	if err != nil {
 		report.Error = databricksMCPRefusal(server.Server, err, secrets).Error()
-		return report
+		return report, secrets
 	}
 	rctx, cancel := context.WithTimeout(ctx, databricksMCPTestSeconds*time.Second)
 	defer cancel()
 	defer databricksMCPClose(ctx, client)
-	err = client.Initialize(rctx)
-	secrets = databricksMCPSecrets(secrets, client)
+	secrets, err = databricksMCPInitialize(rctx, client, secrets)
 	var names []string
 	if err == nil {
-		names, err = mcp.OfferedTools(rctx, client)
+		err = databricksMCPList(rctx, client, secrets, func(name string, _ json.RawMessage) (bool, error) {
+			if len(names) == databricksMCPOffered {
+				return true, fmt.Errorf("the server offers more than %d tools", databricksMCPOffered)
+			}
+			names = append(names, name)
+			return false, nil
+		})
 	}
 	if err != nil {
 		report.Error = databricksMCPRefusal(server.Server, err, secrets).Error()
-		return report
-	}
-	if len(names) > databricksMCPOffered {
-		report.Error = fmt.Sprintf("provider-unavailable: the MCP server %s offers more than %d tools", server.Server, databricksMCPOffered)
-		return report
+		return report, secrets
 	}
 	offered := map[string]bool{}
 	for _, name := range names {
 		offered[name] = true
-		name = databricksRedact(name, secrets)
 		if len(name) > databricksMCPName {
 			name = clipSearchText(name, databricksMCPName) + "…"
 		}
@@ -454,5 +738,5 @@ func (p provider) databricksMCPProbe(ctx context.Context, c DatabricksConnection
 		}
 	}
 	report.OK = true
-	return report
+	return report, secrets
 }

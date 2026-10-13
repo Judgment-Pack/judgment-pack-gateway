@@ -348,7 +348,7 @@ func TestDatabricksMCPServerRefusals(t *testing.T) {
 		"a result that is not one": {func(script *fakemcp.Script) { script.Result = `{"rows":[]}` },
 			"provider-unavailable: the MCP server's answer is not a tool result: tools/call: the tool's result has no content array", "initialize,notifications/initialized,tools/list,tools/call,DELETE"},
 		"a protocol this client does not speak": {func(script *fakemcp.Script) { script.Protocol = "2024-01-01" },
-			"provider-unavailable: the MCP server sql: the server's answer is not of the form the protocol states", "initialize,DELETE"},
+			"provider-unavailable: the MCP server sql: initialize: the server speaks a protocol version this client does not", "initialize,DELETE"},
 	} {
 		f := dbFakeMCP(t, k.change)
 		out, err := databricksAcquire(context.Background(), s, dbMCPRead(c, "sql", "execute_sql", `{"query":"SELECT 1"}`), dbServeOne(api, f))
@@ -522,13 +522,14 @@ func TestDatabricksMCPCredentialsInAnswersAreRefused(t *testing.T) {
 	refused("the client secret across the cut", ss, sc, sapi, func(script *fakemcp.Script) {
 		script.Result = `{"content":[{"type":"text","text":"` + long + `"}],"isError":true}`
 	}, databricksClip("tool-error: "+strings.Repeat("x", databricksMessageBytes-len("tool-error: ")-len(dbSecret)+1)+"[redacted]"))
-	// A test reports no secret among the names a server offers.
+	// A test reads no listing that names a secret: the server is reported
+	// as not read, and nothing of the listing is.
 	sb.provider = dbServeOne(sapi, dbFakeMCP(t, func(script *fakemcp.Script) {
 		script.Tools = `[{"name":"execute_sql","inputSchema":{"type":"object"}},{"name":"` + dbEscaped(dbSecret) + `","inputSchema":{"type":"object"}}]`
 	}))
 	answer, err := sb.Handle(context.Background(), "test", []byte(`{"id":"lake","revision":"`+sc.Revision+`"}`))
 	raw, _ := json.Marshal(answer)
-	if err != nil || !bytes.Contains(raw, []byte(`"offered":["execute_sql","[redacted]"]`)) {
+	if err != nil || !bytes.Contains(raw, []byte(`{"server":"sql","ok":false,"offered":[],"notOffered":[],"error":"provider-unavailable: the MCP server sql: the server's answer repeats the credential or its session id, and is not kept"}`)) {
 		t.Fatalf("test %s %v", raw, err)
 	}
 	seen = append(seen, string(raw))
@@ -561,12 +562,6 @@ func TestDatabricksMCPArgumentsCarryingTheCredentialAreNotSent(t *testing.T) {
 	refused("the token escaped", s, dbMCPRead(c, "sql", "execute_sql", `{"query":"`+dbEscaped(dbPAT)+`"}`), api, 0)
 	refused("the token as a member name", s, dbMCPRead(c, "sql", "execute_sql", `{"`+dbEscaped(dbPAT)+`":1}`), api, 0)
 	refused("the token nested", s, dbMCPRead(c, "sql", "execute_sql", `{"a":{"b":["x","`+dbPAT+`"]}}`), api, 0)
-	// A token of a tool name's form, as the tool.
-	plain := "dapiABCDEF0123456789abcdef"
-	fields := dbTokenFields()
-	fields["token"] = plain
-	ps, _, pc, _ := dbMCPFixture(t, fields, []DatabricksMCPServer{{Server: "sql", Tools: []string{plain}}})
-	refused("the token as the tool", ps, dbMCPRead(pc, "sql", plain, ""), api, 0)
 	// A service principal.
 	ss, _, sc, _ := dbMCPFixture(t, dbPrincipalFields(), dbServers())
 	sapi := newDBFake(t)
@@ -603,7 +598,7 @@ func TestDatabricksMCPTheMembersDecidedByAreReadByExactName(t *testing.T) {
 		"isError beside its long s":                    {`{"content":` + text + `,"isError":false,"iſError":true}`, "", malformed},
 		"a type twice":                                 {`{"content":[{"type":"text","text":"a","type":"image"}]}`, "", twice},
 		"an output schema beside its capital": {dbMCPResult, `[{"name":"execute_sql","inputSchema":{"type":"object"},"outputSchema":{"type":"object"},"OutputSchema":{"type":"string"}}]`,
-			"provider-unavailable: the MCP server's tool descriptor names a member it is read by in another case"},
+			"provider-unavailable: the MCP server sql: tools/list: the server's answer is not a tool list of the protocol's form, or names a member it is read by in another case"},
 	} {
 		f := dbFakeMCP(t, func(script *fakemcp.Script) {
 			script.Result = k.result

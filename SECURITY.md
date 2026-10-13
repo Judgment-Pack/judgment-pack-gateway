@@ -196,11 +196,15 @@ read rather than wrote: the statement is sent as given, and the SQL warehouse's 
 grants on the identity are what keep the profile to reads.
 Its MCP profile reaches the workspace's managed MCP servers, each an endpoint under the workspace
 the operator enables with the tools a read may call on it, over Streamable HTTP under the same
-credential: a tool outside the list, and arguments, a tool or a server carrying the credential, are
-refused before anything is sent; no redirect is followed; an answer that repeats the credential or
-the session id the server issued, as written or in escapes, is refused; a refusal's or a failed
-tool's text has every credential replaced before it is cut to its bound; and the session id is in no
-record, error or report. Its receipt establishes the bytes from that server's endpoint, under the
+credential: a server or a tool named with the credential is refused by `configure`; a tool outside
+the list, and arguments, a tool or a server carrying the credential, are refused before anything is
+sent; no redirect is followed; every answer (`initialize`, each tool listing page, the call) that
+repeats the credential, the token in use or the session id the server issued, as written or in
+escapes, is refused before anything of it is read; the handshake and the listing are read by their
+members' exact names; a refusal's or a failed tool's text has every credential replaced before it is
+cut to its bound, and is not reported at all where it still spells one once its own JSON escapes are
+decoded; and every error, test field and status field is held once more against the credential, the
+token and the session id, which is in no record, error or report. Its receipt establishes the bytes from that server's endpoint, under the
 TLS identity it names, for that tool and those arguments, at that time, under the credential the
 operator configured. It does not establish that the answer is true, or that the tool read rather
 than wrote: Databricks states that its Genie Agent server does not write to tables, while its SQL

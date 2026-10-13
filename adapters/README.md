@@ -1465,8 +1465,9 @@ function, as the page shows it; AI Search is what Databricks formerly called
 vector search, and the former `vector-search` prefix is not taken. A tool's
 name is 1 to 128 ASCII letters, digits, `_`, `-` and `.`, the form the
 [MCP specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names)
-says a name should take. A connection enables at most 16 servers, each with at
-most 32 tools:
+says a name should take. A server's name or a tool that carries the
+connection's credential, as written or in JSON escapes, is refused. A
+connection enables at most 16 servers, each with at most 32 tools:
 
 ```json
 {"id":"lake","revision":"<64-hex>","name":"Lake","workspace-url":"https://example.cloud.databricks.com","warehouse-id":"0123456789abcdef","auth":"token","token":"","mcp":[{"server":"sql","tools":["execute_sql"]},{"server":"genie:01f0a1b2c3d4e5f60718293a4b5c6d7e","tools":[]},{"server":"functions:main.finance.exchange_rate","tools":["main__finance__exchange_rate"]}]}
@@ -1486,7 +1487,12 @@ A read, on `adapter-sources`' stdin:
 
 A read is one session with the server: `initialize`, `tools/list` until the
 tool is found (its descriptor names its output schema), one `tools/call` with
-the arguments as given, and the session's end. The arguments are an object
+the arguments as given, and the session's end. The `initialize` answer is read
+by the connection itself, by its members' exact names: a `protocolVersion` of
+2025-11-25, 2025-06-18 or 2025-03-26, `capabilities` with `tools`, and
+`serverInfo` with a `name` and a `version`; so is each `tools/list` page
+(`tools`, `nextCursor`, each tool's `name`), at most 32 pages, a cursor given
+twice refused. The arguments are an object
 (`{}` when left out) in the canonical domain: a whole number within ±2^53, and
 no fraction, which is sent as a string. Refused before anything is sent: a
 server the connection does not enable (`server-not-enabled`); a tool not on
@@ -1500,11 +1506,15 @@ API profile's words (401 `credentials-required`, 403 `permission-denied`, 429
 `provider-unavailable`); a JSON-RPC error is `provider-unavailable` with the
 server's message; a result whose `isError` is true is `tool-error` with its
 text. In each, every whole credential is replaced by `[redacted]` before the
-text is cut to 4,096 bytes. A result larger than the connection's
+text is cut to 4,096 bytes; a text that still spells a credential or the
+session id once its own JSON escapes are decoded is not reported, and the
+refusal says so in words of its own. A result larger than the connection's
 `max-result-bytes` is `result-too-large`, and each answer is read no further
-than that bound and 64 KiB, or 8 MiB where that is larger. An answer that
-repeats the credential or the session id the server issued, as written or in
-escapes, is refused. The members a read is decided by (the result's `content`,
+than that bound and 64 KiB, or 8 MiB where that is larger. Every answer
+(`initialize`, each `tools/list` page, the call) is screened, before anything
+of it is read, for the credential, the token in use and the session id the
+server issued, as written or in escapes, and one that repeats any of them is
+refused: nothing of the read is kept. The members a read is decided by (the result's `content`,
 `structuredContent` and `isError`, each content item's `type` and `text`, the
 descriptor's `name` and `outputSchema`) are read by their exact names, and an
 answer that also names one of them in another case is refused. A read has 50
@@ -1528,7 +1538,10 @@ and no tool called. It answers `{"ok", "mcp": [{"server", "ok", "offered",
 bytes, every credential replaced), the names on its list it does not offer, or
 why it could not be read; `ok` is true when every server was read. A
 connection that enables no server answers as the API profile does. `status`
-lists each connection's servers and their tools, and never a credential.
+lists each connection's servers and their tools, and never a credential. Each
+field of a test's answer and each error is held once more against the
+credential, the token and the session id before it is written: each whole one
+replaced, and a field that would still spell one written as `[redacted]`.
 
 What a read establishes, and what it does not, is in [the connection
 catalog](../docs/design/connection-catalog.md#databricks-version-3). In

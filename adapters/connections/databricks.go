@@ -261,7 +261,7 @@ func databricksScopeValid(scope string) bool {
 	return true
 }
 func (c DatabricksConnection) valid() bool {
-	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !databricksWarehouse.MatchString(c.Warehouse) || c.wait() < 0 || c.resultBound() < 0 || !databricksMCPValid(c.MCP) {
+	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !databricksWarehouse.MatchString(c.Warehouse) || c.wait() < 0 || c.resultBound() < 0 || !databricksMCPValid(c.MCP) || c.mcpSpells(nil) {
 		return false
 	}
 	if workspace, ok := DatabricksWorkspace(c.Workspace); !ok || workspace != c.Workspace {
@@ -313,9 +313,10 @@ func databricksLeaks(raw []byte, secrets []string) bool {
 // databricksCarries reports whether a JSON text carries a secret where a
 // reader would find it: in its bytes as written, or in a member name, a
 // string or a number as decoded -- an escape such as \u0064 spells a
-// credential the bytes do not show -- or in a string that is itself a JSON
-// text, as a record's statement is. A text that cannot be read is held to
-// carry one.
+// credential the bytes do not show -- including a string whose own text
+// holds JSON escapes that spell one once decoded (databricksSpells), or in a
+// string that is itself a JSON text, as a record's statement is. A text that
+// cannot be read is held to carry one.
 func databricksCarries(raw []byte, secrets []string) bool {
 	return databricksLeaks(raw, secrets) || databricksCarriesDecoded(raw, secrets, 0)
 }
@@ -339,7 +340,7 @@ func databricksCarriesDecoded(raw []byte, secrets []string, depth int) bool {
 		default:
 			continue
 		}
-		if databricksLeaks([]byte(text), secrets) {
+		if databricksSpells(text, secrets) {
 			return true
 		}
 		if depth < 2 && (strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[")) && json.Valid([]byte(text)) && databricksCarriesDecoded([]byte(text), secrets, depth+1) {
@@ -443,6 +444,12 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 			if v.Databricks != nil {
 				for _, c := range v.Databricks.Connections {
 					ready := c.valid()
+					// A server or a tool that would spell a credential, the
+					// configured one or a token held for it, is not reported:
+					// configure refuses one, and a held token is checked here.
+					if c.mcpSpells(databricksTokensOf(v.Databricks.Tokens, c.ID)) {
+						c.MCP, ready = nil, false
+					}
 					c.Token, c.ClientSecret = "", ""
 					rows = append(rows, databricksRow{c, ready})
 				}
