@@ -1,6 +1,8 @@
 package mcp
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -617,9 +619,42 @@ func TestRemoteAnswersAreBoundedByKindBeforeParsing(t *testing.T) {
 			if !past && err != nil {
 				t.Fatalf("%s at its limit of %d bytes: %v", tt.method, tt.limit, err)
 			}
-			if past && (err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the server's answer exceeds the bound of %d bytes", tt.limit))) {
+			if past && (err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the server's answer to %s exceeds the bound of %d bytes", tt.method, tt.limit))) {
 				t.Fatalf("%s one byte past its limit of %d bytes: %v", tt.method, tt.limit, err)
 			}
+		}
+	}
+}
+
+// An encoded answer is refused before any of it is read: the transport does
+// not ask for an encoding or decode one, so a body cannot grow past the
+// bound once the limiter has counted it. One request is made -- the one the
+// answer was refused for -- and the server is told no encoding is accepted.
+func TestRemoteRefusesAnEncodedAnswer(t *testing.T) {
+	for _, encoding := range []string{"gzip", "br", "GZIP"} {
+		var zipped bytes.Buffer
+		gz := gzip.NewWriter(&zipped)
+		gz.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}` + strings.Repeat(" ", 1<<20)))
+		gz.Close()
+		var acceptEncoding []string
+		srv, cfg := remote(t, true, fakemcp.Script{Answer: func(w http.ResponseWriter, method string, id json.RawMessage) bool {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Encoding", encoding)
+			w.Write(zipped.Bytes())
+			return true
+		}})
+		cfg.MaxOutput = 4096
+		_, err := Acquire(within(t), cfg, query("select 1"))
+		if err == nil || !strings.Contains(err.Error(), "encoded") {
+			t.Fatalf("%s: an encoded answer is refused for its encoding: %v", encoding, err)
+		}
+		if got := srv.Requests(); len(got) != 1 {
+			t.Fatalf("%s: %d requests, not the one", encoding, len(got))
+		} else {
+			acceptEncoding = got[0].Header.Values("Accept-Encoding")
+		}
+		if len(acceptEncoding) != 0 {
+			t.Fatalf("%s: the client asked for an encoding: %v", encoding, acceptEncoding)
 		}
 	}
 }

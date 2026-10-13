@@ -263,8 +263,13 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   `notifications/initialized`, the tool list, the one `tools/call` (or, for `--check`, the list
   and the probe), and the session ended with a `DELETE`. The session id the server issues
   (`Mcp-Session-Id`) is the client's: sent on every later request, and recorded nowhere. An
-  answer may be JSON or an event stream; each is read no further than a limit of its kind, before
-  any of it is parsed, and an answer one byte past its limit is refused with a sentence naming it:
+  answer may be JSON or an event stream; each is read no further than a limit of its kind, and an
+  answer one byte past its limit is refused with a sentence naming the kind of answer and the bound.
+  A JSON body is read whole, to the limit and one byte more, before any of it is parsed. An event
+  stream is held to the limit as a whole, every byte counted, comments and notifications included;
+  its events are parsed as they arrive, and the response to the request ends the reading, so what
+  follows it is not read. An answer with a `Content-Encoding` other than `identity` is refused before
+  any of it is read, and no encoding is asked for. The limits:
   a tool call's is `--max-output` and 64 KiB (the JSON-RPC envelope, an event stream's framing, and
   a server's comments and notifications ahead of the response), `initialize`'s is 1 MiB and each
   page of the tool list's is 8 MiB, neither bounded by `--max-output`. A tool's result is then held

@@ -224,9 +224,12 @@ func openRemote(cfg Config) (*server, []string, error) {
 		tlsConfig.RootCAs = pool
 	}
 	transport := &http.Transport{
-		Proxy:                  http.ProxyFromEnvironment,
-		TLSClientConfig:        tlsConfig,
-		ForceAttemptHTTP2:      true,
+		Proxy:             http.ProxyFromEnvironment,
+		TLSClientConfig:   tlsConfig,
+		ForceAttemptHTTP2: true,
+		// An encoded body would be decoded before the limits see it, and its
+		// length would be the encoded one: no encoding is asked for or accepted.
+		DisableCompression:     true,
 		MaxResponseHeaderBytes: 64 << 10,
 		TLSHandshakeTimeout:    10 * time.Second,
 		DialContext:            (&net.Dialer{Timeout: 10 * time.Second}).DialContext,
@@ -236,7 +239,7 @@ func openRemote(cfg Config) (*server, []string, error) {
 		return nil, secrets, err
 	}
 	client, err := mcphttp.Open(cfg.URL, mcphttp.Options{Token: token, Headers: headers, MaxResponse: cfg.MaxOutput + callOverhead,
-		InitializeLimit: initializeLimit, ListLimit: listLimit, CallLimit: cfg.MaxOutput + callOverhead, Tools: cfg.Tools}, &http.Client{Transport: transport})
+		RefuseEncoding: true, InitializeLimit: initializeLimit, ListLimit: listLimit, CallLimit: cfg.MaxOutput + callOverhead, Tools: cfg.Tools}, &http.Client{Transport: transport})
 	if err != nil {
 		return nil, secrets, err
 	}
