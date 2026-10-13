@@ -1,0 +1,1 @@
+{"check":{"message":"tool \"drop_table\" is allowed by the configuration but not offered by the server: [query]","status":"failed"}}

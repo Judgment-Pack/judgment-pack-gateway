@@ -1,0 +1,1 @@
+{"check":{"status":"succeeded","adapter":{"name":"ghcr.io/example/mcp-postgres","version":"2.1","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},"server":{"name":"fake-mcp","version":"1.0"},"protocolVersion":"2025-06-18","tools":["query"],"probe":{"tool":"query","answered":true}}}

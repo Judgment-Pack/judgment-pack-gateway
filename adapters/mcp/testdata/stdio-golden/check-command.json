@@ -1,0 +1,1 @@
+{"check":{"status":"succeeded","adapter":{"name":"SELF","version":"1.0","digest":"sha256:SELF"},"server":{"name":"fake-mcp","version":"1.0"},"protocolVersion":"2025-06-18","tools":["query"]}}
