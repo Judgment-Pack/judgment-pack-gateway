@@ -138,6 +138,32 @@ issues is the client's alone and is in no record. For a write, the executor is t
 and the same rules: the write credential goes to the URL its binding names, after the decision
 policy has held the write, and a write the policy refuses reaches no server.
 
+**A write-back platform writes as the credential its operator configured, under a decision
+policy, and its receipt names the URL it wrote to** (issue #248;
+[executor.md](docs/design/executor.md), "The write-back platforms"). The `azure-devops` and
+`databricks` bindings name a vendor's remote MCP server for their `write` operation alone, at a URL
+template the platform's `parameters` fill. The template writes the scheme and the host, or names
+the host `{workspace}` alone, held to a Databricks workspace's host forms; a value is letters,
+digits, `.`, `_` and `-`, and cannot leave the path segment it fills; a resolved URL out of the
+endpoint form, a placeholder no parameter gives and a parameter no placeholder names refuse the
+start; so no parameter can send the write credential to a host the binding does not state. A
+parameter is never a secret: the credential is the operation's credentials file, sent by the
+adapter as the bearer, and Azure DevOps' read-only header is not sent, since a write needs it
+absent. The executor is narrowed to the one tool asked for, and a write is held to its decision
+before anything is sent. A decision policy binds what it binds and nothing else: Azure DevOps'
+write tools are dispatchers whose `action` argument chooses the operation, and `bind` fixes no
+value of its own and refuses no member it does not name, so a policy holds such a tool only by
+binding the whole arguments to the write the record states; a policy that binds an id and a
+revision alone leaves the action and every other operation to the request. A Databricks function
+does what its body does, as the identity's grants allow; every parameter it declares, defaults
+included, is bound or is the requester's to fill. **Raw SQL is no write tool**: a decision could
+then authorize an arbitrary statement, and no policy can bind a statement argument by argument.
+The receipt establishes who asked, which judgment was cited and found verifying, what was sent, to
+which resolved URL and which tool, and what the target answered; it does not name the credential
+or the TLS identity of the write's answer (ADR-0015, question 2), and it does not establish that
+the target applied the write as intended, that the tool did only what its name says, or anything
+of the service's own permissions beyond the credential's.
+
 **Version 2's arguments commitment is an equality oracle to callers.** `argumentsDigest` is a deterministic
 keyed digest of the canonical arguments, with no per-receipt salt. The keying stops a party that only
 holds receipts from brute-forcing a small argument space; it does not stop a party that can also

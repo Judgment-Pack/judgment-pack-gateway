@@ -25,8 +25,14 @@ write.
 ## What is captured, and from where
 
 Descriptors are captured from one check only: the `<platform>/live` MCP check, which `connect`
-runs as the platform's user with the live operation's credentials. A write operation's check is
-never a source: it may run under other credentials, against another server. The check lists
+runs as the platform's user with the live operation's credentials. Where there is a live
+operation, a write operation's check is never a source: it may run under other credentials,
+against another server. A binding with no live operation — the write-back bindings of issue
+#248, whose reads are a connection's — has its write tools described by its `<platform>/write`
+check instead, at the URL the platform's parameters resolved: the snapshot is pinned and verified
+as any other, the frontend reads it at its start and lists no write tool, since it calls
+`/acquire` alone and a write is made through `/act`, and `--preview-descriptors` renders what was
+captured of the write tools. The check lists
 tools as it does today, page by page, at most 32 pages. Two conditions fail the whole check,
 since a listing that meets them cannot be pinned: a cursor seen twice, and a tool name offered
 twice anywhere in the enumeration, even with an identical descriptor. A tool the live operation

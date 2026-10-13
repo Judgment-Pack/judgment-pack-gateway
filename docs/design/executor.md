@@ -199,7 +199,7 @@ and `resultDigest` names them. The engine then mints one receipt in the session 
 | `action.requester` | the token identity again — the one who asked, named where the action is |
 | `action.decision`, `action.cites` | as given; `action.decision.recordBytes` is `"exact"` for a tool whose policy requires a signed record, and absent otherwise |
 | `action.policy` | for a tool with a decision policy, `"sha256:"` and the SHA-256 of the canonical form of the policy object as configured; absent for a tool with none |
-| `action.tool` | `{"shape": "mcp", "endpoint": <the platform's endpoint or null; a remote server's URL>, "name": <tool>}` |
+| `action.tool` | `{"shape": "mcp", "endpoint": <the platform's endpoint or null; a remote server's URL, as the platform's parameters resolved it>, "name": <tool>}` |
 | `action.request` | a salted commitment over the canonical request sent to the executor, salt returned |
 | `action.adapter` | from the envelope, as `acquisition.adapter` is |
 | `action.observedAt` | when the target answered, from the envelope |
@@ -235,6 +235,47 @@ refusal bytes: the executor is started with `--error-results`, under which `adap
 envelopes a tool result that reports an error as the result of the call, where for a read the
 same result is a failed acquisition — and an executor that cannot reach the target mints
 nothing.
+
+## The write-back platforms
+
+The catalog's `azure-devops` and `databricks` bindings (issue #248;
+[catalog/README.md](../../catalog/README.md), [engine-config.md](engine-config.md), "The
+write-back platforms") point the executor at a vendor's remote MCP server, at a URL the
+platform's parameters fill: `https://mcp.dev.azure.com/<organization>`, the remote Azure DevOps
+MCP server ([set up the remote Azure DevOps MCP Server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server),
+dated 2026-09-21), and `https://<workspace>/api/2.0/mcp/functions/<catalog>/<schema>/<function>`,
+the managed MCP server of one Unity Catalog function
+([Unity Catalog functions MCP server](https://docs.databricks.com/aws/en/agents/mcp-tools/uc-functions),
+updated 2026-10-07). Nothing on the ladder changes: a write is refused before anything is sent
+unless it cites a verifying judgment, and, for a tool held to a policy, unless the record meets it.
+
+**What an action receipt establishes for these platforms**, and no more: who asked
+(`action.requester`, the identity the token proved); which judgment was cited and found verifying
+(`action.decision`, `action.cites`, and, for a tool held to a policy, `action.policy`, the policy
+whose checks held at that moment); what was sent (`argumentsCommitment` and `action.request`,
+salted commitments over the arguments and the canonical request); to which endpoint, the resolved
+URL, and which tool (`action.tool`); and what the target answered, its refusal included, by
+`resultDigest`. The credential is named by the configuration and not by the receipt: the
+operation's credentials file and the member the binding sends, `token`, under a binding whose
+digest the configuration pins. The receipt carries no TLS identity for a write
+([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md), question 2): the
+executor's envelope records the leaf certificate it was answered under, and the receipt does not.
+
+**What it does not establish**: that the target applied the write as intended — the answer is
+the server's word, and what closes the interval between the decision and the commit is the
+target's own precondition (Azure DevOps refuses an update whose `test` of `/rev` no longer holds);
+that the tool did only what its name says — Azure DevOps' write tools are grouped dispatchers whose
+`action` chooses the operation, and the page marks which are read-only and which are not, and a
+Unity Catalog function "with access governed by Unity Catalog permissions" does what its body does
+(Unity Catalog functions MCP server, updated 2026-10-07); and anything of the service's own
+permissions beyond the credential's: "OAuth scopes don't override the permissions of the signed-in
+user. An MCP operation succeeds only when both the application scope and the user's Azure DevOps
+permissions allow it" (set up the remote Azure DevOps MCP Server), and "calling an existing
+function requires `EXECUTE` on it"
+([create agent tools using Unity Catalog functions](https://docs.databricks.com/aws/en/agents/custom-agents/create-custom-tool),
+updated 2026-10-07). A write is sent without the server's read-only header, which the page offers
+"to restrict the server to read-only operations"; the credential's scopes and its identity's
+permissions are what bound it.
 
 ## How it is held
 

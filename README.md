@@ -186,6 +186,26 @@ permission bits show it, and no more: a mode or a file changed later, an access-
 bits do not show (macOS's), a mount, and root are not seen; the engine runs only on unix, so there
 is no Windows check.
 
+Two platforms write back after a decision (issue #248): `azure-devops`, through an organization's
+remote Azure DevOps MCP server at `https://mcp.dev.azure.com/{organization}`, and `databricks`,
+through the managed MCP server of one Unity Catalog function at
+`https://{workspace}/api/2.0/mcp/functions/{catalog}/{schema}/{function}` (the bindings in
+[catalog/](catalog/README.md)). Their reads are the connections', so each binding states a `write`
+operation alone. A binding's URL and tools may be a template, filled from the platform's
+`parameters` (engine configuration version 8): the binding's digest pins the template and the
+transport, the scheme and the host are written in it (or the host is `{workspace}` alone, held to a
+Databricks workspace's host forms), and the action receipt names the resolved URL. Each write tool
+is held to a decision policy: for Azure DevOps, whose write tools are dispatchers that an `action`
+argument steers, the policy binds the whole arguments to the write the record states; for
+Databricks, each of the function's named parameters to a fact. Raw SQL is no write tool, since a
+decision could then authorize an arbitrary statement, which no policy can bind argument by
+argument. An action receipt for these platforms establishes who asked, which judgment was cited and
+found verifying, what was sent and to which resolved endpoint, and what the target answered; it
+does not name the credential, which the configuration names, nor the TLS identity the write was
+answered under, and it does not establish that the target applied the write as intended, that the
+tool did only what its name says, or anything of the service's permissions beyond the
+credential's ([docs/design/executor.md](docs/design/executor.md), "The write-back platforms").
+
 Personal Drive, S3 and local-vault file management is a separate authenticated
 host control surface in `gateway-connections`: bounded listing/search, selected
 file reads, and reviewed create/update/delete plans. It issues no signed action

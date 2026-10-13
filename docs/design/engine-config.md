@@ -56,19 +56,42 @@ key is an error, never an intention silently dropped. `engineVersion`, `authorit
 `store`, `registry`, `decisionRecords`, `listen`, `catalog` and `platforms` are required;
 `runtime`, `adapters`, `rootSigner`, `hostRuntime`, `identity`, `mcp`, `witness` and `witnessedBy` are optional; within a
 platform, `binding`, `credentials` and `user` are required, `endpoint`, `environment`, `write`,
-`descriptors` and `decisionPolicy` optional. Every path is absolute.
+`descriptors`, `decisionPolicy` and `parameters` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"7"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"8"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
-  6 `witness`, and version 7 `witnessedBy`. A file of an earlier version still loads without the
-  member and is refused by name with it.
-  `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and
-  otherwise leaves the version as it found it — it never lowers one — so a signer older than
-  version 3 goes on reading every file `connect` has not pinned. (ADR-0007 named version 4 for
-  its `services` member, which is not built; ADR-0011 gave 4 to `decisionPolicy`, ADR-0012 gave
-  5 to `requireSignedRecord`, ADR-0013 gave 6 to `witness`, ADR-0014 gave 7 to `witnessedBy`,
-  and `services` takes the next version when it is built.)
+  6 `witness`, version 7 `witnessedBy`, and version 8 a platform's `parameters`. A file of an
+  earlier version still loads without the member and is refused by name with it.
+  `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and to
+  version 8 exactly when it carries parameters, and otherwise leaves the version as it found it —
+  it never lowers one — so a signer older than version 3 goes on reading every file `connect` has
+  not pinned. (ADR-0007 named version 4 for its `services` member, which is not built; ADR-0011
+  gave 4 to `decisionPolicy`, ADR-0012 gave 5 to `requireSignedRecord`, ADR-0013 gave 6 to
+  `witness`, ADR-0014 gave 7 to `witnessedBy`, ADR-0015's amendment of 2026-10-13 gave 8 to
+  `parameters`, and `services` takes the next version when it is built.)
+- `parameters`, in a version-8 file, fills the placeholders of the platform's remote binding
+  ([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md), question 1, amended
+  2026-10-13; "Bindings" below) —
+
+  ```json
+  "parameters": { "organization": "example-org" }
+  ```
+
+  — an object of at least one string value, each name a lowercase letter then lowercase letters,
+  digits and hyphens (at most 63), each value 1 to 253 letters, digits, `.`, `_` or `-`, not dots
+  alone. Nothing in a value can end a path segment or begin a query, a fragment, a user or a port,
+  so a value stays where its template puts it. A value is in the configuration and in the
+  signer's memory, and is never a secret: the credential stays in the credentials file the
+  operation names. `workspace` is held besides to a Databricks workspace's host, as the
+  Databricks connection holds one: one to three lowercase labels under `.cloud.databricks.com`,
+  `.cloud.databricks.us`, `.cloud.databricks.mil`, `.gcp.databricks.com` or
+  `.azuredatabricks.net`, none an internationalized label, the first not the account console's
+  (`accounts`, `accounts-dod`). The engine refuses to start on a placeholder of the binding no
+  parameter gives, a parameter no placeholder names, and a resolved URL out of the endpoint form,
+  each by a sentence naming the rule. A decision policy names a tool by its resolved name.
+  `connect` writes the member from `--parameter NAME=VALUE`, repeatable, and keeps the entry's
+  own on `--replace` when none is given.
 - `decisionPolicy`, in a version-4 file, holds the platform's write tools to their decisions
   ([ADR-0011](../adr/0011-hold-a-write-to-its-decision.md), [executor.md](executor.md)): an
   object keyed by write tool name, each value a policy —
@@ -289,7 +312,10 @@ as `--url=<server.url> --credentials=<credentials.<operation>.file> --bearer=<se
 tools for `write`, and the probe for `live` as above: no runtime, no `--endpoint` — the URL is
 the endpoint the receipt names, and for a write the action receipt's `action.tool.endpoint`
 ([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)) — and no server
-arguments.
+arguments. A URL and tools written as templates are filled with the platform's `parameters`
+before the line is built: the adapter is given the resolved URL and the resolved tools, and the
+acquisition's `endpoint` and the action receipt's `action.tool.endpoint` are the resolved URL,
+never the template.
 
 Every flag and its value are one word, `flag=value`: a value that is `--` on its own would be
 the delimiter the adapter splits its line at, and a tool, an endpoint or a runtime can be so
@@ -480,7 +506,8 @@ running engine reaches:
 }
 ```
 
-One binding per platform; one entry per operation it supports — `history`, `live`, `write` —
+One binding per platform; one entry per operation it supports — `history`, `live`, `write`, at
+least one of them, and `write` alone for a platform whose reads are a connection's —
 each naming its shape, the pinned artifact that serves it, the tools it may call, and the
 licence of the artifact it pulls. An `mcp` entry's `server.args`, when present, are the
 server's own arguments inside its container — the mode a server runs in, say — each one word
@@ -496,7 +523,29 @@ credentials file sent as `Authorization: Bearer`, so the platform names a creden
 that operation as for any other; and each header is a name and a value the adapter would accept
 as a fixed header — a credential's, the protocol's, and the ones the client and the transport
 write are refused here, before the engine starts. A remote server has no image to pin: what the receipt names it by is its URL and the TLS
-identity its answer came under, and the binding's digest pins the URL. The engine passes no
+identity its answer came under, and the binding's digest pins the URL.
+
+A remote server's `url`, and each of its operation's `tools`, may be a **template**: `{name}`
+stands where a tenant's part goes — an Azure DevOps organization, a Databricks workspace, a Unity
+Catalog function — and the platform's `parameters` give each name its value
+([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md), question 1, amended
+2026-10-13). A placeholder's name is a parameter's (`[a-z][a-z0-9-]*`); a `{` that opens none, or
+a `}` that closes none, is refused. The template's scheme is written as it is, `https://` or
+`http://`, so no value can change it; its host is written as it is, or is `{workspace}` alone
+over `https`, a Databricks workspace's host held to the forms above — a placeholder anywhere
+else in the host or beside it, in place of a port or a label, could change where the credential
+goes, and is refused; and the template, every placeholder taken as a one-letter value, must be of
+the endpoint form, so a query, a fragment, a user or plain `http` off loopback in its written
+text is refused before any parameter is read. The resolved URL is held to the endpoint form
+again, its 2048 characters included. The binding's digest pins the template and the transport;
+the platform's configuration says which tenant. The two write-back bindings are written so
+([the catalog](../../catalog/README.md)):
+
+```json
+"server": { "url": "https://mcp.dev.azure.com/{organization}", "bearer": "token" }
+"server": { "url": "https://{workspace}/api/2.0/mcp/functions/{catalog}/{schema}/{function}", "bearer": "token" },
+"tools": ["{catalog}__{schema}__{function}"]
+``` The engine passes no
 `--ca-file`, so a remote server's certificate chains to the system's roots. Its `probe`, when present, is `{"tool", "failure"?}`: `tool` is one of its `tools`
 that a check calls once with no arguments — a server that starts and lists its tools without a
 working connection to its platform answers the handshake all the same, and the probe is what
@@ -527,14 +576,19 @@ is fetched both ways and must derive to byte-identical canonical facts.
 ```
 gateway connect --config engine.json service-desk --binding jira \
   --credentials-file live=/run/secrets/service-desk --user engine-service-desk \
-  [--endpoint HOST] [--environment KEY=VALUE]... [--write] [--replace] [--no-descriptors]
+  [--endpoint HOST] [--environment KEY=VALUE]... [--parameter NAME=VALUE]... [--write] [--replace] \
+  [--no-descriptors]
 gateway connect --config engine.json --preview-descriptors service-desk
 ```
 
 writes the platform entry — the binding pinned by the digest of the catalog file as it is
 now, a credentials path per operation as written (`--credentials-file history=… live=…`,
-exactly the operations the binding offers), the user, and what else was given; the platform
-may stand anywhere among the flags — and it writes nothing until two things have held. First, the configuration as it would be, with the entry
+exactly the operations the binding offers), the user, the parameters a binding's templates take
+(`--parameter`, a version-8 member; on `--replace` with none given, the entry's own are kept, as
+its decision policy is), and what else was given; the platform may stand anywhere among the flags
+— and it writes nothing until two things have held. The binding judged and checked is the one the
+parameters resolve, and a placeholder none gives, or a parameter no placeholder names, is
+refused before anything runs. First, the configuration as it would be, with the entry
 in place, passes every refusal `serve` applies (the platforms it already names included, so a
 pin the catalog no longer digests to is found here and not at the next start): the user is
 neither root nor the signer nor another platform's, the credentials file is that user's alone
@@ -556,8 +610,10 @@ acquisition has less: the adapter gives its work twenty seconds, its default, si
 gives it no other, and the gateway cancels the source thirty seconds after it began to start
 it ([engine-image.md](engine-image.md) has the two clocks).
 
-The live operation's check, and no other, also captures the allowed tools' descriptions and
-input schemas and the server's identity ([tool-descriptors.md](tool-descriptors.md)), unless
+The live operation's check, and no other — or, for a binding with no live operation, such as the
+two write-back bindings, the write operation's check, at the resolved URL — also captures the
+allowed tools' descriptions and input schemas and the server's identity
+([tool-descriptors.md](tool-descriptors.md)), unless
 `--no-descriptors` is given, for a deployment whose descriptors are confidential beyond what
 screening finds. `connect` reads the capture strictly from the report and says, for each allowed
 tool, what was captured or why it fell back. A capture holding a tool is kept as an immutable
@@ -568,7 +624,10 @@ before, once that verifies against its pin. It then says which processes must re
 server alone when only the descriptors' pin changed, and both when anything the signer reads
 changed. `--preview-descriptors <platform>` writes nothing: it renders what the MCP server would
 serve for the platform's tools, from the snapshot the platform pins, read and verified as the
-server reads it, with every character outside printable ASCII escaped.
+server reads it, with every character outside printable ASCII escaped. For a platform with no
+live operation the MCP server lists no tool — it calls `/acquire` alone, and a write is made
+through `/act` — and the preview renders what was captured of the write tools, saying so; the
+server still reads and verifies the pinned snapshot at its start.
 
 It refuses a binding that is not in the catalog, a platform already configured unless
 `--replace` is given — and with it the entry replaced is not resolved, since its pin may be
@@ -594,6 +653,116 @@ file or the new and never a partial one. Every value written is valid UTF-8, sin
 is JSON; a path that is not is refused rather than written as something else. A configuration
 with an empty `platforms` object is what the file looks like before its first `connect`; it
 parses, and `serve` refuses to start on it, unless the file carries a `witness`.
+
+## The write-back platforms
+
+Two catalog bindings name a vendor's remote MCP server for their `write` operation alone (issue
+#248; [the catalog](../../catalog/README.md)): `azure-devops`, an organization's remote Azure
+DevOps MCP server, and `databricks`, the managed MCP server of one Unity Catalog function. Their
+reads are the connections' ([connection-catalog.md](connection-catalog.md)), so neither binding
+has a `history` or a `live` operation. The platform sets `write: true`, names one credentials file,
+`write`, holding `{"token": "…"}` — a Microsoft Entra access token, or a Databricks token, of a
+person or a principal the operator holds for writes; the engine mints and renews none — and gives
+the parameters its binding's template takes. Each write tool is held to a decision policy, and a
+policy is written for each tool the platform is meant to write with: a tool held to none is held
+to nothing ([executor.md](executor.md)).
+
+**Azure DevOps.**
+
+```json
+"boards": {
+  "binding": "azure-devops@sha256:…",
+  "credentials": { "write": { "file": "/run/secrets/boards-write" } },
+  "user": "engine-boards",
+  "write": true,
+  "parameters": { "organization": "example-org" },
+  "decisionPolicy": {
+    "wit_work_item_write": {
+      "outcomes": ["approve"],
+      "packs": ["sha256:…"],
+      "reviewed": true,
+      "requireSignedRecord": ["…64 lowercase hex…"],
+      "bind": [
+        { "argument": "", "fact": "/writeBack" },
+        { "argument": "/id", "fact": "/workItem/id" },
+        { "argument": "/updates/0/value", "fact": "/workItem/rev" }
+      ]
+    }
+  }
+}
+```
+
+The server's write tools are grouped dispatchers whose `action` argument chooses the operation:
+`wit_work_item_write` updates a work item's fields and state (`action` `update`, the work item's
+`id`, and `updates`, JSON Patch operations, a `test` of `/rev` first so that Azure DevOps refuses
+the update once the revision has changed), and also creates items, updates several at once
+(`update_batch`, whose `batchUpdates` name their own items) and adds children;
+`wit_work_item_comment_write` adds or updates a comment; `wit_work_item_link_write` links and
+unlinks items. `bind` reaches a nested argument (`/updates/0/value`, an RFC 6901 pointer through
+an array), but it fixes no value of its own and refuses no member it does not name. A policy that
+binds the work item's id and its revision alone therefore leaves the `action` to the request —
+`update_batch` writes the items its `batchUpdates` name, whatever `id` says — and lets a request
+add an operation that changes another field. So the policy above binds the whole arguments, the
+empty pointer, to a fact the record states: the write the decision approved, `writeBack`,
+
+```json
+{"action": "update", "id": 42, "project": "example-project",
+ "updates": [{"op": "test", "path": "/rev", "value": 3},
+             {"op": "replace", "path": "/fields/System.State", "value": "Approved"}]}
+```
+
+which the pack's facts carry beside the work item it judged, `workItem` (`{"id": 42, "rev": 3,
+…}`). The arguments must equal it, member for member and operation for operation, and the two
+other bindings hold it to the judged item's own id and revision. The state the outcome maps to is
+in that fact: `bind` maps no outcome to a value, so a decision names in its facts the state it
+approves, and the pack is what judges that the outcome and the state agree. A policy for the
+comment and link tools binds the whole arguments the same way. What `bind` cannot do today — fix
+`action` to a value, or refuse an argument it does not name, without the record stating the whole
+write — is not extended here: a policy member for it is the follow-up the pull request for #248
+names, and until then a dispatcher tool is held only by a record that states its whole write.
+
+**Databricks.**
+
+```json
+"ledger": {
+  "binding": "databricks@sha256:…",
+  "credentials": { "write": { "file": "/run/secrets/ledger-write" } },
+  "user": "engine-ledger",
+  "write": true,
+  "parameters": {
+    "workspace": "dbc-example.cloud.databricks.com",
+    "catalog": "main", "schema": "decisions", "function": "record_approval"
+  },
+  "decisionPolicy": {
+    "main__decisions__record_approval": {
+      "outcomes": ["approve"],
+      "packs": ["sha256:…"],
+      "reviewed": true,
+      "requireSignedRecord": ["…64 lowercase hex…"],
+      "bind": [
+        { "argument": "/case_id", "fact": "/case/id" },
+        { "argument": "/revision", "fact": "/case/revision" }
+      ]
+    }
+  }
+}
+```
+
+A write is a Unity Catalog function the workspace's owners wrote, called through its managed MCP
+server at `https://<workspace>/api/2.0/mcp/functions/<catalog>/<schema>/<function>`, which offers
+the function as one tool, `<catalog>__<schema>__<function>`, whose arguments are the function's
+named parameters. Each parameter is bound to a fact, so the write is the decision's: here
+`record_approval(case_id, revision)` records that the case was approved at that revision, and the
+outcome is in the function's name and in the policy's `outcomes`. Bind every parameter the
+function declares, one with a default included: a parameter left unbound is the requester's to
+fill. The tool's name and its parameters are the function's, so `connect`'s capture of the
+server's descriptors shows the operator the input schema the policy's pointers must match.
+
+**Raw SQL is no write tool.** The catalog names neither the Databricks SQL server nor any tool
+that takes a statement: a decision could then authorize an arbitrary statement, and no policy can
+bind a statement argument by argument, since its meaning is in its text. A function whose body
+runs a statement it is given is raw SQL by another name, and the function's author is the one to
+refuse it.
 
 ## What the file is not
 

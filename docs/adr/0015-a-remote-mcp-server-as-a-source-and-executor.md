@@ -162,7 +162,7 @@ binding under a policy; and nine vectors in `corpus/v3/stores/` that both verifi
 | 1 | gateway | #245: this record; the remote form of `adapter-mcp` and `mcphttp`'s `Open`; the two members in `SPEC.md` §1.2a and §6, the signer, `gateway verify` and verify-ts; remote bindings in the engine; the vectors; one cross-vendor round (credentials and transport) | — |
 | 2 | gateway | #246: Databricks, its SQL, Genie and Unity Catalog reads over the API and the managed MCP servers | 1 |
 | 3 | gateway | #247: Azure DevOps, work items, repositories and pipelines over the API and its remote MCP server | 1 |
-| 4 | gateway | #248: write-back platforms for Azure DevOps and Databricks under decision policies | 1, 2, 3 |
+| 4 | gateway | #248: write-back platforms for Azure DevOps and Databricks under decision policies | 1, 2, 3 *Amended 2026-10-13: built in the pull request for #248, with the `azure-devops` and `databricks` bindings and a platform's `parameters` at engine configuration version 8, the answer to question 1 above.* |
 
 ### Consequences
 
@@ -193,6 +193,19 @@ written as one.
    (a Databricks workspace, an Azure DevOps organisation) takes a binding per tenant. **Proposed:**
    accept that for #245, and let #246 and #247 say whether a platform's configuration supplies the
    URL beside a binding that names the transport.
+
+   *Amended 2026-10-13 (#248).* The platform's configuration supplies the variable parts: a
+   binding's `server.url`, and its operation's tools, may be a template whose placeholders,
+   `{name}`, the platform's `parameters` fill (engine configuration version 8;
+   `docs/design/engine-config.md`, "Bindings"). The binding's digest pins the template and the
+   transport. The template writes the scheme, and writes the host or names it `{workspace}` alone
+   over `https`, a value held to a Databricks workspace's host forms, so no parameter can send the
+   credential to another host. The engine refuses to start on a placeholder no parameter gives, a
+   parameter no placeholder names, or a resolved URL out of the endpoint form. The adapter is given
+   the resolved URL, and the acquisition's `endpoint` and the action receipt's
+   `action.tool.endpoint` carry it, never the template. #246 and #247 kept a connection's tenant in
+   the connection's own configuration; #248 answers the question for the engine's bindings, and a
+   binding per tenant is not needed.
 2. **The remote write's TLS identity.** **Proposed:** leave `action` as it is here, and take an
    `action.tool.peerIdentity` up only with a reader who needs it.
 
