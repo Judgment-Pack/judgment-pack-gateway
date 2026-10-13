@@ -194,9 +194,10 @@ that time, under the credential the operator configured. It does not establish t
 current or correct, that the identity's grants are what the operator intends, or that a statement
 read rather than wrote: the statement is sent as given, and the SQL warehouse's and Unity Catalog's
 grants on the identity are what keep the profile to reads.
-Its MCP profile reaches the workspace's managed MCP servers, each an endpoint under the workspace
-the operator enables with the tools a read may call on it, over Streamable HTTP under the same
-credential: a server or a tool named with the credential is refused by `configure`; a tool outside
+Its MCP profile reaches the workspace's managed MCP servers and the Unity Gateway services the
+operator enables by exact name, each an endpoint under the workspace with the tools a read may call
+on it, over Streamable HTTP under the same credential (a service principal's scope must name
+`ai-gateway` for a Unity Gateway service): a server or a tool named with the credential is refused by `configure`; a tool outside
 the list, and arguments, a tool or a server carrying the credential, are refused before anything is
 sent; no redirect is followed; every answer (`initialize`, each tool listing page, the call) that
 repeats the credential, the token in use or the session id the server issued, as written or in
@@ -208,8 +209,10 @@ token and the session id, which is in no record, error or report. Its receipt es
 TLS identity it names, for that tool and those arguments, at that time, under the credential the
 operator configured. It does not establish that the answer is true, or that the tool read rather
 than wrote: Databricks states that its Genie Agent server does not write to tables, while its SQL
-server runs what it is sent as far as the identity may and a Unity Catalog function does what its
-body does, so the identity's grants and the tools list are what keep the profile to reads.
+server runs what it is sent as far as the identity may, a Unity Catalog function does what its
+body does, and a Unity Gateway service is any MCP service registered in Unity Catalog, an external
+connector among them, which may write and which the connection claims nothing about; so the
+service list, the tools list and the identity's grants are what keep the profile to reads.
 
 **On Unix a source runs in a process group led by an anchor**, a process the gateway starts before
 the source and reaps only after the group has been killed. A group is addressed by its leader's

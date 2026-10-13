@@ -140,7 +140,12 @@ servers (`mcp` in `configure`): the Databricks SQL server, a Genie space's,
 a Unity Catalog function's and an AI Search index's, each an endpoint under
 the workspace that Databricks lists among the legacy workspace endpoints of
 its [Databricks-provided MCPs](https://docs.databricks.com/aws/en/agents/mcp-tools/built-in-mcp-services)
-(updated 2026-10-08), with the tools a read may call on it. A read is one
+(updated 2026-10-08), behind the Managed MCP Servers preview; and Unity
+Gateway services, each an MCP service registered in Unity Catalog and reached
+at `/ai-gateway/mcp-services/<catalog>.<schema>.<service>`, which that page
+recommends "For new Genie One and Databricks SQL connections". Each is
+enabled by its exact name, with the tools a read may call on it; the
+connection neither discovers nor lists the workspace's services. A read is one
 tool call over Streamable HTTP under the same credential, made by
 `adapter-sources`; the companion's `test` lists each server's tools and calls
 none. The servers, the request, the bounds and the refusals are in the
@@ -165,7 +170,18 @@ SQL server runs what it is sent, as far as the identity may. A
 (updated 2026-10-07) does what its body does, "with access governed by Unity
 Catalog permissions". The identity's grants and the connection's tools list
 are what keep this profile to reads; nothing in the connection holds a tool
-call to reading, and the arguments are sent as given.
+call to reading, and the arguments are sent as given. A Unity Gateway
+service is any MCP service registered in Unity Catalog under that name: one
+Databricks provides under `system.ai` (Genie One, SQL, web search, a code
+sandbox, and connectors to Slack, GitHub, Atlassian, Google Drive, Calendar,
+Gmail and Microsoft 365), or an external MCP server an account registered from
+a Unity Catalog connection ([register an external MCP server](https://docs.databricks.com/aws/en/ai-gateway/register-mcp-service),
+updated 2026-10-07). It may be an external connector, and it may write; no
+page states that a service is read-only, and the connection claims nothing of
+the kind. The service list, the tools list and the identity's grants
+(`EXECUTE` on the service, [govern an MCP](https://docs.databricks.com/aws/en/ai-gateway/govern-mcp-service),
+updated 2026-10-08) are the only things that keep this profile to reads, and
+the operator enables a service knowing what it is.
 
 ## Public URL sources (version 2)
 

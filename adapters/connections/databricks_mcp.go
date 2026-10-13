@@ -68,12 +68,17 @@ var databricksStatus = regexp.MustCompile(`^the server answered ([1-5][0-9][0-9]
 
 // databricksMCPPath is the path under the workspace the server's name
 // stands for, or "" for a name not of a server's form: "sql"; "genie:"
-// and a space id; "functions:" and a function's catalog.schema.name; or
-// "ai-search:" and an index's catalog.schema.name. Each Unity Catalog name
-// is held to the API profile's name form and written into the path as a
-// path segment.
+// and a space id; "functions:" and a function's catalog.schema.name;
+// "ai-search:" and an index's catalog.schema.name; or "unity-gateway:" and
+// an MCP service's catalog.schema.name, as Unity Catalog registers it. Each
+// Unity Catalog name is held to the API profile's name form, with no "*" --
+// a name is a name, never a pattern -- and written into the path as a path
+// segment, a service's three joined by periods as its URL joins them.
 func databricksMCPPath(name string) string {
 	kind, key, keyed := strings.Cut(name, ":")
+	if keyed && strings.Contains(key, "*") {
+		return ""
+	}
 	switch kind {
 	case "sql":
 		if !keyed {
@@ -96,8 +101,46 @@ func databricksMCPPath(name string) string {
 			path += "/" + url.PathEscape(part)
 		}
 		return path
+	case "unity-gateway":
+		parts := strings.Split(key, ".")
+		if len(parts) != 3 {
+			return ""
+		}
+		for i, part := range parts {
+			if !databricksName(part) {
+				return ""
+			}
+			parts[i] = url.PathEscape(part)
+		}
+		return "/ai-gateway/mcp-services/" + strings.Join(parts, ".")
 	}
 	return ""
+}
+
+// databricksGatewayScope is a Unity Gateway service enabled under a service
+// principal whose token would not be minted for the scope its tool calls
+// need.
+const databricksGatewayScope = Error("scope-required: a Unity Gateway service's tool calls are made under the ai-gateway OAuth scope, and the service principal's configured scope does not name it; the connection was not saved")
+
+// gatewayScopeMissing reports whether the connection enables a Unity
+// Gateway service under a service principal whose configured scope does not
+// name ai-gateway: all-apis, the scope a blank one asks for, is not taken
+// for it, since no page says it covers it.
+func (c DatabricksConnection) gatewayScopeMissing() bool {
+	if c.Auth != "service-principal" {
+		return false
+	}
+	for _, server := range c.MCP {
+		if strings.HasPrefix(server.Server, "unity-gateway:") {
+			for _, scope := range strings.Split(c.scope(), " ") {
+				if scope == "ai-gateway" {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
 }
 
 func databricksMCPValid(servers []DatabricksMCPServer) bool {

@@ -261,7 +261,7 @@ func databricksScopeValid(scope string) bool {
 	return true
 }
 func (c DatabricksConnection) valid() bool {
-	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !databricksWarehouse.MatchString(c.Warehouse) || c.wait() < 0 || c.resultBound() < 0 || !databricksMCPValid(c.MCP) || c.mcpSpells(nil) {
+	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !databricksWarehouse.MatchString(c.Warehouse) || c.wait() < 0 || c.resultBound() < 0 || !databricksMCPValid(c.MCP) || c.mcpSpells(nil) || c.gatewayScopeMissing() {
 		return false
 	}
 	if workspace, ok := DatabricksWorkspace(c.Workspace); !ok || workspace != c.Workspace {
@@ -502,6 +502,9 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 			}
 			if index < 0 && (q.Revision != "" || len(v.Databricks.Connections) >= databricksConnections) {
 				return ErrRequest
+			}
+			if q.gatewayScopeMissing() {
+				return databricksGatewayScope
 			}
 			if !q.valid() {
 				return ErrRequest

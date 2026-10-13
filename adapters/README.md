@@ -1439,7 +1439,9 @@ which Databricks now lists as the legacy workspace endpoints of its
 (updated 2026-10-08): each an endpoint under the workspace, reached over
 Streamable HTTP ([authentication and networking](https://docs.databricks.com/aws/en/agents/mcp-tools/authentication-networking),
 updated 2026-10-07), and available once a workspace administrator has enabled
-**Managed MCP Servers** on the workspace's Previews page. `configure` takes
+**Managed MCP Servers** on the workspace's Previews page; and the MCP services
+registered in Unity Catalog that Databricks' Unity Gateway serves, which
+Databricks now recommends (below). `configure` takes
 `mcp`, the servers the connection enables, each a `server` by its name and
 `tools`, the names a read may call on it (none, when the list is empty or left
 out):
@@ -1450,6 +1452,7 @@ out):
 | `genie:<space id>` | `/api/2.0/mcp/genie/<space id>` | `genie` |
 | `functions:<catalog>.<schema>.<function>` | `/api/2.0/mcp/functions/<catalog>/<schema>/<function>` | `unity-catalog` |
 | `ai-search:<catalog>.<schema>.<index>` | `/api/2.0/mcp/ai-search/<catalog>/<schema>/<index>` | `ai-search` |
+| `unity-gateway:<catalog>.<schema>.<service>` | `/ai-gateway/mcp-services/<catalog>.<schema>.<service>` | `ai-gateway` |
 
 The endpoints and scopes are those of Databricks' pages for
 [Databricks SQL](https://docs.databricks.com/aws/en/agents/mcp-tools/databricks-sql)
@@ -1466,11 +1469,43 @@ vector search, and the former `vector-search` prefix is not taken. A tool's
 name is 1 to 128 ASCII letters, digits, `_`, `-` and `.`, the form the
 [MCP specification](https://modelcontextprotocol.io/specification/2025-11-25/server/tools#tool-names)
 says a name should take. A server's name or a tool that carries the
-connection's credential, as written or in JSON escapes, is refused. A
-connection enables at most 16 servers, each with at most 32 tools:
+connection's credential, as written or in JSON escapes, is refused, and so is
+a name that holds `*`: a name is a name, never a pattern. A connection enables
+at most 16 servers, each with at most 32 tools.
+
+**Unity Gateway services.** `unity-gateway:<catalog>.<schema>.<service>` is an
+MCP service registered in Unity Catalog, reached at
+`/ai-gateway/mcp-services/<catalog>.<schema>.<service>` under the workspace
+([authentication and networking](https://docs.databricks.com/aws/en/agents/mcp-tools/authentication-networking),
+[MCP service reference](https://docs.databricks.com/aws/en/ai-gateway/mcp-service-reference),
+each updated 2026-10-07). Databricks recommends these for new work: "For new
+Genie One and Databricks SQL connections, use the `system.ai` MCPs", and lists
+the four endpoints above as legacy workspace endpoints behind the Managed MCP
+Servers preview ([Databricks-provided MCPs](https://docs.databricks.com/aws/en/agents/mcp-tools/built-in-mcp-services),
+updated 2026-10-08). A service is either one Databricks provides under
+`system.ai` (`genie_one_mcp`, `dbsql`, `web_search`, `sandbox`, and connectors
+to Slack, GitHub, Atlassian, Google Drive, Calendar and Gmail, and Microsoft
+365) or an external MCP server an account registers from a Unity Catalog HTTP
+connection ([register an external MCP server](https://docs.databricks.com/aws/en/ai-gateway/register-mcp-service),
+updated 2026-10-07). So a service may be an external connector, and it may
+write: no page says any service is read-only, Databricks states that the SQL
+service "permits reads and writes by default"
+([Databricks SQL](https://docs.databricks.com/aws/en/agents/mcp-tools/databricks-sql),
+updated 2026-10-08), and the connection claims nothing about it. Only a
+service the operator enables by its exact name is reached; the connection
+neither discovers nor lists the workspace's services. Its tool calls are made
+under the `ai-gateway` OAuth scope ("MCP tool calls use `ai-gateway`"): a
+service principal enables one only where its configured `scope` names
+`ai-gateway` (`all-apis`, the scope a blank one asks for, is not taken for it),
+and `configure` refuses otherwise as `scope-required`. A personal access token
+is accepted, which the page puts as "for local testing". Calling a service
+takes `EXECUTE` on it and `USE CATALOG` and `USE SCHEMA` on its parent
+([govern an MCP](https://docs.databricks.com/aws/en/ai-gateway/govern-mcp-service),
+updated 2026-10-08). Everything below holds for a service as for the other
+servers.
 
 ```json
-{"id":"lake","revision":"<64-hex>","name":"Lake","workspace-url":"https://example.cloud.databricks.com","warehouse-id":"0123456789abcdef","auth":"token","token":"","mcp":[{"server":"sql","tools":["execute_sql"]},{"server":"genie:01f0a1b2c3d4e5f60718293a4b5c6d7e","tools":[]},{"server":"functions:main.finance.exchange_rate","tools":["main__finance__exchange_rate"]}]}
+{"id":"lake","revision":"<64-hex>","name":"Lake","workspace-url":"https://example.cloud.databricks.com","warehouse-id":"0123456789abcdef","auth":"token","token":"","mcp":[{"server":"sql","tools":["execute_sql"]},{"server":"genie:01f0a1b2c3d4e5f60718293a4b5c6d7e","tools":[]},{"server":"functions:main.finance.exchange_rate","tools":["main__finance__exchange_rate"]},{"server":"unity-gateway:system.ai.dbsql","tools":["execute_sql"]}]}
 ```
 
 The credential is the API profile's, sent as `Authorization: Bearer`: the
@@ -1548,7 +1583,9 @@ catalog](../docs/design/connection-catalog.md#databricks-version-3). In
 particular, the identity's grants and the tools list are what keep this
 profile to reads: Databricks states that the Genie Agent server does not write
 to tables, while the SQL server runs what it is sent under the identity's
-permissions and a Unity Catalog function does what its body does. The tests
+permissions, a Unity Catalog function does what its body does, and a Unity
+Gateway service is whatever MCP service was registered under that name, an
+external connector among them, which may write. The tests
 answer from the in-process Streamable HTTP fake; a live check runs only where
 `JPACK_DATABRICKS_LIVE_WORKSPACE`, `JPACK_DATABRICKS_LIVE_MCP_SERVER` and
 `JPACK_DATABRICKS_LIVE_MCP_TOOL` name a workspace's server, and is otherwise
