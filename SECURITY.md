@@ -185,8 +185,10 @@ grants keep it to reads** ([connection catalog](docs/design/connection-catalog.m
 A read is one request to a workspace's REST API, over HTTPS to a host of Databricks' own workspace
 domains, with no redirect followed and no proxy. The personal access token, or the service
 principal's secret and the access token minted for it, stay in the companion's private custody and
-are in no receipt, record, status, error or log line: an answer that repeats one is refused, and a
-failed statement's message that repeats one has it replaced. A read's receipt establishes the bytes
+are in no receipt, record, status, error or log line: an answer that repeats one, as written or in
+JSON escapes, is refused; a failed statement's message that repeats one has it replaced before it
+is cut to its bound; and a request that carries one, in its statement, parameters, names or cursor,
+is refused before it is sent. A read's receipt establishes the bytes
 from that workspace endpoint, under the TLS identity it names, for that statement or listing, at
 that time, under the credential the operator configured. It does not establish that the data is
 current or correct, that the identity's grants are what the operator intends, or that a statement

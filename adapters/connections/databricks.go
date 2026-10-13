@@ -301,6 +301,76 @@ func databricksLeaks(raw []byte, secrets []string) bool {
 	return false
 }
 
+// databricksCarries reports whether a JSON text carries a secret where a
+// reader would find it: in its bytes as written, or in a member name, a
+// string or a number as decoded -- an escape such as \u0064 spells a
+// credential the bytes do not show -- or in a string that is itself a JSON
+// text, as a record's statement is. A text that cannot be read is held to
+// carry one.
+func databricksCarries(raw []byte, secrets []string) bool {
+	return databricksLeaks(raw, secrets) || databricksCarriesDecoded(raw, secrets, 0)
+}
+func databricksCarriesDecoded(raw []byte, secrets []string, depth int) bool {
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	for {
+		token, err := d.Token()
+		if err == io.EOF {
+			return false
+		}
+		if err != nil {
+			return true
+		}
+		var text string
+		switch v := token.(type) {
+		case string:
+			text = v
+		case json.Number:
+			text = v.String()
+		default:
+			continue
+		}
+		if databricksLeaks([]byte(text), secrets) {
+			return true
+		}
+		if depth < 2 && (strings.HasPrefix(text, "{") || strings.HasPrefix(text, "[")) && json.Valid([]byte(text)) && databricksCarriesDecoded([]byte(text), secrets, depth+1) {
+			return true
+		}
+	}
+}
+
+// databricksMembers reads an object's members by their exact names, and
+// refuses an object that also carries one of the names given in another
+// case: a decoder that folds case would read the one, and the record keeps
+// the other. Absent or null is no members.
+func databricksMembers(raw json.RawMessage, decided ...string) (map[string]json.RawMessage, bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return map[string]json.RawMessage{}, true
+	}
+	var members map[string]json.RawMessage
+	if !canon.IsObject(raw) || json.Unmarshal(raw, &members) != nil {
+		return nil, false
+	}
+	for name := range members {
+		for _, d := range decided {
+			if name != d && strings.EqualFold(name, d) {
+				return nil, false
+			}
+		}
+	}
+	return members, true
+}
+
+// databricksField reads one member into a value of its type: absent or
+// null is not present; another type is refused.
+func databricksField(members map[string]json.RawMessage, name string, into any) (present, ok bool) {
+	raw, found := members[name]
+	if !found || string(raw) == "null" {
+		return false, true
+	}
+	return true, json.Unmarshal(raw, into) == nil
+}
+
 func databricksDescriptor() Descriptor {
 	return Descriptor{"databricks", "client-credentials", "form", "none", true, []string{"status", "configure", "disconnect", "test"}}
 }
@@ -579,6 +649,26 @@ func (p provider) databricksBearer(ctx context.Context, s *Store, c DatabricksCo
 	return access, nil
 }
 
+// databricksHeld is the token held for a service principal's connection
+// as it stands, used or not, and nothing for a personal access token.
+func databricksHeld(s *Store, c DatabricksConnection) string {
+	var held string
+	if c.Auth != "service-principal" {
+		return ""
+	}
+	s.locked(func(v *state) error {
+		if v.Databricks != nil {
+			for _, t := range v.Databricks.Tokens {
+				if t.Connection == c.ID {
+					held = t.Access
+				}
+			}
+		}
+		return nil
+	})
+	return held
+}
+
 // databricksMint asks the workspace's token endpoint for an access token by
 // the client-credentials grant, the client's id and secret as basic
 // authentication. A failure names the status and the server's error code
@@ -612,20 +702,42 @@ func (p provider) databricksMint(ctx context.Context, c DatabricksConnection) (s
 		} else if code := databricksCode(raw, "error", "error_code"); code != "" {
 			text += " (" + code + ")"
 		}
+		if response.StatusCode == 429 {
+			if wait := databricksRetry(response.Header, raw); wait != "" {
+				text += " and asks to wait " + wait + " before another request"
+			}
+			text += "; it was not retried"
+		}
 		return "", 0, Error(databricksRedact(text, secrets))
 	}
-	var t struct {
-		Access  string `json:"access_token"`
-		Type    string `json:"token_type"`
-		Expires int64  `json:"expires_in"`
+	received := time.Now()
+	notToken := Error("token-failed: the workspace's token endpoint answered 200 with a body that is not a token")
+	if readErr != nil || len(raw) > databricksErrorBytes {
+		return "", 0, notToken
 	}
-	if readErr != nil || len(raw) > databricksErrorBytes || json.Unmarshal(raw, &t) != nil {
-		return "", 0, Error("token-failed: the workspace's token endpoint answered 200 with a body that is not a token")
+	if _, err := canon.Canonicalize(raw, canon.CarryNumbersAsText); err != nil {
+		return "", 0, notToken
 	}
-	if !strings.EqualFold(t.Type, "Bearer") || t.Expires <= 0 || t.Expires > 86400 || !databricksPrintable(t.Access, 8, 4096) || databricksLeaks([]byte(t.Access), secrets) {
+	members, ok := databricksMembers(raw, "access_token", "token_type", "expires_in")
+	if !ok {
+		return "", 0, notToken
+	}
+	var access, kind string
+	var lifetime int64
+	_, okAccess := databricksField(members, "access_token", &access)
+	_, okKind := databricksField(members, "token_type", &kind)
+	_, okLifetime := databricksField(members, "expires_in", &lifetime)
+	if !okAccess || !okKind || !okLifetime || !strings.EqualFold(kind, "Bearer") || lifetime <= 0 || lifetime > 86400 || !databricksPrintable(access, 8, 4096) || databricksLeaks([]byte(access), secrets) {
 		return "", 0, Error("token-failed: the workspace's token endpoint answered 200 with a token not of the form asked for")
 	}
-	return t.Access, sent.Add(time.Duration(t.Expires) * time.Second).Unix(), nil
+	// The lifetime counts from the request, so a slow answer shortens it;
+	// a token that would not outlast its slack when it arrives is not used
+	// and not kept, and no other is asked for.
+	expires := sent.Add(time.Duration(lifetime) * time.Second)
+	if !expires.After(received.Add(databricksTokenSlack)) {
+		return "", 0, Error("token-failed: the workspace's token endpoint answered 200 with a token that expires within a minute of its arrival; it was not used")
+	}
+	return access, expires.Unix(), nil
 }
 
 // databricksCode is the first of the named members of a JSON error body
@@ -755,44 +867,52 @@ func (p provider) databricksSend(ctx context.Context, method, target string, bod
 	return response, raw, nil
 }
 
-// databricksStatement reads the state of a statement's answer: the
-// statement_id of one that succeeded whole, or the refusal.
+// databricksStatement reads the state of a statement's answer, by the
+// exact names of the members it decides by: the statement_id of one that
+// succeeded whole, or the refusal. A failure's message has every whole
+// credential replaced before it is cut to its bound.
 func databricksStatement(raw []byte, wait int, elapsed time.Duration, secrets []string) (string, error) {
-	var a struct {
-		ID     string `json:"statement_id"`
-		Status struct {
-			State string `json:"state"`
-			Error *struct {
-				Code    string `json:"error_code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		} `json:"status"`
-		Manifest *struct {
-			Truncated  bool `json:"truncated"`
-			ChunkCount *int `json:"total_chunk_count"`
-		} `json:"manifest"`
-		Result *struct {
-			NextIndex *int    `json:"next_chunk_index"`
-			NextLink  *string `json:"next_chunk_internal_link"`
-		} `json:"result"`
+	malformed := Error("provider-unavailable: the workspace's answer is not of the form this connection reads, or names a member it reads twice")
+	if _, err := canon.Canonicalize(raw, canon.CarryNumbersAsText); err != nil {
+		return "", malformed
 	}
-	if json.Unmarshal(raw, &a) != nil || !databricksStatementID.MatchString(a.ID) {
+	top, ok := databricksMembers(raw, "statement_id", "status", "manifest", "result")
+	if !ok {
+		return "", malformed
+	}
+	status, ok1 := databricksMembers(top["status"], "state", "error")
+	failure, ok2 := databricksMembers(status["error"], "error_code", "message")
+	manifest, ok3 := databricksMembers(top["manifest"], "truncated", "total_chunk_count")
+	result, ok4 := databricksMembers(top["result"], "chunk_index", "next_chunk_index", "next_chunk_internal_link")
+	if !ok1 || !ok2 || !ok3 || !ok4 {
+		return "", malformed
+	}
+	var id, state, message, link string
+	var truncated bool
+	var chunks, index, next int
+	if present, ok := databricksField(top, "statement_id", &id); !ok || !present || !databricksStatementID.MatchString(id) {
 		return "", Error("provider-unavailable: the workspace's answer names no statement")
 	}
-	message := ""
-	if a.Status.Error != nil {
-		message = a.Status.Error.Message
-		if len(message) > databricksMessageBytes {
-			message = clipSearchText(message, databricksMessageBytes) + "…"
-		}
-		message = databricksRedact(message, secrets)
+	_, okState := databricksField(status, "state", &state)
+	_, okMessage := databricksField(failure, "message", &message)
+	_, okTruncated := databricksField(manifest, "truncated", &truncated)
+	hasChunks, okChunks := databricksField(manifest, "total_chunk_count", &chunks)
+	hasIndex, okIndex := databricksField(result, "chunk_index", &index)
+	hasNext, okNext := databricksField(result, "next_chunk_index", &next)
+	hasLink, okLink := databricksField(result, "next_chunk_internal_link", &link)
+	if !okState || !okMessage || !okTruncated || !okChunks || !okIndex || !okNext || !okLink {
+		return "", malformed
 	}
-	switch a.Status.State {
+	message = databricksRedact(message, secrets)
+	if len(message) > databricksMessageBytes {
+		message = clipSearchText(message, databricksMessageBytes) + "…"
+	}
+	switch state {
 	case "SUCCEEDED":
-		if a.Manifest != nil && (a.Manifest.Truncated || a.Manifest.ChunkCount != nil && *a.Manifest.ChunkCount > 1) || a.Result != nil && (a.Result.NextIndex != nil || a.Result.NextLink != nil) {
+		if truncated || hasChunks && chunks > 1 || hasIndex && index != 0 || hasNext || hasLink {
 			return "", Error("result-incomplete: the workspace answered part of the result, in chunks or truncated; the rest is not fetched")
 		}
-		return a.ID, nil
+		return id, nil
 	case "FAILED":
 		if message == "" {
 			return "", Error("statement-failed: the statement failed, and the workspace gave no message")
@@ -807,10 +927,33 @@ func databricksStatement(raw []byte, wait int, elapsed time.Duration, secrets []
 		}
 		return "", Error(fmt.Sprintf("statement-timeout: the statement did not finish within %d seconds and was cancelled", wait))
 	case "PENDING", "RUNNING":
-		return "", Error(fmt.Sprintf("statement-timeout: the statement did not finish within %d seconds; the workspace answered %s, and it is not polled", wait, a.Status.State))
+		return "", Error(fmt.Sprintf("statement-timeout: the statement did not finish within %d seconds; the workspace answered %s, and it is not polled", wait, state))
 	}
 	return "", Error("provider-unavailable: the workspace answered a statement in no state this connection reads")
 }
+
+// carries reports whether anything a request would send names a secret:
+// its statement, a parameter's name, value or type, the catalog, the
+// schema, the listing or the cursor.
+func (q DatabricksRequest) carries(secrets []string) bool {
+	fields := []string{q.Statement, q.Catalog, q.Schema, q.List, q.PageToken}
+	for _, parameter := range q.Parameters {
+		fields = append(fields, parameter.Name, parameter.Type)
+		if parameter.Value != nil {
+			fields = append(fields, *parameter.Value)
+		}
+	}
+	for _, field := range fields {
+		if databricksLeaks([]byte(field), secrets) {
+			return true
+		}
+	}
+	return false
+}
+
+// databricksInRequest is the refusal of a request that carries the
+// connection's credential. It names the rule, never the value.
+const databricksInRequest = Error("credential-in-request: a request may not carry the connection's credential, which is sent only as its authorization; the request was not sent")
 
 func (q DatabricksRequest) check(c DatabricksConnection) (DatabricksRequest, error) {
 	if q.Catalog == "" && q.Schema == "" {
@@ -879,11 +1022,19 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 	if q, err = q.check(c); err != nil {
 		return nil, err
 	}
+	// The configured secret and any token held for it are known before a
+	// token is asked for; a token minted now is known only after.
+	if q.carries(c.secrets(databricksHeld(s, c))) {
+		return nil, databricksInRequest
+	}
 	bearer, err := p.databricksBearer(ctx, s, c)
 	if err != nil {
 		return nil, err
 	}
 	secrets := c.secrets(bearer)
+	if q.carries(secrets) {
+		return nil, databricksInRequest
+	}
 	wait := c.wait()
 	seconds := databricksListSeconds
 	record := map[string]any{"connection": c.ID, "revision": c.Revision, "provider": "databricks", "read": q.Read}
@@ -923,6 +1074,9 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 		record["query"] = queryValues(query)
 	}
 	record["method"], record["endpoint"] = method, endpoint
+	if body != nil && databricksCarries(body, secrets) || databricksLeaks([]byte(target), secrets) {
+		return nil, databricksInRequest
+	}
 	rctx, cancel := context.WithTimeout(ctx, time.Duration(seconds)*time.Second)
 	defer cancel()
 	started := time.Now()
@@ -938,8 +1092,9 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 		}
 	}
 	// A failed statement's message is reported with the credential
-	// replaced; an answer that would be kept is not kept at all.
-	if databricksLeaks(data, secrets) {
+	// replaced; an answer that would be kept is not kept at all, whether it
+	// writes the credential as it is or in escapes.
+	if databricksCarries(data, secrets) {
 		return nil, Error("provider-unavailable: the workspace's answer repeats the credential, and is not kept")
 	}
 	result, err := canon.Canonicalize(data, canon.CarryNumbersAsText)
@@ -969,6 +1124,9 @@ func databricksAcquire(ctx context.Context, s *Store, q DatabricksRequest, p pro
 	}
 	if len(out) > MaxOutputBytes {
 		return nil, Error(fmt.Sprintf("result-too-large: the envelope is larger than the source's output bound of %d bytes", MaxOutputBytes))
+	}
+	if databricksCarries(out, secrets) {
+		return nil, Error("provider-unavailable: the record would carry the credential, and is not written")
 	}
 	return out, nil
 }

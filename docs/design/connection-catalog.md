@@ -110,6 +110,16 @@ shape `http`, record `databricks-api-v1`), never by the companion, whose `test`
 makes one request, for the first catalog of the listing, and answers only
 whether it succeeded. The operation, the request, the bounds and the refusals
 are in the [adapters README](../../adapters/README.md#databricks-connections-api-profile).
+The API is as Databricks documents it in
+[Execute a SQL statement](https://docs.databricks.com/api/workspace/statementexecution/executestatement)
+and the [Statement Execution API tutorial](https://docs.databricks.com/aws/en/dev-tools/sql-execution-tutorial)
+(updated 2026-10-06), the Unity Catalog listings and their paging
+([catalogs](https://docs.databricks.com/api/workspace/catalogs/list),
+[schemas](https://docs.databricks.com/api/workspace/schemas/list),
+[tables](https://docs.databricks.com/api/workspace/tables/list),
+[functions](https://docs.databricks.com/api/workspace/functions/list)), and
+[OAuth machine-to-machine authentication](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
+(updated 2026-10-12); the pages that show no date were read on 2026-10-13.
 The managed MCP servers are a separate profile, not described here.
 
 **What a read establishes.** A read's receipt establishes that the adapter
