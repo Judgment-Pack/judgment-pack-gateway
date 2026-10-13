@@ -77,6 +77,10 @@ const (
 	// so a request's own text comes back as the source's output.
 	envSourceExit      = "GATEWAY_TEST_SOURCE_EXIT"
 	envSourceEchoStdin = "GATEWAY_TEST_SOURCE_ECHO_STDIN"
+	// The helper writes the command line it was started with, one word to
+	// a line, to the file named here before anything else it does, so a
+	// test can see what the engine started.
+	envSourceArgv = "GATEWAY_TEST_SOURCE_ARGV"
 )
 
 // recordPid publishes a pid atomically: written whole to a sibling file and
@@ -94,7 +98,7 @@ func recordPid(path string, pid int) {
 // longer hands a source its own environment (ADR-0001), so every variable the
 // helper reads is declared here by name and copied at spawn time -- which is
 // what keeps t.Setenv working between acquisitions.
-var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceEnvelope, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid, envSourceQuiet, envSourceDelay, envSourceParentPid, envSourceValues, envSourceExit, envSourceEchoStdin}
+var helperEnv = []string{envSourceHelper, envSourceReady, envSourceWait, envSourceFail, envSourceEcho, envSourceEnvelope, envSourceBig, envSourceHold, envSourceHolder, envSourceStderr, envSourceFdProbe, envSourceEscape, envSourceHolderPid, envSourceQuiet, envSourceDelay, envSourceParentPid, envSourceValues, envSourceExit, envSourceEchoStdin, envSourceArgv}
 
 // A barrier named in the ARGUMENTS rather than the environment. Every helper
 // this process starts inherits the same environment, so an environment-named
@@ -153,6 +157,9 @@ func TestMain(m *testing.M) {
 			}
 		}
 		arguments, _ := io.ReadAll(os.Stdin)
+		if path := os.Getenv(envSourceArgv); path != "" {
+			_ = os.WriteFile(path, []byte(strings.Join(os.Args[1:], "\n")), 0o600)
+		}
 		if status := os.Getenv(envSourceExit); status != "" {
 			n, _ := strconv.Atoi(status)
 			os.Exit(n)

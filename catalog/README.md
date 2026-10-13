@@ -126,8 +126,7 @@ a write, and the decision policy is what holds each one to its decision.
 The organization's local MCP server (the npm package `@azure-devops/mcp`, over stdio) is not a
 catalog entry: the catalog pins images, and the engine authors no binding of a server the
 operator installs; an operator runs it as a source under `adapter-mcp`
-([adapters/README.md](../adapters/README.md)). A binding for it is a follow-up named in the pull
-request for #248.
+([adapters/README.md](../adapters/README.md)). Whether the catalog ships one is #259.
 
 ## databricks
 
@@ -171,5 +170,4 @@ statement: a decision could then authorize an arbitrary statement, which no poli
 argument by argument, since a statement's meaning is in its text. A function whose body runs a
 statement it is given is raw SQL by another name, and its author is the one to refuse it. (The
 `postgres` binding above predates this platform, and its `write` operation names `execute_sql`,
-which takes a statement; the same limit holds for it, and the pull request for #248 names a
-follow-up for it.)
+which takes a statement; the same limit holds for it, and #260 is to decide what becomes of it.)

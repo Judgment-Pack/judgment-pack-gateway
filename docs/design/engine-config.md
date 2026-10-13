@@ -718,8 +718,8 @@ in that fact: `bind` maps no outcome to a value, so a decision names in its fact
 approves, and the pack is what judges that the outcome and the state agree. A policy for the
 comment and link tools binds the whole arguments the same way. What `bind` cannot do today — fix
 `action` to a value, or refuse an argument it does not name, without the record stating the whole
-write — is not extended here: a policy member for it is the follow-up the pull request for #248
-names, and until then a dispatcher tool is held only by a record that states its whole write.
+write — is not extended here: a policy member for it is #258, and until then a dispatcher tool is
+held only by a record that states its whole write.
 
 **Databricks.**
 
