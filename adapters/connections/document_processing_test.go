@@ -623,7 +623,8 @@ const mainLocalPlan = `{"version":1,"sources":[` +
 	`{"id":"web","executable":"adapter-web","args":[],"shape":"http","timeout":60,"connections":false},` +
 	`{"id":"web-discovery","executable":"adapter-web","args":["--discover"],"shape":"http","timeout":60,"connections":false},` +
 	`{"id":"web-search","executable":"adapter-sources","args":["--provider","web-search","--principal","desk-local"],"shape":"http","timeout":60,"connections":true},` +
-	`{"id":"aws-s3","executable":"adapter-sources","args":["--provider","aws-s3","--principal","desk-local"],"shape":"command","timeout":60,"connections":true}]}`
+	`{"id":"aws-s3","executable":"adapter-sources","args":["--provider","aws-s3","--principal","desk-local"],"shape":"command","timeout":60,"connections":true},` +
+	`{"id":"databricks","executable":"adapter-sources","args":["--provider","databricks","--principal","desk-local"],"shape":"http","timeout":60,"connections":true}]}`
 
 // With no processor configured the plan is main's, so every released desk
 // takes it; with one, only the sources that may read a PDF change.

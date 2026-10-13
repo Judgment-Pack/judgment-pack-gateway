@@ -34,10 +34,20 @@ Example descriptor, within `{ "version": 2, "providers": [...], "sources": [...]
 
 - `id`: stable provider identifier, not a user-supplied module name.
 - `auth`: `oauth` or `local-folder` describes the existing consent flow.
-- `registration`: `google-desktop`, `automatic` (Notion DCR), or `none`.
+  In catalog version 3, `credentials` is secrets typed into the setup form
+  and used as given (Amazon S3, web search), and `client-credentials`
+  (Databricks) is a setup form that carries either a token used as given or
+  an OAuth client's id and secret, which the companion exchanges at the
+  provider's token endpoint by the client-credentials grant for a
+  short-lived access token it keeps in its own custody: no browser, and no
+  person's consent.
+- `registration`: `google-desktop`, `automatic` (Notion DCR), or `none`;
+  `form` in version 3, where the setup form's object is sent to `configure`.
 - `selection`: `mail-search` or `source-search` names an existing
   wire contract. It is not a component name, URL, or executable to load.
   `browser-picker` was Drive's until ADR-0010, and no provider has it.
+  `none` (Databricks) is no search or selection: a read names what it reads
+  in the source's request.
 - `queryRequired`: search needs nonempty input. False permits initial bounded
   browsing; it does not imply unbounded account search.
 - `operations`: companion control methods, also used by the broker to refuse
@@ -84,6 +94,46 @@ exercise the advertised protocols. Desk separately tests the process boundary,
 output/time bounds, authentication, external-gateway refusal, compatibility,
 revoked capabilities, stale asynchronous replies and menu stability. No live
 provider account or OAuth acceptance is implied by these fixture checks.
+
+## Databricks (version 3)
+
+Catalog version 3 advertises `databricks` with the protocol `databricks-v1`:
+`status`, `configure`, `test` and `disconnect` over up to six named
+connections, each to one workspace's REST API. Its `auth` is
+`client-credentials`, its registration `form`, its selection `none`. The setup
+fields are the workspace URL, the SQL warehouse ID, the authentication
+(`token` or `service-principal`), a personal access token, or a service
+principal's OAuth client ID, secret and scopes (`all-apis` unless given), an
+optional default catalog and schema, the statement wait and the result bound.
+Reads are made by `adapter-sources --provider databricks` (source `databricks`,
+shape `http`, record `databricks-api-v1`), never by the companion, whose `test`
+makes one request, for the first catalog of the listing, and answers only
+whether it succeeded. The operation, the request, the bounds and the refusals
+are in the [adapters README](../../adapters/README.md#databricks-connections-api-profile).
+The API is as Databricks documents it in
+[Execute a SQL statement](https://docs.databricks.com/api/workspace/statementexecution/executestatement)
+and the [Statement Execution API tutorial](https://docs.databricks.com/aws/en/dev-tools/sql-execution-tutorial)
+(updated 2026-10-06), the Unity Catalog listings and their paging
+([catalogs](https://docs.databricks.com/api/workspace/catalogs/list),
+[schemas](https://docs.databricks.com/api/workspace/schemas/list),
+[tables](https://docs.databricks.com/api/workspace/tables/list),
+[functions](https://docs.databricks.com/api/workspace/functions/list)), and
+[OAuth machine-to-machine authentication](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
+(updated 2026-10-12); the pages that show no date were read on 2026-10-13.
+The managed MCP servers are a separate profile, not described here.
+
+**What a read establishes.** A read's receipt establishes that the adapter
+received these bytes from that workspace endpoint, under the TLS identity the
+receipt names, for that statement or listing, at that time, sent under the
+credential the operator configured for the connection: the personal access
+token, or an access token minted for the service principal.
+
+**What it does not establish.** That the data is current or correct; that the
+identity's grants are what the operator intends; or that a statement read
+rather than wrote. Nothing in the connection holds a statement to reading: the
+statement is sent as given, and the SQL warehouse's and Unity Catalog's grants
+on the identity are what keep this profile to reads. An operator who wants
+reads only gives the identity read privileges only.
 
 ## Public URL sources (version 2)
 

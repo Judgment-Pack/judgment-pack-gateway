@@ -1313,6 +1313,124 @@ to the publisher only under the operator's `google-grounding` redirect policy
 ([operator redirect policies](../docs/design/public-web-sources.md#operator-redirect-policies)).
 Tests with local servers are not a claim that a live account is accepted.
 
+### Databricks connections (API profile)
+
+`gateway-connections --provider databricks` holds up to six named connections,
+each to one Databricks workspace's REST API, and `adapter-sources --provider
+databricks` reads one of them under the HTTP shape: one SQL statement on the
+connection's SQL warehouse, or one page of a Unity Catalog listing. Catalog v3
+advertises the provider under the protocol `databricks-v1` (`status`,
+`configure`, `test`, `disconnect`; `auth` `client-credentials`), and the local
+source plan names the source `databricks` with 60 seconds. The managed MCP
+servers are a later profile.
+
+`configure` takes the connection's `id`, its `revision` (empty to create, the
+current one to change it), a `name`, and the setup fields: `workspace-url`,
+HTTPS and a host of a workspace's own domain (`*.cloud.databricks.com`,
+`*.cloud.databricks.us`, `*.cloud.databricks.mil`, `*.gcp.databricks.com`,
+`*.azuredatabricks.net`) with no path, port, user information, query or
+trailing dot; `warehouse-id`; `auth`, `token` with `token` (a personal access
+token) or `service-principal` with `client-id`, `client-secret` and an optional
+`scope` (space-separated, `all-apis` unless given); an optional `catalog` and
+`schema`; `wait-seconds` (5 to 50, 30 unless given) and `max-result-bytes`
+(65,536 to 15,728,640, 8 MiB unless given), as text:
+
+```json
+{"id":"lake","revision":"","name":"Lake","workspace-url":"https://example.cloud.databricks.com","warehouse-id":"0123456789abcdef","auth":"service-principal","client-id":"00000000-0000-4000-8000-000000000000","client-secret":"<OAuth secret>","catalog":"main","schema":"sales"}
+```
+
+A blank secret on a change keeps the saved one only where the workspace, the
+authentication and the client stay as they were. `status` never returns a
+secret; `test {id, revision}` makes one request, for the first catalog of the
+listing, which starts no warehouse; `disconnect {id, revision}` removes the
+connection, its secret and any minted token from custody, and revokes nothing at
+the workspace.
+
+`adapter-sources --provider databricks --principal <principal>` reads, with
+`JPACK_CONNECTIONS_DIR` naming the custody root:
+
+```json
+{"connection":"lake","revision":"<64-hex>","read":"statement","statement":"SELECT region, sum(amount) AS total FROM orders WHERE year = :year GROUP BY region","parameters":[{"name":"year","value":"2026","type":"INT"}]}
+{"connection":"lake","revision":"<64-hex>","read":"catalog","list":"tables","catalog":"main","schema":"sales","pageToken":"<the last page's next_page_token>","maxResults":50}
+```
+
+A statement is one `POST /api/2.0/sql/statements` with the connection's
+warehouse, its wait, `on_wait_timeout: CANCEL`, `disposition: INLINE`, `format:
+JSON_ARRAY`, the catalog and schema (the request's, or the connection's), and
+the named parameters as given, as Databricks documents the request in
+[Execute a SQL statement](https://docs.databricks.com/api/workspace/statementexecution/executestatement)
+(no date shown; read 2026-10-13). A statement that has not finished when the
+wait passes is cancelled by the workspace and refused, `statement-timeout: the
+statement did not finish within N seconds and was cancelled`; one answered
+`PENDING` or `RUNNING` is refused and not polled. `FAILED` and `CANCELED` are
+refused with the API's message as given (`statement-failed: …`,
+`statement-canceled: …`), every whole credential in it replaced; a message over
+4,096 bytes is cut to that bound after the replacement, and is then not
+verbatim. An inline result may come in chunks, each fetched by a request of its
+own ([the Statement Execution API tutorial](https://docs.databricks.com/aws/en/dev-tools/sql-execution-tutorial),
+updated 2026-10-06): a result in more than one chunk, or truncated, is refused
+as `result-incomplete`, and the other chunks are not fetched. The members the
+connection decides by (`statement_id`, `status.state`, `status.error.message`,
+`manifest.truncated`, `manifest.total_chunk_count`, `result.chunk_index` and
+the next-chunk members) are read by their exact names: an answer that also
+names one of them in another case, or twice, is refused.
+
+Only a listing carries `max_results`; a statement's request carries none. A
+listing (`catalogs`, `schemas`, `tables` or `functions`) is one `GET
+/api/2.1/unity-catalog/<list>` with `max_results` (the request's, 0 for the
+workspace's own page length; at most 50 for tables, 1,000 otherwise) and the
+request's `pageToken` as `page_token`; the answer's `next_page_token` is the
+caller's to send, and is never followed. Databricks documents the listings and
+their paging in [catalogs](https://docs.databricks.com/api/workspace/catalogs/list),
+[schemas](https://docs.databricks.com/api/workspace/schemas/list),
+[tables](https://docs.databricks.com/api/workspace/tables/list) and
+[functions](https://docs.databricks.com/api/workspace/functions/list) (no date
+shown; read 2026-10-13): `max_results` left out returns every row, and the end
+is the answer without a `next_page_token`.
+
+A request whose statement, parameters, catalog, schema or cursor carries the
+connection's credential (the personal access token, the client secret, or a
+token held or minted for it) is refused as `credential-in-request` before it is
+sent, in words that name the rule and not the value.
+
+Each read is one request, after one token request where a service principal
+holds no token more than a minute from its expiry: the client's id and secret
+as basic authentication at the workspace's `/oidc/v1/token`, the
+client-credentials grant and the scope, as
+[OAuth machine-to-machine authentication](https://docs.databricks.com/aws/en/dev-tools/auth/oauth-m2m)
+(updated 2026-10-12) states them. The access token is kept in custody with its
+expiry and the connection's revision, and removed before another is asked for.
+Its lifetime counts from the token request; one that would not outlast the
+minute when it arrives is refused as `token-failed`, is not kept, and no other
+is asked for. Nothing is retried: a 429 from a read is refused as
+`rate-limited`, and one from the token endpoint as `token-failed`, each with the
+wait its `Retry-After` header or `RetryInfo` asks for, and the next request is
+the caller's. A redirect is refused and not followed; a 401 is
+`credentials-required`, a 403 `permission-denied`, another 4xx
+`request-refused`, a 5xx `provider-unavailable`, each naming the status and the
+API's `error_code`, never its message; a failed token request is
+`token-failed`, naming the status and the OAuth error code. An answer over the
+connection's bound is `result-too-large`, read no further; an answer that is not
+JSON is refused, and so is one that repeats the credential, as written or in
+escapes, in a value or a member name.
+
+The result is the API's answer as received, carried into the canon domain, with
+its `statement_id`, `status`, `manifest` and `result` (or the listing and its
+`next_page_token`). The acquisition names the endpoint (the workspace URL and
+the path), the request as the statement the gateway commits to (connection,
+revision, read, method, endpoint, and the body or query sent: the warehouse,
+the statement and its parameters among them), the `statement_id` as the
+snapshot (a listing has the digest of the answer as received), the TLS peer's
+certificate, and the time the answer was read. What a read establishes, and
+what it does not, is in [the connection catalog](../docs/design/connection-catalog.md#databricks-version-3).
+In particular, a statement is sent as given: the warehouse's and Unity
+Catalog's grants on the identity are what keep this profile to reads.
+
+The tests answer from an in-process TLS server; a live check runs only where
+`JPACK_DATABRICKS_LIVE_WORKSPACE` and its companions name a workspace, and is
+otherwise skipped. They are not a claim that a live workspace accepts the
+requests or answers as recorded.
+
 ### Bounded website exploration
 
 `adapter-web --discover` accepts exactly `{"url":"https://example.com/"}`.

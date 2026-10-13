@@ -11,12 +11,12 @@ import (
 
 func TestV3CatalogIsCompleteLocalizedAndMatchesLocalPlan(t *testing.T) {
 	catalog := ConnectionCatalogV3()
-	if catalog.Version != 3 || len(catalog.Providers) != 6 {
+	if catalog.Version != 3 || len(catalog.Providers) != 7 {
 		t.Fatal("wrong catalog")
 	}
 	plan := ConnectionLocalPlan()
 	for _, descriptor := range catalog.Providers {
-		if (descriptor.Protocol != "connection-v1" && descriptor.Protocol != "web-search-v1") || descriptor.Presentation.Name == "" {
+		if (descriptor.Protocol != "connection-v1" && descriptor.Protocol != "web-search-v1" && descriptor.Protocol != "databricks-v1") || descriptor.Presentation.Name == "" {
 			t.Fatal(descriptor.ID)
 		}
 		for _, locale := range []string{"en", "fr", "es", "de", "it", "pt-PT", "pt-BR", "ko", "ja", "zh-Hans", "zh-Hant", "yue-Hant"} {
@@ -56,7 +56,7 @@ func TestTheLocalPlanNamesEachSourceOnceAndTheRenderingAdapter(t *testing.T) {
 			t.Errorf("the plan names %q %d times", id, times)
 		}
 	}
-	if plan.Version != 1 || len(plan.Sources) != 10 {
+	if plan.Version != 1 || len(plan.Sources) != 11 {
 		t.Fatalf("version %d, %d sources", plan.Version, len(plan.Sources))
 	}
 	for _, source := range plan.Sources {

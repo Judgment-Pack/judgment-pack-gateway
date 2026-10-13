@@ -103,6 +103,9 @@ type state struct {
 	Redirect   string       `json:"redirect,omitempty"`
 	Vault      string       `json:"vault,omitempty"`
 	S3         *s3Config    `json:"s3,omitempty"`
+	// Databricks is held only in the databricks namespace, which an
+	// earlier release never opens.
+	Databricks *databricksState `json:"databricks,omitempty"`
 }
 type Store struct{ root *os.Root }
 

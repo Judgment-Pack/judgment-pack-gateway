@@ -329,5 +329,213 @@
       "zh-Hant": "管理搜尋連線。憑證保存在閘道中。",
       "yue-Hant": "管理搜尋連線。憑證保留喺閘道。"
     }
+  },
+  "databricks": {
+    "name": "Databricks",
+    "icon": "",
+    "description": {
+      "en": "SQL on a SQL warehouse and Unity Catalog listings",
+      "fr": "SQL sur un entrepôt SQL et listes Unity Catalog",
+      "es": "SQL en un almacén SQL y listados de Unity Catalog",
+      "de": "SQL auf einem SQL-Warehouse und Unity-Catalog-Listen",
+      "it": "SQL su un SQL warehouse ed elenchi di Unity Catalog",
+      "pt-PT": "SQL num SQL warehouse e listagens do Unity Catalog",
+      "pt-BR": "SQL em um SQL warehouse e listagens do Unity Catalog",
+      "ko": "SQL 웨어하우스의 SQL 및 Unity Catalog 목록",
+      "ja": "SQL ウェアハウスでの SQL と Unity Catalog の一覧",
+      "zh-Hans": "在 SQL 仓库上运行 SQL，以及 Unity Catalog 列表",
+      "zh-Hant": "在 SQL 倉儲上執行 SQL，以及 Unity Catalog 清單",
+      "yue-Hant": "喺 SQL 倉儲度執行 SQL，同埋 Unity Catalog 清單"
+    },
+    "instructions": {
+      "en": "Enter the workspace URL (https://…), the SQL warehouse ID, and the authentication: token, with a personal access token, or service-principal, with the service principal's OAuth client ID and secret. Every read runs as that identity: its grants on the warehouse and in Unity Catalog decide what it can read, and whether a statement can change data. The secret stays on this computer. Disconnecting does not revoke it in Databricks.",
+      "fr": "Saisissez l’URL de l’espace de travail (https://…), l’ID de l’entrepôt SQL et l’authentification : token, avec un jeton d’accès personnel, ou service-principal, avec l’ID client OAuth et le secret du principal de service. Chaque lecture s’exécute sous cette identité : ses droits sur l’entrepôt et dans Unity Catalog déterminent ce qu’elle peut lire et si une instruction peut modifier des données. Le secret reste sur cet ordinateur. La déconnexion ne le révoque pas dans Databricks.",
+      "es": "Introduce la URL del área de trabajo (https://…), el ID del almacén SQL y la autenticación: token, con un token de acceso personal, o service-principal, con el ID de cliente OAuth y el secreto de la entidad de servicio. Cada lectura se ejecuta con esa identidad: sus permisos sobre el almacén y en Unity Catalog deciden qué puede leer y si una instrucción puede modificar datos. El secreto permanece en este equipo. Desconectar no lo revoca en Databricks.",
+      "de": "Gib die Arbeitsbereich-URL (https://…), die ID des SQL-Warehouse und die Authentifizierung an: token mit einem persönlichen Zugriffstoken oder service-principal mit der OAuth-Client-ID und dem Geheimnis des Dienstprinzipals. Jeder Lesezugriff läuft unter dieser Identität: Ihre Berechtigungen auf dem Warehouse und in Unity Catalog bestimmen, was sie lesen kann und ob eine Anweisung Daten ändern kann. Das Geheimnis bleibt auf diesem Computer. Das Trennen widerruft es in Databricks nicht.",
+      "it": "Inserisci l’URL dell’area di lavoro (https://…), l’ID del SQL warehouse e l’autenticazione: token, con un token di accesso personale, oppure service-principal, con l’ID client OAuth e il segreto dell’entità servizio. Ogni lettura viene eseguita con quell’identità: i suoi privilegi sul warehouse e in Unity Catalog decidono cosa può leggere e se un’istruzione può modificare i dati. Il segreto resta su questo computer. La disconnessione non lo revoca in Databricks.",
+      "pt-PT": "Introduza o URL da área de trabalho (https://…), o ID do SQL warehouse e a autenticação: token, com um token de acesso pessoal, ou service-principal, com o ID de cliente OAuth e o segredo do principal de serviço. Cada leitura é executada com essa identidade: as suas permissões no warehouse e no Unity Catalog decidem o que pode ler e se uma instrução pode alterar dados. O segredo fica neste computador. Desligar não o revoga no Databricks.",
+      "pt-BR": "Informe a URL do workspace (https://…), o ID do SQL warehouse e a autenticação: token, com um token de acesso pessoal, ou service-principal, com o ID de cliente OAuth e o segredo da entidade de serviço. Cada leitura é executada com essa identidade: as permissões dela no warehouse e no Unity Catalog decidem o que ela pode ler e se uma instrução pode alterar dados. O segredo fica neste computador. Desconectar não o revoga no Databricks.",
+      "ko": "작업 영역 URL(https://…), SQL 웨어하우스 ID, 인증 방식을 입력하세요. token은 개인용 액세스 토큰을, service-principal은 서비스 주체의 OAuth 클라이언트 ID와 시크릿을 사용합니다. 모든 읽기는 해당 ID로 실행되며, 웨어하우스와 Unity Catalog에서 그 ID에 부여된 권한이 읽을 수 있는 범위와 문이 데이터를 변경할 수 있는지를 결정합니다. 시크릿은 이 컴퓨터에 보관됩니다. 연결을 해제해도 Databricks에서 취소되지 않습니다.",
+      "ja": "ワークスペース URL（https://…）、SQL ウェアハウス ID、認証方式を入力してください。token は個人用アクセス トークン、service-principal はサービス プリンシパルの OAuth クライアント ID とシークレットを使います。すべての読み取りはその ID で実行され、ウェアハウスと Unity Catalog でその ID に与えられた権限が、読み取れる範囲とステートメントがデータを変更できるかを決めます。シークレットはこのコンピューターに保存されます。接続を解除しても Databricks では取り消されません。",
+      "zh-Hans": "输入工作区 URL（https://…）、SQL 仓库 ID 和身份验证方式：token 使用个人访问令牌，service-principal 使用服务主体的 OAuth 客户端 ID 和密钥。每次读取都以该身份运行：它在仓库和 Unity Catalog 中的权限决定它能读取什么，以及语句能否更改数据。密钥保存在这台电脑上。断开连接不会在 Databricks 中撤销它。",
+      "zh-Hant": "輸入工作區 URL（https://…）、SQL 倉儲 ID 和驗證方式：token 使用個人存取權杖，service-principal 使用服務主體的 OAuth 用戶端 ID 和密碼。每次讀取都以該身分執行：它在倉儲和 Unity Catalog 中的權限決定它能讀取什麼，以及陳述式能否變更資料。密碼保存在這部電腦上。中斷連線不會在 Databricks 中撤銷它。",
+      "yue-Hant": "輸入工作區 URL（https://…）、SQL 倉儲 ID 同驗證方式：token 用個人存取權杖，service-principal 用服務主體嘅 OAuth 用戶端 ID 同密碼。每次讀取都以呢個身分執行：佢喺倉儲同 Unity Catalog 入面嘅權限決定佢讀到乜嘢，同埋陳述式可唔可以改資料。密碼保留喺呢部電腦。中斷連線唔會喺 Databricks 撤銷佢。"
+    }
+  },
+  "databricks-workspace-url": {
+    "description": {
+      "en": "Workspace URL (https://…)",
+      "fr": "URL de l’espace de travail (https://…)",
+      "es": "URL del área de trabajo (https://…)",
+      "de": "Arbeitsbereich-URL (https://…)",
+      "it": "URL dell’area di lavoro (https://…)",
+      "pt-PT": "URL da área de trabalho (https://…)",
+      "pt-BR": "URL do workspace (https://…)",
+      "ko": "작업 영역 URL(https://…)",
+      "ja": "ワークスペース URL（https://…）",
+      "zh-Hans": "工作区 URL（https://…）",
+      "zh-Hant": "工作區 URL（https://…）",
+      "yue-Hant": "工作區 URL（https://…）"
+    }
+  },
+  "databricks-warehouse-id": {
+    "description": {
+      "en": "SQL warehouse ID",
+      "fr": "ID de l’entrepôt SQL",
+      "es": "ID del almacén SQL",
+      "de": "SQL-Warehouse-ID",
+      "it": "ID del SQL warehouse",
+      "pt-PT": "ID do SQL warehouse",
+      "pt-BR": "ID do SQL warehouse",
+      "ko": "SQL 웨어하우스 ID",
+      "ja": "SQL ウェアハウス ID",
+      "zh-Hans": "SQL 仓库 ID",
+      "zh-Hant": "SQL 倉儲 ID",
+      "yue-Hant": "SQL 倉儲 ID"
+    }
+  },
+  "databricks-auth": {
+    "description": {
+      "en": "Authentication: token or service-principal",
+      "fr": "Authentification : token ou service-principal",
+      "es": "Autenticación: token o service-principal",
+      "de": "Authentifizierung: token oder service-principal",
+      "it": "Autenticazione: token o service-principal",
+      "pt-PT": "Autenticação: token ou service-principal",
+      "pt-BR": "Autenticação: token ou service-principal",
+      "ko": "인증: token 또는 service-principal",
+      "ja": "認証: token または service-principal",
+      "zh-Hans": "身份验证：token 或 service-principal",
+      "zh-Hant": "驗證：token 或 service-principal",
+      "yue-Hant": "驗證：token 或者 service-principal"
+    }
+  },
+  "databricks-token": {
+    "description": {
+      "en": "Personal access token (for token)",
+      "fr": "Jeton d’accès personnel (pour token)",
+      "es": "Token de acceso personal (para token)",
+      "de": "Persönliches Zugriffstoken (für token)",
+      "it": "Token di accesso personale (per token)",
+      "pt-PT": "Token de acesso pessoal (para token)",
+      "pt-BR": "Token de acesso pessoal (para token)",
+      "ko": "개인용 액세스 토큰(token용)",
+      "ja": "個人用アクセス トークン（token 用）",
+      "zh-Hans": "个人访问令牌（用于 token）",
+      "zh-Hant": "個人存取權杖（用於 token）",
+      "yue-Hant": "個人存取權杖（token 用）"
+    }
+  },
+  "databricks-client-id": {
+    "description": {
+      "en": "OAuth client ID (for service-principal)",
+      "fr": "ID client OAuth (pour service-principal)",
+      "es": "ID de cliente OAuth (para service-principal)",
+      "de": "OAuth-Client-ID (für service-principal)",
+      "it": "ID client OAuth (per service-principal)",
+      "pt-PT": "ID de cliente OAuth (para service-principal)",
+      "pt-BR": "ID de cliente OAuth (para service-principal)",
+      "ko": "OAuth 클라이언트 ID(service-principal용)",
+      "ja": "OAuth クライアント ID（service-principal 用）",
+      "zh-Hans": "OAuth 客户端 ID（用于 service-principal）",
+      "zh-Hant": "OAuth 用戶端 ID（用於 service-principal）",
+      "yue-Hant": "OAuth 用戶端 ID（service-principal 用）"
+    }
+  },
+  "databricks-client-secret": {
+    "description": {
+      "en": "OAuth secret (for service-principal)",
+      "fr": "Secret OAuth (pour service-principal)",
+      "es": "Secreto OAuth (para service-principal)",
+      "de": "OAuth-Geheimnis (für service-principal)",
+      "it": "Segreto OAuth (per service-principal)",
+      "pt-PT": "Segredo OAuth (para service-principal)",
+      "pt-BR": "Segredo OAuth (para service-principal)",
+      "ko": "OAuth 시크릿(service-principal용)",
+      "ja": "OAuth シークレット（service-principal 用）",
+      "zh-Hans": "OAuth 密钥（用于 service-principal）",
+      "zh-Hant": "OAuth 密碼（用於 service-principal）",
+      "yue-Hant": "OAuth 密碼（service-principal 用）"
+    }
+  },
+  "databricks-scope": {
+    "description": {
+      "en": "OAuth scopes, separated by spaces (default all-apis)",
+      "fr": "Portées OAuth, séparées par des espaces (all-apis par défaut)",
+      "es": "Ámbitos OAuth, separados por espacios (all-apis de forma predeterminada)",
+      "de": "OAuth-Bereiche, durch Leerzeichen getrennt (Standard: all-apis)",
+      "it": "Ambiti OAuth, separati da spazi (predefinito all-apis)",
+      "pt-PT": "Âmbitos OAuth, separados por espaços (predefinição all-apis)",
+      "pt-BR": "Escopos OAuth, separados por espaços (padrão all-apis)",
+      "ko": "OAuth 범위, 공백으로 구분(기본값 all-apis)",
+      "ja": "OAuth スコープ、スペース区切り（既定は all-apis）",
+      "zh-Hans": "OAuth 范围，以空格分隔（默认 all-apis）",
+      "zh-Hant": "OAuth 範圍，以空格分隔（預設 all-apis）",
+      "yue-Hant": "OAuth 範圍，用空格分隔（預設 all-apis）"
+    }
+  },
+  "databricks-catalog": {
+    "description": {
+      "en": "Default catalog (optional)",
+      "fr": "Catalogue par défaut (facultatif)",
+      "es": "Catálogo predeterminado (opcional)",
+      "de": "Standardkatalog (optional)",
+      "it": "Catalogo predefinito (facoltativo)",
+      "pt-PT": "Catálogo predefinido (opcional)",
+      "pt-BR": "Catálogo padrão (opcional)",
+      "ko": "기본 카탈로그(선택 사항)",
+      "ja": "既定のカタログ（省略可）",
+      "zh-Hans": "默认目录（可选）",
+      "zh-Hant": "預設目錄（選填）",
+      "yue-Hant": "預設目錄（可選）"
+    }
+  },
+  "databricks-schema": {
+    "description": {
+      "en": "Default schema (optional; needs a catalog)",
+      "fr": "Schéma par défaut (facultatif ; nécessite un catalogue)",
+      "es": "Esquema predeterminado (opcional; requiere un catálogo)",
+      "de": "Standardschema (optional; erfordert einen Katalog)",
+      "it": "Schema predefinito (facoltativo; richiede un catalogo)",
+      "pt-PT": "Esquema predefinido (opcional; requer um catálogo)",
+      "pt-BR": "Esquema padrão (opcional; requer um catálogo)",
+      "ko": "기본 스키마(선택 사항, 카탈로그 필요)",
+      "ja": "既定のスキーマ（省略可、カタログが必要）",
+      "zh-Hans": "默认架构（可选，需要目录）",
+      "zh-Hant": "預設結構描述（選填，需要目錄）",
+      "yue-Hant": "預設結構描述（可選，要有目錄）"
+    }
+  },
+  "databricks-wait-seconds": {
+    "description": {
+      "en": "Statement wait in seconds (5–50, default 30)",
+      "fr": "Attente d’une instruction en secondes (5–50, 30 par défaut)",
+      "es": "Espera de la instrucción en segundos (5–50, 30 de forma predeterminada)",
+      "de": "Wartezeit einer Anweisung in Sekunden (5–50, Standard 30)",
+      "it": "Attesa dell’istruzione in secondi (5–50, predefinito 30)",
+      "pt-PT": "Espera da instrução em segundos (5–50, predefinição 30)",
+      "pt-BR": "Espera da instrução em segundos (5–50, padrão 30)",
+      "ko": "문 대기 시간(초, 5–50, 기본값 30)",
+      "ja": "ステートメントの待機秒数（5～50、既定は 30）",
+      "zh-Hans": "语句等待秒数（5–50，默认 30）",
+      "zh-Hant": "陳述式等待秒數（5–50，預設 30）",
+      "yue-Hant": "陳述式等待秒數（5–50，預設 30）"
+    }
+  },
+  "databricks-max-result-bytes": {
+    "description": {
+      "en": "Result limit in bytes (65536–15728640, default 8388608)",
+      "fr": "Limite du résultat en octets (65536–15728640, 8388608 par défaut)",
+      "es": "Límite del resultado en bytes (65536–15728640, 8388608 de forma predeterminada)",
+      "de": "Ergebnisgrenze in Byte (65536–15728640, Standard 8388608)",
+      "it": "Limite del risultato in byte (65536–15728640, predefinito 8388608)",
+      "pt-PT": "Limite do resultado em bytes (65536–15728640, predefinição 8388608)",
+      "pt-BR": "Limite do resultado em bytes (65536–15728640, padrão 8388608)",
+      "ko": "결과 한도(바이트, 65536–15728640, 기본값 8388608)",
+      "ja": "結果の上限バイト数（65536～15728640、既定は 8388608）",
+      "zh-Hans": "结果上限字节数（65536–15728640，默认 8388608）",
+      "zh-Hant": "結果上限位元組數（65536–15728640，預設 8388608）",
+      "yue-Hant": "結果上限位元組數（65536–15728640，預設 8388608）"
+    }
   }
 }
