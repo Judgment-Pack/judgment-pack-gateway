@@ -1438,7 +1438,7 @@ bounds, servers or tools) spells one; a `FAILED` or `CANCELED` message that
 still spells one once its whole ones are replaced is not repeated; every
 control answer is held once more as a whole; and compression is neither asked
 for nor undone, so the result bound is on the bytes received, and an answer
-that names a `Content-Encoding` is refused.
+that names a `Content-Encoding` other than `identity` (in any case) is refused.
 
 The tests answer from an in-process TLS server; a live check runs only where
 `JPACK_DATABRICKS_LIVE_WORKSPACE` and its companions name a workspace, and is
@@ -1559,11 +1559,18 @@ text is cut to 4,096 bytes; a text that still spells a credential or the
 session id once its own JSON escapes are decoded is not reported, and the
 refusal says so in words of its own. A result larger than the connection's
 `max-result-bytes` is `result-too-large`, and each answer is read no further
-than that bound and 64 KiB, or 8 MiB where that is larger. Every answer
-(`initialize`, each `tools/list` page, the call) is screened, before anything
-of it is read, for the credential, the token in use and the session id the
-server issued, as written or in escapes, and one that repeats any of them is
-refused: nothing of the read is kept. The members a read is decided by (the result's `content`,
+than that bound and 64 KiB, or 8 MiB where that is larger. Each whole message
+the server answers with (`initialize`, each `tools/list` page, the call; a
+JSON body, or each event of a stream, a notification or a request of the
+server's among them) is screened, envelope and every member, before any
+member of it is read or acted on, for the credential, the token in use, every
+credential custody holds for the provider and the session id the server
+issued, as written or as decoded to the point where decoding changes nothing,
+and one that repeats any of them is refused: nothing of the read is kept
+(since #256's first review round, which found that a member beside the
+result was screened by the client for its own token and session id only). A
+server's text is therefore read only where it spells none of them; the
+replacement before the cut is the words' own guard. The members a read is decided by (the result's `content`,
 `structuredContent` and `isError`, each content item's `type` and `text`, the
 descriptor's `name` and `outputSchema`) are read by their exact names, and an
 answer that also names one of them in another case is refused. A read has 50
@@ -1585,9 +1592,14 @@ server the connection enables: `initialize` and `tools/list`, 15 seconds each,
 and no tool called. It answers `{"ok", "mcp": [{"server", "ok", "offered",
 "notOffered", "error"}]}`: the names each server offers (each cut to 128
 bytes, every credential replaced), the names on its list it does not offer, or
-why it could not be read; `ok` is true when every server was read. A
-connection that enables no server answers as the API profile does. `status`
-lists each connection's servers and their tools, and never a credential. Each
+why it could not be read; `ok` is true when every server was read. The whole
+answer is held once more to every secret its reports were held to, each
+session id the servers issued among them, which the broker's final screen
+does not know: one that would still spell a session id where nothing can be
+replaced (as a member's name) is not written, and a refusal of fixed words
+is. A connection that enables no server answers as the API profile does.
+`status` lists each connection's servers and their tools, and never a
+credential. Each
 field of a test's answer and each error is held once more against the
 credential, the token and the session id before it is written: each whole one
 replaced, and a field that would still spell one written as `[redacted]`.
@@ -1616,7 +1628,8 @@ and pipelines (the list, a pipeline's runs, one run). Catalog v3 advertises the
 provider under the protocol `azure-devops-v1` (`status`, `configure`, `test`,
 `disconnect`; `auth` `credentials`, the secret typed into the form and used as
 given), and the local source plan names the source `azure-devops` with 60
-seconds. The MCP profile is a later change.
+seconds. The MCP profile, the organization's remote MCP server, is
+[below](#azure-devops-connections-mcp-profile).
 
 `configure` takes the connection's `id`, its `revision` (empty to create, the
 current one to change it), a `name`, and the setup fields:
@@ -1753,8 +1766,10 @@ verified against a live organization.** A redirect is refused after one
 request and not followed. Compression is neither asked for nor undone, so the
 bound is on the bytes as received: an answer over the connection's bound is
 `result-too-large`, read no further than a byte past it (and not at all when
-its length is announced past it), and an answer that names a
-`Content-Encoding` is refused; an answer that is not JSON is refused. Each
+its length is announced past it), and an answer whose `Content-Encoding`
+names anything but `identity` is refused (each header, each comma-separated
+coding, in any case; `identity` names no encoding, and an empty value is not
+it), as is one the transport undid; an answer that is not JSON is refused. Each
 request has 25 seconds, so the two of a query-and-get end inside the
 adapter's 55.
 
@@ -1832,6 +1847,224 @@ as recorded; in particular, neither the `x-ms-continuationtoken` header of a
 pipelines page nor the `typeKey` of an error body, each taken from Microsoft's
 Python client and from no reference page, has been seen from a live
 organization.
+
+### Azure DevOps connections (MCP profile)
+
+A connection may also enable its organization's remote MCP server, "a hosted
+version of the Azure DevOps MCP Server" that Azure DevOps runs at
+`https://mcp.dev.azure.com/{organization}`, reached "by using streamable HTTP
+transport" ([set up the remote Azure DevOps MCP Server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server),
+dated 2026-09-21). `configure` takes `mcp`: at most one server, `remote`, with
+`tools`, the names a read may call on it (none, when the list is empty or left
+out; at most 32), and `readOnlyHeader`, `send` (the default) or `off`:
+
+```json
+{"id":"board","revision":"<64-hex>","name":"Board","organization-url":"https://dev.azure.com/example","project":"example-project","auth":"bearer","access-token":"","expires-at":"","mcp":[{"server":"remote","tools":["wit_work_item","repo_repository","pipelines_run"]}]}
+```
+
+- **The endpoint** is built from the configured organization URL, of either
+  form, never from a request: `https://mcp.dev.azure.com/` and the
+  organization's name ("Use just the organization name (for example,
+  `contoso`), not the full Azure DevOps URL",
+  [troubleshoot the remote server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/remote-mcp-server-troubleshooting),
+  dated 2026-07-31). The server's root URL, which takes the organization in
+  each tool call instead, is not used.
+- **The credential** is the connection's access token (`auth` `bearer`), sent
+  as `Authorization: Bearer` on every request and held to its configured
+  expiry immediately before each one, as for the API profile. "Personal access
+  tokens (PATs) aren't supported for the remote server" (troubleshoot the
+  remote server), so `configure` refuses the profile under `auth` `token` as
+  `bearer-required`. The pages document only a user's token: a client
+  registered in the tenant is granted the *delegated* permissions it needs on
+  the **Azure DevOps MCP** enterprise application
+  (`2a72489c-aab2-4b65-b93a-a91edccf33b8`), and "OAuth scopes don't override
+  the permissions of the signed-in user. An MCP operation succeeds only when
+  both the application scope and the user's Azure DevOps permissions allow it"
+  (set up the remote server). No page states that the server takes an
+  application-only token from the client-credentials grant, and Microsoft
+  Entra's own page says an application authenticating as itself "can't use
+  *delegated permissions* because there is no user for your app to act on
+  behalf of" ([client credentials flow](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-client-creds-grant-flow),
+  dated 2026-01-30). So the connection mints nothing: the operator obtains a
+  user's access token for that application and pastes it with its expiry,
+  and replaces it when it expires. Whether the server also takes a token
+  issued for Azure DevOps itself (the API profile's), or the REST API this
+  one, no page states; `test` reports the two profiles each on its own, and
+  an operator whose two tokens differ configures two connections.
+- **The read-only header.** Each request carries `X-MCP-Readonly: true`, the
+  header the page documents "to restrict the server to read-only operations"
+  (the troubleshooting page: "Verify the header value is the string
+  `"true"`"). `readOnlyHeader: "off"` sends no such header; the operator sets
+  it knowingly. Either way it is the server's promise, kept by the server:
+  the record does not name it, and nothing in the connection checks what a
+  tool did. The `X-MCP-Toolsets`, `X-MCP-Tools` and `X-MCP-Insiders` headers
+  are not sent.
+- **The tools** are named as the server's list names them. Most are grouped
+  dispatchers that take an `action` argument (`wit_work_item` with `get`,
+  `get_batch`, `list_comments`, …), and the page marks each action read-only
+  or not; the writes have tools of their own (`wit_work_item_write`,
+  `repo_pull_request_write`, `pipelines_write`, …). The list holds tool names,
+  not actions: a tool on it may be called with any action it takes. The page
+  says "This list might not always reflect the most recent tool updates";
+  `test` reports what the server offers.
+
+A read, on `adapter-sources`' stdin:
+
+```json
+{"connection":"board","revision":"<64-hex>","read":"mcp","server":"remote","tool":"wit_work_item","arguments":{"action":"get","project":"example-project","id":12}}
+```
+
+The arguments are the tool's own: an object (`{}` when left out) in the
+canonical domain (a whole number within ±2^53, and no fraction, which is sent
+as a string), sent as given; the server's listing gives each tool's input
+schema (these are the names the local server's `wit_work_item` takes at
+2.10.0). A read is one session with the server, as
+the [Databricks MCP profile](#databricks-connections-mcp-profile) makes one,
+under the same rules: `initialize` and each `tools/list` page read by the
+connection by their members' exact names; one `tools/call`; the session's end,
+which is a request like the others and comes before anything of the read is
+kept: an end the guard refuses (the token within its minute) leaves nothing.
+Refused before anything is sent: a server the connection does not enable
+(`server-not-enabled`), a tool not on its list (`tool-not-allowed`), a read
+out of its form, an access token at or within a minute of its expiry
+(`credentials-expired`), and arguments, a tool or a server that carry a
+credential custody holds for the provider, any connection's, as written or as
+decoded (`credential-in-request`). A tool on the list the server does not
+offer is `tool-not-offered`, and nothing is called. Nothing is retried, no
+redirect is followed, and a refusal is named in the Databricks MCP profile's
+words for its status (401 `credentials-required`, 403 `permission-denied`,
+429 `rate-limited`, another 4xx `request-refused`, otherwise
+`provider-unavailable`); a JSON-RPC error is `provider-unavailable` with the
+server's message, and a result whose `isError` is true is `tool-error` with
+its text, each with every whole credential replaced before it is cut to 4,096
+bytes, and not reported at all where it still spells a credential or the
+session id once its own escapes are decoded. Each whole message the server
+answers with (a JSON body, or each event of a stream, its envelope and every
+member, a notification of the server's among them) is screened, before any
+member of it is read or acted on, for every credential custody holds for the
+provider and the session id the server issued, as written and decoded to the
+point where decoding changes nothing; one that repeats any of them is
+refused, and nothing of the read is kept, so a server's text is read only
+where it spells none. Compression is neither asked for nor undone, and an
+answer whose `Content-Encoding` names anything but `identity` is refused
+(each header, each comma-separated coding, in any case; `identity` names no
+encoding, and an empty value is not it), as is one the transport undid, so
+the bounds are on the bytes received: the tool's result is held to `max-result-bytes`
+(`result-too-large`), and each answer is read no further than that and
+64 KiB, or 8 MiB where that is larger. A read has 50 seconds. Every error is
+held once more against the credentials and the session id before it is
+written.
+
+The result is the tool's result as `adapter-mcp`'s remote form reads a
+source's, in canonical form. The acquisition names:
+
+| Member | Value |
+|---|---|
+| `endpoint` | the server's URL, `https://mcp.dev.azure.com/{organization}` |
+| `statement` | `connection`, `revision`, `provider`, `project` (the connection's; a tool's arguments may name another project the credential can read, and nothing holds them to it), `read: "mcp"`, `server`, `endpoint`, `tool`, `arguments` |
+| `snapshot` | the digest of the tool's result as received |
+| `peerIdentity` | `tls:sha256:` of the leaf certificate the result came under |
+| `schema` | the digest of the tool's declared output schema, or `null` where it declares none |
+| `upstreamToken` | `null` |
+
+The session id is in none of it. The source stays declared `http`
+(`azure-devops-api-v1`), as the Databricks MCP profile's does: SPEC.md §1.2a
+holds `transport` and `server` to shape `mcp`, so the transport is in the
+statement's `read` and the endpoint.
+
+`test {id, revision}` makes the API profile's one request, then reaches the
+server: `initialize` and `tools/list` (15 seconds), and no tool called. For a
+connection that enables the server it answers `{"ok", "api": {"ok",
+"error"}, "mcp": [{"server", "ok", "offered", "notOffered", "error"}]}`,
+each profile reported on its own; `ok` is true when both were read. A server
+whose session's end the guard refused is reported as not read. The whole
+answer, the API's error and the fixed member names included, is held once
+more to every secret the server's report was held to, its session id among
+them (the API's error was written before the session existed, and the
+broker's final screen does not know it): each whole one replaced, and an
+answer that would still spell one, as a member's name, not written; a
+refusal of fixed words is written instead. A connection that enables no
+server answers as the API profile does. `status` lists the server, its
+tools and its `readOnlyHeader`, never a credential; a
+list that would spell a credential custody holds is not reported, and its
+connection is not ready.
+
+**What it establishes, and what it does not**, is in [the connection
+catalog](../docs/design/connection-catalog.md#azure-devops-version-3): the
+bytes from the organization's MCP endpoint under its TLS identity, for that
+tool and those arguments, at that time, under the configured token acting
+with its user's permissions; not that the tool read rather than wrote, nor
+that the answer is true. The read-only header is the server's promise; the
+tools list and the token's permissions are the connection's only guard.
+
+The tests answer from the in-process Streamable HTTP fake; a live check runs
+only where `JPACK_AZURE_DEVOPS_LIVE_ORGANIZATION`,
+`JPACK_AZURE_DEVOPS_LIVE_ACCESS_TOKEN` (with `_EXPIRES_AT`) and
+`JPACK_AZURE_DEVOPS_LIVE_MCP_TOOL` (with `_MCP_ARGUMENTS`) name an
+organization's server, and is otherwise skipped. Nothing here has been seen
+from a live organization: in particular, which token the server takes.
+
+**The local server.** Azure DevOps also publishes the server as an npm
+package, `@azure-devops/mcp` (2.10.0, published 2026-09-09), run over `stdio`
+on the operator's machine ([enable AI assistance with the Azure DevOps MCP
+Server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/mcp-server-overview),
+dated 2026-08-12). It is not a catalog connection: the connections run no
+third-party server process, and this one is a program the operator chooses,
+pins and runs. It is an operator-level source through `adapter-mcp`'s
+existing stdio form:
+
+```
+gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
+  --source boards='adapter-mcp --credentials /run/secrets/ado-mcp-env --tools wit_work_item,wit_query -- npx -y @azure-devops/mcp@2.10.0 example --authentication env --tenant 00000000-0000-0000-0000-000000000000 -d core work-items' \
+  --source-shape boards=mcp \
+  --source-env boards=HOME=/var/lib/jpack/ado-mcp-home
+```
+
+- The organization is the first argument, by its name, as the server's
+  [getting started](https://github.com/microsoft/azure-devops-mcp/blob/43a2b179b02d912399be612e0f7b5121a55eb692/docs/GETTINGSTARTED.md)
+  (at the `v2.10.0` tag) gives it: `npx -y @azure-devops/mcp <your-org>`. The
+  package is pinned by its version; `npx` resolves it from the registry, and
+  the record's `adapter` names the command as configured and the digest of
+  `npx`, not of the package or of what it depends on.
+- `--authentication env` takes the token from Azure Identity's
+  `DefaultAzureCredential`, which a service principal configures with
+  `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and `AZURE_CLIENT_SECRET`
+  ([Azure Identity for JavaScript](https://learn.microsoft.com/en-us/javascript/api/overview/azure/identity-readme),
+  dated 2026-09-14). Those three are the `--credentials` file, the server's
+  environment and nothing else:
+  `{"AZURE_TENANT_ID":"…","AZURE_CLIENT_ID":"…","AZURE_CLIENT_SECRET":"…"}`.
+  The service principal must be added to the organization with its own access
+  level and permissions ([service principals and managed identities](https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/service-principal-managed-identity),
+  dated 2026-09-21). The other methods are `interactive` (the default, a
+  browser sign-in), `azcli`, `envvar` (a bearer token in `ADO_MCP_AUTH_TOKEN`)
+  and `pat` (`PERSONAL_ACCESS_TOKEN`, the base64 of `<email>:<pat>`), each as
+  the getting-started page states it.
+- By the server's source at that tag ([`src/index.ts`](https://github.com/microsoft/azure-devops-mcp/blob/43a2b179b02d912399be612e0f7b5121a55eb692/src/index.ts),
+  [`src/auth.ts`](https://github.com/microsoft/azure-devops-mcp/blob/43a2b179b02d912399be612e0f7b5121a55eb692/src/auth.ts),
+  [`src/org-tenants.ts`](https://github.com/microsoft/azure-devops-mcp/blob/43a2b179b02d912399be612e0f7b5121a55eb692/src/org-tenants.ts)):
+  without `--tenant` it asks `https://vssps.dev.azure.com/{organization}` for
+  the organization's tenant and caches it in `~/.ado_orgs.cache`; and where a
+  tenant is known, it tries the Azure CLI's sign-in first and the environment
+  after, so it runs here with a `HOME` of its own where no Azure CLI sign-in
+  is found, or it acts as that sign-in instead of the service principal.
+- `-d` loads only the named domains (`core`, `work`, `work-items`,
+  `repositories`, `wiki`, `pipelines`, `search`, `test-plans`,
+  `advanced-security`); the local server has no read-only option at 2.10.0
+  (its arguments are the organization, `--domains`, `--authentication` and
+  `--tenant`). `--tools` is the allowlist, as for any stdio server; the
+  local tools' names are in its [toolset](https://github.com/microsoft/azure-devops-mcp/blob/43a2b179b02d912399be612e0f7b5121a55eb692/docs/TOOLSET.md),
+  where the writes again have tools of their own (`wit_work_item_write`, …).
+- `adapter-mcp --check` with the same words starts the server, completes the
+  handshake and lists its tools, failing where a name in `--tools` is not
+  offered; `--probe` names a tool it calls once.
+
+What such a source establishes is `adapter-mcp`'s over stdio: the tool's
+answer as that process wrote it, under the command as configured. It does not
+establish the organization's TLS identity (the process reaches Azure DevOps
+itself, and the record names no transport identity), that the process is the
+package the version names, that a tool read rather than wrote (no read-only
+mode; the tools list and the service principal's permissions are the guard),
+or that the answer is true.
 
 ### Bounded website exploration
 

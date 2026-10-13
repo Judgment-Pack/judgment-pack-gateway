@@ -479,8 +479,10 @@ func TestDatabricksMCPTheSessionIdIsInTheRefusalSet(t *testing.T) {
 
 // The personal access token, the client secret and the minted token are in
 // no record, error or test answer, whatever the server sends back: an answer
-// that repeats one, as written or in escapes, is refused; a refusal or a
-// result that reports an error has each replaced.
+// that repeats one, as written or in escapes, is refused -- since round 1 of
+// #256 the whole message, before anything of it is read, a refusal and a
+// failed tool's text included; and a text that reaches the refusal's words
+// has each replaced before it is cut.
 func TestDatabricksMCPCredentialsInAnswersAreRefused(t *testing.T) {
 	var seen []string
 	refused := func(name string, s *Store, c DatabricksConnection, api *dbFake, change func(*fakemcp.Script), want string) {
@@ -498,7 +500,7 @@ func TestDatabricksMCPCredentialsInAnswersAreRefused(t *testing.T) {
 		return func(script *fakemcp.Script) { script.Result = `{"content":[{"type":"text","text":"` + text + `"}]}` }
 	}
 	byClient := "provider-unavailable: the MCP server sql: the server's answer repeats the credential"
-	byConnection := "provider-unavailable: the MCP server's answer repeats the credential or its session id, and is not kept"
+	byConnection := "provider-unavailable: the MCP server sql: the server's answer repeats the credential or its session id, and is not kept"
 	ts, _, tc, _ := dbMCPFixture(t, dbTokenFields(), dbServers())
 	tapi := newDBFake(t)
 	refused("the token", ts, tc, tapi, result(dbPAT), byClient)
@@ -513,15 +515,21 @@ func TestDatabricksMCPCredentialsInAnswersAreRefused(t *testing.T) {
 	}, byConnection)
 	refused("the client secret in a refusal", ss, sc, sapi, func(script *fakemcp.Script) {
 		script.Refuse = `{"code":-32000,"message":"denied for ` + dbEscaped(dbSecret) + `"}`
-	}, "provider-unavailable: the MCP server sql: the server answered with an error: denied for [redacted] (code -32000)")
+	}, byConnection)
 	refused("the client secret in an error result", ss, sc, sapi, func(script *fakemcp.Script) {
 		script.Result = `{"content":[{"type":"text","text":"denied for ` + dbEscaped(dbSecret) + `"}],"isError":true}`
-	}, "tool-error: denied for [redacted]")
+	}, byConnection)
 	// A long error's text has the secret replaced before it is cut.
 	long := strings.Repeat("x", databricksMessageBytes-len("tool-error: ")-len(dbSecret)+1) + dbSecret
 	refused("the client secret across the cut", ss, sc, sapi, func(script *fakemcp.Script) {
 		script.Result = `{"content":[{"type":"text","text":"` + long + `"}],"isError":true}`
-	}, databricksClip("tool-error: "+strings.Repeat("x", databricksMessageBytes-len("tool-error: ")-len(dbSecret)+1)+"[redacted]"))
+	}, byConnection)
+	// The words a text reaches are redacted before they are cut, where the
+	// message's screen did not see it.
+	if _, err := databricksToolAnswer([]byte(`{"content":[{"type":"text","text":"`+long+`"}],"isError":true}`), 1<<20, []string{dbSecret}); err == nil ||
+		err.Error() != databricksClip("tool-error: "+strings.Repeat("x", databricksMessageBytes-len("tool-error: ")-len(dbSecret)+1)+"[redacted]") {
+		t.Errorf("across the cut: %.80q", err)
+	}
 	// A test reads no listing that names a secret: the server is reported
 	// as not read, and nothing of the listing is.
 	sb.provider = dbServeOne(sapi, dbFakeMCP(t, func(script *fakemcp.Script) {

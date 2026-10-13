@@ -3,6 +3,7 @@
 package connections
 
 import (
+	"adapters/internal/fakemcp"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -133,7 +134,8 @@ func dbAbsent(t *testing.T, name, text string) {
 
 // A server's text -- a tool's error, a JSON-RPC error's message -- that
 // spells a credential or the session id once the JSON it holds is decoded
-// is not reported at all; the refusal says why, in words of its own.
+// is not reported at all; the refusal says why, in words of its own. Since
+// round 1 of #256 the whole message is refused before its text is read.
 func TestDatabricksMCPAServersTextThatSpellsASecretIsNotReported(t *testing.T) {
 	for _, kind := range []string{"token", "session id", "client secret"} {
 		fields, secret := dbTokenFields(), dbPAT
@@ -146,7 +148,7 @@ func TestDatabricksMCPAServersTextThatSpellsASecretIsNotReported(t *testing.T) {
 		s, _, c, _ := dbMCPFixture(t, fields, dbServers())
 		x := &dbMCPTransport{t: t, c: c, session: dbSession, result: dbErrorText(secret)}
 		out, err := databricksAcquire(context.Background(), s, dbMCPRead(c, "sql", "execute_sql", ""), dbMCPThrough(x))
-		if out != nil || err == nil || err.Error() != "tool-error: the tool reported an error whose text repeats the credential or its session id; the text is not reported" || x.calls != 1 {
+		if out != nil || err == nil || err.Error() != "provider-unavailable: the MCP server sql: the server's answer repeats the credential or its session id, and is not kept" || x.calls != 1 {
 			t.Errorf("%s in a tool's error: %v", kind, err)
 		}
 		if err != nil {
@@ -155,7 +157,7 @@ func TestDatabricksMCPAServersTextThatSpellsASecretIsNotReported(t *testing.T) {
 		message, _ := json.Marshal(map[string]any{"code": -32000, "message": `{"secret":"` + dbEscaped(secret) + `"}`})
 		x = &dbMCPTransport{t: t, c: c, session: dbSession, rpcError: string(message)}
 		out, err = databricksAcquire(context.Background(), s, dbMCPRead(c, "sql", "execute_sql", ""), dbMCPThrough(x))
-		if out != nil || err == nil || err.Error() != "provider-unavailable: the MCP server sql: the server's text repeats the credential or its session id, and is not reported" {
+		if out != nil || err == nil || err.Error() != "provider-unavailable: the MCP server sql: the server's answer repeats the credential or its session id, and is not kept" {
 			t.Errorf("%s in a JSON-RPC error: %v", kind, err)
 		}
 		if err != nil {
@@ -353,5 +355,84 @@ func TestDatabricksMCPRecordsHoldTheirForm(t *testing.T) {
 	reports, err := dbMCPThrough(x).databricksMCPTest(context.Background(), s, c.ID, c.Revision)
 	if err != nil || len(reports) != 4 || x.calls != 0 || x.lists != 4 {
 		t.Fatal(reports, err, x.calls, x.lists)
+	}
+}
+
+// The Azure DevOps MCP profile's first review round (#256) found two rules
+// the screens shared with this profile did not keep; both are held here
+// too.
+
+// The whole of every message is screened before any member of it is read:
+// the client secret, or the token nested past one decoding, beside the
+// envelope's own members at the handshake, the listing or the call -- where
+// the result a read takes holds neither -- is refused, and nothing of the
+// read is kept.
+func TestDatabricksMCPTheWholeMessageIsScreenedBeforeItIsRead(t *testing.T) {
+	want := "provider-unavailable: the MCP server sql: the server's answer repeats the credential or its session id, and is not kept"
+	results := map[string]string{
+		"initialize": `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake","version":"1"}}`,
+		"tools/list": `{"tools":` + dbMCPTools + `}`,
+		"tools/call": dbMCPResult,
+	}
+	for name, k := range map[string]struct {
+		fields map[string]string
+		secret string
+	}{
+		"the client secret":      {dbPrincipalFields(), dbSecret},
+		"the token nested":       {dbTokenFields(), adoNested(dbPAT, 5)},
+		"the session id nested":  {dbTokenFields(), adoNested(dbSession, 5)},
+		"the minted token, deep": {dbPrincipalFields(), adoNested(dbMinted, 3)},
+	} {
+		for _, stage := range []string{"initialize", "tools/list", "tools/call"} {
+			s, _, c, _ := dbMCPFixture(t, k.fields, dbServers())
+			f := dbFakeMCP(t, func(script *fakemcp.Script) {
+				script.Answer = func(w http.ResponseWriter, method string, id json.RawMessage) bool {
+					if method != stage {
+						return false
+					}
+					if method == "initialize" {
+						w.Header().Set("Mcp-Session-Id", dbSession)
+					}
+					w.Header().Set("Content-Type", "application/json")
+					io.WriteString(w, `{"jsonrpc":"2.0","id":`+string(id)+`,"result":`+results[method]+`,"extra":"`+k.secret+`"}`)
+					return true
+				}
+			})
+			out, err := databricksAcquire(context.Background(), s, dbMCPRead(c, "sql", "execute_sql", ""), dbServeOne(newDBFake(t), f))
+			if out != nil || err == nil || err.Error() != want {
+				t.Errorf("%s beside the envelope at %s: %v", name, stage, err)
+			}
+			if stage != "tools/call" && strings.Contains(dbMethods(f), "tools/call") {
+				t.Errorf("%s at %s: a tool was called", name, stage)
+			}
+			if err != nil {
+				dbAbsent(t, name, err.Error())
+			}
+		}
+	}
+}
+
+// A test's whole answer is held to the session id each server issued, which
+// the broker's final screen does not know: a session id that is a member's
+// name of the answer, where nothing can be replaced, is not written, and a
+// refusal of fixed words is.
+func TestDatabricksMCPATestAnswerNeverCarriesTheSessionID(t *testing.T) {
+	for _, fixed := range []string{"offered", "notOffered", "server"} {
+		_, b, c, _ := dbMCPFixture(t, dbTokenFields(), dbServers())
+		x := &dbMCPTransport{t: t, c: c, session: fixed}
+		b.provider = dbMCPThrough(x)
+		answer, err := b.Handle(context.Background(), "test", []byte(`{"id":"lake","revision":"`+c.Revision+`"}`))
+		raw, _ := json.Marshal(answer)
+		if answer != nil || err != unwritten || x.calls != 0 {
+			t.Errorf("the session id %q: %s %v", fixed, raw, err)
+		}
+	}
+	// A session id that names nothing of the answer leaves it as it was.
+	_, b, c, _ := dbMCPFixture(t, dbTokenFields(), dbServers())
+	b.provider = dbMCPThrough(&dbMCPTransport{t: t, c: c, session: dbSession})
+	answer, err := b.Handle(context.Background(), "test", []byte(`{"id":"lake","revision":"`+c.Revision+`"}`))
+	raw, _ := json.Marshal(answer)
+	if err != nil || !bytes.HasSuffix(raw, []byte(`"ok":true}`)) || bytes.Contains(raw, []byte(dbSession)) {
+		t.Fatalf("test %s %v", raw, err)
 	}
 }

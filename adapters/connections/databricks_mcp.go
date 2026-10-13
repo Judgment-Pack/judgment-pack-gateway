@@ -410,10 +410,25 @@ func databricksMCPClose(ctx context.Context, client *mcphttp.Client) {
 // endpoint under the workspace, the credential as the bearer, the server's
 // list as the only tools a call may name, and each answer read no further
 // than the result bound and the room a message takes around it, or the
-// client's own bound where that is larger.
-func (p provider) databricksMCPOpen(c DatabricksConnection, server DatabricksMCPServer, bearer string) (*mcphttp.Client, error) {
+// client's own bound where that is larger. Each whole message the server
+// answers with is screened, before any member of it is read, for the
+// connection's credentials, the others given and the session id
+// (databricksMCPScreen).
+func (p provider) databricksMCPOpen(c DatabricksConnection, server DatabricksMCPServer, bearer string, others ...string) (*mcphttp.Client, error) {
 	limit := max(int64(c.resultBound())+databricksErrorBytes, mcphttp.MaxResponse)
-	return mcphttp.Open(c.Workspace+databricksMCPPath(server.Server), mcphttp.Options{Token: bearer, MaxResponse: limit, Tools: append([]string{}, server.Tools...)}, p.client)
+	return mcphttp.Open(c.Workspace+databricksMCPPath(server.Server), mcphttp.Options{Token: bearer, MaxResponse: limit, Tools: append([]string{}, server.Tools...), Screen: databricksMCPScreen(joinSecrets(c.secrets(bearer), others))}, p.client)
+}
+
+// databricksMCPScreen is the screen a session's client holds each whole
+// message to -- a JSON body or one event of a stream, its envelope and
+// every member of it, not only the result a caller reads -- before anything
+// of it is read: one that spells a secret or the session id the server
+// issued, as written or as decoded to the point where decoding changes
+// nothing, is refused.
+func databricksMCPScreen(secrets []string) func([]byte, string) bool {
+	return func(message []byte, session string) bool {
+		return databricksCarries(message, joinSecrets(secrets, []string{session}))
+	}
 }
 
 // databricksMCPSchema is the tool's declared output schema, digested as
@@ -635,7 +650,7 @@ func (p provider) databricksMCPAcquire(ctx context.Context, s *Store, c Databric
 	if carries(secrets) {
 		return nil, databricksInRequest
 	}
-	client, err := p.databricksMCPOpen(c, server, bearer)
+	client, err := p.databricksMCPOpen(c, server, bearer, secrets...)
 	if err != nil {
 		return nil, databricksMCPRefusal(server.Server, err, secrets)
 	}
@@ -746,21 +761,41 @@ func (r databricksMCPReport) screened(secrets []string) databricksMCPReport {
 // and its tools, and nothing called. It is nil for a connection that
 // enables none.
 func (p provider) databricksMCPTest(ctx context.Context, s *Store, id, revision string) ([]databricksMCPReport, error) {
+	reports, _, err := p.databricksMCPTestHeld(ctx, s, id, revision)
+	return reports, err
+}
+
+// databricksMCPTestHeld is databricksMCPTest and every secret its reports
+// were held against, each server's session id among them: the whole answer
+// a test writes is held to them once more (databricksMCPAnswer).
+func (p provider) databricksMCPTestHeld(ctx context.Context, s *Store, id, revision string) ([]databricksMCPReport, []string, error) {
 	c, err := databricksSnapshot(s, id, revision)
 	if err != nil || len(c.MCP) == 0 {
-		return nil, err
+		return nil, nil, err
 	}
 	bearer, err := p.databricksBearer(ctx, s, c)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	active := databricksActive(s)
 	reports := []databricksMCPReport{}
+	held := []string{}
 	for _, server := range c.MCP {
 		report, secrets := p.databricksMCPProbe(ctx, c, server, bearer, active)
 		reports = append(reports, report.screened(secrets))
+		held = joinSecrets(held, secrets)
 	}
-	return reports, nil
+	return reports, held, nil
+}
+
+// databricksMCPAnswer is a test's whole answer as it is written, held to
+// every secret its parts were held to, each session id the servers issued
+// among them, whose holder -- the broker's final screen -- knows none: an
+// answer that would still spell one anywhere, its fixed member names
+// included, is not written, and a refusal of fixed words is written in its
+// place (outwardAnswer).
+func databricksMCPAnswer(answer any, held []string) (any, error) {
+	return outwardAnswer(answer, nil, held)
 }
 
 // databricksMCPProbe is one server's part of a test, and the secrets its
@@ -768,7 +803,7 @@ func (p provider) databricksMCPTest(ctx context.Context, s *Store, id, revision 
 func (p provider) databricksMCPProbe(ctx context.Context, c DatabricksConnection, server DatabricksMCPServer, bearer string, active []string) (databricksMCPReport, []string) {
 	report := databricksMCPReport{Server: server.Server, Offered: []string{}, NotOffered: []string{}}
 	secrets := joinSecrets(c.secrets(bearer), active)
-	client, err := p.databricksMCPOpen(c, server, bearer)
+	client, err := p.databricksMCPOpen(c, server, bearer, secrets...)
 	if err != nil {
 		report.Error = databricksMCPRefusal(server.Server, err, secrets).Error()
 		return report, secrets

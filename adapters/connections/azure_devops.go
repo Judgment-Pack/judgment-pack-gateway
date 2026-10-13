@@ -9,7 +9,8 @@ package connections
 // as received. What the credential may read, and whether a call could write,
 // is the credential's scopes and its identity's permissions: the connection
 // mints nothing, and holds itself to the reads it names, each a GET but the
-// query, which the API takes as a POST.
+// query, which the API takes as a POST. A connection may also enable the
+// organization's remote MCP server (azure_devops_mcp.go).
 import (
 	"adapters/document"
 	"adapters/internal/canon"
@@ -81,6 +82,10 @@ type AzureDevOpsConnection struct {
 	AccessToken  string `json:"access-token,omitempty"`
 	ExpiresAt    string `json:"expires-at,omitempty"`
 	ResultBytes  string `json:"max-result-bytes,omitempty"`
+	// MCP is the remote MCP server the connection enables, with the tools a
+	// read may call on it (azure_devops_mcp.go); the setup form does not
+	// yet carry it.
+	MCP []AzureDevOpsMCPServer `json:"mcp,omitempty"`
 }
 type azureDevOpsState struct {
 	Connections []AzureDevOpsConnection `json:"connections"`
@@ -113,6 +118,11 @@ type AzureDevOpsRequest struct {
 	Status      string   `json:"status,omitempty"`
 	Pipeline    int64    `json:"pipeline,omitempty"`
 	Run         int64    `json:"run,omitempty"`
+	// Server, Tool and Arguments are an mcp read's: the remote MCP server by
+	// its name, the tool, and its arguments, an object.
+	Server    string          `json:"server,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 }
 
 // An organization's name: letters of the English alphabet, digits and
@@ -326,9 +336,10 @@ func azureDevOpsActive(s *Store) []string {
 }
 
 // spells reports whether the connection's own text -- its id, name,
-// organization URL, project, expiry or bound -- spells one of secrets.
+// organization URL, project, expiry, bound, or its MCP server's name, tools
+// and header setting -- spells one of secrets.
 func (c AzureDevOpsConnection) spells(secrets []string) bool {
-	for _, text := range []string{c.ID, c.Name, c.Organization, c.Project, c.ExpiresAt, c.ResultBytes} {
+	for _, text := range append([]string{c.ID, c.Name, c.Organization, c.Project, c.ExpiresAt, c.ResultBytes}, c.mcpTexts()...) {
 		if databricksSpells(text, secrets) {
 			return true
 		}
@@ -338,6 +349,10 @@ func (c AzureDevOpsConnection) spells(secrets []string) bool {
 
 func (c AzureDevOpsConnection) valid() bool {
 	if !searchID.MatchString(c.ID) || !resourceText(c.Name, 80, false) || !azureDevOpsName(c.Project, azureDevOpsProjectForbidden, azureDevOpsProjectChars) || c.resultBound() < 0 || c.spells(c.secrets()) {
+		return false
+	}
+	// The remote MCP server takes an Entra access token, not a PAT.
+	if !azureDevOpsMCPValid(c.MCP) || len(c.MCP) > 0 && c.Auth != "bearer" {
 		return false
 	}
 	if organization, ok := AzureDevOpsOrganization(c.Organization); !ok || organization != c.Organization {
@@ -430,6 +445,7 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 			"apiVersion":         AzureDevOpsAPIVersion,
 			"defaultResultBytes": AzureDevOpsDefaultResultBytes, "minResultBytes": AzureDevOpsMinResultBytes, "maxResultBytes": AzureDevOpsMaxResultBytes,
 			"maxIds": AzureDevOpsMaxIDs, "maxTop": AzureDevOpsMaxTop, "maxPage": AzureDevOpsMaxPage,
+			"maxMCPServers": 1, "maxMCPTools": azureDevOpsMCPTools,
 		}
 		return map[string]any{"version": 1, "provider": "azure-devops", "connections": rows, "limits": limits}, err
 	case "configure":
@@ -439,6 +455,16 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 		}
 		if organization, ok := AzureDevOpsOrganization(q.Organization); ok {
 			q.Organization = organization
+		}
+		// A server's list left out is an empty one: no tool may be called.
+		// Its read-only header is sent unless the operator turns it off.
+		for i := range q.MCP {
+			if q.MCP[i].Tools == nil {
+				q.MCP[i].Tools = []string{}
+			}
+			if q.MCP[i].ReadOnlyHeader == "" {
+				q.MCP[i].ReadOnlyHeader = azureDevOpsReadOnlySend
+			}
 		}
 		err := b.store.locked(func(v *state) error {
 			if v.AzureDevOps == nil {
@@ -474,6 +500,9 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 			b.pending = q.secrets()
 			if q.spells(joinSecrets(azureDevOpsActiveOf(v), q.secrets())) {
 				return azureDevOpsInConfiguration
+			}
+			if len(q.MCP) > 0 && q.Auth != "bearer" {
+				return azureDevOpsMCPBearer
 			}
 			if !q.valid() {
 				return ErrRequest
@@ -518,9 +547,32 @@ func (b *Broker) azureDevOpsOperation(ctx context.Context, method string, raw []
 			return nil, ErrRequest
 		}
 		// An explicit action: one query for at most one work item of the
-		// project, whose answer is never returned.
+		// project, whose answer is never returned. Then the remote MCP server,
+		// where the connection enables it: initialize and its tools, and no
+		// tool called. The two are reported each on its own, since the token
+		// the MCP server takes is issued for its own application, and no page
+		// says the API takes that token or the server the API's.
 		err := azureDevOpsTest(ctx, b.store, q.ID, q.Revision, b.provider)
-		return map[string]bool{"ok": err == nil}, err
+		reports, held, mcpErr := b.provider.azureDevOpsMCPTest(ctx, b.store, q.ID, q.Revision)
+		if reports == nil {
+			if err == nil {
+				err = mcpErr
+			}
+			return map[string]bool{"ok": err == nil}, err
+		}
+		// The API's error was written before the server issued its session
+		// id: it is held to the session id now, as the whole answer is,
+		// fixed member names and all; an answer that would still spell one is
+		// not written (databricksMCPAnswer).
+		api := map[string]any{"ok": err == nil}
+		if err != nil {
+			api["error"] = outward(err, held, azureDevOpsUnreported).Error()
+		}
+		ok := err == nil
+		for _, report := range reports {
+			ok = ok && report.OK
+		}
+		return databricksMCPAnswer(map[string]any{"ok": ok, "api": api, "mcp": reports}, held)
 	}
 	return nil, ErrRequest
 }
@@ -536,6 +588,12 @@ func (c AzureDevOpsConnection) row(secrets []string) azureDevOpsRow {
 		for _, text := range []*string{&c.ID, &c.Name, &c.Organization, &c.Project, &c.ExpiresAt, &c.ResultBytes} {
 			if databricksSpells(*text, secrets) {
 				*text = "[redacted]"
+			}
+		}
+		// A server or a tool that would spell one is not reported at all.
+		for _, text := range c.mcpTexts() {
+			if databricksSpells(text, secrets) {
+				c.MCP = nil
 			}
 		}
 	}
@@ -742,7 +800,7 @@ func (p provider) azureDevOpsSend(ctx context.Context, c AzureDevOpsConnection, 
 	if len(raw) > bound {
 		return nil, nil, tooLarge
 	}
-	if encoding := response.Header.Get("Content-Encoding"); response.Uncompressed || encoding != "" && !strings.EqualFold(encoding, "identity") {
+	if azureDevOpsEncoded(response) {
 		return nil, nil, Error("provider-unavailable: the organization's answer is encoded, and this connection reads only what it asked for, which is not")
 	}
 	if !json.Valid(raw) {
@@ -776,6 +834,7 @@ func (q AzureDevOpsRequest) check() (AzureDevOpsRequest, error) {
 		"query": q.Query != "", "id": q.ID != 0, "ids": q.IDs != nil, "fields": q.Fields != nil, "top": q.Top != 0, "skip": q.Skip != 0, "cursor": q.Cursor != "",
 		"repository": q.Repository != "", "path": q.Path != "", "recursion": q.Recursion != "", "version": q.Version != "", "versionType": q.VersionType != "",
 		"status": q.Status != "", "pipeline": q.Pipeline != 0, "run": q.Run != 0,
+		"server": q.Server != "", "tool": q.Tool != "", "arguments": q.Arguments != nil,
 	}
 	takes := map[string]string{
 		"workitems.query":         "query top",
@@ -788,6 +847,7 @@ func (q AzureDevOpsRequest) check() (AzureDevOpsRequest, error) {
 		"pipelines.list":          "top cursor",
 		"pipelines.runs":          "pipeline",
 		"pipelines.run":           "pipeline run",
+		"mcp":                     "server tool arguments",
 	}
 	members, ok := takes[q.Read]
 	if !ok {
@@ -878,6 +938,12 @@ func (q AzureDevOpsRequest) check() (AzureDevOpsRequest, error) {
 		ok = id(q.Pipeline)
 	case "pipelines.run":
 		ok = id(q.Pipeline) && id(q.Run)
+	case "mcp":
+		// Arguments are an object, {} when left out.
+		if len(q.Arguments) == 0 || string(q.Arguments) == "null" {
+			q.Arguments = json.RawMessage(`{}`)
+		}
+		ok = databricksTool.MatchString(q.Tool) && canon.IsObject(q.Arguments)
 	}
 	if !ok {
 		return q, ErrRequest
@@ -1124,8 +1190,16 @@ func azureDevOpsAcquire(ctx context.Context, s *Store, q AzureDevOpsRequest, p p
 	if q, err = q.check(); err != nil {
 		return nil, err
 	}
+	if q.Read == "mcp" {
+		if err = q.checkMCP(c); err != nil {
+			return nil, err
+		}
+	}
 	if c.expired() {
 		return nil, azureDevOpsExpired
+	}
+	if q.Read == "mcp" {
+		return p.azureDevOpsMCPAcquire(ctx, s, c, q, secrets)
 	}
 	first, err := q.call(c)
 	if err != nil {

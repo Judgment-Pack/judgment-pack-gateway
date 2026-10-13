@@ -570,7 +570,7 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 		if err := databricksTest(ctx, b.store, q.ID, q.Revision, b.provider); err != nil {
 			return map[string]bool{"ok": false}, err
 		}
-		reports, err := b.provider.databricksMCPTest(ctx, b.store, q.ID, q.Revision)
+		reports, held, err := b.provider.databricksMCPTestHeld(ctx, b.store, q.ID, q.Revision)
 		if err != nil || reports == nil {
 			return map[string]bool{"ok": err == nil}, err
 		}
@@ -578,7 +578,7 @@ func (b *Broker) databricksOperation(ctx context.Context, method string, raw []b
 		for _, report := range reports {
 			ok = ok && report.OK
 		}
-		return map[string]any{"ok": ok, "mcp": reports}, nil
+		return databricksMCPAnswer(map[string]any{"ok": ok, "mcp": reports}, held)
 	}
 	return nil, ErrRequest
 }

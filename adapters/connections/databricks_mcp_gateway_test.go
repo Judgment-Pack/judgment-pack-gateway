@@ -206,7 +206,9 @@ func TestDatabricksMCPUnityGatewayNamesAndScope(t *testing.T) {
 // status names the services.
 func TestDatabricksMCPUnityGatewayHoldsEverySafeguard(t *testing.T) {
 	byClient := "provider-unavailable: the MCP server " + dbGateway + ": the server's answer repeats the credential"
-	byConnection := "provider-unavailable: the MCP server's answer repeats the credential or its session id, and is not kept"
+	// Since round 1 of #256 the whole message is screened before anything of
+	// it is read, so a secret the client does not know is refused there, at
+	// every stage, in the same words.
 	early := "provider-unavailable: the MCP server " + dbGateway + ": the server's answer repeats the credential or its session id, and is not kept"
 	session := "provider-unavailable: the MCP server " + dbGateway + ": the server's answer repeats its session id"
 	result := func(text string) string { return `{"content":[{"type":"text","text":"` + text + `"}]}` }
@@ -217,10 +219,10 @@ func TestDatabricksMCPUnityGatewayHoldsEverySafeguard(t *testing.T) {
 		"the token escaped":                      {dbTokenFields(), "", "", result(dbEscaped(dbPAT)), byClient},
 		"the session id escaped":                 {dbTokenFields(), "", "", result(dbEscaped(dbSession)), session},
 		"the minted token escaped":               {dbGatewayPrincipal(), "", "", result(dbEscaped(dbMinted)), byClient},
-		"the client secret escaped":              {dbGatewayPrincipal(), "", "", result(dbEscaped(dbSecret)), byConnection},
+		"the client secret escaped":              {dbGatewayPrincipal(), "", "", result(dbEscaped(dbSecret)), early},
 		"the client secret in the server's name": {dbGatewayPrincipal(), `{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"` + dbSecret + `","version":"1"}}`, "", "", early},
 		"the client secret escaped in a listing": {dbGatewayPrincipal(), "", `{"tools":[{"name":"execute_sql","description":"` + dbEscaped(dbSecret) + `"}]}`, "", early},
-		"the client secret in a tool's error":    {dbGatewayPrincipal(), "", "", dbErrorText(dbSecret), "tool-error: the tool reported an error whose text repeats the credential or its session id; the text is not reported"},
+		"the client secret in a tool's error":    {dbGatewayPrincipal(), "", "", dbErrorText(dbSecret), early},
 	} {
 		s, _, c, _ := dbMCPFixture(t, k.fields, dbGatewayServers())
 		x := &dbMCPTransport{t: t, c: c, path: dbGatewayPath, session: dbSession, init: k.init, list: k.list, result: k.answer}
