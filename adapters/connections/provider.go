@@ -33,6 +33,7 @@ type provider struct {
 	notion                   bool
 	obsidian                 bool
 	s3                       bool
+	databricks               bool
 }
 
 func google() provider {
@@ -249,6 +250,9 @@ func (p provider) kind() string {
 	}
 	if p.s3 {
 		return "aws-s3"
+	}
+	if p.databricks {
+		return "databricks"
 	}
 	if p.obsidian {
 		return "obsidian"

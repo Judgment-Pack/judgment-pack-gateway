@@ -50,6 +50,8 @@ func run() int {
 		open, read = connections.OpenObsidianStore, connections.ReadObsidian
 	case "aws-s3":
 		open, read = connections.OpenS3Store, connections.ReadS3
+	case "databricks":
+		open, read = connections.OpenDatabricksStore, connections.ReadDatabricks
 	default:
 		return 2
 	}
@@ -63,6 +65,9 @@ func run() int {
 	if *provider == "aws-s3" || *provider == "web-search" {
 		limit = 16 << 10
 	} // a 1024-byte key may be JSON-escaped up to sixfold
+	if *provider == "databricks" {
+		limit = 64 << 10 // a statement of 32 KiB, escaped, and its parameters
+	}
 	raw, err := io.ReadAll(io.LimitReader(os.Stdin, int64(limit+1)))
 	if err != nil || len(raw) > limit {
 		fmt.Fprintln(os.Stderr, "invalid-request")

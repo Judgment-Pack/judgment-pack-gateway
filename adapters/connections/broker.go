@@ -111,6 +111,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if b.provider.s3 {
 		return b.s3Operation(ctx, method, raw)
 	}
+	if b.provider.databricks {
+		return b.databricksOperation(ctx, method, raw)
+	}
 	switch method {
 	case "status":
 		var empty struct{}

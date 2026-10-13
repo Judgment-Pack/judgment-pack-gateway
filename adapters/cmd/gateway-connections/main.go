@@ -86,6 +86,9 @@ func run() int {
 	if *provider == "web-search" {
 		open = connections.OpenSearchStore
 	}
+	if *provider == "databricks" {
+		open = connections.OpenDatabricksStore
+	}
 	if *provider == "document-processing" {
 		open = connections.OpenProcessingStore
 	}
@@ -114,6 +117,9 @@ func run() int {
 	}
 	if *provider == "web-search" {
 		b = connections.NewSearch(s, *disabled)
+	}
+	if *provider == "databricks" {
+		b = connections.NewDatabricks(s, *disabled)
 	}
 	if *provider == "document-processing" {
 		b = connections.NewProcessing(s, *disabled)
