@@ -261,7 +261,7 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 			id := identityFor(t, issuer)
 			service.identity = &id
 			token := issuer.mint(t, "ec-1", nil, goodClaims(time.Now()))
-			code, first := authed(t, server, "/acquire", `{"session":"wb","source":"screening","arguments":{"q":"acme"}}`, token)
+			code, first := authed(t, server, "/acquire", `{"session":"wb","source":"screening","arguments":{"q":"example"}}`, token)
 			if code != http.StatusOK {
 				t.Fatalf("acquire: %d %v", code, first)
 			}
