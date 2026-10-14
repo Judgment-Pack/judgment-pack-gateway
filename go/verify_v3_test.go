@@ -209,6 +209,61 @@ func TestVersion3StructuralConstraints(t *testing.T) {
 	}
 }
 
+// What a write to a remote server adds to an action's tool (SPEC.md §1.2a,
+// #268): transport "http", on shape mcp alone, and the endpoint then a
+// string of the endpoint form -- each case of the table the form answers
+// to, accepted and refused -- while a tool without transport keeps the
+// platform's endpoint, free text or null, held to nothing more.
+func TestAnActionsToolTransportHoldsItsEndpointToTheForm(t *testing.T) {
+	tool := func(members map[string]value) func(*vObject) {
+		return func(o *vObject) {
+			named := sub(sub(o, "action"), "tool")
+			for name, v := range members {
+				named.set(name, v)
+			}
+		}
+	}
+	grade := func(t *testing.T, name string, mutate func(*vObject), want bool) {
+		t.Helper()
+		obj, r := receipt3("action", mutate)
+		if err := validateVersion3(obj, r); (err == nil) != want {
+			t.Errorf("%s: want accepted %v, got %v", name, want, err)
+		}
+	}
+	accepted, refused := endpointCases(t)
+	for _, c := range accepted {
+		grade(t, "transport with "+c.text(), tool(map[string]value{"transport": vString("http"), "endpoint": vString(c.text())}), true)
+	}
+	for _, c := range refused {
+		grade(t, "transport with "+c.text(), tool(map[string]value{"transport": vString("http"), "endpoint": vString(c.text())}), false)
+	}
+	of := vString("https://mcp.example/api/mcp")
+	for _, tc := range []struct {
+		name    string
+		members map[string]value
+		want    bool
+	}{
+		{"transport with a null endpoint", map[string]value{"transport": vString("http"), "endpoint": vNull{}}, false},
+		{"transport with an endpoint that is no string", map[string]value{"transport": vString("http"), "endpoint": vInt(443)}, false},
+		{"a transport of another value", map[string]value{"transport": vString("stdio"), "endpoint": of}, false},
+		{"a transport in upper case", map[string]value{"transport": vString("HTTP"), "endpoint": of}, false},
+		{"an empty transport", map[string]value{"transport": vString(""), "endpoint": of}, false},
+		{"a transport null", map[string]value{"transport": vNull{}, "endpoint": of}, false},
+		{"a transport that is no string", map[string]value{"transport": vInt(1), "endpoint": of}, false},
+		{"transport on shape http", map[string]value{"transport": vString("http"), "shape": vString("http"), "endpoint": of}, false},
+		{"transport on shape airbyte", map[string]value{"transport": vString("http"), "shape": vString("airbyte"), "endpoint": of}, false},
+		{"no transport, a host", map[string]value{"endpoint": vString("desk.internal")}, true},
+		{"no transport, a host and a port", map[string]value{"endpoint": vString("warehouse.internal:5432")}, true},
+		{"no transport, https and no host", map[string]value{"endpoint": vString("https://:443/")}, true},
+		{"no transport, https and a user", map[string]value{"endpoint": vString("https://operator@desk.internal/")}, true},
+		{"no transport, an endpoint of the form", map[string]value{"endpoint": of}, true},
+		{"no transport, null", map[string]value{"endpoint": vNull{}}, true},
+		{"no transport, shape http", map[string]value{"shape": vString("http"), "endpoint": vString("desk.internal")}, true},
+	} {
+		grade(t, tc.name, tool(tc.members), tc.want)
+	}
+}
+
 // sub on an array-valued member needs the raw value.
 func (o *vObject) getArray(name string) vArray {
 	v, _ := o.get(name)

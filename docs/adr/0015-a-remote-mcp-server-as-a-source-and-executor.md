@@ -173,6 +173,25 @@ Nothing changes in `go/act.go`. A binding's `mcp` operation may name `server` as
 `action.tool.endpoint` carries — is the URL. The decision policy holds the write before the
 executor starts, so a write it refuses reaches no server.
 
+*Amended 2026-10-14 (#268).* The action receipt names the transport as well. For a write,
+`action.tool.endpoint` carried the URL over HTTP and the platform's endpoint over stdio, which
+the engine configuration takes as any non-empty string, one beginning with `https://` among them;
+nothing in the receipt said which, so both verifiers held the member to a string or `null`
+alone, and a receipt naming a remote endpoint out of the form of §1 above was graded `ok`. Of
+the two routes #268 set out, the maintainer chose the first: an optional member
+`action.tool.transport`, `"http"` exactly when the executor reached a remote server, the `--url`
+form, and absent over stdio, as `acquisition.transport` is (§4 above). With it,
+`action.tool.endpoint` is a string held to the endpoint form `SPEC.md` §1.2a states; without it,
+a string or `null` as before; a `transport` of another value, or one on a tool whose `shape` is
+not `"mcp"`, is `malformed`. The second route, a platform `endpoint` that may not begin with a
+scheme, was not taken: it reads the transport from the endpoint's spelling, and it says nothing
+of a receipt minted before the rule, whose platform endpoint may begin with one. So `go/act.go`
+changes by the one member, which it sets for a write source the engine derived from a binding
+that names a URL; a stdio write's receipt is the bytes it was, which a golden test holds
+(`go/testdata/action-golden`). A verifier written before the member tolerates it and holds the
+endpoint to nothing. Six vectors `v3-action-*` hold both verifiers to the rule. An
+`action.tool.peerIdentity` stays out of it, as question 2 below answers.
+
 ### 7. How it is held
 
 An in-process Streamable HTTP server (`adapters/internal/fakemcp`) that issues a session and holds

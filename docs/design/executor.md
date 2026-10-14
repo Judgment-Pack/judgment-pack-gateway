@@ -214,7 +214,7 @@ and `resultDigest` names them. The engine then mints one receipt in the session 
 | `action.requester` | the token identity again — the one who asked, named where the action is |
 | `action.decision`, `action.cites` | as given; `action.decision.recordBytes` is `"exact"` for a tool whose policy requires a signed record, and absent otherwise |
 | `action.policy` | for a tool with a decision policy, `"sha256:"` and the SHA-256 of the canonical form of the policy object as configured; absent for a tool with none |
-| `action.tool` | `{"shape": "mcp", "endpoint": <the platform's endpoint or null; a remote server's URL, as the platform's parameters resolved it>, "name": <tool>}` |
+| `action.tool` | `{"shape": "mcp", "endpoint": <the platform's endpoint or null; a remote server's URL, as the platform's parameters resolved it>, "name": <tool>}`, and `"transport": "http"` for a remote server alone, under which both verifiers hold the endpoint to the form of `SPEC.md` §1.2a; absent over stdio, whose receipt is what it was (#268) |
 | `action.request` | a salted commitment over the canonical request sent to the executor, salt returned |
 | `action.adapter` | from the envelope, as `acquisition.adapter` is |
 | `action.observedAt` | when the target answered, from the envelope |
@@ -277,7 +277,8 @@ unless it cites a verifying judgment, and, for a tool held to a policy, unless t
 (`action.decision`, `action.cites`, and, for a tool held to a policy, `action.policy`, the policy
 whose checks held at that moment); what was sent (`argumentsCommitment` and `action.request`,
 salted commitments over the arguments and the canonical request); to which endpoint, the resolved
-URL, and which tool (`action.tool`); and what the target answered, by `resultDigest`: a tool
+URL, named with `transport` `"http"` so that a verifier holds it to the endpoint form, and which
+tool (`action.tool`); and what the target answered, by `resultDigest`: a tool
 result the adapter accepted, a refusal reported as one (`isError: true`) included. An HTTP error
 status or a JSON-RPC error answered after the call was sent is no such result and mints nothing,
 though the target may have applied the write. The credential is named by the configuration and not by the receipt: the

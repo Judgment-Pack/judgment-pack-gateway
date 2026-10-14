@@ -25,7 +25,8 @@ with `"observations": […]` after the findings when §4 step 8 has any, and
 §4; ADR-0014), exiting 0 whenever it reached a verdict and 2 when it could not.
 The `witness` member was added to it by the author of the reference's change, as
 `action.policy` was, and so were the members a remote MCP server adds to an acquisition
-(ADR-0015): a second body of code, not a second reading of the text.
+(ADR-0015) and `action.tool.transport` (#268): a second body of code, not a second reading of the
+text.
 `impl witness --trail <hex> --witness-key <file>... [--witness <file>]...
 [--witness-head <file>]` reads a chain of witness statements (§8.6) and writes
 its answer — a refusal, findings, or what the chain says — exiting 0 whenever it

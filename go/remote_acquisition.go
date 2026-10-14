@@ -6,7 +6,8 @@ package main
 // endpoint and the peer identity then held to the forms a remote server's
 // take. The signer holds an adapter's envelope to them, the verifier a
 // receipt, and a binding's remote server is held to the endpoint's form
-// before the engine starts.
+// before the engine starts. A write to a remote server names its transport
+// in the action's tool, whose endpoint is then held to the same form (#268).
 
 import (
 	"errors"
@@ -145,6 +146,31 @@ func isEndpointPath(path string) bool {
 
 func isHexDigit(c byte) bool {
 	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
+}
+
+// toolTransportProblem holds an action's tool to what a write to a remote
+// server adds to it (SPEC.md §1.2a, #268), or is nil when it adds nothing:
+// transport, when present, is "http", on shape mcp alone, and the endpoint
+// is then a string of the endpoint form above. Without transport the
+// endpoint is the platform's, a string or null as the engine configuration
+// takes it, and is held to nothing here: a stdio write's endpoint may even
+// begin with "https://", so its spelling says nothing of the transport.
+func toolTransportProblem(tool *vObject) error {
+	transport, present := tool.get("transport")
+	if !present {
+		return nil
+	}
+	if t, ok := transport.(vString); !ok || t != "http" {
+		return errors.New("action.tool: transport is outside its enumeration")
+	}
+	if shape, _ := memberString(tool, "shape"); shape != "mcp" {
+		return errors.New("action.tool: transport is a member of shape mcp alone")
+	}
+	endpoint, ok := memberString(tool, "endpoint")
+	if !ok || !isRemoteEndpoint(endpoint) {
+		return errors.New("action.tool: a remote server's endpoint is not of its form")
+	}
+	return nil
 }
 
 // remoteMembersOnShape is why an acquisition of the shape given carries what

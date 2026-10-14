@@ -197,7 +197,9 @@ through the managed MCP server of one Unity Catalog function at
 operation alone. A binding's URL and tools may be a template, filled from the platform's
 `parameters` (engine configuration version 8): the binding's digest pins the template and the
 transport, the scheme and the host are written in it (or the host is `{workspace}` alone, held to a
-Databricks workspace's host forms), and the action receipt names the resolved URL. Each write tool
+Databricks workspace's host forms), and the action receipt names the resolved URL, beside
+`action.tool.transport` `"http"`, under which `gateway verify` and verify-ts hold it to the
+endpoint form of `SPEC.md` §1.2a. Each write tool
 is held to a decision policy: for Azure DevOps, whose write tools are dispatchers that an `action`
 argument steers, the worked policy fixes `action` to `update` and the form of its operations, binds
 the work item's id and revision to the record's facts, and is closed, so a request that names

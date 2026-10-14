@@ -240,8 +240,11 @@ func TestEngineDerivesARemoteServer(t *testing.T) {
 	if want := []string{adapter, "--url=https://mcp.example/api/mcp", "--credentials=" + creds["write"], "--bearer=WRITE_TOKEN", "--tools=update", "--error-results"}; !reflect.DeepEqual(write.argv, want) {
 		t.Fatalf("write:\n got %q\nwant %q", write.argv, want)
 	}
-	if write.endpoint != "https://mcp.example/api/mcp" {
-		t.Fatalf("the write's endpoint is the URL it went to, not the platform's: %q", write.endpoint)
+	if write.endpoint != "https://mcp.example/api/mcp" || write.transport != "http" {
+		t.Fatalf("the write's endpoint is the URL it went to, not the platform's, reached over http: %q %q", write.endpoint, write.transport)
+	}
+	if live.transport != "" || live.endpoint != "" {
+		t.Fatalf("a read source names no endpoint and no transport for a receipt: %q %q", live.endpoint, live.transport)
 	}
 }
 
