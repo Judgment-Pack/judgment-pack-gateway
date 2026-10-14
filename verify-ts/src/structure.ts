@@ -79,15 +79,21 @@ function isAdapter(v: Value | undefined): boolean {
 const shapes = new Set(["airbyte", "mcp", "http", "command"]);
 
 // isRemoteEndpoint is the form of a remote MCP server's endpoint (§1.2a,
-// ADR-0015): at most 2048 characters, each from U+0021 to U+007E;
-// "https://" or "http://" first; no "?" and no "#"; an authority -- what
-// follows "//" up to the first "/" or the end -- that is not empty and
-// holds no "@"; and, after "http://", an authority that is a loopback
+// ADR-0015; testdata/remote-endpoints/cases.json is the table it is tested
+// against): at most 2048 characters, each from U+0021 to U+007E; no "?",
+// no "#" and no "@" anywhere, so no user; "https://" or "http://"; then an
+// authority, a host and optionally ":" and a port; then nothing, or "/"
+// and a path. The host is a name of letters, digits, "-", "." and "_", or
+// "[", hexadecimal digits, ":" and ".", and "]"; the port a decimal from 1
+// to 65535 with no leading zero; and every "%" in the path is followed by
+// exactly two hexadecimal digits. After "http://", the host is a loopback
 // address written as one, an IPv4 address of 127.0.0.0/8 in dotted decimal
-// or [::1], with ":" and a port in decimal from 1 to 65535 with no leading
-// zero, or no port.
+// or [::1]; a name is not one, localhost included.
 export function isRemoteEndpoint(s: string): boolean {
-  if (s.length === 0 || s.length > 2048 || !/^[\x21-\x7e]+$/.test(s) || /[?#]/.test(s)) {
+  if (s.length > 2048 || !/^[\x21-\x7e]*$/.test(s) || /[?#]/.test(s)) {
+    return false;
+  }
+  if (s.includes("@")) {
     return false;
   }
   const scheme = /^(https?):\/\/(.*)$/s.exec(s);
@@ -97,40 +103,48 @@ export function isRemoteEndpoint(s: string): boolean {
   const rest = scheme[2]!;
   const slash = rest.indexOf("/");
   const authority = slash < 0 ? rest : rest.slice(0, slash);
-  if (authority === "" || authority.includes("@")) {
+  const path = slash < 0 ? "" : rest.slice(slash + 1);
+  const split = splitAuthority(authority);
+  if (split === null || split.host === "") {
     return false;
   }
-  return scheme[1] === "https" || isLoopbackAuthority(authority);
+  if (!/^[A-Za-z0-9._-]+$/.test(split.host) && !/^\[[0-9A-Fa-f:.]+\]$/.test(split.host)) {
+    return false;
+  }
+  if (split.port !== null && (!/^[1-9][0-9]{0,4}$/.test(split.port) || Number(split.port) > 65535)) {
+    return false;
+  }
+  if (/%(?![0-9A-Fa-f]{2})/.test(path)) {
+    return false;
+  }
+  return scheme[1] === "https" || isLoopbackHost(split.host);
 }
 
-// isLoopbackAuthority is a loopback address written as one, with a port
-// or without.
-function isLoopbackAuthority(authority: string): boolean {
-  let host = authority;
-  let port: string | null = null;
-  if (authority.startsWith("[")) {
-    const end = authority.indexOf("]");
-    if (end < 0) {
-      return false;
-    }
-    host = authority.slice(0, end + 1);
-    const rest = authority.slice(end + 1);
-    if (rest !== "") {
-      if (!rest.startsWith(":")) {
-        return false;
-      }
-      port = rest.slice(1);
-    }
-  } else {
+// splitAuthority is an authority's host and its port, null when no ":"
+// follows the host: a host in brackets runs to the first "]", any other to
+// the first ":". It is null itself when the "]" is missing or anything
+// but ":" follows it.
+function splitAuthority(authority: string): { host: string; port: string | null } | null {
+  if (!authority.startsWith("[")) {
     const colon = authority.indexOf(":");
-    if (colon >= 0) {
-      host = authority.slice(0, colon);
-      port = authority.slice(colon + 1);
-    }
+    return colon < 0 ? { host: authority, port: null } : { host: authority.slice(0, colon), port: authority.slice(colon + 1) };
   }
-  if (port !== null && (!/^[1-9][0-9]{0,4}$/.test(port) || Number(port) > 65535)) {
-    return false;
+  const end = authority.indexOf("]");
+  if (end < 0) {
+    return null;
   }
+  const host = authority.slice(0, end + 1);
+  const rest = authority.slice(end + 1);
+  if (rest === "") {
+    return { host, port: null };
+  }
+  return rest.startsWith(":") ? { host, port: rest.slice(1) } : null;
+}
+
+// isLoopbackHost is a loopback address written as one: [::1], or an IPv4
+// address of 127.0.0.0/8 in dotted decimal, each part from 0 to 255 with
+// no leading zero.
+function isLoopbackHost(host: string): boolean {
   if (host === "[::1]") {
     return true;
   }

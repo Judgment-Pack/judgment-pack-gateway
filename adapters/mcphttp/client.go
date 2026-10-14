@@ -127,14 +127,21 @@ type Options struct {
 	Screen func(message []byte, session string) bool
 }
 
-// EndpointProblem is why endpoint is not one a client is opened on, or nil:
-// https, or http at a loopback address written as one -- an IPv4 address
-// of 127.0.0.0/8 in dotted decimal, or [::1] -- since a credential sent in
-// the clear is a credential given away; no user, no query, no fragment; at
-// most 2048 bytes of printable ASCII. The endpoint is used as written.
+// EndpointProblem is why endpoint is not one a client is opened on, or nil,
+// held to the form SPEC.md §1.2a states for a remote server's endpoint,
+// which the signer and both verifiers hold a receipt's to as well
+// (testdata/remote-endpoints/cases.json is the table each is tested
+// against): at most 2048 bytes of printable ASCII; https, or http at a
+// loopback address written as one -- an IPv4 address of 127.0.0.0/8 in
+// dotted decimal, or [::1] -- since a credential sent in the clear is a
+// credential given away; no query, no fragment and no "@", so no user; a
+// host of letters, digits, '-', '.' and '_', or hexadecimal digits, ':' and
+// '.' in brackets, and a port, when given, from 1 to 65535 with no leading
+// zero; and every '%' in the path followed by two hexadecimal digits. The
+// endpoint is used as written.
 func EndpointProblem(endpoint string) error {
-	if endpoint == "" || len(endpoint) > 2048 {
-		return errors.New("the url is empty or longer than 2048 bytes")
+	if len(endpoint) > 2048 {
+		return errors.New("the url is longer than 2048 bytes")
 	}
 	for i := 0; i < len(endpoint); i++ {
 		if endpoint[i] < 0x21 || endpoint[i] > 0x7e {
@@ -153,21 +160,79 @@ func EndpointProblem(endpoint string) error {
 	if strings.ContainsAny(endpoint, "?#") {
 		return errors.New("the url carries a query or a fragment; it is used as written, and a credential's place is the credentials file")
 	}
-	authority, _, _ := strings.Cut(rest, "/")
-	if authority == "" {
+	if strings.Contains(endpoint, "@") {
+		return errors.New("the url carries a user, or an '@' that could be read as one: a credential's place is the credentials file")
+	}
+	authority, path, _ := strings.Cut(rest, "/")
+	host, port, hasPort, ok := splitAuthority(authority)
+	if ok && host == "" {
 		return errors.New("the url names no host")
 	}
-	if strings.Contains(authority, "@") {
-		return errors.New("the url carries a user: a credential's place is the credentials file")
+	if !ok || !hostForm(host) {
+		return errors.New("the url's host is not a name of letters, digits, '-', '.' and '_', nor an address of hexadecimal digits, ':' and '.' in brackets")
+	}
+	if hasPort && !decimalIn(port, 1, 65535) {
+		return errors.New("the url's port is not a decimal from 1 to 65535 with no leading zero")
+	}
+	for i := 0; i < len(path); i++ {
+		if path[i] == '%' && (i+2 >= len(path) || !isHex(path[i+1]) || !isHex(path[i+2])) {
+			return errors.New("the url's path carries a '%' not followed by two hexadecimal digits")
+		}
 	}
 	if plain && !LoopbackAuthority(authority) {
 		return errors.New("the url must be https; http is accepted at a loopback address written as one (127.0.0.0/8 in dotted decimal, or [::1]) only, since a credential sent in the clear is a credential given away")
 	}
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
-		return errors.New("the url is not an absolute URL of a host")
-	}
 	return nil
+}
+
+// splitAuthority is an authority's host and port: a host in brackets runs
+// to the first ']', any other to the first ':'; hasPort is whether ':'
+// follows the host. ok is false when the ']' is missing or anything but
+// ':' follows it.
+func splitAuthority(authority string) (host, port string, hasPort, ok bool) {
+	if !strings.HasPrefix(authority, "[") {
+		host, port, hasPort = strings.Cut(authority, ":")
+		return host, port, hasPort, true
+	}
+	end := strings.IndexByte(authority, ']')
+	if end < 0 {
+		return "", "", false, false
+	}
+	host, rest := authority[:end+1], authority[end+1:]
+	if rest == "" {
+		return host, "", false, true
+	}
+	port, hasPort = strings.CutPrefix(rest, ":")
+	return host, port, hasPort, hasPort
+}
+
+// hostForm is a host as the endpoint form writes one: a name of one or more
+// letters, digits, '-', '.' and '_' (an IPv4 address among them), or '[',
+// one or more hexadecimal digits, ':' and '.', and ']'.
+func hostForm(host string) bool {
+	allowed := func(c byte) bool {
+		return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '.' || c == '_'
+	}
+	if inner, bracketed := strings.CutPrefix(host, "["); bracketed {
+		var closed bool
+		if host, closed = strings.CutSuffix(inner, "]"); !closed {
+			return false
+		}
+		allowed = func(c byte) bool { return isHex(c) || c == ':' || c == '.' }
+	}
+	if host == "" {
+		return false
+	}
+	for i := 0; i < len(host); i++ {
+		if !allowed(host[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHex(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 // LoopbackAuthority reports whether authority -- a URL's host, with its
@@ -177,23 +242,8 @@ func EndpointProblem(endpoint string) error {
 // with no leading zero. A name is not one, localhost included: what a name
 // resolves to is not in the text.
 func LoopbackAuthority(authority string) bool {
-	host, port := authority, ""
-	if strings.HasPrefix(authority, "[::1]") {
-		host, port = "[::1]", strings.TrimPrefix(authority, "[::1]")
-		if port != "" && !strings.HasPrefix(port, ":") {
-			return false
-		}
-		port = strings.TrimPrefix(port, ":")
-		if strings.HasSuffix(authority, ":") {
-			return false
-		}
-	} else if h, p, found := strings.Cut(authority, ":"); found {
-		if p == "" {
-			return false
-		}
-		host, port = h, p
-	}
-	if port != "" && !decimalIn(port, 1, 65535) {
+	host, port, hasPort, ok := splitAuthority(authority)
+	if !ok || (hasPort && !decimalIn(port, 1, 65535)) {
 		return false
 	}
 	if host == "[::1]" {

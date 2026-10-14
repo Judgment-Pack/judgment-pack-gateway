@@ -237,10 +237,14 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   --source-shape tickets=mcp
 ```
 
-- `--url` is held as `adapter-http` holds its endpoint, a little narrower: `https`, or `http`
-  at a loopback address written as one (127.0.0.0/8 in dotted decimal, or `[::1]` — a name such
-  as `localhost` is not one, since what it resolves to is not in the text); no user, no query,
-  no fragment; at most 2048 bytes of printable ASCII, the scheme in lower case. It is used
+- `--url` is held to the one form `SPEC.md` §1.2a states for a remote server's endpoint, which
+  the signer and both verifiers hold the receipt's `endpoint` to as well: at most 2048 bytes of
+  printable ASCII; `https://`, or `http://` at a loopback address written as one (127.0.0.0/8 in
+  dotted decimal, or `[::1]` — a name such as `localhost` is not one, since what it resolves to
+  is not in the text), the scheme in lower case; a host that is a name of letters, digits, `-`,
+  `.` and `_`, or hexadecimal digits, `:` and `.` in brackets; a port, when given, from 1 to
+  65535 with no leading zero; no user, no query, no fragment, and no `@` anywhere, the path
+  included; every `%` in the path followed by two hexadecimal digits. It is used
   exactly as written, nothing appended. A redirect is never followed: the server's `3xx` fails
   the call, named by its status and never by its location.
 - `--bearer MEMBER` names the member of the `--credentials` file sent as

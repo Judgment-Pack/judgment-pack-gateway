@@ -138,22 +138,49 @@ test("what a remote MCP server adds to an acquisition is held to its form", () =
   }
 });
 
-test("a remote server's endpoint form answers as the reference's does", () => {
-  for (const ok of [
-    "https://mcp.example/mcp", "https://mcp.example:8443/api/2.0/mcp/functions/a/b", "https://127.0.0.1:9/mcp", "https://MCP.example/x",
-    "http://127.0.0.1/mcp", "http://127.0.0.1:8080/mcp", "http://127.255.0.9:1", "http://[::1]:65535/x", "http://[::1]/", "https://h",
-  ]) {
-    assert.equal(isRemoteEndpoint(ok), true, ok);
+// The table the endpoint form's four implementations answer to (§1.2a):
+// this one, the signer's, which the reference's verifier uses too, and the
+// adapter's. Every case names a rule the table lists, and every rule has a
+// case on each side.
+type EndpointCase = { rule: string; endpoint: string; padTo?: number };
+const endpointTable: { about: string[]; rules: string[]; accepted: EndpointCase[]; refused: EndpointCase[] } = JSON.parse(
+  fs.readFileSync(path.join(import.meta.dirname, "..", "..", "testdata", "remote-endpoints", "cases.json"), "utf8"),
+);
+const endpointText = (c: EndpointCase): string => c.endpoint + "a".repeat(Math.max(0, (c.padTo ?? 0) - c.endpoint.length));
+
+test("the endpoint table holds every rule on each side", () => {
+  assert.deepEqual(Object.keys(endpointTable).sort(), ["about", "accepted", "refused", "rules"]);
+  for (const rule of endpointTable.rules) {
+    assert.ok(endpointTable.accepted.some((c) => c.rule === rule), `${rule} accepted`);
+    assert.ok(endpointTable.refused.some((c) => c.rule === rule), `${rule} refused`);
   }
-  for (const bad of [
-    "", "mcp.example/mcp", "HTTPS://mcp.example/mcp", "wss://mcp.example/mcp", "https://", "https:///mcp",
-    "http://mcp.example/mcp", "http://localhost:8080/mcp", "http://128.0.0.1/mcp", "http://127.0.0.01/mcp", "http://127.0.0/mcp",
-    "http://127.0.0.1:0/mcp", "http://127.0.0.1:080/mcp", "http://127.0.0.1:65536/mcp", "http://127.0.0.1:/mcp", "http://[::2]/mcp",
-    "http://[0:0:0:0:0:0:0:1]/mcp", "http://[::1]x/mcp", "http://[::1]:/mcp",
-    "https://user@mcp.example/mcp", "https://user:pw@mcp.example/mcp", "https://mcp.example/mcp?key=x", "https://mcp.example/mcp?",
-    "https://mcp.example/mcp#x", "https://mcp.example/a b", "https://mcp.example/\u00e9", "https://mcp.example/" + "a".repeat(2048),
-  ]) {
-    assert.equal(isRemoteEndpoint(bad), false, bad);
+  for (const c of [...endpointTable.accepted, ...endpointTable.refused]) {
+    assert.ok(endpointTable.rules.includes(c.rule), c.endpoint);
+  }
+});
+
+test("a remote server's endpoint form answers to the table", () => {
+  for (const c of endpointTable.accepted) {
+    assert.equal(isRemoteEndpoint(endpointText(c)), true, `${c.rule}: ${endpointText(c)}`);
+  }
+  for (const c of endpointTable.refused) {
+    assert.equal(isRemoteEndpoint(endpointText(c)), false, `${c.rule}: ${endpointText(c)}`);
+  }
+});
+
+test("a receipt naming the table's endpoints is graded by them", () => {
+  const naming = (endpoint: string) => (r: any) => {
+    remote(r);
+    r.acquisition.endpoint = endpoint;
+    if (endpoint.startsWith("http://")) {
+      r.acquisition.peerIdentity = null;
+    }
+  };
+  for (const c of endpointTable.accepted) {
+    assert.deepEqual(alone(edited(acquisitionV3(), naming(endpointText(c)))), passes, `${c.rule}: ${endpointText(c)}`);
+  }
+  for (const c of endpointTable.refused) {
+    assert.deepEqual(alone(edited(acquisitionV3(), naming(endpointText(c)))), malformed, `${c.rule}: ${endpointText(c)}`);
   }
 });
 

@@ -72,6 +72,21 @@ the scheme in lower case. It is used exactly as written, nothing appended. No re
 followed: a `3xx` is a refusal naming the status, never the location. `--ca-file` is
 `adapter-http`'s. `--endpoint` is refused beside `--url`, which is the endpoint.
 
+*Amended 2026-10-14 (#251).* The URL has one form, stated once in `SPEC.md` §1.2a and
+referred to from §6: at most 2048 characters of printable ASCII; `https://` or `http://`;
+a host, then optionally `:` and a port, then nothing or `/` and a path; a host that is a
+name of letters, digits, `-`, `.` and `_`, or hexadecimal digits, `:` and `.` in brackets;
+a port from 1 to 65535 with no leading zero; no `?`, no `#` and no `@` anywhere; every `%`
+in the path followed by two hexadecimal digits; and after `http://` a loopback address
+written as one. The adapter's rule, which ended with `net/url`, was tightened to it: a
+named host of a fixed alphabet where `net/url` also took sub-delimiters and percent
+escapes, no `:` without a port after it, and no `@` in the path. The signer's rule, which
+`gateway verify` and the engine share, and `verify-ts`'s were raised to it: they had held
+the authority only to being non-empty and free of `@`, so an envelope naming
+`https://mcp.example/%zz` or `https://:443/` was signed and verified. A table of accepted
+and refused endpoints (`testdata/remote-endpoints/cases.json`) is read by a test of each of
+the four, and nine vectors `v3-mcp-remote-endpoint-*` hold both verifiers to the form.
+
 ### 2. The credential and the headers
 
 `--bearer NAME` names the member of the `--credentials` JSON object sent as

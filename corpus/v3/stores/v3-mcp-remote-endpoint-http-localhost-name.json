@@ -1,0 +1,20 @@
+{
+  "name": "v3-mcp-remote-endpoint-http-localhost-name",
+  "note": "A remote acquisition whose endpoint is http at the name localhost: after \"http://\" the host is a loopback address written as one, 127.0.0.0/8 in dotted decimal or [::1], and a name is not one, localhost included, since what a name resolves to is not in the text (§1.2a). Its peer identity is null, as plaintext's is. Signed, and malformed at order 1.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580": "{\"n\":0,\"session\":\"s-remote\"}",
+    "receipts/s-remote/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:a22c061264d59629ff4720ce714d9e4089f905eb2b7573963fab2dc3a8b782cd\",\"name\":\"adapter-mcp\",\"version\":\"0\"},\"endpoint\":\"http://localhost:8080/\",\"observedAt\":\"2026-10-13T00:00:00Z\",\"peerIdentity\":null,\"schema\":null,\"server\":{\"name\":\"example-remote\",\"version\":\"1.4.0\"},\"shape\":\"mcp\",\"snapshot\":null,\"statement\":\"sha256:b111c6e1d318f203063e5c16bab43c108326af0aa2f7b65760c95547a43dbe52\",\"transport\":\"http\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:5cf145a7c4b85171a8b8a7b69e5f79c97e841f966a3ec30b4de5a4ec3c89be29\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580\",\"servedAt\":\"2026-10-13T00:00:00Z\",\"sessionId\":\"s-remote\",\"signature\":\"2959c7879966e70bfdff4f1e94310046a2b5f14f26c2ba72dc90dc8563f77a8a5de9e151916e6e367fc70a68afaa29b2fa4510a47e05bf6a18984b733db44d09\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-10-13T00:00:01Z\",\"sessionId\":\"s-remote\",\"signature\":\"0d1559eb68a804b9c97c370a8a4171cb79a253cd9b891b1b5f22766b116a951a04109c7e8327641f43197e3c5556bfa63f8ed3857b0e4b513a1c911411947f0a\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "file": "0.json",
+        "sessionId": "s-remote",
+        "status": "malformed"
+      }
+    ]
+  }
+}

@@ -961,7 +961,7 @@ func parseRemoteServer(server *vObject, name string, o *operation) error {
 	}
 	var err error
 	if o.url, err = requireString(server, "url"); err != nil {
-		return fmt.Errorf("operation %s: server.url must be https, or http at a loopback address written as one, with no user, query or fragment", name)
+		return fmt.Errorf("operation %s: server.url must be %s", name, remoteEndpointForm)
 	}
 	// A URL may be a template whose placeholders a platform's parameters
 	// fill (binding_template.go): held here to the template's rules, and,
@@ -975,9 +975,7 @@ func parseRemoteServer(server *vObject, name string, o *operation) error {
 			return fmt.Errorf("operation %s: server.url, a template, %v", name, err)
 		}
 	} else if !isRemoteEndpoint(o.url) {
-		return fmt.Errorf("operation %s: server.url must be https, or http at a loopback address written as one, with no user, query or fragment", name)
-	} else if err := urlParses(o.url); err != nil {
-		return fmt.Errorf("operation %s: server.url %v", name, err)
+		return fmt.Errorf("operation %s: server.url must be %s", name, remoteEndpointForm)
 	}
 	if o.bearer, err = requireString(server, "bearer"); err != nil || o.bearer == "" || strings.ContainsAny(o.bearer, "\n\x00") {
 		return fmt.Errorf("operation %s: server.bearer names the credentials member sent as the bearer", name)
@@ -998,16 +996,6 @@ func parseRemoteServer(server *vObject, name string, o *operation) error {
 			}
 			o.headers = append(o.headers, string(pair))
 		}
-	}
-	return nil
-}
-
-// urlParses is why a remote server's URL, already of its form, is not one
-// a client can reach, or nil.
-func urlParses(raw string) error {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.Hostname() == "" {
-		return errors.New("is not an absolute URL of a host")
 	}
 	return nil
 }

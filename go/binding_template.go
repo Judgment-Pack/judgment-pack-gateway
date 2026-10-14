@@ -157,8 +157,8 @@ func urlTemplateProblem(template string) error {
 		return errors.New("must write its host as it is, or as {workspace} alone over https: a placeholder anywhere else in the host or beside it could change the host")
 	}
 	sample := fillTemplate(template, func(string) string { return "x" })
-	if !isRemoteEndpoint(sample) || urlParses(sample) != nil {
-		return errors.New("must be of the endpoint form with its placeholders filled: https, or http at a loopback address written as one, with no user, query or fragment")
+	if !isRemoteEndpoint(sample) {
+		return errors.New("must be of the endpoint form with its placeholders filled: " + remoteEndpointForm)
 	}
 	return nil
 }
@@ -221,8 +221,8 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 		}
 		resolved := *op
 		resolved.url = fillTemplate(op.url, value)
-		if !isRemoteEndpoint(resolved.url) || urlParses(resolved.url) != nil {
-			return b, fmt.Errorf("binding %s: the %s operation's URL, filled with the platform's parameters, is %q, which is not of the endpoint form: https, or http at a loopback address written as one, with no user, query or fragment, at most %d characters", ref, slot.name, requestText(resolved.url), maxRemoteEndpoint)
+		if !isRemoteEndpoint(resolved.url) {
+			return b, fmt.Errorf("binding %s: the %s operation's URL, filled with the platform's parameters, is %q, which is not of the endpoint form: %s", ref, slot.name, requestText(resolved.url), remoteEndpointForm)
 		}
 		resolved.tools = make([]string, 0, len(op.tools))
 		for _, tool := range op.tools {

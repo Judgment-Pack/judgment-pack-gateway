@@ -1,36 +1,88 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 )
 
-// The endpoint form a remote MCP server is named by, in a receipt and in a
-// binding: the same cases adapters/mcphttp holds its own rule to, which
-// the adapter's endpoint never leaves.
-func TestRemoteEndpointForm(t *testing.T) {
-	for _, ok := range []string{
-		"https://mcp.example/mcp", "https://mcp.example:8443/api/2.0/mcp/functions/a/b", "https://127.0.0.1:9/mcp", "https://MCP.example/x",
-		"http://127.0.0.1/mcp", "http://127.0.0.1:8080/mcp", "http://127.255.0.9:1", "http://[::1]:65535/x", "http://[::1]/", "https://h",
-	} {
-		if !isRemoteEndpoint(ok) {
-			t.Errorf("%s refused", ok)
+// endpointCase is one endpoint of the table the endpoint form's four
+// implementations answer to (testdata/remote-endpoints/cases.json): the
+// signer's, which gateway verify and the engine use; verify-ts's; and the
+// adapter's, adapters/mcphttp.EndpointProblem.
+type endpointCase struct {
+	Rule     string `json:"rule"`
+	Endpoint string `json:"endpoint"`
+	PadTo    int    `json:"padTo"`
+}
+
+// text is the endpoint the case names, extended with "a" to its padTo.
+func (c endpointCase) text() string {
+	if c.PadTo > len(c.Endpoint) {
+		return c.Endpoint + strings.Repeat("a", c.PadTo-len(c.Endpoint))
+	}
+	return c.Endpoint
+}
+
+// endpointCases reads the table, held to its own rule: every case names a
+// rule the table lists, and every rule has a case on each side.
+func endpointCases(t *testing.T) (accepted, refused []endpointCase) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "testdata", "remote-endpoints", "cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table struct {
+		About    []string       `json:"about"`
+		Rules    []string       `json:"rules"`
+		Accepted []endpointCase `json:"accepted"`
+		Refused  []endpointCase `json:"refused"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&table); err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range table.Rules {
+		var sides [2]int
+		for side, cases := range [][]endpointCase{table.Accepted, table.Refused} {
+			for _, c := range cases {
+				if c.Rule == rule {
+					sides[side]++
+				}
+			}
+		}
+		if sides[0] == 0 || sides[1] == 0 {
+			t.Fatalf("rule %s has %d accepted and %d refused cases; every rule has one on each side", rule, sides[0], sides[1])
 		}
 	}
-	for _, bad := range []string{
-		"", "mcp.example/mcp", "HTTPS://mcp.example/mcp", "wss://mcp.example/mcp", "https://", "https:///mcp",
-		"http://mcp.example/mcp", "http://localhost:8080/mcp", "http://128.0.0.1/mcp", "http://127.0.0.01/mcp", "http://127.0.0/mcp",
-		"http://127.0.0.1:0/mcp", "http://127.0.0.1:080/mcp", "http://127.0.0.1:65536/mcp", "http://127.0.0.1:/mcp", "http://[::2]/mcp",
-		"http://[0:0:0:0:0:0:0:1]/mcp", "http://[::1]x/mcp", "http://[::1]:/mcp",
-		"https://user@mcp.example/mcp", "https://user:pw@mcp.example/mcp", "https://mcp.example/mcp?key=x", "https://mcp.example/mcp?",
-		"https://mcp.example/mcp#x", "https://mcp.example/a b", "https://mcp.example/é", "https://mcp.example/" + strings.Repeat("a", 2048),
-	} {
-		if isRemoteEndpoint(bad) {
-			t.Errorf("%q accepted", bad)
+	for _, c := range append(append([]endpointCase{}, table.Accepted...), table.Refused...) {
+		if !contains(table.Rules, c.Rule) {
+			t.Fatalf("%q names the rule %q, which the table does not list", c.Endpoint, c.Rule)
+		}
+	}
+	return table.Accepted, table.Refused
+}
+
+// The endpoint form a remote MCP server is named by, in a receipt and in a
+// binding: the table's cases, which the adapter's own rule answers to as
+// well, so the adapter's endpoint never leaves it.
+func TestRemoteEndpointForm(t *testing.T) {
+	accepted, refused := endpointCases(t)
+	for _, c := range accepted {
+		if !isRemoteEndpoint(c.text()) {
+			t.Errorf("%s: %q refused", c.Rule, c.text())
+		}
+	}
+	for _, c := range refused {
+		if isRemoteEndpoint(c.text()) {
+			t.Errorf("%s: %q accepted", c.Rule, c.text())
 		}
 	}
 }
@@ -81,6 +133,31 @@ func TestRemoteMembersAreRecordedAndHeldToTheirForm(t *testing.T) {
 	t.Setenv(envSourceEnvelope, envelopeText(t, env))
 	if code, body := post(t, server, "/acquire", `{"session":"remote-1","source":"history","arguments":{}}`); code != http.StatusOK {
 		t.Fatalf("a loopback acquisition: %d %v", code, body)
+	}
+	// Every endpoint of the table's accepted cases is signed, and the store
+	// verifies below; every refused one is refused as not an envelope, with
+	// nothing minted.
+	accepted, refused := endpointCases(t)
+	withEndpoint := func(endpoint string) map[string]any {
+		env, acq := remoteEnvelope()
+		acq["endpoint"] = endpoint
+		if strings.HasPrefix(endpoint, "http://") {
+			acq["peerIdentity"] = nil
+		}
+		return env
+	}
+	for _, c := range accepted {
+		t.Setenv(envSourceEnvelope, envelopeText(t, withEndpoint(c.text())))
+		if code, body := post(t, server, "/acquire", `{"session":"remote-1","source":"history","arguments":{}}`); code != http.StatusOK {
+			t.Fatalf("%s: %q, of the form, refused: %d %v", c.Rule, c.text(), code, body)
+		}
+	}
+	for _, c := range refused {
+		t.Setenv(envSourceEnvelope, envelopeText(t, withEndpoint(c.text())))
+		code, body := post(t, server, "/acquire", `{"session":"remote-2","source":"history","arguments":{}}`)
+		if code == http.StatusOK || !strings.Contains(fmt.Sprint(body["error"]), "not an envelope") {
+			t.Fatalf("%s: %q must be refused as not an envelope: %d %v", c.Rule, c.text(), code, body)
+		}
 	}
 	for _, tc := range []struct {
 		name   string
@@ -180,7 +257,7 @@ func TestRemoteBindingRefusals(t *testing.T) {
 		`{"url":"http://mcp.example/mcp","bearer":"T"}`:                                       "server.url must be https",
 		`{"url":"https://user@mcp.example/mcp","bearer":"T"}`:                                 "server.url must be https",
 		`{"url":"https://mcp.example/mcp?key=k","bearer":"T"}`:                                "server.url must be https",
-		`{"url":"https://mcp.example/%zz","bearer":"T"}`:                                      "is not an absolute URL",
+		`{"url":"https://mcp.example/%zz","bearer":"T"}`:                                      "every '%' followed by two hexadecimal digits",
 		`{"url":7,"bearer":"T"}`:                                                              "server.url must be https",
 		`{"url":"https://mcp.example/mcp","bearer":"T","headers":[]}`:                         "server.headers, when present, is a non-empty array",
 		`{"url":"https://mcp.example/mcp","bearer":"T","headers":["X-Read-Only"]}`:            "server.headers must be NAME=VALUE",
@@ -189,6 +266,44 @@ func TestRemoteBindingRefusals(t *testing.T) {
 	} {
 		if _, err := parseBinding([]byte(op(server))); err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: want %q, got %v", server, want, err)
+		}
+	}
+	// The table's endpoints, as a binding's url: each accepted case starts
+	// and each refused one is refused before the engine starts, as written
+	// and as a template's text. A case with a brace is a template's
+	// placeholder in a binding, and is held as one elsewhere.
+	accepted, refused := endpointCases(t)
+	quoted := func(endpoint string) string {
+		text, _ := json.Marshal(endpoint)
+		return string(text)
+	}
+	for _, c := range accepted {
+		if strings.ContainsAny(c.Endpoint, "{}") {
+			continue
+		}
+		if _, err := parseBinding([]byte(op(`{"url":` + quoted(c.text()) + `,"bearer":"T"}`))); err != nil {
+			t.Errorf("%s: %q, of the form, refused: %v", c.Rule, c.text(), err)
+		}
+		if err := urlTemplateProblem(c.text()); err != nil {
+			t.Errorf("%s: %q, of the form, refused as a template: %v", c.Rule, c.text(), err)
+		}
+	}
+	for _, c := range refused {
+		if _, err := parseBinding([]byte(op(`{"url":` + quoted(c.text()) + `,"bearer":"T"}`))); err == nil || !strings.Contains(err.Error(), "server.url must be https") {
+			t.Errorf("%s: %q: want a refusal of server.url, got %v", c.Rule, c.text(), err)
+		}
+		if err := urlTemplateProblem(c.text()); err == nil {
+			t.Errorf("%s: %q accepted as a template", c.Rule, c.text())
+		}
+		// A template whose placeholders resolve, with the URL as the table
+		// gives it: the resolved URL is held to the form again. An empty URL
+		// names no remote server, and is refused as written above.
+		if c.text() == "" {
+			continue
+		}
+		b := binding{platform: "p", live: &operation{shape: "mcp", url: c.text(), tools: []string{"{tool}"}}}
+		if _, err := resolveParameters(b, map[string]string{"tool": "q"}, "p@x"); err == nil || !strings.Contains(err.Error(), "which is not of the endpoint form") {
+			t.Errorf("%s: %q: want the resolved URL refused, got %v", c.Rule, c.text(), err)
 		}
 	}
 }

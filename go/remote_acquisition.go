@@ -18,17 +18,35 @@ import (
 // maxRemoteEndpoint is the longest endpoint a remote server is named by.
 const maxRemoteEndpoint = 2048
 
-var remotePeerIdentity = regexp.MustCompile(`^tls:sha256:[0-9a-f]{64}$`)
+// remoteEndpointForm is the endpoint form in the words a refusal gives an
+// operator.
+const remoteEndpointForm = "https, or http at a loopback address written as one (127.0.0.0/8 in dotted decimal, or [::1]); " +
+	"a host of letters, digits, '-', '.' and '_', or an address in brackets; a port, when given, from 1 to 65535 with no leading zero; " +
+	"no '?', '#' or '@' anywhere, so no query, fragment or user; every '%' followed by two hexadecimal digits; at most 2048 characters of printable ASCII (SPEC.md §1.2a)"
 
-// isRemoteEndpoint is the form of a remote MCP server's endpoint: at most
-// 2048 characters, each from U+0021 to U+007E; "https://" or "http://"
-// first; no "?" and no "#"; an authority -- what follows "//" up to the
-// first "/" or the end -- that is not empty and holds no "@"; and, after
-// "http://", an authority that is a loopback address written as one, an
-// IPv4 address of 127.0.0.0/8 in dotted decimal or [::1], with ":" and a
-// port in decimal from 1 to 65535 with no leading zero, or no port.
+var (
+	remotePeerIdentity = regexp.MustCompile(`^tls:sha256:[0-9a-f]{64}$`)
+	// endpointName and endpointBracketed are the two ways a remote
+	// endpoint's host is written: a name, an IPv4 address in dotted
+	// decimal among them, and an address in brackets.
+	endpointName      = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	endpointBracketed = regexp.MustCompile(`^\[[0-9A-Fa-f:.]+\]$`)
+)
+
+// isRemoteEndpoint is the form of a remote MCP server's endpoint, as
+// SPEC.md §1.2a states it once for the signer, both verifiers and the
+// adapter, each tested against one table (testdata/remote-endpoints/cases.json):
+// at most 2048 characters, each from U+0021 to U+007E, no "?", no "#" and
+// no "@" anywhere, so no user; "https://" or "http://"; then an authority,
+// a host and optionally ":" and a port; then nothing, or "/" and a path. The
+// host is a name of letters, digits, "-", "." and "_", or "[", hexadecimal
+// digits, ":" and ".", and "]"; the port a decimal from 1 to 65535 with no
+// leading zero; and every "%" in the path is followed by exactly two
+// hexadecimal digits. After "http://", the host is a loopback address
+// written as one, an IPv4 address of 127.0.0.0/8 in dotted decimal or
+// [::1]; a name is not one, localhost included.
 func isRemoteEndpoint(s string) bool {
-	if s == "" || len(s) > maxRemoteEndpoint {
+	if len(s) > maxRemoteEndpoint {
 		return false
 	}
 	for i := 0; i < len(s); i++ {
@@ -39,6 +57,9 @@ func isRemoteEndpoint(s string) bool {
 	if strings.ContainsAny(s, "?#") {
 		return false
 	}
+	if strings.Contains(s, "@") {
+		return false
+	}
 	rest, secure := strings.CutPrefix(s, "https://")
 	if !secure {
 		var plain bool
@@ -46,40 +67,67 @@ func isRemoteEndpoint(s string) bool {
 			return false
 		}
 	}
-	authority, _, _ := strings.Cut(rest, "/")
-	if authority == "" || strings.Contains(authority, "@") {
+	authority, path, _ := strings.Cut(rest, "/")
+	host, port, hasPort, ok := endpointAuthority(authority)
+	if !ok || host == "" {
 		return false
 	}
-	return secure || isLoopbackAuthority(authority)
+	if !endpointName.MatchString(host) && !endpointBracketed.MatchString(host) {
+		return false
+	}
+	if hasPort && !isEndpointPort(port) {
+		return false
+	}
+	if !isEndpointPath(path) {
+		return false
+	}
+	return secure || isLoopbackHost(host)
 }
 
-// isLoopbackAuthority is a loopback address written as one, with a port or
-// without.
-func isLoopbackAuthority(authority string) bool {
-	host, port, hasPort := authority, "", false
-	if strings.HasPrefix(authority, "[") {
-		end := strings.IndexByte(authority, ']')
-		if end < 0 {
-			return false
-		}
-		host = authority[:end+1]
-		if rest := authority[end+1:]; rest != "" {
-			if port, hasPort = strings.CutPrefix(rest, ":"); !hasPort {
-				return false
-			}
-		}
-	} else {
+// endpointAuthority is an authority's host and its port: a host in
+// brackets runs to the first "]", any other to the first ":"; hasPort is
+// whether ":" follows the host. ok is false when anything else follows a
+// host in brackets, or the "]" is missing.
+func endpointAuthority(authority string) (host, port string, hasPort, ok bool) {
+	if !strings.HasPrefix(authority, "[") {
 		host, port, hasPort = strings.Cut(authority, ":")
+		return host, port, hasPort, true
 	}
-	if hasPort {
-		if !originPort.MatchString(port) {
+	end := strings.IndexByte(authority, ']')
+	if end < 0 {
+		return "", "", false, false
+	}
+	host, rest := authority[:end+1], authority[end+1:]
+	if rest == "" {
+		return host, "", false, true
+	}
+	port, hasPort = strings.CutPrefix(rest, ":")
+	return host, port, hasPort, hasPort
+}
+
+// isEndpointPort is a port in decimal from 1 to 65535 with no leading zero;
+// an empty one is not.
+func isEndpointPort(port string) bool {
+	if !originPort.MatchString(port) {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n <= 65535
+}
+
+// isEndpointPath is a path in which every "%" is followed by exactly two
+// hexadecimal digits.
+func isEndpointPath(path string) bool {
+	for i := 0; i < len(path); i++ {
+		if path[i] == '%' && (i+2 >= len(path) || !isHexDigit(path[i+1]) || !isHexDigit(path[i+2])) {
 			return false
 		}
-		if n, err := strconv.Atoi(port); err != nil || n > 65535 {
-			return false
-		}
 	}
-	return isLoopbackHost(host)
+	return true
+}
+
+func isHexDigit(c byte) bool {
+	return '0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F'
 }
 
 // remoteMembersOnShape is why an acquisition of the shape given carries what
