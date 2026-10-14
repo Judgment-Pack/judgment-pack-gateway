@@ -224,6 +224,50 @@ test("an action receipt departing from §1.2a in one respect is malformed", () =
   }
 });
 
+// What a write to a remote server adds to an action's tool (§1.2a, #268):
+// transport "http", on shape mcp alone, and the endpoint then a string of a
+// remote server's form, each case of the table on each side; a tool
+// without transport keeps the platform's endpoint, free text or null, held
+// to nothing more.
+test("an action's tool transport holds its endpoint to the form, and only then", () => {
+  const cite = { sessionId: "s1", callIndex: 0, signature: "a".repeat(128) };
+  const action = () => actionV3(0, null, [cite], resultDigest);
+  const valid = multiset([
+    { sessionId: "s1", callIndex: 0, status: "ok" },
+    { sessionId: "s1", callIndex: 0, status: "citation-unresolved" },
+    { sessionId: "s1", callIndex: 0, status: "decision-record-mismatch" },
+  ]);
+  const tool = (members: Record<string, unknown>) => (r: any) => Object.assign(r.action.tool, members);
+  for (const c of endpointTable.accepted) {
+    assert.deepEqual(alone(edited(action(), tool({ transport: "http", endpoint: endpointText(c) }))), valid, `${c.rule}: ${endpointText(c)}`);
+  }
+  for (const c of endpointTable.refused) {
+    assert.deepEqual(alone(edited(action(), tool({ transport: "http", endpoint: endpointText(c) }))), malformed, `${c.rule}: ${endpointText(c)}`);
+  }
+  const of = "https://mcp.example/api/mcp";
+  const cases: [string, Record<string, unknown>, string[]][] = [
+    ["transport with a null endpoint", { transport: "http", endpoint: null }, malformed],
+    ["transport with an endpoint that is no string", { transport: "http", endpoint: 443 }, malformed],
+    ["a transport of another value", { transport: "stdio", endpoint: of }, malformed],
+    ["a transport in upper case", { transport: "HTTP", endpoint: of }, malformed],
+    ["an empty transport", { transport: "", endpoint: of }, malformed],
+    ["a transport null", { transport: null, endpoint: of }, malformed],
+    ["a transport that is no string", { transport: 1, endpoint: of }, malformed],
+    ["transport on shape http", { transport: "http", shape: "http", endpoint: of }, malformed],
+    ["transport on shape airbyte", { transport: "http", shape: "airbyte", endpoint: of }, malformed],
+    ["no transport, a host", { endpoint: "desk.internal" }, valid],
+    ["no transport, a host and a port", { endpoint: "warehouse.internal:5432" }, valid],
+    ["no transport, https and no host", { endpoint: "https://:443/" }, valid],
+    ["no transport, https and a user", { endpoint: "https://operator@desk.internal/" }, valid],
+    ["no transport, an endpoint of the form", { endpoint: of }, valid],
+    ["no transport, null", { endpoint: null }, valid],
+    ["no transport, shape http", { shape: "http", endpoint: "desk.internal" }, valid],
+  ];
+  for (const [name, members, want] of cases) {
+    assert.deepEqual(alone(edited(action(), tool(members))), want, name);
+  }
+});
+
 test("a version 2 receipt is held to §1.4 order 1's list, and its signature's case is open", () => {
   const r = signed(receiptV2());
   assert.deepEqual(alone(JSON.stringify(r)), passes);

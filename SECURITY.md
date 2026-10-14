@@ -139,7 +139,11 @@ and version the server gave itself; it does not say the tool read rather than wr
 server is honest or the vendor's, or anything the session carried. The session id the server
 issues is the client's alone and is in no record. For a write, the executor is the same adapter
 and the same rules: the write credential goes to the URL its binding names, after the decision
-policy has held the write, and a write the policy refuses reaches no server.
+policy has held the write, and a write the policy refuses reaches no server. The action receipt
+names that URL in `action.tool.endpoint` beside `transport` `"http"`, and both verifiers hold it to
+the same form (#268); a write over stdio names no transport, and its endpoint, the platform's, is
+held to nothing more. A verifier written before the member holds no endpoint of an action to the
+form.
 
 **A write-back platform writes as the credential its operator configured, under a decision
 policy, and its receipt names the URL it wrote to** (issue #248;

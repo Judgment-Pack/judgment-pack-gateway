@@ -403,6 +403,11 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 			if tool["endpoint"] != resolved || tool["name"] != wp.tool || tool["shape"] != "mcp" || inner["policy"] == nil || inner["decision"].(map[string]any)["recordBytes"] != "exact" {
 				t.Fatalf("the action receipt names the resolved URL and the tool asked for: %v", inner)
 			}
+			// and the transport that reached it, so a verifier holds that URL
+			// to the endpoint form (#268): the store verifies below with it.
+			if tool["transport"] != "http" || len(tool) != 4 {
+				t.Fatalf("a remote write's tool names its transport, and nothing more: %v", tool)
+			}
 			var trace []string
 			calls := 0
 			for _, r := range stand.requests() {

@@ -247,6 +247,30 @@ function isAcquisition(v: Value | undefined): boolean {
   );
 }
 
+// toolTransportHolds is what a write to a remote MCP server adds to an
+// action's tool (§1.2a, #268), held to its form, or true when it adds
+// nothing: transport, when present, is "http", on shape mcp alone, and the
+// endpoint is then a string of a remote server's form. Without transport
+// the endpoint is the platform's, a string or null, held to nothing more:
+// it may even begin with "https://", so its spelling says nothing of the
+// transport.
+function toolTransportHolds(tool: ObjectValue): boolean {
+  const transport = member(tool, "transport");
+  if (transport === undefined) {
+    return true;
+  }
+  const shape = member(tool, "shape");
+  const endpoint = member(tool, "endpoint");
+  return (
+    isString(transport) &&
+    transport.value === "http" &&
+    isString(shape) &&
+    shape.value === "mcp" &&
+    isString(endpoint) &&
+    isRemoteEndpoint(endpoint.value)
+  );
+}
+
 function isAction(v: Value | undefined): boolean {
   if (v?.type !== "object") {
     return false;
@@ -269,6 +293,8 @@ function isAction(v: Value | undefined): boolean {
     isString(member(tool, "shape")) &&
     nullableString(member(tool, "endpoint")) &&
     isString(member(tool, "name")) &&
+    // a write to a remote server: its transport, and its endpoint of the form
+    toolTransportHolds(tool) &&
     isDigest(member(v, "request")) &&
     // the policy the write was held to: optional, and a digest when present
     (policy === undefined || isDigest(policy)) &&

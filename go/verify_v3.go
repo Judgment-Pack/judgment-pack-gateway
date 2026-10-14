@@ -309,6 +309,12 @@ func validateAction(v value, r *receipt) error {
 	if err := nullableString(tool, "endpoint", nil); err != nil {
 		return fmt.Errorf("action.tool: %w", err)
 	}
+	// A write to a remote server names its transport, and its endpoint is
+	// then held to the endpoint form (#268); without it the endpoint is
+	// the platform's, held to nothing more.
+	if err := toolTransportProblem(tool); err != nil {
+		return err
+	}
 	if err := requireDigest(obj, "request"); err != nil {
 		return fmt.Errorf("action: %w", err)
 	}

@@ -73,11 +73,15 @@ type sourceSpec struct {
 	// check are the arguments a check of this source adds to the adapter's
 	// command line, from the binding; nothing serve uses.
 	check []string
-	// tools and endpoint are the write binding's, for a write source only
-	// (executor.md): the tools an executor may be asked for, and the
-	// endpoint an action receipt names; /acquire reads neither.
-	tools    []string
-	endpoint string
+	// tools, endpoint and transport are the write binding's, for a write
+	// source only (executor.md): the tools an executor may be asked for,
+	// the endpoint an action receipt names, and the transport it names
+	// beside it -- "http" for a remote server's URL, the --url form, and ""
+	// for a server the adapter runs over stdio (SPEC.md §1.2a, #268);
+	// /acquire reads none of them.
+	tools     []string
+	endpoint  string
+	transport string
 	// policies are the decision policies the operator holds the write
 	// binding's tools to (ADR-0011), by tool, for a write source only; a
 	// tool with none has its writes read nothing in their decision record.

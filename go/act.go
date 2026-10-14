@@ -297,6 +297,14 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		called.set("endpoint", vString(spec.endpoint))
 	}
 	called.set("name", vString(tool))
+	// The transport, for a write to a remote server alone (SPEC.md §1.2a,
+	// #268): "http", and the endpoint above is then the URL the engine held
+	// to the endpoint form before it started, which a verifier holds it to
+	// as well. A write over stdio names none, and its receipt is the one it
+	// was before the member existed.
+	if spec.transport != "" {
+		called.set("transport", vString(spec.transport))
+	}
 	action.set("tool", called)
 	action.set("request", vString(commitmentOver(requestSalt, "request:", canonicalRequest)))
 	for _, name := range []string{"adapter", "observedAt"} {

@@ -1068,12 +1068,14 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			}
 			// What the action receipt names as the tool's endpoint: the
 			// platform's, for a server the adapter runs; a remote server's
-			// URL, which is where the write went (ADR-0015).
-			endpoint := p.endpoint
+			// URL, which is where the write went (ADR-0015), with the
+			// transport that reached it, so a verifier holds that URL to the
+			// endpoint form and the platform's endpoint to nothing (#268).
+			endpoint, transport := p.endpoint, ""
 			if b.write.url != "" {
-				endpoint = b.write.url
+				endpoint, transport = b.write.url, "http"
 			}
-			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, policies: p.policies}
+			sources[p.name+"/write"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "mcp", tools: b.write.tools, endpoint: endpoint, transport: transport, policies: p.policies}
 		}
 	}
 	return sources

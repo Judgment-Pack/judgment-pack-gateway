@@ -134,7 +134,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 58 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 64 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -202,6 +202,17 @@ of 2049 characters, and for `http` at the name `localhost`; and an endpoint with
 port and a percent escape in its path, each of the form, `ok`, so a verifier holding
 the endpoint tighter than the form is caught as well as one holding it looser. Every one is signed with its members, so what
 each holds is the member's form and not the signature.
+
+Six hold what a write to a remote MCP server adds to an action (§1.2a; issue #268), each
+named `v3-action-*` and each the action of `v3-action-valid` with its `action.tool` changed
+and signed again: `transport` `"http"` with an endpoint of the form, `ok`; `malformed` for
+`transport` with the endpoint `https://:443/`, for a `transport` of `"stdio"`, for one of
+`null`, and for `transport` on a tool of shape `http`; and a tool with no `transport` whose
+endpoint is `https://:443/`, `ok`, since without the member the endpoint is the platform's and
+held to nothing more, so a verifier that applies the form to every endpoint, or reads the
+transport from the endpoint's spelling, is caught as well as one that drops the rule. The
+earlier action vectors carry no `transport`, and their endpoint, `https://mcp.example.com/`,
+is held to nothing by it.
 
 **`witnesses`.** A vector whose report names witnesses gives them in `expected`
 as `witnesses`, each `{"trail", "origin", "keyId"}`, and a runner compares them

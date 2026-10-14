@@ -40,6 +40,9 @@ func TestTheStdioWritesReceiptIsByteForByteWhatItWas(t *testing.T) {
 			if len(spec.argv) == 0 || spec.argv[0] != "adapter-mcp" || !contains(spec.argv, "--image=ghcr.io/example/mcp-postgres:2.1@"+testImageDigest) || remoteURL(spec.argv) != "" {
 				t.Fatalf("the write source is adapter-mcp running an image: %q", spec.argv)
 			}
+			if spec.transport != "" {
+				t.Fatalf("a server the adapter runs is reached over stdio, and its write names no transport: %q", spec.transport)
+			}
 			// The stand-in in the adapter's place: no installed program runs.
 			spec.argv[0], spec.env, spec.user = os.Args[0], helperEnv, ""
 			service, _ := testService(t)

@@ -274,7 +274,7 @@ target's response bytes, retained like any artifact.
 | `decision` | `{ "recordDigest": "sha256:" + hex, "packDigest": "sha256:" + hex, "recordBytes": "exact" }`, `recordBytes` **optional** | the decision record the requester says the action relies on, and the pack it says the decision was made under, by digest; `recordBytes`, how the gateway found the record (below) |
 | `cites` | array of `{ "sessionId": flat token (§3a), "callIndex": non-negative integer, "signature": signature }` | the acquisition receipts the requester says the decision record relied on |
 | `policy` | `"sha256:" + hex` — **optional** | the decision policy the gateway held the action to before it was sent, by digest (below); absent when its operator held the tool to none |
-| `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string }` | what was called, named as `acquisition` names its adapter; for a write to a remote MCP server, `endpoint` is the server's URL |
+| `tool` | `{ "shape": string, "endpoint": string or `null`, "name": string, "transport": "http" }`, `transport` **optional** | what was called, named as `acquisition` names its adapter; for a write to a remote MCP server, `endpoint` is the server's URL and `transport` is `"http"` (below) |
 | `request` | `"sha256:" + hex` | a commitment (above) to the request the executor sent |
 | `adapter` | as in `acquisition` | the executor that performed it |
 | `observedAt` | string | when the target answered |
@@ -292,6 +292,23 @@ fact. A verifier written before the member tolerates it, as it tolerates any
 signed member it does not know, and finds the record by step 6's reading: it can
 answer `ok` for a record converted to CRLF that a verifier reading the member
 reports `decision-record-mismatch` for.
+
+**`tool.transport`** (`docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md`,
+amended for #268). Present, it is the string `"http"`: the executor reached a remote MCP
+server over Streamable HTTP, as an acquisition's `transport` says of an adapter, and
+`endpoint` is then a string held to the form "A remote MCP server" states above. Absent,
+the write went over stdio, and `endpoint` is the platform's, a string or `null` held to
+nothing more: the engine configuration takes a platform's endpoint as any non-empty
+string, which can begin with `"https://"`, so the transport is read from this member and
+never from the endpoint's spelling. A `transport` of another value, `transport` on a
+`tool` whose `shape` is not `"mcp"`, or, with it, an `endpoint` that is `null` or out of
+that form, is `malformed`. The member is signed with every other member; a write over
+stdio carries none, so its receipt is the one it was before the member existed. A
+verifier written before the member tolerates it, as it tolerates any signed member it
+does not know, and holds the endpoint to nothing: it can answer `ok` for a receipt naming
+a remote endpoint out of the form that a verifier reading the member reports `malformed`
+for. The TLS identity the write's answer came under is in no member of the action
+(ADR-0015, question 2).
 
 `decision.packDigest` and `cites` are claims the requester supplied, recorded as
 given. §4 checks that the cited receipts exist and that a decision record with
@@ -975,7 +992,11 @@ record relied on, after the engine has found the cited receipts in its own
 store under its own key and the record under its decision-record directory —
 the standard §4 applies — and, for a tool its operator holds to a decision
 policy, after it has held the record and the request to that policy (§1.2a
-`policy`). When its operator names a witness for a trail (§1.2a, `witness`), the
+`policy`). For a write through a binding that names a remote server's URL, the
+receipt's `action.tool` names that URL, as the platform's parameters resolved
+it, as its `endpoint`, and carries `transport` `"http"`; for a write through a
+server the adapter runs, it names the platform's endpoint, or `null`, and no
+`transport` (§1.2a, `tool.transport`). When its operator names a witness for a trail (§1.2a, `witness`), the
 gateway reads the found record's `trail` too, from the bytes whose digest matched,
 whatever the tool, and names that trail's witness on the receipt. The format was specified before the surface so that a verifier
 written then verifies what is minted now. `gateway verify` takes
