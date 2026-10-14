@@ -4,7 +4,7 @@ date: 2026-10-14
 deciders: maintainer
 ---
 
-# A decision policy may fix an argument to a value and close the argument set, at engine configuration version 9, so that a dispatcher write tool is held to the one write its decision means; the engine compares and never fills a value in, and the receipt names the policy by its digest as before
+# A decision policy may fix an argument to a value and close the argument set, at engine configuration version 9, so that a dispatcher write tool is held to the write its decision means; the engine compares and never fills a value in, and the receipt names the policy by its digest as before
 
 Issue #258. A decision policy's `bind` ([ADR-0011](0011-hold-a-write-to-its-decision.md))
 compares an argument with a fact of the record; it has no value of its own and refuses no argument
@@ -159,7 +159,10 @@ that each argument the policy fixes was the value the policy states, at that mom
 It does not establish that the target interpreted them as intended: what an `action` or an
 operation means is the server's, and a server may supply a default for an argument the request
 left out, which no check of the request can see. It establishes nothing of anything a policy does
-not name when `closed` is false. As before, nothing here closes the interval between the check and
+not name when `closed` is false. A closed policy holds the values it names and that nothing else
+is present; it does not hold the container type of an ancestor, so an object whose member names
+are an array's indexes is read as that array's elements (RFC 6901 reads a numeric token on an
+object as a member's name), and a closed policy admits more than one shape of request. As before, nothing here closes the interval between the check and
 the commit: a precondition on the target, Azure DevOps' `test` of `/rev`, is what does.
 
 ### 6. The worked example
@@ -167,7 +170,9 @@ the commit: a precondition on the target, Azure DevOps' `test` of `/rev`, is wha
 The Azure DevOps policy in [engine-config.md](../design/engine-config.md), "The write-back
 platforms", is rewritten on the members. `fix` holds `action` to `update`, the revision test's
 `op` and `path`, and the operation that sets the state the outcome maps to. `bind` holds the work
-item's `id` and the tested revision to the record's facts. `closed: true` refuses anything else.
+item's `id` and the tested revision to the record's facts. `closed: true` refuses any member or
+element no pointer reaches; the request the example shows is one the policy admits, not the only
+one (§5).
 The record states the item it judged and no write. The whole-arguments binding is replaced there.
 It is still valid.
 
@@ -195,7 +200,8 @@ It is still valid.
 - Bad, because a closed refusal quotes a pointer built from the request's member names, bounded
   and made printable as other request text is.
 - Revisit when a tool needs an argument held to a set of values, or to a value that depends on the
-  outcome; when the engine reads a server's captured input schema at `/act`; or when the receipt
+  outcome; when a policy is to hold a container's shape, an array at a pointer and its length
+  (#267); when the engine reads a server's captured input schema at `/act`; or when the receipt
   is to carry the policy rather than its digest.
 
 ### How this sits with earlier records

@@ -177,6 +177,9 @@ type writePlatformCase struct {
 	arguments  string // the write's arguments, held to the facts
 	hold       string // the policy's members that hold the arguments: bind, and fix and closed
 	mismatched []mismatchedWrite
+	// admitted are writes other than arguments that the policy admits, each
+	// sent once: what it holds, recorded where it is less than one request.
+	admitted []string
 }
 
 // mismatchedWrite is a write the policy refuses at policy-bind, by the
@@ -223,6 +226,15 @@ var writePlatformCases = []writePlatformCase{
 			{`{"action":"update","id":42,"project":"another-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/project" is reached by no binding`},
 			// a member the policy does not name, inside an operation
 			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3,"from":"/fields/System.Title"},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/updates/0/from" is reached by no binding`},
+		},
+		// The policy holds the values it names and that nothing else is
+		// there, not the container type of an ancestor (ADR-0016, section 5):
+		// an object whose members are named "0" and "1" in place of the
+		// updates array is read as that array's elements, as RFC 6901 reads
+		// a numeric token on an object, and is admitted and sent once. What
+		// the server makes of it is the server's.
+		admitted: []string{
+			`{"action":"update","id":42,"updates":{"0":{"op":"test","path":"/rev","value":3},"1":{"op":"replace","path":"/fields/System.State","value":"Approved"}}}`,
 		},
 	},
 	{
@@ -412,6 +424,30 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 			p := wp.path
 			if strings.Join(trace, "|") != "POST "+p+" initialize|POST "+p+" notifications/initialized|POST "+p+" tools/list|POST "+p+" tools/call|DELETE "+p+" " || calls != 1 {
 				t.Fatalf("the write is one session at the resolved URL and one call: %q", trace)
+			}
+			// Each other write the policy admits is sent once too, exactly as
+			// asked.
+			for _, arguments := range wp.admitted {
+				stand.forget()
+				if code, acted := authed(t, server, "/act", request(arguments, digest(good), packA, signature), token); code != http.StatusOK {
+					t.Fatalf("%s: a write the policy admits: %d %v", arguments, code, acted)
+				}
+				calls := 0
+				for _, r := range stand.requests() {
+					if r.method != "tools/call" {
+						continue
+					}
+					calls++
+					var params struct {
+						Arguments json.RawMessage `json:"arguments"`
+					}
+					if err := json.Unmarshal(r.params, &params); err != nil || canonOf(t, string(params.Arguments)) != canonOf(t, arguments) {
+						t.Fatalf("%s: the target got the write as asked: %s", arguments, r.params)
+					}
+				}
+				if calls != 1 {
+					t.Fatalf("%s: a write the policy admits was sent %d times", arguments, calls)
+				}
 			}
 			// A target's refusal is a response to receipt: its bytes are the
 			// result, and the receipt is minted.

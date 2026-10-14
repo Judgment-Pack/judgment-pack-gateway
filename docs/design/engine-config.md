@@ -750,7 +750,7 @@ add an operation that changes another field. The policy above holds the tool to 
 `action` to `update`, the first operation to a `test` of `/rev`, and the second to the operation
 that sets the state the outcome maps to; `bind` holds the work item's `id` and the tested revision
 to the item the pack judged, `workItem` in its facts (`{"id": 42, "rev": 3, …}`); and `closed`
-refuses every other member and element, so the one request it admits is
+refuses every other member and element. A request it admits is
 
 ```json
 {"action": "update", "id": 42,
@@ -760,8 +760,12 @@ refuses every other member and element, so the one request it admits is
 
 A request that names another action, adds an operation (`/updates/2`), adds a member
 (`batchUpdates`, `project`, or `from` inside an operation), leaves the test out or names another
-item or revision is refused at `policy-bind`, and nothing is sent. The record states the item it
-judged and no write; the state the outcome maps to is the operator's, fixed in the policy beside
+item or revision is refused at `policy-bind`, and nothing is sent. The policy holds the values it
+names and that nothing else is there; it does not hold the container type of an ancestor. RFC 6901
+reads a numeric token on an object as a member's name, so an object whose members are named `"0"`
+and `"1"` in place of the `updates` array is read as that array's elements, and the policy admits
+it as it admits the request above; what the server makes of it is the server's. The record states
+the item it judged and no write; the state the outcome maps to is the operator's, fixed in the policy beside
 the outcomes it allows. A policy fixes one value for every outcome it allows, and a platform holds
 each tool to one policy, so a write of another state for another outcome is held by a policy of
 its own on another platform entry. A policy for the comment and link tools is written the same
