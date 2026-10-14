@@ -134,14 +134,13 @@ catalog entry: the catalog pins images, and the engine authors no binding of a s
 operator installs; an operator runs it as a source under `adapter-mcp`
 ([adapters/README.md](../adapters/README.md)).
 
-**Decided 2026-10-14 (#259): no catalog binding of the local server.** The catalog pins images
-by digest, with a licence copied from the artifact; the local server is an npm package the
-operator installs and runs, not an image the catalog pins. Building and re-pinning an image of a
-third-party package, for a token form the vendor is moving away from, is maintenance the project
-does not take on. Write-back to Azure DevOps goes through the organization's remote server under
-a Microsoft Entra token, as the binding above states; the local server stays an operator-level
-stdio source, for reads. Revisit if an operator who can hold only a personal access token needs
-write-back.
+**Decided 2026-10-14 (#259): no catalog binding of the local server.** The catalog's bindings
+take two forms: an image pinned by digest, or a remote server named by URL and transport. A
+local executable or package is neither. Shipping the local server would mean the project
+building, licensing and re-pinning an image of a third-party package, which it does not take on.
+Write-back to Azure DevOps goes through the organization's remote server under a Microsoft
+Entra token, as the binding above states; the local server stays an operator-level stdio source,
+for reads. Revisit if an operator who can hold only a personal access token needs write-back.
 
 ## databricks
 
