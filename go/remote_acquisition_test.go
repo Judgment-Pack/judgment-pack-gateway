@@ -302,8 +302,73 @@ func TestRemoteBindingRefusals(t *testing.T) {
 			continue
 		}
 		b := binding{platform: "p", live: &operation{shape: "mcp", url: c.text(), tools: []string{"{tool}"}}}
-		if _, err := resolveParameters(b, map[string]string{"tool": "q"}, "p@x"); err == nil || !strings.Contains(err.Error(), "which is not of the endpoint form") {
+		if _, err := resolveParameters(b, map[string]string{"tool": "q"}, "p@x"); err == nil || !strings.Contains(err.Error(), "of the endpoint form") {
 			t.Errorf("%s: %q: want the resolved URL refused, got %v", c.Rule, c.text(), err)
+		} else if len(c.text()) > len("https://h/") && strings.Contains(err.Error(), c.text()) {
+			t.Errorf("%s: the refusal repeats the URL: %v", c.Rule, err)
 		}
+	}
+}
+
+// A binding's URL may carry, by mistake, what is never to be shown -- a
+// credential pasted into its path -- so no refusal of it repeats it: not as
+// written, not as a template, not a placeholder's text and not as the
+// platform's parameters resolve it. Each refusal names the binding, the
+// operation and the rule; the marker is in the URL's path, and in no error.
+func TestARefusalOfABindingsURLRepeatsNothingOfIt(t *testing.T) {
+	const marker = "MARKER-NOT-TO-BE-SHOWN"
+	server := func(url string) string {
+		return `{"bindingVersion":"1","platform":"p","operations":{"live":{"shape":"mcp","server":{"url":"` + url + `","bearer":"T"},"tools":["q"],"licence":"MIT"}}}`
+	}
+	for _, tc := range []struct{ name, url, want string }{
+		{"out of the form as written", "https://mcp.example/" + marker + "/?q", "server.url must be https"},
+		{"a template out of the form", "https://mcp.example/" + marker + "/{x}?q", "must be of the endpoint form with its placeholders filled"},
+		{"a template naming the host", "https://" + marker + "{x}/mcp", "must write its host as it is"},
+		{"a template of a scheme not written", "{x}://mcp.example/" + marker, "must begin with its scheme written as it is"},
+		{"a placeholder not a parameter's name", "https://mcp.example/{" + marker + "}", "names a placeholder which is not a parameter's name"},
+		{"a } closing no placeholder", "https://mcp.example/" + marker + "}", "holds a } that closes no placeholder"},
+		{"a { no } closes", "https://mcp.example/" + marker + "{x", "holds a { that no } closes"},
+	} {
+		_, err := parseBinding([]byte(server(tc.url)))
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want a refusal saying %q, got %v", tc.name, tc.want, err)
+		} else if strings.Contains(err.Error(), marker) {
+			t.Errorf("%s: the refusal repeats the URL: %v", tc.name, err)
+		}
+	}
+	// Resolved: past the form's length by its parameters, and out of the
+	// form once filled.
+	template := "https://mcp.example/" + marker + "/" + strings.Repeat("{tenant}/", 10)
+	b, err := parseBinding([]byte(server(template)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tenant := strings.Repeat("a", maxParameterValue)
+	if err := parameterProblem("tenant", tenant); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		b    binding
+		want string
+	}{
+		{"resolved past the form's length", b, "more than the 2048 of the endpoint form"},
+		{"resolved out of the form", binding{platform: "p", live: &operation{shape: "mcp", url: "https://mcp.example/" + marker + "/{tenant}?q", tools: []string{"q"}}}, "is not of the endpoint form"},
+	} {
+		_, err := resolveParameters(tc.b, map[string]string{"tenant": tenant}, "p@sha256:0")
+		if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "binding p@sha256:0: the live operation's URL") {
+			t.Errorf("%s: want a refusal naming the binding, the operation and %q, got %v", tc.name, tc.want, err)
+		} else if strings.Contains(err.Error(), marker) || strings.Contains(err.Error(), tenant) {
+			t.Errorf("%s: the refusal repeats the URL: %v", tc.name, err)
+		}
+	}
+	// And at start, as the engine refuses the platform.
+	catalog := catalogWith(t, map[string]string{"p": server(template)})
+	text := engineJSON(t, catalog, ``, platformJSONFor(t, "p", "p@"+digestOf(server(template)), "engine-desk", `,"parameters":{"tenant":"`+tenant+`"}`, "live"))
+	text = strings.Replace(text, `"engineVersion":"1"`, `"engineVersion":"8"`, 1)
+	if _, _, err := load(t, text); err == nil || !strings.Contains(err.Error(), "more than the 2048 of the endpoint form") {
+		t.Fatalf("the engine starts on a resolved URL past the form: %v", err)
+	} else if strings.Contains(err.Error(), marker) {
+		t.Fatalf("the start-up refusal repeats the URL: %v", err)
 	}
 }
