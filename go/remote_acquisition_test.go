@@ -312,9 +312,11 @@ func TestRemoteBindingRefusals(t *testing.T) {
 
 // A binding's URL may carry, by mistake, what is never to be shown -- a
 // credential pasted into its path -- so no refusal of it repeats it: not as
-// written, not as a template, not a placeholder's text and not as the
-// platform's parameters resolve it. Each refusal names the binding, the
-// operation and the rule; the marker is in the URL's path, and in no error.
+// written, not as a template, not a placeholder's text, not as the
+// platform's parameters resolve it, and not as a descriptors pin or a
+// connect check compares it. Each refusal names the binding, the operation
+// and the rule, or the endpoints compared by their roles; the marker is in
+// the URL's path, and in no error.
 func TestARefusalOfABindingsURLRepeatsNothingOfIt(t *testing.T) {
 	const marker = "MARKER-NOT-TO-BE-SHOWN"
 	server := func(url string) string {
@@ -370,5 +372,40 @@ func TestARefusalOfABindingsURLRepeatsNothingOfIt(t *testing.T) {
 		t.Fatalf("the engine starts on a resolved URL past the form: %v", err)
 	} else if strings.Contains(err.Error(), marker) {
 		t.Fatalf("the start-up refusal repeats the URL: %v", err)
+	}
+	// A descriptors pin compared with the endpoint the parameters resolve
+	// to, and a connect check's reported endpoint compared with the URL the
+	// source was given: each refusal names the endpoints by their roles.
+	pinned, reached := "https://mcp.example/"+marker+"/pinned", "https://mcp.example/"+marker+"/reached"
+	for _, tc := range []struct {
+		name     string
+		snapshot snapshot
+		url      string
+		want     string
+	}{
+		{"a pin of another endpoint", snapshot{endpoint: pinned}, reached, "now reaches another endpoint than the one its pinned descriptors were captured at"},
+		{"a pin of a remote server for a server the adapter runs", snapshot{endpoint: pinned}, "", "the pinned descriptors were captured at a remote server"},
+		{"a pin naming no endpoint for a remote server", snapshot{}, reached, "names no endpoint, and the platform's operation reaches a remote server"},
+	} {
+		err := snapshotEndpointProblem(tc.snapshot, &operation{shape: "mcp", url: tc.url})
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want a refusal saying %q, got %v", tc.name, tc.want, err)
+		} else if strings.Contains(err.Error(), marker) {
+			t.Errorf("%s: the refusal repeats an endpoint: %v", tc.name, err)
+		}
+	}
+	report := func(endpoint string) []byte {
+		return []byte(`{"check":{"adapter":{"name":"adapter-mcp","version":"0","digest":"sha256:0"},"status":"succeeded","protocolVersion":"2025-06-18","endpoint":"` + endpoint + `","tools":["q"]}}`)
+	}
+	for _, tc := range []struct{ name, reported, given, want string }{
+		{"a check of another endpoint", reached, pinned, "the endpoint the adapter reports is not the one the source was given"},
+		{"a check reporting an endpoint for a server the adapter runs", reached, "", "the adapter reports an endpoint for a server it runs"},
+	} {
+		_, err := describeCheck("mcp", report(tc.reported), tc.given)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: want a refusal saying %q, got %v", tc.name, tc.want, err)
+		} else if strings.Contains(err.Error(), marker) {
+			t.Errorf("%s: the refusal repeats an endpoint: %v", tc.name, err)
+		}
 	}
 }

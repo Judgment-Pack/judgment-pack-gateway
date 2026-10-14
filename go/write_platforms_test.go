@@ -928,8 +928,10 @@ func TestAParameterValueStaysInItsSegment(t *testing.T) {
 
 // connect holds the endpoint an adapter's check reports to the URL the
 // source was given (cross-vendor round 1 on #257), refusing a check that
-// names another, and names it in what it prints; a server the adapter runs
-// reports none.
+// names another by the roles of the two endpoints and repeating neither
+// (the review round on #266: a URL may carry, by mistake, what is never to
+// be shown), and names it in the line it prints for a check that holds; a
+// server the adapter runs reports none.
 func TestConnectHoldsTheReportedEndpointToTheResolvedOne(t *testing.T) {
 	report := func(endpoint string) []byte {
 		member := ""
@@ -943,12 +945,16 @@ func TestConnectHoldsTheReportedEndpointToTheResolvedOne(t *testing.T) {
 		t.Fatalf("the resolved endpoint named: %q %v", line, err)
 	}
 	for _, tc := range []struct{ reported, given, want string }{
-		{"https://mcp.dev.azure.com/other-org", url, `and the source was given "` + url + `"`},
-		{"", url, `and the source was given "` + url + `"`},
-		{url, "", "for a server it runs, which has none"},
+		{"https://mcp.dev.azure.com/other-org", url, "the endpoint the adapter reports is not the one the source was given"},
+		{"", url, "the endpoint the adapter reports is not the one the source was given"},
+		{url, "", "the adapter reports an endpoint for a server it runs, which has none"},
 	} {
-		if _, err := describeCheck("mcp", report(tc.reported), tc.given); err == nil || !strings.Contains(err.Error(), tc.want) {
+		_, err := describeCheck("mcp", report(tc.reported), tc.given)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("reported %q, given %q: %v", tc.reported, tc.given, err)
+		}
+		if strings.Contains(err.Error(), "mcp.dev.azure.com") {
+			t.Fatalf("reported %q, given %q: the refusal repeats an endpoint: %v", tc.reported, tc.given, err)
 		}
 	}
 	if got := remoteURL([]string{"adapter-mcp", "--url=" + url, "--tools=a", "--", "--url=https://elsewhere.example/"}); got != url {
