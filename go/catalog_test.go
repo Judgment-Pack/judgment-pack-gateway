@@ -192,13 +192,14 @@ func TestStatementWriteToolIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mutant := strings.Replace(string(data), `    }
+	text := strings.ReplaceAll(string(data), "\r\n", "\n") // a Windows checkout may carry CRLF
+	mutant := strings.Replace(text, `    }
   }
 }`, `    },
     "write": {"shape": "mcp", "server": {"image": "bytebase/dbhub:1.2.3@sha256:8fbdf3f579b7eb2701c32d895447e35f61b24e6c2505b0fcfd34e314bdf9f5db", "args": ["--transport", "stdio"]}, "tools": ["execute_sql"], "licence": "MIT"}
   }
 }`, 1)
-	if mutant == string(data) {
+	if mutant == text {
 		t.Fatal("the mutant did not apply")
 	}
 	b, err := parseBinding([]byte(mutant))
