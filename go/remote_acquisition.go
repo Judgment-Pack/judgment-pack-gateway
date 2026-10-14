@@ -22,13 +22,14 @@ const maxRemoteEndpoint = 2048
 // operator.
 const remoteEndpointForm = "https, or http at a loopback address written as one (127.0.0.0/8 in dotted decimal, or [::1]); " +
 	"a host of letters, digits, '-', '.' and '_', or an address in brackets; a port, when given, from 1 to 65535 with no leading zero; " +
-	"no '?', '#' or '@' anywhere, so no query, fragment or user; every '%' followed by two hexadecimal digits; at most 2048 characters of printable ASCII (SPEC.md §1.2a)"
+	"no user, query or fragment; every '%' followed by two hexadecimal digits; at most 2048 characters of printable ASCII (SPEC.md §1.2a)"
 
 var (
 	remotePeerIdentity = regexp.MustCompile(`^tls:sha256:[0-9a-f]{64}$`)
 	// endpointName and endpointBracketed are the two ways a remote
 	// endpoint's host is written: a name, an IPv4 address in dotted
-	// decimal among them, and an address in brackets.
+	// decimal among them, and an address in brackets. Neither holds "@",
+	// so no user is named before the host.
 	endpointName      = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 	endpointBracketed = regexp.MustCompile(`^\[[0-9A-Fa-f:.]+\]$`)
 )
@@ -36,13 +37,14 @@ var (
 // isRemoteEndpoint is the form of a remote MCP server's endpoint, as
 // SPEC.md §1.2a states it once for the signer, both verifiers and the
 // adapter, each tested against one table (testdata/remote-endpoints/cases.json):
-// at most 2048 characters, each from U+0021 to U+007E, no "?", no "#" and
-// no "@" anywhere, so no user; "https://" or "http://"; then an authority,
-// a host and optionally ":" and a port; then nothing, or "/" and a path. The
-// host is a name of letters, digits, "-", "." and "_", or "[", hexadecimal
-// digits, ":" and ".", and "]"; the port a decimal from 1 to 65535 with no
-// leading zero; and every "%" in the path is followed by exactly two
-// hexadecimal digits. After "http://", the host is a loopback address
+// at most 2048 characters, each from U+0021 to U+007E, no "?" and no "#";
+// "https://" or "http://"; then an authority, a host and optionally ":" and
+// a port; then nothing, or "/" and a path. The host is a name of letters,
+// digits, "-", "." and "_", or "[", hexadecimal digits, ":" and ".", and
+// "]", so no "@" is in the authority and no user is named; the port a
+// decimal from 1 to 65535 with no leading zero; and every "%" in the path is
+// followed by exactly two hexadecimal digits. An "@" in the path names no
+// user, and is a path's character like any other. After "http://", the host is a loopback address
 // written as one, an IPv4 address of 127.0.0.0/8 in dotted decimal or
 // [::1]; a name is not one, localhost included.
 func isRemoteEndpoint(s string) bool {
@@ -55,9 +57,6 @@ func isRemoteEndpoint(s string) bool {
 		}
 	}
 	if strings.ContainsAny(s, "?#") {
-		return false
-	}
-	if strings.Contains(s, "@") {
 		return false
 	}
 	rest, secure := strings.CutPrefix(s, "https://")

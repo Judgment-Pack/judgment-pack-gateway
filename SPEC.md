@@ -210,16 +210,17 @@ acquisition was recorded.
 a port or by nothing; then nothing, or `"/"` and a path. The host is a name — one or
 more characters from `A` to `Z`, `a` to `z`, `0` to `9`, `-`, `.` and `_`, an IPv4
 address in dotted decimal among them — or `"["`, one or more characters from the
-hexadecimal digits, `:` and `.`, and `"]"`. The port is a decimal from 1 to 65535 with
-no leading zero; `":"` with nothing after it is not one. The path holds no `?` and no
-`#`, and every `%` in it is followed by exactly two hexadecimal digits. `@` appears
-nowhere in the string, so no user is named in it. After `"http://"`, the host is a
-loopback address written as one: an IPv4 address of `127.0.0.0/8` in dotted decimal,
-each part from 0 to 255 with no leading zero, or `[::1]`; a name is not one,
-`localhost` included, since what a name resolves to is not in the text. This is the
-one form of a remote server's URL: the adapter holds its `--url` to it before
-anything is sent, the gateway an envelope's `endpoint` before anything is signed and
-a binding's URL before the engine starts, and a verifier a receipt's.
+hexadecimal digits, `:` and `.`, and `"]"`; no host holds `@`, so no user is named
+before it. The port is a decimal from 1 to 65535 with no leading zero; `":"` with
+nothing after it is not one. The path holds no `?` and no `#`, and every `%` in it is
+followed by exactly two hexadecimal digits; an `@` in the path names no user, and is
+one of its characters. After `"http://"`, the host is a loopback address written as
+one: an IPv4 address of `127.0.0.0/8` in dotted decimal, each part from 0 to 255 with
+no leading zero, or `[::1]`; a name is not one, `localhost` included, since what a
+name resolves to is not in the text. This is the one form of a remote server's URL:
+the adapter holds its `--url` to it before anything is sent, the gateway an
+envelope's `endpoint` before anything is signed and a binding's URL before the engine
+starts, and a verifier a receipt's.
 `peerIdentity` is `"tls:sha256:"` followed by exactly 64 lowercase
 hexadecimal characters after `"https://"`, and `null` after `"http://"`, where no
 transport identity is established. A `transport` of another value, a `server` that is

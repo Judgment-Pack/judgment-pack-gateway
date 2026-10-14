@@ -80,20 +80,18 @@ const shapes = new Set(["airbyte", "mcp", "http", "command"]);
 
 // isRemoteEndpoint is the form of a remote MCP server's endpoint (§1.2a,
 // ADR-0015; testdata/remote-endpoints/cases.json is the table it is tested
-// against): at most 2048 characters, each from U+0021 to U+007E; no "?",
-// no "#" and no "@" anywhere, so no user; "https://" or "http://"; then an
-// authority, a host and optionally ":" and a port; then nothing, or "/"
-// and a path. The host is a name of letters, digits, "-", "." and "_", or
-// "[", hexadecimal digits, ":" and ".", and "]"; the port a decimal from 1
-// to 65535 with no leading zero; and every "%" in the path is followed by
-// exactly two hexadecimal digits. After "http://", the host is a loopback
+// against): at most 2048 characters, each from U+0021 to U+007E; no "?"
+// and no "#"; "https://" or "http://"; then an authority, a host and
+// optionally ":" and a port; then nothing, or "/" and a path. The host is
+// a name of letters, digits, "-", "." and "_", or "[", hexadecimal digits,
+// ":" and ".", and "]", so no "@" is in the authority and no user is named;
+// the port a decimal from 1 to 65535 with no leading zero; and every "%" in
+// the path is followed by exactly two hexadecimal digits. An "@" in the
+// path names no user, and is a path's character like any other. After "http://", the host is a loopback
 // address written as one, an IPv4 address of 127.0.0.0/8 in dotted decimal
 // or [::1]; a name is not one, localhost included.
 export function isRemoteEndpoint(s: string): boolean {
   if (s.length > 2048 || !/^[\x21-\x7e]*$/.test(s) || /[?#]/.test(s)) {
-    return false;
-  }
-  if (s.includes("@")) {
     return false;
   }
   const scheme = /^(https?):\/\/(.*)$/s.exec(s);

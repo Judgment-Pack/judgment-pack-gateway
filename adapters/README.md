@@ -243,8 +243,9 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   dotted decimal, or `[::1]` — a name such as `localhost` is not one, since what it resolves to
   is not in the text), the scheme in lower case; a host that is a name of letters, digits, `-`,
   `.` and `_`, or hexadecimal digits, `:` and `.` in brackets; a port, when given, from 1 to
-  65535 with no leading zero; no user, no query, no fragment, and no `@` anywhere, the path
-  included; every `%` in the path followed by two hexadecimal digits. It is used
+  65535 with no leading zero; no user, so no `@` before the host (one in the path names no
+  user, and is taken as written); no query, no fragment; every `%` in the path followed by
+  two hexadecimal digits. It is used
   exactly as written, nothing appended. A redirect is never followed: the server's `3xx` fails
   the call, named by its status and never by its location.
 - `--bearer MEMBER` names the member of the `--credentials` file sent as

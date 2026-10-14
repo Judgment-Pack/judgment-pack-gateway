@@ -134,11 +134,12 @@ type Options struct {
 // against): at most 2048 bytes of printable ASCII; https, or http at a
 // loopback address written as one -- an IPv4 address of 127.0.0.0/8 in
 // dotted decimal, or [::1] -- since a credential sent in the clear is a
-// credential given away; no query, no fragment and no "@", so no user; a
-// host of letters, digits, '-', '.' and '_', or hexadecimal digits, ':' and
-// '.' in brackets, and a port, when given, from 1 to 65535 with no leading
-// zero; and every '%' in the path followed by two hexadecimal digits. The
-// endpoint is used as written.
+// credential given away; no query and no fragment; no user, so no '@'
+// before the host; a host of letters, digits, '-', '.' and '_', or
+// hexadecimal digits, ':' and '.' in brackets, and a port, when given, from
+// 1 to 65535 with no leading zero; and every '%' in the path followed by two
+// hexadecimal digits. An '@' in the path names no user and is taken as
+// written. The endpoint is used as written.
 func EndpointProblem(endpoint string) error {
 	if len(endpoint) > 2048 {
 		return errors.New("the url is longer than 2048 bytes")
@@ -160,10 +161,10 @@ func EndpointProblem(endpoint string) error {
 	if strings.ContainsAny(endpoint, "?#") {
 		return errors.New("the url carries a query or a fragment; it is used as written, and a credential's place is the credentials file")
 	}
-	if strings.Contains(endpoint, "@") {
-		return errors.New("the url carries a user, or an '@' that could be read as one: a credential's place is the credentials file")
-	}
 	authority, path, _ := strings.Cut(rest, "/")
+	if strings.Contains(authority, "@") {
+		return errors.New("the url carries a user: a credential's place is the credentials file")
+	}
 	host, port, hasPort, ok := splitAuthority(authority)
 	if ok && host == "" {
 		return errors.New("the url names no host")

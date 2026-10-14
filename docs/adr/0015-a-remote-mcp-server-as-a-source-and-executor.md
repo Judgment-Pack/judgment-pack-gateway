@@ -76,16 +76,17 @@ followed: a `3xx` is a refusal naming the status, never the location. `--ca-file
 referred to from §6: at most 2048 characters of printable ASCII; `https://` or `http://`;
 a host, then optionally `:` and a port, then nothing or `/` and a path; a host that is a
 name of letters, digits, `-`, `.` and `_`, or hexadecimal digits, `:` and `.` in brackets;
-a port from 1 to 65535 with no leading zero; no `?`, no `#` and no `@` anywhere; every `%`
-in the path followed by two hexadecimal digits; and after `http://` a loopback address
-written as one. The adapter's rule, which ended with `net/url`, was tightened to it: a
-named host of a fixed alphabet where `net/url` also took sub-delimiters and percent
-escapes, no `:` without a port after it, and no `@` in the path. The signer's rule, which
+a port from 1 to 65535 with no leading zero; no `?` and no `#` anywhere; no `@` in the
+authority, which no host's characters include, so no user, while an `@` in the path is one
+of its characters, as it was; every `%` in the path followed by two hexadecimal digits; and
+after `http://` a loopback address written as one. The adapter's rule, which ended with
+`net/url`, was tightened to it: a named host of a fixed alphabet where `net/url` also took
+sub-delimiters and percent escapes, and no `:` without a port after it. The signer's rule, which
 `gateway verify` and the engine share, and `verify-ts`'s were raised to it: they had held
 the authority only to being non-empty and free of `@`, so an envelope naming
 `https://mcp.example/%zz` or `https://:443/` was signed and verified. A table of accepted
 and refused endpoints (`testdata/remote-endpoints/cases.json`) is read by a test of each of
-the four, and nine vectors `v3-mcp-remote-endpoint-*` hold both verifiers to the form.
+the four, and eight vectors `v3-mcp-remote-endpoint-*` hold both verifiers to the form.
 
 ### 2. The credential and the headers
 
