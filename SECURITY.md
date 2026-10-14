@@ -150,13 +150,21 @@ start; so no parameter can send the write credential to a host the binding does 
 parameter is never a secret: the credential is the operation's credentials file, sent by the
 adapter as the bearer, and Azure DevOps' read-only header is not sent, since a write needs it
 absent. The executor is narrowed to the one tool asked for, and a write is held to its decision
-before anything is sent. A decision policy binds what it binds and nothing else: Azure DevOps'
+before anything is sent. A decision policy holds what it names and nothing else: Azure DevOps'
 write tools are dispatchers whose `action` argument chooses the operation, and `bind` fixes no
-value of its own and refuses no member it does not name, so a policy holds such a tool only by
-binding the whole arguments to the write the record states; a policy that binds an id and a
-revision alone leaves the action and every other operation to the request. A Databricks function
-does what its body does, as the identity's grants allow; every parameter it declares, defaults
-included, is bound or is the requester's to fill. **Raw SQL is no write tool**: a decision could
+value of its own and refuses no member it does not name, so a policy that binds an id and a
+revision alone leaves the action and every other operation to the request. Such a tool is held by
+`fix`, which holds an argument to a value the operator states, and `closed`, which refuses every
+member and array element no pointer of `bind` or `fix` reaches (engine configuration version 9,
+[ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)); the engine never
+fills a value in, so what is sent and committed to is what the requester asked. A closed policy
+establishes that the request's arguments were exactly those the policy names, each bound to the
+record or fixed by the policy, at the moment of the check. It does not establish that the target
+interpreted them as intended — what an `action` means, and any default the server supplies for an
+argument left out, are the server's — and a policy that is not closed establishes nothing of an
+argument it does not name. A Databricks function does what its body does, as the identity's
+grants allow; every parameter it declares, defaults included, is bound or is the requester's to
+fill. **Raw SQL is no write tool**: a decision could
 then authorize an arbitrary statement, and no policy can bind a statement argument by argument.
 The receipt establishes who asked, which judgment was cited and found verifying, what was sent, to
 which resolved URL and which tool, and what the target answered; it does not name the credential

@@ -59,17 +59,19 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
 `descriptors`, `decisionPolicy` and `parameters` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"8"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"9"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
-  6 `witness`, version 7 `witnessedBy`, and version 8 a platform's `parameters`. A file of an
-  earlier version still loads without the member and is refused by name with it.
+  6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, and version 9 a
+  decision policy's `fix` and `closed`. A file of an earlier version still loads without the
+  member and is refused by name with it.
   `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and to
   version 8 exactly when it carries parameters, and otherwise leaves the version as it found it —
   it never lowers one — so a signer older than version 3 goes on reading every file `connect` has
   not pinned. (ADR-0007 named version 4 for its `services` member, which is not built; ADR-0011
   gave 4 to `decisionPolicy`, ADR-0012 gave 5 to `requireSignedRecord`, ADR-0013 gave 6 to
   `witness`, ADR-0014 gave 7 to `witnessedBy`, ADR-0015's amendment of 2026-10-13 gave 8 to
-  `parameters`, and `services` takes the next version when it is built.)
+  `parameters`, ADR-0016 gave 9 to `fix` and `closed`, and `services` takes the next version
+  when it is built.)
 - `parameters`, in a version-8 file, fills the placeholders of the platform's remote binding
   ([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md), question 1, amended
   2026-10-13; "Bindings" below) —
@@ -122,12 +124,13 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   does not name, and a `decisionPolicy` on a platform that does not set `write: true`. A tool
   the member does not name is held to nothing, and its writes read nothing in their decision
   record. An action receipt for a tool with a policy carries `action.policy`, `"sha256:"` and
-  the SHA-256 of the canonical form of that policy object as written here (SPEC.md §1.2a): the
-  same policy spelled another way has the same digest, and a policy that writes
-  `"reviewed": false` has another digest than one that leaves the member out, though the two
-  make the same checks. `connect` has no flag for it: the entry it replaces keeps its policy, and
-  a replacement the policy would not fit — one without `--write`, or a binding whose write
-  operation does not name a tool the policy holds — is refused before any check runs.
+  the SHA-256 of the canonical form of that policy object as written here (SPEC.md §1.2a), every
+  member in it, `fix` and `closed` as much as the rest: the same policy spelled another way has
+  the same digest, and a policy that writes `"reviewed": false` or `"closed": false` has another
+  digest than one that leaves the member out, though the two make the same checks. `connect` has
+  no flag for it: the entry it replaces keeps its policy, and a replacement the policy would not
+  fit — one without `--write`, or a binding whose write operation does not name a tool the policy
+  holds — is refused before any check runs.
 
   `requireSignedRecord`, in a version-5 file, is optional: a non-empty array of Ed25519 public
   keys, each 64 lowercase hex as `jpack audit key public` prints one, none given twice
@@ -144,6 +147,36 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   runtime's key changes, the next key is added before the project signs with it, and the old
   one removed once no record it signed is still to be acted on. The keys are part of the
   policy's digest, in their order.
+
+  `fix` and `closed`, in a version-9 file, are optional
+  ([ADR-0016](../adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)) —
+
+  ```json
+  "fix": [
+    { "argument": "/action", "value": "update" },
+    { "argument": "/priority", "value": 2 }
+  ],
+  "closed": true
+  ```
+
+  — `bind` holds an argument to a fact of the record; it has no value of its own and refuses no
+  argument it does not name. `fix` is an array of `{argument, value}`: `argument` an RFC 6901
+  pointer into the request's `arguments`, held as `bind`'s are, and `value` any JSON value the
+  strict parser reads. The argument at that pointer must be there and equal the value as a JSON
+  value with its type, compared as `bind` compares: `"2"` is not `2`, and an object's members may
+  come in any order. The engine never fills a value in: a request that leaves a fixed argument
+  out, or changes it, is refused and nothing is sent, since the receipt records what the
+  requester asked. No pointer may be fixed twice, or both fixed and bound. `closed` is a boolean,
+  false when absent; `true` means every member of the request's `arguments`, at every depth, must
+  lie under a pointer some `bind` or `fix` entry names. A pointer covers the value it names and
+  everything under it, the empty pointer the whole arguments; an object or an array on the way to
+  a named pointer has each of its members or elements held in turn; anything else is refused. An
+  array's element is reached by its index pointer, in decimal with no leading zero
+  (`/updates/0`), or by a pointer that covers the array (`/updates`), so an element past those
+  the pointers name is refused; `-` and an index with a leading zero reach none. A closed policy
+  with neither `bind` nor `fix` admits only an empty `arguments`. Both members are checked at
+  `policy-bind`, after the bindings ([executor.md](executor.md), step 11), and are part of the
+  policy's digest; fixed entries in another order are another digest for the same checks.
 - `descriptors`, in a version-3 file, pins the snapshot of the platform's tool descriptors
   that `connect` captured from its live operation, `sha256:<64 hex>`, kept beside the file in
   `<file>.descriptors/` ([tool-descriptors.md](tool-descriptors.md)). A platform whose binding
@@ -686,11 +719,18 @@ to nothing ([executor.md](executor.md)).
       "packs": ["sha256:…"],
       "reviewed": true,
       "requireSignedRecord": ["…64 lowercase hex…"],
+      "fix": [
+        { "argument": "/action", "value": "update" },
+        { "argument": "/updates/0/op", "value": "test" },
+        { "argument": "/updates/0/path", "value": "/rev" },
+        { "argument": "/updates/1",
+          "value": { "op": "replace", "path": "/fields/System.State", "value": "Approved" } }
+      ],
       "bind": [
-        { "argument": "", "fact": "/writeBack" },
         { "argument": "/id", "fact": "/workItem/id" },
         { "argument": "/updates/0/value", "fact": "/workItem/rev" }
-      ]
+      ],
+      "closed": true
     }
   }
 }
@@ -702,28 +742,32 @@ The server's write tools are grouped dispatchers whose `action` argument chooses
 the update once the revision has changed), and also creates items, updates several at once
 (`update_batch`, whose `batchUpdates` name their own items) and adds children;
 `wit_work_item_comment_write` adds or updates a comment; `wit_work_item_link_write` links and
-unlinks items. `bind` reaches a nested argument (`/updates/0/value`, an RFC 6901 pointer through
-an array), but it fixes no value of its own and refuses no member it does not name. A policy that
-binds the work item's id and its revision alone therefore leaves the `action` to the request —
+unlinks items. `bind` alone fixes no value of its own and refuses no member it does not name, so a
+policy that binds the work item's id and its revision alone leaves the `action` to the request —
 `update_batch` writes the items its `batchUpdates` name, whatever `id` says — and lets a request
-add an operation that changes another field. So the policy above binds the whole arguments, the
-empty pointer, to a fact the record states: the write the decision approved, `writeBack`,
+add an operation that changes another field. The policy above holds the tool to one write
+([ADR-0016](../adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)): `fix` holds
+`action` to `update`, the first operation to a `test` of `/rev`, and the second to the operation
+that sets the state the outcome maps to; `bind` holds the work item's `id` and the tested revision
+to the item the pack judged, `workItem` in its facts (`{"id": 42, "rev": 3, …}`); and `closed`
+refuses every other member and element, so the one request it admits is
 
 ```json
-{"action": "update", "id": 42, "project": "example-project",
+{"action": "update", "id": 42,
  "updates": [{"op": "test", "path": "/rev", "value": 3},
              {"op": "replace", "path": "/fields/System.State", "value": "Approved"}]}
 ```
 
-which the pack's facts carry beside the work item it judged, `workItem` (`{"id": 42, "rev": 3,
-…}`). The arguments must equal it, member for member and operation for operation, and the two
-other bindings hold it to the judged item's own id and revision. The state the outcome maps to is
-in that fact: `bind` maps no outcome to a value, so a decision names in its facts the state it
-approves, and the pack is what judges that the outcome and the state agree. A policy for the
-comment and link tools binds the whole arguments the same way. What `bind` cannot do today — fix
-`action` to a value, or refuse an argument it does not name, without the record stating the whole
-write — is not extended here: a policy member for it is #258, and until then a dispatcher tool is
-held only by a record that states its whole write.
+A request that names another action, adds an operation (`/updates/2`), adds a member
+(`batchUpdates`, `project`, or `from` inside an operation), leaves the test out or names another
+item or revision is refused at `policy-bind`, and nothing is sent. The record states the item it
+judged and no write; the state the outcome maps to is the operator's, fixed in the policy beside
+the outcomes it allows. A policy fixes one value for every outcome it allows, and a platform holds
+each tool to one policy, so a write of another state for another outcome is held by a policy of
+its own on another platform entry. A policy for the comment and link tools is written the same
+way, every argument fixed or bound. Binding the whole arguments, the empty pointer, to a fact in
+which the record states the whole write is still valid, and is what a closed policy with that one
+binding is; it puts the write in the pack.
 
 **Databricks.**
 

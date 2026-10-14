@@ -167,12 +167,25 @@ file whole — so the record judged is the record named:
     any order, and a fact outside the canonical domain — a fraction, an exponent, an integer
     past 2⁵³−1 — equals no argument, since arguments are held to the domain. This is what
     refuses a decision about revision 3 cited for a write to revision 4, or an approval of one
-    order used for another.
+    order used for another. The same step then holds the arguments to the policy's own values
+    and, when it is closed, to the pointers it names
+    ([ADR-0016](../adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md), engine
+    configuration version 9): for each entry of `fix`, the argument at its pointer must be there
+    and equal its value, compared as a binding compares — absent is not the value, and nothing is
+    filled in — or the request is refused, `argument "<pointer>" is not the fixed value`; and when
+    the policy sets `closed`, every member and element of the arguments must be reached by a
+    pointer of `bind` or `fix` — covered by one, the empty pointer covering everything, or an
+    object or array on the way to one whose members or elements are each reached in turn, an
+    element by its index pointer or by a pointer covering its array — or the request is refused,
+    `argument "<pointer>" is reached by no binding`, naming the first value refused. This is what
+    refuses another `action` of a dispatcher tool, an operation added to a list, or a member the
+    policy does not name.
 
 A refused request executes nothing and mints nothing. The refusal names which step refused, in
 `refusedAt`. A refusal at steps 8 to 11 names the check and never a value of the record's —
 not its outcome, not a fact — since the requester may know a record by its digest and not by
-its contents.
+its contents; a refusal of a fixed or an unreached argument names its pointer, and no value of
+the policy's or the request's.
 
 ## The executor
 
@@ -222,7 +235,10 @@ moment it made them, and no more; `action.policy` says which policy, and the con
 what that policy is — the receipt carries its digest, not its text. A precondition on the
 target — a revision or an ETag compared on write — is still the only thing that closes the
 interval between the check and the commit, and that is the target's or the adapter's to supply:
-`bind` stops a substituted object, not a concurrent edit of the same one.
+`bind` stops a substituted object, not a concurrent edit of the same one. A closed policy
+establishes that the request's arguments were exactly those the policy names, each bound to the
+record or fixed by the policy, at the moment of the check; not that the target interpreted them
+as intended, and nothing of an argument a policy that is not closed does not name.
 
 A record is found by its shape, so a policy holds a write to whatever record a writer of the
 decision-record directory put there. With `requireSignedRecord`, the record was signed, in its

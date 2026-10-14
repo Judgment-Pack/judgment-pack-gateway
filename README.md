@@ -149,8 +149,11 @@ before anything is sent: it must be shaped as the runtime's evaluation record (`
 1, `kind` evaluation, a pack digest), the request's pack digest and citations must be the
 record's, and the record must state an outcome the policy allows, no handoff, a pack and
 reviewed law where the policy asks for them, and facts equal to the write's arguments where the
-policy binds them. `reviewed` alone holds a write to whatever reviewed-set lock is current, so an
-edited pack locked again passes it; list `packs` to hold a write to particular reviewed bytes.
+policy binds them. From engine configuration version 9 a policy may also fix an argument to a
+value of its own (`fix`) and refuse any argument it neither binds nor fixes (`closed`,
+[ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)); the engine
+compares and never fills a value in. `reviewed` alone holds a write to whatever reviewed-set
+lock is current, so an edited pack locked again passes it; list `packs` to hold a write to particular reviewed bytes.
 The receipt then names the policy by its digest. For a tool held to none, nothing in the record
 is read. `gateway verify` compares an action's pack digest and citations with a runtime
 evaluation record it names, and says of any other record that it did not compare it. Without a
@@ -196,10 +199,13 @@ operation alone. A binding's URL and tools may be a template, filled from the pl
 transport, the scheme and the host are written in it (or the host is `{workspace}` alone, held to a
 Databricks workspace's host forms), and the action receipt names the resolved URL. Each write tool
 is held to a decision policy: for Azure DevOps, whose write tools are dispatchers that an `action`
-argument steers, the policy binds the whole arguments to the write the record states; for
-Databricks, each of the function's named parameters to a fact. Raw SQL is no write tool, since a
-decision could then authorize an arbitrary statement, which no policy can bind argument by
-argument. An action receipt for these platforms establishes who asked, which judgment was cited and
+argument steers, the worked policy fixes `action` to `update` and the form of its operations, binds
+the work item's id and revision to the record's facts, and is closed, so a request that names
+another action, adds an operation or adds a member is refused before anything is sent (engine
+configuration version 9, [ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md));
+for Databricks, each of the function's named parameters is bound to a fact. Raw SQL is no write
+tool, since a decision could then authorize an arbitrary statement, which no policy can bind
+argument by argument. An action receipt for these platforms establishes who asked, which judgment was cited and
 found verifying, what was sent and to which resolved endpoint, and what the target answered; it
 does not name the credential, which the configuration names, nor the TLS identity the write was
 answered under, and it does not establish that the target applied the write as intended, that the

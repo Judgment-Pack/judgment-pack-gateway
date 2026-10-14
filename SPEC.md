@@ -320,7 +320,11 @@ interval between those checks and the target's commit: a precondition on the
 target — a revision or an ETag compared on write — is the only thing that does,
 and it is the target's, or its adapter's, to supply. A policy's `bind` stops an
 action on another object than the one decided; it does not stop a concurrent
-edit of that object.
+edit of that object. A policy that sets `closed` establishes that the request's
+arguments were exactly those the policy names, each bound to the record or fixed
+by the policy, at the moment of the check; not that the target interpreted them
+as intended, and a policy that does not set it establishes nothing of an
+argument it does not name.
 
 **`policy`.** The gateway's operator may hold a write tool to a **decision
 policy** in the gateway's configuration (`docs/design/engine-config.md`,
@@ -329,7 +333,11 @@ policy** in the gateway's configuration (`docs/design/engine-config.md`,
 the pack digests it may have been decided under, `reviewed`, whether it must
 carry `"reviewed": true`, `bind`, pairs of JSON pointers (RFC 6901), one
 into the request's arguments and one into the record's `inputs.facts`, whose
-values must be equal, and `requireSignedRecord`, the Ed25519 public keys of the
+values must be equal, `fix`, pairs of a JSON pointer into the request's
+arguments and a value the argument there must equal, `closed`, whether every
+argument must be reached by a pointer of `bind` or `fix`
+(`docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md`), and
+`requireSignedRecord`, the Ed25519 public keys of the
 runtimes whose signature of the record it requires
 (`docs/adr/0012-hold-a-write-to-a-signed-record.md`). Before an action through
 such a tool is sent, the gateway requires the decision record to be a runtime
@@ -345,16 +353,27 @@ its citations to be `cites` as a
 set; its `disposition` to be of kind `"outcome"`, its `outcomeId` among
 `outcomes`, and its `handoff.state` `"none"`; its `pack.digest` to be among
 `packs` when they are given; its `reviewed` to be `true` when `reviewed` is
-`true`; and, for each pair of `bind`, both pointers to resolve and the two
+`true`; for each pair of `bind`, both pointers to resolve and the two
 values to have the same canonical form (§1.1) — a value outside the canonical
-domain equals none. It refuses the request otherwise, with nothing sent and
-nothing minted. `reviewed` holds the record to whatever reviewed-set lock was
-current when it was written, not to particular bytes: a pack that is edited and
-locked again yields records with `"reviewed": true` and a new pack digest, which
-a policy without `packs` admits. `packs` is what holds a write to particular
+domain equals none; for each entry of `fix`, the argument at its pointer to be
+present and to have the canonical form of the entry's value, the gateway
+filling nothing in; and, when `closed` is `true`, every member and element of
+the arguments to be reached: covered by a pointer of `bind` or `fix`, which
+covers the value it names and everything under it, or an object or array on the
+way to one, each of whose members or elements is reached in turn, an array's
+element reached by its index pointer or by a pointer covering the array. It
+refuses the request otherwise, with nothing sent and nothing minted. `reviewed`
+holds the record to whatever reviewed-set lock was current when it was written,
+not to particular bytes: a pack that is edited and locked again yields records
+with `"reviewed": true` and a new pack digest, which a policy without `packs`
+admits. `packs` is what holds a write to particular
 reviewed packs. `policy` is then `"sha256:"` + hex of SHA-256 over `canon` of
-the policy object as configured (§1.1) — for this object its RFC 8785 form too,
-since its member names are the fixed ASCII names above and it holds no number.
+the policy object as configured (§1.1), every member of it included, `fix` and
+`closed` as much as the others. For a policy without `fix` that is its RFC 8785
+form too, since its member names are then the fixed ASCII names above and it
+holds no number; a fixed value may hold integers and member names of any script,
+and the digest is `canon`'s, whose order of names outside the Basic
+Multilingual Plane is not RFC 8785's.
 The receipt carries the policy's digest and never the policy. A verifier checks
 the member's form and nothing else: it holds no configuration to recompute the
 digest against.

@@ -113,9 +113,9 @@ and `type`; every tool takes an optional `project`. "The remote and local server
 different versions" (troubleshoot the remote server), so the remote server's own input schemas
 are what `connect` captures through the write operation's check, at the resolved URL, and what an
 operator writes a policy against ([engine-config.md](../docs/design/engine-config.md), "The
-write-back platforms", has one for `wit_work_item_write`: it binds the whole arguments to the
-write the record states, since `bind` cannot fix `action` or refuse an operation it does not
-name).
+write-back platforms", has one for `wit_work_item_write`: it fixes `action` to `update` and the
+form of the operations, binds the work item's id and revision to the record's facts, and is
+closed, so an argument it does not name is refused).
 
 **No read-only header.** "Use the `X-MCP-Readonly` header to restrict the server to read-only
 operations" (set up the remote server): the connection sends it on its reads, and a write needs

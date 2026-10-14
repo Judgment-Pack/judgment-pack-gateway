@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -19,7 +20,9 @@ import (
 // The write-back platforms (issue #248): a catalog binding whose write
 // operation names a remote MCP server by a URL template, filled from the
 // platform's parameters (engineVersion 8; ADR-0015, amended 2026-10-13),
-// and whose tools are held to decision policies (ADR-0011, ADR-0012). No
+// and whose tools are held to decision policies (ADR-0011, ADR-0012; the
+// Azure DevOps dispatcher by a fixed action and a closed argument set,
+// ADR-0016, engineVersion 9). No
 // test here reaches a real service: every remote server is the in-process
 // stand-in below, and the live checks at the end run only when their
 // environment names an organization or a workspace, and are skipped
@@ -172,29 +175,54 @@ type writePlatformCase struct {
 	tools      string // what the stand-in lists
 	facts      string // the record's facts
 	arguments  string // the write's arguments, held to the facts
-	bind       string // the policy's bind
-	mismatched []string
+	hold       string // the policy's members that hold the arguments: bind, and fix and closed
+	mismatched []mismatchedWrite
+}
+
+// mismatchedWrite is a write the policy refuses at policy-bind, by the
+// sentence want.
+type mismatchedWrite struct {
+	arguments, want string
 }
 
 var writePlatformCases = []writePlatformCase{
 	{
 		platform: "boards", catalog: "azure-devops", from: "https://mcp.dev.azure.com", path: "/example-org",
 		parameters: `{"organization":"example-org"}`, tool: "wit_work_item_write", tools: boardsTools,
-		// The decision is about work item 42 at revision 3, and the write it
-		// approves is stated in its facts: the dispatcher's action and every
-		// operation, the revision test first.
-		facts:     `{"workItem":{"id":42,"rev":3},"writeBack":{"action":"update","id":42,"project":"example-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}}`,
-		arguments: `{"action":"update","id":42,"project":"example-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`,
-		bind:      `[{"argument":"","fact":"/writeBack"},{"argument":"/id","fact":"/workItem/id"},{"argument":"/updates/0/value","fact":"/workItem/rev"}]`,
-		mismatched: []string{
+		// The decision is about work item 42 at revision 3, and its facts
+		// state that item alone. The policy holds the dispatcher to the one
+		// write the outcome means (ADR-0016; engine-config.md, "The
+		// write-back platforms"): action fixed to update, the revision test
+		// first and the state the outcome maps to fixed, the work item's id
+		// and the tested revision bound to the record's, and closed, so that
+		// nothing else may be asked.
+		facts:     `{"workItem":{"id":42,"rev":3}}`,
+		arguments: `{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`,
+		hold: `"fix":[{"argument":"/action","value":"update"},{"argument":"/updates/0/op","value":"test"},{"argument":"/updates/0/path","value":"/rev"},` +
+			`{"argument":"/updates/1","value":{"op":"replace","path":"/fields/System.State","value":"Approved"}}],` +
+			`"bind":[{"argument":"/id","fact":"/workItem/id"},{"argument":"/updates/0/value","fact":"/workItem/rev"}],"closed":true`,
+		mismatched: []mismatchedWrite{
 			// another work item
-			`{"action":"update","id":43,"project":"example-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`,
+			{`{"action":"update","id":43,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/id" does not equal the fact at "/workItem/id"`},
+			// another revision than the one decided
+			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":4},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/updates/0/value" does not equal the fact at "/workItem/rev"`},
+			// the revision test left out
+			{`{"action":"update","id":42,"updates":[{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/updates/0/value" does not equal the fact at "/workItem/rev"`},
 			// another action of the same tool, the same work item
-			`{"action":"update_batch","id":42,"project":"example-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`,
-			// one operation more than the decision stated
-			`{"action":"update","id":42,"project":"example-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"},{"op":"add","path":"/fields/System.AssignedTo","value":"someone"}]}`,
-			// a member the decision did not state
-			`{"action":"update","id":42,"project":"example-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}],"batchUpdates":[{"id":7,"path":"/fields/System.State","value":"Closed"}]}`,
+			{`{"action":"update_batch","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/action" is not the fixed value`},
+			// another action, writing the items its batchUpdates name
+			{`{"action":"update_batch","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}],"batchUpdates":[{"id":7,"path":"/fields/System.State","value":"Closed"}]}`, `argument "/action" is not the fixed value`},
+			// no action at all: the engine fills none in
+			{`{"id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/action" is not the fixed value`},
+			// another state than the outcome maps to
+			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Closed"}]}`, `argument "/updates/1" is not the fixed value`},
+			// one operation more than the policy names
+			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"},{"op":"add","path":"/fields/System.AssignedTo","value":"someone"}]}`, `argument "/updates/2" is reached by no binding`},
+			// a member the policy does not name
+			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}],"batchUpdates":[{"id":7,"path":"/fields/System.State","value":"Closed"}]}`, `argument "/batchUpdates" is reached by no binding`},
+			{`{"action":"update","id":42,"project":"another-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/project" is reached by no binding`},
+			// a member the policy does not name, inside an operation
+			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3,"from":"/fields/System.Title"},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/updates/0/from" is reached by no binding`},
 		},
 	},
 	{
@@ -203,12 +231,12 @@ var writePlatformCases = []writePlatformCase{
 		// The function's named parameters, each bound to a fact.
 		facts:     `{"case":{"id":"CASE-7","revision":3}}`,
 		arguments: `{"case_id":"CASE-7","revision":3}`,
-		bind:      `[{"argument":"/case_id","fact":"/case/id"},{"argument":"/revision","fact":"/case/revision"}]`,
-		mismatched: []string{
-			`{"case_id":"CASE-8","revision":3}`,
-			`{"case_id":"CASE-7","revision":4}`,
-			`{"case_id":"CASE-7","revision":"3"}`,
-			`{"case_id":"CASE-7"}`,
+		hold:      `"bind":[{"argument":"/case_id","fact":"/case/id"},{"argument":"/revision","fact":"/case/revision"}]`,
+		mismatched: []mismatchedWrite{
+			{`{"case_id":"CASE-8","revision":3}`, `the argument at "/case_id" does not equal the fact at "/case/id"`},
+			{`{"case_id":"CASE-7","revision":4}`, `the argument at "/revision" does not equal the fact at "/case/revision"`},
+			{`{"case_id":"CASE-7","revision":"3"}`, `the argument at "/revision" does not equal the fact at "/case/revision"`},
+			{`{"case_id":"CASE-7"}`, `the request's arguments hold nothing at "/revision"`},
 		},
 	},
 }
@@ -232,7 +260,7 @@ func writeConfig(t *testing.T, dir, bin, catalogName, text, platform, parameters
 	if policy != "" {
 		extra += `,"decisionPolicy":` + policy
 	}
-	config := `{"engineVersion":"8","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
+	config := `{"engineVersion":"9","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
 		`"registry":"` + escape(filepath.Join(dir, "registry.jsonl")) + `","decisionRecords":"` + escape(filepath.Join(dir, "decisions")) + `",` +
 		`"listen":"127.0.0.1:0","catalog":"` + escape(catalog) + `","adapters":"` + escape(bin) + `",` +
 		`"platforms":{"` + platform + `":{"binding":"` + catalogName + `@` + digestOf(text) + `","credentials":{"write":{"file":"` + escape(credentials) + `"}},` +
@@ -257,7 +285,7 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 		t.Run(wp.catalog, func(t *testing.T) {
 			stand := newWriteStandIn(t, wp.tools)
 			key := keyFromSeed(t, vectorSeed1)
-			policy := `{"outcomes":["approve"],"packs":["` + packA + `"],"reviewed":true,"requireSignedRecord":["` + key.public + `"],"bind":` + wp.bind + `}`
+			policy := `{"outcomes":["approve"],"packs":["` + packA + `"],"reviewed":true,"requireSignedRecord":["` + key.public + `"],` + wp.hold + `}`
 			text := atStandIn(t, wp.catalog, wp.from, stand.URL)
 			config := writeConfig(t, t.TempDir(), bin, wp.catalog, text, wp.platform, wp.parameters, `{"`+wp.tool+`":`+policy+`}`)
 			cfg, bindings, err := loadEngineConfig(config, stubAccounts(map[string]int{"engine-" + wp.platform: 1001}))
@@ -327,6 +355,8 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 			type refusal struct {
 				name, body, step string
 			}
+			// what a refusal says, by its name, where the test looks at it
+			wants := map[string]string{}
 			refusals := []refusal{
 				{"a tool the binding does not name", strings.Replace(request(wp.arguments, digest(good), packA, signature), `"tool":"`+wp.tool+`"`, `"tool":"unlisted"`, 1), "tool"},
 				{"no judgment cited", strings.Replace(request(wp.arguments, digest(good), packA, signature), `"cites":[{"sessionId":"wb","callIndex":0,"signature":"`+signature+`"}]`, `"cites":[]`, 1), "cites"},
@@ -337,11 +367,13 @@ func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 				{"a pack the policy does not name", request(wp.arguments, digest(unnamed), packB, signature), "policy-packs"},
 				{"a decision not judged under reviewed law", request(wp.arguments, digest(unreviewed), packA, signature), "policy-reviewed"},
 			}
-			for i, arguments := range wp.mismatched {
-				refusals = append(refusals, refusal{"arguments the record does not state " + strconv.Itoa(i), request(arguments, digest(good), packA, signature), "policy-bind"})
+			for i, m := range wp.mismatched {
+				name := "arguments the policy does not admit " + strconv.Itoa(i)
+				refusals = append(refusals, refusal{name, request(m.arguments, digest(good), packA, signature), "policy-bind"})
+				wants[name] = m.want
 			}
 			for _, r := range refusals {
-				if code, body := authed(t, server, "/act", r.body, token); code != http.StatusBadRequest || body["refusedAt"] != r.step {
+				if code, body := authed(t, server, "/act", r.body, token); code != http.StatusBadRequest || body["refusedAt"] != r.step || !strings.Contains(fmt.Sprint(body["error"]), wants[r.name]) {
 					t.Fatalf("%s: %d %v", r.name, code, body)
 				}
 				if seen := stand.requests(); len(seen) != 0 {

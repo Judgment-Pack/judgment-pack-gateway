@@ -33,16 +33,18 @@ import (
 // (docs/adr/0012-hold-a-write-to-a-signed-record.md), version 6 the
 // optional `witness` (docs/adr/0013-checkpoint-witness.md), and version 7
 // the optional `witnessedBy` (docs/adr/0014-a-receipt-names-the-witness.md),
-// and version 8 a platform's optional `parameters`, which fill a remote
-// binding's templates (binding_template.go; ADR-0015, amended 2026-10-13):
+// version 8 a platform's optional `parameters`, which fill a remote
+// binding's templates (binding_template.go; ADR-0015, amended 2026-10-13),
+// and version 9 a decision policy's optional `fix` and `closed`
+// (docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md):
 // a file of an earlier version without the member still loads, and one with
 // it is refused by name, as any member a version does not have. connect raises a file to
 // version 3 exactly when the entry it writes carries a pin, and to version 8
 // exactly when it carries parameters, and otherwise leaves the version as it
 // found it; it never lowers one.
-const engineVersion = "8"
+const engineVersion = "9"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -263,7 +265,7 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 	var cfg engineConfig
 	version, _ := memberString(obj, "engineVersion")
 	if !engineVersions[version] {
-		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", "7", engineVersion)
+		return engineConfig{}, fmt.Errorf("engine configuration: engineVersion %q is not %q, %q, %q, %q, %q, %q, %q, %q or %q", version, "1", "2", "3", "4", "5", "6", "7", "8", engineVersion)
 	}
 	cfg.version = version
 	if _, present := obj.get("mcp"); present && version == "1" {
