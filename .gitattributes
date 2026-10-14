@@ -7,3 +7,6 @@ testdata/tool-descriptors/rendered.json -text
 
 # The stdio form of adapter-mcp is held to these records byte for byte.
 adapters/mcp/testdata/stdio-golden/** -text
+
+# A stdio write's action receipt is held to these records byte for byte.
+go/testdata/action-golden/** -text
