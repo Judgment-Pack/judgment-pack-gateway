@@ -2026,7 +2026,9 @@ Server](https://learn.microsoft.com/en-us/azure/devops/mcp-server/mcp-server-ove
 dated 2026-08-12). It is not a catalog connection: the connections run no
 third-party server process, and this one is a program the operator chooses,
 pins and runs. It is an operator-level source through `adapter-mcp`'s
-existing stdio form:
+existing stdio form, a source and not a write-back platform: the catalog
+ships no binding of it, for the reasons recorded in the
+[catalog's Azure DevOps section](../catalog/README.md#azure-devops).
 
 ```
 gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
