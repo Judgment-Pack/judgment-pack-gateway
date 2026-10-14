@@ -130,8 +130,9 @@ operation to sending none. The credential's scopes and its identity's permission
 a write, and the decision policy is what holds each one to its decision.
 
 The organization's local MCP server (the npm package `@azure-devops/mcp`, over stdio) is not a
-catalog entry: the catalog pins images, and the engine authors no binding of a server the
-operator installs; an operator runs it as a source under `adapter-mcp`
+catalog entry: the catalog's binding forms are an image pinned by digest or a remote server
+named by URL and transport, and the engine authors no binding for a server the operator
+installs; an operator runs it as a source under `adapter-mcp`
 ([adapters/README.md](../adapters/README.md)).
 
 **Decided 2026-10-14 (#259): no catalog binding of the local server.** The catalog's bindings
