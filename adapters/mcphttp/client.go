@@ -65,6 +65,13 @@ type Client struct {
 	headers http.Header
 	// limit bounds each answer; MaxResponse for New.
 	limit int64
+	// initializeLimit, listLimit and callLimit bound the answers to
+	// initialize, to tools/list and to tools/call, each the whole body of
+	// the answer (or the whole event stream): limit where Options gave none.
+	initializeLimit, listLimit, callLimit int64
+	// kinded is a client opened with a limit of a kind: its refusals name
+	// the kind of answer. refuseEncoding is Options.RefuseEncoding.
+	kinded, refuseEncoding bool
 	// requestLimit bounds each request this client sends: 64 KiB for New,
 	// and for Open what a request on adapter-mcp's stdin may hold, 1 MiB,
 	// with room for the message around it.
@@ -91,6 +98,22 @@ type Options struct {
 	Headers http.Header
 	// MaxResponse bounds each answer; zero is MaxResponse.
 	MaxResponse int64
+	// InitializeLimit, ListLimit and CallLimit bound the whole answer -- a
+	// JSON body, or an event stream with every comment and notification in
+	// it -- to initialize, to one page of tools/list and to tools/call; an
+	// answer one byte past its limit is refused, and the refusal names the
+	// kind of answer. A JSON body is read whole, to the limit and one byte
+	// more, before any of it is parsed. An event stream is held to the limit
+	// as a whole -- every byte read, comments and notifications included --
+	// and to it for each event, but its events are parsed as they arrive,
+	// and the response to the request ends the reading: what follows it is
+	// not read. Zero is MaxResponse's value for that kind of answer.
+	InitializeLimit, ListLimit, CallLimit int64
+	// RefuseEncoding refuses an answer that names a Content-Encoding other
+	// than identity, before any of it is read. A caller that sets it also
+	// turns the transport's automatic decompression off, which would
+	// otherwise decode the body before the limits above see it.
+	RefuseEncoding bool
 	// Tools are the only tools a call may name; nil lets a call name any
 	// tool, the caller holding its own allowlist.
 	Tools []string
@@ -223,7 +246,15 @@ func Open(endpoint string, opts Options, transport *http.Client) (*Client, error
 	if limit <= 0 {
 		limit = MaxResponse
 	}
-	c := &Client{endpoint: endpoint, token: opts.Token, allowed: map[string]bool{}, http: &h, headers: opts.Headers.Clone(), limit: limit, requestLimit: 2 << 20, anyTool: opts.Tools == nil, refuseSession: true, screen: opts.Screen}
+	own := func(n int64) int64 {
+		if n <= 0 {
+			return limit
+		}
+		return n
+	}
+	c := &Client{endpoint: endpoint, token: opts.Token, allowed: map[string]bool{}, http: &h, headers: opts.Headers.Clone(), limit: limit,
+		initializeLimit: own(opts.InitializeLimit), listLimit: own(opts.ListLimit), callLimit: own(opts.CallLimit),
+		kinded: opts.InitializeLimit > 0 || opts.ListLimit > 0 || opts.CallLimit > 0, refuseEncoding: opts.RefuseEncoding, requestLimit: 2 << 20, anyTool: opts.Tools == nil, refuseSession: true, screen: opts.Screen}
 	for _, name := range opts.Tools {
 		if name == "" {
 			return nil, ErrTool
@@ -254,7 +285,7 @@ func New(endpoint, token string, allowed []string, transport *http.Client) (*Cli
 	h := *transport
 	h.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	h.Timeout = 45 * time.Second
-	c := &Client{endpoint: endpoint, token: token, allowed: map[string]bool{}, http: &h, limit: MaxResponse, requestLimit: 64 << 10}
+	c := &Client{endpoint: endpoint, token: token, allowed: map[string]bool{}, http: &h, limit: MaxResponse, initializeLimit: MaxResponse, listLimit: MaxResponse, callLimit: MaxResponse, requestLimit: 64 << 10}
 	for _, name := range allowed {
 		if name == "" || len(name) > 128 {
 			return nil, ErrTool
@@ -280,7 +311,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	default:
 		return ErrProtocol
 	}
-	_, err = c.post(ctx, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, 0)
+	_, err = c.post(ctx, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, 0, 0, "")
 	return err
 }
 func (c *Client) CallTool(ctx context.Context, name string, args any) (json.RawMessage, error) {
@@ -313,7 +344,7 @@ func (c *Client) Negotiated(ctx context.Context, version string) error {
 		return fault(ErrProtocol, "the session was negotiated already")
 	}
 	c.version = version
-	_, err := c.post(ctx, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, 0)
+	_, err := c.post(ctx, map[string]any{"jsonrpc": "2.0", "method": "notifications/initialized"}, 0, 0, "")
 	return err
 }
 
@@ -410,9 +441,31 @@ func (c *Client) setHeaders(r *http.Request) {
 }
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	c.next++
-	return c.post(ctx, map[string]any{"jsonrpc": "2.0", "id": c.next, "method": method, "params": params}, c.next)
+	limit := c.limit
+	switch method {
+	case "initialize":
+		limit = c.initializeLimit
+	case "tools/list":
+		limit = c.listLimit
+	case "tools/call":
+		limit = c.callLimit
+	}
+	return c.post(ctx, map[string]any{"jsonrpc": "2.0", "id": c.next, "method": method, "params": params}, c.next, limit, method)
 }
-func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage, error) {
+
+// exceeded is the refusal of an answer past its limit: the number, and for a
+// client with limits of its kinds the method the answer was to -- a fixed
+// label, never any of the body.
+func (c *Client) exceeded(method string, limit int64) error {
+	if c.kinded && method != "" {
+		return fault(ErrLimit, "the server's answer to %s exceeds the bound of %d bytes", method, limit)
+	}
+	return fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", limit)
+}
+
+// post sends one message and reads its answer, no further than limit bytes:
+// past it the answer is refused before any of it is parsed.
+func (c *Client) post(ctx context.Context, message any, id int, limit int64, method string) (json.RawMessage, error) {
 	raw, err := json.Marshal(message)
 	if err != nil || len(raw) > c.requestLimit {
 		return nil, fault(ErrLimit, "the request exceeds %d bytes", c.requestLimit)
@@ -462,8 +515,18 @@ func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage
 		sum := sha256.Sum256(resp.TLS.PeerCertificates[0].Raw)
 		c.peer = "tls:sha256:" + hex.EncodeToString(sum[:])
 	}
-	if resp.ContentLength > c.limit {
-		return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
+	if c.refuseEncoding {
+		if resp.Uncompressed {
+			return nil, fault(ErrProtocol, "the server's answer was encoded, which this client does not accept")
+		}
+		for _, value := range resp.Header.Values("Content-Encoding") {
+			if value != "" && !strings.EqualFold(strings.TrimSpace(value), "identity") {
+				return nil, fault(ErrProtocol, "the server's answer is encoded, which this client does not accept")
+			}
+		}
+	}
+	if resp.ContentLength > limit {
+		return nil, c.exceeded(method, limit)
 	}
 	if c.version == "" {
 		session := resp.Header.Get("Mcp-Session-Id")
@@ -482,12 +545,12 @@ func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage
 		return nil, fault(ErrProtocol, "the server's answer names no content type a client reads")
 	}
 	if media == "application/json" {
-		body, err := io.ReadAll(io.LimitReader(resp.Body, c.limit+1))
+		body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 		if err != nil {
 			return nil, fault(ErrUnavailable, "the server's answer could not be read whole")
 		}
-		if int64(len(body)) > c.limit {
-			return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
+		if int64(len(body)) > limit {
+			return nil, c.exceeded(method, limit)
 		}
 		result, done, err := c.message(ctx, body, id)
 		if !done && err == nil {
@@ -500,15 +563,15 @@ func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage
 		return nil, fault(ErrProtocol, "the server's answer is of a content type that is neither application/json nor text/event-stream")
 	}
 	// Bound the entire stream, including comments/notifications, not just its result.
-	limited := &io.LimitedReader{R: resp.Body, N: c.limit + 1}
+	limited := &io.LimitedReader{R: resp.Body, N: limit + 1}
 	scanner := bufio.NewScanner(limited)
-	scanner.Buffer(make([]byte, 4096), int(min(c.limit, 1<<30)))
+	scanner.Buffer(make([]byte, 4096), int(min(limit, 1<<30)))
 	var event bytes.Buffer
 	events := 0
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if limited.N <= 0 {
-			return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
+			return nil, c.exceeded(method, limit)
 		}
 		if len(line) == 0 {
 			if event.Len() == 0 {
@@ -528,15 +591,17 @@ func (c *Client) post(ctx context.Context, message any, id int) (json.RawMessage
 		if bytes.HasPrefix(line, []byte("data:")) {
 			value := bytes.TrimPrefix(line, []byte("data:"))
 			value = bytes.TrimPrefix(value, []byte(" "))
-			if int64(event.Len()+len(value)+1) > c.limit {
-				return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
+			if int64(event.Len()+len(value)+1) > limit {
+				return nil, c.exceeded(method, limit)
 			}
 			event.Write(value)
 			event.WriteByte('\n')
 		}
 	}
-	if limited.N <= 0 {
-		return nil, fault(ErrLimit, "the server's answer exceeds the bound of %d bytes", c.limit)
+	// A line longer than the limit stops the scanner before the sentinel
+	// byte is read: that is the bound too.
+	if errors.Is(scanner.Err(), bufio.ErrTooLong) || limited.N <= 0 {
+		return nil, c.exceeded(method, limit)
 	}
 	// Incomplete events and disconnected streams are not success.
 	return nil, fault(ErrProtocol, "the server's event stream ended before the response")
@@ -589,7 +654,7 @@ func (c *Client) message(ctx context.Context, body []byte, id int) (json.RawMess
 				key = "result"
 				response = map[string]any{}
 			}
-			_, err := c.post(ctx, map[string]any{"jsonrpc": "2.0", "id": requestID, key: response}, 0)
+			_, err := c.post(ctx, map[string]any{"jsonrpc": "2.0", "id": requestID, key: response}, 0, 0, "")
 			if err != nil {
 				return nil, false, err
 			}

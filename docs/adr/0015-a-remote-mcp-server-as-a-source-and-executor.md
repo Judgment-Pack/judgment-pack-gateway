@@ -94,8 +94,11 @@ connection maps, so its behaviour is unchanged. One session per invocation: `ini
 the adapter to the stdio form's rules; `notifications/initialized`; the tool list; the one
 `tools/call` (or, for `--check`, the list and the probe); the session ended with a `DELETE`. The
 session id is the client's, sent on every later request and recorded nowhere. Each answer is read
-no further than the output bound or 8 MiB, whichever is larger, and the tool's result is then held
-to the output bound as over stdio. `--tools`, `--check`, `--probe`, the descriptors capture,
+no further than a limit of its kind (#250), a JSON body before any of it is parsed and an event stream
+as a whole, its events parsed as they arrive and the response ending the reading; an encoded answer is
+refused unread: a tool call's, the output bound and
+64 KiB; `initialize`'s, 1 MiB; a page of the tool list's, 8 MiB. The tool's result is then held to
+the output bound as over stdio. `--tools`, `--check`, `--probe`, the descriptors capture,
 `--error-results` and the result's reading are the stdio form's, unchanged.
 
 ### 4. The acquisition

@@ -1,11 +1,14 @@
 package mcp
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -553,5 +556,105 @@ func TestRemoteSessionIdIsInTheRedactionSet(t *testing.T) {
 	}
 	if got := redact.Redact("the session "+sessionMarker+" ended", srv.sessionSecret(secrets)); strings.Contains(got, sessionMarker) {
 		t.Fatalf("the session id is not redacted: %s", got)
+	}
+}
+
+// sized answers one kind of request with a body of exactly n bytes -- the
+// response, then spaces; or, past the limit, ending in a byte that no JSON
+// parser would take -- and records the bytes it wrote. Every other request
+// is the server's own.
+func sized(method string, n int, garbage bool, wrote *int) func(w http.ResponseWriter, got string, id json.RawMessage) bool {
+	result := map[string]string{
+		"initialize": `{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fake-remote-mcp","version":"2.0"}}`,
+		"tools/list": `{"tools":` + fakemcp.DefaultTools + `}`,
+		"tools/call": fakemcp.DefaultResult,
+	}[method]
+	return func(w http.ResponseWriter, got string, id json.RawMessage) bool {
+		if got != method {
+			return false
+		}
+		body := `{"jsonrpc":"2.0","id":` + string(id) + `,"result":` + result + `}`
+		body += strings.Repeat(" ", n-len(body))
+		if garbage {
+			body = body[:n-1] + "x"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if method == "initialize" {
+			w.Header().Set("Mcp-Session-Id", sessionMarker)
+		}
+		*wrote += len(body)
+		io.WriteString(w, body)
+		return true
+	}
+}
+
+// The remote form bounds each answer by its kind before parsing it: a tool
+// call's by --max-output and the envelope's allowance, initialize's and a
+// tool list page's by limits of their own, which --max-output does not
+// bound. At its limit an answer is read; one byte past, it is refused with
+// a sentence naming the bound, and (the tail being no JSON) never parsed.
+func TestRemoteAnswersAreBoundedByKindBeforeParsing(t *testing.T) {
+	const bound = 4096
+	for _, tt := range []struct {
+		method string
+		output int64
+		limit  int
+	}{
+		{"tools/call", bound, bound + callOverhead},
+		{"initialize", bound, initializeLimit},
+		{"tools/list", 16 << 20, listLimit},
+	} {
+		for _, past := range []bool{false, true} {
+			var wrote int
+			n := tt.limit
+			if past {
+				n++
+			}
+			_, cfg := remote(t, true, fakemcp.Script{Answer: sized(tt.method, n, past, &wrote)})
+			cfg.MaxOutput, cfg.Tools = tt.output, []string{"query"}
+			_, err := Acquire(within(t), cfg, query("select 1"))
+			if wrote != n {
+				t.Fatalf("%s: the server wrote %d bytes, not %d", tt.method, wrote, n)
+			}
+			if !past && err != nil {
+				t.Fatalf("%s at its limit of %d bytes: %v", tt.method, tt.limit, err)
+			}
+			if past && (err == nil || !strings.Contains(err.Error(), fmt.Sprintf("the server's answer to %s exceeds the bound of %d bytes", tt.method, tt.limit))) {
+				t.Fatalf("%s one byte past its limit of %d bytes: %v", tt.method, tt.limit, err)
+			}
+		}
+	}
+}
+
+// An encoded answer is refused before any of it is read: the transport does
+// not ask for an encoding or decode one, so a body cannot grow past the
+// bound once the limiter has counted it. One request is made -- the one the
+// answer was refused for -- and the server is told no encoding is accepted.
+func TestRemoteRefusesAnEncodedAnswer(t *testing.T) {
+	for _, encoding := range []string{"gzip", "br", "GZIP"} {
+		var zipped bytes.Buffer
+		gz := gzip.NewWriter(&zipped)
+		gz.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}` + strings.Repeat(" ", 1<<20)))
+		gz.Close()
+		var acceptEncoding []string
+		srv, cfg := remote(t, true, fakemcp.Script{Answer: func(w http.ResponseWriter, method string, id json.RawMessage) bool {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Encoding", encoding)
+			w.Write(zipped.Bytes())
+			return true
+		}})
+		cfg.MaxOutput = 4096
+		_, err := Acquire(within(t), cfg, query("select 1"))
+		if err == nil || !strings.Contains(err.Error(), "encoded") {
+			t.Fatalf("%s: an encoded answer is refused for its encoding: %v", encoding, err)
+		}
+		if got := srv.Requests(); len(got) != 1 {
+			t.Fatalf("%s: %d requests, not the one", encoding, len(got))
+		} else {
+			acceptEncoding = got[0].Header.Values("Accept-Encoding")
+		}
+		if len(acceptEncoding) != 0 {
+			t.Fatalf("%s: the client asked for an encoding: %v", encoding, acceptEncoding)
+		}
 	}
 }

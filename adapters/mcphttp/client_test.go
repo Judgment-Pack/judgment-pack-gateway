@@ -251,3 +251,208 @@ func TestStatusesAreNamed(t *testing.T) {
 		}
 	}
 }
+
+// A message the server writes at exactly its limit is read; one byte more is
+// refused before any of it is parsed -- the client's screen, handed each
+// message it goes on to read, is not handed it -- and the refusal names the
+// limit of that kind of answer: initialize's, a tool list page's, a tool
+// call's, as JSON and as an event stream.
+func TestAnswerLimitsAreHeldBeforeParsing(t *testing.T) {
+	const initialize, list, call = 300, 400, 500
+	var size int
+	var garbage bool // the last byte is no JSON
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		json.NewDecoder(r.Body).Decode(&request)
+		if r.Method == "DELETE" || request.ID == 0 {
+			w.WriteHeader(202)
+			return
+		}
+		result := map[string]string{"initialize": `{"protocolVersion":"2025-06-18"}`, "tools/list": `{"tools":[]}`, "tools/call": `{"content":[]}`}[request.Method]
+		message := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":%s}`, request.ID, result)
+		var out string
+		if r.Header.Get("X-Events") != "" {
+			// "data: " and the blank line after are part of the stream.
+			out = "data: " + message + strings.Repeat(" ", size-len(message)-len("data: ")-2)
+			if garbage {
+				out = out[:len(out)-1] + "x"
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, out[:1])
+			w.(http.Flusher).Flush()
+			io.WriteString(w, out[1:]+"\n\n")
+			return
+		}
+		out = message + strings.Repeat(" ", size-len(message))
+		if garbage {
+			out = out[:len(out)-1] + "x"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Flushed in two, so the body is chunked and carries no length the
+		// client could refuse it by before reading.
+		io.WriteString(w, out[:1])
+		w.(http.Flusher).Flush()
+		io.WriteString(w, out[1:])
+	}))
+	defer server.Close()
+	for _, events := range []bool{false, true} {
+		screened := 0
+		headers := http.Header{}
+		if events {
+			headers.Set("X-Events", "1")
+		}
+		c, err := Open(server.URL, Options{Headers: headers, MaxResponse: 100000, InitializeLimit: initialize, ListLimit: list, CallLimit: call,
+			Screen: func([]byte, string) bool { screened++; return false }}, server.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		step := func(name string, limit int, run func() error) {
+			t.Helper()
+			size, garbage = limit, false
+			before := screened
+			if err := run(); err != nil {
+				t.Fatalf("%s at its limit (events %v): %v", name, events, err)
+			}
+			if screened != before+1 {
+				t.Fatalf("%s at its limit is read once: %d", name, screened-before)
+			}
+			// Past the limit the body is still valid JSON, so only the order of
+			// the checks -- the screen is handed a message after it is parsed --
+			// shows whether it was read.
+			size, garbage = limit+1, false
+			before = screened
+			err := run()
+			if !errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), fmt.Sprintf("exceeds the bound of %d bytes", limit)) {
+				t.Fatalf("%s one byte past its limit (events %v): %v", name, events, err)
+			}
+			if screened != before {
+				t.Fatalf("%s past its limit was read", name)
+			}
+		}
+		// initialize may be repeated until negotiated; the session id is not
+		// recorded by this server, so a second one is a fresh request.
+		step("initialize", initialize, func() error { _, err := c.Request(ctx, "initialize", map[string]any{}); return err })
+		size, garbage = initialize, false
+		if err := c.Negotiated(ctx, "2025-06-18"); err != nil {
+			t.Fatal(err)
+		}
+		step("tools/list", list, func() error { _, err := c.Request(ctx, "tools/list", map[string]any{}); return err })
+		step("tools/call", call, func() error { _, err := c.CallTool(ctx, "any", map[string]any{}); return err })
+	}
+}
+
+// An event stream is held to its limit as a whole, every byte counted, but
+// its events are parsed as they arrive and the response ends the reading.
+// The bodies are chunked and carry no length, written in flushed fragments.
+func TestEventStreamsAreBoundedAsTheyArrive(t *testing.T) {
+	// A line is only too long for the scanner past its 4096-byte first buffer.
+	const limit, longLimit = 500, 8192
+	const notice = `{"jsonrpc":"2.0","method":"notifications/message","params":{}}`
+	var shape string
+	var total int
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		json.NewDecoder(r.Body).Decode(&request)
+		if r.Method == "DELETE" || request.ID == 0 {
+			w.WriteHeader(202)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if request.Method == "initialize" {
+			fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%d,"result":{"protocolVersion":"2025-06-18"}}`, request.ID)
+			return
+		}
+		response := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"result":{"content":[]}}`, request.ID)
+		var stream string
+		switch shape {
+		case "one event":
+			stream = "data: " + response + "%s\n\n"
+		case "several events":
+			stream = "data: " + notice + "\n\n: keepalive\nevent: message\ndata: " + response + "%s\n\n"
+		case "trailing data":
+			stream = "data: " + response + "\n\n" + strings.Repeat(": tail\n", 4*limit)
+		case "one long line":
+			stream = ": " + strings.Repeat("x", longLimit+100) + "\n"
+		}
+		pad := ""
+		if strings.Contains(stream, "%s") {
+			pad = strings.Repeat(" ", total-len(strings.Replace(stream, "%s", "", 1)))
+			stream = strings.Replace(stream, "%s", pad, 1)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for len(stream) > 0 {
+			n := min(7, len(stream))
+			if _, err := io.WriteString(w, stream[:n]); err != nil {
+				return
+			}
+			w.(http.Flusher).Flush()
+			stream = stream[n:]
+		}
+	}))
+	defer server.Close()
+	for _, tt := range []struct {
+		shape string
+		total int
+		ok    bool
+	}{
+		{"one event", limit, true}, {"one event", limit + 1, false},
+		{"several events", limit, true}, {"several events", limit + 1, false},
+		// The response is the reading's end: what follows it is not read.
+		{"trailing data", 0, true},
+		{"one long line", 0, false},
+	} {
+		shape, total = tt.shape, tt.total
+		bound := int64(limit)
+		if tt.shape == "one long line" {
+			bound = longLimit
+		}
+		c, err := Open(server.URL, Options{CallLimit: bound}, server.Client())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx := context.Background()
+		if _, err := c.Request(ctx, "initialize", map[string]any{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := c.Negotiated(ctx, "2025-06-18"); err != nil {
+			t.Fatal(err)
+		}
+		_, err = c.CallTool(ctx, "any", map[string]any{})
+		switch {
+		case tt.ok && err != nil:
+			t.Errorf("%s of %d bytes: %v", tt.shape, tt.total, err)
+		case !tt.ok && (!errors.Is(err, ErrLimit) || !strings.Contains(err.Error(), fmt.Sprintf("the server's answer to tools/call exceeds the bound of %d bytes", bound))):
+			t.Errorf("%s of %d bytes: %v", tt.shape, tt.total, err)
+		}
+	}
+}
+
+// An answer with a Content-Encoding is refused before any of it is read by a
+// client opened to refuse one, and read as before by one not.
+func TestEncodedAnswersAreRefusedOnRequest(t *testing.T) {
+	for _, refuse := range []bool{true, false} {
+		reads := 0
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Add("Content-Encoding", "identity")
+			w.Header().Add("Content-Encoding", "gzip")
+			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{}}`)
+		}))
+		c, _ := Open(server.URL, Options{RefuseEncoding: refuse, Screen: func([]byte, string) bool { reads++; return false }}, server.Client())
+		_, err := c.Request(context.Background(), "initialize", map[string]any{})
+		if refuse && (err == nil || reads != 0 || !strings.Contains(err.Error(), "encoded")) {
+			t.Errorf("refused: %v, %d reads", err, reads)
+		}
+		if !refuse && err != nil {
+			t.Errorf("not asked to refuse: %v", err)
+		}
+		server.Close()
+	}
+}
