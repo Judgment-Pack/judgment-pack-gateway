@@ -79,7 +79,9 @@ with one it also compares them with the record they name (step 10).
    after the write. What remains outside the claim is a second engine writing receipts into a
    directory this one made — two engines on one store, which the design does not serve.
 3. The platform is unknown, or its binding declares no `write` operation, or the
-   configuration does not set `write: true` for it → refused. `write: true` says an executor
+   configuration does not set `write: true` for it → refused. (A configuration that sets
+   `write: true` for a platform whose binding has no `write` operation is refused at start,
+   naming the platform; the `postgres` binding is one, since raw SQL is no write tool, #260.) `write: true` says an executor
    may be pointed at the platform; it authorizes no particular write. Every member of the
    request is read at its own step — `session` at step 2, `platform` here, `tool` at step 4,
    `decision` and `cites` at theirs — absent, unparseable or of the wrong type is a refusal at

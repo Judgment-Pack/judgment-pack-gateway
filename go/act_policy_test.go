@@ -332,7 +332,7 @@ func TestDecisionPolicyConfiguration(t *testing.T) {
 		t.Fatalf("a policy for a tool the binding does not name: %v", err)
 	}
 	historyOnly := engineJSON(t, catalog, ``, platformJSONFor(t, "warehouse", "history-only@"+digestOf(historyOnlyBinding), "engine-warehouse", `,"write":true,"decisionPolicy":{"execute":{"outcomes":["approve"]}}`, "history"))
-	if _, _, err := load(t, strings.Replace(historyOnly, `"engineVersion":"1"`, `"engineVersion":"4"`, 1)); err == nil || !strings.Contains(err.Error(), "states no write operation") {
+	if _, _, err := load(t, strings.Replace(historyOnly, `"engineVersion":"1"`, `"engineVersion":"4"`, 1)); err == nil || !strings.Contains(err.Error(), "has no write operation") {
 		t.Fatalf("a policy on a binding with no write operation: %v", err)
 	}
 }

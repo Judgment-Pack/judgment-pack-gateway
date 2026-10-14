@@ -445,7 +445,8 @@ and citations that a workflow holds and an MCP host has no place for, and the ex
 gate — the record exists, the citations verify — is what it is whether the request came by
 HTTP or by MCP; the workflow packages expose it, this server does not, for now. Nor does
 omitting `/act` make the tools read-only: `execute_sql` sits in the postgres binding's live
-operation and its write operation alike, and what holds a live tool to reading is the
+operation (which is its only operation that names it; the binding has no write operation), and
+what holds a live tool to reading is the
 credential the operator gave it — a role that can only read — as `catalog/README.md` says.
 The server names tools; it cannot make them harmless.
 

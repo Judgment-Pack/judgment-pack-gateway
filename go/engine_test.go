@@ -198,12 +198,19 @@ func TestEngineDerivesSourcesFromPlatforms(t *testing.T) {
 		t.Fatalf("a probe on a write operation: %v", err)
 	}
 	noWrite := `{"bindingVersion":"1","platform":"postgres","operations":{"live":{"shape":"mcp","server":{"image":"ghcr.io/example/mcp-postgres:2.1@` + testImageDigest + `"},"tools":["query"],"licence":"MIT"}}}`
-	_, sources, err = load(t, engineJSON(t, catalogWith(t, map[string]string{"postgres": noWrite}), ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(noWrite), "engine-warehouse", `,"write":true`, "live")))
+	// write: true against a binding with no write operation is refused at
+	// start, naming the platform and the rule: a silent flag would read as an
+	// enabled write that no executor serves (#260).
+	if _, _, err := load(t, engineJSON(t, catalogWith(t, map[string]string{"postgres": noWrite}), ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(noWrite), "engine-warehouse", `,"write":true`, "live"))); err == nil || !strings.Contains(err.Error(), "platform warehouse: sets write: true, and binding postgres@") || !strings.Contains(err.Error(), "raw SQL is no write tool") {
+		t.Fatalf("write: true against a binding with no write operation: %v", err)
+	}
+	// Without write: true the same binding loads and derives no write source.
+	_, sources, err = load(t, engineJSON(t, catalogWith(t, map[string]string{"postgres": noWrite}), ``, platformJSONFor(t, "warehouse", "postgres@"+digestOf(noWrite), "engine-warehouse", ``, "live")))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, derived := sources["warehouse/write"]; derived || len(sources) != 1 {
-		t.Fatalf("write: true against a binding with no write operation derives none: %+v", sources)
+		t.Fatalf("a binding with no write operation derives none: %+v", sources)
 	}
 	// Without an adapters directory the binaries are found on PATH; a
 	// binding with one operation derives one source; the runtime is

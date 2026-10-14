@@ -16,7 +16,6 @@ file name.
 |---|---|---|---|---|
 | `history` | `airbyte/source-postgres:3.8.5` | index digest `a36f1528…ded125`, read from Docker Hub 2026-09-13 | ELv2 | `airbyte-integrations/connectors/source-postgres/metadata.yaml` in the airbytehq/airbyte repository at the commit where `dockerImageTag` is `3.8.5` (`4e38cca211`, 2026-08-26): `license: ELv2` |
 | `live` | `bytebase/dbhub:1.2.3` with `--transport stdio` | index digest `8fbdf3f5…9f5db`, read from Docker Hub 2026-09-14 | MIT | `LICENSE` in the bytebase/dbhub repository |
-| `write` | the same server, the same arguments | the same digest | MIT | the same |
 
 The `live` entry carries no `probe`: this server connects to the database as it starts and
 exits before answering the handshake when it cannot (a wrong password ends it with
@@ -44,13 +43,20 @@ test's live fixtures were captured through such a role, its fresh fetch runs bot
 through one, and an `UPDATE` through it is refused by Postgres — "cannot execute UPDATE in a
 read-only transaction" under the default, "permission denied for table city" once the session
 lifts it — which the server reports as an error result and the adapter as a failed
-acquisition. The `write` file
-names a role that may write. The connector's `history` file is the configuration its `spec`
+acquisition. The connector's `history` file is the configuration its `spec`
 describes (`host`, `port` as a number, `database`, `username`, `password`, `ssl_mode` as an
 object, `replication_method` as an object, `schemas` as a list). A platform names one file
-per operation, the `write` file only when the platform sets `write: true`. The `write` entry
-is derived only for such a platform, as `<platform>/write`, and only the executor runs it
-(`docs/design/executor.md`); `/acquire` never names it.
+per operation.
+
+**The binding has no `write` operation** (2026-10-14, #260). It once carried one, naming the
+same server's `execute_sql`, a tool that takes a statement. A decision policy can bind a
+statement's text only as a whole, never argument by argument, so a decision could authorize any
+statement the requester wrote: raw SQL is no write tool (see the write-back platforms below),
+and `postgres` holds to that rule now. The server (`bytebase/dbhub` 1.2.3) offers no narrower
+tool, so none is named; a function or procedure write returns when a server offers one. A
+platform that pins this binding and sets `write: true` is refused at start, naming the
+platform and the rule, and its credentials name no `write` file. The `history` and `live`
+entries and their digests are unchanged.
 
 **The golden records.** The both-paths agreement test (`adapters/agreement`) fetches one row
 of the World sample database (`ghusta/postgres-world-db:2.15.1`, `city` where `id = 1`), and
@@ -168,6 +174,6 @@ function's input schema, which is what a policy's pointers are written against.
 **Raw SQL is no write tool.** The binding names no SQL server and no tool that takes a
 statement: a decision could then authorize an arbitrary statement, which no policy can bind
 argument by argument, since a statement's meaning is in its text. A function whose body runs a
-statement it is given is raw SQL by another name, and its author is the one to refuse it. (The
-`postgres` binding above predates this platform, and its `write` operation names `execute_sql`,
-which takes a statement; the same limit holds for it, and #260 is to decide what becomes of it.)
+statement it is given is raw SQL by another name, and its author is the one to refuse it. The
+`postgres` binding holds to the same rule: it predated it, and its `write` operation, which
+named `execute_sql`, was removed on 2026-10-14 (#260).

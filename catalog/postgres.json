@@ -15,15 +15,6 @@
       },
       "tools": ["execute_sql", "search_objects"],
       "licence": "MIT"
-    },
-    "write": {
-      "shape": "mcp",
-      "server": {
-        "image": "bytebase/dbhub:1.2.3@sha256:8fbdf3f579b7eb2701c32d895447e35f61b24e6c2505b0fcfd34e314bdf9f5db",
-        "args": ["--transport", "stdio"]
-      },
-      "tools": ["execute_sql"],
-      "licence": "MIT"
     }
   }
 }
