@@ -25,14 +25,18 @@ import (
 // decisionPolicy is what the operator holds one write tool to: the outcomes
 // a record may have decided, the packs it may have been decided under,
 // whether it must have been judged under reviewed law, which of the write's
-// arguments must equal which of the record's facts, and which runtime keys,
-// if any, one of which must have signed the record. digest names the policy
-// as configured, and is what an action receipt carries.
+// arguments must equal which of the record's facts, which must equal a value
+// the policy itself fixes, whether the arguments may hold anything those two
+// lists do not name, and which runtime keys, if any, one of which must have
+// signed the record. digest names the policy as configured, and is what an
+// action receipt carries.
 type decisionPolicy struct {
 	outcomes []string
 	packs    []string // empty when the member is absent: any pack
 	reviewed bool
 	bind     []factBinding
+	fix      []fixedValue   // engineVersion 9 (ADR-0016): values the arguments must hold
+	closed   bool           // engineVersion 9 (ADR-0016): every argument reached by a pointer of bind or fix
 	signers  []recordSigner // empty when requireSignedRecord is absent: no signature read
 	digest   string
 }
@@ -45,7 +49,16 @@ type factBinding struct {
 	fact     string
 }
 
-var decisionPolicyMembers = map[string]bool{"outcomes": true, "packs": false, "reviewed": false, "bind": false, "requireSignedRecord": false}
+// fixedValue is one entry of a policy's fix: a JSON pointer into the
+// request's arguments and the value the argument there must be, held as its
+// canonical form (SPEC.md §1.1). The engine compares; it never fills a value
+// in, since the receipt records what the requester asked.
+type fixedValue struct {
+	argument  string
+	canonical []byte
+}
+
+var decisionPolicyMembers = map[string]bool{"outcomes": true, "packs": false, "reviewed": false, "bind": false, "fix": false, "closed": false, "requireSignedRecord": false}
 
 // parseDecisionPolicies reads a platform's decisionPolicy member: an object
 // keyed by write tool name, each a policy. Whether each tool is one the
@@ -74,12 +87,16 @@ func parseDecisionPolicies(v value, platform, version string) (map[string]*decis
 
 // parseDecisionPolicy holds one policy to its closed shape: outcomes a
 // non-empty array of outcome ids, packs a non-empty array of digests,
-// reviewed a boolean, bind an array of {argument, fact} pointers, and, from
-// engineVersion 5, requireSignedRecord a non-empty array of Ed25519 public
-// keys -- a list naming one entry twice is refused, as a list nobody meant.
-// Its digest is over the canonical form (SPEC.md §1.1) of the object as
-// configured, which for this object is its RFC 8785 form too: its member
-// names are the fixed ASCII names above, and it holds no number.
+// reviewed a boolean, bind an array of {argument, fact} pointers, from
+// engineVersion 5 requireSignedRecord a non-empty array of Ed25519 public
+// keys, and from engineVersion 9 fix an array of {argument, value} and
+// closed a boolean -- a list naming one entry twice is refused, as a list
+// nobody meant, and so is an argument both fixed and bound. Its digest is
+// over the canonical form (SPEC.md §1.1) of the object as configured. Without
+// fix that is its RFC 8785 form too, since its member names are the fixed
+// ASCII names above and it holds no number; a fixed value may hold member
+// names of any script and integers, and the digest stays canon's, whose
+// order of names outside the Basic Multilingual Plane is not RFC 8785's.
 func parseDecisionPolicy(v value, where, version string) (*decisionPolicy, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
@@ -135,6 +152,54 @@ func parseDecisionPolicy(v value, where, version string) (*decisionPolicy, error
 			}
 			policy.bind = append(policy.bind, b)
 		}
+	}
+	if fixV, present := obj.get("fix"); present {
+		if !versionAtLeast(version, "9") {
+			return nil, fmt.Errorf("%s: fix is a version-9 member; engineVersion %s has no fix", where, version)
+		}
+		entries, ok := fixV.(vArray)
+		if !ok {
+			return nil, fmt.Errorf("%s: fix, when present, is an array of {argument, value}", where)
+		}
+		for i, entry := range entries {
+			what := fmt.Sprintf("%s: fix[%d]", where, i)
+			pair, ok := entry.(*vObject)
+			if !ok {
+				return nil, fmt.Errorf("%s must be an object of argument and value", what)
+			}
+			if err := exactlyMembers(pair, map[string]bool{"argument": true, "value": true}, what); err != nil {
+				return nil, err
+			}
+			argument, ok := memberString(pair, "argument")
+			if !ok || !validPointer(argument) {
+				return nil, fmt.Errorf("%s: argument must be a JSON pointer (RFC 6901): empty, or each token after a /, a ~ in one followed by 0 or 1", what)
+			}
+			// One argument, one rule: a pointer fixed twice is a list nobody
+			// meant, and one both fixed and bound would hold the argument to
+			// a value and to a fact at once.
+			for _, prior := range policy.fix {
+				if prior.argument == argument {
+					return nil, fmt.Errorf("%s: fix names the argument %q twice", where, argument)
+				}
+			}
+			for _, b := range policy.bind {
+				if b.argument == argument {
+					return nil, fmt.Errorf("%s: the argument %q is both fixed and bound", what, argument)
+				}
+			}
+			fixed, _ := pair.get("value")
+			policy.fix = append(policy.fix, fixedValue{argument: argument, canonical: canon(fixed)})
+		}
+	}
+	if closedV, present := obj.get("closed"); present {
+		if !versionAtLeast(version, "9") {
+			return nil, fmt.Errorf("%s: closed is a version-9 member; engineVersion %s has no closed", where, version)
+		}
+		b, ok := closedV.(vBool)
+		if !ok {
+			return nil, fmt.Errorf("%s: closed, when present, is a boolean", where)
+		}
+		policy.closed = bool(b)
 	}
 	if _, present := obj.get("requireSignedRecord"); present {
 		if !versionAtLeast(version, "5") {
@@ -325,8 +390,10 @@ func sameCitations(a, b []citation) bool {
 // signed by a key the policy trusts, in the sidecar beside it (signed holds
 // what the walk found there); the request's claims held to the record it
 // names; the record held to the operator's policy -- outcome, handoff,
-// packs, reviewed, bind, in that order. The first that fails is the refusal,
-// and nothing is sent. The bytes read are the bytes step 7 hashed, so the
+// packs, reviewed, bind, in that order, the last step holding the arguments
+// also to the values the policy fixes and, when it is closed, to the
+// pointers it names (ADR-0016). The first that fails is the refusal, and
+// nothing is sent. The bytes read are the bytes step 7 hashed, so the
 // record judged is the record named.
 func holdToPolicy(data []byte, claimed decision, cites []citation, arguments value, policy *decisionPolicy, signed sidecarEvidence) error {
 	record, why := readRuntimeRecord(data)
@@ -408,7 +475,107 @@ func holdToPolicy(data []byte, claimed decision, cites []citation, arguments val
 			return actRefusal{"policy-bind", fmt.Sprintf("the argument at %q does not equal the fact at %q", b.argument, b.fact)}
 		}
 	}
+	// The values the policy fixes (ADR-0016): the argument must be there and
+	// be the value, as a JSON value with its type, compared as bind compares.
+	// Absent is not the value: the engine fills nothing in, since the receipt
+	// records what the requester asked. The refusal names the pointer and
+	// never a value.
+	for _, f := range policy.fix {
+		argument, ok := resolvePointer(arguments, f.argument)
+		if !ok || !bytes.Equal(canon(argument), f.canonical) {
+			return actRefusal{"policy-bind", fmt.Sprintf("argument %q is not the fixed value", f.argument)}
+		}
+	}
+	if policy.closed {
+		if at, found := unreachedArgument(arguments, policy.namedArguments()); found {
+			return actRefusal{"policy-bind", fmt.Sprintf("argument %q is reached by no binding", requestText(at))}
+		}
+	}
 	return nil
+}
+
+// namedArguments are the pointers into the request's arguments that a
+// policy's bind and fix name.
+func (p *decisionPolicy) namedArguments() []string {
+	named := make([]string, 0, len(p.bind)+len(p.fix))
+	for _, b := range p.bind {
+		named = append(named, b.argument)
+	}
+	for _, f := range p.fix {
+		named = append(named, f.argument)
+	}
+	return named
+}
+
+// unreachedArgument is a closed policy's rule (ADR-0016): the pointer of the
+// first value in the arguments that no named pointer reaches, or false when
+// every one is reached. A pointer covers the value it names and everything
+// under it, so the empty pointer covers the whole arguments. The arguments
+// object itself is walked and never refused. Below it, a value a named
+// pointer covers is admitted whole; an object or an array whose pointer is a
+// proper prefix, token by token, of a named pointer is admitted when each of
+// its members, or each of its elements, is admitted in turn; any other value
+// -- a member or an element no named pointer reaches, or a value on the way
+// to a named pointer that is neither an object nor an array -- is refused.
+// An array's element is reached by its index pointer, the index in decimal
+// with no leading zero ("/updates/0"), or by a pointer that covers the array;
+// "-" and an index with a leading zero name no element (RFC 6901 §4) and so
+// reach none. A member's token is its name with "~" written "~0" and "/"
+// written "~1", the one spelling RFC 6901 gives it, so a pointer reaches a
+// member exactly when it resolves to it.
+func unreachedArgument(arguments value, named []string) (string, bool) {
+	covered := func(at string) bool {
+		for _, p := range named {
+			if p == "" || at == p || strings.HasPrefix(at, p+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	onTheWay := func(at string) bool {
+		for _, p := range named {
+			if strings.HasPrefix(p, at+"/") {
+				return true
+			}
+		}
+		return false
+	}
+	var under func(v value, at string) (string, bool)
+	visit := func(v value, at string) (string, bool) {
+		if covered(at) {
+			return "", false
+		}
+		switch v.(type) {
+		case *vObject, vArray:
+			if onTheWay(at) {
+				return under(v, at)
+			}
+		}
+		return at, true
+	}
+	under = func(v value, at string) (string, bool) {
+		switch c := v.(type) {
+		case *vObject:
+			for _, name := range c.names {
+				member, _ := c.get(name)
+				token := strings.ReplaceAll(strings.ReplaceAll(name, "~", "~0"), "/", "~1")
+				if bad, found := visit(member, at+"/"+token); found {
+					return bad, true
+				}
+			}
+		case vArray:
+			for i, element := range c {
+				if bad, found := visit(element, at+"/"+strconv.Itoa(i)); found {
+					return bad, true
+				}
+			}
+		}
+		return "", false
+	}
+	if covered("") {
+		return "", false
+	}
+	return under(arguments, "")
 }
 
 // recordClaims is what the verifier reads of a decision record an action

@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: accepted, amended 2026-10-14
 date: 2026-09-30
 deciders: maintainer
 ---
@@ -90,6 +90,15 @@ Determinations:
    are held to it. A refusal names the check and never a value of the record's. The bytes judged
    are the bytes whose digest matched. For a tool with no policy, `/act` reads nothing in the
    record and is unchanged.
+
+   *Amended 2026-10-14 (#258).* A policy may also carry `fix`, pairs of an argument's pointer and
+   a value the argument must equal, and `closed`, which refuses any argument that no pointer of
+   `bind` or `fix` reaches. Both are members of engine configuration version 9, held at
+   `policy-bind` after the bindings, before anything is sent, and in the policy's digest
+   ([ADR-0016](0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)). `bind` itself is
+   unchanged: it has no value of its own and refuses no argument it does not name, so a dispatcher
+   tool steered by an argument, such as Azure DevOps' `action`, is held by those two members or by
+   binding the whole arguments. No determination here is reversed.
 3. **The receipt names the policy.** An action receipt for a tool with a policy carries
    `action.policy`: `"sha256:"` and the SHA-256 of the canonical form of the tool's policy object
    as configured, which for that object is its RFC 8785 form too — its member names are fixed
