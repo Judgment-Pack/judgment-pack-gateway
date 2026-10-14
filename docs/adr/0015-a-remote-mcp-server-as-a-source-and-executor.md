@@ -86,7 +86,16 @@ sub-delimiters and percent escapes, and no `:` without a port after it. The sign
 the authority only to being non-empty and free of `@`, so an envelope naming
 `https://mcp.example/%zz` or `https://:443/` was signed and verified. A table of accepted
 and refused endpoints (`testdata/remote-endpoints/cases.json`) is read by a test of each of
-the four, and eight vectors `v3-mcp-remote-endpoint-*` hold both verifiers to the form.
+the four, and eight vectors `v3-mcp-remote-endpoint-*` hold both verifiers to the form. After
+the review round on #266, an address in brackets is an IPv6 address in the form RFC 3986
+names `IPv6address` — eight groups of one to four hexadecimal digits separated by `:`, `::`
+standing once for one or more groups of zeros, the last two groups optionally an IPv4 address
+in dotted decimal — with no zone, rather than any run of hexadecimal digits, `:` and `.`,
+which admitted `[abc]` and `[127.0.0.1]` that the transport's URL parser then refused; a
+ninth vector, `v3-mcp-remote-endpoint-ipv6-literal-malformed`, holds both verifiers to it. In
+the same round, a refusal of a binding's URL, as written, as a template or as the platform's
+parameters resolve it, came to name the binding, the operation and the rule, and never the
+URL, which may carry by mistake what is never to be shown.
 
 ### 2. The credential and the headers
 

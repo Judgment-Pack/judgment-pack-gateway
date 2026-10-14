@@ -125,8 +125,8 @@ connection** ([ADR-0015](docs/adr/0015-a-remote-mcp-server-as-a-source-and-execu
 `adapter-mcp --url` sends the member of its credentials file that `--bearer` names, and nothing
 else of the file, to the one URL the operator fixed — `https`, or `http` at a loopback address
 written as one, of the one form `SPEC.md` §1.2a states, which the signer and both verifiers hold
-a receipt's `endpoint` to as well: a host of letters, digits, `-`, `.` and `_` or an address in
-brackets, a port from 1 to 65535, no user, query or fragment, every `%` the start of an escape —
+a receipt's `endpoint` to as well: a host of letters, digits, `-`, `.` and `_` or an IPv6 address
+in brackets, a port from 1 to 65535, no user, query or fragment, every `%` the start of an escape —
 follows no redirect, and refuses an answer that repeats the credential; the
 server holds it for as long as it holds the connection, and what it does with it is bounded by
 what the platform lets that credential do, not by the adapter. **The adapter cannot tell a read

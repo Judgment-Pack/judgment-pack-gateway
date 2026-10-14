@@ -144,6 +144,7 @@ var endpointReasons = map[string]string{
 	"userinfo":       "carries a user",
 	"host-empty":     "names no host",
 	"host-character": "the url's host is not a name",
+	"host-ipv6":      "the url's host is not a name",
 	"port-empty":     "the url's port is not a decimal from 1 to 65535",
 	"port-range":     "the url's port is not a decimal from 1 to 65535",
 	"percent":        "a '%' not followed by two hexadecimal digits",

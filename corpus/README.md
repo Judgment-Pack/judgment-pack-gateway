@@ -134,7 +134,7 @@ the question for them too.
 
 ## Version 3 vectors, and when they arbitrate
 
-**`v3/stores/*.json`** — 57 vectors for receipt version 3 (`SPEC.md` §1.2a,
+**`v3/stores/*.json`** — 58 vectors for receipt version 3 (`SPEC.md` §1.2a,
 §4 steps 5 to 8), in the same shape as `stores/` plus an optional
 `decisionRecords` map, materialized as the directory a verifier is handed for
 §4 step 6, and an optional `witnesses` in `expected` (below). They cover: a valid sealed version 3 session; an action receipt whose
@@ -184,7 +184,7 @@ four members and names nothing. The witnesses are keys the witness vectors
 already name, the base point times 1 and times 2, so no secret beyond `TEST-SEED`
 is in the corpus.
 
-Seventeen hold what a remote MCP server adds to an acquisition (§1.2a, §6 shape `mcp`;
+Eighteen hold what a remote MCP server adds to an acquisition (§1.2a, §6 shape `mcp`;
 `docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md`), each named
 `v3-mcp-remote-*`: a sealed session of two, one over TLS with an `https` endpoint
 and a `tls:sha256:` peer identity and one over plaintext at a loopback address with
@@ -192,11 +192,12 @@ a null one, both `ok`; `malformed` for a `transport` outside its one value, for 
 `http` endpoint at a name, for an endpoint with a user, for a peer identity in upper
 case, for a null peer identity over TLS, for `transport` without `server`, and for
 the two on shape `http`; and a `server` carrying a member beside its two, which a
-verifier tolerates as it tolerates any signed member it does not know, `ok`. Eight
+verifier tolerates as it tolerates any signed member it does not know, `ok`. Nine
 more, each named `v3-mcp-remote-endpoint-*`, hold the endpoint to the one form
 §1.2a states for the adapter, the signer and both verifiers (issue #251): `malformed`
 for a percent escape that is not one (`%zz`), for a port and no host, for a `$` in
-the host, for a `:` after the host and no port, for the port 65536, for an endpoint
+the host, for an address in brackets that is no IPv6 address (`[abc]`), for a `:`
+after the host and no port, for the port 65536, for an endpoint
 of 2049 characters, and for `http` at the name `localhost`; and an endpoint with a
 port and a percent escape in its path, each of the form, `ok`, so a verifier holding
 the endpoint tighter than the form is caught as well as one holding it looser. Every one is signed with its members, so what

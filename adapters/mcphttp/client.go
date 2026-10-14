@@ -17,6 +17,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -135,8 +136,8 @@ type Options struct {
 // loopback address written as one -- an IPv4 address of 127.0.0.0/8 in
 // dotted decimal, or [::1] -- since a credential sent in the clear is a
 // credential given away; no query and no fragment; no user, so no '@'
-// before the host; a host of letters, digits, '-', '.' and '_', or
-// hexadecimal digits, ':' and '.' in brackets, and a port, when given, from
+// before the host; a host of letters, digits, '-', '.' and '_', or an IPv6
+// address in brackets, with no zone, and a port, when given, from
 // 1 to 65535 with no leading zero; and every '%' in the path followed by two
 // hexadecimal digits. An '@' in the path names no user and is taken as
 // written. The endpoint is used as written.
@@ -170,7 +171,7 @@ func EndpointProblem(endpoint string) error {
 		return errors.New("the url names no host")
 	}
 	if !ok || !hostForm(host) {
-		return errors.New("the url's host is not a name of letters, digits, '-', '.' and '_', nor an address of hexadecimal digits, ':' and '.' in brackets")
+		return errors.New("the url's host is not a name of letters, digits, '-', '.' and '_', nor an IPv6 address in brackets")
 	}
 	if hasPort && !decimalIn(port, 1, 65535) {
 		return errors.New("the url's port is not a decimal from 1 to 65535 with no leading zero")
@@ -209,12 +210,17 @@ func splitAuthority(authority string) (host, port string, hasPort, ok bool) {
 
 // hostForm is a host as the endpoint form writes one: a name of one or more
 // letters, digits, '-', '.' and '_' (an IPv4 address among them), or '[',
-// one or more hexadecimal digits, ':' and '.', and ']'.
+// an IPv6 address, and ']' -- the form RFC 3986 names IPv6address: eight
+// groups of one to four hexadecimal digits separated by ':', "::" standing
+// once for one or more groups of zeros, the last two groups optionally an
+// IPv4 address in dotted decimal; no zone. netip.ParseAddr reads that form,
+// a zone besides and an IPv4 address on its own, which are refused.
 func hostForm(host string) bool {
 	allowed := func(c byte) bool {
 		return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '-' || c == '.' || c == '_'
 	}
-	if inner, bracketed := strings.CutPrefix(host, "["); bracketed {
+	inner, bracketed := strings.CutPrefix(host, "[")
+	if bracketed {
 		var closed bool
 		if host, closed = strings.CutSuffix(inner, "]"); !closed {
 			return false
@@ -228,6 +234,10 @@ func hostForm(host string) bool {
 		if !allowed(host[i]) {
 			return false
 		}
+	}
+	if bracketed {
+		addr, err := netip.ParseAddr(host)
+		return err == nil && addr.Is6() && addr.Zone() == ""
 	}
 	return true
 }

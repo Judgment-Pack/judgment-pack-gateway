@@ -242,7 +242,8 @@ gateway serve ./store gateway.seed gateway:acme ./registry.jsonl \
   printable ASCII; `https://`, or `http://` at a loopback address written as one (127.0.0.0/8 in
   dotted decimal, or `[::1]` — a name such as `localhost` is not one, since what it resolves to
   is not in the text), the scheme in lower case; a host that is a name of letters, digits, `-`,
-  `.` and `_`, or hexadecimal digits, `:` and `.` in brackets; a port, when given, from 1 to
+  `.` and `_`, or an IPv6 address in brackets, in the form RFC 3986 names `IPv6address`, with
+  no zone; a port, when given, from 1 to
   65535 with no leading zero; no user, so no `@` before the host (one in the path names no
   user, and is taken as written); no query, no fragment; every `%` in the path followed by
   two hexadecimal digits. It is used
