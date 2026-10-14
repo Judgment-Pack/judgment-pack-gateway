@@ -1907,6 +1907,14 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		if err := credentialsMatch(p.credentials, b, p.write); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
 		}
+		// write: true says an executor may be pointed at the platform; a
+		// binding with no write operation has none to point it at, and the
+		// flag would read as a write the operator had enabled (#260: the
+		// postgres binding has no write operation, since raw SQL is no
+		// write tool).
+		if p.write && b.write == nil {
+			return nil, fmt.Errorf("platform %s: sets write: true, and binding %s has no write operation (raw SQL is no write tool, so a binding names none for a server that takes a statement); remove write: true or pin a binding that offers a write", p.name, p.binding)
+		}
 		// A snapshot is of the described operation's tools -- the live
 		// operation's, or, for a binding with none, the write operation's
 		// of a platform that allows writes; a binding with neither has none

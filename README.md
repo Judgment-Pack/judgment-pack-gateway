@@ -205,7 +205,8 @@ another action, adds an operation or adds a member is refused before anything is
 configuration version 9, [ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md));
 for Databricks, each of the function's named parameters is bound to a fact. Raw SQL is no write
 tool, since a decision could then authorize an arbitrary statement, which no policy can bind
-argument by argument. An action receipt for these platforms establishes who asked, which judgment was cited and
+argument by argument; the `postgres` binding, whose server takes a statement, has no write
+operation, and a platform that pins it with `write: true` is refused at start. An action receipt for these platforms establishes who asked, which judgment was cited and
 found verifying, what was sent and to which resolved endpoint, and what the target answered; it
 does not name the credential, which the configuration names, nor the TLS identity the write was
 answered under, and it does not establish that the target applied the write as intended, that the

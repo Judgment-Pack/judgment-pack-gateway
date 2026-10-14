@@ -81,9 +81,19 @@ func TestShippedCatalogHoldsItsShape(t *testing.T) {
 				}
 			}
 		}
+		// No write operation names a tool that takes a statement (#260, #257):
+		// a decision policy binds a statement's text only as a whole.
+		if b.write != nil {
+			if reason := statementWriteTool(b.write.tools); reason != "" {
+				t.Fatalf("catalog/%s: the write operation %s", e.Name(), reason)
+			}
+		}
 		if name == "postgres" {
 			// Live through DBHub, which connects as it starts (so no probe) and answers SQL as JSON text; the
 			// operator's read-only role, not the server, holds the live operation to reading (catalog/README.md).
+			if b.write != nil {
+				t.Fatalf("catalog/postgres.json: no write operation, since raw SQL is no write tool (#260): %+v", b.write)
+			}
 			if b.history == nil || b.live == nil || strings.Join(b.live.args, " ") != "--transport stdio" || b.live.probe != "" || b.live.probeFailure != "" || !strings.HasPrefix(b.history.image, "airbyte/source-postgres:") || !strings.HasPrefix(b.live.image, "bytebase/dbhub:") || strings.Join(b.live.tools, ",") != "execute_sql,search_objects" {
 				t.Fatalf("catalog/postgres.json: history through the Airbyte connector, live through DBHub over stdio: %+v %+v", b.history, b.live)
 			}
@@ -146,5 +156,56 @@ func TestTheWriteBackBindingsResolveAsShipped(t *testing.T) {
 				t.Fatalf("a disallowed placeholder: %v", err)
 			}
 		})
+	}
+}
+
+// statementWriteTool says why a write operation's tools name one that takes a
+// statement, or "" when none does. The catalog states tool names, not their
+// arguments, so the names that carry a statement are held out: execute_sql and
+// anything naming sql, a query or a statement.
+func statementWriteTool(tools []string) string {
+	for _, tool := range tools {
+		lower := strings.ToLower(tool)
+		for _, word := range []string{"sql", "query", "statement"} {
+			if strings.Contains(lower, word) {
+				return "names " + tool + ", which takes a statement; no decision policy can bind a statement argument by argument"
+			}
+		}
+	}
+	return ""
+}
+
+// The refusal holds: the operation the binding used to carry, put back, is
+// caught by the shape test's rule, and the shipped write tools are not.
+func TestStatementWriteToolIsRefused(t *testing.T) {
+	for _, tools := range [][]string{{"execute_sql"}, {"run_query"}, {"EXECUTE_STATEMENT"}, {"wit_work_item_write", "execute_sql"}} {
+		if statementWriteTool(tools) == "" {
+			t.Fatalf("%v is a write tool that takes a statement and was not refused", tools)
+		}
+	}
+	for _, tools := range [][]string{{"wit_work_item_write", "wit_work_item_comment_write"}, {"{catalog}__{schema}__{function}"}, {"record_approval"}} {
+		if reason := statementWriteTool(tools); reason != "" {
+			t.Fatalf("%v refused: %s", tools, reason)
+		}
+	}
+	data, err := os.ReadFile(filepath.Join("..", "catalog", "postgres.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutant := strings.Replace(string(data), `    }
+  }
+}`, `    },
+    "write": {"shape": "mcp", "server": {"image": "bytebase/dbhub:1.2.3@sha256:8fbdf3f579b7eb2701c32d895447e35f61b24e6c2505b0fcfd34e314bdf9f5db", "args": ["--transport", "stdio"]}, "tools": ["execute_sql"], "licence": "MIT"}
+  }
+}`, 1)
+	if mutant == string(data) {
+		t.Fatal("the mutant did not apply")
+	}
+	b, err := parseBinding([]byte(mutant))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.write == nil || statementWriteTool(b.write.tools) == "" {
+		t.Fatalf("postgres with its write operation put back is not caught: %+v", b.write)
 	}
 }

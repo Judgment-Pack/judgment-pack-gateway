@@ -156,7 +156,7 @@ func (f *connectFixture) check(_ context.Context, spec sourceSpec) ([]byte, erro
 
 func (f *connectFixture) request() connectRequest {
 	return connectRequest{config: f.config, platform: "warehouse", binding: "postgres", credentials: map[string]string{"history": f.credentials, "live": f.credentials}, user: "engine-warehouse",
-		endpoint: "warehouse.internal:5432", environment: []string{"DOCKER_HOST=unix:///run/user/1001/docker.sock"}, write: true}
+		endpoint: "warehouse.internal:5432", environment: []string{"DOCKER_HOST=unix:///run/user/1001/docker.sock"}}
 }
 
 func (f *connectFixture) fileText(t *testing.T) string {
@@ -215,7 +215,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	}
 	p := cfg.platforms[0]
 	if p.name != "warehouse" || p.binding != "postgres@"+digestOf(restrictedBinding) || p.credentials["history"] != f.credentials || p.credentials["live"] != f.credentials || p.user != "engine-warehouse" ||
-		p.endpoint != "warehouse.internal:5432" || strings.Join(p.environment, ",") != "DOCKER_HOST=unix:///run/user/1001/docker.sock" || !p.write {
+		p.endpoint != "warehouse.internal:5432" || strings.Join(p.environment, ",") != "DOCKER_HOST=unix:///run/user/1001/docker.sock" || p.write {
 		t.Fatalf("the entry as requested: %+v", p)
 	}
 	live := deriveSources(cfg, bindings)["warehouse/live"]

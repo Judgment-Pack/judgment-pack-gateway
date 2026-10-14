@@ -814,7 +814,10 @@ server's descriptors shows the operator the input schema the policy's pointers m
 that takes a statement: a decision could then authorize an arbitrary statement, and no policy can
 bind a statement argument by argument, since its meaning is in its text. A function whose body
 runs a statement it is given is raw SQL by another name, and the function's author is the one to
-refuse it.
+refuse it. The `postgres` binding holds to it: its server's only write tool, `execute_sql`, takes
+a statement, so the binding has no `write` operation (2026-10-14, #260). A platform that sets
+`write: true` while its binding has no `write` operation is refused at start, naming the platform
+and the rule; the flag is never silently ignored.
 
 ## What the file is not
 

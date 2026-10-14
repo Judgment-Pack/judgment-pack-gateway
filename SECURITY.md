@@ -169,7 +169,9 @@ argument it does not name. A Databricks function does what its body does, as the
 grants allow; every parameter it declares, defaults included, is bound or is the requester's to
 fill. **Raw SQL is no write tool**: a decision could
 then authorize an arbitrary statement, and no policy can bind a statement argument by argument.
-The receipt establishes who asked, which judgment was cited and found verifying, what was sent, to
+The `postgres` binding names no write operation for that reason (its server's one write tool,
+`execute_sql`, takes a statement), and a platform that pins it with `write: true` is refused at
+start. The receipt establishes who asked, which judgment was cited and found verifying, what was sent, to
 which resolved URL and which tool, and what the target answered; it does not name the credential
 or the TLS identity of the write's answer (ADR-0015, question 2), and it does not establish that
 the target applied the write as intended, that the tool did only what its name says, or anything
