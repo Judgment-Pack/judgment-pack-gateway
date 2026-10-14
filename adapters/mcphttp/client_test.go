@@ -1,6 +1,7 @@
 package mcphttp
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -10,6 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -113,27 +117,94 @@ func TestRedirectDoesNotForwardCredential(t *testing.T) {
 	}
 }
 
-// The endpoint a client is opened on: https, or http at a loopback address
-// written as one; no user, query or fragment; printable ASCII.
+// endpointCase is one endpoint of the table the endpoint form's four
+// implementations answer to (testdata/remote-endpoints/cases.json): this
+// one, the signer's, which gateway verify uses too, and verify-ts's.
+type endpointCase struct {
+	Rule     string `json:"rule"`
+	Endpoint string `json:"endpoint"`
+	PadTo    int    `json:"padTo"`
+}
+
+func (c endpointCase) text() string {
+	if c.PadTo > len(c.Endpoint) {
+		return c.Endpoint + strings.Repeat("a", c.PadTo-len(c.Endpoint))
+	}
+	return c.Endpoint
+}
+
+// endpointReasons is what EndpointProblem says of a case that breaks each
+// rule: the reason is the rule the case was written for, not a later one
+// that happens to refuse it too.
+var endpointReasons = map[string]string{
+	"length":         "longer than 2048 bytes",
+	"character":      "outside printable ASCII",
+	"scheme":         "must begin https://",
+	"query-fragment": "carries a query or a fragment",
+	"userinfo":       "carries a user",
+	"host-empty":     "names no host",
+	"host-character": "the url's host is not a name",
+	"host-ipv6":      "the url's host is not a name",
+	"port-empty":     "the url's port is not a decimal from 1 to 65535",
+	"port-range":     "the url's port is not a decimal from 1 to 65535",
+	"percent":        "a '%' not followed by two hexadecimal digits",
+	"http-loopback":  "http is accepted at a loopback address written as one",
+	"http-localhost": "http is accepted at a loopback address written as one",
+}
+
+// The endpoint a client is opened on is the form SPEC.md §1.2a states, the
+// table's cases: each accepted one opens a client, and is one net/url
+// parses to the host and port written, so nothing the form admits is one
+// the transport reads otherwise; each refused one is refused for the rule
+// it breaks.
 func TestEndpointProblem(t *testing.T) {
-	for _, ok := range []string{
-		"https://mcp.example/mcp", "https://mcp.example:8443/api/2.0/mcp/functions/a/b", "https://127.0.0.1:9/mcp",
-		"http://127.0.0.1/mcp", "http://127.0.0.1:8080/mcp", "http://127.255.0.9:1", "http://[::1]:65535/x", "http://[::1]/",
-	} {
-		if err := EndpointProblem(ok); err != nil {
-			t.Errorf("%s refused: %v", ok, err)
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "remote-endpoints", "cases.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var table struct {
+		About    []string       `json:"about"`
+		Rules    []string       `json:"rules"`
+		Accepted []endpointCase `json:"accepted"`
+		Refused  []endpointCase `json:"refused"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&table); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Rules) != len(endpointReasons) || len(table.Accepted) == 0 || len(table.Refused) == 0 {
+		t.Fatalf("the table's rules %q are not the ones this test gives a reason for", table.Rules)
+	}
+	for _, c := range table.Accepted {
+		endpoint := c.text()
+		if err := EndpointProblem(endpoint); err != nil {
+			t.Errorf("%s: %q refused: %v", c.Rule, endpoint, err)
+			continue
+		}
+		u, err := url.Parse(endpoint)
+		authority, _, _ := strings.Cut(endpoint[strings.Index(endpoint, "//")+2:], "/")
+		if err != nil || u.Host != authority || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			t.Errorf("%s: %q is read by net/url as host %q: %v", c.Rule, endpoint, u.Host, err)
+		}
+		if _, err := http.NewRequest("POST", endpoint, nil); err != nil {
+			t.Errorf("%s: %q is no request's URL: %v", c.Rule, endpoint, err)
+		}
+		if _, err := Open(endpoint, Options{}, nil); err != nil {
+			t.Errorf("%s: %q opens no client: %v", c.Rule, endpoint, err)
 		}
 	}
-	for _, bad := range []string{
-		"", "mcp.example/mcp", "HTTPS://mcp.example/mcp", "wss://mcp.example/mcp", "https://", "https:///mcp",
-		"http://mcp.example/mcp", "http://localhost:8080/mcp", "http://128.0.0.1/mcp", "http://127.0.0.01/mcp", "http://127.0.0/mcp",
-		"http://127.0.0.1:0/mcp", "http://127.0.0.1:080/mcp", "http://127.0.0.1:65536/mcp", "http://127.0.0.1:/mcp", "http://[::2]/mcp",
-		"http://[0:0:0:0:0:0:0:1]/mcp", "http://[::1]x/mcp", "http://[::1]:/mcp",
-		"https://user@mcp.example/mcp", "https://user:pw@mcp.example/mcp", "https://mcp.example/mcp?key=x", "https://mcp.example/mcp?",
-		"https://mcp.example/mcp#x", "https://mcp.example/a b", "https://mcp.example/é", "https://mcp.example/" + strings.Repeat("a", 2048),
-	} {
-		if err := EndpointProblem(bad); err == nil {
-			t.Errorf("%q accepted", bad)
+	for _, c := range table.Refused {
+		reason, named := endpointReasons[c.Rule]
+		if !named {
+			t.Fatalf("%q names the rule %q, which this test gives no reason for", c.Endpoint, c.Rule)
+		}
+		err := EndpointProblem(c.text())
+		if err == nil || !strings.Contains(err.Error(), reason) {
+			t.Errorf("%s: %q: want a refusal saying %q, got %v", c.Rule, c.text(), reason, err)
+		}
+		if _, err := Open(c.text(), Options{}, nil); !errors.Is(err, ErrProtocol) {
+			t.Errorf("%s: %q opened a client: %v", c.Rule, c.text(), err)
 		}
 	}
 }

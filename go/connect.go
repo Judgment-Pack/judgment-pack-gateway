@@ -658,7 +658,9 @@ func remoteURL(argv []string) string {
 // answered, in one line for the operator. url is the remote server's URL
 // the source was given, "" for a server the adapter runs: the endpoint the
 // report names must be that one, and the line names it, so the operator
-// reads which tenant's server answered.
+// reads which tenant's server answered. A refusal names the endpoints it
+// compares by their roles and repeats neither: a URL may carry, by
+// mistake, what is never to be shown.
 func describeCheck(shape string, report []byte, url string) (string, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(report, &top); err != nil || len(top) != 1 || len(top["check"]) == 0 {
@@ -704,9 +706,9 @@ func describeCheck(shape string, report []byte, url string) (string, error) {
 		}
 		if check.Endpoint != url {
 			if url == "" {
-				return "", fmt.Errorf("the adapter reports the endpoint %q for a server it runs, which has none", requestText(check.Endpoint))
+				return "", errors.New("the adapter reports an endpoint for a server it runs, which has none")
 			}
-			return "", fmt.Errorf("the adapter reports the endpoint %q, and the source was given %q; nothing it captured is kept", requestText(check.Endpoint), requestText(url))
+			return "", errors.New("the endpoint the adapter reports is not the one the source was given; nothing it captured is kept")
 		}
 		server := strings.TrimSpace(check.Server.Name + " " + check.Server.Version)
 		if server == "" {

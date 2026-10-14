@@ -95,7 +95,8 @@ func isWorkspaceHost(host string) bool {
 // templatePlaceholders are the names a template's placeholders give, in
 // the order they first appear, or why the template is not one: a '{' that
 // does not open a placeholder of a parameter's name, or a '}' that does not
-// close one.
+// close one. The refusal repeats no text of the template: a binding's URL
+// may carry, by mistake, what is never to be shown.
 func templatePlaceholders(s string) ([]string, error) {
 	var names []string
 	for i := 0; i < len(s); i++ {
@@ -109,7 +110,7 @@ func templatePlaceholders(s string) ([]string, error) {
 			}
 			name := s[i+1 : i+end]
 			if !parameterName.MatchString(name) {
-				return nil, fmt.Errorf("names a placeholder {%s}, which is not a parameter's name: a lowercase letter, then lowercase letters, digits and hyphens", requestText(name))
+				return nil, errors.New("names a placeholder which is not a parameter's name: a lowercase letter, then lowercase letters, digits and hyphens")
 			}
 			if !contains(names, name) {
 				names = append(names, name)
@@ -157,8 +158,8 @@ func urlTemplateProblem(template string) error {
 		return errors.New("must write its host as it is, or as {workspace} alone over https: a placeholder anywhere else in the host or beside it could change the host")
 	}
 	sample := fillTemplate(template, func(string) string { return "x" })
-	if !isRemoteEndpoint(sample) || urlParses(sample) != nil {
-		return errors.New("must be of the endpoint form with its placeholders filled: https, or http at a loopback address written as one, with no user, query or fragment")
+	if !isRemoteEndpoint(sample) {
+		return errors.New("must be of the endpoint form with its placeholders filled: " + remoteEndpointForm)
 	}
 	return nil
 }
@@ -189,7 +190,9 @@ func bindingPlaceholders(b binding) []string {
 // tool and a probe resolved. It refuses a placeholder no parameter gives, a
 // parameter no placeholder names, a resolved URL out of the endpoint form,
 // and two tools that resolve to one name. ref names the binding in what it
-// says. The binding given is not changed.
+// says; a refusal of a resolved URL names the binding, the operation and the
+// rule, never the URL, which may carry by mistake what is never to be shown.
+// The binding given is not changed.
 func resolveParameters(b binding, parameters map[string]string, ref string) (binding, error) {
 	names := bindingPlaceholders(b)
 	for _, name := range names {
@@ -221,8 +224,11 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 		}
 		resolved := *op
 		resolved.url = fillTemplate(op.url, value)
-		if !isRemoteEndpoint(resolved.url) || urlParses(resolved.url) != nil {
-			return b, fmt.Errorf("binding %s: the %s operation's URL, filled with the platform's parameters, is %q, which is not of the endpoint form: https, or http at a loopback address written as one, with no user, query or fragment, at most %d characters", ref, slot.name, requestText(resolved.url), maxRemoteEndpoint)
+		if len(resolved.url) > maxRemoteEndpoint {
+			return b, fmt.Errorf("binding %s: the %s operation's URL, filled with the platform's parameters, is %d characters, more than the %d of the endpoint form", ref, slot.name, len(resolved.url), maxRemoteEndpoint)
+		}
+		if !isRemoteEndpoint(resolved.url) {
+			return b, fmt.Errorf("binding %s: the %s operation's URL, filled with the platform's parameters, is not of the endpoint form: %s", ref, slot.name, remoteEndpointForm)
 		}
 		resolved.tools = make([]string, 0, len(op.tools))
 		for _, tool := range op.tools {

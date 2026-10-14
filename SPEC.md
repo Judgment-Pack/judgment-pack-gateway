@@ -205,13 +205,26 @@ acquisition was recorded.
 **A remote MCP server** (`docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md`).
 `transport` and `server` are present together or not at all, and only on shape
 `"mcp"`; with them, `endpoint` and `peerIdentity` are held to the forms that follow.
-`endpoint` is a string of at most 2048 characters, each from U+0021 to U+007E,
-beginning `"https://"` or `"http://"`, with no `?` and no `#`, whose authority — what
-follows `//` up to the first `/` or the end — is not empty and holds no `@`; after
-`"http://"`, the authority is a loopback address written as one, an IPv4 address of
-`127.0.0.0/8` in dotted decimal with each part from 0 to 255 and no leading zero, or
-`[::1]`, followed by `":"` and a port in decimal from 1 to 65535 with no leading zero,
-or by nothing. `peerIdentity` is `"tls:sha256:"` followed by exactly 64 lowercase
+`endpoint` is a string of at most 2048 characters, each from U+0021 to U+007E:
+`"https://"` or `"http://"`; then an authority, which is a host, followed by `":"` and
+a port or by nothing; then nothing, or `"/"` and a path. The host is a name — one or
+more characters from `A` to `Z`, `a` to `z`, `0` to `9`, `-`, `.` and `_`, an IPv4
+address in dotted decimal among them — or `"["`, an IPv6 address, and `"]"`. The IPv6
+address is of the form RFC 3986 names `IPv6address`: eight groups of one to four
+hexadecimal digits separated by `:`, where `::` may stand once for one or more groups
+of zeros, and the last two groups may be written as an IPv4 address in dotted decimal,
+each part from 0 to 255 with no leading zero; it has no zone. No host holds `@`, so no
+user is named before it. The port is a decimal from 1 to 65535 with no leading zero;
+`":"` with nothing after it is not one. The path holds no `?` and no `#`, and every
+`%` in it is followed by exactly two hexadecimal digits; an `@` in the path names no
+user, and is one of its characters. After `"http://"`, the host is a loopback address
+written as one: an IPv4 address of `127.0.0.0/8` in dotted decimal, each part from 0
+to 255 with no leading zero, or `[::1]`; a name is not one, `localhost` included,
+since what a name resolves to is not in the text. This is the one form of a remote
+server's URL: the adapter holds its `--url` to it before anything is sent, the gateway
+an envelope's `endpoint` before anything is signed and a binding's URL before the
+engine starts, and a verifier a receipt's.
+`peerIdentity` is `"tls:sha256:"` followed by exactly 64 lowercase
 hexadecimal characters after `"https://"`, and `null` after `"http://"`, where no
 transport identity is established. A `transport` of another value, a `server` that is
 not an object of a string `name` and a string `version`, one of the two without the
@@ -1010,7 +1023,7 @@ command with the version the server gave itself and the digest of its executable
 `endpoint` is the host the operator named, or `null`; `peerIdentity` is `null`. For a
 remote server it carries the eight and `transport` and `server`: `adapter` names
 `adapter-mcp` itself, with the digest of its own executable; `endpoint` is the URL as
-configured; `peerIdentity` is the identity of the TLS peer whose answer carried the
+configured, of the form §1.2a states; `peerIdentity` is the identity of the TLS peer whose answer carried the
 tool's result, or `null` over plaintext loopback; `transport` is `"http"`; and
 `server` is the name and version the server gave itself, each held to its form as
 §1.2a states. In both, `statement` is the call, `snapshot` and `upstreamToken` are

@@ -57,15 +57,17 @@ var snapshotMembers = map[string]bool{"binding": true, "capturedAt": true, "plat
 // template and not its tenant, so a platform whose organization or
 // workspace changed would otherwise serve another tenant's descriptors for
 // the server it now reaches. A server the adapter runs is named by the
-// binding's pinned image, and its snapshot names no endpoint.
+// binding's pinned image, and its snapshot names no endpoint. The refusal
+// names the endpoints compared by their roles and repeats neither: a URL
+// may carry, by mistake, what is never to be shown.
 func snapshotEndpointProblem(s snapshot, described *operation) error {
 	switch {
 	case described.url == "" && s.endpoint != "":
-		return fmt.Errorf("the snapshot describes the remote server at %q, and the platform's operation runs a server of its own; capture its descriptors anew with connect --replace", requestText(s.endpoint))
+		return errors.New("the pinned descriptors were captured at a remote server, and the platform's operation runs a server of its own; capture its descriptors anew with connect --replace")
 	case described.url != "" && s.endpoint == "":
-		return fmt.Errorf("the snapshot names no endpoint, and the platform's operation reaches the remote server at %q; a remote server's descriptors are pinned with the endpoint they were captured at, so capture them anew with connect --replace", requestText(described.url))
+		return errors.New("the snapshot of the pinned descriptors names no endpoint, and the platform's operation reaches a remote server; a remote server's descriptors are pinned with the endpoint they were captured at, so capture them anew with connect --replace")
 	case s.endpoint != described.url:
-		return fmt.Errorf("the snapshot describes the server at %q, and the platform's operation now reaches %q: descriptors are pinned with the resolved endpoint they were captured at, so an endpoint that changed, a parameter's change among them, is captured anew with connect --replace", requestText(s.endpoint), requestText(described.url))
+		return errors.New("the platform's operation now reaches another endpoint than the one its pinned descriptors were captured at, as its parameters resolve it: descriptors are pinned with the resolved endpoint they were captured at, so an endpoint that changed, a parameter's change among them, is captured anew with connect --replace")
 	}
 	return nil
 }

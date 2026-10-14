@@ -72,6 +72,31 @@ the scheme in lower case. It is used exactly as written, nothing appended. No re
 followed: a `3xx` is a refusal naming the status, never the location. `--ca-file` is
 `adapter-http`'s. `--endpoint` is refused beside `--url`, which is the endpoint.
 
+*Amended 2026-10-14 (#251).* The URL has one form, stated once in `SPEC.md` §1.2a and
+referred to from §6: at most 2048 characters of printable ASCII; `https://` or `http://`;
+a host, then optionally `:` and a port, then nothing or `/` and a path; a host that is a
+name of letters, digits, `-`, `.` and `_`, or hexadecimal digits, `:` and `.` in brackets;
+a port from 1 to 65535 with no leading zero; no `?` and no `#` anywhere; no `@` in the
+authority, which no host's characters include, so no user, while an `@` in the path is one
+of its characters, as it was; every `%` in the path followed by two hexadecimal digits; and
+after `http://` a loopback address written as one. The adapter's rule, which ended with
+`net/url`, was tightened to it: a named host of a fixed alphabet where `net/url` also took
+sub-delimiters and percent escapes, and no `:` without a port after it. The signer's rule, which
+`gateway verify` and the engine share, and `verify-ts`'s were raised to it: they had held
+the authority only to being non-empty and free of `@`, so an envelope naming
+`https://mcp.example/%zz` or `https://:443/` was signed and verified. A table of accepted
+and refused endpoints (`testdata/remote-endpoints/cases.json`) is read by a test of each of
+the four, and eight vectors `v3-mcp-remote-endpoint-*` hold both verifiers to the form. After
+the review round on #266, an address in brackets is an IPv6 address in the form RFC 3986
+names `IPv6address` — eight groups of one to four hexadecimal digits separated by `:`, `::`
+standing once for one or more groups of zeros, the last two groups optionally an IPv4 address
+in dotted decimal — with no zone, rather than any run of hexadecimal digits, `:` and `.`,
+which admitted `[abc]` and `[127.0.0.1]` that the transport's URL parser then refused; a
+ninth vector, `v3-mcp-remote-endpoint-ipv6-literal-malformed`, holds both verifiers to it. In
+the same round, a refusal of a binding's URL, as written, as a template or as the platform's
+parameters resolve it, came to name the binding, the operation and the rule, and never the
+URL, which may carry by mistake what is never to be shown.
+
 ### 2. The credential and the headers
 
 `--bearer NAME` names the member of the `--credentials` JSON object sent as

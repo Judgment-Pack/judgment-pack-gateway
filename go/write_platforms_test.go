@@ -601,7 +601,7 @@ func TestParametersFillARemoteBindingsTemplates(t *testing.T) {
 		{"a value that is not a string", "8", organization, `,"parameters":{"organization":7}`, "parameters.organization must be a string"},
 		{"a name out of form", "8", organization, `,"parameters":{"Organization":"example-org"}`, "which is not a parameter's name"},
 		{"no parameter at all", "8", organization, `,"parameters":{}`, "parameters, when present, is an object of at least one string value"},
-		{"a resolved URL out of the endpoint form", "8", long, `,"parameters":{"organization":"example-org"}`, "which is not of the endpoint form"},
+		{"a resolved URL out of the endpoint form", "8", long, `,"parameters":{"organization":"example-org"}`, "more than the 2048 of the endpoint form"},
 		{"a workspace off the workspace domains", "8", workspace, strings.Replace(databricks, "dbc-example.cloud.databricks.com", "dbc-example.example.com", 1), "parameters.workspace is not a Databricks workspace's host"},
 		{"a workspace that is the account console", "8", workspace, strings.Replace(databricks, "dbc-example.cloud.databricks.com", "accounts.cloud.databricks.com", 1), "parameters.workspace is not a Databricks workspace's host"},
 		{"a workspace under a workspace domain's look-alike", "8", workspace, strings.Replace(databricks, "dbc-example.cloud.databricks.com", "dbc-example.cloud.databricks.com.example.net", 1), "parameters.workspace is not a Databricks workspace's host"},
@@ -613,11 +613,11 @@ func TestParametersFillARemoteBindingsTemplates(t *testing.T) {
 		{"a template that names the port", "8", template("https://{workspace}:8443/mcp", `["write"]`), `,"parameters":{"workspace":"dbc-example.cloud.databricks.com"}`, "must write its host as it is, or as {workspace} alone over https"},
 		{"a template of the workspace in the clear", "8", template("http://{workspace}/mcp", `["write"]`), `,"parameters":{"workspace":"dbc-example.cloud.databricks.com"}`, "must write its host as it is, or as {workspace} alone over https"},
 		{"a template with a query", "8", template("https://mcp.example/{organization}?tenant=1", `["write"]`), `,"parameters":{"organization":"example-org"}`, "must be of the endpoint form with its placeholders filled"},
-		{"a placeholder of an upper-case name", "8", template("https://mcp.example/{Organization}", `["write"]`), `,"parameters":{"organization":"example-org"}`, "names a placeholder {Organization}, which is not a parameter's name"},
-		{"an empty placeholder", "8", template("https://mcp.example/{}", `["write"]`), `,"parameters":{"organization":"example-org"}`, "names a placeholder {}, which is not a parameter's name"},
+		{"a placeholder of an upper-case name", "8", template("https://mcp.example/{Organization}", `["write"]`), `,"parameters":{"organization":"example-org"}`, "names a placeholder which is not a parameter's name"},
+		{"an empty placeholder", "8", template("https://mcp.example/{}", `["write"]`), `,"parameters":{"organization":"example-org"}`, "names a placeholder which is not a parameter's name"},
 		{"a placeholder never closed", "8", template("https://mcp.example/{organization", `["write"]`), `,"parameters":{"organization":"example-org"}`, "holds a { that no } closes"},
 		{"a brace that closes nothing", "8", template("https://mcp.example/organization}", `["write"]`), `,"parameters":{"organization":"example-org"}`, "holds a } that closes no placeholder"},
-		{"a tool of a disallowed placeholder", "8", template("https://mcp.example/{organization}", `["{Organization}_write"]`), `,"parameters":{"organization":"example-org"}`, "a tool names a placeholder {Organization}"},
+		{"a tool of a disallowed placeholder", "8", template("https://mcp.example/{organization}", `["{Organization}_write"]`), `,"parameters":{"organization":"example-org"}`, "a tool names a placeholder which is not a parameter's name"},
 		{"two tools that resolve to one", "8", template("https://mcp.example/{a}/{b}", `["{a}","{b}"]`), `,"parameters":{"a":"same","b":"same"}`, `two of the write operation's tools resolve to "same"`},
 		{"parameters in a version-7 file", "7", organization, `,"parameters":{"organization":"example-org"}`, "parameters is a version-8 member; engineVersion 7 has no parameters"},
 		{"a policy named by the tool's template", "8", workspace, databricks + `,"decisionPolicy":{"{catalog}__{schema}__{function}":{"outcomes":["approve"]}}`, `decisionPolicy names tool "{catalog}__{schema}__{function}", which the binding's write operation does not name`},
@@ -928,8 +928,10 @@ func TestAParameterValueStaysInItsSegment(t *testing.T) {
 
 // connect holds the endpoint an adapter's check reports to the URL the
 // source was given (cross-vendor round 1 on #257), refusing a check that
-// names another, and names it in what it prints; a server the adapter runs
-// reports none.
+// names another by the roles of the two endpoints and repeating neither
+// (the review round on #266: a URL may carry, by mistake, what is never to
+// be shown), and names it in the line it prints for a check that holds; a
+// server the adapter runs reports none.
 func TestConnectHoldsTheReportedEndpointToTheResolvedOne(t *testing.T) {
 	report := func(endpoint string) []byte {
 		member := ""
@@ -943,12 +945,16 @@ func TestConnectHoldsTheReportedEndpointToTheResolvedOne(t *testing.T) {
 		t.Fatalf("the resolved endpoint named: %q %v", line, err)
 	}
 	for _, tc := range []struct{ reported, given, want string }{
-		{"https://mcp.dev.azure.com/other-org", url, `and the source was given "` + url + `"`},
-		{"", url, `and the source was given "` + url + `"`},
-		{url, "", "for a server it runs, which has none"},
+		{"https://mcp.dev.azure.com/other-org", url, "the endpoint the adapter reports is not the one the source was given"},
+		{"", url, "the endpoint the adapter reports is not the one the source was given"},
+		{url, "", "the adapter reports an endpoint for a server it runs, which has none"},
 	} {
-		if _, err := describeCheck("mcp", report(tc.reported), tc.given); err == nil || !strings.Contains(err.Error(), tc.want) {
+		_, err := describeCheck("mcp", report(tc.reported), tc.given)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("reported %q, given %q: %v", tc.reported, tc.given, err)
+		}
+		if strings.Contains(err.Error(), "mcp.dev.azure.com") {
+			t.Fatalf("reported %q, given %q: the refusal repeats an endpoint: %v", tc.reported, tc.given, err)
 		}
 	}
 	if got := remoteURL([]string{"adapter-mcp", "--url=" + url, "--tools=a", "--", "--url=https://elsewhere.example/"}); got != url {

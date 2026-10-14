@@ -1,0 +1,20 @@
+{
+  "name": "v3-mcp-remote-endpoint-port-and-escape-valid",
+  "note": "A sealed session of one acquisition from a remote MCP server over TLS whose https endpoint names a port, 8443, and carries a percent escape in its path, \"%20\", each of the form (§1.2a), its peer identity tls:sha256: and 64 lowercase hex: ok, so a verifier holding the endpoint tighter than the form is caught as well as one holding it looser.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580": "{\"n\":0,\"session\":\"s-remote\"}",
+    "receipts/s-remote/0.json": "{\"acquisition\":{\"adapter\":{\"digest\":\"sha256:a22c061264d59629ff4720ce714d9e4089f905eb2b7573963fab2dc3a8b782cd\",\"name\":\"adapter-mcp\",\"version\":\"0\"},\"endpoint\":\"https://mcp.example:8443/mcp/a%20b\",\"observedAt\":\"2026-10-13T00:00:00Z\",\"peerIdentity\":\"tls:sha256:bbcc0315e014e772aeb06e92c05f3f2a798a71c23657d638f43ce638b3713727\",\"schema\":null,\"server\":{\"name\":\"example-remote\",\"version\":\"1.4.0\"},\"shape\":\"mcp\",\"snapshot\":null,\"statement\":\"sha256:b111c6e1d318f203063e5c16bab43c108326af0aa2f7b65760c95547a43dbe52\",\"transport\":\"http\",\"upstreamToken\":null},\"argumentsCommitment\":\"sha256:5cf145a7c4b85171a8b8a7b69e5f79c97e841f966a3ec30b4de5a4ec3c89be29\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"caller\":null,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"acquisition\",\"prevSignature\":null,\"receiptVersion\":\"3\",\"resultDigest\":\"sha256:0f540d1a957b1013b8bf10c1e1aeb9c16b2576fdfbf0128724994f9b2a354580\",\"servedAt\":\"2026-10-13T00:00:00Z\",\"sessionId\":\"s-remote\",\"signature\":\"a089fd5fe76d1f053389cb14de667bcc8b27ed294a66d569403b05cadac73216470ace7c3acf2d7c7acc1e9b6d69e39e4e50e4dd0fda62af15b3f8ce61463502\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-10-13T00:00:01Z\",\"sessionId\":\"s-remote\",\"signature\":\"0d1559eb68a804b9c97c370a8a4171cb79a253cd9b891b1b5f22766b116a951a04109c7e8327641f43197e3c5556bfa63f8ed3857b0e4b513a1c911411947f0a\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "callIndex": 0,
+        "sessionId": "s-remote",
+        "status": "ok"
+      }
+    ]
+  }
+}

@@ -79,15 +79,19 @@ function isAdapter(v: Value | undefined): boolean {
 const shapes = new Set(["airbyte", "mcp", "http", "command"]);
 
 // isRemoteEndpoint is the form of a remote MCP server's endpoint (§1.2a,
-// ADR-0015): at most 2048 characters, each from U+0021 to U+007E;
-// "https://" or "http://" first; no "?" and no "#"; an authority -- what
-// follows "//" up to the first "/" or the end -- that is not empty and
-// holds no "@"; and, after "http://", an authority that is a loopback
+// ADR-0015; testdata/remote-endpoints/cases.json is the table it is tested
+// against): at most 2048 characters, each from U+0021 to U+007E; no "?"
+// and no "#"; "https://" or "http://"; then an authority, a host and
+// optionally ":" and a port; then nothing, or "/" and a path. The host is
+// a name of letters, digits, "-", "." and "_", or "[", an IPv6 address, and
+// "]", so no "@" is in the authority and no user is named;
+// the port a decimal from 1 to 65535 with no leading zero; and every "%" in
+// the path is followed by exactly two hexadecimal digits. An "@" in the
+// path names no user, and is a path's character like any other. After "http://", the host is a loopback
 // address written as one, an IPv4 address of 127.0.0.0/8 in dotted decimal
-// or [::1], with ":" and a port in decimal from 1 to 65535 with no leading
-// zero, or no port.
+// or [::1]; a name is not one, localhost included.
 export function isRemoteEndpoint(s: string): boolean {
-  if (s.length === 0 || s.length > 2048 || !/^[\x21-\x7e]+$/.test(s) || /[?#]/.test(s)) {
+  if (s.length > 2048 || !/^[\x21-\x7e]*$/.test(s) || /[?#]/.test(s)) {
     return false;
   }
   const scheme = /^(https?):\/\/(.*)$/s.exec(s);
@@ -97,40 +101,88 @@ export function isRemoteEndpoint(s: string): boolean {
   const rest = scheme[2]!;
   const slash = rest.indexOf("/");
   const authority = slash < 0 ? rest : rest.slice(0, slash);
-  if (authority === "" || authority.includes("@")) {
+  const path = slash < 0 ? "" : rest.slice(slash + 1);
+  const split = splitAuthority(authority);
+  if (split === null || split.host === "") {
     return false;
   }
-  return scheme[1] === "https" || isLoopbackAuthority(authority);
+  if (!/^[A-Za-z0-9._-]+$/.test(split.host) && !/^\[[0-9A-Fa-f:.]+\]$/.test(split.host)) {
+    return false;
+  }
+  if (split.host.startsWith("[") && !isIPv6Address(split.host.slice(1, -1))) {
+    return false;
+  }
+  if (split.port !== null && (!/^[1-9][0-9]{0,4}$/.test(split.port) || Number(split.port) > 65535)) {
+    return false;
+  }
+  if (/%(?![0-9A-Fa-f]{2})/.test(path)) {
+    return false;
+  }
+  return scheme[1] === "https" || isLoopbackHost(split.host);
 }
 
-// isLoopbackAuthority is a loopback address written as one, with a port
-// or without.
-function isLoopbackAuthority(authority: string): boolean {
-  let host = authority;
-  let port: string | null = null;
-  if (authority.startsWith("[")) {
-    const end = authority.indexOf("]");
-    if (end < 0) {
+// isIPv6Address is an IPv6 address in the form RFC 3986 names IPv6address
+// (§1.2a): eight groups of one to four hexadecimal digits separated by ":",
+// "::" standing once for one or more groups of zeros, and the last two
+// groups optionally an IPv4 address in dotted decimal, each part from 0 to
+// 255 with no leading zero; no zone.
+function isIPv6Address(s: string): boolean {
+  let groups = s;
+  let wanted = 8;
+  if (s.includes(".")) {
+    const colon = s.lastIndexOf(":");
+    if (colon < 0 || colon > s.indexOf(".") || !isIPv4Dotted(s.slice(colon + 1))) {
       return false;
     }
-    host = authority.slice(0, end + 1);
-    const rest = authority.slice(end + 1);
-    if (rest !== "") {
-      if (!rest.startsWith(":")) {
-        return false;
-      }
-      port = rest.slice(1);
-    }
-  } else {
-    const colon = authority.indexOf(":");
-    if (colon >= 0) {
-      host = authority.slice(0, colon);
-      port = authority.slice(colon + 1);
-    }
+    // The address's last two groups are the IPv4 address: what is before
+    // it ends in ":", or in "::" when that stands for groups before it.
+    groups = s.slice(0, colon + 1);
+    groups = groups.endsWith("::") ? groups : groups.slice(0, -1);
+    wanted = 6;
   }
-  if (port !== null && (!/^[1-9][0-9]{0,4}$/.test(port) || Number(port) > 65535)) {
+  const halves = groups.split("::");
+  if (halves.length > 2) {
     return false;
   }
+  const written = halves.flatMap((half) => (half === "" ? [] : half.split(":")));
+  if (!written.every((group) => /^[0-9A-Fa-f]{1,4}$/.test(group))) {
+    return false;
+  }
+  return halves.length === 2 ? written.length < wanted : written.length === wanted;
+}
+
+// isIPv4Dotted is an IPv4 address in dotted decimal, each part from 0 to
+// 255 with no leading zero.
+function isIPv4Dotted(s: string): boolean {
+  const octets = /^(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})\.(0|[1-9][0-9]{0,2})$/.exec(s);
+  return octets !== null && octets.slice(1).every((o) => Number(o) <= 255);
+}
+
+// splitAuthority is an authority's host and its port, null when no ":"
+// follows the host: a host in brackets runs to the first "]", any other to
+// the first ":". It is null itself when the "]" is missing or anything
+// but ":" follows it.
+function splitAuthority(authority: string): { host: string; port: string | null } | null {
+  if (!authority.startsWith("[")) {
+    const colon = authority.indexOf(":");
+    return colon < 0 ? { host: authority, port: null } : { host: authority.slice(0, colon), port: authority.slice(colon + 1) };
+  }
+  const end = authority.indexOf("]");
+  if (end < 0) {
+    return null;
+  }
+  const host = authority.slice(0, end + 1);
+  const rest = authority.slice(end + 1);
+  if (rest === "") {
+    return { host, port: null };
+  }
+  return rest.startsWith(":") ? { host, port: rest.slice(1) } : null;
+}
+
+// isLoopbackHost is a loopback address written as one: [::1], or an IPv4
+// address of 127.0.0.0/8 in dotted decimal, each part from 0 to 255 with
+// no leading zero.
+function isLoopbackHost(host: string): boolean {
   if (host === "[::1]") {
     return true;
   }
