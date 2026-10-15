@@ -87,7 +87,11 @@ func searchRows(t *testing.T, b *Broker) []SearchConnection {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return out.(map[string]any)["connections"].([]SearchConnection)
+	rows := []SearchConnection{}
+	for _, row := range out.(map[string]any)["connections"].([]SearchStatusRow) {
+		rows = append(rows, row.SearchConnection)
+	}
+	return rows
 }
 
 func TestSearchConfigureTakesNoCounterFromTheCaller(t *testing.T) {

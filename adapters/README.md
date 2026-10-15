@@ -1257,6 +1257,9 @@ selection and operation identifiers with their own supported handlers, then ask
 for live account status. The catalog does not authorize access or prove a service
 is currently available. See [the catalog contract](../docs/design/connection-catalog.md)
 for compatibility, limits and the distinction from tool listings and receipts.
+`--catalog-v3` prints version 3, and `--catalog-v4` version 4: version 3 with the
+research capabilities each adapter can serve, `answer`, `search` and `page`
+([research capabilities](../docs/design/connection-catalog.md#research-capabilities-version-4)).
 
 ### Selected public web pages
 

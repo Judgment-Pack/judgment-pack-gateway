@@ -6,8 +6,9 @@ it does not change gateway SPEC.md, receipt signing, or the frozen corpus.
 ## Discovery and compatibility
 
 `gateway-connections --catalog-v3` emits catalog version 3. `--catalog` retains
-version 2 for existing consumers. Both are stateless, offline discovery modes,
-and refuse mixed command-line modes. A provider is advertised only when its
+version 2 for existing consumers. `--catalog-v4` emits version 4, version 3 with
+each adapter's research capabilities ([connection catalog](connection-catalog.md#research-capabilities-version-4)).
+All three are stateless, offline discovery modes, and refuse mixed command-line modes. A provider is advertised only when its
 implementation ships. Fixtures are never added to production discovery.
 
 Version 3 retains provider id, auth, registration, selection, queryRequired and

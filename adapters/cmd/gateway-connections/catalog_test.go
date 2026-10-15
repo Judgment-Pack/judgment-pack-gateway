@@ -44,8 +44,11 @@ func TestCatalogCLIHasNoAccountOrFilesystemPrerequisite(t *testing.T) {
 }
 
 func TestExtendedDiscoveryModesHaveNoAccountPrerequisite(t *testing.T) {
-	for _, mode := range []string{"--catalog-v3", "--local-plan", "--source-capabilities"} {
-		for _, extra := range [][]string{nil, {"--catalog"}, {"--provider", "gmail"}, {"--state-dir", "private"}, {"--disabled"}, {"extra"}} {
+	for _, mode := range []string{"--catalog-v3", "--catalog-v4", "--local-plan", "--source-capabilities"} {
+		for _, extra := range [][]string{nil, {"--catalog"}, {"--catalog-v3"}, {"--provider", "gmail"}, {"--state-dir", "private"}, {"--disabled"}, {"extra"}} {
+			if mode == "--catalog-v3" && len(extra) == 1 && extra[0] == "--catalog-v3" {
+				continue
+			}
 			flags := append([]string{mode}, extra...)
 			cmd := exec.Command(os.Args[0], append([]string{"-test.run=^TestCatalogCLIHelper$", "--"}, flags...)...)
 			cmd.Env = append(os.Environ(), "GATEWAY_CATALOG_HELPER=1")
@@ -58,6 +61,9 @@ func TestExtendedDiscoveryModesHaveNoAccountPrerequisite(t *testing.T) {
 				want := 1
 				if mode == "--catalog-v3" {
 					want = 3
+				}
+				if mode == "--catalog-v4" {
+					want = 4
 				}
 				if err != nil || json.Unmarshal(raw, &result) != nil || result.Version != want {
 					t.Fatalf("%s: %s %v", mode, raw, err)
@@ -250,7 +256,30 @@ func TestTheOperatorsRedirectPoliciesReachThePlanAndTheReport(t *testing.T) {
 		}
 	}
 	// The catalogs do not read it.
-	if raw, _, err := ask("--catalog-v3", "JPACK_WEB_REDIRECT_POLICIES=any-origin"); err != nil || len(raw) == 0 {
-		t.Error("the catalog read the redirect policies", err)
+	for _, mode := range []string{"--catalog-v3", "--catalog-v4"} {
+		if raw, _, err := ask(mode, "JPACK_WEB_REDIRECT_POLICIES=any-origin"); err != nil || len(raw) == 0 {
+			t.Error("the catalog read the redirect policies", mode, err)
+		}
+	}
+}
+
+// --catalog-v4 writes version 4 as the package makes it, and the earlier
+// flags write their versions without the research capabilities.
+func TestTheCatalogFlagsWriteTheirVersions(t *testing.T) {
+	for _, c := range []struct {
+		flag string
+		want any
+	}{{"--catalog", connections.ConnectionCatalog()}, {"--catalog-v3", connections.ConnectionCatalogV3()}, {"--catalog-v4", connections.ConnectionCatalogV4()}} {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestCatalogCLIHelper$", "--", c.flag)
+		cmd.Env = append(os.Environ(), "GATEWAY_CATALOG_HELPER=1")
+		cmd.Dir = t.TempDir()
+		raw, err := cmd.Output()
+		want, _ := json.Marshal(c.want)
+		if err != nil || string(raw) != string(want)+"\n" {
+			t.Errorf("%s: %v", c.flag, err)
+		}
+		if has := strings.Contains(string(raw), `"capabilities"`); has != (c.flag == "--catalog-v4") {
+			t.Errorf("%s: capabilities written: %v", c.flag, has)
+		}
 	}
 }
