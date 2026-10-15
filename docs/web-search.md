@@ -38,6 +38,21 @@ Catalog v3 advertises `web-search-v1` and these operations:
 - `disconnect {id, revision}`: remove exactly that connection.
 - `test {id, revision}`: make one metered search request; return only success.
 
+Each connection `status` returns carries `research`, what the connection serves of
+RFC 0018's research capabilities, in the form of an input profile's `research`
+member (`spec/dialect.md` §5.1 in the specification repository): a Tavily
+connection `{"capabilities": ["search"]}`, and a Google connection
+`{"capabilities": ["answer", "search"], "model": "<its model>"}`. The member is
+computed from the provider and the stored model, never stored, and never taken
+from `configure`, which refuses it as an unknown member. A connection whose
+stored model `configure` would refuse declares nothing. The model is the one the
+acquisition's endpoint names (below), so the declaration belongs to a profile
+that pins that endpoint. The catalog declares what the adapter can serve, both
+(`["answer", "search"]`, [catalog version 4](design/connection-catalog.md#research-capabilities-version-4));
+a profile copies the connection's, not the adapter's. It is a declaration from
+the providers' documentation, not an observation, and the gateway checks no
+binding of it ([ADR-0017](adr/0017-adapters-declare-research-capabilities.md)).
+
 Google configuration adds `project`, `location` and `model`. Tavily has no such
 fields. Endpoints cannot be supplied by a caller. Up to six connections live in
 Gateway's private `web-search` custody namespace. `status` never returns a
@@ -56,7 +71,10 @@ this adapter as source `web-search`, using the existing HTTP acquisition shape.
 Results contain version, connection and revision, provider, query, retrieval
 time, kind and bounded HTTPS hits. The receipt commits to the arguments, to a
 statement of the request and to the normalized result. The statement names the
-connection, revision, provider, query, maximum results, method and endpoint. It
+connection, revision, provider, query, maximum results, method and endpoint. The
+endpoint is `https://api.tavily.com/search` for Tavily, and for Google
+`https://{host}/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`,
+which names the connection's model. It
 is not the bytes sent: what the adapter adds to a query, which for Google is a
 fixed instruction before it and fixed generation settings, is part of the
 adapter, and the acquisition records the adapter's digest. The acquisition also

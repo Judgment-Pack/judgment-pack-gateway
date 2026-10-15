@@ -94,6 +94,16 @@ type SearchConnection struct {
 type searchState struct {
 	Connections []SearchConnection `json:"connections"`
 }
+
+// SearchStatusRow is a connection as status reports it: the stored
+// connection without its credential, and the research declaration a profile
+// pinning the connection's endpoint carries (RFC 0018 §5.1). The declaration
+// is computed for status from the provider and the model, never stored and
+// never taken from a caller.
+type SearchStatusRow struct {
+	SearchConnection
+	Research *Research `json:"research,omitempty"`
+}
 type SearchRequest struct {
 	Connection string `json:"connection"`
 	Revision   string `json:"revision"`
@@ -187,6 +197,31 @@ func searchProviders() []map[string]any {
 		{"id": "google-grounding", "name": "Google Cloud · Search grounding", "kind": "grounded-answer", "fields": []string{"project", "location", "model", "service-account-json"}, "docs": "https://cloud.google.com/vertex-ai/generative-ai/docs/grounding/grounding-with-google-search"},
 	}
 }
+
+// searchResearch is what a connection serves of RFC 0018's research
+// capabilities: a search-results provider answers with links (search); a
+// grounded-answer provider with the answer its model generated and the links
+// it was grounded in (answer and search), and names that model, which the
+// acquisition's endpoint names too. A provider or a stored model configure
+// would refuse declares nothing.
+func searchResearch(c SearchConnection) *Research {
+	var r Research
+	switch c.Provider {
+	case "tavily":
+		r = Research{Capabilities: []string{CapabilitySearch}}
+	case "google-grounding":
+		if !cloudModel.MatchString(c.Model) {
+			return nil
+		}
+		r = Research{Capabilities: []string{CapabilityAnswer, CapabilitySearch}, Model: c.Model}
+	default:
+		return nil
+	}
+	if CheckResearch(r) != nil {
+		return nil
+	}
+	return &r
+}
 func searchTimeout(c SearchConnection) time.Duration {
 	seconds := c.TimeoutSeconds
 	if seconds == 0 {
@@ -261,10 +296,11 @@ func (b *Broker) searchOperation(ctx context.Context, method string, raw []byte)
 		if decode(raw, &q) != nil {
 			return nil, ErrRequest
 		}
-		rows := []SearchConnection{}
+		rows := []SearchStatusRow{}
 		err := b.store.locked(func(v *state) error {
 			if v.Search != nil {
 				for _, c := range v.Search.Connections {
+					research := searchResearch(c)
 					c.Credential = ""
 					if !searchTimeoutValid(c.TimeoutSeconds) {
 						c.TimeoutSeconds = SearchTimeoutInvalid
@@ -272,7 +308,7 @@ func (b *Broker) searchOperation(ctx context.Context, method string, raw []byte)
 					if c.Day != time.Now().UTC().Format("2006-01-02") {
 						c.Requests = 0
 					}
-					rows = append(rows, c)
+					rows = append(rows, SearchStatusRow{c, research})
 				}
 			}
 			return nil

@@ -291,3 +291,44 @@ Version 2 adds a separate `sources` list for explicit inputs without account
 connections. The web descriptor and its bounds are defined in
 [public web sources](public-web-sources.md). The provider dispatch allowlist is
 unchanged. Version 1 clients must refuse this version rather than guess support.
+
+## Research capabilities (version 4)
+
+`gateway-connections --catalog-v4` writes catalog version 4
+([ADR-0017](../adr/0017-adapters-declare-research-capabilities.md)). It is version 3 with one
+member more, `capabilities`, on each provider's `source` and on each entry of `sources`; nothing
+else changes, and `--catalog-v3` and `--catalog` write versions 3 and 2 as before, for the hosts
+that hold their members closed. A provider's source in version 4:
+
+```json
+{"id": "web-search", "shape": "http", "record": "web-search-v1", "capabilities": ["answer", "search"]}
+```
+
+`capabilities` is what the adapter can serve of the research capabilities of RFC 0018
+(`spec/dialect.md` §§4.3, 4.4 and 5.1 in the specification repository): an array of distinct
+names from the closed set `answer`, `search` and `page`, in that order, written `[]` for an
+adapter that serves none. The names are the specification's: `answer` is a model's generated
+answer, `search` an answer of links to a query, `page` one page read and retained. The adapters
+declare:
+
+| Adapter (acquisition id) | `capabilities` |
+|---|---|
+| `web` (`adapter-web`) | `["page"]` |
+| `web-search` (`adapter-sources --provider web-search`), as the provider's source and as an explicit source | `["answer", "search"]` |
+| `web-discovery`, `drive`, `gmail`, `notion`, `obsidian`, `aws-s3`, `databricks`, `azure-devops` | `[]` |
+
+`web-search` declares `answer` because a connection of a `grounded-answer` provider serves one;
+a connection of a `search-results` provider does not. What one connection serves, and the model
+it serves it from, is in its `status` row, as the `research` member
+([configurable web search](../web-search.md#connection-protocol)): that member, not the adapter's
+declaration, is what an input profile for the connection's endpoint declares. `web-discovery`
+returns a site's navigation manifest, which is neither a search for a query nor a retained page,
+and declares nothing. The catalog names no model: a model is a connection's configuration, and
+the catalog is static.
+
+**What it establishes, and what it does not.** A declaration says what the distribution's
+adapter is built to return, as its providers document it; no provider was called with an
+account to establish it. The gateway checks no binding: an installation writes its input
+profiles, their class among the rest, and a Runner holds a research source's binding to them
+(RFC 0018 §4.4). A declaration grants no acquisition and does not establish that an answer is
+true, that a model ran, or which one.
