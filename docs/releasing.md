@@ -150,16 +150,36 @@ Every job works on the commit the run was started for, by its digest, and not on
    states.
 5. **Attests and drafts.** Only after every smoke test passes, and only if the tag still names the
    commit, are the archives attested and a draft release created, with the notes from the commit.
+   The job records the draft's release id for the publish job.
 6. **Waits at the `production` gate.** Review the draft on the Releases page: the notes and the
    seven assets. Approve the pending deployment on the run.
-7. **Holds the draft to the run, and publishes.** A draft can be changed while it waits, by
-   whoever may write to the repository. So on the far side of the gate the tag is held to the
-   commit once more, and the draft as it then stands is downloaded and held to what the run
-   packaged: the title the workflow gave it, the notes the commit holds (compared without the
-   newlines either ends in), the same files by name, the same `checksums.txt`, and every archive
-   the bytes that list names. Then it is published.
-   A moment remains between that check and the publishing, and nothing closes it. An approval given more than thirty days after the run finds the run's
-   archives gone, and the job fails: release a new version.
+7. **Holds the draft to the run, and publishes it by its id.** A draft can be changed while it
+   waits, by whoever may write to the repository. So on the far side of the gate the tag is held to
+   the commit once more, and the run's own files are held to their checksums. The release the run
+   drafted is then read through the releases API by its id, without downloading anything: it must
+   still be a draft under the tag, with the title the workflow gave it and the notes the commit
+   holds (compared without the newlines either ends in), and the digest the API reports for each
+   of its assets must be the digest of the run's file of that name, no asset more or fewer. Any
+   difference refuses. The publish call follows that last read at once, addressed to the same
+   release id, not to the tag.
+8. **Reads the published release again.** Immediately after publication the job reads the
+   published release's asset digests through the API once more, and fails the step `The published
+   release holds what this run packaged`, printing both digest sets, if they differ from the run's
+   files.
+
+An approval given more than thirty days after the run finds the run's
+archives gone, and the job fails: release a new version.
+
+### The window that remains
+
+The API cannot publish a release on condition that its assets are the ones just read, so one
+window remains: between the last read of the draft's asset digests and the publish call, a few
+moments of the same step. Whoever can write to the repository's releases can act in it: a
+repository writer, which in this organisation is a maintainer, the same people the `production`
+gate asks to approve. Nothing in the workflow closes that window. A file replaced in it is
+published, and the read after publication then fails the run by name; with release immutability
+on, the published release can no longer be changed, so the replacement stays visible as a failed
+release and is not quietly corrected.
 
 No maintainer token and no repository secret is used.
 
@@ -185,7 +205,9 @@ What to do with a draft depends on which job failed:
 | --- | --- | --- |
 | Any job before `Attest and draft release` | none was made | re-run the failed jobs |
 | `Attest and draft release` | may exist, and may lack assets | read it, delete it by hand, then re-run the failed jobs. The job refuses to run while a release under the tag exists, draft or published, and refuses when it cannot find out |
-| `Publish release` | to be looked at: it may be as it was made, changed, incomplete, gone, or already published | read why the job failed, and look at the Releases page. A draft as it was made is **kept**, and the failed jobs re-run: that job only publishes the draft that is there. A draft that was changed or is incomplete is not to be published. If it is gone or the release is already published, there is nothing to re-run. Where the draft cannot be published, release a new version |
+| `Publish release`, before publication | needs looking at: it may be as it was made, changed, incomplete or gone | read why the job failed, and look at the Releases page. **Keep** a draft that is as it was made, and re-run the failed jobs: that job only publishes the release id the run drafted. Do not publish a draft that was changed or is incomplete. Where the draft cannot be published, release a new version |
+| `Publish release`, at `The published release holds what this run packaged`, with the message "the published release does not hold what this run packaged" and two digest sets | published, holding files this run did not package, or not published after the call | someone who can write to the repository changed the release in the window above. Treat it as an incident: tell the maintainers, point no one at the release, and release a new version from a new tag. Do not re-run |
+| `Publish release`, at the same step, with the message "the published release could not be verified" and no digest sets | published; a read after the call failed (an API or network error, or an empty answer), so nothing is known of its files | the release is unverified, not found changed: make no diagnosis. Read the same release id again and compare its asset digests with the run's: `gh api repos/Judgment-Pack/judgment-pack-gateway/releases/<id>/assets --jq '.[] | "\(.name) \(.digest)"'` (the id is in the job's log and the draft job's `release-id` output), against `checksums.txt` of the run's `release-dist` artifact and the `sha256` of each archive and of `checksums.txt` itself. If they match, the release is good. If they differ, treat it as the incident in the row above. Do not re-run the publish step |
 
 A draft is deleted with `gh release delete <tag> --repo Judgment-Pack/judgment-pack-gateway`,
 which leaves the tag. A published release is never deleted to make room for another.

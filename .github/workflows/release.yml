@@ -327,6 +327,10 @@ jobs:
       - smoke-windows
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      # The draft this run made, by its id: the publish job reads and
+      # publishes that release, never a name.
+      release-id: ${{ steps.draft.outputs.release-id }}
     permissions:
       contents: write
       id-token: write
@@ -369,6 +373,7 @@ jobs:
           subject-checksums: dist/checksums.txt
 
       - name: Create draft release
+        id: draft
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -397,6 +402,19 @@ jobs:
 
           gh release create "${release_args[@]}"
 
+          # The one draft under the tag, which this job has just made (no
+          # release existed under it before). The listing can lag the
+          # creation by a few seconds: read it again until the draft
+          # appears, at most twelve times.
+          release_id=""
+          for attempt in $(seq 1 12); do
+            release_id="$(gh api "repos/${GH_REPO}/releases" --paginate --jq '.[] | select(.tag_name == env.RELEASE_TAG and .draft) | .id')"
+            [[ "${release_id}" =~ ^[0-9]+$ ]] && break
+            sleep 5
+          done
+          [[ "${release_id}" =~ ^[0-9]+$ ]] || { echo "Expected one draft release under ${RELEASE_TAG}; found: ${release_id:-none}" >&2; exit 1; }
+          echo "release-id=${release_id}" >> "${GITHUB_OUTPUT}"
+
   publish:
     name: Publish release
     needs: attest-and-draft
@@ -405,6 +423,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: write
+    env:
+      RELEASE_ID: ${{ needs.attest-and-draft.outputs.release-id }}
     steps:
       - name: The tag still names the commit the run was started for
         shell: bash
@@ -419,60 +439,88 @@ jobs:
           name: release-dist
           path: run
 
-      # The draft has waited at the gate, and whoever may write to the
-      # repository could have changed it there. What is about to be
-      # published is taken from the draft as it now stands and held to what
-      # this run packaged: the title the workflow gave it, the notes the
-      # commit holds, the same files by name, the same list of checksums,
-      # and every archive the bytes that list names. A moment remains
-      # between this and the publishing, and nothing here closes it.
-      - name: The draft holds what this run packaged
+      # The run's own files, the bytes the draft must hold: checksums.txt in
+      # the one form this workflow writes it, naming the six archives, each
+      # once, and every archive the bytes that list names.
+      - name: Hold the run's files to their checksums
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
+        working-directory: run
         run: |
-          state="$(gh release view "${RELEASE_TAG}" --json isDraft --jq .isDraft)"
-          [ "${state}" = "true" ] || { echo "the release under ${RELEASE_TAG} is not a draft" >&2; exit 1; }
-
-          drafted_title="$(gh release view "${RELEASE_TAG}" --json name --jq .name)"
-          [ "${drafted_title}" = "gateway ${RELEASE_TAG}" ] || { echo "the draft is titled ${drafted_title}, and the workflow titled it gateway ${RELEASE_TAG}" >&2; exit 1; }
-          # Both are taken without the newlines they end in, which the two
-          # ways of reading them do not agree on.
-          drafted_notes="$(gh release view "${RELEASE_TAG}" --json body --jq .body)"
-          packaged_notes="$(cat run/release-notes.md)"
-          [ "${drafted_notes}" = "${packaged_notes}" ] || { echo "the draft's notes are not the notes the commit holds:" >&2; diff <(echo "${packaged_notes}") <(echo "${drafted_notes}") >&2; exit 1; }
-
-          mkdir draft
-          gh release download "${RELEASE_TAG}" --dir draft
-
-          packaged="$(cd run && find . -type f ! -name release-notes.md | LC_ALL=C sort)"
-          drafted="$(cd draft && find . -type f | LC_ALL=C sort)"
-          [ "${packaged}" = "${drafted}" ] || { echo "the draft does not hold the files this run packaged:" >&2; diff <(echo "${packaged}") <(echo "${drafted}") >&2; exit 1; }
-
-          cmp run/checksums.txt draft/checksums.txt
-          # The list is read in the one form this workflow writes it: a
-          # digest, two spaces, and a name of plain characters. Any other
-          # line is refused, though a checksum program would read it.
-          if grep -q -v -E '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' draft/checksums.txt; then
+          if grep -q -v -E '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' checksums.txt; then
             echo "checksums.txt holds a line that is not a digest, two spaces and a plain name" >&2
             exit 1
           fi
-          named="$(awk '{ print "./" $2 }' draft/checksums.txt | LC_ALL=C sort)"
-          archives="$(cd draft && find . -type f ! -name checksums.txt | LC_ALL=C sort)"
-          [ "${named}" = "${archives}" ] || { echo "checksums.txt does not name the draft's archives, each once:" >&2; diff <(echo "${named}") <(echo "${archives}") >&2; exit 1; }
-          (cd draft && sha256sum --check --strict checksums.txt)
+          named="$(awk '{ print "./" $2 }' checksums.txt | LC_ALL=C sort)"
+          archives="$(find . -type f ! -name checksums.txt ! -name release-notes.md | LC_ALL=C sort)"
+          [ "${named}" = "${archives}" ] || { echo "checksums.txt does not name the run's archives, each once:" >&2; diff <(echo "${named}") <(echo "${archives}") >&2; exit 1; }
+          sha256sum --check --strict checksums.txt
 
-      - name: Publish the reviewed draft release
+      # The draft has waited at the gate, and whoever may write to the
+      # repository could have changed it there. The release this run
+      # drafted is read through the API by its id, never downloaded: its
+      # state, title and notes, then the digest GitHub reports for each
+      # asset, compared with the run's files, no asset more or fewer. The
+      # publish call follows that last read at once, by the same id, never
+      # by the tag. The moment between the two is the residual window
+      # docs/releasing.md states; the next step closes it after the fact.
+      - name: The draft holds what this run packaged, and is published
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           # No checkout in this job; tell gh which repository to target.
           GH_REPO: ${{ github.repository }}
         run: |
-          publish_args=("${RELEASE_TAG}" --draft=false)
-          # A prerelease (the tag contains a hyphen) is never marked latest.
-          if [[ "${RELEASE_TAG}" != *-* ]]; then
-            publish_args+=(--latest)
+          [[ "${RELEASE_ID}" =~ ^[0-9]+$ ]] || { echo "no release id from the draft job: ${RELEASE_ID:-none}" >&2; exit 1; }
+          packaged="$(cd run && for name in $(find . -type f ! -name release-notes.md -printf '%P\n'); do printf '%s sha256:%s\n' "${name}" "$(sha256sum "${name}" | cut -d ' ' -f 1)"; done | LC_ALL=C sort)"
+
+          state="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq '[.draft, .tag_name, .name] | @tsv')"
+          [ "${state}" = "$(printf 'true\t%s\tgateway %s' "${RELEASE_TAG}" "${RELEASE_TAG}")" ] || { echo "release ${RELEASE_ID} is not this run's draft of ${RELEASE_TAG}: ${state}" >&2; exit 1; }
+          # Both are taken without the newlines they end in, which the two
+          # ways of reading them do not agree on.
+          drafted_notes="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq .body)"
+          packaged_notes="$(cat run/release-notes.md)"
+          [ "${drafted_notes}" = "${packaged_notes}" ] || { echo "the draft's notes are not the notes the commit holds:" >&2; diff <(echo "${packaged_notes}") <(echo "${drafted_notes}") >&2; exit 1; }
+
+          drafted="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --paginate --jq '.[] | "\(.name) \(.digest)"' | LC_ALL=C sort)"
+          if [ "${drafted}" != "${packaged}" ]; then
+            printf 'the draft does not hold what this run packaged.\nThis run packaged:\n%s\nThe draft holds:\n%s\n' "${packaged}" "${drafted}" >&2
+            exit 1
           fi
-          gh release edit "${publish_args[@]}"
+
+          # A prerelease (the tag contains a hyphen) is never marked latest.
+          latest=true
+          [[ "${RELEASE_TAG}" != *-* ]] || latest=false
+          gh api -X PATCH "repos/${GH_REPO}/releases/${RELEASE_ID}" -F draft=false -f make_latest="${latest}" --silent
+
+      # Published, the release is immutable once the repository's release
+      # immutability is on (docs/releasing.md). Its assets are read once more:
+      # a file replaced in the window is published only as a release this job
+      # fails, by name, with both digest sets.
+      - name: The published release holds what this run packaged
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          packaged="$(cd run && for name in $(find . -type f ! -name release-notes.md -printf '%P\n'); do printf '%s sha256:%s\n' "${name}" "$(sha256sum "${name}" | cut -d ' ' -f 1)"; done | LC_ALL=C sort)"
+          # A read that cannot be completed is not a finding about the
+          # release: it fails by its own name, makes no diagnosis, and
+          # leaves the maintainer to read the release again
+          # (docs/releasing.md).
+          unverified() {
+            echo "the published release could not be verified: ${1}" >&2
+            echo "release ${RELEASE_ID} of ${RELEASE_TAG} is unverified, not found changed; read it again (docs/releasing.md)" >&2
+            exit 1
+          }
+          draft="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq .draft 2>&1)" || unverified "${draft}"
+          published="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --paginate --jq '.[] | "\(.name) \(.digest)"' 2>&1)" || unverified "${published}"
+          [[ "${draft}" == true || "${draft}" == false ]] || unverified "the release read returned ${draft:-nothing}"
+          [ -n "${published}" ] || unverified "the asset list came back empty"
+          published="$(printf '%s\n' "${published}" | LC_ALL=C sort)"
+          if [ "${draft}" != "false" ] || [ "${published}" != "${packaged}" ]; then
+            printf 'the published release does not hold what this run packaged (release %s of %s, draft: %s).\nThis run packaged:\n%s\nThe release holds:\n%s\n' \
+              "${RELEASE_ID}" "${RELEASE_TAG}" "${draft}" "${packaged}" "${published}" >&2
+            exit 1
+          fi
+          echo "published ${RELEASE_TAG} (release ${RELEASE_ID}):"
+          echo "${published}"
