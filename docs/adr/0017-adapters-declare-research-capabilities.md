@@ -34,9 +34,14 @@ only provider names to go by.
 links and no generated answer; Google Cloud Search grounding, of kind `grounded-answer`, gives a
 Gemini model's generated answer with the links it was grounded in, the model chosen per
 connection ([web-search.md](../web-search.md)). `adapter-web --discover` (`web-discovery`) returns
-one site's navigation manifest: it is not a search for a query and does not retain a page. No
-adapter of this distribution serves a fixed model. The bindings in `catalog/*.json` bind
-operations (`history`, `live`, `write`), and none of them serves a research capability.
+one site's navigation manifest: it is not a search for a query and does not retain a page. The
+connections read pages and files a person selected (Notion's pages, retained with their text, URL
+and original bytes; Drive's files; Gmail's messages; Obsidian's notes; S3's objects). The MCP
+tools a Databricks or Azure DevOps connection enables (a Genie space, a Unity Gateway service such
+as `system.ai`'s web search, the organization's remote server) return what the service returns,
+which may be a model's answer or a search, from a model the gateway does not know. The bindings in
+`catalog/*.json` bind operations (`history`, `live`, `write`), and none is declared a research
+capability.
 
 ## Decision drivers
 
@@ -68,8 +73,8 @@ gateway knows it: in the configured connection.
 
 `gateway-connections --catalog-v4` writes version 4. It is version 3 with one member more:
 `capabilities` on each provider's `source` and on each entry of `sources`. Nothing else changes.
-The member is always written, `[]` for an adapter that serves none. `--catalog-v3` and `--catalog`
-write versions 3 and 2 unchanged, byte for byte.
+The member is always written, `[]` for an adapter the gateway declares no research contract
+for. `--catalog-v3` and `--catalog` write versions 3 and 2 unchanged, byte for byte.
 
 | Adapter (acquisition id) | `capabilities` |
 | --- | --- |
@@ -80,6 +85,18 @@ write versions 3 and 2 unchanged, byte for byte.
 An adapter's declaration is what it can serve. `web-search` declares `answer` because a
 grounded-answer connection serves one, and a Tavily connection does not. The declaration a
 profile carries is its channel's, which section 3 gives.
+
+`[]` means no research contract the gateway declares for that adapter. It does not mean the
+adapter serves none of these upstream. A research source cannot bind an adapter that declares no
+capability it needs, whatever the adapter does upstream. Two kinds of adapter declare `[]` so:
+
+- **Selected reads, excluded by name.** A page or file a person selected through a connection
+  (Notion's pages, and any other selected read: Drive, Gmail, Obsidian, S3) is read under the
+  dialect's `selected-file` kind (§4.2), not as the public page read that `page` names.
+- **Unclassified MCP paths.** The Databricks and Azure DevOps connections' MCP tools may carry a
+  model's answer or a search. The gateway does not classify them. No capability is granted to them
+  now, and no research source binds them until a declaration for them exists. A remote tool is not
+  given `answer` for carrying a model's text.
 
 ### 2. The closed set
 
@@ -94,8 +111,10 @@ Each connection row of web-search `status` gains `research`, §5.1's form exactl
 connection `{"capabilities": ["search"]}`, and a Google grounding connection
 `{"capabilities": ["answer", "search"], "model": "<the connection's model>"}`. The declaration is
 computed from the provider and the stored model, never stored and never taken from a caller.
-`configure` refuses the member as an unknown one, as it did before. A provider, or a stored model,
-that `configure` would refuse declares nothing. Status stays version 1. The member is additive,
+`configure` refuses the member as an unknown one, as it did before. Only a connection acquisition
+admits declares anything: one acquisition refuses as `setup-required` (a Tavily connection with a
+stored model, a Google one whose model is not well-formed, a stored timeout or credential
+`configure` would refuse) declares nothing. Status stays version 1. The member is additive,
 as `timeout` was, and the Desk's reader of status does not hold rows closed.
 
 The model is pinned where the receipt is. A grounded answer's acquisition endpoint is
@@ -121,9 +140,12 @@ reads no profile and no dialect.
   exploration as `search`.
 - Bad, because the declarations repeat the providers' documentation and were not observed. No
   provider was called with an account ([web-search.md](../web-search.md), "What was tested").
-- Revisit when an adapter that serves a model's answer outside web-search ships (a model behind a
-  remote MCP server, or one of the search integrations of #233 to #237), when RFC 0018 changes the
-  set, or when the Runner's check reads declarations from somewhere else.
+- Bad, because the MCP paths that may already carry a model's answer or a search (Databricks'
+  and Azure DevOps' enabled tools) are unclassified: a research source cannot bind them, though
+  they may serve what it needs.
+- Revisit when a declaration for those MCP paths is designed, when one of the search integrations
+  of #233 to #237 ships, when the dialect's `selected-file` kind is to be bound by research, when
+  RFC 0018 changes the set, or when the Runner's check reads declarations from somewhere else.
 
 ## More information
 

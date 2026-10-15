@@ -44,8 +44,11 @@ member (`spec/dialect.md` §5.1 in the specification repository): a Tavily
 connection `{"capabilities": ["search"]}`, and a Google connection
 `{"capabilities": ["answer", "search"], "model": "<its model>"}`. The member is
 computed from the provider and the stored model, never stored, and never taken
-from `configure`, which refuses it as an unknown member. A connection whose
-stored model `configure` would refuse declares nothing. The model is the one the
+from `configure`, which refuses it as an unknown member. Only a connection that
+acquisition admits declares anything: one it refuses as `setup-required` (a
+Tavily connection with a stored model, a Google one whose model is not
+well-formed, a stored timeout or credential `configure` would refuse) declares
+nothing. The model is the one the
 acquisition's endpoint names (below), so the declaration belongs to a profile
 that pins that endpoint. The catalog declares what the adapter can serve, both
 (`["answer", "search"]`, [catalog version 4](design/connection-catalog.md#research-capabilities-version-4));

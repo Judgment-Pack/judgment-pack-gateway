@@ -84,18 +84,33 @@ func CheckResearch(r Research) error {
 }
 
 // adapterCapabilities is each adapter's declaration, by the acquisition id
-// the catalog describes it under. An adapter not named here serves none.
+// the catalog describes it under: the research contracts the gateway declares
+// for it. An adapter not named here declares none. That is not to say it
+// serves none upstream: a research source cannot bind an adapter that
+// declares no capability it needs, whatever the adapter does.
+//
 // web reads one public page. web-search answers a query with links, and,
 // through a connection whose provider is of kind grounded-answer, with the
 // answer the connection's model generated: the adapter can serve both, and
 // which one a connection serves is that connection's (searchResearch).
+//
+// A page or file a person selected through a connection (Notion's pages,
+// Drive's files, Gmail's messages, Obsidian's notes, S3's objects) is a
+// selected read, the dialect's selected-file kind, not the public page read
+// that page names: those adapters declare no page. The MCP tools a Databricks
+// or Azure DevOps connection enables (a Genie space, a Unity Gateway service
+// such as a web search, the organization's remote server) may return a
+// model's answer or a search. They are unclassified: the gateway grants them
+// no capability, and no research source binds them until a declaration for
+// them exists.
 var adapterCapabilities = map[string][]string{
 	"web":        {CapabilityPage},
 	"web-search": {CapabilityAnswer, CapabilitySearch},
 }
 
 // declaredCapabilities is a fresh copy of the adapter's declaration, never
-// nil, so that the member is written even when empty. A declaration outside
+// nil, so that the member is written even when empty: [] is no research
+// contract declared, not an adapter that serves nothing. A declaration outside
 // the closed set is the distribution's own error, and no catalog is made.
 func declaredCapabilities(id string) []string {
 	names := append([]string{}, adapterCapabilities[id]...)

@@ -202,20 +202,21 @@ func searchProviders() []map[string]any {
 // capabilities: a search-results provider answers with links (search); a
 // grounded-answer provider with the answer its model generated and the links
 // it was grounded in (answer and search), and names that model, which the
-// acquisition's endpoint names too. A provider or a stored model configure
-// would refuse declares nothing.
+// acquisition's endpoint names too. Only a connection acquisition admits
+// declares anything: one it refuses as setup-required (searchValid: a Tavily
+// connection with a stored model, a Google one whose model is not
+// well-formed, a stored timeout or credential configure would refuse)
+// declares nothing.
 func searchResearch(c SearchConnection) *Research {
+	if !searchValid(c) {
+		return nil
+	}
 	var r Research
 	switch c.Provider {
 	case "tavily":
 		r = Research{Capabilities: []string{CapabilitySearch}}
 	case "google-grounding":
-		if !cloudModel.MatchString(c.Model) {
-			return nil
-		}
 		r = Research{Capabilities: []string{CapabilityAnswer, CapabilitySearch}, Model: c.Model}
-	default:
-		return nil
 	}
 	if CheckResearch(r) != nil {
 		return nil

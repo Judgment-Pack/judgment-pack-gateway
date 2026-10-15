@@ -304,10 +304,11 @@ that hold their members closed. A provider's source in version 4:
 {"id": "web-search", "shape": "http", "record": "web-search-v1", "capabilities": ["answer", "search"]}
 ```
 
-`capabilities` is what the adapter can serve of the research capabilities of RFC 0018
-(`spec/dialect.md` §§4.3, 4.4 and 5.1 in the specification repository): an array of distinct
-names from the closed set `answer`, `search` and `page`, in that order, written `[]` for an
-adapter that serves none. The names are the specification's: `answer` is a model's generated
+`capabilities` is the research contracts the gateway declares for the adapter, from the
+research capabilities of RFC 0018 (`spec/dialect.md` §§4.3, 4.4 and 5.1 in the specification
+repository): an array of distinct names from the closed set `answer`, `search` and `page`, in
+that order, written `[]` for an adapter the gateway declares none for. The names are the
+specification's: `answer` is a model's generated
 answer, `search` an answer of links to a query, `page` one page read and retained. The adapters
 declare:
 
@@ -325,6 +326,23 @@ declaration, is what an input profile for the connection's endpoint declares. `w
 returns a site's navigation manifest, which is neither a search for a query nor a retained page,
 and declares nothing. The catalog names no model: a model is a connection's configuration, and
 the catalog is static.
+
+**What `[]` means.** No research contract the gateway declares for that adapter; not that the
+adapter serves none of these upstream. A research source cannot bind an adapter that declares
+no capability it needs, whatever the adapter does upstream. Two kinds of adapter declare `[]`
+for that reason:
+
+- **Selected reads.** A page or file a person selected through a connection is a selected read,
+  which the dialect reads under its `selected-file` kind (§4.2), not the public page read that
+  `page` names: Notion's pages, which are retained with their text, URL and original bytes, and
+  Drive's files, Gmail's messages, Obsidian's notes and S3's objects. These are excluded by name,
+  not overlooked.
+- **Unclassified MCP paths.** The MCP tools a Databricks connection enables (a Genie space, a
+  Unity Gateway service such as `system.ai`'s web search) and the tools of the organization's
+  remote Azure DevOps server return what the service returns, which may be a model's answer or a
+  search, from a model the gateway does not know. The gateway does not classify them: no
+  capability is granted to them, and no research source binds them until a declaration for them
+  exists.
 
 **What it establishes, and what it does not.** A declaration says what the distribution's
 adapter is built to return, as its providers document it; no provider was called with an
