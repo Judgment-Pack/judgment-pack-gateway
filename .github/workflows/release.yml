@@ -503,11 +503,23 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           packaged="$(cd run && for name in $(find . -type f ! -name release-notes.md -printf '%P\n'); do printf '%s sha256:%s\n' "${name}" "$(sha256sum "${name}" | cut -d ' ' -f 1)"; done | LC_ALL=C sort)"
-          draft="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq .draft)"
-          published="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --paginate --jq '.[] | "\(.name) \(.digest)"' | LC_ALL=C sort)"
+          # A read that cannot be completed is not a finding about the
+          # release: it fails by its own name, makes no diagnosis, and
+          # leaves the maintainer to read the release again
+          # (docs/releasing.md).
+          unverified() {
+            echo "the published release could not be verified: ${1}" >&2
+            echo "release ${RELEASE_ID} of ${RELEASE_TAG} is unverified, not found changed; read it again (docs/releasing.md)" >&2
+            exit 1
+          }
+          draft="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}" --jq .draft 2>&1)" || unverified "${draft}"
+          published="$(gh api "repos/${GH_REPO}/releases/${RELEASE_ID}/assets" --paginate --jq '.[] | "\(.name) \(.digest)"' 2>&1)" || unverified "${published}"
+          [[ "${draft}" == true || "${draft}" == false ]] || unverified "the release read returned ${draft:-nothing}"
+          [ -n "${published}" ] || unverified "the asset list came back empty"
+          published="$(printf '%s\n' "${published}" | LC_ALL=C sort)"
           if [ "${draft}" != "false" ] || [ "${published}" != "${packaged}" ]; then
-            printf 'the published release %s (release %s, draft: %s) does not hold what this run packaged.\nThis run packaged:\n%s\nThe release holds:\n%s\n' \
-              "${RELEASE_TAG}" "${RELEASE_ID}" "${draft}" "${packaged}" "${published}" >&2
+            printf 'the published release does not hold what this run packaged (release %s of %s, draft: %s).\nThis run packaged:\n%s\nThe release holds:\n%s\n' \
+              "${RELEASE_ID}" "${RELEASE_TAG}" "${draft}" "${packaged}" "${published}" >&2
             exit 1
           fi
           echo "published ${RELEASE_TAG} (release ${RELEASE_ID}):"
