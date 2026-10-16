@@ -127,13 +127,15 @@ func declaredCapabilities(id string) []string {
 // (web-search-v1); `adapter` is what a published dialect's `record` names for
 // an unbound source (judgment-pack-spec#184), so a desk copies `adapter`,
 // never `record`, into that source. adapter-http is not here: no catalog
-// source is served by it.
+// source is served by it. A source of the command shape (Obsidian and S3)
+// is not here either: its acquisition receipt is minted by the gateway's
+// serve path, which names the configured command's argv[0], not a program of
+// the catalog's, and RFC 0018 section 4.4 admits an unbound operation only
+// for the airbyte, mcp and http shapes.
 var adapterPrograms = map[string]string{
 	"drive":         "adapter-drive",
 	"gmail":         "adapter-gmail",
 	"notion":        "adapter-sources",
-	"obsidian":      "adapter-sources",
-	"aws-s3":        "adapter-sources",
 	"web-search":    "adapter-sources",
 	"databricks":    "adapter-sources",
 	"azure-devops":  "adapter-sources",
@@ -145,18 +147,32 @@ var adapterPrograms = map[string]string{
 // catalog source.
 var knownPrograms = map[string]bool{"adapter-drive": true, "adapter-gmail": true, "adapter-sources": true, "adapter-web": true}
 
-// declaredProgram is the program the source is read by. A source with no
-// program, or one the gateway does not mint receipts for, is the
-// distribution's own error, and no catalog is made.
-func declaredProgram(id string) string {
-	name := adapterPrograms[id]
+// declaredProgram is the program the source is read by, or "" for a source
+// of the command shape, which names none. A source of another shape with no
+// program, one the gateway does not mint receipts for, or a command source
+// that names one, is the distribution's own error, and no catalog is made.
+func declaredProgram(id, shape string) string {
+	name, named := adapterPrograms[id]
 	switch {
+	case shape == "command" && named:
+		panic(fmt.Sprintf("the catalog's adapter for %s: a command-shaped source names no program, and %q is given", id, name))
+	case shape == "command":
+		return ""
 	case name == "":
 		panic(fmt.Sprintf("the catalog's adapter for %s: no program is named", id))
 	case !knownPrograms[name]:
 		panic(fmt.Sprintf("the catalog's adapter for %s: %q is not a program the gateway mints receipts for", id, name))
 	}
 	return name
+}
+
+// sourceShapes is each explicit source's shape, from the local plan.
+func sourceShapes() map[string]string {
+	out := map[string]string{}
+	for _, s := range ConnectionLocalPlan().Sources {
+		out[s.ID] = s.Shape
+	}
+	return out
 }
 
 // CatalogV4 is version 3 with each adapter's program and research
@@ -173,7 +189,7 @@ type SourceContractV4 struct {
 	ID           string   `json:"id"`
 	Shape        string   `json:"shape"`
 	Record       string   `json:"record"`
-	Adapter      string   `json:"adapter"`
+	Adapter      string   `json:"adapter,omitempty"`
 	Capabilities []string `json:"capabilities"`
 }
 
@@ -185,7 +201,7 @@ type ProviderDescriptorV4 struct {
 }
 type SourceDescriptorV4 struct {
 	SourceDescriptor
-	Adapter      string   `json:"adapter"`
+	Adapter      string   `json:"adapter,omitempty"`
 	Capabilities []string `json:"capabilities"`
 }
 
@@ -194,10 +210,11 @@ func ConnectionCatalogV4() CatalogV4 {
 	out := CatalogV4{Version: 4, Providers: []ProviderDescriptorV4{}, Sources: []SourceDescriptorV4{}}
 	for _, provider := range base.Providers {
 		source := provider.Source
-		out.Providers = append(out.Providers, ProviderDescriptorV4{provider, SourceContractV4{source.ID, source.Shape, source.Record, declaredProgram(source.ID), declaredCapabilities(source.ID)}})
+		out.Providers = append(out.Providers, ProviderDescriptorV4{provider, SourceContractV4{source.ID, source.Shape, source.Record, declaredProgram(source.ID, source.Shape), declaredCapabilities(source.ID)}})
 	}
+	shapes := sourceShapes()
 	for _, source := range base.Sources {
-		out.Sources = append(out.Sources, SourceDescriptorV4{source, declaredProgram(source.ID), declaredCapabilities(source.ID)})
+		out.Sources = append(out.Sources, SourceDescriptorV4{source, declaredProgram(source.ID, shapes[source.ID]), declaredCapabilities(source.ID)})
 	}
 	return out
 }

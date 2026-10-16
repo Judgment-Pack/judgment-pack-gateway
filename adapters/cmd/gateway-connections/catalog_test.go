@@ -289,12 +289,12 @@ func TestTheCatalogFlagsWriteTheirVersions(t *testing.T) {
 				Providers []struct{ Source struct{ ID, Adapter string } }
 				Sources   []struct{ ID, Adapter string }
 			}
-			want := map[string]string{"drive": "adapter-drive", "gmail": "adapter-gmail", "notion": "adapter-sources", "obsidian": "adapter-sources", "aws-s3": "adapter-sources", "web-search": "adapter-sources", "databricks": "adapter-sources", "azure-devops": "adapter-sources", "web": "adapter-web", "web-discovery": "adapter-web"}
+			want := map[string]string{"drive": "adapter-drive", "gmail": "adapter-gmail", "notion": "adapter-sources", "obsidian": "", "aws-s3": "", "web-search": "adapter-sources", "databricks": "adapter-sources", "azure-devops": "adapter-sources", "web": "adapter-web", "web-discovery": "adapter-web"}
 			if json.Unmarshal(raw, &got) != nil || len(got.Providers) != 8 || len(got.Sources) != 3 {
 				t.Fatalf("%s: %s", c.flag, raw)
 			}
 			for _, p := range got.Providers {
-				if p.Source.Adapter != want[p.Source.ID] || p.Source.Adapter == "" {
+				if p.Source.Adapter != want[p.Source.ID] || (p.Source.Adapter == "") != (p.Source.ID == "obsidian" || p.Source.ID == "aws-s3") {
 					t.Errorf("%s: source %s names %q", c.flag, p.Source.ID, p.Source.Adapter)
 				}
 			}

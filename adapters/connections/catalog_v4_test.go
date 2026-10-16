@@ -87,7 +87,7 @@ var wantCapabilities = struct{ providers, sources map[string][]string }{
 // test.
 var wantPrograms = map[string]string{
 	"drive": "adapter-drive", "gmail": "adapter-gmail", "notion": "adapter-sources",
-	"obsidian": "adapter-sources", "aws-s3": "adapter-sources", "web-search": "adapter-sources",
+	"obsidian": "", "aws-s3": "", "web-search": "adapter-sources",
 	"databricks": "adapter-sources", "azure-devops": "adapter-sources",
 	"web": "adapter-web", "web-discovery": "adapter-web",
 }
@@ -99,7 +99,7 @@ func TestEachCatalogSourceNamesItsAdapterProgram(t *testing.T) {
 		t.Fatalf("%d providers, %d sources", len(catalog.Providers), len(catalog.Sources))
 	}
 	for i, p := range catalog.Providers {
-		if want := wantPrograms[p.Source.ID]; want == "" || p.Source.Adapter != want {
+		if want, ok := wantPrograms[p.Source.ID]; !ok || p.Source.Adapter != want {
 			t.Errorf("provider %s (source %s) names adapter %q, want %q", p.ID, p.Source.ID, p.Source.Adapter, want)
 		}
 		if p.Source.Record != v3.Providers[i].Source.Record {
@@ -107,7 +107,7 @@ func TestEachCatalogSourceNamesItsAdapterProgram(t *testing.T) {
 		}
 	}
 	for _, s := range catalog.Sources {
-		if want := wantPrograms[s.ID]; want == "" || s.Adapter != want {
+		if want, ok := wantPrograms[s.ID]; !ok || want == "" || s.Adapter != want {
 			t.Errorf("source %s names adapter %q, want %q", s.ID, s.Adapter, want)
 		}
 	}
@@ -116,6 +116,43 @@ func TestEachCatalogSourceNamesItsAdapterProgram(t *testing.T) {
 		if p.Source.ID == "web-search" && (p.Source.Record != "web-search-v1" || p.Source.Adapter != "adapter-sources") {
 			t.Errorf("web-search: record %q, adapter %q", p.Source.Record, p.Source.Adapter)
 		}
+	}
+}
+
+// A command-shaped source (Obsidian, S3) names no program: its receipt is
+// minted by the serve path under the configured command, and an unbound
+// operation cannot be of that shape. One that names a program is refused by
+// name, and the member is not written.
+func TestACommandSourceNamesNoProgram(t *testing.T) {
+	raw, err := json.Marshal(ConnectionCatalogV4())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Providers []struct{ Source map[string]any }
+	}
+	if json.Unmarshal(raw, &got) != nil {
+		t.Fatal("unreadable")
+	}
+	for _, p := range got.Providers {
+		_, has := p.Source["adapter"]
+		if command := p.Source["shape"] == "command"; command == has {
+			t.Errorf("source %v: shape command %v, adapter written %v", p.Source["id"], command, has)
+		}
+	}
+	for _, id := range []string{"obsidian", "aws-s3"} {
+		adapterPrograms[id] = "adapter-sources"
+		func() {
+			defer func() {
+				delete(adapterPrograms, id)
+				want := "the catalog's adapter for " + id + `: a command-shaped source names no program, and "adapter-sources" is given`
+				if said := recover(); said != want {
+					t.Errorf("%s: %v, want %q", id, said, want)
+				}
+			}()
+			ConnectionCatalogV4()
+			t.Errorf("%s: a catalog was made", id)
+		}()
 	}
 }
 
@@ -202,8 +239,8 @@ func TestVersionFourIsVersionThreeWithCapabilities(t *testing.T) {
 		if _, ok := source["capabilities"]; !ok {
 			t.Fatalf("a provider's source has no capabilities: %v", source)
 		}
-		if name, _ := source["adapter"].(string); name == "" {
-			t.Fatalf("a provider's source has no adapter: %v", source)
+		if name, _ := source["adapter"].(string); (name == "") != (source["shape"] == "command") {
+			t.Fatalf("a provider's source names the wrong adapter: %v", source)
 		}
 		delete(source, "capabilities")
 		delete(source, "adapter")

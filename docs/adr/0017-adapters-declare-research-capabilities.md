@@ -99,17 +99,24 @@ capability it needs, whatever the adapter does upstream. Two kinds of adapter de
   given `answer` for carrying a model's text.
 
 **The program beside the record.** Version 4 also writes `adapter` on each provider's `source` and
-on each entry of `sources`: the program whose answer the read is written against, as its receipts
-carry it in `adapter.name`. `drive` is `adapter-drive`, `gmail` is `adapter-gmail`, `web` and
-`web-discovery` are `adapter-web`, and `notion`, `obsidian`, `aws-s3`, `web-search`, `databricks` and
-`azure-devops` are `adapter-sources`; each name is the one the adapter's code sets where it mints the
-receipt. `record` stays the result contract (`web-search-v1`), for the catalog's own purposes.
-Judgment-pack-spec#184 decided that an unbound source's `record` in a published dialect is the
-program's name, matched against the profile's `adapter.name` at import and against the receipt's by
-a verifier, so a desk that writes a dialect from the catalog copies `adapter`, never `record`, into
-an unbound source's `record`: a dialect written by copying `record` is refused `profile-mismatch`.
-An empty program, or one the gateway mints no receipts for, is refused by name when the catalog is
-made. Versions 3 and 2 are unchanged, byte for byte.
+on each entry of `sources` whose shape is `airbyte`, `mcp` or `http`: the program whose answer the
+read is written against, as its receipts carry it in `adapter.name`. `drive` is `adapter-drive`,
+`gmail` is `adapter-gmail`, `web` and `web-discovery` are `adapter-web`, and `notion`, `web-search`,
+`databricks` and `azure-devops` are `adapter-sources`; each name is the one the adapter's code sets
+where it mints the receipt. `record` stays the result contract (`web-search-v1`), for the
+catalog's own purposes. Judgment-pack-spec#184 decided that an unbound source's `record` in a
+published dialect is the program's name, matched against the profile's `adapter.name` at import
+and against the receipt's by a verifier, so a desk that writes a dialect from the catalog copies
+`adapter`, never `record`, into an unbound source's `record`: a dialect written by copying
+`record` is refused `profile-mismatch`.
+
+The two `command`-shaped sources, Obsidian and S3, carry no `adapter`. Their acquisition receipt
+is minted by the gateway's serve path with the configured command's `argv[0]`, not with a program
+name of the catalog's, and RFC 0018 admits an unbound operation only for the `airbyte`, `mcp` and
+`http` shapes (§4.4; a command profile serves no operation, §4.1). They are not bindable this way,
+so there is no program to name. An empty program, one the gateway mints no receipts for, or a
+program named for a `command`-shaped source, is refused by name when the catalog is made. Versions
+3 and 2 are unchanged, byte for byte.
 
 ### 2. The closed set
 

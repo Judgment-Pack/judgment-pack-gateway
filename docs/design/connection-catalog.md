@@ -307,10 +307,14 @@ that hold their members closed. A provider's source in version 4:
 `record` is the result contract and stays as version 3 has it. `adapter` is the program whose
 answer the read is written against, as its receipts carry it in `adapter.name`: `drive` is
 `adapter-drive`, `gmail` is `adapter-gmail`, `web` and `web-discovery` are `adapter-web`, and
-`notion`, `obsidian`, `aws-s3`, `web-search`, `databricks` and `azure-devops` are `adapter-sources`.
-It is the program a published dialect's `record` names for an unbound source
-(judgment-pack-spec#184), so a desk copies `adapter`, never `record`, into an unbound source's
-`record`. An empty or unknown program refuses the catalog by name.
+`notion`, `web-search`, `databricks` and `azure-devops` are `adapter-sources`. It is the program a
+published dialect's `record` names for an unbound source (judgment-pack-spec#184), so for a source
+of the `airbyte`, `mcp` or `http` shape a desk copies `adapter`, never `record`, into the unbound
+source's `record`. The two `command`-shaped sources, Obsidian and S3, carry no `adapter`: their
+receipt is minted by the gateway's serve path with the configured command's `argv[0]`, and RFC 0018
+admits an unbound operation only for those three shapes (§4.4, §4.1), so they are not bindable this
+way. An empty or unknown program, or one named for a `command`-shaped source, refuses the catalog
+by name.
 
 `capabilities` is the research contracts the gateway declares for the adapter, from the
 research capabilities of RFC 0018 (`spec/dialect.md` §§4.3, 4.4 and 5.1 in the specification
