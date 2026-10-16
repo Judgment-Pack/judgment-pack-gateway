@@ -295,14 +295,26 @@ unchanged. Version 1 clients must refuse this version rather than guess support.
 ## Research capabilities (version 4)
 
 `gateway-connections --catalog-v4` writes catalog version 4
-([ADR-0017](../adr/0017-adapters-declare-research-capabilities.md)). It is version 3 with one
-member more, `capabilities`, on each provider's `source` and on each entry of `sources`; nothing
+([ADR-0017](../adr/0017-adapters-declare-research-capabilities.md)). It is version 3 with two
+members more, `adapter` and `capabilities`, on each provider's `source` and on each entry of `sources`; nothing
 else changes, and `--catalog-v3` and `--catalog` write versions 3 and 2 as before, for the hosts
 that hold their members closed. A provider's source in version 4:
 
 ```json
-{"id": "web-search", "shape": "http", "record": "web-search-v1", "capabilities": ["answer", "search"]}
+{"id": "web-search", "shape": "http", "record": "web-search-v1", "adapter": "adapter-sources", "capabilities": ["answer", "search"]}
 ```
+
+`record` is the result contract and stays as version 3 has it. `adapter` is the program whose
+answer the read is written against, as its receipts carry it in `adapter.name`: `drive` is
+`adapter-drive`, `gmail` is `adapter-gmail`, `web` and `web-discovery` are `adapter-web`, and
+`notion`, `web-search`, `databricks` and `azure-devops` are `adapter-sources`. It is the program a
+published dialect's `record` names for an unbound source (judgment-pack-spec#184), so for a source
+of the `airbyte`, `mcp` or `http` shape a desk copies `adapter`, never `record`, into the unbound
+source's `record`. The two `command`-shaped sources, Obsidian and S3, carry no `adapter`: their
+receipt is minted by the gateway's serve path with the configured command's `argv[0]`, and RFC 0018
+admits an unbound operation only for those three shapes (§4.4, §4.1), so they are not bindable this
+way. An empty or unknown program, or one named for a `command`-shaped source, refuses the catalog
+by name.
 
 `capabilities` is the research contracts the gateway declares for the adapter, from the
 research capabilities of RFC 0018 (`spec/dialect.md` §§4.3, 4.4 and 5.1 in the specification
