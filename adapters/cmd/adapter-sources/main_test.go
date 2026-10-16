@@ -120,3 +120,55 @@ func TestEachLaunchGivesTheReadItsDeadline(t *testing.T) {
 		}
 	}
 }
+
+func TestResearchDescriptionUsesTheAdapterWithoutAcquisition(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	store, err := connections.OpenSearchStore(dir, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := connections.NewSearch(store, false)
+	_, err = broker.Handle(t.Context(), "configure", []byte(`{"id":"test","name":"Test","provider":"tavily","dailyLimit":1,"credential":"tvly-fixture-secret"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := broker.Handle(t.Context(), "status", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(status)
+	var state struct{ Connections []connections.SearchStatusRow }
+	if json.Unmarshal(raw, &state) != nil || len(state.Connections) != 1 {
+		t.Fatal("missing connection", string(raw))
+	}
+	c := state.Connections[0]
+	broker.Close()
+	store.Close()
+	args, _ := json.Marshal([]string{"adapter-sources", "--state-dir", dir, "--principal", "fixture", "--provider", "web-search", "--describe-research"})
+	request, _ := json.Marshal(map[string]string{"connection": c.ID, "revision": c.Revision})
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSourcesCLIHelper$")
+	cmd.Env = append(os.Environ(), "SOURCES_CLI_HELPER=1", "SOURCES_CLI_ARGS="+string(args))
+	cmd.Stdin = bytes.NewReader(request)
+	var diagnostic bytes.Buffer
+	cmd.Stderr = &diagnostic
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err, diagnostic.String())
+	}
+	var d connections.ResearchBindingDescriptor
+	if json.Unmarshal(out, &d) != nil || d.Version != 1 || d.Adapter.Name != "adapter-sources" || d.Endpoint != "https://api.tavily.com/search" || d.FixedArguments["revision"] != c.Revision || bytes.Contains(out, []byte("tvly-fixture-secret")) {
+		t.Fatal("invalid description")
+	}
+	// The acquisition request parser is not switched by a JSON member. This mode
+	// exists only on an operator-selected invocation of the trusted executable.
+	for _, provider := range []string{"notion", "obsidian", "aws-s3", "databricks", "azure-devops"} {
+		args, _ := json.Marshal([]string{"adapter-sources", "--state-dir", dir, "--principal", "fixture", "--provider", provider, "--describe-research"})
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSourcesCLIHelper$")
+		cmd.Env = append(os.Environ(), "SOURCES_CLI_HELPER=1", "SOURCES_CLI_ARGS="+string(args))
+		cmd.Stdin = strings.NewReader("{}")
+		if err := cmd.Run(); err == nil {
+			t.Fatal("foreign provider accepted description mode", provider)
+		}
+	}
+}

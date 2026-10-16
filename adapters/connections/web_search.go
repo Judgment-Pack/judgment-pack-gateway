@@ -455,7 +455,7 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 	}
 	ctx, cancel := context.WithTimeout(ctx, searchTimeout(c))
 	defer cancel()
-	endpoint := "https://api.tavily.com/search"
+	endpoint := searchEndpoint(c)
 	token := c.Credential
 	body := map[string]any{"query": q.Query, "max_results": q.MaxResults, "search_depth": "basic", "include_answer": false, "include_raw_content": false}
 	if c.Provider == "google-grounding" {
@@ -477,11 +477,7 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 			return nil, searchRequestFailure(e, Error("credentials-required"))
 		}
 		token = access.AccessToken
-		host := "aiplatform.googleapis.com"
-		if c.Location != "global" {
-			host = c.Location + "-" + host
-		}
-		endpoint = "https://" + host + "/v1/projects/" + c.Project + "/locations/" + c.Location + "/publishers/google/models/" + c.Model + ":generateContent"
+
 		body = map[string]any{"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "Use Google Search to find public sources for this query. Give a concise factual answer with sources. Query: " + q.Query}}}}, "tools": []any{map[string]any{"googleSearch": map[string]any{}}}, "generationConfig": map[string]any{"maxOutputTokens": 2048, "temperature": 1}}
 	}
 	// Tests inject an isolated TLS endpoint through the package-private provider.

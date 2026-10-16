@@ -38,7 +38,8 @@ func run() int {
 	provider := fs.String("provider", "", "")
 	processing := fs.Bool("document-processing", false, "")
 	longSearch := fs.Bool("long-search", false, "")
-	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || *processing && *provider != "aws-s3" || *longSearch && *provider != "web-search" {
+	describeResearch := fs.Bool("describe-research", false, "")
+	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 || *processing && *provider != "aws-s3" || *longSearch && *provider != "web-search" || *describeResearch && *provider != "web-search" {
 		return 2
 	}
 	open, read := connections.OpenNotionStore, connections.ReadNotion
@@ -80,7 +81,12 @@ func run() int {
 	}
 	ctx, cancel := readContext(*processing, *longSearch)
 	defer cancel()
-	out, err := read(ctx, s, raw)
+	var out []byte
+	if *describeResearch {
+		out, err = connections.DescribeSearchBinding(s, raw)
+	} else {
+		out, err = read(ctx, s, raw)
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
 		return 1
