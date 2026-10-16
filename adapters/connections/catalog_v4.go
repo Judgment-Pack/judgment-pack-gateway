@@ -120,8 +120,48 @@ func declaredCapabilities(id string) []string {
 	return names
 }
 
-// CatalogV4 is version 3 with each adapter's research capabilities: the
-// provider's source contract and each explicit source carry `capabilities`.
+// adapterPrograms is the program each source's read is written against, by
+// the acquisition id the catalog describes it under, as the program's
+// receipts carry it in `adapter.name`: the name each adapter's code sets
+// where it mints the receipt. `record` stays the result contract
+// (web-search-v1); `adapter` is what a published dialect's `record` names for
+// an unbound source (judgment-pack-spec#184), so a desk copies `adapter`,
+// never `record`, into that source. adapter-http is not here: no catalog
+// source is served by it.
+var adapterPrograms = map[string]string{
+	"drive":         "adapter-drive",
+	"gmail":         "adapter-gmail",
+	"notion":        "adapter-sources",
+	"obsidian":      "adapter-sources",
+	"aws-s3":        "adapter-sources",
+	"web-search":    "adapter-sources",
+	"databricks":    "adapter-sources",
+	"azure-devops":  "adapter-sources",
+	"web":           "adapter-web",
+	"web-discovery": "adapter-web",
+}
+
+// knownPrograms are the programs whose receipts the gateway mints for a
+// catalog source.
+var knownPrograms = map[string]bool{"adapter-drive": true, "adapter-gmail": true, "adapter-sources": true, "adapter-web": true}
+
+// declaredProgram is the program the source is read by. A source with no
+// program, or one the gateway does not mint receipts for, is the
+// distribution's own error, and no catalog is made.
+func declaredProgram(id string) string {
+	name := adapterPrograms[id]
+	switch {
+	case name == "":
+		panic(fmt.Sprintf("the catalog's adapter for %s: no program is named", id))
+	case !knownPrograms[name]:
+		panic(fmt.Sprintf("the catalog's adapter for %s: %q is not a program the gateway mints receipts for", id, name))
+	}
+	return name
+}
+
+// CatalogV4 is version 3 with each adapter's program and research
+// capabilities: the provider's source contract and each explicit source carry
+// `adapter` and `capabilities`.
 // Version 3 and version 2 remain available, unchanged, for the hosts that
 // hold their members closed.
 type CatalogV4 struct {
@@ -133,6 +173,7 @@ type SourceContractV4 struct {
 	ID           string   `json:"id"`
 	Shape        string   `json:"shape"`
 	Record       string   `json:"record"`
+	Adapter      string   `json:"adapter"`
 	Capabilities []string `json:"capabilities"`
 }
 
@@ -144,6 +185,7 @@ type ProviderDescriptorV4 struct {
 }
 type SourceDescriptorV4 struct {
 	SourceDescriptor
+	Adapter      string   `json:"adapter"`
 	Capabilities []string `json:"capabilities"`
 }
 
@@ -152,10 +194,10 @@ func ConnectionCatalogV4() CatalogV4 {
 	out := CatalogV4{Version: 4, Providers: []ProviderDescriptorV4{}, Sources: []SourceDescriptorV4{}}
 	for _, provider := range base.Providers {
 		source := provider.Source
-		out.Providers = append(out.Providers, ProviderDescriptorV4{provider, SourceContractV4{source.ID, source.Shape, source.Record, declaredCapabilities(source.ID)}})
+		out.Providers = append(out.Providers, ProviderDescriptorV4{provider, SourceContractV4{source.ID, source.Shape, source.Record, declaredProgram(source.ID), declaredCapabilities(source.ID)}})
 	}
 	for _, source := range base.Sources {
-		out.Sources = append(out.Sources, SourceDescriptorV4{source, declaredCapabilities(source.ID)})
+		out.Sources = append(out.Sources, SourceDescriptorV4{source, declaredProgram(source.ID), declaredCapabilities(source.ID)})
 	}
 	return out
 }

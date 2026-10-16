@@ -82,6 +82,74 @@ var wantCapabilities = struct{ providers, sources map[string][]string }{
 	},
 }
 
+// The program each source's read is written against, as its receipts name it
+// in adapter.name. The names are held here, not derived from the code under
+// test.
+var wantPrograms = map[string]string{
+	"drive": "adapter-drive", "gmail": "adapter-gmail", "notion": "adapter-sources",
+	"obsidian": "adapter-sources", "aws-s3": "adapter-sources", "web-search": "adapter-sources",
+	"databricks": "adapter-sources", "azure-devops": "adapter-sources",
+	"web": "adapter-web", "web-discovery": "adapter-web",
+}
+
+func TestEachCatalogSourceNamesItsAdapterProgram(t *testing.T) {
+	catalog := ConnectionCatalogV4()
+	v3 := ConnectionCatalogV3()
+	if len(catalog.Providers) != 8 || len(catalog.Sources) != 3 {
+		t.Fatalf("%d providers, %d sources", len(catalog.Providers), len(catalog.Sources))
+	}
+	for i, p := range catalog.Providers {
+		if want := wantPrograms[p.Source.ID]; want == "" || p.Source.Adapter != want {
+			t.Errorf("provider %s (source %s) names adapter %q, want %q", p.ID, p.Source.ID, p.Source.Adapter, want)
+		}
+		if p.Source.Record != v3.Providers[i].Source.Record {
+			t.Errorf("provider %s: record %q changed from %q", p.ID, p.Source.Record, v3.Providers[i].Source.Record)
+		}
+	}
+	for _, s := range catalog.Sources {
+		if want := wantPrograms[s.ID]; want == "" || s.Adapter != want {
+			t.Errorf("source %s names adapter %q, want %q", s.ID, s.Adapter, want)
+		}
+	}
+	// The record stays the result contract; the program is its own member.
+	for _, p := range catalog.Providers {
+		if p.Source.ID == "web-search" && (p.Source.Record != "web-search-v1" || p.Source.Adapter != "adapter-sources") {
+			t.Errorf("web-search: record %q, adapter %q", p.Source.Record, p.Source.Adapter)
+		}
+	}
+}
+
+// A source with no program, or a program the gateway mints no receipts for,
+// is refused when the catalog is made, naming the source, and no catalog is made.
+func TestTheCatalogRefusesAnEmptyOrUnknownProgram(t *testing.T) {
+	held := adapterPrograms["web"]
+	t.Cleanup(func() { adapterPrograms["web"] = held })
+	for _, c := range []struct{ name, says string }{
+		{"", `the catalog's adapter for web: no program is named`},
+		{"adapter-http", `the catalog's adapter for web: "adapter-http" is not a program the gateway mints receipts for`},
+		{"web", `the catalog's adapter for web: "web" is not a program the gateway mints receipts for`},
+	} {
+		adapterPrograms["web"] = c.name
+		func() {
+			defer func() {
+				if said := recover(); said != c.says {
+					t.Errorf("%q: %v, want %q", c.name, said, c.says)
+				}
+			}()
+			ConnectionCatalogV4()
+			t.Errorf("%q: a catalog was made", c.name)
+		}()
+	}
+	delete(adapterPrograms, "web")
+	defer func() {
+		if said := recover(); said != `the catalog's adapter for web: no program is named` {
+			t.Errorf("a source with no entry: %v", said)
+		}
+	}()
+	ConnectionCatalogV4()
+	t.Error("a catalog was made")
+}
+
 func TestEachCatalogAdapterDeclaresItsCapabilities(t *testing.T) {
 	catalog := ConnectionCatalogV4()
 	if catalog.Version != 4 || len(catalog.Providers) != len(wantCapabilities.providers) || len(catalog.Sources) != len(wantCapabilities.sources) {
@@ -115,7 +183,7 @@ func TestEachCatalogAdapterDeclaresItsCapabilities(t *testing.T) {
 	}
 }
 
-// Version 4 is version 3 with the one member more, and nothing else changed;
+// Version 4 is version 3 with two members more, and nothing else changed;
 // versions 3 and 2 carry no capabilities, so the hosts that hold their
 // members closed read them as before.
 func TestVersionFourIsVersionThreeWithCapabilities(t *testing.T) {
@@ -134,13 +202,21 @@ func TestVersionFourIsVersionThreeWithCapabilities(t *testing.T) {
 		if _, ok := source["capabilities"]; !ok {
 			t.Fatalf("a provider's source has no capabilities: %v", source)
 		}
+		if name, _ := source["adapter"].(string); name == "" {
+			t.Fatalf("a provider's source has no adapter: %v", source)
+		}
 		delete(source, "capabilities")
+		delete(source, "adapter")
 	}
 	for _, s := range v4["sources"].([]any) {
 		if _, ok := s.(map[string]any)["capabilities"]; !ok {
 			t.Fatalf("a source has no capabilities: %v", s)
 		}
+		if name, _ := s.(map[string]any)["adapter"].(string); name == "" {
+			t.Fatalf("a source has no adapter: %v", s)
+		}
 		delete(s.(map[string]any), "capabilities")
+		delete(s.(map[string]any), "adapter")
 	}
 	v4["version"] = 3.0
 	if !reflect.DeepEqual(v4, v3) {

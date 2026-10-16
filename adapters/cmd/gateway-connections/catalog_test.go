@@ -281,5 +281,28 @@ func TestTheCatalogFlagsWriteTheirVersions(t *testing.T) {
 		if has := strings.Contains(string(raw), `"capabilities"`); has != (c.flag == "--catalog-v4") {
 			t.Errorf("%s: capabilities written: %v", c.flag, has)
 		}
+		if has := strings.Contains(string(raw), `"adapter":`); has != (c.flag == "--catalog-v4") {
+			t.Errorf("%s: adapter written: %v", c.flag, has)
+		}
+		if c.flag == "--catalog-v4" {
+			var got struct {
+				Providers []struct{ Source struct{ ID, Adapter string } }
+				Sources   []struct{ ID, Adapter string }
+			}
+			want := map[string]string{"drive": "adapter-drive", "gmail": "adapter-gmail", "notion": "adapter-sources", "obsidian": "adapter-sources", "aws-s3": "adapter-sources", "web-search": "adapter-sources", "databricks": "adapter-sources", "azure-devops": "adapter-sources", "web": "adapter-web", "web-discovery": "adapter-web"}
+			if json.Unmarshal(raw, &got) != nil || len(got.Providers) != 8 || len(got.Sources) != 3 {
+				t.Fatalf("%s: %s", c.flag, raw)
+			}
+			for _, p := range got.Providers {
+				if p.Source.Adapter != want[p.Source.ID] || p.Source.Adapter == "" {
+					t.Errorf("%s: source %s names %q", c.flag, p.Source.ID, p.Source.Adapter)
+				}
+			}
+			for _, x := range got.Sources {
+				if x.Adapter != want[x.ID] || x.Adapter == "" {
+					t.Errorf("%s: source %s names %q", c.flag, x.ID, x.Adapter)
+				}
+			}
+		}
 	}
 }
