@@ -59,19 +59,19 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
 `descriptors`, `decisionPolicy` and `parameters` optional. Every path is absolute.
 
 - `engineVersion` moves on any member change, as `receiptVersion` does. The engine reads
-  `"1"` to `"9"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
+  `"1"` to `"10"`: version 2 added `mcp`, version 3 a platform's `descriptors`, version 4 a
   platform's `decisionPolicy`, version 5 a decision policy's `requireSignedRecord`, version
-  6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, and version 9 a
-  decision policy's `fix` and `closed`. A file of an earlier version still loads without the
-  member and is refused by name with it.
+  6 `witness`, version 7 `witnessedBy`, version 8 a platform's `parameters`, version 9 a
+  decision policy's `fix` and `closed`, and version 10 a decision policy's `shape`. A file of
+  an earlier version still loads without the member and is refused by name with it.
   `connect` raises a file to version 3 exactly when an entry it writes carries a pin, and to
   version 8 exactly when it carries parameters, and otherwise leaves the version as it found it —
   it never lowers one — so a signer older than version 3 goes on reading every file `connect` has
   not pinned. (ADR-0007 named version 4 for its `services` member, which is not built; ADR-0011
   gave 4 to `decisionPolicy`, ADR-0012 gave 5 to `requireSignedRecord`, ADR-0013 gave 6 to
   `witness`, ADR-0014 gave 7 to `witnessedBy`, ADR-0015's amendment of 2026-10-13 gave 8 to
-  `parameters`, ADR-0016 gave 9 to `fix` and `closed`, and `services` takes the next version
-  when it is built.)
+  `parameters`, ADR-0016 gave 9 to `fix` and `closed`, ADR-0018 gave 10 to `shape`, and
+  `services` takes the next version when it is built.)
 - `parameters`, in a version-8 file, fills the placeholders of the platform's remote binding
   ([ADR-0015](../adr/0015-a-remote-mcp-server-as-a-source-and-executor.md), question 1, amended
   2026-10-13; "Bindings" below) —
@@ -125,7 +125,7 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   the member does not name is held to nothing, and its writes read nothing in their decision
   record. An action receipt for a tool with a policy carries `action.policy`, `"sha256:"` and
   the SHA-256 of the canonical form of that policy object as written here (SPEC.md §1.2a), every
-  member in it, `fix` and `closed` as much as the rest: the same policy spelled another way has
+  member in it, `fix`, `shape` and `closed` as much as the rest: the same policy spelled another way has
   the same digest, and a policy that writes `"reviewed": false` or `"closed": false` has another
   digest than one that leaves the member out, though the two make the same checks. `connect` has
   no flag for it: the entry it replaces keeps its policy, and a replacement the policy would not
@@ -177,6 +177,38 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   with neither `bind` nor `fix` admits only an empty `arguments`. Both members are checked at
   `policy-bind`, after the bindings ([executor.md](executor.md), step 11), and are part of the
   policy's digest; fixed entries in another order are another digest for the same checks.
+
+  `shape`, in a version-10 file, is optional
+  ([ADR-0018](../adr/0018-a-policy-holds-a-containers-shape.md)) —
+
+  ```json
+  "shape": [
+    { "pointer": "/updates", "type": "array", "maxLength": 2 },
+    { "pointer": "/labels", "type": "object" }
+  ]
+  ```
+
+  — a pointer names a value as RFC 6901 does, and RFC 6901 reads a numeric token on an object
+  as a member's name, so `bind`, `fix` and `closed` hold the values under a container and not
+  whether it is an array or an object. `shape` is an array of entries, each
+  `{pointer, type: "object"}` or `{pointer, type: "array", maxLength}`: `pointer` an RFC 6901
+  pointer into the request's `arguments`, held as `bind`'s are, and `maxLength` an integer from 0
+  to 524288, the value budget an action's arguments are parsed within. An array's entry always
+  carries its bound, and an object's never does. The value at the pointer must be there and be of
+  the type, and an array must hold at most `maxLength` elements: absent is not the container, as
+  it is not a fixed value, and the engine fills nothing in. The refusals are
+  `argument "<pointer>" is not of the shape the policy holds it to` and
+  `argument "<pointer>" holds more elements than the policy's shape allows`, naming no type,
+  bound or length. An entry holds the value at its pointer and nothing above it: a container is
+  held to its type only by an entry of its own. No pointer may be shaped twice, or both fixed and
+  shaped, since a fixed value holds its own type and length; a pointer both bound and shaped is
+  the operator's to write. For `closed`, a shaped pointer reaches its container, which is walked
+  as a container on the way to a named pointer is, and covers nothing under it: each member or
+  element there is reached only by a pointer of `bind` or `fix`, or is a container another entry
+  shapes. So a closed policy whose one entry shapes `/updates` as an array admits
+  `{"updates": []}` alone. The member is checked at `policy-bind` after `fix` and before
+  `closed`, and is part of the policy's digest; entries in another order are another digest for
+  the same checks.
 - `descriptors`, in a version-3 file, pins the snapshot of the platform's tool descriptors
   that `connect` captured from its live operation, `sha256:<64 hex>`, kept beside the file in
   `<file>.descriptors/` ([tool-descriptors.md](tool-descriptors.md)). A platform whose binding
@@ -726,6 +758,9 @@ to nothing ([executor.md](executor.md)).
         { "argument": "/updates/1",
           "value": { "op": "replace", "path": "/fields/System.State", "value": "Approved" } }
       ],
+      "shape": [
+        { "pointer": "/updates", "type": "array", "maxLength": 2 }
+      ],
       "bind": [
         { "argument": "/id", "fact": "/workItem/id" },
         { "argument": "/updates/0/value", "fact": "/workItem/rev" }
@@ -745,12 +780,15 @@ the update once the revision has changed), and also creates items, updates sever
 unlinks items. `bind` alone fixes no value of its own and refuses no member it does not name, so a
 policy that binds the work item's id and its revision alone leaves the `action` to the request —
 `update_batch` writes the items its `batchUpdates` name, whatever `id` says — and lets a request
-add an operation that changes another field. The policy above holds the tool to one write
-([ADR-0016](../adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)): `fix` holds
-`action` to `update`, the first operation to a `test` of `/rev`, and the second to the operation
-that sets the state the outcome maps to; `bind` holds the work item's `id` and the tested revision
-to the item the pack judged, `workItem` in its facts (`{"id": 42, "rev": 3, …}`); and `closed`
-refuses every other member and element. A request it admits is
+add an operation that changes another field. The policy above, in a version-10 file, holds the
+tool to one write ([ADR-0016](../adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md),
+[ADR-0018](../adr/0018-a-policy-holds-a-containers-shape.md)): `fix` holds `action` to `update`,
+the first operation to a `test` of `/rev`, and the second to the operation that sets the state the
+outcome maps to; `shape` holds `updates` to an array of at most two elements, and so, with the
+second fixed, of exactly two; `bind` holds the work item's `id` and the tested revision to the item
+the pack judged, `workItem` in its facts (`{"id": 42, "rev": 3, …}`); and `closed` refuses every
+other member and element. For that record it admits one request, up to the order of an object's
+members and the spelling of its JSON:
 
 ```json
 {"action": "update", "id": 42,
@@ -760,16 +798,20 @@ refuses every other member and element. A request it admits is
 
 A request that names another action, adds an operation (`/updates/2`), adds a member
 (`batchUpdates`, `project`, or `from` inside an operation), leaves the test out or names another
-item or revision is refused at `policy-bind`, and nothing is sent. The policy holds the values it
-names and that nothing else is there; it does not hold the container type of an ancestor. RFC 6901
-reads a numeric token on an object as a member's name, so an object whose members are named `"0"`
-and `"1"` in place of the `updates` array is read as that array's elements, and the policy admits
-it as it admits the request above; what the server makes of it is the server's. The record states
+item or revision is refused at `policy-bind`, and nothing is sent. So is an object whose members
+are named `"0"` and `"1"` in place of the `updates` array: RFC 6901 reads a numeric token on an
+object as a member's name, so `fix`, `bind` and `closed` alone read that object as the array's
+elements, and it is the `shape` of `/updates` that refuses it. `/updates/0` needs no entry of its
+own, since `op`, `path` and `value` resolve only in an object, and the arguments are an object by
+the executor's rule. Without the `shape` entry the policy is ADR-0016's, which a version-9 file can
+hold: it admits the object as it admits the array, and what the server makes of it is the
+server's. The record states
 the item it judged and no write; the state the outcome maps to is the operator's, fixed in the policy beside
 the outcomes it allows. A policy fixes one value for every outcome it allows, and a platform holds
 each tool to one policy, so a write of another state for another outcome is held by a policy of
 its own on another platform entry. A policy for the comment and link tools is written the same
-way, every argument fixed or bound. Binding the whole arguments, the empty pointer, to a fact in
+way, every argument fixed or bound, and every container its pointers continue through only by an
+index shaped. Binding the whole arguments, the empty pointer, to a fact in
 which the record states the whole write is still valid, and is what a closed policy with that one
 binding is; it puts the write in the pack.
 

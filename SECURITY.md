@@ -164,7 +164,12 @@ revision alone leaves the action and every other operation to the request. Such 
 `fix`, which holds an argument to a value the operator states, and `closed`, which refuses every
 member and array element no pointer of `bind` or `fix` reaches (engine configuration version 9,
 [ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)); the engine never
-fills a value in, so what is sent and committed to is what the requester asked. A closed policy
+fills a value in, so what is sent and committed to is what the requester asked. A pointer reads a
+numeric token on an object as a member's name, so those members hold the values under a container
+and not whether it is an array or an object; `shape` holds the value at a pointer to one of the
+two, and an array to a length (engine configuration version 10,
+[ADR-0018](docs/adr/0018-a-policy-holds-a-containers-shape.md)), and a closed policy that shapes
+each container its pointers reach only by an index admits one shape of request. A closed policy
 establishes that the request's arguments were exactly those the policy names, each bound to the
 record or fixed by the policy, at the moment of the check. It does not establish that the target
 interpreted them as intended — what an `action` means, and any default the server supplies for an
