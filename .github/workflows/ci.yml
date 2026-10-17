@@ -108,6 +108,12 @@ jobs:
         run: go test ./...
       - name: Build
         run: go build -buildvcs=false ./...
+      - name: Tagged acquisition fixture contracts and refusal checks
+        run: |
+          go test -race -tags gateway_acquisition_fixture ./internal/acquisitionfixture ./websource ./connections ./testdata/acquisition-fixture -run '^Test(Fixture|AcquisitionFixture)' -count=1
+          go vet -tags gateway_acquisition_fixture ./internal/acquisitionfixture ./websource ./connections ./testdata/acquisition-fixture
+          PYTHONDONTWRITEBYTECODE=1 python3 testdata/acquisition-fixture/build_test.py
+          PYTHONDONTWRITEBYTECODE=1 python3 testdata/acquisition-fixture/smoke_test.py
       - name: Actual provider output agrees with its published attachment schema
         run: |
           python3 -m venv "$RUNNER_TEMP/attachment-schema"
