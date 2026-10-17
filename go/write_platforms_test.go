@@ -22,7 +22,8 @@ import (
 // platform's parameters (engineVersion 8; ADR-0015, amended 2026-10-13),
 // and whose tools are held to decision policies (ADR-0011, ADR-0012; the
 // Azure DevOps dispatcher by a fixed action and a closed argument set,
-// ADR-0016, engineVersion 9). No
+// ADR-0016, engineVersion 9, and the shape of its updates, ADR-0018,
+// engineVersion 10). No
 // test here reaches a real service: every remote server is the in-process
 // stand-in below, and the live checks at the end run only when their
 // environment names an organization or a workspace, and are skipped
@@ -166,6 +167,8 @@ const (
 
 // writePlatformCase is one write-back platform as these tests configure it.
 type writePlatformCase struct {
+	variant    string // what sets the case apart from another of its catalog; "" for the first
+	version    string // the configuration's engineVersion
 	platform   string // the configured platform's name
 	catalog    string // the shipped catalog file's name
 	from       string // the shipped URL's scheme and host, put at the stand-in's
@@ -175,7 +178,7 @@ type writePlatformCase struct {
 	tools      string // what the stand-in lists
 	facts      string // the record's facts
 	arguments  string // the write's arguments, held to the facts
-	hold       string // the policy's members that hold the arguments: bind, and fix and closed
+	hold       string // the policy's members that hold the arguments: bind, and fix, shape and closed
 	mismatched []mismatchedWrite
 	// admitted are writes other than arguments that the policy admits, each
 	// sent once: what it holds, recorded where it is less than one request.
@@ -188,57 +191,101 @@ type mismatchedWrite struct {
 	arguments, want string
 }
 
+// boardsArguments is the write the Azure DevOps cases hold: work item 42 at
+// revision 3, the revision tested first, then the state set to the one the
+// outcome maps to.
+const boardsArguments = `{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`
+
+// boardsHold is the Azure DevOps policy of ADR-0016: action fixed to update,
+// the revision test first and the state the outcome maps to fixed, the work
+// item's id and the tested revision bound to the record's, and closed, so
+// that nothing else may be asked.
+const boardsHold = `"fix":[{"argument":"/action","value":"update"},{"argument":"/updates/0/op","value":"test"},{"argument":"/updates/0/path","value":"/rev"},` +
+	`{"argument":"/updates/1","value":{"op":"replace","path":"/fields/System.State","value":"Approved"}}],` +
+	`"bind":[{"argument":"/id","fact":"/workItem/id"},{"argument":"/updates/0/value","fact":"/workItem/rev"}],"closed":true`
+
+// boardsShape is what ADR-0018 adds to it, and the worked policy of
+// engine-config.md, "The write-back platforms", holds: updates is an array,
+// of at most two elements, so with the second fixed, of exactly two.
+const boardsShape = `,"shape":[{"pointer":"/updates","type":"array","maxLength":2}]`
+
+// boardsObjectUpdates is the write the review of #265 found: an object whose
+// members are named "0" and "1" in place of the updates array, which RFC 6901
+// reads as that array's elements, a numeric token on an object naming a
+// member.
+const boardsObjectUpdates = `{"action":"update","id":42,"updates":{"0":{"op":"test","path":"/rev","value":3},"1":{"op":"replace","path":"/fields/System.State","value":"Approved"}}}`
+
+// boardsRefused are the writes both Azure DevOps policies refuse, each by the
+// same sentence.
+var boardsRefused = []mismatchedWrite{
+	// another work item
+	{`{"action":"update","id":43,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/id" does not equal the fact at "/workItem/id"`},
+	// another revision than the one decided
+	{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":4},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/updates/0/value" does not equal the fact at "/workItem/rev"`},
+	// the revision test left out
+	{`{"action":"update","id":42,"updates":[{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/updates/0/value" does not equal the fact at "/workItem/rev"`},
+	// another action of the same tool, the same work item
+	{`{"action":"update_batch","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/action" is not the fixed value`},
+	// another action, writing the items its batchUpdates name
+	{`{"action":"update_batch","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}],"batchUpdates":[{"id":7,"path":"/fields/System.State","value":"Closed"}]}`, `argument "/action" is not the fixed value`},
+	// no action at all: the engine fills none in
+	{`{"id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/action" is not the fixed value`},
+	// another state than the outcome maps to
+	{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Closed"}]}`, `argument "/updates/1" is not the fixed value`},
+	// a member the policy does not name
+	{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}],"batchUpdates":[{"id":7,"path":"/fields/System.State","value":"Closed"}]}`, `argument "/batchUpdates" is reached by no binding`},
+	{`{"action":"update","id":42,"project":"another-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/project" is reached by no binding`},
+	// a member the policy does not name, inside an operation
+	{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3,"from":"/fields/System.Title"},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/updates/0/from" is reached by no binding`},
+}
+
+// boardsThreeOperations is one operation more than the policies name.
+const boardsThreeOperations = `{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"},{"op":"add","path":"/fields/System.AssignedTo","value":"someone"}]}`
+
 var writePlatformCases = []writePlatformCase{
 	{
-		platform: "boards", catalog: "azure-devops", from: "https://mcp.dev.azure.com", path: "/example-org",
+		version: "10", platform: "boards", catalog: "azure-devops", from: "https://mcp.dev.azure.com", path: "/example-org",
 		parameters: `{"organization":"example-org"}`, tool: "wit_work_item_write", tools: boardsTools,
 		// The decision is about work item 42 at revision 3, and its facts
 		// state that item alone. The policy holds the dispatcher to the one
-		// write the outcome means (ADR-0016; engine-config.md, "The
-		// write-back platforms"): action fixed to update, the revision test
-		// first and the state the outcome maps to fixed, the work item's id
-		// and the tested revision bound to the record's, and closed, so that
-		// nothing else may be asked.
+		// write the outcome means (ADR-0016, ADR-0018; engine-config.md, "The
+		// write-back platforms"): ADR-0016's policy, and updates held to an
+		// array of exactly two, so that the request has one shape.
 		facts:     `{"workItem":{"id":42,"rev":3}}`,
-		arguments: `{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`,
-		hold: `"fix":[{"argument":"/action","value":"update"},{"argument":"/updates/0/op","value":"test"},{"argument":"/updates/0/path","value":"/rev"},` +
-			`{"argument":"/updates/1","value":{"op":"replace","path":"/fields/System.State","value":"Approved"}}],` +
-			`"bind":[{"argument":"/id","fact":"/workItem/id"},{"argument":"/updates/0/value","fact":"/workItem/rev"}],"closed":true`,
-		mismatched: []mismatchedWrite{
-			// another work item
-			{`{"action":"update","id":43,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/id" does not equal the fact at "/workItem/id"`},
-			// another revision than the one decided
-			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":4},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/updates/0/value" does not equal the fact at "/workItem/rev"`},
-			// the revision test left out
-			{`{"action":"update","id":42,"updates":[{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `the argument at "/updates/0/value" does not equal the fact at "/workItem/rev"`},
-			// another action of the same tool, the same work item
-			{`{"action":"update_batch","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/action" is not the fixed value`},
-			// another action, writing the items its batchUpdates name
-			{`{"action":"update_batch","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}],"batchUpdates":[{"id":7,"path":"/fields/System.State","value":"Closed"}]}`, `argument "/action" is not the fixed value`},
-			// no action at all: the engine fills none in
-			{`{"id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/action" is not the fixed value`},
-			// another state than the outcome maps to
-			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Closed"}]}`, `argument "/updates/1" is not the fixed value`},
+		arguments: boardsArguments,
+		hold:      boardsHold + boardsShape,
+		mismatched: append(append([]mismatchedWrite(nil), boardsRefused...),
+			// one operation more: the array past its bound, held before the
+			// closed set is walked
+			mismatchedWrite{boardsThreeOperations, `argument "/updates" holds more elements than the policy's shape allows`},
+			// the object in place of the array, which the policy without a
+			// shape admits (below): refused, and nothing is sent
+			mismatchedWrite{boardsObjectUpdates, `argument "/updates" is not of the shape the policy holds it to`},
+		),
+	},
+	{
+		variant: " without a shape", version: "9", platform: "boards", catalog: "azure-devops", from: "https://mcp.dev.azure.com", path: "/example-org",
+		parameters: `{"organization":"example-org"}`, tool: "wit_work_item_write", tools: boardsTools,
+		// ADR-0016's policy alone, in a version-9 file, as it was written
+		// before ADR-0018: it means what it meant.
+		facts:     `{"workItem":{"id":42,"rev":3}}`,
+		arguments: boardsArguments,
+		hold:      boardsHold,
+		mismatched: append(append([]mismatchedWrite(nil), boardsRefused...),
 			// one operation more than the policy names
-			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"},{"op":"add","path":"/fields/System.AssignedTo","value":"someone"}]}`, `argument "/updates/2" is reached by no binding`},
-			// a member the policy does not name
-			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}],"batchUpdates":[{"id":7,"path":"/fields/System.State","value":"Closed"}]}`, `argument "/batchUpdates" is reached by no binding`},
-			{`{"action":"update","id":42,"project":"another-project","updates":[{"op":"test","path":"/rev","value":3},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/project" is reached by no binding`},
-			// a member the policy does not name, inside an operation
-			{`{"action":"update","id":42,"updates":[{"op":"test","path":"/rev","value":3,"from":"/fields/System.Title"},{"op":"replace","path":"/fields/System.State","value":"Approved"}]}`, `argument "/updates/0/from" is reached by no binding`},
-		},
+			mismatchedWrite{boardsThreeOperations, `argument "/updates/2" is reached by no binding`},
+		),
 		// The policy holds the values it names and that nothing else is
 		// there, not the container type of an ancestor (ADR-0016, section 5):
 		// an object whose members are named "0" and "1" in place of the
 		// updates array is read as that array's elements, as RFC 6901 reads
 		// a numeric token on an object, and is admitted and sent once. What
-		// the server makes of it is the server's.
-		admitted: []string{
-			`{"action":"update","id":42,"updates":{"0":{"op":"test","path":"/rev","value":3},"1":{"op":"replace","path":"/fields/System.State","value":"Approved"}}}`,
-		},
+		// the server makes of it is the server's. The policy with a shape,
+		// above, refuses it.
+		admitted: []string{boardsObjectUpdates},
 	},
 	{
-		platform: "ledger", catalog: "databricks", from: "https://{workspace}", path: "/api/2.0/mcp/functions/main/decisions/record_approval",
+		version: "9", platform: "ledger", catalog: "databricks", from: "https://{workspace}", path: "/api/2.0/mcp/functions/main/decisions/record_approval",
 		parameters: `{"catalog":"main","function":"record_approval","schema":"decisions"}`, tool: "main__decisions__record_approval", tools: ledgerTools,
 		// The function's named parameters, each bound to a fact.
 		facts:     `{"case":{"id":"CASE-7","revision":3}}`,
@@ -256,8 +303,14 @@ var writePlatformCases = []writePlatformCase{
 // writeConfig writes an engine configuration of one write-back platform
 // whose binding is text, under the catalog name given, and returns its
 // path; the adapters are bin's, and the write credentials file holds the
-// token.
+// token. The file is of version 9; writeConfigAt writes one of the version
+// given.
 func writeConfig(t *testing.T, dir, bin, catalogName, text, platform, parameters, policy string) string {
+	t.Helper()
+	return writeConfigAt(t, "9", dir, bin, catalogName, text, platform, parameters, policy)
+}
+
+func writeConfigAt(t *testing.T, version, dir, bin, catalogName, text, platform, parameters, policy string) string {
 	t.Helper()
 	credentials := filepath.Join(dir, platform+"-write.json")
 	if err := os.WriteFile(credentials, []byte(`{"token":"write-secret-token"}`), 0o600); err != nil {
@@ -272,7 +325,7 @@ func writeConfig(t *testing.T, dir, bin, catalogName, text, platform, parameters
 	if policy != "" {
 		extra += `,"decisionPolicy":` + policy
 	}
-	config := `{"engineVersion":"9","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
+	config := `{"engineVersion":"` + version + `","authority":"gateway:test","seed":"` + escape(filepath.Join(dir, "gateway.seed")) + `","store":"` + escape(filepath.Join(dir, "store")) + `",` +
 		`"registry":"` + escape(filepath.Join(dir, "registry.jsonl")) + `","decisionRecords":"` + escape(filepath.Join(dir, "decisions")) + `",` +
 		`"listen":"127.0.0.1:0","catalog":"` + escape(catalog) + `","adapters":"` + escape(bin) + `",` +
 		`"platforms":{"` + platform + `":{"binding":"` + catalogName + `@` + digestOf(text) + `","credentials":{"write":{"file":"` + escape(credentials) + `"}},` +
@@ -294,12 +347,12 @@ func writeConfig(t *testing.T, dir, bin, catalogName, text, platform, parameters
 func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 	bin, _ := buildMCPStandIns(t, t.TempDir())
 	for _, wp := range writePlatformCases {
-		t.Run(wp.catalog, func(t *testing.T) {
+		t.Run(wp.catalog+wp.variant, func(t *testing.T) {
 			stand := newWriteStandIn(t, wp.tools)
 			key := keyFromSeed(t, vectorSeed1)
 			policy := `{"outcomes":["approve"],"packs":["` + packA + `"],"reviewed":true,"requireSignedRecord":["` + key.public + `"],` + wp.hold + `}`
 			text := atStandIn(t, wp.catalog, wp.from, stand.URL)
-			config := writeConfig(t, t.TempDir(), bin, wp.catalog, text, wp.platform, wp.parameters, `{"`+wp.tool+`":`+policy+`}`)
+			config := writeConfigAt(t, wp.version, t.TempDir(), bin, wp.catalog, text, wp.platform, wp.parameters, `{"`+wp.tool+`":`+policy+`}`)
 			cfg, bindings, err := loadEngineConfig(config, stubAccounts(map[string]int{"engine-" + wp.platform: 1001}))
 			if err != nil {
 				t.Fatal(err)
@@ -682,6 +735,11 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 	bin, _ := buildMCPStandIns(t, t.TempDir())
 	adapter := filepath.Join(bin, "adapter-mcp")
 	for _, wp := range writePlatformCases {
+		// connect is of the platform, whatever policy holds its tools: one
+		// run per catalog.
+		if wp.variant != "" {
+			continue
+		}
 		t.Run(wp.catalog, func(t *testing.T) {
 			stand := newWriteStandIn(t, wp.tools)
 			f := newConnectFixture(t, restrictedBinding, ``)

@@ -169,25 +169,31 @@ file whole — so the record judged is the record named:
     any order, and a fact outside the canonical domain — a fraction, an exponent, an integer
     past 2⁵³−1 — equals no argument, since arguments are held to the domain. This is what
     refuses a decision about revision 3 cited for a write to revision 4, or an approval of one
-    order used for another. The same step then holds the arguments to the policy's own values
-    and, when it is closed, to the pointers it names
+    order used for another. The same step then holds the arguments to the policy's own values,
+    to the containers it shapes and, when it is closed, to the pointers it names, in that order
     ([ADR-0016](../adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md), engine
-    configuration version 9): for each entry of `fix`, the argument at its pointer must be there
-    and equal its value, compared as a binding compares — absent is not the value, and nothing is
-    filled in — or the request is refused, `argument "<pointer>" is not the fixed value`; and when
-    the policy sets `closed`, every member and element of the arguments must be reached by a
-    pointer of `bind` or `fix` — covered by one, the empty pointer covering everything, or an
-    object or array on the way to one whose members or elements are each reached in turn, an
-    element by its index pointer or by a pointer covering its array — or the request is refused,
-    `argument "<pointer>" is reached by no binding`, naming the first value refused. This is what
-    refuses another `action` of a dispatcher tool, an operation added to a list, or a member the
-    policy does not name.
+    configuration version 9; [ADR-0018](../adr/0018-a-policy-holds-a-containers-shape.md),
+    version 10): for each entry of `fix`, the argument at its pointer must be there and equal its
+    value, compared as a binding compares — absent is not the value, and nothing is filled in — or
+    the request is refused, `argument "<pointer>" is not the fixed value`; for each entry of
+    `shape`, the value at its pointer must be there and be an array or an object, as the entry
+    says, an array of at most its `maxLength` elements, or the request is refused,
+    `argument "<pointer>" is not of the shape the policy holds it to` or
+    `argument "<pointer>" holds more elements than the policy's shape allows`; and when the policy
+    sets `closed`, every member and element of the arguments must be reached by a pointer of
+    `bind` or `fix` — covered by one, the empty pointer covering everything, or an object or array
+    on the way to one, or on the way to or at a pointer of `shape`, whose members or elements are
+    each reached in turn, an element by its index pointer or by a pointer covering its array; a
+    pointer of `shape` reaches its container and covers nothing under it — or the request is
+    refused, `argument "<pointer>" is reached by no binding`, naming the first value refused. This
+    is what refuses another `action` of a dispatcher tool, an operation added to a list, a member
+    the policy does not name, or an object in place of an array the policy shapes.
 
 A refused request executes nothing and mints nothing. The refusal names which step refused, in
 `refusedAt`. A refusal at steps 8 to 11 names the check and never a value of the record's —
 not its outcome, not a fact — since the requester may know a record by its digest and not by
-its contents; a refusal of a fixed or an unreached argument names its pointer, and no value of
-the policy's or the request's.
+its contents; a refusal of a fixed, a shaped or an unreached argument names its pointer, and no
+value of the policy's or the request's — not a shape's type, its bound or the array's length.
 
 ## The executor
 
@@ -240,7 +246,9 @@ interval between the check and the commit, and that is the target's or the adapt
 `bind` stops a substituted object, not a concurrent edit of the same one. A closed policy
 establishes that the request's arguments were exactly those the policy names, each bound to the
 record or fixed by the policy, at the moment of the check; not that the target interpreted them
-as intended, and nothing of an argument a policy that is not closed does not name.
+as intended, and nothing of an argument a policy that is not closed does not name. A policy's
+`shape` establishes that each value it names was a container of its type, an array no longer
+than its bound; a container no entry names may be either, as RFC 6901 reads a pointer.
 
 A record is found by its shape, so a policy holds a write to whatever record a writer of the
 decision-record directory put there. With `requireSignedRecord`, the record was signed, in its

@@ -120,8 +120,9 @@ different versions" (troubleshoot the remote server), so the remote server's own
 are what `connect` captures through the write operation's check, at the resolved URL, and what an
 operator writes a policy against ([engine-config.md](../docs/design/engine-config.md), "The
 write-back platforms", has one for `wit_work_item_write`: it fixes `action` to `update` and the
-form of the operations, binds the work item's id and revision to the record's facts, and is
-closed, so an argument it does not name is refused).
+form of the operations, binds the work item's id and revision to the record's facts, holds
+`updates` to an array of two, and is closed, so an argument it does not name, or `updates` written
+as an object, is refused).
 
 **No read-only header.** "Use the `X-MCP-Readonly` header to restrict the server to read-only
 operations" (set up the remote server): the connection sends it on its reads, and a write needs

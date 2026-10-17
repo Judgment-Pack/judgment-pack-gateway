@@ -151,8 +151,10 @@ record's, and the record must state an outcome the policy allows, no handoff, a 
 reviewed law where the policy asks for them, and facts equal to the write's arguments where the
 policy binds them. From engine configuration version 9 a policy may also fix an argument to a
 value of its own (`fix`) and refuse any argument it neither binds nor fixes (`closed`,
-[ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)); the engine
-compares and never fills a value in. `reviewed` alone holds a write to whatever reviewed-set
+[ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md)), and from
+version 10 hold the value at a pointer to an array or an object, an array to a length (`shape`,
+[ADR-0018](docs/adr/0018-a-policy-holds-a-containers-shape.md)); the engine compares and never
+fills a value in. `reviewed` alone holds a write to whatever reviewed-set
 lock is current, so an edited pack locked again passes it; list `packs` to hold a write to particular reviewed bytes.
 The receipt then names the policy by its digest. For a tool held to none, nothing in the record
 is read. `gateway verify` compares an action's pack digest and citations with a runtime
@@ -202,9 +204,11 @@ Databricks workspace's host forms), and the action receipt names the resolved UR
 endpoint form of `SPEC.md` §1.2a. Each write tool
 is held to a decision policy: for Azure DevOps, whose write tools are dispatchers that an `action`
 argument steers, the worked policy fixes `action` to `update` and the form of its operations, binds
-the work item's id and revision to the record's facts, and is closed, so a request that names
-another action, adds an operation or adds a member is refused before anything is sent (engine
-configuration version 9, [ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md));
+the work item's id and revision to the record's facts, holds `updates` to an array of two, and is
+closed, so a request that names another action, adds an operation, adds a member or writes its
+operations as an object is refused before anything is sent (engine configuration version 10,
+[ADR-0016](docs/adr/0016-a-policy-fixes-a-value-and-closes-the-argument-set.md),
+[ADR-0018](docs/adr/0018-a-policy-holds-a-containers-shape.md));
 for Databricks, each of the function's named parameters is bound to a fact. Raw SQL is no write
 tool, since a decision could then authorize an arbitrary statement, which no policy can bind
 argument by argument; the `postgres` binding, whose server takes a statement, has no write

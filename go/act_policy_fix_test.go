@@ -224,7 +224,7 @@ func TestAClosedPolicyReachesArgumentsByTheirPointers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got, found := unreachedArgument(v, tc.named)
+		got, found := unreachedArgument(v, tc.named, nil)
 		if found != (tc.want != "") || got != tc.want {
 			t.Fatalf("%q over %s: got %q (%v), want %q", tc.named, tc.arguments, got, found, tc.want)
 		}
@@ -248,9 +248,16 @@ const heldTicketFacts = `{"ticket":{"id":"T-7","revision":4,"sku":"S-1"},` +
 
 func newHeldTicket(t *testing.T, bin, policy string) *heldTicket {
 	t.Helper()
+	return newHeldTicketAt(t, bin, "9", policy)
+}
+
+// newHeldTicketAt is newHeldTicket in a configuration of the engineVersion
+// given.
+func newHeldTicketAt(t *testing.T, bin, version, policy string) *heldTicket {
+	t.Helper()
 	stand := newWriteStandIn(t, `[{"name":"update_ticket","description":"Update a ticket.","inputSchema":{"type":"object"}}]`)
 	binding := `{"bindingVersion":"1","platform":"tickets","operations":{"write":{"shape":"mcp","server":{"url":"` + stand.URL + `/mcp","bearer":"token"},"tools":["update_ticket"],"licence":"MIT"}}}`
-	config := writeConfig(t, t.TempDir(), bin, "tickets", binding, "tickets", "", `{"update_ticket":`+policy+`}`)
+	config := writeConfigAt(t, version, t.TempDir(), bin, "tickets", binding, "tickets", "", `{"update_ticket":`+policy+`}`)
 	cfg, bindings, err := loadEngineConfig(config, stubAccounts(map[string]int{"engine-tickets": 1001}))
 	if err != nil {
 		t.Fatal(err)

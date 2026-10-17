@@ -1,5 +1,5 @@
 ---
-status: accepted, 2026-10-14
+status: accepted, 2026-10-14, amended 2026-10-17
 date: 2026-10-14
 deciders: maintainer
 ---
@@ -164,6 +164,15 @@ is present; it does not hold the container type of an ancestor, so an object who
 are an array's indexes is read as that array's elements (RFC 6901 reads a numeric token on an
 object as a member's name), and a closed policy admits more than one shape of request. As before, nothing here closes the interval between the check and
 the commit: a precondition on the target, Azure DevOps' `test` of `/rev`, is what does.
+
+*Amended 2026-10-17 (#267).* A policy may also carry `shape`, entries that hold the value at a
+pointer to an array or an object, and an array to at most `maxLength` elements. `shape` is a member
+of engine configuration version 10, held at `policy-bind` after `fix` and before `closed`, and in
+the policy's digest ([ADR-0018](0018-a-policy-holds-a-containers-shape.md)). For `closed`, a shaped
+pointer reaches its container and covers nothing under it. The limit stated above holds for a
+container no shape names. A closed policy that shapes each container its pointers continue through
+only by an index admits one shape of request. The worked example of §6 gains a shape of `/updates`.
+No determination here is reversed.
 
 ### 6. The worked example
 

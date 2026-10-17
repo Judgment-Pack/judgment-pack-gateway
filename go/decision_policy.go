@@ -26,7 +26,8 @@ import (
 // a record may have decided, the packs it may have been decided under,
 // whether it must have been judged under reviewed law, which of the write's
 // arguments must equal which of the record's facts, which must equal a value
-// the policy itself fixes, whether the arguments may hold anything those two
+// the policy itself fixes, which must be an array or an object, an array of
+// at most so many elements, whether the arguments may hold anything those
 // lists do not name, and which runtime keys, if any, one of which must have
 // signed the record. digest names the policy as configured, and is what an
 // action receipt carries.
@@ -36,7 +37,8 @@ type decisionPolicy struct {
 	reviewed bool
 	bind     []factBinding
 	fix      []fixedValue   // engineVersion 9 (ADR-0016): values the arguments must hold
-	closed   bool           // engineVersion 9 (ADR-0016): every argument reached by a pointer of bind or fix
+	shape    []heldShape    // engineVersion 10 (ADR-0018): containers the arguments must hold
+	closed   bool           // engineVersion 9 (ADR-0016): every argument reached by a pointer of bind, fix or shape
 	signers  []recordSigner // empty when requireSignedRecord is absent: no signature read
 	digest   string
 }
@@ -58,7 +60,24 @@ type fixedValue struct {
 	canonical []byte
 }
 
-var decisionPolicyMembers = map[string]bool{"outcomes": true, "packs": false, "reviewed": false, "bind": false, "fix": false, "closed": false, "requireSignedRecord": false}
+// heldShape is one entry of a policy's shape (ADR-0018): a JSON pointer into
+// the request's arguments and the container the value there must be, an
+// array or an object, and for an array the most elements it may hold. It
+// holds the value at its pointer and nothing above it: the pointer is
+// resolved as fix's are, by RFC 6901, which reads a numeric token on an
+// object as a member's name.
+type heldShape struct {
+	pointer   string
+	array     bool // false: an object
+	maxLength int  // an array's bound; 0 for an object, which has none
+}
+
+// maxShapeLength is the largest bound a shape gives an array: the value
+// budget an action's arguments are parsed within (maxArgumentValues), past
+// which no array can arrive, so a larger bound would hold nothing more.
+const maxShapeLength = maxArgumentValues
+
+var decisionPolicyMembers = map[string]bool{"outcomes": true, "packs": false, "reviewed": false, "bind": false, "fix": false, "shape": false, "closed": false, "requireSignedRecord": false}
 
 // parseDecisionPolicies reads a platform's decisionPolicy member: an object
 // keyed by write tool name, each a policy. Whether each tool is one the
@@ -89,14 +108,17 @@ func parseDecisionPolicies(v value, platform, version string) (map[string]*decis
 // non-empty array of outcome ids, packs a non-empty array of digests,
 // reviewed a boolean, bind an array of {argument, fact} pointers, from
 // engineVersion 5 requireSignedRecord a non-empty array of Ed25519 public
-// keys, and from engineVersion 9 fix an array of {argument, value} and
-// closed a boolean -- a list naming one entry twice is refused, as a list
-// nobody meant, and so is an argument both fixed and bound. Its digest is
-// over the canonical form (SPEC.md §1.1) of the object as configured. Without
-// fix that is its RFC 8785 form too, since its member names are the fixed
-// ASCII names above and it holds no number; a fixed value may hold member
-// names of any script and integers, and the digest stays canon's, whose
-// order of names outside the Basic Multilingual Plane is not RFC 8785's.
+// keys, from engineVersion 9 fix an array of {argument, value} and closed a
+// boolean, and from engineVersion 10 shape an array of {pointer, type}, an
+// array's with its maxLength -- a list naming one entry twice is refused, as
+// a list nobody meant, and so is an argument both fixed and bound, or both
+// fixed and shaped. Its digest is over the canonical form (SPEC.md §1.1) of
+// the object as configured. Without fix that is its RFC 8785 form too, since
+// its member names are the fixed ASCII names above and its only numbers are
+// a shape's maxLength, integers from 0 to maxShapeLength, which RFC 8785
+// writes as canon does; a fixed value may hold member names of any script and
+// integers, and the digest stays canon's, whose order of names outside the
+// Basic Multilingual Plane is not RFC 8785's.
 func parseDecisionPolicy(v value, where, version string) (*decisionPolicy, error) {
 	obj, ok := v.(*vObject)
 	if !ok {
@@ -189,6 +211,64 @@ func parseDecisionPolicy(v value, where, version string) (*decisionPolicy, error
 			}
 			fixed, _ := pair.get("value")
 			policy.fix = append(policy.fix, fixedValue{argument: argument, canonical: canon(fixed)})
+		}
+	}
+	if shapeV, present := obj.get("shape"); present {
+		if !versionAtLeast(version, "10") {
+			return nil, fmt.Errorf("%s: shape is a version-10 member; engineVersion %s has no shape", where, version)
+		}
+		entries, ok := shapeV.(vArray)
+		if !ok {
+			return nil, fmt.Errorf("%s: shape, when present, is an array of {pointer, type}, an array's with its maxLength", where)
+		}
+		for i, entry := range entries {
+			what := fmt.Sprintf("%s: shape[%d]", where, i)
+			held, ok := entry.(*vObject)
+			if !ok {
+				return nil, fmt.Errorf("%s must be an object of pointer and type", what)
+			}
+			if err := exactlyMembers(held, map[string]bool{"pointer": true, "type": true, "maxLength": false}, what); err != nil {
+				return nil, err
+			}
+			var s heldShape
+			pointer, ok := memberString(held, "pointer")
+			if !ok || !validPointer(pointer) {
+				return nil, fmt.Errorf("%s: pointer must be a JSON pointer (RFC 6901): empty, or each token after a /, a ~ in one followed by 0 or 1", what)
+			}
+			s.pointer = pointer
+			switch kind, _ := memberString(held, "type"); kind {
+			case "array":
+				s.array = true
+			case "object":
+			default:
+				return nil, fmt.Errorf(`%s: type must be "array" or "object"`, what)
+			}
+			// One form per type: an array's entry states its bound, and an
+			// object's has none to state.
+			n, present, err := integerMember(held, "maxLength")
+			switch {
+			case s.array && !present:
+				return nil, fmt.Errorf("%s: an array's shape carries maxLength, an integer from 0 to %d", what, maxShapeLength)
+			case s.array && (err != nil || n < 0 || n > maxShapeLength):
+				return nil, fmt.Errorf("%s: maxLength must be an integer from 0 to %d", what, maxShapeLength)
+			case !s.array && present:
+				return nil, fmt.Errorf("%s: maxLength is an array's; an object's shape is exactly {pointer, type}", what)
+			}
+			s.maxLength = int(n)
+			// One pointer, one shape; and a fixed value holds its own type
+			// and length, so a shape beside it says nothing more or admits
+			// nothing.
+			for _, prior := range policy.shape {
+				if prior.pointer == pointer {
+					return nil, fmt.Errorf("%s: shape names the pointer %q twice", where, pointer)
+				}
+			}
+			for _, f := range policy.fix {
+				if f.argument == pointer {
+					return nil, fmt.Errorf("%s: the argument %q is both fixed and shaped", what, pointer)
+				}
+			}
+			policy.shape = append(policy.shape, s)
 		}
 	}
 	if closedV, present := obj.get("closed"); present {
@@ -391,8 +471,9 @@ func sameCitations(a, b []citation) bool {
 // what the walk found there); the request's claims held to the record it
 // names; the record held to the operator's policy -- outcome, handoff,
 // packs, reviewed, bind, in that order, the last step holding the arguments
-// also to the values the policy fixes and, when it is closed, to the
-// pointers it names (ADR-0016). The first that fails is the refusal, and
+// also to the values the policy fixes (ADR-0016), to the containers it
+// shapes (ADR-0018) and, when it is closed, to the pointers it names, in
+// that order. The first that fails is the refusal, and
 // nothing is sent. The bytes read are the bytes step 7 hashed, so the
 // record judged is the record named.
 func holdToPolicy(data []byte, claimed decision, cites []citation, arguments value, policy *decisionPolicy, signed sidecarEvidence) error {
@@ -486,8 +567,24 @@ func holdToPolicy(data []byte, claimed decision, cites []citation, arguments val
 			return actRefusal{"policy-bind", fmt.Sprintf("argument %q is not the fixed value", f.argument)}
 		}
 	}
+	// The containers the policy holds (ADR-0018): the value at the pointer
+	// must be there and be an array or an object, as the entry says, and an
+	// array no longer than its bound. Absent is not the container, as it is
+	// not a fixed value. Each refusal names the pointer and never the type,
+	// the bound or the length.
+	for _, s := range policy.shape {
+		argument, ok := resolvePointer(arguments, s.pointer)
+		elements, isArray := argument.(vArray)
+		_, isObject := argument.(*vObject)
+		if !ok || (s.array && !isArray) || (!s.array && !isObject) {
+			return actRefusal{"policy-bind", fmt.Sprintf("argument %q is not of the shape the policy holds it to", s.pointer)}
+		}
+		if s.array && len(elements) > s.maxLength {
+			return actRefusal{"policy-bind", fmt.Sprintf("argument %q holds more elements than the policy's shape allows", s.pointer)}
+		}
+	}
 	if policy.closed {
-		if at, found := unreachedArgument(arguments, policy.namedArguments()); found {
+		if at, found := unreachedArgument(arguments, policy.namedArguments(), policy.shapedArguments()); found {
 			return actRefusal{"policy-bind", fmt.Sprintf("argument %q is reached by no binding", requestText(at))}
 		}
 	}
@@ -507,23 +604,36 @@ func (p *decisionPolicy) namedArguments() []string {
 	return named
 }
 
-// unreachedArgument is a closed policy's rule (ADR-0016): the pointer of the
-// first value in the arguments that no named pointer reaches, or false when
-// every one is reached. A pointer covers the value it names and everything
-// under it, so the empty pointer covers the whole arguments. The arguments
-// object itself is walked and never refused. Below it, a value a named
-// pointer covers is admitted whole; an object or an array whose pointer is a
-// proper prefix, token by token, of a named pointer is admitted when each of
-// its members, or each of its elements, is admitted in turn; any other value
-// -- a member or an element no named pointer reaches, or a value on the way
-// to a named pointer that is neither an object nor an array -- is refused.
-// An array's element is reached by its index pointer, the index in decimal
-// with no leading zero ("/updates/0"), or by a pointer that covers the array;
-// "-" and an index with a leading zero name no element (RFC 6901 §4) and so
-// reach none. A member's token is its name with "~" written "~0" and "/"
-// written "~1", the one spelling RFC 6901 gives it, so a pointer reaches a
-// member exactly when it resolves to it.
-func unreachedArgument(arguments value, named []string) (string, bool) {
+// shapedArguments are the pointers into the request's arguments that a
+// policy's shape names.
+func (p *decisionPolicy) shapedArguments() []string {
+	shaped := make([]string, 0, len(p.shape))
+	for _, s := range p.shape {
+		shaped = append(shaped, s.pointer)
+	}
+	return shaped
+}
+
+// unreachedArgument is a closed policy's rule (ADR-0016, ADR-0018): the
+// pointer of the first value in the arguments that no named pointer reaches,
+// or false when every one is reached. A pointer covers the value it names and
+// everything under it, so the empty pointer covers the whole arguments. The
+// arguments object itself is walked and never refused. Below it, a value a
+// named pointer covers is admitted whole; an object or an array whose pointer
+// is a proper prefix, token by token, of a named or a shaped pointer, or is a
+// shaped pointer, is admitted when each of its members, or each of its
+// elements, is admitted in turn; any other value -- a member or an element
+// no pointer reaches, or a value on the way to one that is neither an object
+// nor an array -- is refused. So a shaped pointer reaches its container and
+// covers nothing: the container is not refused, and each member or element
+// under it is reached only as a pointer of bind or fix, or another shape,
+// reaches it. An array's element is reached by its index pointer, the index
+// in decimal with no leading zero ("/updates/0"), or by a pointer that covers
+// the array; "-" and an index with a leading zero name no element (RFC 6901
+// §4) and so reach none. A member's token is its name with "~" written "~0"
+// and "/" written "~1", the one spelling RFC 6901 gives it, so a pointer
+// reaches a member exactly when it resolves to it.
+func unreachedArgument(arguments value, named, shaped []string) (string, bool) {
 	covered := func(at string) bool {
 		for _, p := range named {
 			if p == "" || at == p || strings.HasPrefix(at, p+"/") {
@@ -535,6 +645,11 @@ func unreachedArgument(arguments value, named []string) (string, bool) {
 	onTheWay := func(at string) bool {
 		for _, p := range named {
 			if strings.HasPrefix(p, at+"/") {
+				return true
+			}
+		}
+		for _, p := range shaped {
+			if p == at || strings.HasPrefix(p, at+"/") {
 				return true
 			}
 		}
