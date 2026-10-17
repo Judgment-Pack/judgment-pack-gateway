@@ -71,10 +71,61 @@ credential. There is no implicit fallback to a different provider.
 
 `JPACK_CONNECTIONS_DIR` names the private custody root. The local plan exposes
 this adapter as source `web-search`, using the existing HTTP acquisition shape.
+
+### The arguments
+
+The arguments are held to one table
+([ADR-0019](adr/0019-web-search-holds-its-arguments-to-one-table.md)), the same
+one `--describe-research` gives as a request schema:
+
+| Argument | Required | Tavily | Google | Form |
+| --- | --- | --- | --- | --- |
+| `connection` | yes | yes | yes | a saved connection's name |
+| `revision` | yes | yes | yes | its present revision, 64 lowercase hexadecimal characters |
+| `query` | yes | sent as `query` | sent inside the adapter's instruction | 1 to 2,000 bytes of UTF-8, no control character |
+| `maxResults` | yes | sent as `max_results`; the hits are cut to it | not sent; the answer's links are cut to it | an integer from 1 to 10 |
+| `includeDomains` | no | sent as `include_domains` | refused | 1 to 20 distinct domain names |
+| `excludeDomains` | no | sent as `exclude_domains` | refused | 1 to 20 distinct domain names |
+| `timeRange` | no | sent as `time_range` | refused | `day`, `week`, `month` or `year` |
+
+A domain name is two or more labels of lowercase letters, digits and hyphens,
+separated by dots, at most 253 bytes: `example.org`, not `https://example.org`,
+`Example.org`, `*.example.org` or `example.org/policy`. A domain restriction and
+a time range are Tavily's to apply; the adapter does not hold the hits to them.
+
+```json
+{"connection":"research","revision":"<64-hex-revision>","query":"public policy guidance","maxResults":5,"includeDomains":["example.gov"],"timeRange":"year"}
+```
+
+An argument is refused by name, before anything is charged or sent, and the
+program writes nothing, so no receipt is made:
+
+- a member the table does not hold, Tavily's own spellings
+  (`include_domains`) and its options the table does not take (`topic`,
+  `searchDepth`, dates, `country` and the rest) among them:
+  `search-argument-unsupported: "topic" is not an argument of web-search; nothing was sent`.
+  A name that is not a plain name (a letter, then letters, digits and
+  underscores, at most 64) is not repeated;
+- an argument required and absent, or a value out of its form:
+  `search-argument-invalid: "maxResults" must be an integer from 1 to 10; nothing was sent`;
+- an argument the connection's provider does not take, once the connection is
+  read:
+  `search-argument-unsupported: "timeRange" is not an argument a google-grounding connection takes; nothing was sent`.
+
+A request that is not a JSON object, names a member twice, or is longer than the
+program reads (16 KiB) is still `invalid-request`. The first fault is the
+refusal: a name the table does not hold, then the table's order, then the
+connection (blocked, absent, changed), then what the provider takes, then the
+day's allowance.
+
+### What is recorded
+
 Results contain version, connection and revision, provider, query, retrieval
 time, kind and bounded HTTPS hits. The receipt commits to the arguments, to a
 statement of the request and to the normalized result. The statement names the
-connection, revision, provider, query, maximum results, method and endpoint. The
+connection, revision, provider, query, maximum results, method and endpoint, and
+each argument the request carried beyond those four, by its name, as it was sent.
+A request without them has the statement it had before ADR-0019. The
 endpoint is `https://api.tavily.com/search` for Tavily, and for Google
 `https://{host}/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`,
 which names the connection's model. It
@@ -138,7 +189,7 @@ each kind of result beside them:
 
 | File | What it describes |
 | --- | --- |
-| [`testdata/search/arguments-v1.schema.json`](../testdata/search/arguments-v1.schema.json) | what `adapter-sources --provider web-search` reads |
+| [`testdata/search/arguments-v1.schema.json`](../testdata/search/arguments-v1.schema.json) | the four arguments every request carries, which `adapter-sources --provider web-search` reads; a connection's whole form, with the arguments its provider takes, is the request schema `--describe-research` gives |
 | [`testdata/search/result-v1.schema.json`](../testdata/search/result-v1.schema.json) | the `result` of what it answers |
 | [`testdata/search/examples/`](../testdata/search/examples) | a request, the results of a search engine, a grounded answer |
 
@@ -163,10 +214,19 @@ The tests answer from local TLS servers and a stand-in transport. They hold
 the stored timeout to its bounds and its legacy default, the deadline a request
 is given, a caller's earlier cancellation, the revision a change makes, the
 metering of a failed attempt, and the plan's envelope to the timeouts stored.
+They hold each argument at its bounds and one past them, for each provider that
+takes it; each argument a provider does not take, and names of neither, refused
+by name with nothing sent or charged, counted by a stand-in provider on
+loopback; the request schema `--describe-research` gives agreeing with what
+acquisition admits, value by value; and a request without the new arguments
+asking for the bytes, and answering with the record, the adapter wrote before
+them (`adapters/connections/testdata/search-golden.jsonl`).
 No provider was called with an account, so nothing here is a claim that a live Tavily or
 Google Cloud account is accepted, or of what a live answer holds: the form of
 Google's source links, the size of its attribution markup and the models that
 support grounding are as its documentation states them, not as observed.
+Tavily's `include_domains`, `exclude_domains` and `time_range` are sent as its
+search reference names them; what Tavily does with them was not observed.
 
 ## Adding a provider
 

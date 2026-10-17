@@ -11,16 +11,28 @@ import (
 // receipt, permission grant, or assertion about the truth of a source. The host
 // supplies its Gateway key/authority and source name when registering a profile.
 // Only the trusted adapter executable can report its own acquisition identity.
+//
+// Version 2 (ADR-0019) adds the request schema's version, and the result
+// schema and its version; the members of version 1 keep their meaning, and
+// the request schema is the one acquisition enforces, generated from the same
+// table.
 type ResearchBindingDescriptor struct {
-	Version        int                 `json:"version"`
-	Shape          string              `json:"shape"`
-	Adapter        attachment.Identity `json:"adapter"`
-	Endpoint       string              `json:"endpoint"`
-	Research       Research            `json:"research"`
-	FixedArguments map[string]string   `json:"fixedArguments"`
-	RequestSchema  json.RawMessage     `json:"requestSchema"`
-	ResultRecord   string              `json:"resultRecord"`
+	Version              int                 `json:"version"`
+	Shape                string              `json:"shape"`
+	Adapter              attachment.Identity `json:"adapter"`
+	Endpoint             string              `json:"endpoint"`
+	Research             Research            `json:"research"`
+	FixedArguments       map[string]string   `json:"fixedArguments"`
+	RequestSchema        json.RawMessage     `json:"requestSchema"`
+	RequestSchemaVersion string              `json:"requestSchemaVersion"`
+	ResultRecord         string              `json:"resultRecord"`
+	ResultSchema         json.RawMessage     `json:"resultSchema"`
+	ResultSchemaVersion  string              `json:"resultSchemaVersion"`
 }
+
+// ResearchBindingVersion is the version of the description
+// --describe-research writes.
+const ResearchBindingVersion = 2
 
 // searchEndpoint is shared by acquisition and read-only binding discovery. Never
 // reproduce provider URL construction in a consumer or infer it from a model name.
@@ -77,18 +89,14 @@ func DescribeSearchBinding(s *Store, raw []byte) ([]byte, error) {
 		return nil, ErrProvider
 	}
 	identity.Name = "adapter-sources"
-	schema, err := canon.EncodeJSON(map[string]any{
-		"$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "additionalProperties": false,
-		"required": []string{"connection", "revision", "query", "maxResults"},
-		"properties": map[string]any{
-			"connection": map[string]any{"type": "string", "const": c.ID},
-			"revision":   map[string]any{"type": "string", "const": c.Revision},
-			"query":      map[string]any{"type": "string", "minLength": 1, "maxLength": 2000, "description": "At most 2000 UTF-8 bytes, with no control characters; the adapter enforces these additional byte and text bounds."},
-			"maxResults": map[string]any{"type": "integer", "minimum": 1, "maximum": 10},
-		},
-	})
+	versions, known := searchSchemaVersions[c.Provider]
+	request, err := canon.EncodeJSON(searchRequestSchema(c))
+	if err != nil || !known {
+		return nil, ErrProvider
+	}
+	result, err := canon.EncodeJSON(searchResultSchema(c))
 	if err != nil {
 		return nil, ErrProvider
 	}
-	return canon.EncodeJSON(ResearchBindingDescriptor{Version: 1, Shape: "http", Adapter: identity, Endpoint: searchEndpoint(c), Research: *searchResearch(c), FixedArguments: map[string]string{"connection": c.ID, "revision": c.Revision}, RequestSchema: schema, ResultRecord: "web-search-v1"})
+	return canon.EncodeJSON(ResearchBindingDescriptor{Version: ResearchBindingVersion, Shape: "http", Adapter: identity, Endpoint: searchEndpoint(c), Research: *searchResearch(c), FixedArguments: map[string]string{"connection": c.ID, "revision": c.Revision}, RequestSchema: request, RequestSchemaVersion: versions.request, ResultRecord: "web-search-v1", ResultSchema: result, ResultSchemaVersion: versions.result})
 }

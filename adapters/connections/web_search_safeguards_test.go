@@ -500,8 +500,9 @@ func TestSearchRequestIsHeldToItsForm(t *testing.T) {
 	}
 	// As the program reads one: a member too many, naming no saved
 	// connection, so that nothing is asked of a provider however it is read.
+	// It is refused by its name (ADR-0019).
 	raw := `{"connection":"absent","revision":"` + c.Revision + `","query":"query","maxResults":1,"extra":1}`
-	if out, err := ReadSearch(context.Background(), s, []byte(raw)); err != ErrRequest || len(out) != 0 {
+	if out, err := ReadSearch(context.Background(), s, []byte(raw)); err != Error(`search-argument-unsupported: "extra" is not an argument of web-search; nothing was sent`) || len(out) != 0 {
 		t.Fatal("a request with a member too many was read", err)
 	}
 }
@@ -687,14 +688,17 @@ func TestSearchMakesNoRecordWhenItsOwnProgramCannotBeRead(t *testing.T) {
 
 // A request for a search is read by its names as written, through the
 // program's own entry point. The request names no saved connection, so that
-// nothing is asked of a provider however it is read.
+// nothing is asked of a provider however it is read. A name in another case
+// is no argument, and is refused by its name (ADR-0019), the first in the
+// order of names.
 func TestSearchRequestInAnotherCaseIsRefused(t *testing.T) {
 	s, b, c := searchFixture(t)
-	for name, raw := range map[string]string{
-		"every name in capitals": `{"CONNECTION":"absent","REVISION":"` + c.Revision + `","QUERY":"query","MAXRESULTS":1}`,
-		"a query beside itself":  `{"connection":"absent","revision":"` + c.Revision + `","query":"first","QUERY":"second","maxResults":1}`,
+	for name, test := range map[string]struct{ raw, refused string }{
+		"every name in capitals": {`{"CONNECTION":"absent","REVISION":"` + c.Revision + `","QUERY":"query","MAXRESULTS":1}`, "CONNECTION"},
+		"a query beside itself":  {`{"connection":"absent","revision":"` + c.Revision + `","query":"first","QUERY":"second","maxResults":1}`, "QUERY"},
 	} {
-		if out, err := ReadSearch(context.Background(), s, []byte(raw)); err != ErrRequest || len(out) != 0 {
+		want := Error(`search-argument-unsupported: "` + test.refused + `" is not an argument of web-search; nothing was sent`)
+		if out, err := ReadSearch(context.Background(), s, []byte(test.raw)); err != want || len(out) != 0 {
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
