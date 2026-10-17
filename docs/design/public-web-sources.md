@@ -10,6 +10,28 @@ credentials, executable settings, or network-policy overrides from the caller.
 The signing engine remains in its existing process; receipt v3, canonicalization,
 and the frozen conformance corpus are unchanged.
 
+## Read-only research binding description
+
+`adapter-web --describe-research` is an exclusive operator command. It reads no
+stdin, connection, credential, processing configuration or network resource. It
+returns installation metadata, never an acquisition, receipt, profile or grant.
+
+The version-1 object is closed: `version: 1`, `shape: "http"`,
+`adapter: {name, version, digest}`, `endpoint: null`,
+`research: {capabilities: ["page"]}`, `fixedArguments: {}`,
+`requestSchema` and `resultRecord: "attachment-v1"`. Adapter identity is
+reported through the same executable/version/digest path as actual page reads.
+The JSON Schema 2020-12 request shape names required nonempty `url` and optional
+nonempty `site`, and closes other members. URL, UTF-8 byte, public-network,
+robots and operator-policy checks still run at acquisition; the schema does not
+establish reachability or permission.
+
+A consumer verifies this executable against its installed distribution, then
+supplies its own Gateway authority/key and explicitly reviewed endpoint constraint
+when registering a profile. Null endpoint is not a wildcard. No profile is made
+by description, and neither the descriptor nor a source may choose a broader
+scope, redirect policy, credential or processing configuration.
+
 ## Admission and bounds
 
 URLs are UTF-8, at most 4,096 bytes; JSON input is at most 8,192 bytes. Only HTTPS,
