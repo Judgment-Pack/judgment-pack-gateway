@@ -46,8 +46,11 @@ func TestAcquisitionFixtureSearchKeepsIdentityValidationAndBudget(t *testing.T) 
 	}
 	identity, err := document.OwnIdentity()
 	identity.Name = "adapter-sources"
-	if err != nil || json.Unmarshal(raw, &envelope) != nil || envelope.Acquisition.Adapter != identity || envelope.Acquisition.Endpoint != acquisitionfixture.SearchEndpoint || !strings.HasPrefix(envelope.Acquisition.PeerIdentity, "tls:sha256:") || envelope.Result.Query != request.Query || len(envelope.Result.Hits) != 3 || envelope.Result.Hits[0].URL != acquisitionfixture.CompanyURL || strings.Contains(string(raw), acquisitionfixture.Credential) {
+	if err != nil || json.Unmarshal(raw, &envelope) != nil || envelope.Acquisition.Adapter != identity || envelope.Acquisition.Endpoint != acquisitionfixture.SearchEndpoint || !strings.HasPrefix(envelope.Acquisition.PeerIdentity, "tls:sha256:") || envelope.Result.Query != request.Query || len(envelope.Result.Hits) != 3 || envelope.Result.Hits[0].URL != acquisitionfixture.CompanySearchURL || strings.Contains(string(raw), acquisitionfixture.Credential) {
 		t.Fatal("search normalization/identity/credential boundary changed", string(raw))
+	}
+	if envelope.Result.Hits[0].Snippet != acquisitionfixture.CompanySearchSnippet || !strings.Contains(acquisitionfixture.CompanyHTML, "Location: Fixture City") || strings.Contains(envelope.Result.Hits[0].Snippet, "Fixture City") {
+		t.Fatal("distinct source observations collapsed", string(raw))
 	}
 	description, _ := json.Marshal(map[string]string{"connection": connection.ID, "revision": connection.Revision})
 	described, err := DescribeSearchBinding(store, description)

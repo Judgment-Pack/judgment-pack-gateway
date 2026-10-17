@@ -24,7 +24,12 @@ The fixed corpus uses invented company, professional and procurement records.
 `https://example.com/fixtures/`: `company`, `person` and `notice`. Configure only
 a disposable Tavily connection with the fake credential `tvly-fixture-only`.
 The harness keeps the canonical provider endpoint; it does not override the
-acquisition endpoint to match a local listener. Page paths include:
+acquisition endpoint to match a local listener. The company search snippet names
+`Fixture District`, while its page states `Fixture City`, so consumers can test
+preserving two contradictory acquired observations without inventing a conflict.
+The company search URL includes `?from=search%2Ffixture`; consumers must preserve
+the complete discovered URL rather than reconstructing it from the page URL.
+Page paths include:
 
 | Path | Fixture behavior |
 | --- | --- |

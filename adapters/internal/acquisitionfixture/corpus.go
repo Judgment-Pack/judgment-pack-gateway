@@ -9,10 +9,13 @@ import (
 )
 
 const CompanyURL = "https://" + PageHost + "/fixtures/company"
+const CompanySearchURL = CompanyURL + "?from=search%2Ffixture"
 const PersonURL = "https://" + PageHost + "/fixtures/person"
 const NoticeURL = "https://" + PageHost + "/fixtures/notice"
 
 // These are invented fixture statements, not assertions about real entities.
+const CompanySearchSnippet = "Example Fixture Company in Fixture District."
+
 const CompanyHTML = `<html><title>Synthetic company fixture</title><h1>Example Fixture Company</h1><p>Official website: https://example.com/fixtures/company</p><p>Location: Fixture City</p><p>Employee range: 10 to 20. Source date: 2026-01-01.</p><p>Public routing: https://example.com/fixtures/contact</p><script>Never retain executable page code.</script></html>`
 const PersonHTML = `<html><title>Synthetic professional fixture</title><h1>Alex Fixture</h1><p>Company: Example Fixture Company</p><p>Professional role: Operations director</p><p>Professional biography: https://example.com/fixtures/person</p><p>Business contact page: https://example.com/fixtures/contact</p></html>`
 const NoticeHTML = `<html><title>Synthetic procurement fixture</title><h1>Fixture supply notice</h1><p>Issuer: Example Fixture Company</p><p>Notice URL: https://example.com/fixtures/notice</p><p>Region: Fixture City</p><p>Published status: open</p><p>No deadline is stated.</p></html>`
@@ -33,7 +36,7 @@ func serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"results":[{"title":"Synthetic company","url":"`+CompanyURL+`","content":"Example Fixture Company in Fixture City."},{"title":"Synthetic professional","url":"`+PersonURL+`","content":"Alex Fixture, Operations director."},{"title":"Synthetic notice","url":"`+NoticeURL+`","content":"Fixture supply notice, published open."}]}`)
+		_, _ = io.WriteString(w, `{"results":[{"title":"Synthetic company","url":"`+CompanySearchURL+`","content":"`+CompanySearchSnippet+`"},{"title":"Synthetic professional","url":"`+PersonURL+`","content":"Alex Fixture, Operations director."},{"title":"Synthetic notice","url":"`+NoticeURL+`","content":"Fixture supply notice, published open."}]}`)
 		return
 	}
 	if r.Host != PageHost || r.Method != http.MethodGet || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" {
