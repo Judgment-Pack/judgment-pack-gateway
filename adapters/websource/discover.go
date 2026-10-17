@@ -1,7 +1,6 @@
 package websource
 
 import (
-	"adapters/document"
 	"adapters/internal/canon"
 	"bytes"
 	"context"
@@ -239,11 +238,10 @@ func discover(ctx context.Context, raw []byte, f fetcher, delay time.Duration) (
 	if result.Bytes > CrawlBytes {
 		result.Bytes = CrawlBytes
 	}
-	identity, err := document.OwnIdentity()
+	identity, err := pageIdentity()
 	if err != nil {
 		return nil, ErrProcessing
 	}
-	identity.Name = "adapter-web"
 	statement, _ := canon.EncodeJSON(map[string]any{"operation": "discover", "seed": seed, "origin": origin})
 	// robots.txt is the initial HTTP observation establishing the crawl policy.
 	// The signed result names every subsequently visited URL and its outcome.

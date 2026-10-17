@@ -166,11 +166,10 @@ func readOptions(ctx context.Context, raw []byte, f fetcher, options Options) ([
 		_, n := utf8.DecodeLastRuneInString(title)
 		title = title[:len(title)-n]
 	}
-	identity, err := document.OwnIdentity()
+	identity, err := pageIdentity()
 	if err != nil {
 		return nil, ErrProcessing
 	}
-	identity.Name = "adapter-web"
 	processing, stop := context.WithTimeout(ctx, cfg.Timeout)
 	defer stop()
 	encoded, err := document.Process(processing, cfg, document.Request{Name: title, MediaType: media, Bytes: data, SHA256: digest(data), OCR: "auto", ReceivedAt: started}, identity, started)

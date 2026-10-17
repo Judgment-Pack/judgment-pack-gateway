@@ -2,10 +2,45 @@ package main
 
 import (
 	"adapters/connections"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 )
+
+func TestResearchDescriptionReadsNoRequest(t *testing.T) {
+	var stdout, stderr strings.Builder
+	if code := run([]string{"--describe-research"}, unread{t}, &stdout, &stderr); code != 0 || stderr.Len() != 0 {
+		t.Fatal("read-only description failed", code, stderr.String())
+	}
+	var d struct {
+		Version  int
+		Shape    string
+		Adapter  struct{ Name, Version, Digest string }
+		Endpoint *string
+		Research struct{ Capabilities []string }
+	}
+	if json.Unmarshal([]byte(stdout.String()), &d) != nil || d.Version != 1 || d.Shape != "http" ||
+		d.Adapter.Name != "adapter-web" || d.Adapter.Version == "" || d.Adapter.Digest == "" ||
+		d.Endpoint != nil || len(d.Research.Capabilities) != 1 || d.Research.Capabilities[0] != "page" {
+		t.Fatal("incorrect page descriptor", stdout.String())
+	}
+	for _, args := range [][]string{
+		{"--describe-research", "--describe-research"},
+		{"--describe-research", "--discover"},
+		{"--discover", "--describe-research"},
+		{"--describe-research", "--document-processing"},
+		{"--describe-research", "--redirect-policies="},
+		{"--describe-research", "--redirect-policies=google-grounding"},
+		{"--describe-research", "--state-dir=/unused"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(args, unread{t}, &stdout, &stderr); code != 2 || stdout.Len() != 0 {
+			t.Errorf("ambiguous description accepted: %v (%d)", args, code)
+		}
+	}
+}
 
 // unread fails the test if the adapter reads its request: a start that is
 // refused is refused before stdin.
