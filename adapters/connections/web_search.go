@@ -104,6 +104,10 @@ type SearchStatusRow struct {
 	SearchConnection
 	Research *Research `json:"research,omitempty"`
 }
+
+// SearchRequest is the four arguments every search carries. The others a
+// provider takes are searchOptions, read by the same table
+// (web_search_arguments.go).
 type SearchRequest struct {
 	Connection string `json:"connection"`
 	Revision   string `json:"revision"`
@@ -389,8 +393,16 @@ func (b *Broker) searchOperation(ctx context.Context, method string, raw []byte)
 	return nil, ErrRequest
 }
 func searchSnapshot(s *Store, q SearchRequest) (SearchConnection, error) {
+	return searchSnapshotWith(s, q, nil)
+}
+
+// searchSnapshotWith reserves one request of the connection's allowance for
+// q and options. Before it reserves anything it holds the four arguments to
+// their forms, and, once the connection is read, refuses an argument its
+// provider does not take, by name.
+func searchSnapshotWith(s *Store, q SearchRequest, options searchOptions) (SearchConnection, error) {
 	var found SearchConnection
-	if !searchID.MatchString(q.Connection) || !opaque.MatchString(q.Revision) || !resourceText(q.Query, 2000, false) || q.MaxResults < 1 || q.MaxResults > 10 {
+	if !searchRequestHeld(q) {
 		return found, ErrRequest
 	}
 	err := s.locked(func(v *state) error {
@@ -407,6 +419,9 @@ func searchSnapshot(s *Store, q SearchRequest) (SearchConnection, error) {
 				}
 				if !searchValid(c) {
 					return ErrSetup
+				}
+				if err := searchArgumentsTaken(c.Provider, options); err != nil {
+					return err
 				}
 				day := time.Now().UTC().Format("2006-01-02")
 				if c.Day != day {
@@ -442,14 +457,24 @@ func searchCurrent(s *Store, c SearchConnection) error {
 	})
 }
 func ReadSearch(ctx context.Context, s *Store, raw []byte) ([]byte, error) {
-	var q SearchRequest
-	if decode(raw, &q) != nil {
-		return nil, ErrRequest
+	return readSearch(ctx, s, raw, googleProvider())
+}
+
+// readSearch reads a request by the table and acquires it. A request the
+// table refuses is refused before the connection is read: nothing is
+// charged or sent.
+func readSearch(ctx context.Context, s *Store, raw []byte, p provider) ([]byte, error) {
+	q, options, err := readSearchArguments(raw)
+	if err != nil {
+		return nil, err
 	}
-	return searchAcquire(ctx, s, q, googleProvider())
+	return searchAcquireWith(ctx, s, q, options, p)
 }
 func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) ([]byte, error) {
-	c, err := searchSnapshot(s, q)
+	return searchAcquireWith(ctx, s, q, nil, p)
+}
+func searchAcquireWith(ctx context.Context, s *Store, q SearchRequest, options searchOptions, p provider) ([]byte, error) {
+	c, err := searchSnapshotWith(s, q, options)
 	if err != nil {
 		return nil, err
 	}
@@ -457,7 +482,7 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 	defer cancel()
 	endpoint := searchEndpoint(c)
 	token := c.Credential
-	body := map[string]any{"query": q.Query, "max_results": q.MaxResults, "search_depth": "basic", "include_answer": false, "include_raw_content": false}
+	body := tavilyRequest(q, options)
 	if c.Provider == "google-grounding" {
 		cfg, e := googleauth.JWTConfigFromJSON([]byte(c.Credential), "https://www.googleapis.com/auth/cloud-platform")
 		if e != nil {
@@ -529,12 +554,19 @@ func searchAcquire(ctx context.Context, s *Store, q SearchRequest, p provider) (
 		sum := sha256.Sum256(response.TLS.PeerCertificates[0].Raw)
 		peer = "tls:sha256:" + hex.EncodeToString(sum[:])
 	}
-	statement, _ := canon.EncodeJSON(map[string]any{"connection": q.Connection, "revision": q.Revision, "provider": c.Provider, "query": q.Query, "maxResults": q.MaxResults, "method": "POST", "endpoint": endpoint})
+	// The statement names each argument the request carried past the four,
+	// by its name, as it was sent; a request with none has the statement it
+	// had before them.
+	said := map[string]any{"connection": q.Connection, "revision": q.Revision, "provider": c.Provider, "query": q.Query, "maxResults": q.MaxResults, "method": "POST", "endpoint": endpoint}
+	for name, v := range options {
+		said[name] = v
+	}
+	statement, _ := canon.EncodeJSON(said)
 	return canon.EncodeJSON(map[string]any{"acquisition": map[string]any{"adapter": identity, "endpoint": endpoint, "statement": string(statement), "snapshot": digest(data), "peerIdentity": peer, "schema": nil, "upstreamToken": nil, "observedAt": result.RetrievedAt}, "result": result})
 }
 func searchURL(value string) bool {
 	u, err := url.Parse(value)
-	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && (u.Port() == "" || u.Port() == "443") && len(value) <= 4096 && !strings.ContainsAny(value, "\r\n\x00")
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && (u.Port() == "" || u.Port() == "443") && len(value) <= searchURLBytes && !strings.ContainsAny(value, "\r\n\x00")
 }
 func normalizeSearch(data []byte, c SearchConnection, q SearchRequest) (SearchResult, error) {
 	out := SearchResult{Version: 1, Connection: c.ID, Revision: c.Revision, Provider: c.Provider, Query: q.Query, RetrievedAt: time.Now().UTC().Format(time.RFC3339), Kind: "search-results", Hits: []SearchHit{}}
@@ -544,7 +576,7 @@ func normalizeSearch(data []byte, c SearchConnection, q SearchRequest) (SearchRe
 			return
 		}
 		seen[link] = true
-		out.Hits = append(out.Hits, SearchHit{clipSearchText(title, 512), link, clipSearchText(snippet, 2000)})
+		out.Hits = append(out.Hits, SearchHit{clipSearchText(title, searchTitleBytes), link, clipSearchText(snippet, searchSnippetBytes)})
 	}
 	if c.Provider == "tavily" {
 		var r struct {
@@ -590,24 +622,24 @@ func normalizeSearch(data []byte, c SearchConnection, q SearchRequest) (SearchRe
 		for _, part := range first.Content.Parts {
 			out.GeneratedAnswer += part.Text
 		}
-		out.GeneratedAnswer = clipSearchText(out.GeneratedAnswer, 12000)
+		out.GeneratedAnswer = clipSearchText(out.GeneratedAnswer, searchAnswerBytes)
 		for _, h := range first.Metadata.Chunks {
 			if h.Web != nil {
 				add(h.Web.Title, h.Web.URI, "")
 			}
 		}
-		if len(first.Metadata.Entry.HTML) > 32000 {
+		if len(first.Metadata.Entry.HTML) > searchAttributionBytes {
 			return out, ErrProvider
 		}
 		if len(out.Hits) == 0 || first.Metadata.Entry.HTML == "" {
 			return out, Error("search-not-grounded")
 		}
 		out.AttributionHTML = first.Metadata.Entry.HTML
-		if len(first.Metadata.Queries) > 20 {
+		if len(first.Metadata.Queries) > searchQueriesMax {
 			return out, ErrProvider
 		}
 		for _, query := range first.Metadata.Queries {
-			out.Queries = append(out.Queries, clipSearchText(query, 2000))
+			out.Queries = append(out.Queries, clipSearchText(query, searchQueryBytes))
 		}
 	}
 	return out, nil

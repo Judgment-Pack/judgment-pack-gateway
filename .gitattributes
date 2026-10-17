@@ -10,3 +10,6 @@ adapters/mcp/testdata/stdio-golden/** -text
 
 # A stdio write's action receipt is held to these records byte for byte.
 go/testdata/action-golden/** -text
+
+# The search source is held to the records it wrote before ADR-0019 byte for byte.
+adapters/connections/testdata/*-golden*.jsonl -text

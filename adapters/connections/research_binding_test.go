@@ -33,7 +33,7 @@ func TestResearchBindingDiscoveryRetainsNoCredentialsAndDoesNotCharge(t *testing
 		t.Fatal(err)
 	}
 	actual.Name = "adapter-sources"
-	if d.Version != 1 || d.Shape != "http" || d.Adapter != actual || d.Endpoint != "https://api.tavily.com/search" || d.ResultRecord != "web-search-v1" || strings.Join(d.Research.Capabilities, ",") != "search" || d.FixedArguments["connection"] != c.ID || d.FixedArguments["revision"] != c.Revision {
+	if d.Version != ResearchBindingVersion || d.Shape != "http" || d.Adapter != actual || d.Endpoint != "https://api.tavily.com/search" || d.ResultRecord != "web-search-v1" || strings.Join(d.Research.Capabilities, ",") != "search" || d.FixedArguments["connection"] != c.ID || d.FixedArguments["revision"] != c.Revision || d.RequestSchemaVersion != "tavily-request-1" || d.ResultSchemaVersion != "tavily-result-1" || len(d.ResultSchema) == 0 {
 		t.Fatal("descriptor does not name exact acquisition", d)
 	}
 	if bytes.Contains(raw, []byte(c.Credential)) || bytes.Contains(raw, []byte(`"credential"`)) {

@@ -157,8 +157,11 @@ func TestResearchDescriptionUsesTheAdapterWithoutAcquisition(t *testing.T) {
 		t.Fatal(err, diagnostic.String())
 	}
 	var d connections.ResearchBindingDescriptor
-	if json.Unmarshal(out, &d) != nil || d.Version != 1 || d.Adapter.Name != "adapter-sources" || d.Endpoint != "https://api.tavily.com/search" || d.FixedArguments["revision"] != c.Revision || bytes.Contains(out, []byte("tvly-fixture-secret")) {
+	if json.Unmarshal(out, &d) != nil || d.Version != connections.ResearchBindingVersion || d.Adapter.Name != "adapter-sources" || d.Endpoint != "https://api.tavily.com/search" || d.FixedArguments["revision"] != c.Revision || bytes.Contains(out, []byte("tvly-fixture-secret")) {
 		t.Fatal("invalid description")
+	}
+	if d.RequestSchemaVersion != "tavily-request-1" || d.ResultSchemaVersion != "tavily-result-1" || !bytes.Contains(d.RequestSchema, []byte(`"timeRange"`)) || !bytes.Contains(d.ResultSchema, []byte(`"search-results"`)) {
+		t.Fatal("the description does not carry the versioned schemas", string(out))
 	}
 	// The acquisition request parser is not switched by a JSON member. This mode
 	// exists only on an operator-selected invocation of the trusted executable.
@@ -170,5 +173,86 @@ func TestResearchDescriptionUsesTheAdapterWithoutAcquisition(t *testing.T) {
 		if err := cmd.Run(); err == nil {
 			t.Fatal("foreign provider accepted description mode", provider)
 		}
+	}
+}
+
+// The program refuses an argument by its name, writes nothing to its output,
+// and so gives the gateway nothing to mint a receipt from (ADR-0019). The
+// requests name the connection's revision, so that a refusal is the
+// argument's; a request in its form that is not refused names a revision
+// that is not the present one, and ends before anything is sent.
+func TestTheProgramRefusesAnArgumentByName(t *testing.T) {
+	dir := t.TempDir()
+	os.Chmod(dir, 0700)
+	store, err := connections.OpenSearchStore(dir, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker := connections.NewSearch(store, false)
+	if _, err = broker.Handle(t.Context(), "configure", []byte(`{"id":"test","name":"Test","provider":"tavily","dailyLimit":1,"credential":"tvly-fixture-secret"}`)); err != nil {
+		t.Fatal(err)
+	}
+	status, err := broker.Handle(t.Context(), "status", []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(status)
+	var state struct{ Connections []connections.SearchStatusRow }
+	if json.Unmarshal(raw, &state) != nil || len(state.Connections) != 1 {
+		t.Fatal("missing connection", string(raw))
+	}
+	revision := state.Connections[0].Revision
+	broker.Close()
+	store.Close()
+	run := func(request []byte) (int, string, string) {
+		args, _ := json.Marshal([]string{"adapter-sources", "--state-dir", dir, "--principal", "fixture", "--provider", "web-search"})
+		cmd := exec.Command(os.Args[0], "-test.run=^TestSourcesCLIHelper$")
+		cmd.Env = append(os.Environ(), "SOURCES_CLI_HELPER=1", "SOURCES_CLI_ARGS="+string(args))
+		cmd.Stdin = bytes.NewReader(request)
+		var out, diagnostic bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &out, &diagnostic
+		err := cmd.Run()
+		code := 0
+		if exit, ok := err.(*exec.ExitError); ok {
+			code = exit.ExitCode()
+		} else if err != nil {
+			t.Fatal(err)
+		}
+		return code, out.String(), diagnostic.String()
+	}
+	of := func(revision string, extra map[string]any) []byte {
+		members := map[string]any{"connection": "test", "revision": revision, "query": "public policy guidance", "maxResults": 5}
+		for name, value := range extra {
+			members[name] = value
+		}
+		raw, _ := json.Marshal(members)
+		return raw
+	}
+	for _, c := range []struct {
+		request []byte
+		said    string
+	}{
+		{of(revision, map[string]any{"topic": "news"}), `search-argument-unsupported: "topic" is not an argument of web-search; nothing was sent`},
+		{of(revision, map[string]any{"include_domains": []string{"example.org"}}), `search-argument-unsupported: "include_domains" is not an argument of web-search; nothing was sent`},
+		{of(revision, map[string]any{"timeRange": "decade"}), `search-argument-invalid: "timeRange" must be one of "day", "week", "month", "year"; nothing was sent`},
+		{of(revision, map[string]any{"maxResults": 11}), `search-argument-invalid: "maxResults" must be an integer from 1 to 10; nothing was sent`},
+	} {
+		code, out, said := run(c.request)
+		if code != 1 || out != "" || said != c.said+"\n" {
+			t.Errorf("%s: exit %d, wrote %q, said %q", c.request, code, out, said)
+		}
+	}
+	// The longest request in its form is read: a query of 2000 bytes that
+	// are each escaped, and both lists of twenty domains of 253 bytes.
+	long := func(first byte) []string {
+		list := make([]string, 20)
+		for i := range list {
+			list[i] = string(rune(first)) + string(rune('a'+i)) + strings.Repeat("a", 61) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61)
+		}
+		return list
+	}
+	largest := of(strings.Repeat("0", 64), map[string]any{"query": strings.Repeat(`"`, 2000), "includeDomains": long('i'), "excludeDomains": long('e'), "timeRange": "month"})
+	if code, out, said := run(largest); code != 1 || out != "" || said != "source-changed\n" {
+		t.Errorf("the longest request in its form (%d bytes): exit %d, wrote %q, said %q", len(largest), code, out, said)
 	}
 }
