@@ -28,9 +28,9 @@ each as `invalid-request`, which names nothing.
 
 **What that left open.** Nothing was silently dropped and nothing was forwarded unchecked, but a
 caller could not restrict a search to some domains or to recent results, which Tavily's search
-reference offers, and could not tell from a refusal which member was wrong. `--describe-research` (#281) gave a
-request schema written beside the decoder, not derived from it, with no version, and no result
-schema.
+reference offers, and could not tell from a refusal which member was wrong.
+`--describe-research` (#281) gave a request schema written beside the decoder, not derived from
+it, with no version, and no result schema.
 
 ## Decision drivers
 
@@ -84,8 +84,8 @@ Chosen: A.
 
 A domain name is two or more labels of lowercase letters, digits and hyphens separated by dots,
 each label 1 to 63 characters that neither begin nor end with a hyphen, at most 253 bytes in all:
-no scheme, path, port, wildcard, capital or final dot. Twenty is the adapter's bound, below the
-lists Tavily documents. Google is sent the query inside the adapter's instruction and no other
+no scheme, path, port, wildcard, capital or final dot. Twenty is the adapter's own bound, not a
+provider's. Google is sent the query inside the adapter's instruction and no other
 argument, as before; `maxResults` bounds the links its answer keeps.
 
 ### 2. Refusals
@@ -156,7 +156,7 @@ whatever the statement holds.
 - Bad, because a refusal of an unknown member that was `invalid-request` is now
   `search-argument-unsupported`, and of a value out of its form `search-argument-invalid`: a
   client that matched `invalid-request` for those reads a new code.
-- Bad, because the domain restriction and the time range are applied by Tavily; the adapter does
+- Bad, because the domain restriction and the time range are Tavily's to apply; the adapter does
   not hold the hits to them, and they repeat Tavily's search reference, not an observation. No
   provider was called with an account.
 - Bad, because Google takes neither a domain restriction nor a time range here, though its API

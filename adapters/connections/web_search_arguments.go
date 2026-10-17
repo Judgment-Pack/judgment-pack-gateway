@@ -26,8 +26,8 @@ const (
 	// searchResultsMax is the most hits a request may ask for and a result
 	// holds.
 	searchResultsMax = 10
-	// searchDomainsMax is the most domains a list may name: fewer than any
-	// provider that takes a list documents.
+	// searchDomainsMax is the most domains a list may name: the adapter's
+	// own bound, not a provider's.
 	searchDomainsMax = 20
 	// searchDomainBytes is the longest name of a domain.
 	searchDomainBytes = 253
