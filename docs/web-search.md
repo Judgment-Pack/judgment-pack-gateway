@@ -84,14 +84,20 @@ one `--describe-research` gives as a request schema:
 | `revision` | yes | yes | yes | its present revision, 64 lowercase hexadecimal characters |
 | `query` | yes | sent as `query` | sent inside the adapter's instruction | 1 to 2,000 bytes of UTF-8, no control character |
 | `maxResults` | yes | sent as `max_results`; the hits are cut to it | not sent; the answer's links are cut to it | an integer from 1 to 10 |
-| `includeDomains` | no | sent as `include_domains` | refused | 1 to 20 distinct domain names |
+| `includeDomains` | no | sent as `include_domains`, with `include_domains_mode: "restrict"` | refused | 1 to 20 distinct domain names |
 | `excludeDomains` | no | sent as `exclude_domains` | refused | 1 to 20 distinct domain names |
 | `timeRange` | no | sent as `time_range` | refused | `day`, `week`, `month` or `year` |
 
 A domain name is two or more labels of lowercase letters, digits and hyphens,
-separated by dots, at most 253 bytes: `example.org`, not `https://example.org`,
-`Example.org`, `*.example.org` or `example.org/policy`. A domain restriction and
-a time range are Tavily's to apply; the adapter does not hold the hits to them.
+separated by dots, at most 253 bytes, its last label holding a letter:
+`example.org`, not `https://example.org`, `Example.org`, `*.example.org`,
+`example.org/policy`, `192.168.1.1` or `1.2`. A domain restriction and a time
+range are Tavily's to apply; the adapter does not hold the hits to them. A request
+that carries `includeDomains` is also sent `include_domains_mode: "restrict"`,
+Tavily's hard filter, so the restriction does not rest on Tavily's default mode;
+the mode is the adapter's and a caller cannot send it. Under `timeRange`, Tavily
+drops results it dates, by publish or last-updated date, outside the span; results
+it cannot date are kept. The adapter does not send `filter_by_published_date`.
 
 ```json
 {"connection":"research","revision":"<64-hex-revision>","query":"public policy guidance","maxResults":5,"includeDomains":["example.gov"],"timeRange":"year"}
@@ -225,8 +231,11 @@ No provider was called with an account, so nothing here is a claim that a live T
 Google Cloud account is accepted, or of what a live answer holds: the form of
 Google's source links, the size of its attribution markup and the models that
 support grounding are as its documentation states them, not as observed.
-Tavily's `include_domains`, `exclude_domains` and `time_range` are sent as its
-search reference names them; what Tavily does with them was not observed.
+Tavily's `include_domains` (with `include_domains_mode`), `exclude_domains` and
+`time_range` are sent as its search reference names them; what Tavily does with
+them was not observed. The golden comparison records each request's headers, a
+bearer value masked, and Google's token request with the assertion's header and
+claims, without its instants and its signature.
 
 ## Adding a provider
 

@@ -12,7 +12,8 @@ silently ignored", with its acceptance's "versioned discovery/configuration sche
 search adapter. This record states the design the pull request builds; the maintainer accepts or
 amends it.
 
-**Checked against** gateway `main` at `8f7c619`. It extends [ADR-0009](0009-named-web-search-connections.md),
+**Checked against** gateway `main` at `8f7c619`, and at `552141b` (v0.18.0) with the clean-room
+review of the pull request applied. It extends [ADR-0009](0009-named-web-search-connections.md),
 whose acquisition arguments were the connection, its revision, the query and the maximum results,
 and supersedes nothing.
 
@@ -55,12 +56,15 @@ it, with no version, and no result schema.
   of a domain list (a subdomain, a redirect) is its own, and an adapter that dropped hits by
   another reading would change the result. The restriction is the provider's to apply, and the
   schema says the adapter does not hold the hits to it.
-- **D. Admit Google's domain exclusion (`googleSearch.excludeDomains`).** Declined for this
-  change: the provider documentation was not fetched for it, and that the exclusion applies to the
-  `googleSearch` tool of the endpoint the adapter calls, and with what bound, could not be
-  confirmed. Tavily's three parameters are admitted as its search reference names them, each
-  within what it documents; Google's exclusion is refused by name, and a later record can admit
-  it with a new request schema version.
+- **D. Admit Google's domain exclusion (`googleSearch.exclude_domains`).** Declined for this
+  change. Google documents it on the endpoint the adapter calls: the Vertex AI grounding page's
+  `generateContent` example sends `"googleSearch": {"exclude_domains": [...]}`, with
+  "EXCLUDE_DOMAINS: Optional: List of domains that aren't to be used for grounding", and the
+  Vertex reference for `Tool.GoogleSearch` says "The default limit is 2000 domains". It is
+  deferred because it is not observed (no provider was called with an account) and which models
+  support it is not known. It stays refused by name; a later record can admit it as
+  `google-grounding-request-2`. Google documents neither an include-list nor a time range for
+  `googleSearch`, so those are refused for Google on their own grounds.
 - **E. A description that stays version 1.** Declined: `docs/design/research-binding-discovery.md`
   states version 1 as closed, so new members are a new version.
 
@@ -78,15 +82,19 @@ Chosen: A.
 | `revision` | yes | takes | takes | 64 lowercase hexadecimal characters | not sent |
 | `query` | yes | takes | takes | 1 to 2,000 bytes of UTF-8, no control character | `query` |
 | `maxResults` | yes | takes | takes | an integer from 1 to 10 | `max_results` |
-| `includeDomains` | no | takes | refused | 1 to 20 distinct domain names | `include_domains` |
+| `includeDomains` | no | takes | refused | 1 to 20 distinct domain names | `include_domains`, with `include_domains_mode: "restrict"` |
 | `excludeDomains` | no | takes | refused | 1 to 20 distinct domain names | `exclude_domains` |
 | `timeRange` | no | takes | refused | `day`, `week`, `month` or `year` | `time_range` |
 
 A domain name is two or more labels of lowercase letters, digits and hyphens separated by dots,
-each label 1 to 63 characters that neither begin nor end with a hyphen, at most 253 bytes in all:
-no scheme, path, port, wildcard, capital or final dot. Twenty is the adapter's own bound, not a
-provider's. Google is sent the query inside the adapter's instruction and no other
-argument, as before; `maxResults` bounds the links its answer keeps.
+each label 1 to 63 characters that neither begin nor end with a hyphen, at most 253 bytes in all,
+the last label holding a letter: no scheme, path, port, wildcard, capital or final dot, no address
+(`192.168.1.1`) and no name of digits alone (`1.2`). Twenty is the adapter's own bound, not a
+provider's. Under `timeRange`, Tavily drops results it dates, by publish or last-updated date,
+outside the span; results it cannot date are kept. The adapter does not send
+`filter_by_published_date`, which would change what Tavily returns; that is a choice for a later
+schema version. Google is sent the query inside the adapter's instruction and no other argument,
+as before; `maxResults` bounds the links its answer keeps.
 
 ### 2. Refusals
 
@@ -110,17 +118,24 @@ A request is read in this order, and the first fault is the refusal:
 
 Nothing refused at any step is charged or sent, and the program writes nothing to its output, so
 the gateway mints no receipt. A Tavily option the table does not hold (a topic, a search depth,
-dates, a country, an answer, page content, images) is refused at step 2, as is a member named as
-Tavily names it (`include_domains`).
+dates, a country, an answer, page content, images, `include_domains_mode`,
+`filter_by_published_date`) is refused at step 2, as is a member named as Tavily names it
+(`include_domains`).
 
 ### 3. What is sent and stated
 
 A taken argument is sent to Tavily exactly as read, under its member there, beside the members the
-adapter fixes, which no argument can be sent as. The acquisition's statement names each argument
-the request carried beyond the four, by its name, as it was sent; the receipt's
-`acquisition.statement` commits to it, and its `argumentsCommitment` to the arguments, as both
-did. A request with none of them sends the bytes it sent before and has the statement it had
-before; the golden comparison holds that, with the records written by `8f7c619`'s code.
+adapter fixes, which no argument can be sent as. A request that carries `includeDomains` is also
+sent `include_domains_mode: "restrict"`, Tavily's hard filter, so that the restriction does not
+rest on Tavily's default mode; no other request is sent it, and a caller cannot send it. The
+mode is the adapter's, as the other fixed members are, and is not in the statement. The
+acquisition's statement names each argument the request carried beyond the four, by its name, as
+it was sent; the receipt's `acquisition.statement` commits to it, and its `argumentsCommitment` to
+the arguments, as both did. A request with none of them sends the bytes it sent before and has the
+statement it had before; the golden comparison holds that, with the records written by
+`552141b`'s code: each request's method, address, headers (a bearer value masked) and body, and
+Google's token request with its assertion's header and claims, without the instants and the
+signature.
 
 ### 4. Description version 2 and the schema versions
 
@@ -151,16 +166,20 @@ whatever the statement holds.
 
 - Good, because the schema a host registers is the one acquisition enforces, and a refusal says
   which argument and why, before anything is spent.
-- Good, because a Tavily search can be held to domains and to a span of time, and the receipt
-  commits to that.
+- Good, because a Tavily search can be held to domains and, as Tavily dates results, to a span of
+  time, and the receipt commits to that.
 - Bad, because a refusal of an unknown member that was `invalid-request` is now
   `search-argument-unsupported`, and of a value out of its form `search-argument-invalid`: a
   client that matched `invalid-request` for those reads a new code.
 - Bad, because the domain restriction and the time range are Tavily's to apply; the adapter does
   not hold the hits to them, and they repeat Tavily's search reference, not an observation. No
   provider was called with an account.
-- Bad, because Google takes neither a domain restriction nor a time range here, though its API
-  reference may document an exclusion (option D).
+- Bad, because Google takes no domain exclusion here, though it documents `exclude_domains` for
+  `googleSearch` on this endpoint, with a 2,000-domain default limit: it is not observed, and
+  which models support it is not known (option D).
+- Bad, because the Desk reads description version 1 closed and maps only `invalid-request` for a
+  search refusal: judgment-pack-desk#444 reads version 2 and maps the named refusals, and must land
+  with or before the Desk's pin moves to the gateway release that carries this record.
 - Revisit when Google's domain exclusion is to be admitted, when another search provider is added
   (#233 to #237), when the adapter is to hold hits to a restriction, or when the single authoring
   boundary across two source configurations of #275 is designed.

@@ -21,7 +21,9 @@ version 1's members, each with the meaning it had, and three more:
 `requestSchemaVersion`, `resultSchema` and `resultSchemaVersion`. Version 1, which
 #281 wrote, had `version`, `shape`, `adapter`, `endpoint`, `research`,
 `fixedArguments`, `requestSchema` and `resultRecord`, and was closed, so a reader
-that holds it closed refuses version 2.
+that holds it closed refuses version 2. The Desk holds it so: judgment-pack-desk#444
+reads version 2 (and maps the named refusals), and must land with or before the
+Desk's pin moves to a gateway release that carries ADR-0019.
 
 - `shape` is `http`; `adapter` is the same `{name, version, digest}` that the
   running executable places in acquisitions. A host must not substitute its own

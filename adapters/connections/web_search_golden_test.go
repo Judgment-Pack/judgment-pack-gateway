@@ -6,34 +6,41 @@ package connections
 // ADR-0019 added asks each provider for the same bytes, and answers with the
 // same record, as the adapter did before them. testdata/search-golden.jsonl
 // was written by this test run against the code before the change (gateway
-// main at 8f7c619, with goldenRead decoding the request and calling
+// main at 552141b, v0.18.0, with goldenRead decoding the request and calling
 // searchAcquire, as ReadSearch did there); with
 // JPACK_TEST_SEARCH_GOLDEN_WRITE naming a file, it writes that file again
 // instead of comparing. testdata/describe-golden-v1.jsonl is what
-// --describe-research wrote then, version 1, for the same two connections.
+// --describe-research wrote at 8f7c619, version 1, for the same two
+// connections.
 //
 // What a run cannot reproduce is taken out, and only that: the instant the
-// answer was read (observedAt, retrievedAt) and the digest of the program
-// that read it, which is this test's own binary. Everything else is compared
-// byte for byte: each request's method, address and body (but the body of
-// Google's token request, a signed assertion of the moment), the statement,
-// the endpoint, the snapshot, the peer and the result. A receipt the gateway
-// mints from the same arguments and the same record differs from another
-// only by its salts, its session and its stamps.
+// answer was read (observedAt, retrievedAt), the digest of the program that
+// read it, which is this test's own binary, a bearer credential's value, and
+// in Google's token request the assertion's instants (iat, exp) and its
+// signature, the key being made for each run. Everything else is compared
+// byte for byte: each request's method, address, headers and body, the
+// token request's form and the assertion's header and other claims, the
+// statement, the endpoint, the snapshot, the peer and the result. A receipt
+// the gateway mints from the same arguments and the same record differs
+// from another only by its salts, its session and its stamps.
 
 import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"adapters/document"
+	"adapters/internal/canon"
 )
 
 type searchGolden struct {
@@ -43,9 +50,59 @@ type searchGolden struct {
 }
 
 type goldenRequest struct {
-	Method string `json:"method"`
-	URL    string `json:"url"`
-	Body   string `json:"body"`
+	Method  string   `json:"method"`
+	URL     string   `json:"url"`
+	Headers []string `json:"headers"`
+	Body    string   `json:"body"`
+}
+
+// goldenHeaders is each header a request carries, as "Name: value", in the
+// order of names, a bearer credential's value masked.
+func goldenHeaders(h http.Header) []string {
+	out := []string{}
+	for name, values := range h {
+		for _, v := range values {
+			if name == "Authorization" && strings.HasPrefix(v, "Bearer ") {
+				v = "Bearer (masked)"
+			}
+			out = append(out, name+": "+v)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// goldenToken is Google's token request as it is compared: its form, and
+// the assertion's header and claims, decoded, without its instants (iat,
+// exp) and its signature.
+func goldenToken(body []byte) string {
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		return "(not a form)"
+	}
+	said := map[string]any{}
+	for name, values := range form {
+		if name != "assertion" {
+			said[name] = values
+			continue
+		}
+		parts := strings.Split(values[0], ".")
+		if len(values) != 1 || len(parts) != 3 {
+			return "(not one assertion)"
+		}
+		for i, member := range []string{"assertionHeader", "assertionClaims"} {
+			raw, err := base64.RawURLEncoding.DecodeString(parts[i])
+			var decoded map[string]any
+			if err != nil || json.Unmarshal(raw, &decoded) != nil {
+				return "(an assertion that is not JSON)"
+			}
+			delete(decoded, "iat")
+			delete(decoded, "exp")
+			said[member] = decoded
+		}
+	}
+	out, _ := canon.EncodeJSON(said)
+	return string(out)
 }
 
 // goldenRead is what ReadSearch does, with the provider given.
@@ -97,10 +154,10 @@ func goldenProvider(t *testing.T, tavily string, recorded *[]goldenRequest) prov
 	return searchThrough(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
 		if r.URL.Host == "oauth2.googleapis.com" {
-			*recorded = append(*recorded, goldenRequest{r.Method, r.URL.String(), "(a signed assertion)"})
+			*recorded = append(*recorded, goldenRequest{r.Method, r.URL.String(), goldenHeaders(r.Header), goldenToken(body)})
 			return searchReply(200, strings.NewReader(`{"access_token":"isolated-token","token_type":"Bearer","expires_in":3600}`)), nil
 		}
-		*recorded = append(*recorded, goldenRequest{r.Method, r.URL.String(), string(body)})
+		*recorded = append(*recorded, goldenRequest{r.Method, r.URL.String(), goldenHeaders(r.Header), string(body)})
 		if strings.HasSuffix(r.URL.Path, ":generateContent") {
 			return searchReply(200, strings.NewReader(goldenGrounded)), nil
 		}
@@ -186,7 +243,7 @@ func TestSearchWithoutTheNewArgumentsIsAsBefore(t *testing.T) {
 			t.Fatalf("%s: %d requests, before %d", g.Case, len(g.Requests), len(want.Requests))
 		}
 		for j := range want.Requests {
-			if g.Requests[j] != want.Requests[j] {
+			if g.Requests[j].Method != want.Requests[j].Method || g.Requests[j].URL != want.Requests[j].URL || g.Requests[j].Body != want.Requests[j].Body || !slices.Equal(g.Requests[j].Headers, want.Requests[j].Headers) {
 				t.Errorf("%s: request %d\n got  %+v\n want %+v", g.Case, j, g.Requests[j], want.Requests[j])
 			}
 		}

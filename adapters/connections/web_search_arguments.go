@@ -46,7 +46,13 @@ const (
 // No scheme, path, port, wildcard, capital or final dot.
 const searchDomainPattern = `^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)$`
 
+// searchDomainLastLabel is the rule beside it: the last label holds a
+// letter, so that no address (192.168.1.1) and no name of digits alone is a
+// domain name. A domain matches both patterns.
+const searchDomainLastLabel = `[a-z][a-z0-9-]*$`
+
 var searchDomain = regexp.MustCompile(searchDomainPattern)
+var searchDomainLetter = regexp.MustCompile(searchDomainLastLabel)
 
 // The kinds of form an argument may have.
 const (
@@ -67,15 +73,17 @@ type searchForm struct {
 // searchArgument is a row of the table: an argument by its name as a caller
 // writes it, whether every request carries it, the providers whose
 // connections take it, the member of Tavily's request it is sent as, as
-// given ("" where it is not sent so), its form, and what the schema says of
-// it beyond the form.
+// given ("" where it is not sent so), its form, what the schema says of it
+// beyond the form, and the members the adapter fixes that Tavily is sent
+// beside it, exactly when a request carries it.
 type searchArgument struct {
-	name      string
-	required  bool
-	providers []string
-	tavily    string
-	form      searchForm
-	about     string
+	name       string
+	required   bool
+	providers  []string
+	tavily     string
+	form       searchForm
+	about      string
+	tavilyWith map[string]any
 }
 
 var searchBothProviders = []string{"tavily", "google-grounding"}
@@ -85,17 +93,22 @@ var searchBothProviders = []string{"tavily", "google-grounding"}
 // is given. A Google connection is sent the query inside the adapter's own
 // instruction, and maxResults bounds the links its answer keeps; neither is
 // sent to Google as an argument of its own.
+//
+// includeDomains is sent with include_domains_mode "restrict", Tavily's
+// hard filter, so that the restriction does not rest on Tavily's default
+// mode; the mode is the adapter's, never a caller's.
 var searchArguments = []searchArgument{
-	{"connection", true, searchBothProviders, "", searchForm{kind: formConnection}, ""},
-	{"revision", true, searchBothProviders, "", searchForm{kind: formRevision}, ""},
-	{"query", true, searchBothProviders, "query", searchForm{kind: formText, min: 1, max: searchQueryBytes}, ""},
-	{"maxResults", true, searchBothProviders, "max_results", searchForm{kind: formInteger, min: 1, max: searchResultsMax}, ""},
+	{"connection", true, searchBothProviders, "", searchForm{kind: formConnection}, "", nil},
+	{"revision", true, searchBothProviders, "", searchForm{kind: formRevision}, "", nil},
+	{"query", true, searchBothProviders, "query", searchForm{kind: formText, min: 1, max: searchQueryBytes}, "", nil},
+	{"maxResults", true, searchBothProviders, "max_results", searchForm{kind: formInteger, min: 1, max: searchResultsMax}, "", nil},
 	{"includeDomains", false, []string{"tavily"}, "include_domains", searchForm{kind: formDomains, min: 1, max: searchDomainsMax},
-		"Only results from these domains: sent to Tavily as include_domains, as given, for Tavily to apply; the adapter does not hold the hits to it."},
+		"Only results from these domains: sent to Tavily as include_domains, as given, with include_domains_mode restrict, for Tavily to apply; the adapter does not hold the hits to it.",
+		map[string]any{"include_domains_mode": "restrict"}},
 	{"excludeDomains", false, []string{"tavily"}, "exclude_domains", searchForm{kind: formDomains, min: 1, max: searchDomainsMax},
-		"No results from these domains: sent to Tavily as exclude_domains, as given, for Tavily to apply; the adapter does not hold the hits to it."},
+		"No results from these domains: sent to Tavily as exclude_domains, as given, for Tavily to apply; the adapter does not hold the hits to it.", nil},
 	{"timeRange", false, []string{"tavily"}, "time_range", searchForm{kind: formChoice, choices: []string{"day", "week", "month", "year"}},
-		"Only results from this span of time back from the request: sent to Tavily as time_range, as given, for Tavily to apply."},
+		"Tavily drops results it dates, by publish or last-updated date, outside this span; results it cannot date are kept. Sent to Tavily as time_range, as given.", nil},
 }
 
 // tavilyFixed is what the adapter asks of Tavily whatever the request: a
@@ -152,7 +165,7 @@ func (f searchForm) holds(v any) bool {
 		}
 		seen := map[string]bool{}
 		for _, d := range list {
-			if len(d) > searchDomainBytes || !searchDomain.MatchString(d) || seen[d] {
+			if len(d) > searchDomainBytes || !searchDomain.MatchString(d) || !searchDomainLetter.MatchString(d) || seen[d] {
 				return false
 			}
 			seen[d] = true
@@ -229,7 +242,7 @@ func (f searchForm) says() string {
 		}
 		return "one of " + strings.Join(quoted, ", ")
 	case formDomains:
-		return "a list of " + strconv.Itoa(f.min) + " to " + strconv.Itoa(f.max) + " distinct domain names, each of at most " + strconv.Itoa(searchDomainBytes) + " bytes in lowercase letters, digits, hyphens and dots"
+		return "a list of " + strconv.Itoa(f.min) + " to " + strconv.Itoa(f.max) + " distinct domain names, each of at most " + strconv.Itoa(searchDomainBytes) + " bytes in lowercase letters, digits, hyphens and dots, its last label holding a letter"
 	}
 	return "in its form"
 }
@@ -363,7 +376,8 @@ func searchArgumentsTaken(provider string, options searchOptions) error {
 }
 
 // tavilyRequest is what Tavily is asked: the fixed members, and each
-// argument the table sends to Tavily, under its member there, as given.
+// argument the table sends to Tavily, under its member there, as given,
+// with the members the table fixes beside it.
 func tavilyRequest(q SearchRequest, options searchOptions) map[string]any {
 	body := map[string]any{}
 	for name, v := range tavilyFixed {
@@ -376,6 +390,9 @@ func tavilyRequest(q SearchRequest, options searchOptions) map[string]any {
 	for _, a := range searchArguments {
 		if v, ok := values[a.name]; ok && a.tavily != "" {
 			body[a.tavily] = v
+			for name, fixed := range a.tavilyWith {
+				body[name] = fixed
+			}
 		}
 	}
 	return body
@@ -420,7 +437,7 @@ func (a searchArgument) schema(c SearchConnection) map[string]any {
 		s = map[string]any{"type": "string", "enum": a.form.choices}
 	case formDomains:
 		s = map[string]any{"type": "array", "minItems": a.form.min, "maxItems": a.form.max, "uniqueItems": true,
-			"items": map[string]any{"type": "string", "maxLength": searchDomainBytes, "pattern": searchDomainPattern}}
+			"items": map[string]any{"type": "string", "maxLength": searchDomainBytes, "allOf": []any{map[string]any{"pattern": searchDomainPattern}, map[string]any{"pattern": searchDomainLastLabel}}}}
 	}
 	if a.about != "" {
 		s["description"] = a.about

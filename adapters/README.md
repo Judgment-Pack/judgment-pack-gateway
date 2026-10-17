@@ -1323,8 +1323,9 @@ before the network is reached. Hits are leads to read through `web`, not
 documents. Catalog v3 advertises the provider under the protocol `web-search-v1`
 and the local source plan names the source. The arguments are held to one table,
 which `--describe-research` gives as a versioned request schema: a Tavily search
-may also be restricted to domains and to a span of time, and any other argument,
-or a value out of its form, is refused by name before anything is charged or sent
+may also be restricted to domains and, as Tavily dates results, to a span of
+time, and any other argument, or a value out of its form, is refused by name
+before anything is charged or sent
 ([ADR-0019](../docs/adr/0019-web-search-holds-its-arguments-to-one-table.md)). See
 [configuration, limits and the provider contract](../docs/web-search.md).
 A Google grounding hit is a link to Google's redirect endpoint; `web` follows it

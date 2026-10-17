@@ -60,7 +60,7 @@ func newStandIn(t *testing.T) (*standIn, provider) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		in.mu.Lock()
-		in.requests = append(in.requests, goldenRequest{r.Method, "https://" + r.Host + r.URL.RequestURI(), string(body)})
+		in.requests = append(in.requests, goldenRequest{Method: r.Method, URL: "https://" + r.Host + r.URL.RequestURI(), Body: string(body)})
 		in.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -197,8 +197,8 @@ func TestEachArgumentIsHeldToItsBounds(t *testing.T) {
 			out: []value{{"none", 0}, {"eleven", 11}, {"fewer than none", -1}, {"a string", "5"}, {"a fraction", rawJSON("2.5")}, {"an exponent", rawJSON("1e1")}, {"past 32 bits", rawJSON("4294967297")}},
 		},
 		"includeDomains": {
-			in:  []value{{"one", domains(1)}, {"twenty", domains(20)}, {"a name of 253 bytes", []string{longDomain(253)}}, {"a label of 63", []string{strings.Repeat("a", 63) + ".org"}}, {"a punycode label", []string{"xn--bcher-kva.example"}}},
-			out: []value{{"none", []string{}}, {"twenty-one", domains(21)}, {"a name of 254 bytes", []string{longDomain(254)}}, {"a label of 64", []string{strings.Repeat("a", 64) + ".org"}}, {"twice", []string{"example.org", "example.org"}}, {"a capital", []string{"Example.org"}}, {"one label", []string{"example"}}, {"a scheme", []string{"https://example.org"}}, {"a path", []string{"example.org/policy"}}, {"a port", []string{"example.org:443"}}, {"a wildcard", []string{"*.example.org"}}, {"a final dot", []string{"example.org."}}, {"a hyphen first", []string{"-a.example.org"}}, {"a line feed after", []string{"example.org\n"}}, {"a string, not a list", "example.org"}, {"a number in the list", rawJSON(`["example.org",7]`)}, {"null", rawJSON("null")}},
+			in:  []value{{"one", domains(1)}, {"twenty", domains(20)}, {"a name of 253 bytes", []string{longDomain(253)}}, {"a label of 63", []string{strings.Repeat("a", 63) + ".org"}}, {"a punycode label", []string{"xn--bcher-kva.example"}}, {"a first label of digits", []string{"123.example.org"}}, {"a last label with a digit", []string{"example.a1"}}},
+			out: []value{{"none", []string{}}, {"twenty-one", domains(21)}, {"a name of 254 bytes", []string{longDomain(254)}}, {"a label of 64", []string{strings.Repeat("a", 64) + ".org"}}, {"twice", []string{"example.org", "example.org"}}, {"a capital", []string{"Example.org"}}, {"one label", []string{"example"}}, {"a scheme", []string{"https://example.org"}}, {"a path", []string{"example.org/policy"}}, {"a port", []string{"example.org:443"}}, {"a wildcard", []string{"*.example.org"}}, {"a final dot", []string{"example.org."}}, {"a hyphen first", []string{"-a.example.org"}}, {"a line feed after", []string{"example.org\n"}}, {"an address", []string{"192.168.1.1"}}, {"the loopback address", []string{"127.0.0.1"}}, {"digits alone", []string{"1.2"}}, {"a last label of digits and a hyphen", []string{"example.1-2"}}, {"a string, not a list", "example.org"}, {"a number in the list", rawJSON(`["example.org",7]`)}, {"null", rawJSON("null")}},
 		},
 		"timeRange": {
 			in:  []value{{"day", "day"}, {"week", "week"}, {"month", "month"}, {"year", "year"}},
@@ -258,7 +258,12 @@ func carried(t *testing.T, label string, a searchArgument, v any, c SearchConnec
 		if !bytes.Equal(body[a.tavily], want) {
 			t.Errorf("%s: Tavily was sent %s=%s, the request %s", label, a.tavily, body[a.tavily], want)
 		}
-		if len(body) != len(tavilyFixed)+2+boolInt(a.name != "query" && a.name != "maxResults") {
+		for name, fixed := range a.tavilyWith {
+			if raw, _ := json.Marshal(fixed); !bytes.Equal(body[name], raw) {
+				t.Errorf("%s: Tavily was sent %s=%s beside it, not %s", label, name, body[name], raw)
+			}
+		}
+		if len(body) != len(tavilyFixed)+2+boolInt(a.name != "query" && a.name != "maxResults")+len(a.tavilyWith) {
 			t.Errorf("%s: Tavily was sent members besides the arguments: %s", label, sent.Body)
 		}
 	case "google-grounding":
@@ -293,7 +298,7 @@ func TestEachArgumentAProviderDoesNotTakeIsRefusedByName(t *testing.T) {
 	// Names a provider documents that the table does not hold, the names
 	// Tavily's own request uses, members that are the adapter's or the
 	// operator's, a name in another case, and a name that is not plain.
-	others := []string{"searchDepth", "search_depth", "topic", "days", "startDate", "start_date", "endDate", "country", "chunksPerSource", "includeAnswer", "include_answer", "includeRawContent", "includeImages", "autoParameters", "include_domains", "exclude_domains", "time_range", "max_results", "excludeDomain", "freshness", "endpoint", "url", "headers", "credential", "provider", "model", "generationConfig", "tools", "Query", "TIMERANGE"}
+	others := []string{"searchDepth", "search_depth", "topic", "days", "startDate", "start_date", "endDate", "country", "chunksPerSource", "includeAnswer", "include_answer", "includeRawContent", "includeImages", "autoParameters", "include_domains", "exclude_domains", "time_range", "max_results", "excludeDomain", "freshness", "endpoint", "url", "headers", "credential", "provider", "model", "generationConfig", "tools", "Query", "TIMERANGE", "include_domains_mode", "includeDomainsMode", "filter_by_published_date"}
 	for _, provider := range searchBothProviders {
 		c := connections[provider]
 		for _, a := range searchArguments {
@@ -382,6 +387,16 @@ func TestTheArgumentTableIsWhole(t *testing.T) {
 		if _, fixed := tavilyFixed[a.tavily]; fixed {
 			t.Errorf("%s would be sent as a member the adapter fixes: %s", a.name, a.tavily)
 		}
+		for name := range a.tavilyWith {
+			if _, fixed := tavilyFixed[name]; fixed || a.tavily == "" {
+				t.Errorf("%s is sent with %s, which the adapter fixes already, or with nothing to go beside", a.name, name)
+			}
+			for _, other := range searchArguments {
+				if other.tavily == name || other.name == name {
+					t.Errorf("%s is sent with %s, which an argument is sent as", a.name, name)
+				}
+			}
+		}
 		if slices.Contains(statementOwn, a.name) {
 			t.Errorf("%s would replace a member of the statement that is the adapter's", a.name)
 		}
@@ -461,6 +476,10 @@ func schemaValid(t *testing.T, schema map[string]any, v any) bool {
 					ok = ok && !seen[string(key)]
 					seen[string(key)] = true
 				}
+			}
+		case "allOf":
+			for _, sub := range k.([]any) {
+				ok = ok && schemaValid(t, sub.(map[string]any), v)
 			}
 		case "items":
 			if list, is := v.([]any); is {
@@ -551,7 +570,7 @@ func samples(property map[string]any) []any {
 		out = append(out, json.Number("7"))
 	case "array":
 		items, _ := property["items"].(map[string]any)
-		candidates := []string{"example.org", "a.b", "xn--bcher-kva.example", "Example.org", "example", "-a.org", "a-.org", "a..org", "example.org.", "*.example.org", "https://example.org", "example.org/path", "exa mple.org", "example.org:443", "example.org\n", longDomain(253), longDomain(254), strings.Repeat("a", 63) + ".org", strings.Repeat("a", 64) + ".org", ""}
+		candidates := []string{"example.org", "a.b", "xn--bcher-kva.example", "Example.org", "example", "-a.org", "a-.org", "a..org", "example.org.", "*.example.org", "https://example.org", "example.org/path", "exa mple.org", "example.org:443", "example.org\n", longDomain(253), longDomain(254), strings.Repeat("a", 63) + ".org", strings.Repeat("a", 64) + ".org", "", "192.168.1.1", "127.0.0.1", "1.2", "123.example.org", "example.a1", "example.1-2"}
 		for _, c := range candidates {
 			out = append(out, []any{c})
 		}
@@ -720,12 +739,49 @@ func TestTheResultSchemaDescribesWhatAcquisitionAnswers(t *testing.T) {
 	}
 }
 
+// A request that carries includeDomains is sent include_domains_mode
+// "restrict" beside it, exactly, and no other request is: the restriction
+// is Tavily's hard filter whatever Tavily's default mode, and a caller
+// cannot set the mode.
+func TestIncludeDomainsIsSentAsAHardFilter(t *testing.T) {
+	b, connections := argumentStore(t)
+	c := connections["tavily"]
+	for label, change := range map[string]map[string]any{
+		"includeDomains":                {"includeDomains": []string{"example.gov"}},
+		"includeDomains and the others": {"includeDomains": []string{"example.gov"}, "excludeDomains": []string{"example.com"}, "timeRange": "week"},
+		"excludeDomains alone":          {"excludeDomains": []string{"example.com"}},
+		"timeRange alone":               {"timeRange": "month"},
+		"the four alone":                {},
+	} {
+		o := acquire(t, b, c, request(c, change))
+		if o.err != nil || o.sent != 1 {
+			t.Fatalf("%s: %v after %d requests", label, o.err, o.sent)
+		}
+		var body map[string]json.RawMessage
+		json.Unmarshal([]byte(b.in.last().Body), &body)
+		mode, sent := body["include_domains_mode"]
+		_, restricted := change["includeDomains"]
+		if sent != restricted || restricted && string(mode) != `"restrict"` {
+			t.Errorf("%s: include_domains_mode %s (sent %v)", label, mode, sent)
+		}
+		var statement map[string]json.RawMessage
+		var envelope struct{ Acquisition struct{ Statement string } }
+		json.Unmarshal(o.out, &envelope)
+		json.Unmarshal([]byte(envelope.Acquisition.Statement), &statement)
+		if _, named := statement["include_domains_mode"]; named {
+			t.Errorf("%s: the statement names the adapter's own member", label)
+		}
+	}
+	o := acquire(t, b, c, request(c, map[string]any{"includeDomains": []string{"example.gov"}, "include_domains_mode": "prefer"}))
+	refusedUnsent(t, "a mode from the caller", o, `search-argument-unsupported: "include_domains_mode" is not an argument of web-search; nothing was sent`)
+}
+
 // Each schema version names one schema: the digest of what it was when it
 // was given. A change of a schema with no new version fails here; a new
 // version is a new row, and the old row goes with the schema it named.
 func TestSearchSchemaVersionsNameOneSchemaEach(t *testing.T) {
 	pinned := map[string]string{
-		"tavily-request-1":           "sha256:0e8771d04110d6e7ca704c29f31ceb579a18e95bb7d21a038523fe98bf210320",
+		"tavily-request-1":           "sha256:f0f33ef8c122a29bc7dc652ae29d8378776d9015a0ce2ca200354f8f7c9237f3",
 		"tavily-result-1":            "sha256:fc117aadcc0e6a346cb7cbd3e6d9aca23aa0c8cca9e99409bb467191a822e758",
 		"google-grounding-request-1": "sha256:5e34c0dd5df4fda297924192c6648212895bdad0a4df7b898c57347a86bcebfd",
 		"google-grounding-result-1":  "sha256:ac95ece6df9ee61a8732b77a160c308f9581554522d45bab2f92f195a78f4f1f",
