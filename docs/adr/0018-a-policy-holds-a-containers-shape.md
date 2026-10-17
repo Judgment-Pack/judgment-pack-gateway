@@ -195,9 +195,15 @@ the policy with one.
   and 2 are extended, and nothing is superseded. The closed set of a policy's members gains
   `shape`, a version-10 member. `policy-bind` also holds the shapes, after the fixed values and
   before `closed`. `closed`'s reach gains the shaped pointers, which reach their containers and
-  cover nothing. §5's limit holds for a container no shape names. §6's worked example is rewritten
-  in engine-config.md, and its admission of the object spelling is kept as a regression under the
-  policy without a shape. ADR-0016 carries an amendment paragraph after §5 that points here.
+  cover nothing. §5's limit holds for a container no shape names, and only for that: a closed
+  policy that shapes each container its pointers continue through only by an index admits one
+  shape of request. §2's closed policy with neither `bind` nor `fix` admits only an empty
+  `arguments`, or none, when it has no `shape` either (§3 above). §4's "holds no number" becomes
+  "its only numbers are a shape's `maxLength`" (§4 above). §6's worked example is rewritten in
+  engine-config.md, and its admission of the object spelling is kept as a regression under the
+  policy without a shape. ADR-0016 itself is not edited: an accepted record is immutable
+  ([README](README.md#adding-a-record)), and its index row carries the annotation naming this
+  record.
 - [ADR-0011](0011-hold-a-write-to-its-decision.md) and
   [ADR-0012](0012-hold-a-write-to-a-signed-record.md) are unchanged beyond what ADR-0016 records.
 - [ADR-0007](0007-the-engine-serves-the-adapters-it-ships.md)'s `services` still takes the next
