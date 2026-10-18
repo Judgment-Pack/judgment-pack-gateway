@@ -32,6 +32,7 @@ func (r unread) Read([]byte) (int, error) {
 }
 
 func TestAcquisitionFixtureProtocolIsClosedBeforeReadingInput(t *testing.T) {
+	markedBuild(t)
 	for _, test := range []struct {
 		role string
 		args []string
@@ -152,15 +153,33 @@ func TestAcquisitionFixtureRefusesAnUnmarkedBuildInEveryRole(t *testing.T) {
 		{"adapter-sources", source, `{"connection":"demo","revision":"abc","query":"fixture","maxResults":1}`},
 	} {
 		var out, stderr bytes.Buffer
-		if code := run(test.role, test.args, strings.NewReader(test.input), &out, &stderr); code != 1 || out.Len() != 0 || strings.TrimSpace(stderr.String()) != "fixture-build-required" {
+		reads := &countingReader{Reader: strings.NewReader(test.input)}
+		if code := run(test.role, test.args, reads, &out, &stderr); code != 1 || out.Len() != 0 || strings.TrimSpace(stderr.String()) != "fixture-build-required" {
 			t.Fatal("unmarked build served", test.role, code, out.String(), stderr.String())
 		}
+		if reads.n != 0 {
+			t.Fatal("unmarked build read its input", test.role)
+		}
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+			t.Fatal("unmarked build touched the state directory", test.role, err)
+		}
 	}
+}
+
+type countingReader struct {
+	io.Reader
+	n int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	r.n++
+	return r.Reader.Read(p)
 }
 
 // Each of these stops at the principal alone: the state directory is absolute,
 // the provider is right, and no input may be read.
 func TestAcquisitionFixtureSourceRefusesAnyPrincipalButTheLocalDesk(t *testing.T) {
+	markedBuild(t)
 	dir := t.TempDir()
 	for _, args := range [][]string{
 		{"--state-dir", dir, "--provider", "web-search"},

@@ -138,6 +138,13 @@ class FixtureBuilderTest(unittest.TestCase):
                                allow_dirty_fixture_source=allow_dirty)
 
         def git(*arguments):
+            # The refs are the signed tag's own, not HEAD or another name.
+            if arguments[0] == 'verify-tag':
+                self.assertEqual(arguments, ('verify-tag', 'refs/tags/v0.18.0'))
+            elif arguments[0] == 'cat-file':
+                self.assertEqual(arguments, ('cat-file', 'tag', 'refs/tags/v0.18.0'))
+            elif arguments[0] == 'rev-parse':
+                self.assertIn(arguments, [('rev-parse', '--verify', 'refs/tags/v0.18.0^{commit}'), ('rev-parse', 'HEAD')])
             if arguments[0] == failing:
                 raise subprocess.CalledProcessError(1, ['git', *arguments])
             output = b'signed tag evidence'

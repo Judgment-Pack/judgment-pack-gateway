@@ -23,8 +23,8 @@ The fixed corpus uses invented company, professional and procurement records.
 `https://api.tavily.com/search` returns three links under
 `https://example.com/fixtures/`: `company`, `person` and `notice`. Configure only
 a disposable Tavily connection with the fake credential `tvly-fixture-only`; the search
-bridge refuses any other connection (`fixture-store-required`) before it charges
-anything.
+bridge refuses any connection that is not a `tavily` connection holding that
+credential (`fixture-store-required`) before it charges anything.
 The harness keeps the canonical provider endpoint; it does not override the
 acquisition endpoint to match a local listener. The company search snippet names
 `Fixture District`, while its page states `Fixture City`, so consumers can test

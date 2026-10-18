@@ -7,6 +7,7 @@ package main
 
 import (
 	"adapters/connections"
+	"adapters/internal/acquisitionfixture"
 	"adapters/websource"
 	"context"
 	"fmt"
@@ -23,6 +24,10 @@ func main() {
 }
 
 func run(role string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// An unmarked build refuses before it reads any input or opens any store.
+	if (role == "adapter-web" || role == "adapter-sources") && !acquisitionfixture.Marked() {
+		return result(nil, websource.ErrFixtureBuild, stdout, stderr)
+	}
 	switch role {
 	case "adapter-web":
 		if len(args) == 1 && args[0] == "--describe-research" {
