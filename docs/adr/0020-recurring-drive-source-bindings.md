@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-10-18
 deciders: maintainer
 ---
@@ -67,6 +67,12 @@ and the real bounded Drive acquisition/extraction path.
   [ADR-0005](0005-personal-storage-controls.md) and
   [ADR-0010](0010-a-drive-connection-is-of-the-whole-drive.md).
 
-Material-decision impact: public-surface, security, documented-claim. The eventual
-PR must record a different-vendor adversarial review and maintainer dispositions;
-this proposed record does not itself satisfy that review requirement.
+Material-decision impact: public-surface, security, documented-claim. Accepted
+with merged [PR #297](https://github.com/Judgment-Pack/judgment-pack-gateway/pull/297),
+whose reviewed head was `27df7367b6be5f380c6ae5989bde625bf9dde68a` and whose squash
+merge was `5b2136c5f0b43c1c42831b7d05109c791606861b`, with an identical source tree.
+The review used OpenAI models over an OpenAI implementation: same-vendor review,
+not different-vendor review. The maintainer explicitly granted a
+[one-time exception to merge the named exact-head PRs](https://github.com/Judgment-Pack/judgment-pack-gateway/pull/297#issuecomment-6248852465).
+That exception records the approval for this merged decision; it does not waive
+review requirements for later material changes or authorize a release.
