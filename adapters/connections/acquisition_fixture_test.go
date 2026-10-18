@@ -6,7 +6,10 @@ import (
 	"adapters/attachment"
 	"adapters/document"
 	"adapters/internal/acquisitionfixture"
+	"bytes"
 	"encoding/json"
+	"io"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -60,5 +63,90 @@ func TestAcquisitionFixtureSearchKeepsIdentityValidationAndBudget(t *testing.T) 
 	}
 	if _, err := ReadSearchAcquisitionFixture(t.Context(), store, encoded); err != Error("search-budget-exhausted") {
 		t.Fatal("production durable daily cap bypassed", err)
+	}
+}
+
+type bodyKeeper struct {
+	http.RoundTripper
+	bodies *[]string
+}
+
+func (k bodyKeeper) RoundTrip(r *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(r.Body)
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	*k.bodies = append(*k.bodies, string(body))
+	return k.RoundTripper.RoundTrip(r)
+}
+
+// The fixture reads a request by production's path: for the same request it
+// sends the same body, commits the same statement and refuses by the same
+// code as production's readSearch.
+func TestAcquisitionFixtureSearchTakesProductionsArgumentTable(t *testing.T) {
+	store, broker, connection := searchFixture(t)
+	connection.Credential = acquisitionfixture.Credential
+	connection.DailyLimit = 1000
+	configured, _ := json.Marshal(connection)
+	if _, err := broker.Handle(t.Context(), "configure", configured); err != nil {
+		t.Fatal(err)
+	}
+	store.locked(func(state *state) error { connection = state.Search.Connections[0]; return nil })
+	in, p := newStandIn(t)
+	statementOf := func(out []byte) string {
+		var envelope struct{ Acquisition struct{ Statement string } }
+		if json.Unmarshal(out, &envelope) != nil || envelope.Acquisition.Statement == "" {
+			t.Fatal("no statement", string(out))
+		}
+		return envelope.Acquisition.Statement
+	}
+	admitted := map[string]map[string]any{
+		"includeDomains":   {"includeDomains": []string{"example.gov"}},
+		"excludeDomains":   {"excludeDomains": []string{"example.com"}},
+		"timeRange":        {"timeRange": "week"},
+		"all three":        {"includeDomains": []string{"example.gov"}, "excludeDomains": []string{"example.com"}, "timeRange": "year"},
+		"maxResults lower": {"maxResults": 1},
+		"maxResults upper": {"maxResults": 10},
+		"the four alone":   {},
+		"twenty domains":   {"includeDomains": domains(20)},
+	}
+	for label, change := range admitted {
+		raw := request(connection, change)
+		want, err := readSearch(t.Context(), store, raw, p)
+		if err != nil {
+			t.Fatalf("%s: production refused: %v", label, err)
+		}
+		var bodies []string
+		got, err := readSearchAcquisitionFixture(t.Context(), store, raw, func(rt http.RoundTripper) http.RoundTripper { return bodyKeeper{rt, &bodies} })
+		if err != nil {
+			t.Fatalf("%s: the fixture refused what production admits: %v", label, err)
+		}
+		if len(bodies) != 1 || bodies[0] != in.last().Body {
+			t.Errorf("%s: the fixture sent %q, production %q", label, bodies, in.last().Body)
+		}
+		if statementOf(got) != statementOf(want) {
+			t.Errorf("%s: statements differ:\\n%s\\n%s", label, statementOf(got), statementOf(want))
+		}
+	}
+	refused := map[string]map[string]any{
+		"maxResults zero":         {"maxResults": 0},
+		"maxResults eleven":       {"maxResults": 11},
+		"includeDomains empty":    {"includeDomains": []string{}},
+		"includeDomains scheme":   {"includeDomains": []string{"https://example.org"}},
+		"timeRange decade":        {"timeRange": "decade"},
+		"unsupported searchDepth": {"searchDepth": "advanced"},
+		"unsupported mode":        {"include_domains_mode": "prefer"},
+	}
+	for label, change := range refused {
+		raw := request(connection, change)
+		sent := in.count()
+		_, want := readSearch(t.Context(), store, raw, p)
+		var bodies []string
+		out, got := readSearchAcquisitionFixture(t.Context(), store, raw, func(rt http.RoundTripper) http.RoundTripper { return bodyKeeper{rt, &bodies} })
+		if want == nil || got == nil || got.Error() != want.Error() || len(out) != 0 || len(bodies) != 0 || in.count() != sent {
+			t.Errorf("%s: fixture %v, production %v, %d fixture requests", label, got, want, len(bodies))
+		}
+		code := strings.SplitN(want.Error(), ":", 2)[0]
+		if code != "search-argument-invalid" && code != "search-argument-unsupported" {
+			t.Errorf("%s: production's code %q", label, code)
+		}
 	}
 }
