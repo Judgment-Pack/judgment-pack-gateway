@@ -5,6 +5,7 @@
 package acquisitionfixture
 
 import (
+	"adapters/document"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -19,6 +20,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"time"
 )
 
@@ -28,6 +30,14 @@ const SearchEndpoint = "https://" + SearchHost + "/search"
 const Credential = "tvly-fixture-only"
 
 var ErrNetwork = errors.New("fixture-network-refused")
+
+// ErrBuild is the refusal of a program that is not marked as the fixture. Only
+// the builder stamps the marker, so a plain tagged build refuses by itself.
+var ErrBuild = errors.New("fixture-build-required")
+
+// Marked reports whether this program was built as the fixture: its reported
+// version begins "fixture.", as the builder stamps it.
+func Marked() bool { return strings.HasPrefix(document.Version, "fixture.") }
 
 // Network serves only the compiled synthetic corpus. No request, environment
 // variable or operator argument can supply a destination, root or response.

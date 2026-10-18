@@ -7,6 +7,7 @@ package main
 
 import (
 	"adapters/connections"
+	"adapters/internal/acquisitionfixture"
 	"adapters/websource"
 	"context"
 	"fmt"
@@ -23,10 +24,14 @@ func main() {
 }
 
 func run(role string, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	// An unmarked build refuses before it reads any input or opens any store.
+	if (role == "adapter-web" || role == "adapter-sources") && !acquisitionfixture.Marked() {
+		return result(nil, websource.ErrFixtureBuild, stdout, stderr)
+	}
 	switch role {
 	case "adapter-web":
 		if len(args) == 1 && args[0] == "--describe-research" {
-			raw, err := websource.DescribeResearchBinding()
+			raw, err := websource.DescribeAcquisitionFixture()
 			return result(raw, err, stdout, stderr)
 		}
 		if len(args) != 0 {
@@ -93,7 +98,7 @@ func runSearch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	defer store.Close()
 	if describe {
-		out, err := connections.DescribeSearchBinding(store, raw)
+		out, err := connections.DescribeSearchAcquisitionFixture(store, raw)
 		return result(out, err, stdout, stderr)
 	}
 	timeout := 55 * time.Second

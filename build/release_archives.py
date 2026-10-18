@@ -239,6 +239,9 @@ def parse_record(text):
             settings.setdefault(key, []).append(value)
     if len(packages) != 1:
         return None, f'its build record names {len(packages)} packages'
+    # The test fixture is built under this tag; no release program is.
+    if any('gateway_acquisition_fixture' in value.split(',') for value in settings.get('-tags', [])):
+        return None, 'its build record carries the acquisition fixture build tag'
     for key in ('GOOS', 'GOARCH'):
         if len(settings.get(key, [])) != 1:
             return None, f'its build record states {key} {len(settings.get(key, []))} times'

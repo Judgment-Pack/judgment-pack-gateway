@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 import io
 import json
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 from types import SimpleNamespace
@@ -129,18 +130,28 @@ class FixtureBuilderTest(unittest.TestCase):
             asset.write_text('{"en":"changed embed"}')
             self.assertNotEqual(before, builder.source_files())
 
-    def fake_build(self, change=None):
-        args = SimpleNamespace(output=self.output, base_archive=self.archive,
+    def fake_build(self, change=None, output=None, allow_dirty=True, status=b' M fixture source',
+                   tag_commit=None, failing=None):
+        args = SimpleNamespace(output=output or self.output, base_archive=self.archive,
                                base_checksums=self.checksums, base_provenance=self.provenance,
                                base_tag='v0.18.0', base_commit=self.commit,
-                               allow_dirty_fixture_source=True)
+                               allow_dirty_fixture_source=allow_dirty)
 
         def git(*arguments):
+            # The refs are the signed tag's own, not HEAD or another name.
+            if arguments[0] == 'verify-tag':
+                self.assertEqual(arguments, ('verify-tag', 'refs/tags/v0.18.0'))
+            elif arguments[0] == 'cat-file':
+                self.assertEqual(arguments, ('cat-file', 'tag', 'refs/tags/v0.18.0'))
+            elif arguments[0] == 'rev-parse':
+                self.assertIn(arguments, [('rev-parse', '--verify', 'refs/tags/v0.18.0^{commit}'), ('rev-parse', 'HEAD')])
+            if arguments[0] == failing:
+                raise subprocess.CalledProcessError(1, ['git', *arguments])
             output = b'signed tag evidence'
             if arguments[0] == 'rev-parse':
-                output = self.commit.encode()
+                output = (tag_commit or self.commit).encode() if arguments[1] == '--verify' else self.commit.encode()
             elif arguments[0] == 'status':
-                output = b' M fixture source'
+                output = status
             return SimpleNamespace(stdout=output, stderr=b'')
 
         def go(command, **options):
@@ -174,6 +185,45 @@ class FixtureBuilderTest(unittest.TestCase):
         self.assertEqual(provenance['fixture']['sourceFiles'], before)
         self.assertEqual(provenance['fixture']['builderSha256'], before['adapters/testdata/acquisition-fixture/build.py'])
         self.assertEqual(provenance['fixture']['sourceFiles']['adapters/connections/presentation.json'], builder.digest((module / 'connections' / 'presentation.json').read_bytes()))
+
+    def test_a_tag_that_does_not_verify_refuses_before_any_output(self):
+        self.source_tree()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.fake_build(failing='verify-tag')
+        self.assertFalse(self.output.exists())
+
+    def test_a_tag_naming_another_commit_refuses(self):
+        self.source_tree()
+        with self.assertRaisesRegex(ValueError, 'names another commit'):
+            self.fake_build(tag_commit='6' * 40)
+        self.assertFalse(self.output.exists())
+
+    def test_uncommitted_source_refuses_without_the_review_flag(self):
+        self.source_tree()
+        with self.assertRaisesRegex(ValueError, 'source is dirty'):
+            self.fake_build(allow_dirty=False)
+        self.assertFalse(self.output.exists())
+        # The same tree, clean, builds without the flag and is not marked dirty.
+        output = self.fake_build(allow_dirty=False, status=b'')
+        provenance = json.loads((output / 'fixture-provenance.json').read_bytes())
+        self.assertFalse(provenance['fixture']['dirty'])
+        self.assertEqual(provenance['fixture']['version'], 'fixture.' + self.commit[:12])
+
+    def test_an_output_in_the_checkout_or_already_there_refuses(self):
+        self.source_tree()
+        existing = self.output_temporary_path('existing')
+        existing.mkdir()
+        (existing / 'keep').write_text('kept')
+        for name, output in {'existing': existing, 'the checkout': self.root,
+                             'inside the checkout': self.root / 'new-output'}.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(ValueError, 'new directory outside the source checkout'):
+                    self.fake_build(output=output)
+        self.assertEqual((existing / 'keep').read_text(), 'kept')
+        self.assertFalse((self.root / 'new-output').exists())
+
+    def output_temporary_path(self, name):
+        return self.output.parent / name
 
 
 if __name__ == '__main__':

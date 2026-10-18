@@ -22,7 +22,9 @@ builder/smoke refusal tests; these are separate from its ordinary build checks.
 The fixed corpus uses invented company, professional and procurement records.
 `https://api.tavily.com/search` returns three links under
 `https://example.com/fixtures/`: `company`, `person` and `notice`. Configure only
-a disposable Tavily connection with the fake credential `tvly-fixture-only`.
+a disposable Tavily connection with the fake credential `tvly-fixture-only`; the search
+bridge refuses any connection that is not a `tavily` connection holding that
+credential (`fixture-store-required`) before it charges anything.
 The harness keeps the canonical provider endpoint; it does not override the
 acquisition endpoint to match a local listener. The company search snippet names
 `Fixture District`, while its page states `Fixture City`, so consumers can test
@@ -81,7 +83,10 @@ python3 adapters/testdata/acquisition-fixture/build.py \
 
 The signer and other companions remain exact base-archive bytes. Only the two
 adapter slots contain the fixture executable. `document.OwnIdentity` reports that
-executable's actual digest and a stamped `fixture.<source-revision>` version; the
+executable's actual digest and a stamped `fixture.<source-revision>` version
+(both bridges and both descriptors refuse with `fixture-build-required` in a
+tagged build that lacks the stamp, and `build/release_archives.py` refuses a
+release program whose build record carries the tag); the
 fixture manifest is explicitly separate from the official release. Both role
 slots contain the same executable, with the invoked filename selecting the role.
 `fixture-provenance.json` records the source revision, every regular file in the
