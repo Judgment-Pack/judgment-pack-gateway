@@ -5,6 +5,11 @@ version 2. It was proposed separately from the Notion/Obsidian connection review
 PR #143 and flagged for its own material-decision review. It does not change the
 normative gateway receipt contract.
 
+Drive's additional recurring host controls are documented in
+[recurring source observations](recurring-source-observations.md). They extend
+catalog v3/v4 `operations` only, and declare no research or external lifecycle
+capability.
+
 ## Problem and behavior
 
 A host with a built-in list can offer a connection that its installed companion

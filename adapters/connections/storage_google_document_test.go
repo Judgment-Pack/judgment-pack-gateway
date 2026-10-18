@@ -844,9 +844,9 @@ func TestTheConversionIsDrivesAlone(t *testing.T) {
 		if want := provider.ID == "google-drive"; want != (offered == 1) || offered > 1 {
 			t.Fatalf("%s offers the conversion %d times", provider.ID, offered)
 		}
-		// A desk takes at most sixteen operations of a provider, each an
-		// identifier, and refuses the catalog otherwise.
-		if len(provider.Operations) > 16 {
+		// The host admits at most thirty-two operations per provider. Drive's
+		// four recurring source controls extend its existing storage controls.
+		if len(provider.Operations) > 32 {
 			t.Fatalf("%s has %d operations", provider.ID, len(provider.Operations))
 		}
 		for _, operation := range provider.Operations {

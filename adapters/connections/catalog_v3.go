@@ -73,6 +73,9 @@ func ConnectionCatalogV3() CatalogV3 {
 	out.Providers = append(out.Providers, s3Catalog(presentation), searchCatalog(presentation), databricksCatalog(presentation), azureDevOpsCatalog(presentation))
 	out.Sources = append(out.Sources, SourceDescriptor{"web-search", "query", []string{"application/vnd.jpack.web-search+json"}, 1 << 20})
 	for i := range out.Providers {
+		if out.Providers[i].ID == "google-drive" {
+			out.Providers[i].Operations = append(out.Providers[i].Operations, sourceMethods...)
+		}
 		if storageProvider(out.Providers[i].ID) {
 			out.Providers[i].Operations = append(out.Providers[i].Operations, storageMethods...)
 		}

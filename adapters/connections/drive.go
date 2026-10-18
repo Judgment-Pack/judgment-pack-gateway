@@ -32,13 +32,13 @@ type metadata struct {
 	} `json:"capabilities"`
 }
 
-func (p provider) metadata(ctx context.Context, token, id string) (metadata, error) {
-	raw, _, err := p.request(ctx, "GET", p.api+"/files/"+id+"?supportsAllDrives=true&fields=id,name,mimeType,version,size,trashed,capabilities(canDownload)", token, nil, 64<<10)
+func (p provider) metadata(ctx context.Context, token, id string, guard func() error) (metadata, error) {
+	raw, _, err := p.guardedDriveRequest(ctx, p.api+"/files/"+id+"?supportsAllDrives=true&fields=id,name,mimeType,version,size,trashed,capabilities(canDownload)", token, 64<<10, guard)
 	var m metadata
 	if err != nil {
 		return m, err
 	}
-	if json.Unmarshal(raw, &m) != nil || m.ID != id || !readableName(m.Name) || m.Version == "" || len(m.Version) > 32 || m.Trashed || !m.Capabilities.CanDownload {
+	if json.Unmarshal(raw, &m) != nil || m.ID != id || !readableName(m.Name) || !resourceText(m.Version, 32, false) || m.Trashed || !m.Capabilities.CanDownload {
 		return m, ErrUnsupported
 	}
 	return m, nil
@@ -79,16 +79,33 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	if err != nil {
 		return nil, err
 	}
+	return p.readDriveDocument(ctx, s, req.FileID, client, credentialSnapshot, epoch, func() error {
+		return s.checkConnection(credentialSnapshot, epoch)
+	}, nil)
+}
+
+type driveReadProfile struct{ requestedOCR string }
+
+// readDriveDocument is the same acquisition for a one-use selection and a
+// recurring host binding. The caller supplies the current authority check;
+// neither the attachment nor its acquisition envelope carries that authority.
+func (p provider) readDriveDocument(ctx context.Context, s *Store, fileID string, client Client, credentialSnapshot credential, epoch string, guard func() error, profile *driveReadProfile) ([]byte, error) {
+	if err := guard(); err != nil {
+		return nil, err
+	}
 	token, err := p.access(ctx, s, client, credentialSnapshot, epoch)
+	if current := guard(); current != nil {
+		return nil, current
+	}
 	if err != nil {
 		return nil, err
 	}
-	before, err := p.metadata(ctx, token, req.FileID)
+	before, err := p.metadata(ctx, token, fileID, guard)
 	if err != nil {
 		return nil, err
 	}
 	media, name := before.MediaType, before.Name
-	path := "/files/" + req.FileID
+	path := "/files/" + fileID
 	query := url.Values{"alt": {"media"}, "supportsAllDrives": {"true"}}
 	switch media {
 	case "application/vnd.google-apps.document", "application/vnd.google-apps.spreadsheet", "application/vnd.google-apps.presentation":
@@ -106,7 +123,7 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	default:
 		return nil, ErrUnsupported
 	}
-	data, response, err := p.request(ctx, "GET", p.api+path+"?"+query.Encode(), token, nil, MaxFileBytes)
+	data, response, err := p.guardedDriveRequest(ctx, p.api+path+"?"+query.Encode(), token, MaxFileBytes, guard)
 	if err != nil {
 		return nil, err
 	}
@@ -120,11 +137,11 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 		}
 	}
 	observed := time.Now().UTC().Format("2006-01-02T15:04:05Z")
-	after, err := p.metadata(ctx, token, req.FileID)
+	after, err := p.metadata(ctx, token, fileID, guard)
 	if err != nil {
 		return nil, err
 	}
-	if before.Version != after.Version || before.MediaType != after.MediaType || before.Name != after.Name {
+	if before.Version != after.Version || before.MediaType != after.MediaType || before.Name != after.Name || before.Size != after.Size {
 		return nil, ErrChanged
 	}
 	identity, err := document.OwnIdentity()
@@ -140,7 +157,13 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	cfg.MaxOutput = 8 << 20
 	started := time.Now()
 	request := document.Request{Name: name, MediaType: media, Bytes: data, SHA256: digest(data), OCR: "auto", ReceivedAt: started}
+	if profile != nil {
+		profile.requestedOCR = request.OCR
+	}
 	encoded, err := processDriveDocument(ctx, cfg, request, identity, started)
+	if current := guard(); current != nil {
+		return nil, current
+	}
 	if err != nil {
 		return nil, Error("processing-failed")
 	}
@@ -152,7 +175,7 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	}
 	record["document"].(map[string]any)["version"] = before.Version
 	record["original"] = map[string]any{"retention": "inline", "encoding": "base64", "bytes": base64.StdEncoding.EncodeToString(data)}
-	record["provenance"].(map[string]any)["source"] = map[string]any{"kind": "google-drive", "fileId": req.FileID, "version": before.Version, "mediaType": before.MediaType}
+	record["provenance"].(map[string]any)["source"] = map[string]any{"kind": "google-drive", "fileId": fileID, "version": before.Version, "mediaType": before.MediaType}
 	recordBytes, e := canon.EncodeJSON(record)
 	if e != nil || attachment.Check(recordBytes) != nil {
 		return nil, Error("processing-failed")
@@ -167,7 +190,23 @@ func (p provider) read(ctx context.Context, s *Store, raw []byte) ([]byte, error
 	if len(out) > MaxOutputBytes {
 		return nil, ErrLimit
 	}
+	if err := guard(); err != nil {
+		return nil, err
+	}
 	return out, nil
+}
+
+// Every provider read is bracketed by current custody checks, including a
+// failed I/O. A removal/reconnect wins over an otherwise usable response.
+func (p provider) guardedDriveRequest(ctx context.Context, endpoint, token string, max int64, guard func() error) ([]byte, *http.Response, error) {
+	if err := guard(); err != nil {
+		return nil, nil, err
+	}
+	raw, response, err := p.request(ctx, "GET", endpoint, token, nil, max)
+	if current := guard(); current != nil {
+		return nil, nil, current
+	}
+	return raw, response, err
 }
 func queryValues(q url.Values) map[string]string {
 	m := map[string]string{}

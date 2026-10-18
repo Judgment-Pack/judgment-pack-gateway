@@ -109,6 +109,9 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 	if ok && storageMethodOf(descriptor.ID, method) {
 		return b.storageOperation(ctx, method, raw)
 	}
+	if ok && sourceMethodOf(descriptor.ID, method) {
+		return b.sourceOperation(ctx, method, raw)
+	}
 	if !ok || !descriptor.supports(method) {
 		return nil, ErrRequest
 	}
@@ -399,6 +402,11 @@ func (b *Broker) callback(ctx context.Context, f *flow, w http.ResponseWriter, r
 			}
 			if c.Refresh == "" {
 				return ErrRevoked
+			}
+			if b.provider.kind() == "google-drive" && previous != nil {
+				if err := b.store.invalidateSourceBindings(v); err != nil {
+					return err
+				}
 			}
 			v.Connection = c
 			if err := b.store.write("state.json", v); err != nil {
