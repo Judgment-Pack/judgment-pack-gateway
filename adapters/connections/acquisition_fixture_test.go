@@ -123,30 +123,34 @@ func TestAcquisitionFixtureSearchTakesProductionsArgumentTable(t *testing.T) {
 			t.Errorf("%s: the fixture sent %q, production %q", label, bodies, in.last().Body)
 		}
 		if statementOf(got) != statementOf(want) {
-			t.Errorf("%s: statements differ:\\n%s\\n%s", label, statementOf(got), statementOf(want))
+			t.Errorf("%s: statements differ:\n%s\n%s", label, statementOf(got), statementOf(want))
 		}
 	}
-	refused := map[string]map[string]any{
-		"maxResults zero":         {"maxResults": 0},
-		"maxResults eleven":       {"maxResults": 11},
-		"includeDomains empty":    {"includeDomains": []string{}},
-		"includeDomains scheme":   {"includeDomains": []string{"https://example.org"}},
-		"timeRange decade":        {"timeRange": "decade"},
-		"unsupported searchDepth": {"searchDepth": "advanced"},
-		"unsupported mode":        {"include_domains_mode": "prefer"},
+	invalid, unsupported := "search-argument-invalid", "search-argument-unsupported"
+	refused := map[string]struct {
+		change map[string]any
+		code   string
+	}{
+		"maxResults zero":         {map[string]any{"maxResults": 0}, invalid},
+		"maxResults eleven":       {map[string]any{"maxResults": 11}, invalid},
+		"includeDomains empty":    {map[string]any{"includeDomains": []string{}}, invalid},
+		"includeDomains scheme":   {map[string]any{"includeDomains": []string{"https://example.org"}}, invalid},
+		"timeRange decade":        {map[string]any{"timeRange": "decade"}, invalid},
+		"unsupported searchDepth": {map[string]any{"searchDepth": "advanced"}, unsupported},
+		"unsupported mode":        {map[string]any{"include_domains_mode": "prefer"}, unsupported},
 	}
-	for label, change := range refused {
-		raw := request(connection, change)
+	for label, c := range refused {
+		raw := request(connection, c.change)
 		sent := in.count()
 		_, want := readSearch(t.Context(), store, raw, p)
 		var bodies []string
 		out, got := readSearchAcquisitionFixture(t.Context(), store, raw, func(rt http.RoundTripper) http.RoundTripper { return bodyKeeper{rt, &bodies} })
 		if want == nil || got == nil || got.Error() != want.Error() || len(out) != 0 || len(bodies) != 0 || in.count() != sent {
 			t.Errorf("%s: fixture %v, production %v, %d fixture requests", label, got, want, len(bodies))
+			continue
 		}
-		code := strings.SplitN(want.Error(), ":", 2)[0]
-		if code != "search-argument-invalid" && code != "search-argument-unsupported" {
-			t.Errorf("%s: production's code %q", label, code)
+		if code := strings.SplitN(got.Error(), ":", 2)[0]; code != c.code {
+			t.Errorf("%s: code %q, want %q", label, code, c.code)
 		}
 	}
 }
