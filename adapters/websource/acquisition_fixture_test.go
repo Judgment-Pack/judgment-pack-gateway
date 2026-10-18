@@ -15,6 +15,7 @@ import (
 )
 
 func TestAcquisitionFixturePageUsesProductionBodyAndOwnIdentity(t *testing.T) {
+	markedBuild(t)
 	requested := "https://example.com/fixtures/start?submitted=unchanged%2Fbytes"
 	raw, err := ReadAcquisitionFixture(t.Context(), []byte(`{"url":"`+requested+`"}`))
 	if err != nil {
@@ -51,6 +52,7 @@ func TestAcquisitionFixturePageUsesProductionBodyAndOwnIdentity(t *testing.T) {
 }
 
 func TestAcquisitionFixturePageKeepsRequestAndNetworkRefusals(t *testing.T) {
+	markedBuild(t)
 	for _, raw := range []string{`{"url":"https://example.com/fixtures/company","url":"https://example.com/fixtures/company"}`, `{"URL":"https://example.com/fixtures/company"}`, `{"url":"https://example.com/fixtures/company","headers":{}}`, `null`} {
 		if _, err := ReadAcquisitionFixture(t.Context(), []byte(raw)); !errors.Is(err, ErrRequest) {
 			t.Fatal("malformed request admitted", raw, err)

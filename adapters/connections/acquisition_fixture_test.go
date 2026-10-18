@@ -15,6 +15,7 @@ import (
 )
 
 func TestAcquisitionFixtureSearchKeepsIdentityValidationAndBudget(t *testing.T) {
+	markedBuild(t)
 	store, broker, connection := searchFixture(t)
 	connection.Credential = acquisitionfixture.Credential
 	connection.DailyLimit = 1
@@ -82,6 +83,7 @@ func (k bodyKeeper) RoundTrip(r *http.Request) (*http.Response, error) {
 // sends the same body, commits the same statement and refuses by the same
 // code as production's readSearch.
 func TestAcquisitionFixtureSearchTakesProductionsArgumentTable(t *testing.T) {
+	markedBuild(t)
 	store, broker, connection := searchFixture(t)
 	connection.Credential = acquisitionfixture.Credential
 	connection.DailyLimit = 1000

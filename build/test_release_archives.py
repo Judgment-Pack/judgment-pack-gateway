@@ -759,6 +759,12 @@ class ArchiveChecks(unittest.TestCase):
     def test_a_record_of_two_programs(self):
         self.assertEqual(checked.parse_record(RECORD + RECORD), (None, 'its build record names 2 packages'))
 
+    def test_a_record_of_the_acquisition_fixture_build_tag(self):
+        for tags in ('gateway_acquisition_fixture', 'other,gateway_acquisition_fixture'):
+            self.assertEqual(checked.parse_record(RECORD + f'\tbuild\t-tags={tags}\n'),
+                             (None, 'its build record carries the acquisition fixture build tag'))
+        self.assertEqual(checked.parse_record(RECORD + '\tbuild\t-tags=netgo\n'), (('gateway', 'linux', 'amd64', 'v1'), ''))
+
     def test_a_record_that_names_no_package(self):
         self.assertEqual(checked.parse_record(RECORD.replace('\tpath\tgateway\n', '')), (None, 'its build record names 0 packages'))
 

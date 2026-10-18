@@ -15,6 +15,15 @@ import (
 	"testing"
 )
 
+// markedBuild makes the test run as the builder stamps the fixture; a test of
+// the refusal of an unmarked build sets the version itself.
+func markedBuild(t *testing.T) {
+	t.Helper()
+	was := document.Version
+	document.Version = "fixture.test"
+	t.Cleanup(func() { document.Version = was })
+}
+
 type unread struct{ t *testing.T }
 
 func (r unread) Read([]byte) (int, error) {
@@ -46,6 +55,7 @@ func TestAcquisitionFixtureProtocolIsClosedBeforeReadingInput(t *testing.T) {
 }
 
 func TestAcquisitionFixturePageDescriptionReadsNoInput(t *testing.T) {
+	markedBuild(t)
 	t.Setenv("JPACK_CONNECTIONS_DIR", "/must-not-be-opened")
 	var out, stderr bytes.Buffer
 	if code := run("adapter-web", []string{"--describe-research"}, unread{t}, &out, &stderr); code != 0 || stderr.Len() != 0 {
@@ -63,6 +73,7 @@ func TestAcquisitionFixturePageDescriptionReadsNoInput(t *testing.T) {
 }
 
 func TestAcquisitionFixtureProtocolBoundsInputAndDoesNotEchoIt(t *testing.T) {
+	markedBuild(t)
 	for _, input := range []string{strings.Repeat("sensitive-fixture", 1000), `{"url":"https://example.com/fixtures/company","endpoint":"secret"}`, `{"url":"https://user:private@example.com/fixtures/company"}`} {
 		var out, stderr bytes.Buffer
 		if code := run("adapter-web", nil, strings.NewReader(input), &out, &stderr); code != 1 || out.Len() != 0 || strings.Contains(stderr.String(), "private") || strings.Contains(stderr.String(), "secret") || strings.Contains(stderr.String(), "https:") || stderr.Len() > 200 {
@@ -72,6 +83,7 @@ func TestAcquisitionFixtureProtocolBoundsInputAndDoesNotEchoIt(t *testing.T) {
 }
 
 func TestAcquisitionFixtureSourceProtocolUsesPrivateStoreAndRealBodies(t *testing.T) {
+	markedBuild(t)
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0700); err != nil {
 		t.Fatal(err)
@@ -117,5 +129,47 @@ func TestAcquisitionFixtureSourceProtocolUsesPrivateStoreAndRealBodies(t *testin
 	stderr.Reset()
 	if code := run("adapter-sources", args, bytes.NewReader(request), &out, &stderr); code != 1 || out.Len() != 0 || strings.TrimSpace(stderr.String()) != "search-budget-exhausted" {
 		t.Fatal("source protocol bypassed daily budget", code, stderr.String())
+	}
+}
+
+func TestAcquisitionFixtureRefusesAnUnmarkedBuildInEveryRole(t *testing.T) {
+	was := document.Version
+	document.Version = "0"
+	t.Cleanup(func() { document.Version = was })
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	source := []string{"--state-dir", dir, "--principal", "desk-local", "--provider", "web-search"}
+	for _, test := range []struct {
+		role  string
+		args  []string
+		input string
+	}{
+		{"adapter-web", []string{"--describe-research"}, ""},
+		{"adapter-web", nil, `{"url":"https://example.com/fixtures/company"}`},
+		{"adapter-sources", append([]string{"--describe-research"}, source...), `{"connection":"demo","revision":"abc"}`},
+		{"adapter-sources", source, `{"connection":"demo","revision":"abc","query":"fixture","maxResults":1}`},
+	} {
+		var out, stderr bytes.Buffer
+		if code := run(test.role, test.args, strings.NewReader(test.input), &out, &stderr); code != 1 || out.Len() != 0 || strings.TrimSpace(stderr.String()) != "fixture-build-required" {
+			t.Fatal("unmarked build served", test.role, code, out.String(), stderr.String())
+		}
+	}
+}
+
+// Each of these stops at the principal alone: the state directory is absolute,
+// the provider is right, and no input may be read.
+func TestAcquisitionFixtureSourceRefusesAnyPrincipalButTheLocalDesk(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"--state-dir", dir, "--provider", "web-search"},
+		{"--state-dir", dir, "--provider", "web-search", "--principal", "someone-else"},
+		{"--state-dir", dir, "--provider", "web-search", "--principal", "desk-local ", "--describe-research"},
+	} {
+		var out, stderr bytes.Buffer
+		if code := run("adapter-sources", args, unread{t}, &out, &stderr); code != 2 || out.Len() != 0 || stderr.Len() != 0 {
+			t.Fatal("principal check bypassed", args, code, out.String(), stderr.String())
+		}
 	}
 }

@@ -26,7 +26,7 @@ func run(role string, args []string, stdin io.Reader, stdout, stderr io.Writer) 
 	switch role {
 	case "adapter-web":
 		if len(args) == 1 && args[0] == "--describe-research" {
-			raw, err := websource.DescribeResearchBinding()
+			raw, err := websource.DescribeAcquisitionFixture()
 			return result(raw, err, stdout, stderr)
 		}
 		if len(args) != 0 {
@@ -93,7 +93,7 @@ func runSearch(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	}
 	defer store.Close()
 	if describe {
-		out, err := connections.DescribeSearchBinding(store, raw)
+		out, err := connections.DescribeSearchAcquisitionFixture(store, raw)
 		return result(out, err, stdout, stderr)
 	}
 	timeout := 55 * time.Second
