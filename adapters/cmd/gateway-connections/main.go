@@ -3,6 +3,7 @@ package main
 
 import (
 	"adapters/connections"
+	"adapters/internal/canon"
 	"bufio"
 	"context"
 	"encoding/json"
@@ -216,10 +217,23 @@ func writeResponseLimit(w io.Writer, out map[string]any, id, method string) erro
 	limit := connections.ControlLineBytes
 	if method == "files-read" {
 		limit = connections.StorageLineBytes
+	} else if method == "source-observe" {
+		limit = connections.SourceObservationLineBytes
 	} else if method == "files-list" {
 		limit = connections.StorageMetadataBytes
 	}
-	raw, err := json.Marshal(out)
+	var raw []byte
+	var err error
+	if method == "source-observe" {
+		// Preserve the canonical attachment artifact inside its JSON object,
+		// including raw Unicode and HTML characters, without re-escaping it.
+		raw, err = canon.EncodeJSON(out)
+		if err == nil {
+			raw, err = canon.Canonicalize(raw, canon.RefuseNumbers)
+		}
+	} else {
+		raw, err = json.Marshal(out)
+	}
 	if err != nil || len(raw)+1 > limit {
 		raw, err = json.Marshal(response(id, nil, connections.Error("response-too-large")))
 		if err != nil {
