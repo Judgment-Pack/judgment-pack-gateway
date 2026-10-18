@@ -80,7 +80,7 @@ func TestPageBindingRequestShapeKeepsOperatorControlsClosed(t *testing.T) {
 	var d PageBindingDescriptor
 	var schema struct {
 		Type                 string
-		AdditionalProperties bool
+		AdditionalProperties *bool
 		Required             []string
 		Properties           map[string]struct {
 			Type      string
@@ -89,7 +89,7 @@ func TestPageBindingRequestShapeKeepsOperatorControlsClosed(t *testing.T) {
 		}
 	}
 	if json.Unmarshal(raw, &d) != nil || json.Unmarshal(d.RequestSchema, &schema) != nil ||
-		schema.Type != "object" || schema.AdditionalProperties || len(schema.Required) != 1 ||
+		schema.Type != "object" || schema.AdditionalProperties == nil || *schema.AdditionalProperties || len(schema.Required) != 1 ||
 		schema.Required[0] != "url" || len(schema.Properties) != 2 {
 		t.Fatal("page request shape is not closed")
 	}
