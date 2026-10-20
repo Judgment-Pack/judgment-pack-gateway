@@ -44,8 +44,8 @@ Sources: [S3 objects retain null versions when versioning is enabled](https://do
 
 Independent tests live outside the production tree:
 
-- `<scratch>`
-- `<scratch>`
+- `<scratch>/probe_test.go`
+- `<scratch>/overlay.json`
 
 Command, run from `<scratch>`:
 

@@ -14,7 +14,7 @@ for name,file,old,new,test in checks:
  path=root/'connections'/file;source=path.read_text()
  if source.count(old)!=1:raise RuntimeError((name,source.count(old)))
  changed=work/(name+'.go');changed.write_text(source.replace(old,new));overlay=work/(name+'.json');overlay.write_text(json.dumps({'Replace':{str(path):str(changed)}}))
- p=subprocess.run(['go','test','-overlay',str(overlay),'./connections','-run','^'+test+'$','-count=1'],cwd=root,env={**os.environ,'GOCACHE':os.environ.get('GOCACHE','<scratch>')},text=True,capture_output=True)
+ p=subprocess.run(['go','test','-overlay',str(overlay),'./connections','-run','^'+test+'$','-count=1'],cwd=root,env={**os.environ,'GOCACHE':os.environ.get('GOCACHE','.jpack-s3-mutation-cache')},text=True,capture_output=True)
  (work/(name+'.log')).write_text(p.stdout+p.stderr)
  # A compile failure is not a killed behavioral mutation.
  killed=p.returncode!=0 and ('--- FAIL:' in p.stdout or 'panic: runtime error:' in p.stdout)
