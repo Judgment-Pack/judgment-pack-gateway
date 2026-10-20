@@ -17,3 +17,16 @@ verify-ts/node_modules/
 
 # release archives, built by goreleaser (docs/releasing.md)
 /dist/
+
+# Python virtual environment of the development kit (dev.json).
+/.venv/
+
+# What the engine image checks (scripts/checks/image-*.sh) write into the working directory.
+/runtime-jpack
+/engine-export.tar
+/engine-config.json
+/image/
+/probe
+/project/
+/result.json
+/out.txt

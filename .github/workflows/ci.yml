@@ -1,5 +1,13 @@
 name: CI
 
+# The check list is dev.json, run by scripts/dev/check.sh (the development kit's vendored runner).
+# Two jobs. `go` is the operating system matrix: its job names are required by branch protection,
+# and its legs run the core's Go steps natively on each platform. `check` sets the toolchains up
+# from the manifest and runs every step of it: the core, the adapters, the release contents, the
+# plugins, the second implementation, the engine image, the witness scenario and the agreement of
+# the two paths. Each of the steps that were jobs of their own is a step of dev.json, and the
+# longer ones are scripts under scripts/checks/ with the comments they had here.
+
 on:
   pull_request:
   push:
@@ -83,456 +91,49 @@ jobs:
             | awk '$1 != "gateway" && $2 != "true" { print "resolves outside the standard library: " $0; bad = 1 } END { exit bad }'
           go list -deps . | grep -qx plugin && { echo "the core imports plugin"; exit 1; } || true
 
-  adapters:
-    name: adapters · Go 1.26
+  check:
+    name: check
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: adapters
-    env:
-      GOWORK: off
+    timeout-minutes: 120
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: "1.26"
-      - name: Formatting is canonical
-        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
-      - name: Vet
-        run: go vet ./...
-      - name: Cross-vet Windows adapters
-        run: GOOS=windows go vet ./...
-      - name: Tests
-        run: go test ./...
-      - name: Build
-        run: go build -buildvcs=false ./...
-      - name: Tagged acquisition fixture contracts and refusal checks
+          persist-credentials: false
+      # First, so that a manifest that does not parse fails before the long steps start.
+      - name: The manifest parses and its first step runs
+        run: scripts/dev/check.sh --manifest dev.json --only local-paths
+      - name: Read the toolchains from dev.json and release.yml
+        id: dev
         run: |
-          go test -race -tags gateway_acquisition_fixture ./internal/acquisitionfixture ./websource ./connections ./testdata/acquisition-fixture -run '^Test(Fixture|AcquisitionFixture)' -count=1
-          go vet -tags gateway_acquisition_fixture ./internal/acquisitionfixture ./websource ./connections ./testdata/acquisition-fixture
-          PYTHONDONTWRITEBYTECODE=1 python3 testdata/acquisition-fixture/build_test.py
-          PYTHONDONTWRITEBYTECODE=1 python3 testdata/acquisition-fixture/smoke_test.py
-      - name: Actual provider output agrees with its published attachment schema
-        run: |
-          python3 -m venv "$RUNNER_TEMP/attachment-schema"
-          "$RUNNER_TEMP/attachment-schema/bin/pip" install -r ../testdata/attachments/schema-requirements.txt
-          JPACK_TEST_DRIVE_RECORD="$RUNNER_TEMP/drive-record.json" go test ./connections -run '^TestDriveRecordForPublishedSchema$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_schema.py "$RUNNER_TEMP/drive-record.json"
-          JPACK_TEST_GMAIL_RECORD="$RUNNER_TEMP/gmail-record.json" go test ./connections -run '^TestGmailSearchSelectAndVerifiedTextExport$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_gmail_schema.py "$RUNNER_TEMP/gmail-record.json"
-          JPACK_TEST_NOTION_RECORD="$RUNNER_TEMP/notion-record.json" JPACK_TEST_OBSIDIAN_RECORD="$RUNNER_TEMP/obsidian-record.json" go test ./connections -run '^Test(NotionOAuthSearchSelectedSnapshot|ObsidianSelectedSnapshotAndBoundary)$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_connected_schema.py "$RUNNER_TEMP/notion-record.json" "$RUNNER_TEMP/obsidian-record.json"
-          JPACK_TEST_WEB_RECORD="$RUNNER_TEMP/web-record.json" go test ./websource -run '^TestWebSnapshotAndRedirect$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_web_schema.py "$RUNNER_TEMP/web-record.json"
-          JPACK_TEST_WEB_OCR_RECORD="$RUNNER_TEMP/web-ocr-record.json" go test ./websource -run '^TestWebPDFUsesSelectedOCRAndKeepsOriginalSource$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_web_schema.py "$RUNNER_TEMP/web-ocr-record.json"
-          JPACK_TEST_WEB_REDIRECT_RECORD="$RUNNER_TEMP/web-redirect-record.json" go test ./websource -run '^TestGroundingRedirectIsFollowedOnceWhenTheOperatorEnablesIt$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_web_schema.py "$RUNNER_TEMP/web-redirect-record.json"
-          JPACK_TEST_RESOURCE_RECORD="$RUNNER_TEMP/resource-record.json" go test ./connections -run '^TestResourceProducerSupportsUnknownProviderAndBindsRetainedBytes$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_resource_schema.py "$RUNNER_TEMP/resource-record.json"
-          JPACK_TEST_RESOURCE_PDF="$RUNNER_TEMP/resource-pdf.json" go test ./connections -run '^TestGenericResourcePDFUsesSharedRecord$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/attachments/check_resource_schema.py "$RUNNER_TEMP/resource-pdf.json"
-      # A record the rendering adapter writes in this run, and the examples
-      # beside the schemas, are what the schemas describe, and the schemas
-      # refuse a list of broken variants of each (docs/design/rendering.md).
-      # The record of a PDF is made with the stand-in for a rendering program
-      # that lies beside the examples, since the runner has none. The
-      # validator is the one the step above installed.
-      - name: A rendering agrees with its published schemas
-        run: |
-          go build -buildvcs=false -o "$RUNNER_TEMP/adapter-render" ./cmd/adapter-render
-          "$RUNNER_TEMP/adapter-render" < ../testdata/rendering/examples/refund-decision.request.json > "$RUNNER_TEMP/render-record.json"
-          "$RUNNER_TEMP/adapter-render" --renderer ../testdata/rendering/standin-renderer < ../testdata/rendering/examples/refund-decision.pdf.request.json > "$RUNNER_TEMP/render-pdf-record.json"
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/rendering/check_schema.py "$RUNNER_TEMP/render-record.json" "$RUNNER_TEMP/render-pdf-record.json"
-      # A result of each kind the search source writes in this run, and the
-      # examples beside the schemas, are what the schemas describe, and the
-      # schemas refuse a list of broken variants of each (docs/web-search.md).
-      # No provider is asked: the answers are the test's own. The validator
-      # is the one installed above.
-      - name: A search result agrees with its published schema
-        run: |
-          JPACK_TEST_SEARCH_RESULT="$RUNNER_TEMP/search-result.json" JPACK_TEST_GROUNDED_RESULT="$RUNNER_TEMP/grounded-result.json" go test ./connections -run '^TestSearchResultsForPublishedSchema$' -count=1
-          "$RUNNER_TEMP/attachment-schema/bin/python" ../testdata/search/check_schema.py "$RUNNER_TEMP/search-result.json" "$RUNNER_TEMP/grounded-result.json"
-      # The shared descriptor vectors are what make_vectors.py writes, and
-      # every schema they and the library fixtures say schema grammar 1
-      # accepts is a schema under both dialects' meta-schemas
-      # (docs/design/tool-descriptors.md). The validator is a module of its
-      # own, so neither of the gateway's modules takes the dependency; it
-      # carries both meta-schemas and fetches nothing.
-      - name: The descriptor vectors are what their script writes
-        working-directory: testdata/tool-descriptors
-        run: python3 make_vectors.py && git diff --exit-code -- vectors.json
-      - name: Accepted descriptor schemas are valid in both dialects
-        working-directory: testdata/tool-descriptors/metaschema
-        run: go vet ./... && go test ./...
-      # Every description the MCP server serves, as rendered.json records
-      # it -- the gateway's own test holds the record to its rendering --
-      # parsed by a CommonMark renderer the gateway does not link: what a
-      # server wrote stays inside one fenced block, and nothing else becomes
-      # an element but a paragraph and its code spans.
-      - name: Served descriptions render nothing a server wrote as markup
-        working-directory: testdata/tool-descriptors/commonmark
-        run: go vet ./... && go test ./...
-      # The mirror of the core's rule: an adapter may take dependencies the core
-      # never will, but no dependency may resolve into the core's directory,
-      # under any import name, and nothing may redirect resolution.
-      - name: No adapters dependency resolves into the core
-        run: |
-          find .. -name go.work -not -path '*/.git/*' | grep -q . && { echo "a go.work file is present"; exit 1; } || true
-          grep -nE '^\s*replace\b' go.mod && { echo "go.mod carries a replace directive"; exit 1; } || true
-          core="$(cd ../go && pwd)"
-          go list -deps -f '{{.ImportPath}} {{.Dir}}' ./... \
-            | awk -v core="$core" '$2 == core || index($2, core "/") == 1 { print "resolves into the core: " $0; bad = 1 } END { exit bad }'
-          go list -deps ./... | grep -qx plugin && { echo "an adapter imports plugin"; exit 1; } || true
-
-  # What a release carries (docs/releasing.md), held on every commit so that
-  # a tag is never the first to learn of it. The toolchain is the one
-  # release.yml names, exactly, and not the newest of its line as in the
-  # jobs above: the notices carry the toolchain's own licence, so they are
-  # held with the toolchain that links a release.
-  release-contents:
-    name: release contents
-    runs-on: ubuntu-latest
-    env:
-      GOWORK: off
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: 1.26.5
-          cache-dependency-path: adapters/go.sum
-      - name: This is the toolchain the release workflow names
-        run: |
-          named="$(sed -n "s/^ *go-version: *['\"]\{0,1\}\([0-9][0-9.]*\)['\"]\{0,1\} *\$/\1/p" .github/workflows/release.yml)"
-          [ -n "$named" ] && [ "go$named" = "$(go env GOVERSION)" ] || { echo "release.yml names Go ${named:-nothing}, and this job runs $(go env GOVERSION)"; exit 1; }
-      # The licence of every module the released programs link, and of
-      # every linked package that carries its own, as the module cache
-      # holds them.
-      - name: The third-party notices are what the linked modules say
-        run: python3 build/third_party_notices.py --check
-      # The names in a file, compared with the directories: a first notice
-      # only. A build under the right name from the wrong package passes
-      # it, and is refused by the release workflow, which reads the
-      # archives.
-      - name: Every program under adapters/cmd is named in the release build
-        run: |
-          want="$(ls adapters/cmd | sort)"
-          have="$(sed -n 's/^    binary: //p' .goreleaser.yml | grep -vx gateway | sort)"
-          [ "$want" = "$have" ] || { echo "adapters/cmd and .goreleaser.yml name different programs:"; diff <(echo "$want") <(echo "$have"); exit 1; }
-      # What the release workflow holds of its archives, run here against
-      # sound archives and against archives spoiled one way at a time: real
-      # programs, built by this toolchain and archived.
-      - name: The archive check refuses each fault it names
-        run: python3 build/test_release_archives.py
-      # No publisher's application registration in the connection companion
-      # (docs/design/publisher-google-oauth.md).
-      - name: The tree carries no publisher registration
-        run: |
-          [ "$(tr -d '[:space:]' < adapters/cmd/gateway-connections/publisher-google.json)" = "{}" ] || { echo "publisher-google.json is not the empty registration"; exit 1; }
-
-  image:
-    name: engine image
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The image is built from this commit and never pushed here, and the
-      # release workflow does not publish it yet. What is checked is that
-      # it builds from the pinned bases, and that the core inside it agrees
-      # with the frozen corpus it carries.
-      # BuildKit, stated rather than assumed: the legacy builder copies the
-      # gateway binary between stages without its capability attribute.
-      - name: Build
-        run: docker build --tag engine:ci .
-        env:
-          DOCKER_BUILDKIT: "1"
-      - name: The image's core agrees with the corpus it carries
-        run: docker run --rm engine:ci conform --corpus /usr/share/engine/corpus
-      # The filesystem the runtime itself unpacks -- a container created
-      # from the image, exported whole -- is what is held to the design,
-      # not a model of the layers: the gateway's capabilities (an attribute
-      # the export carries), mode and owner on a root-owned unlinked path;
-      # nothing else privileged; the homes and their parent; the adapters,
-      # catalog and corpus root's and unwritable, byte for byte; the users;
-      # the entrypoint and command from the image's configuration.
-      - name: The image check holds each invariant, one negative case each
-        run: python3 .github/test_image_checks.py
-      # The runtime the image carries is the released binary the Dockerfile
-      # pins, byte for byte: the same binary is taken from the pinned image
-      # here, by the digest the Dockerfile names, and handed to the check.
-      - name: The image's unpacked filesystem is what the design states, and its layers give the attribute as stated
-        run: |
-          # Exactly one pin line, spelled as a version tag and a digest.
-          [ "$(grep -c '^FROM ghcr\.io/judgment-pack/judgment-pack:' Dockerfile)" = 1 ] || { echo "the Dockerfile must name the runtime pin exactly once"; exit 1; }
-          pin=$(sed -n 's/^FROM \(ghcr\.io\/judgment-pack\/judgment-pack:[0-9][0-9.]*[0-9]@sha256:[0-9a-f]\{64\}\) AS runtime$/\1/p' Dockerfile)
-          [ -n "$pin" ] || { echo "the Dockerfile's runtime pin is not <version>@sha256:<digest>"; exit 1; }
-          docker create --name runtime-pinned "$pin"
-          docker cp runtime-pinned:/jpack runtime-jpack
-          docker rm runtime-pinned
-          docker create --name engine-export engine:ci
-          docker export engine-export > engine-export.tar
-          docker rm engine-export
-          docker image inspect engine:ci > engine-config.json
-          mkdir -p image && docker save engine:ci | tar -x -C image
-          python3 .github/image_checks.py engine-export.tar engine-config.json . image runtime-jpack
-      # The root directory is not in an export; what it must be -- root's,
-      # writable by nobody else -- is held by the act, with a probe every
-      # identity can run (build/probe.go, built here with the image's own
-      # pinned builder, mounted read-only, never part of the image): the
-      # signer and each of the eight platform users are refused at the
-      # root, and root, as the control, is not.
-      - name: Nobody but root may write the root directory
-        run: |
-          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -e GOCACHE=/tmp/gocache -e GOPATH=/tmp/gopath -v "$PWD":/src -w /src docker.io/library/golang:1.26-bookworm@sha256:9fdc884aacc3bec89b20ffc69f4bb369c78210e3e4f600387b5128b12c199f81 sh -c 'CGO_ENABLED=0 go build -o /src/probe build/probe.go'
-          # The probe's refusal is its exit 3; under the runner's bash -e a
-          # failing substitution would end the step first, so it is caught.
-          for user in 65532 65601 65602 65603 65604 65605 65606 65607 65608; do
-            code=0; out=$(docker run --rm --user $user -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-$user 2>&1) || code=$?
-            echo "uid $user: exit $code: $out"
-            if [ "$code" != "3" ] || ! echo "$out" | grep -q 'permission denied'; then echo "uid $user was not refused at the root as stated"; exit 1; fi
-          done
-          out=$(docker run --rm --user 0 -v "$PWD/probe:/probe:ro" --entrypoint /probe engine:ci /created-root 2>&1)
-          echo "root: $out"
-          echo "$out" | grep -q 'created' || { echo "the probe could not create even as root; it proves nothing"; exit 1; }
-          # The root directory itself: root's, its group root's, passable by
-          # everyone and writable by nobody else -- what a refusal alone
-          # cannot show, since a platform user that owned it could chmod it.
-          echo "$out" | grep -q 'root uid=0 gid=0 mode=0755' || { echo "the root directory is not root's at 0755"; exit 1; }
-      - name: The image runs the adapters and the runtime, and starts the engine as built
-        run: |
-          docker run --rm --entrypoint /usr/local/bin/adapter-mcp engine:ci --check 2>&1 | grep -q 'usage: adapter-mcp' || { echo "adapter-mcp does not run"; exit 1; }
-          docker run --rm --entrypoint /usr/local/bin/adapter-airbyte engine:ci 2>&1 | grep -q 'usage: adapter-airbyte' || { echo "adapter-airbyte does not run"; exit 1; }
-          docker run --rm --entrypoint /usr/local/bin/adapter-http engine:ci 2>&1 | grep -q 'usage: adapter-http' || { echo "adapter-http does not run"; exit 1; }
-          docker run --rm --entrypoint /usr/local/bin/adapter-document engine:ci positional 2>&1 | grep -q 'usage: adapter-document' || { echo "adapter-document does not run"; exit 1; }
-          # The runtime reports the pinned release's version, as the signer
-          # and as a platform user: it is everyone's to run. The first line
-          # of its output is compared literally, and the run must succeed.
-          version=$(sed -n 's/^FROM ghcr\.io\/judgment-pack\/judgment-pack:\([0-9][0-9.]*[0-9]\)@sha256:[0-9a-f]\{64\} AS runtime$/\1/p' Dockerfile)
-          [ -n "$version" ] || { echo "the Dockerfile's runtime pin names no version"; exit 1; }
-          for user in 65532 65601; do
-            out=$(docker run --rm --user $user --entrypoint /usr/local/bin/jpack engine:ci version) || { echo "the runtime does not run as uid $user"; exit 1; }
-            [ "$(printf '%s\n' "$out" | head -n 1)" = "jpack $version" ] || { echo "uid $user: the runtime is not $version: $out"; exit 1; }
-          done
-      # The runtime evaluates for whoever runs it, on a project that user
-      # owns: the image's working directory is the signer's home, which a
-      # platform user cannot enter, so the project is mounted and named --
-      # here as uid 65601, HOME and the working directory on the mount --
-      # and the decision record it appends carries the citations it was
-      # given, as given, which is what the engine's verify reads.
-      - name: The runtime evaluates as a platform user and its record cites receipts as given
-        run: |
-          mkdir -p project/packs project/audit
-          cp .github/fixtures/runtime/data-request-intake-triage.json project/packs/intake.json
-          printf '%s' '{"configVersion":"3","audit":{"dir":"audit"},"packs":{"intake":{"path":"packs/intake.json"}}}' > project/jpack.json
-          printf '%s' '{"request":{"type":"data-access","completeness":"complete","appropriateness":"hard-fail","embargoedInformationToUnauthorizedRecipients":false}}' > project/facts.json
-          printf '%s' '{"intake-form":"present","sponsor-endorsement":"present"}' > project/evidence.json
-          signature=$(printf 'a%.0s' $(seq 128))
-          printf '[{"sessionId":"s-1","callIndex":0,"signature":"%s"}]' "$signature" > project/cites.json
-          sudo chown -R 65601:65601 project
-          docker run --rm --user 65601 -e HOME=/project -w /project -v "$PWD/project:/project" --entrypoint /usr/local/bin/jpack engine:ci \
-            experimental evaluate --pack-id intake --facts facts.json --evidence evidence.json --cites cites.json --format json > result.json
-          # The record is that user's alone (the runtime writes it so);
-          # the project is handed back to the runner to read it.
-          sudo chown -R "$(id -u):$(id -g)" project
-          python3 - "$signature" <<'PY'
-          import json, sys
-          # The disposition the fixture's facts reach under this pack: the
-          # outcome the runtime's own test of the same fixture expects.
-          result = json.load(open("result.json"))
-          disposition = result.get("disposition")
-          assert isinstance(disposition, dict) and disposition.get("kind") == "outcome" and disposition.get("outcomeId") == "decline-redirect", result
-          lines = [line for line in open("project/audit/evaluations.jsonl").read().split("\n") if line.strip()]
-          assert len(lines) == 1, lines
-          # As given means as written: the member's bytes on the record line,
-          # integer index and all, not a decoded value Python would fold.
-          expected = '"cites":[{"sessionId":"s-1","callIndex":0,"signature":"%s"}]' % sys.argv[1]
-          assert expected in lines[0], lines[0]
-          record = json.loads(lines[0])
-          assert record.get("kind") == "evaluation" and record.get("recordVersion") == "1", record
-          print("the record cites what it was given, as given, and the evaluation reached its outcome")
+          set -eu
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          m = json.load(open("dev.json", encoding="utf-8"))
+          tc = m.get("toolchains", {})
+          print("node=" + tc.get("node", {}).get("version", ""))
+          print("python=" + tc.get("python", {}).get("version", "3.12"))
           PY
-          # As built: no entrypoint or command override, so the default CMD is what runs.
-          docker run --rm engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the image does not start the engine with its own command"; exit 1; }
-      # The launch overrides the design note states: every capability
-      # dropped is an exec the kernel refuses, since the binary's effective
-      # bit demands its permitted set in full; the three added back is the
-      # supported minimum.
-      - name: The stated launch overrides behave as stated
-        run: |
-          if docker run --rm --cap-drop ALL engine:ci >out.txt 2>&1; then echo "started with every capability dropped"; cat out.txt; exit 1; fi
-          grep -qi 'operation not permitted\|permission denied' out.txt || { echo "refused for another reason:"; cat out.txt; exit 1; }
-          docker run --rm --cap-drop ALL --cap-add SETUID --cap-add SETGID --cap-add KILL engine:ci 2>&1 | grep -q 'engine configuration: open /etc/engine/engine.json' || { echo "the three capabilities alone do not start the engine"; exit 1; }
-
-  agreement:
-    name: both paths agree
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: adapters
-    env:
-      GOWORK: off
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          # The toolchain the release workflow names, exactly: the third-party notices carry the
+          # toolchain's own licence, so they are held with the toolchain that links a release
+          # (scripts/checks/release-toolchain.sh checks that this is it).
+          named="$(sed -n "s/^ *go-version: *['\"]\{0,1\}\([0-9][0-9.]*\)['\"]\{0,1\} *\$/\1/p" .github/workflows/release.yml)"
+          [ -n "${named}" ] || { echo 'release.yml names no Go version' >&2; exit 1; }
+          echo "go=${named}" >> "$GITHUB_OUTPUT"
       - name: Set up Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: "1.26"
-      # ADR-0001 point 4, on a fresh fetch rather than the fixtures alone: a
-      # World database is started from the pinned image, and the golden
-      # records are fetched through the adapter implementations the
-      # binaries call -- against the connector image and the MCP server
-      # image the shipped binding pins -- under a role Postgres holds to
-      # reading, and the facts each shape derives are held to each other,
-      # to the golden records, and to the fixtures'
-      # (docs/design/both-paths-agreement.md). The test derives its own
-      # deadlines from this timeout, leaving itself time to remove what it
-      # started.
-      - name: The golden records derive to the same facts through both shapes
-        run: go test -count=1 -timeout 25m -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/
-        env:
-          AGREEMENT_RUNTIME: docker
-
-  plugins:
-    name: plugins · ${{ matrix.package }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - plugins/n8n-nodes-judgment-pack
-          - plugins/activepieces/judgment-pack
-    defaults:
-      run:
-        working-directory: ${{ matrix.package }}
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+          go-version: ${{ steps.dev.outputs.go }}
+          cache-dependency-path: adapters/go.sum
       - name: Set up Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: "22"
-      # Each ecosystem package is installed from its own lock file, built,
-      # linted by its ecosystem's own linter and tested with Node's test
-      # runner over the request-building code (docs/design/plugins.md).
-      # Lifecycle scripts are not run: the n8n CLI's dependency tree carries
-      # a native module (isolated-vm, under @n8n/ai-utilities) the build,
-      # lint and tests never load, and nothing here needs one compiled.
-      # Nothing here publishes: the n8n node is published by its own
-      # workflow, publish-n8n.yml, on a tag a person pushes.
-      - name: Install from the lock file
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Build
-        run: npm run build
-      - name: Lint
-        run: npm run lint
-      - name: Tests
-        run: npm test
-      # The smoke checkers' refusals (plugins/smoke/testing): the n8n
-      # checker over executions written as n8n stores them, and -- where the
-      # piece has just been built, and so required -- the Activepieces runner
-      # against the stand-in engine, as the engine answers and in each wrong
-      # answer the stand-in can give. Standard library Python; no n8n, no
-      # container. The stand-in's comparison with the engine runs in the Go
-      # job, which builds the engine; here it skips.
-      - name: Smoke checkers
-        working-directory: ${{ github.workspace }}
-        env:
-          SMOKE_REQUIRE_PIECE: ${{ matrix.package == 'plugins/activepieces/judgment-pack' && '1' || '' }}
-        run: python3 -m unittest discover -s plugins/smoke/testing -v
-
-  second-implementation:
-    name: verify-ts · a second implementation
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: verify-ts
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+          node-version: ${{ steps.dev.outputs.node }}
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          go-version: "1.26"
-      - name: Set up Node
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: "22"
-      # A verifier of the attestation format written from SPEC.md and the
-      # corpus, in another language, apart from the Go source
-      # (verify-ts/README.md). It runs on Node's own type stripping and
-      # has no runtime dependency; the compiler is only its typecheck.
-      - name: Install from the lock file
-        run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Typecheck
-        run: npm run typecheck
-      - name: Tests
-        run: npm test
-      # The corpus arbitrates between the two implementations: the
-      # gateway's runner drives this one through the process contract
-      # (corpus/README.md), so neither is checked against the other.
-      - name: The second implementation agrees with the frozen corpus
-        working-directory: go
-        run: |
-          go build -buildvcs=false -o gateway .
-          ./gateway conform --impl ../verify-ts/impl
-      # A chain this gateway's witness serves over HTTP, submitted and read
-      # back a page at a time to its head, before and after a retirement,
-      # read by this implementation through the process contract's
-      # `witness` command with no finding (go/witness_serve_test.go). The
-      # test reads it through the Go reader on every platform; here it reads
-      # it through this one too.
-      - name: The second implementation reads a chain a witness serves
-        working-directory: go
-        env:
-          GATEWAY_VERIFY_TS_IMPL: ${{ github.workspace }}/verify-ts/impl
-        run: go test -count=1 -run '^TestWitnessServedChainReadsCleanly$' -v .
-
-  # ADR-0014's acceptance scenario (determination 6), as the test: a witness
-  # run from this commit's binary on loopback with a test issuer, a trail
-  # registered there, an operator's gateway naming it in witnessedBy, an
-  # acquisition and an action for the trail, and a verifier that starts from
-  # the record and its receipts alone -- `gateway verify`, then
-  # `gateway witness fetch` against the released runtime's reader -- and
-  # reads the countersigned coverage; then a key the witness does not hold,
-  # another origin than the statements came from, and the witness stopped
-  # (go/witness_scenario_test.go).
-  witness-scenario:
-    name: a receipt names its witness · end to end
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: go
-    env:
-      # A second runtime pin, beside the Dockerfile's: the image carries
-      # 0.21.0, which predates `audit verify --witness`, and moving that pin
-      # is a release of the image of its own. This one is the released
-      # binary the scenario reads a witness's chain with, by digest.
-      WITNESS_READER_RUNTIME: ghcr.io/judgment-pack/judgment-pack:0.30.0@sha256:7e5576e7a515e16568480aa00e60a89deb97f7f3552b23aeda5355a0946da450
-    steps:
-      - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Go
-        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
-        with:
-          go-version: "1.26"
-      - name: The pinned runtime, taken from its image by digest
-        run: |
-          docker create --name witness-reader "$WITNESS_READER_RUNTIME"
-          docker cp witness-reader:/jpack "$RUNNER_TEMP/jpack"
-          docker rm witness-reader
-          version=$(printf '%s' "$WITNESS_READER_RUNTIME" | sed -n 's/^ghcr\.io\/judgment-pack\/judgment-pack:\([0-9][0-9.]*[0-9]\)@sha256:[0-9a-f]\{64\}$/\1/p')
-          [ -n "$version" ] || { echo "the runtime pin is not <version>@sha256:<digest>"; exit 1; }
-          out=$("$RUNNER_TEMP/jpack" version) || { echo "the pinned runtime does not run"; exit 1; }
-          [ "$(printf '%s\n' "$out" | head -n 1)" = "jpack $version" ] || { echo "the pinned runtime is not $version: $out"; exit 1; }
-      - name: Build
-        run: go build -buildvcs=false -o "$RUNNER_TEMP/gateway" .
-      - name: A verifier that starts from the record reads the countersigned coverage
-        env:
-          GATEWAY_SCENARIO_RUNTIME: ${{ runner.temp }}/jpack
-          GATEWAY_SCENARIO_GATEWAY: ${{ runner.temp }}/gateway
-        run: go test -count=1 -run '^TestReceiptNamesTheWitnessScenario$' -v .
+          python-version: ${{ steps.dev.outputs.python }}
+      - name: Setup steps
+        run: scripts/dev/check.sh --setup
+      - name: Checks
+        run: scripts/dev/check.sh --all
