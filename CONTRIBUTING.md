@@ -24,6 +24,10 @@ can pick it up. You're welcome to take it back while it's still open.
 
 ## Before opening a pull request
 
+`scripts/dev/check.sh` runs every check CI runs, from the list in `dev.json` (`--setup` installs
+the dependencies first); run it once and paste its summary block in the pull request body. The
+commands below are its first steps for the core:
+
 ```bash
 cd go
 gofmt -l .            # must print nothing

@@ -13,3 +13,9 @@ go/testdata/action-golden/** -text
 
 # The search source is held to the records it wrote before ADR-0019 byte for byte.
 adapters/connections/testdata/*-golden*.jsonl -text
+
+# Whitespace is part of these fixtures and scripts' bytes, so git diff --check (dev.json) skips them.
+adapters/document/testdata/*.pdf -whitespace
+adapters/document/testdata/notes.txt -whitespace
+testdata/rendering/standin-renderer -whitespace
+verify-ts/src/citations.ts whitespace=-blank-at-eof

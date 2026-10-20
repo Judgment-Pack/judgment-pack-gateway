@@ -396,6 +396,16 @@ for others is the hosted product. Nothing in a paid deployment may make a receip
 verifiable *only* through that operator; if it did, it would not be a judgment-pack
 attestation.
 
+## Checks and agent instructions
+
+`scripts/dev/check.sh` runs every check CI runs, in order, and prints one summary block of passes,
+failures and skips; `--setup` runs the install steps first and `--only NAME` re-runs one check. The
+checks are listed in [`dev.json`](dev.json), the manifest of the Judgment Pack development kit
+(v0.1.0), whose runner is vendored here unchanged; the longer ones are scripts under
+`scripts/checks/`. `AGENTS.md` and `CLAUDE.md` carry the same instructions for agent sessions,
+shared rules first and this repository's own after them; CI checks that the two are identical
+(`scripts/sync-agent-docs.sh` writes `CLAUDE.md` from `AGENTS.md`).
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
