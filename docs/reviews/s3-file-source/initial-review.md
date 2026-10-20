@@ -1,6 +1,6 @@
 # Independent initial S3 review — 2026-09-22
 
-Reviewed the working draft in `/tmp/jp-s3-gateway-20260922`, based on commit `a986bef5ca9a52349938750ffc2e9e0086f7f108`; production files were not edited by this reviewer. This is a user-authorized Codex same-vendor independent review, not the cross-vendor review ordinarily required by `docs/adr/README.md`. Read `CONTRIBUTING.md` and `docs/adr/README.md`. The implementation and test work are ongoing; this report is not an exact-head approval.
+Reviewed the working draft in `<scratch>`, based on commit `a986bef5ca9a52349938750ffc2e9e0086f7f108`; production files were not edited by this reviewer. This is a user-authorized Codex same-vendor independent review, not the cross-vendor review ordinarily required by `docs/adr/README.md`. Read `CONTRIBUTING.md` and `docs/adr/README.md`. The implementation and test work are ongoing; this report is not an exact-head approval.
 
 Scope: `docs/design/s3-file-source.md`, `adapters/connections/s3.go`, `s3_network.go`, custody/grant helpers, catalog and executable dispatch changes. Focus: actual protocol behavior and security boundaries, without treating deferred broader integrations machinery as a reason to halt the first connector.
 
@@ -44,13 +44,13 @@ Sources: [S3 objects retain null versions when versioning is enabled](https://do
 
 Independent tests live outside the production tree:
 
-- `/tmp/jp-s3-review-probes/probe_test.go`
-- `/tmp/jp-s3-review-probes/overlay.json`
+- `<scratch>`
+- `<scratch>`
 
-Command, run from `/tmp/jp-s3-gateway-20260922/adapters`:
+Command, run from `<scratch>`:
 
 ```sh
-GOCACHE=/tmp/jp-s3-review-go-cache go test -overlay /tmp/jp-s3-review-probes/overlay.json ./connections -run '^TestIndependentS3' -count=1 -v
+GOCACHE=<scratch> go test -overlay <scratch> ./connections -run '^TestIndependentS3' -count=1 -v
 ```
 
 All three named tests fail against the initial draft for the reasons above. They are external review probes, not proposed production tests. The overlay adds only a virtual test file.

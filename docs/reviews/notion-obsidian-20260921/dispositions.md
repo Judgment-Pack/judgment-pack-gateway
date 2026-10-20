@@ -42,7 +42,7 @@ covers these parents only, not catalog #144/#123 or public-web #148/#124.
 Gateway `review_*_test.go` fixtures adapt the reviewer-supplied probes under these
 accepted findings; the recovery and deterministic race cases were written by Codex.
 The original probes, mutation drivers and report are preserved at
-`/tmp/jpack-handoff/review-notion-claude-20260921`.
+`<scratch>`.
 
 Primary sources checked directly during remediation:
 - https://developers.notion.com/guides/mcp/build-mcp-client (rotation, bounded previous-token tolerance, registration reuse).

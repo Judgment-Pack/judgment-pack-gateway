@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Focused semantic mutations. Run against both reviewed, complete source trees.
 
-python3 mutations.py /path/to/gateway /path/to/desk /tmp/results.json
+python3 mutations.py /path/to/gateway /path/to/desk <scratch>
 Requires Go, Node 22 and Desk's installed web/node_modules. No provider credentials.
 Each mutation uses an isolated copy; originals are never edited. Output includes
 exact replacements and test commands. This is not independent review or coverage
