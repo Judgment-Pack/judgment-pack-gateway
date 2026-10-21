@@ -59,5 +59,9 @@
     {"name": "image-launch-overrides", "run": "scripts/checks/image-launch-overrides.sh", "toolchain": "shell", "timeout": 600},
     {"name": "witness-scenario", "run": "../scripts/checks/witness-scenario.sh", "toolchain": "go", "cwd": "go", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "both-paths-agree", "run": "export GOWORK=off AGREEMENT_RUNTIME=docker; go test -count=1 -timeout 25m -run TestBothPathsAgreeOnAFreshFetch -v ./agreement/", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 3000}
-  ]
+  ],
+  "handover": {
+    "boundary_paths": ["adapters/mcp", "adapters/mcphttp", "adapters/agreement", "adapters/attachment"],
+    "shared_paths": ["corpus", "catalog", "docs/adr"]
+  }
 }
