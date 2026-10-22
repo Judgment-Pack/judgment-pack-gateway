@@ -4,7 +4,7 @@ The **open reference gateway** for judgment-pack: a small hosted service that
 attests the inputs a pack is judged on, under one protected signing identity, and
 seals each session so a verifier can catch replay and rollback.
 
-It is the *hosted deployment shape* of the trustworthy-input-acquisition research
+It is the *hosted deployment shape* of trustworthy input acquisition
 line ([judgment-pack-evaluator-experiments](https://github.com/Judgment-Pack/judgment-pack-evaluator-experiments),
 ADR-0002). That line asked a narrow question — **where do a pack's inputs come from,
 and what makes them trustworthy?** — and answered it with a ceiling stated up front:
