@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -774,65 +773,39 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 		return nil, err
 	}
 
-	core := newObject()
-	core.set("receiptVersion", vString(g.receiptVersion))
-	core.set("sessionId", vString(sessionID))
-	core.set("callIndex", vInt(state.index))
-	if state.prev == "" {
-		core.set("prevSignature", vNull{})
-	} else {
-		core.set("prevSignature", vString(state.prev))
-	}
-	core.set("source", vString(source))
-	core.set("resultDigest", vString(resultDigest))
-	core.set("servedAt", vString(nowStamp()))
-	core.set("authority", vString(g.authority))
+	// Keep time and salt draws here, in their original order: the builder
+	// only assembles already prepared values and performs no I/O.
+	servedAt := nowStamp()
 	var salts map[string]any
+	var argsSalt []byte
+	var acquisition *vObject
+	var witness *vObject
 	if g.receiptVersion == receiptVersion3 {
-		// SPEC.md §1.2a: a salted commitment to the arguments, the salt drawn
-		// fresh, returned to the caller beside the receipt, and never
-		// retained. A bare command is the "command" shape: bytes attested,
-		// the acquisition recorded as far as a command can record it.
-		salt, err := newSalt()
+		argsSalt, err = newSalt()
 		if err != nil {
 			return nil, err
 		}
-		core.set("argumentsCommitment", vString(commitmentOver(salt, "args:", canonicalArgs)))
-		core.set("kind", vString("acquisition"))
-		// SPEC.md §1.2a: the identity a verified token proved, or null.
-		if who == nil {
-			core.set("caller", vNull{})
-		} else {
-			identity := newObject()
-			identity.set("issuer", vString(who.issuer))
-			identity.set("subject", vString(who.subject))
-			identity.set("tokenDigest", vString(who.tokenDigest))
-			core.set("caller", identity)
-		}
-		salts = map[string]any{"args": hex.EncodeToString(salt)}
-		// The witness the configuration names for the trail the request
-		// named, signed with the rest (ADR-0014); absent otherwise, and the
-		// receipt is then the one minted before the member existed.
-		if member := g.witnessMember(trail); member != nil {
-			core.set("witness", member)
-		}
+		salts = map[string]any{"args": hex.EncodeToString(argsSalt)}
+		witness = g.witnessMember(trail)
 		if adapterEnvelope == nil {
-			core.set("acquisition", commandAcquisition(spec, adapterDigest, observedAt))
+			acquisition = commandAcquisition(spec, adapterDigest, observedAt)
 		} else {
-			acquisition, statementSalt, err := adapterAcquisition(spec.shape, adapterEnvelope)
+			var statementSalt []byte
+			acquisition, statementSalt, err = adapterAcquisition(spec.shape, adapterEnvelope)
 			if err != nil {
 				return nil, err
 			}
-			core.set("acquisition", acquisition)
 			if statementSalt != nil {
 				salts["statement"] = hex.EncodeToString(statementSalt)
 			}
 		}
-	} else {
-		mac := hmac.New(sha256.New, argumentsKey(g.store.seed))
-		mac.Write(append([]byte("args:"), canonicalArgs...))
-		core.set("argumentsDigest", vString("hmac-sha256:"+hex.EncodeToString(mac.Sum(nil))))
 	}
+	core := buildReceipt(receiptInput{
+		version: g.receiptVersion, sessionID: sessionID, callIndex: state.index, prevSignature: state.prev,
+		source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
+		arguments: canonicalArgs, argumentsSalt: argsSalt, argumentsSeed: g.store.seed,
+		who: who, witness: witness, kind: "acquisition", detail: acquisition,
+	})
 
 	if g.beforeStamp != nil {
 		g.beforeStamp()
