@@ -494,7 +494,7 @@ func TestResealIsRefused(t *testing.T) {
 // sessions by ENUMERATING it. A value that escaped would produce genuinely
 // signed receipts verification could never see.
 func TestSessionIdIsNotAPath(t *testing.T) {
-	st, reg, _, _ := testStore(t)
+	st, reg, _, registryPath := testStore(t)
 	core := func(sessionID string) *vObject {
 		o := newObject()
 		o.set("receiptVersion", vString(receiptVersion))
@@ -512,8 +512,15 @@ func TestSessionIdIsNotAPath(t *testing.T) {
 		filepath.Join(t.TempDir(), "ESCAPED"), "../../TRAVERSED", "a/b", ".", "..",
 		"", strings.Repeat("x", 129), "sess id",
 	} {
-		if _, _, err := st.stamp(core(bad)); err == nil {
+		_, _, err := st.stamp(core(bad))
+		if err == nil {
 			t.Fatalf("session id %q was accepted", bad)
+		}
+		if bad == "." || bad == ".." {
+			const want = "session id must match ^[A-Za-z0-9._-]{1,128}$"
+			if err.Error() != want {
+				t.Errorf("stamp session id %q: error = %q, want %q", bad, err, want)
+			}
 		}
 	}
 	for _, good := range []string{"s1", "sess-a", "run_2026.07.31", strings.Repeat("A", 128)} {
@@ -521,8 +528,23 @@ func TestSessionIdIsNotAPath(t *testing.T) {
 			t.Fatalf("legitimate session id %q was refused: %v", good, err)
 		}
 	}
-	if _, err := reg.seal("../../ESCAPED", 1, "t"); err == nil {
-		t.Fatal("the registry sealed an escaping session id")
+	for _, bad := range []string{"../../ESCAPED", ".", ".."} {
+		t.Run("seal "+bad, func(t *testing.T) {
+			before, err := os.ReadFile(registryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := reg.seal(bad, 1, "t"); err == nil {
+				t.Errorf("the registry sealed session id %q", bad)
+			}
+			after, err := os.ReadFile(registryPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Errorf("sealing session id %q changed the registry", bad)
+			}
+		})
 	}
 }
 
