@@ -566,6 +566,143 @@ func TestStampRefusesACallIndexOutsideTheCanonicalDomain(t *testing.T) {
 	}
 }
 
+// Each refusal isolates one parser rule. In particular a truncated Unicode
+// escape ends before four bytes remain; a closing quote would instead be an
+// invalid hex digit and would not exercise the length guard.
+func TestCanonTextValueRefusals(t *testing.T) {
+	for _, tt := range []struct {
+		name, input, want, wantErr string
+	}{
+		{name: "accepted escaped control", input: `{"k":"a\u0001b"}`, want: `{"k":"a\u0001b"}`},
+		{name: "accepted integer", input: `{"n":1}`, want: `{"n":1}`},
+		{name: "accepted surrogate pair", input: `"\ud83d\ude00"`, want: `"😀"`},
+		{name: "unterminated string", input: `"abc`, wantErr: "unterminated string"},
+		{name: "unterminated escape", input: `"abc\`, wantErr: "unterminated escape"},
+		{name: "invalid escape", input: `"\q"`, wantErr: `invalid escape \q`},
+		{name: "raw control byte", input: "\"a\x01b\"", wantErr: "unescaped control character 0x01 in string"},
+		{name: "invalid UTF-8", input: "\"\xff\"", wantErr: "invalid UTF-8 in string"},
+		{name: "truncated Unicode escape", input: `"\u12`, wantErr: `truncated \u escape`},
+		{name: "invalid Unicode hex", input: `"\u12g4"`, wantErr: `invalid hex digit 'g' in \u escape`},
+		{name: "truncated second Unicode escape", input: `"\ud800\u12`, wantErr: `truncated \u escape`},
+		{name: "invalid second Unicode hex", input: `"\ud800\u12g4"`, wantErr: `invalid hex digit 'g' in \u escape`},
+		{name: "invalid surrogate pair", input: `"\ud800\u0041"`, wantErr: `lone surrogate \ud800 is not encodable`},
+		{name: "missing number digits", input: `-`, wantErr: "expected digits at 1"},
+		{name: "leading zero", input: `01`, wantErr: "leading zero in number at 0"},
+		{name: "integer overflow", input: `9223372036854775808`, wantErr: "integer 9223372036854775808 is outside the canonical domain"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := canonText([]byte(tt.input))
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("canonText(%q): got %q, %v; want error %q", tt.input, got, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || string(got) != tt.want {
+				t.Fatalf("canonText(%q): got %q, %v; want %q", tt.input, got, err, tt.want)
+			}
+		})
+	}
+}
+
+// The sign refusal is a statement-only parser mode: canonText accepts signed
+// integers. Exercise its public parser entry point separately.
+func TestStatementNumberSignRefusals(t *testing.T) {
+	for _, tt := range []struct {
+		name, input, wantErr string
+	}{
+		{name: "accepted unsigned zero", input: "0"},
+		{name: "negative zero", input: "-0", wantErr: "a number spelled with a sign at 0"},
+		{name: "negative integer", input: "-1", wantErr: "a number spelled with a sign at 0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseStatementJSON([]byte(tt.input), 1)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("parseStatementJSON(%q): got %v, %v; want error %q", tt.input, got, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || got != vInt(0) {
+				t.Fatalf("parseStatementJSON(%q): got %v, %v; want zero", tt.input, got, err)
+			}
+		})
+	}
+}
+
+// Shape checks precede all signature work. Build the receipt directly so a
+// missing member and a retyped member each reach their own refusal.
+func TestReceiptFromVersion2ShapeRefusals(t *testing.T) {
+	for _, tt := range []struct {
+		name, member string
+		replacement  value // nil removes the member
+		wantErr      string
+	}{
+		{name: "accepted null predecessor"},
+		{name: "accepted string predecessor", member: "prevSignature", replacement: vString("previous")},
+		{name: "missing receiptVersion", member: "receiptVersion", wantErr: `missing member "receiptVersion"`},
+		{name: "retyped receiptVersion", member: "receiptVersion", replacement: vBool(false), wantErr: `member "receiptVersion" is not a string`},
+		{name: "missing sessionId", member: "sessionId", wantErr: `missing member "sessionId"`},
+		{name: "retyped sessionId", member: "sessionId", replacement: vBool(false), wantErr: `member "sessionId" is not a string`},
+		{name: "missing keyId", member: "keyId", wantErr: `missing member "keyId"`},
+		{name: "retyped keyId", member: "keyId", replacement: vBool(false), wantErr: `member "keyId" is not a string`},
+		{name: "missing authority", member: "authority", wantErr: `missing member "authority"`},
+		{name: "retyped authority", member: "authority", replacement: vBool(false), wantErr: `member "authority" is not a string`},
+		{name: "missing resultDigest", member: "resultDigest", wantErr: `missing member "resultDigest"`},
+		{name: "retyped resultDigest", member: "resultDigest", replacement: vBool(false), wantErr: `member "resultDigest" is not a string`},
+		{name: "missing signature", member: "signature", wantErr: `missing member "signature"`},
+		{name: "retyped signature", member: "signature", replacement: vBool(false), wantErr: `member "signature" is not a string`},
+		{name: "missing source", member: "source", wantErr: `missing member "source"`},
+		{name: "retyped source", member: "source", replacement: vBool(false), wantErr: `member "source" is not a string`},
+		{name: "missing servedAt", member: "servedAt", wantErr: `missing member "servedAt"`},
+		{name: "retyped servedAt", member: "servedAt", replacement: vBool(false), wantErr: `member "servedAt" is not a string`},
+		{name: "missing argumentsDigest", member: "argumentsDigest", wantErr: `missing member "argumentsDigest"`},
+		{name: "retyped argumentsDigest", member: "argumentsDigest", replacement: vBool(false), wantErr: `member "argumentsDigest" is not a string`},
+		{name: "missing callIndex", member: "callIndex", wantErr: `missing member "callIndex"`},
+		{name: "retyped callIndex", member: "callIndex", replacement: vString("0"), wantErr: `member "callIndex" is not an integer`},
+		{name: "negative callIndex", member: "callIndex", replacement: vInt(-1), wantErr: `member "callIndex" is negative`},
+		{name: "missing prevSignature", member: "prevSignature", wantErr: `missing member "prevSignature"`},
+		{name: "retyped prevSignature", member: "prevSignature", replacement: vInt(0), wantErr: `member "prevSignature" is neither a string nor null`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			obj := newObject()
+			obj.set("receiptVersion", vString(receiptVersion))
+			obj.set("sessionId", vString("shape-test"))
+			obj.set("keyId", vString(strings.Repeat("0", 64)))
+			obj.set("authority", vString("gateway:test"))
+			obj.set("resultDigest", vString("sha256:"+strings.Repeat("0", 64)))
+			obj.set("signature", vString(strings.Repeat("0", ed25519.SignatureSize*2)))
+			obj.set("source", vString("s"))
+			obj.set("servedAt", vString("2026-10-01T00:00:00Z"))
+			obj.set("argumentsDigest", vString("hmac-sha256:"+strings.Repeat("0", 64)))
+			obj.set("callIndex", vInt(0))
+			obj.set("prevSignature", vNull{})
+			if tt.member != "" {
+				if tt.replacement == nil {
+					obj.names = remove(obj.names, tt.member)
+					delete(obj.byName, tt.member)
+				} else {
+					obj.set(tt.member, tt.replacement)
+				}
+			}
+			r, err := receiptFrom(obj)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Fatalf("receiptFrom: got %v, %v; want error %q", r, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil || r == nil {
+				t.Fatalf("receiptFrom: got %v, %v; want accepted receipt", r, err)
+			}
+			wantPrev := tt.member == "prevSignature"
+			if r.hasPrev != wantPrev || (wantPrev && r.prevSignature != "previous") {
+				t.Fatalf("predecessor: got %q, present %v; want present %v", r.prevSignature, r.hasPrev, wantPrev)
+			}
+		})
+	}
+}
+
 // SPEC §1.4 fixes ONE finding per receipt, at the first failure in a stated
 // order. A verifier that reports a later status for a receipt carrying two
 // defects is not merely less helpful — it makes the diagnostic depend on its
