@@ -398,13 +398,16 @@ func TestSessionCountIncludesOnlyJSONFiles(t *testing.T) {
 		name        string
 		removeTail  bool
 		replacement string
+		directory   bool
 		wantOK      bool
 		want        map[string]int
 	}{
-		{"stray non-receipt file", false, ".DS_Store", true, map[string]int{"ok": 3}},
-		{"deleted tail receipt", true, "", false, map[string]int{"ok": 2, "tail-rollback": 1}},
-		{"junk JSON replaces tail receipt", true, "2.json", false, map[string]int{"ok": 2, "malformed": 1}},
-		{"junk text replaces tail receipt", true, "2.txt", false, map[string]int{"ok": 2, "tail-rollback": 1}},
+		{"stray non-receipt file", false, ".DS_Store", false, true, map[string]int{"ok": 3}},
+		{"deleted tail receipt", true, "", false, false, map[string]int{"ok": 2, "tail-rollback": 1}},
+		{"junk JSON replaces tail receipt", true, "2.json", false, false, map[string]int{"ok": 2, "malformed": 1}},
+		{"junk text replaces tail receipt", true, "2.txt", false, false, map[string]int{"ok": 2, "tail-rollback": 1}},
+		{"stray receipt-named directory", false, "9.json", true, true, map[string]int{"ok": 3}},
+		{"directory replaces tail receipt", true, "2.json", true, false, map[string]int{"ok": 2, "tail-rollback": 1}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, reg, storeRoot, registryPath := testStore(t)
@@ -420,7 +423,11 @@ func TestSessionCountIncludesOnlyJSONFiles(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if tc.replacement != "" {
+			if tc.directory {
+				if err := os.Mkdir(filepath.Join(sessionDir, tc.replacement), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.replacement != "" {
 				if err := os.WriteFile(filepath.Join(sessionDir, tc.replacement), []byte("junk"), 0o600); err != nil {
 					t.Fatal(err)
 				}
