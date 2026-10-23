@@ -229,19 +229,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		return nil, err
 	}
 
-	core := newObject()
-	core.set("receiptVersion", vString(receiptVersion3))
-	core.set("sessionId", vString(sessionID))
-	core.set("callIndex", vInt(state.index))
-	if state.prev == "" {
-		core.set("prevSignature", vNull{})
-	} else {
-		core.set("prevSignature", vString(state.prev))
-	}
-	core.set("source", vString(source))
-	core.set("resultDigest", vString(resultDigest))
-	core.set("servedAt", vString(nowStamp()))
-	core.set("authority", vString(g.authority))
+	servedAt := nowStamp()
 	argsSalt, err := newSalt()
 	if err != nil {
 		return nil, err
@@ -250,9 +238,6 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	if err != nil {
 		return nil, err
 	}
-	core.set("argumentsCommitment", vString(commitmentOver(argsSalt, "args:", canon(arguments))))
-	core.set("kind", vString("action"))
-	core.set("caller", identityObject(who))
 
 	action := newObject()
 	action.set("requester", identityObject(who))
@@ -284,10 +269,9 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	// found, read from the bytes whose digest matched (ADR-0014): absent
 	// when the record is no runtime evaluation record of a trail, or the
 	// configuration names no witness for its trail.
+	var witness *vObject
 	if len(g.witnessedBy) > 0 {
-		if member := g.witnessMember(recordTrail(recorded)); member != nil {
-			core.set("witness", member)
-		}
+		witness = g.witnessMember(recordTrail(recorded))
 	}
 	called := newObject()
 	called.set("shape", vString("mcp"))
@@ -311,7 +295,12 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 		v, _ := adapterEnvelope.acquisition.get(name)
 		action.set(name, v)
 	}
-	core.set("action", action)
+	core := buildReceipt(receiptInput{
+		version: receiptVersion3, sessionID: sessionID, callIndex: state.index, prevSignature: state.prev,
+		source: source, resultDigest: resultDigest, servedAt: servedAt, authority: g.authority,
+		arguments: canon(arguments), argumentsSalt: argsSalt,
+		who: who, witness: witness, kind: "action", detail: action,
+	})
 
 	stored, signature, err := g.store.stamp(core)
 	if err != nil {
