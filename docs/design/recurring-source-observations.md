@@ -1,6 +1,6 @@
 # Recurring Google Drive source observations
 
-Status: implemented on the #295 branch; unreleased. This is a local host control
+Status: implemented on main for Google Drive; policy sync and governed admission remain under #295. This is a local host control
 contract, not an adopted portable Policy schema or a change to signed receipts.
 
 `gateway-connections --provider google-drive` answers four additional methods
