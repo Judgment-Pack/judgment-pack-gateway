@@ -20,13 +20,15 @@ import (
 // members share a cell; optional and kind-specific rows are explicitly
 // distinguished by the table's prose. A newly required common row therefore
 // changes this check without a second list of member names in Go.
-func specCommonReceiptMembers(t *testing.T) []string {
+func specCommonReceiptMembers(t *testing.T, path string) []string {
 	t.Helper()
-	text, err := os.ReadFile(filepath.Join("..", "SPEC.md"))
+	text, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, section, found := strings.Cut(string(text), "### 1.2a The receipt (version 3)\n")
+	// Git checkouts may use CRLF; line endings do not change SPEC membership.
+	normalized := strings.ReplaceAll(string(text), "\r\n", "\n")
+	_, section, found := strings.Cut(normalized, "### 1.2a The receipt (version 3)\n")
 	if !found {
 		t.Fatal("SPEC has no version 3 receipt section")
 	}
@@ -60,6 +62,33 @@ func specCommonReceiptMembers(t *testing.T) []string {
 		t.Fatal("SPEC receipt member table yielded no common members")
 	}
 	return names
+}
+
+// Use the actual normative member table in both checkout forms so the
+// regression keeps following SPEC when a common member is added.
+func TestSpecCommonReceiptMembersLineEndings(t *testing.T) {
+	specPath := filepath.Join("..", "SPEC.md")
+	text, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lf := strings.ReplaceAll(string(text), "\r\n", "\n")
+	want := specCommonReceiptMembers(t, specPath)
+	for _, tc := range []struct{ name, ending string }{
+		{"LF", "\n"},
+		{"CRLF", "\r\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "SPEC.md")
+			if err := os.WriteFile(path, []byte(strings.ReplaceAll(lf, "\n", tc.ending)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			got := specCommonReceiptMembers(t, path)
+			if strings.Join(got, "\n") != strings.Join(want, "\n") {
+				t.Fatalf("%s SPEC membership = %v; want %v", tc.name, got, want)
+			}
+		})
+	}
 }
 
 // This is hand-authored adapter output, not a recording of a receipt. Both
@@ -103,7 +132,7 @@ func receiptBuilderAct(t *testing.T, g *gatewayService, cited map[string]any, wh
 }
 
 func TestReceiptPathsCarryEverySpecCommonMember(t *testing.T) {
-	names := specCommonReceiptMembers(t)
+	names := specCommonReceiptMembers(t, filepath.Join("..", "SPEC.md"))
 	g, who := receiptBuilderService(t), receiptBuilderCaller()
 	acquired, err := g.acquire("shared", "read", newObject(), who)
 	if err != nil {
