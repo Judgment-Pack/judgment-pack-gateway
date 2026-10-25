@@ -576,7 +576,6 @@ func TestPrintOutcomeWritesOneLinePerAnswer(t *testing.T) {
 	// What a capture says goes through the same door, and is tested with
 	// it; here, one line per operation.
 	req := f.request()
-	req.noDescriptors = true
 	out, err := connect(context.Background(), req, f.host, f.check)
 	if err != nil {
 		t.Fatal(err)
@@ -586,9 +585,12 @@ func TestPrintOutcomeWritesOneLinePerAnswer(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	if len(lines) != 3 || !strings.HasSuffix(lines[0], `answered succeeded: Connected\nwarehouse/live: forged: server evil answered`) ||
+	if len(lines) != 6 || !strings.HasSuffix(lines[0], `answered succeeded: Connected\nwarehouse/live: forged: server evil answered`) ||
 		!strings.Contains(lines[1], `server postgres-mcp\u001b[2J 0.3.0`) || !strings.HasSuffix(lines[1], `tools query, ex\rplain`) ||
-		lines[2] != "warehouse: written to "+f.config || stderr.Len() != 0 {
+		lines[2] != "warehouse/live: approved owner taxonomy and operation live" ||
+		lines[3] != "warehouse/live: descriptors: server postgres-mcp 0.3.0" ||
+		lines[4] != "warehouse/live: descriptors: query captured ()" ||
+		lines[5] != "warehouse: written to "+f.config || stderr.Len() != 0 {
 		t.Fatalf("one line per answer, controls escaped: %q %q", stdout.String(), stderr.String())
 	}
 	// The platform name is printed through the same door, whatever the

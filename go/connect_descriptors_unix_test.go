@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -244,7 +245,29 @@ func TestTheSnapshotsDirectoryIsHeld(t *testing.T) {
 				t.Fatal(err)
 			}
 			dir := f.config + ".descriptors"
+			inventory := func(path string) map[string]string {
+				t.Helper()
+				entries, err := os.ReadDir(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				files := map[string]string{}
+				for _, entry := range entries {
+					if !entry.Type().IsRegular() {
+						t.Fatalf("unexpected evidence entry: %s", entry.Name())
+					}
+					data, err := os.ReadFile(filepath.Join(path, entry.Name()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					files[entry.Name()] = digestOf(string(data))
+				}
+				return files
+			}
+			beforeInventory := inventory(dir)
+			var swapInventory map[string]string
 			swap := func() {
+				swapInventory = inventory(dir)
 				if err := os.Rename(dir, dir+".moved"); err != nil {
 					t.Fatal(err)
 				}
@@ -273,10 +296,17 @@ func TestTheSnapshotsDirectoryIsHeld(t *testing.T) {
 			if f.fileText(t) != before {
 				t.Fatal("the configuration is left as it was")
 			}
-			// Found when it is judged, nothing is written in the directory
-			// the link leads to.
-			if entries, _ := os.ReadDir(dir + ".moved"); when == "judged" && len(entries) != 1 {
-				t.Fatalf("a snapshot was kept in a directory swapped in: %v", entries)
+			// Every previously retained declaration and snapshot stays byte-for-byte.
+			// A swap at judgment permits no publication; a later swap can retain
+			// the new unused immutable snapshot, but permits no writes after it.
+			afterInventory := inventory(dir + ".moved")
+			for name, digest := range beforeInventory {
+				if afterInventory[name] != digest {
+					t.Fatalf("retained evidence changed: %s", name)
+				}
+			}
+			if !reflect.DeepEqual(afterInventory, swapInventory) || (when == "judged" && !reflect.DeepEqual(afterInventory, beforeInventory)) {
+				t.Fatalf("evidence changed after directory swap: before %v, at swap %v, after %v", beforeInventory, swapInventory, afterInventory)
 			}
 		})
 	}

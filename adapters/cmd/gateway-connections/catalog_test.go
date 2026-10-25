@@ -65,6 +65,9 @@ func TestExtendedDiscoveryModesHaveNoAccountPrerequisite(t *testing.T) {
 				if mode == "--catalog-v4" {
 					want = 4
 				}
+				if mode == "--catalog-v5" {
+					want = 5
+				}
 				if err != nil || json.Unmarshal(raw, &result) != nil || result.Version != want {
 					t.Fatalf("%s: %s %v", mode, raw, err)
 				}

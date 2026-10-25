@@ -1,7 +1,9 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -318,7 +320,8 @@ func ownerFileArguments(cfg engineConfig, p platformConfig, op *operation) []str
 	if err != nil {
 		return nil
 	}
-	pin := digestOf(string(raw))
+	sum := sha256.Sum256(raw)
+	pin := "sha256:" + hex.EncodeToString(sum[:])
 	return []string{"--owner-declaration-file=" + cfg.configPath + ".descriptors/" + strings.TrimPrefix(pin, "sha256:") + ".json", "--owner-declaration-pin=" + pin}
 }
 

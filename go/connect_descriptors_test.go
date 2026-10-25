@@ -5,12 +5,15 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
 
 // capturedQuery is a capture of the one tool the restricted binding's live
 // operation allows.
+const capturedOwnedQuery = `{"query":{"description":"Run a query","inputSchemaText":"{\"type\":\"object\"}","taxonomy":{"operation":"read","effect":"read-external"}}}`
+
 const capturedQuery = `{"query":{"description":"Run a query","inputSchemaText":"{\"type\":\"object\"}"}}`
 
 // pinnedSnapshot is what the configuration pins for the platform, and the
@@ -405,7 +408,7 @@ func TestADescriptorsPinIsAVersion3MemberOfALiveBinding(t *testing.T) {
 // admits, cannot forge a line.
 func TestWhatACaptureSaysIsPrintedEscaped(t *testing.T) {
 	f := newConnectFixture(t, restrictedBinding, ``)
-	f.snapshotAs = `{"binding":"postgres@` + digestOf(restrictedBinding) + `","capturedAt":"2026-09-15T00:00:00Z","platform":"warehouse","policy":1,"server":{"name":"pg\nwarehouse: written to /elsewhere","version":"1"},"tools":` + capturedQuery + `}`
+	f.snapshotAs = `{"snapshotVersion":"2","operation":"live","binding":"postgres@` + digestOf(restrictedBinding) + `","capturedAt":"2026-09-15T00:00:00Z","platform":"warehouse","policy":1,"server":{"name":"pg\nwarehouse: written to /elsewhere","version":"1"},"tools":` + capturedOwnedQuery + `}`
 	out, err := connect(context.Background(), f.request(), f.host, f.check)
 	if err != nil {
 		t.Fatal(err)
@@ -422,9 +425,8 @@ func TestWhatACaptureSaysIsPrintedEscaped(t *testing.T) {
 	}
 }
 
-// A tool the previous binding allowed and the snapshot never held -- it
-// fell back -- is still one the comparison names when the binding no
-// longer allows it.
+// A tool whose display candidates fell back still has mandatory V2 owner
+// metadata, and is named when the replacement binding no longer allows it.
 func TestAToolThatFellBackIsStillRemoved(t *testing.T) {
 	narrow := strings.Replace(restrictedBinding, `"platform": "postgres"`, `"platform": "postgres2"`, 1)
 	f := newConnectFixture(t, twoToolBinding, ``)
@@ -441,51 +443,114 @@ func TestAToolThatFellBackIsStillRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Never captured, it is named by no snapshot, and counted, not named.
-	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: 1 tool no snapshot names removed") {
+	// The V2 snapshot retains its exact identity and owner declaration.
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: explain removed") {
 		t.Fatalf("%q", out.answers)
 	}
 }
 
-// A tool the bindings name and no snapshot holds is named, if at all, by
-// the adapter's label: a binding's name may hold a value of the
-// credentials, which the adapter redacted.
+// Historical V1 captures could omit a screened tool entirely. Keep those
+// exact rendering semantics without granting that evidence current admission.
+func historicalCapture(t *testing.T, tools, fallbacks string, allowed []string) (liveCapture, *operation) {
+	t.Helper()
+	op := &operation{name: "live", tools: allowed}
+	ref := "postgres@" + digestOf(historicalRestrictedBinding)
+	report := `{"check":{"descriptors":{"binding":"` + ref + `","capturedAt":"2026-09-15T00:00:00Z","platform":"warehouse","policy":1,"tools":` + tools + `},"fallbacks":` + fallbacks + `}}`
+	capture, err := readCapture([]byte(report), "warehouse", ref, op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capture.snap.version != "" {
+		t.Fatal("historical probe must remain V1")
+	}
+	return capture, op
+}
+
 func TestTheComparisonNamesNoToolTheAdapterScreened(t *testing.T) {
-	secretive := strings.Replace(twoToolBinding, `"platform": "postgres"`, `"platform": "postgres3"`, 1)
-	secretive = strings.Replace(secretive, `"tools": ["query", "explain"]`, `"tools": ["query", "lookup_swordfish"]`, 1)
-	f := newConnectFixture(t, restrictedBinding, ``)
-	if err := os.WriteFile(filepath.Join(f.catalog, "postgres3.json"), []byte(secretive), 0o644); err != nil {
+	before, narrow := historicalCapture(t, capturedQuery, `[]`, []string{"query"})
+	now, wide := historicalCapture(t, capturedQuery, `[{"tool":"lookup_[redacted]","allowed":1,"part":"tool","reason":"its name holds a value of the credentials"}]`, []string{"query", "lookup_swordfish"})
+	added := compareLines(&before.snap, map[string]bool{"query": true}, now, wide)
+	if !hasLine(added, "descriptors: against the previous snapshot: lookup_[redacted] added") {
+		t.Fatalf("%q", added)
+	}
+	removed := compareLines(&now.snap, map[string]bool{"query": true, "lookup_swordfish": true}, before, narrow)
+	if !hasLine(removed, "descriptors: against the previous snapshot: 1 tool no snapshot names removed") {
+		t.Fatalf("%q", removed)
+	}
+	var stdout, stderr bytes.Buffer
+	answers := append(captureLines(now, wide), added...)
+	answers = append(answers, removed...)
+	if printOutcome(&stdout, &stderr, "warehouse", connectOutcome{answers: answers}, nil) != 0 || stderr.Len() != 0 || strings.Contains(stdout.String(), "swordfish") {
+		t.Fatalf("historical screened name printed: %q %q", stdout.String(), stderr.String())
+	}
+}
+
+// Current registration exercises the actual adapter and server. A credential
+// in an exact owner key refuses capture, rather than publishing a partial V2 map.
+func TestV2ConnectRefusesACredentialBearingOwnerName(t *testing.T) {
+	bin, _ := buildMCPStandIns(t, t.TempDir())
+	server := newWriteStandIn(t, customerTools)
+	f, req, initialCheck, adapt := customerFixture(t, bin, customerBinding(server.URL, ""), false)
+	if _, err := connect(context.Background(), req, f.host, initialCheck); err != nil {
 		t.Fatal(err)
 	}
-	f.captured = `{"query":{"description":"Run a query"}}`
-	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
-		t.Fatal(err)
-	}
-	// Added: the adapter reports the new tool by its label.
-	req := f.request()
-	req.replace, req.binding = true, "postgres3"
-	f.capturedExtra = `"fallbacks":[{"tool":"lookup_[redacted]","allowed":1,"part":"tool","reason":"its name holds a value of the credentials"}],`
-	out, err := connect(context.Background(), req, f.host, f.check)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: lookup_[redacted] added") {
-		t.Fatalf("%q", out.answers)
-	}
-	// Removed: no snapshot and no label names it now.
-	req.binding = "postgres"
-	f.capturedExtra = ""
-	out, err = connect(context.Background(), req, f.host, f.check)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: 1 tool no snapshot names removed") {
-		t.Fatalf("%q", out.answers)
-	}
-	for _, line := range out.answers {
-		if strings.Contains(line, "descriptors:") && strings.Contains(line, "swordfish") {
-			t.Fatalf("a screened name is printed: %q", line)
+	inventory := func() map[string]string {
+		t.Helper()
+		entries, err := os.ReadDir(f.config + ".descriptors")
+		if err != nil {
+			t.Fatal(err)
 		}
+		files := map[string]string{}
+		declarations, snapshots := 0, 0
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				t.Fatalf("unexpected evidence: %s", entry.Name())
+			}
+			data, err := os.ReadFile(filepath.Join(f.config+".descriptors", entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[entry.Name()] = digestOf(string(data))
+			if bytes.Contains(data, []byte(`"declarationVersion":"1"`)) {
+				declarations++
+			}
+			if bytes.Contains(data, []byte(`"snapshotVersion":"2"`)) {
+				snapshots++
+			}
+		}
+		if declarations != 1 || snapshots != 1 || len(files) != 2 {
+			t.Fatalf("expected separate owner declaration and approved snapshot: %v", files)
+		}
+		return files
+	}
+	beforeInventory := inventory()
+	before := f.fileText(t)
+	req.replace = true
+	check := func(ctx context.Context, spec sourceSpec) ([]byte, error) {
+		f.asked = append(f.asked, spec)
+		spec = adapt(spec)
+		for _, arg := range spec.argv {
+			if path, ok := strings.CutPrefix(arg, "--credentials="); ok {
+				if err := os.WriteFile(path, []byte(`{"token":"query"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		return runCheck(ctx, spec)
+	}
+	out, err := connect(context.Background(), req, f.host, check)
+	if err == nil || !strings.Contains(err.Error(), "the server's answer repeats the credential") || f.fileText(t) != before || out.written != "" {
+		t.Fatalf("credential-bearing owner capture must refuse before replacement: %v", err)
+	}
+	if targetCalls(server) != 0 {
+		t.Fatal("refused capture called a tool")
+	}
+	if after := inventory(); !reflect.DeepEqual(beforeInventory, after) {
+		t.Fatalf("refused replacement changed approved evidence or retained declaration: before %v after %v", beforeInventory, after)
+	}
+	var stdout, stderr bytes.Buffer
+	if printOutcome(&stdout, &stderr, "warehouse", out, err) != 1 || strings.Contains(stdout.String()+stderr.String(), "query") {
+		t.Fatalf("credential in diagnostics: %q %q", stdout.String(), stderr.String())
 	}
 }
 
@@ -499,19 +564,42 @@ func TestTheServersIdentityIsCompared(t *testing.T) {
 	}
 	req := f.request()
 	req.replace = true
-	base := `{"binding":"postgres@` + digestOf(restrictedBinding) + `","capturedAt":"2026-09-15T00:00:00Z","platform":"warehouse","policy":1,`
-	for _, tc := range []struct{ snapshot, want string }{
-		{base + `"server":{"name":"postgres-mcp","version":"0.4.0"},"tools":` + capturedQuery + `}`, "against the previous snapshot: the server's identity changed"},
-		{base + `"tools":` + capturedQuery + `}`, "against the previous snapshot: the server's identity now fallen back"},
-		{base + `"server":{"name":"postgres-mcp","version":"0.4.0"},"tools":` + capturedQuery + `}`, "against the previous snapshot: the server's identity no longer fallen back"},
+	base := `{"snapshotVersion":"2","operation":"live","binding":"postgres@` + digestOf(restrictedBinding) + `","capturedAt":"2026-09-15T00:00:00Z","platform":"warehouse","policy":1,`
+	f.snapshotAs = base + `"server":{"name":"postgres-mcp","version":"0.4.0"},"tools":` + capturedOwnedQuery + `}`
+	out, err := connect(context.Background(), req, f.host, f.check)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot: the server's identity changed") {
+		t.Fatalf("%q", out.answers)
+	}
+	before := f.fileText(t)
+	_, pin, approved := pinnedSnapshot(t, f)
+	f.snapshotAs = base + `"tools":` + capturedOwnedQuery + `}`
+	if _, err := connect(context.Background(), req, f.host, f.check); err == nil || !strings.Contains(err.Error(), "complete V2 snapshot evidence") || f.fileText(t) != before {
+		t.Fatalf("V2 missing server identity must refuse before replacement: %v", err)
+	}
+	_, afterPin, afterApproved := pinnedSnapshot(t, f)
+	if afterPin != pin || !bytes.Equal(approved, afterApproved) {
+		t.Fatal("refused identity fallback changed the approved snapshot")
+	}
+
+	// Historical V1 evidence allowed server identity fallback. Its comparison
+	// remains readable, without granting current registration that authority.
+	historical, op := historicalCapture(t, capturedQuery, `[]`, []string{"query"})
+	withServer := historical
+	withServer.snap.server = &snapshotServer{name: "postgres-mcp", version: "0.4.0"}
+	for _, tc := range []struct {
+		previous *snapshot
+		now      liveCapture
+		want     string
+	}{
+		{&withServer.snap, historical, "the server's identity now fallen back"},
+		{&historical.snap, withServer, "the server's identity no longer fallen back"},
 	} {
-		f.snapshotAs = tc.snapshot
-		out, err := connect(context.Background(), req, f.host, f.check)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !hasLine(out.answers, "warehouse/live: descriptors: "+tc.want) {
-			t.Fatalf("want %q: %q", tc.want, out.answers)
+		lines := compareLines(tc.previous, map[string]bool{"query": true}, tc.now, op)
+		if !hasLine(lines, "descriptors: against the previous snapshot: "+tc.want) {
+			t.Fatalf("%q", lines)
 		}
 	}
 }
@@ -552,14 +640,14 @@ func TestRestartAdviceComparesWhatIsWritten(t *testing.T) {
 // and says neither that a tool was added nor that nothing changed.
 func TestAComparisonWithoutThePreviousBindingSaysWhatItCannotKnow(t *testing.T) {
 	f := newConnectFixture(t, twoToolBinding, ``)
-	f.captured = `{"query":{"description":"Run a query"}}` // explain fell back
+	f.captured = `{"query":{"description":"Run a query"}}` // explain retains owner metadata only
 	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
 		t.Fatal(err)
 	}
 	req := f.request()
 	req.replace = true
 	// The binding rewritten in place with its tools as they were: explain
-	// now captured was allowed before, which the comparison cannot know.
+	// now has display text too; the previous approved owner entry is known.
 	rewritten := strings.Replace(twoToolBinding, `"licence": "MIT"`, `"licence": "MIT-0"`, 1)
 	if rewritten == twoToolBinding {
 		t.Fatal("the rewrite changed nothing")
@@ -572,11 +660,11 @@ func TestAComparisonWithoutThePreviousBindingSaysWhatItCannotKnow(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot (the previous binding cannot be read, so which tools it allowed is not known): explain captured now and not before") {
+	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot (the previous binding cannot be read, so which tools it allowed is not known): explain changed") {
 		t.Fatalf("%q", out.answers)
 	}
-	// Rewritten again, explain gone; it fell back before, so neither
-	// snapshot shows it, and nothing is claimed about it.
+	// Rewritten again, explain is gone; the comparison still must not
+	// claim an addition or unchanged approval without the previous binding.
 	if err := os.WriteFile(filepath.Join(f.catalog, "postgres.json"), []byte(strings.Replace(restrictedBinding, `"licence": "MIT"`, `"licence": "MIT-0"`, 1)), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -600,19 +688,24 @@ func TestAComparisonWithoutThePreviousBindingSaysWhatItCannotKnow(t *testing.T) 
 func TestFallbacksAreMatchedByPosition(t *testing.T) {
 	f := newConnectFixture(t, twoToolBinding, ``)
 	f.captured = `{"query":{"description":"Run a query"}}`
-	f.capturedExtra = `"fallbacks":[{"tool":"que[redacted]","allowed":0,"part":"inputSchema","reason":"the tool declares no inputSchema"},{"tool":"exp…","allowed":1,"part":"tool","reason":"its name holds a value of the credentials"}],`
+	f.capturedExtra = `"fallbacks":[{"tool":"que[redacted]","allowed":0,"part":"inputSchema","reason":"the tool declares no inputSchema"}],`
 	out, err := connect(context.Background(), f.request(), f.host, f.check)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasLine(out.answers, "warehouse/live: descriptors: query captured (description 11 bytes); fell back: input schema: the tool declares no inputSchema") ||
-		!hasLine(out.answers, "warehouse/live: descriptors: exp… fell back: tool: its name holds a value of the credentials") {
+	if !hasLine(out.answers, "warehouse/live: descriptors: query captured (description 11 bytes); fell back: input schema: the tool declares no inputSchema") || !hasLine(out.answers, "warehouse/live: descriptors: explain captured ()") {
 		t.Fatalf("%q", out.answers)
 	}
-	for _, line := range out.answers {
-		if strings.Contains(line, "descriptors:") && strings.Contains(line, "explain") {
-			t.Fatalf("a name the adapter screened is printed: %q", line)
-		}
+	// V1 alone could fall back a whole screened tool. Position, rather
+	// than the redacted or truncated label, identifies that historical tool.
+	historical, op := historicalCapture(t, `{"query":{"description":"Run a query"}}`, `[{"tool":"que[redacted]","allowed":0,"part":"inputSchema","reason":"the tool declares no inputSchema"},{"tool":"exp…","allowed":1,"part":"tool","reason":"its name holds a value of the credentials"}]`, []string{"query", "explain"})
+	lines := captureLines(historical, op)
+	if !hasLine(lines, "descriptors: query captured (description 11 bytes); fell back: input schema: the tool declares no inputSchema") || !hasLine(lines, "descriptors: exp… fell back: tool: its name holds a value of the credentials") {
+		t.Fatalf("%q", lines)
+	}
+	var stdout, stderr bytes.Buffer
+	if printOutcome(&stdout, &stderr, "warehouse", connectOutcome{answers: lines}, nil) != 0 || strings.Contains(stdout.String(), "explain") || stderr.Len() != 0 {
+		t.Fatalf("screened historical name printed: %q", stdout.String())
 	}
 	f = newConnectFixture(t, twoToolBinding, ``)
 	f.capturedExtra = `"fallbacks":[{"tool":"x","allowed":2,"part":"tool","reason":"r"}],`

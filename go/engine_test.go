@@ -243,7 +243,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"unknown member", engineJSON(t, catalog, `,"port":8787`, good), `unknown member "port"`},
 		{"duplicate member", `{"engineVersion":"1","engineVersion":"1"}`, "duplicate"},
 		{"missing member", replace(`"registry":"`, `"registryx":"`), `unknown member "registryx"`},
-		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"11"`), `engineVersion "11" is not "1", "2", "3", "4", "5", "6", "7", "8", "9" or "10"`},
+		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"12"`), `engineVersion "12" is not "1", "2", "3", "4", "5", "6", "7", "8", "9" or "11"`},
 		{"identity without an audience", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), `missing member "audience"`},
 		{"identity with an unknown member", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`","jwksUrl":"https://x"}`, good), `unknown member "jwksUrl"`},
 		{"identity with an empty issuer", engineJSON(t, catalog, `,"identity":{"issuer":"","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), "identity.issuer must be the token issuer"},
@@ -295,7 +295,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 // no restriction the acquisition does not yet apply.
 func TestBindingRefusals(t *testing.T) {
 	cases := map[string]string{
-		`{"bindingVersion":"2","platform":"p","operations":{}}`: `bindingVersion "2"`,
+		`{"bindingVersion":"3","platform":"p","operations":{}}`: `bindingVersion "3"`,
 		`{"bindingVersion":"1","platform":"p","operations":{}}`: "no operation",
 		`{"bindingVersion":"1","platform":"p","operations":{"history":{"shape":"airbyte","image":"airbyte/source-postgres:3.6.1","licence":"ELv2"}}}`:                                                           "image must be pinned",
 		`{"bindingVersion":"1","platform":"p","operations":{"history":{"shape":"airbyte","image":"--label=probe@` + testImageDigest + `","licence":"ELv2"}}}`:                                                   "image must be pinned",
