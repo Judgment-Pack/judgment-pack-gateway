@@ -137,9 +137,13 @@ registry                            the registry at the cut, when there was one
 store/receipts/<session>/<n>.json   every session at the cut, an empty one too, and its receipts
 store/artifacts/<hex>               every artifact at the cut, as held
 decision-records/...                every regular file verification would read (links never followed), when the directory was there
-descriptors/<hex>.json              each snapshot a platform pins, digested to its pin
+descriptors/<hex>.json              each snapshot a platform pins, for itself or for one of its operations, digested to its pin
 observations/<i>.json               each journal given
 ```
+
+The manifest's `descriptors` name each pinned snapshot by its pin and its platform and, for an
+operation's (`operationDescriptors`), the operation; `sessions` name every session, an empty one
+too, since a directory is no file.
 
 The decision records are the runtime's files, in no space of a kind; they are read after the cut,
 so a record written before an action receipt the cut holds is in the export. The export copies

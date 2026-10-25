@@ -187,15 +187,17 @@ func exportOutside(out string, roots ...string) error {
 	return nil
 }
 
-// exportPin is a descriptor snapshot a platform pins, read and digested.
+// exportPin is a descriptor snapshot a platform pins -- for the platform,
+// or for one of its operations (operationDescriptors) -- read and digested.
 type exportPin struct {
-	platform, pin string
-	data          []byte
+	platform, operation, pin string
+	data                     []byte
 }
 
-// readPinnedSnapshots reads every snapshot a platform pins, as the MCP
-// server opens the snapshots' directory (openServedDirectory) and as a
-// blob of the filesystem kind; each must digest to its pin.
+// readPinnedSnapshots reads every snapshot a platform pins, its own and
+// each of its operations' in the operations' order, as the MCP server opens
+// the snapshots' directory (openServedDirectory) and as a blob of the
+// filesystem kind; each must digest to its pin.
 func readPinnedSnapshots(configPath string, cfg engineConfig) ([]exportPin, error) {
 	dir, err := openServedDirectory(configPath, cfg)
 	if err != nil || dir == nil {
@@ -204,19 +206,38 @@ func readPinnedSnapshots(configPath string, cfg engineConfig) ([]exportPin, erro
 	defer dir.Close()
 	pins := fsHeldPins{dir: dir.dir, name: dir.name, owner: dir.owner}
 	var out []exportPin
-	for _, p := range cfg.platforms {
-		if p.descriptors == "" {
-			continue
+	read := func(platform, operation, pin string) error {
+		what := "platform " + platform + ": descriptors"
+		if operation != "" {
+			what = "platform " + platform + ": operation " + operation + ": descriptors"
 		}
-		data, err := pins.getBlob(p.descriptors)
+		data, err := pins.getBlob(pin)
 		if err != nil {
-			return nil, fmt.Errorf("platform %s: descriptors: %w", p.name, err)
+			return fmt.Errorf("%s: %w", what, err)
 		}
 		sum := sha256.Sum256(data)
-		if "sha256:"+hex.EncodeToString(sum[:]) != p.descriptors {
-			return nil, fmt.Errorf("platform %s: descriptors: the snapshot does not digest to its pin", p.name)
+		if "sha256:"+hex.EncodeToString(sum[:]) != pin {
+			return fmt.Errorf("%s: the snapshot does not digest to its pin", what)
 		}
-		out = append(out, exportPin{platform: p.name, pin: p.descriptors, data: data})
+		out = append(out, exportPin{platform: platform, operation: operation, pin: pin, data: data})
+		return nil
+	}
+	for _, p := range cfg.platforms {
+		if p.descriptors != "" {
+			if err := read(p.name, "", p.descriptors); err != nil {
+				return nil, err
+			}
+		}
+		operations := make([]string, 0, len(p.operationDescriptors))
+		for name := range p.operationDescriptors {
+			operations = append(operations, name)
+		}
+		sort.Strings(operations)
+		for _, name := range operations {
+			if err := read(p.name, name, p.operationDescriptors[name]); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return out, nil
 }
@@ -389,6 +410,9 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 			}
 		}
 		pinned := newObject()
+		if p.operation != "" {
+			pinned.set("operation", vString(p.operation))
+		}
 		pinned.set("pin", vString(p.pin))
 		pinned.set("platform", vString(p.platform))
 		descriptors = append(descriptors, pinned)
@@ -595,8 +619,13 @@ func readExportManifest(dir string) (*exportManifest, error) {
 	}
 	for _, raw := range descriptors {
 		d, ok := raw.(*vObject)
-		if !ok || exactlyMembers(d, map[string]bool{"pin": true, "platform": true}, "manifest descriptor") != nil {
-			return nil, errors.New("manifest: a descriptor is not {pin, platform}")
+		if !ok || exactlyMembers(d, map[string]bool{"operation": false, "pin": true, "platform": true}, "manifest descriptor") != nil {
+			return nil, errors.New("manifest: a descriptor is not {operation?, pin, platform}")
+		}
+		if raw, present := d.get("operation"); present {
+			if operation, isString := raw.(vString); !isString || operation == "" {
+				return nil, errors.New("manifest: a descriptor's operation is not an operation's name")
+			}
 		}
 		pin, _ := memberString(d, "pin")
 		if _, err := requireString(d, "platform"); err != nil || !isDigest(pin) {

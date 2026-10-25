@@ -621,6 +621,19 @@ func TestAHandWrittenExportChecks(t *testing.T) {
 	if len(removals) != 13 {
 		t.Fatalf("%d members to remove: the manifest is not the one written by hand", len(removals))
 	}
+	// an operation's pin names its operation, a non-empty string
+	raw, _ := manifest.get("descriptors")
+	byOperation := raw.(vArray)[1].(*vObject)
+	if _, named := byOperation.get("operation"); !named {
+		t.Fatal("the hand-written manifest pins no operation's snapshot")
+	}
+	for _, bad := range []value{vString(""), vInt(1)} {
+		op := withoutMember(byOperation, "operation")
+		op.set("operation", bad)
+		out := withoutMember(manifest, "descriptors")
+		out.set("descriptors", vArray{raw.(vArray)[0], op})
+		removals = append(removals, removal{"descriptors", "an operation's name", func(string) *vObject { return out }})
+	}
 	for _, r := range removals {
 		t.Run(r.where+" without "+r.member, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "export")
@@ -664,5 +677,46 @@ func TestAStoreOfAnotherKindExportsAndVerifies(t *testing.T) {
 	requireExportChecks(t, out)
 	if ok, counts := statuses(t, filepath.Join(out, "store"), filepath.Join(out, "registry")); !ok || counts["ok"] != 4 {
 		t.Fatalf("the export of the in-memory kind: ok=%v %v", ok, counts)
+	}
+}
+
+// A platform's own pin and each of its operations' pins are exported, in
+// the operations' order, each snapshot once, named in the manifest by the
+// platform and, for an operation's, the operation.
+func TestExportCarriesEveryOperationsPinnedSnapshot(t *testing.T) {
+	f := newServedFixture(t, canonicalSnapshot(t, servedTools))
+	other := f.write(t, canonicalSnapshot(t, `{"close":{"description":"Close a ticket"}}`))
+	cfg := engineConfig{platforms: []platformConfig{
+		{name: "tickets", binding: servedBinding, descriptors: f.pin},
+		{name: "warehouse", binding: servedBinding, operationDescriptors: map[string]string{"write": f.pin, "live": other}},
+	}}
+	pins, err := readPinnedSnapshots(f.config, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, p := range pins {
+		got = append(got, p.platform+"/"+p.operation+"="+p.pin)
+	}
+	if want := []string{"tickets/=" + f.pin, "warehouse/live=" + other, "warehouse/write=" + f.pin}; strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("pins read %v, want %v", got, want)
+	}
+	_, _, storeRoot, registryPath := testStore(t)
+	out := filepath.Join(t.TempDir(), "export")
+	if _, err := writeExport(exportInputs{authority: "gateway:test", keyID: keyIDFor(make([]byte, 32)), kind: newFsKind(fsLayout{store: storeRoot, registry: registryPath}), pins: pins}, out); err != nil {
+		t.Fatal(err)
+	}
+	requireExportChecks(t, out)
+	manifest, err := os.ReadFile(filepath.Join(out, exportManifestName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `"descriptors":[{"pin":"` + f.pin + `","platform":"tickets"},{"operation":"live","pin":"` + other + `","platform":"warehouse"},{"operation":"write","pin":"` + f.pin + `","platform":"warehouse"}]`
+	if !strings.Contains(string(manifest), want) {
+		t.Fatalf("the manifest's descriptors: %s", manifest)
+	}
+	snapshots, err := os.ReadDir(filepath.Join(out, "descriptors"))
+	if err != nil || len(snapshots) != 2 {
+		t.Fatalf("the exported snapshots: %v %v", snapshots, err)
 	}
 }

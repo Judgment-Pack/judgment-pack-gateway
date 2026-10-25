@@ -250,7 +250,7 @@ A store to hand to an auditor, or to back up, is exported as one consistent cut:
 ```
 
 The export holds the receipts and artifacts, the registry, the decision records, the
-descriptor snapshots the platforms pin and any observation journal given, in the store layout
+descriptor snapshots the platforms pin (a platform's own, or each of its operations') and any observation journal given, in the store layout
 `gateway verify` reads (SPEC.md §1.3), with `manifest.json` naming the authority, the signing
 key by its id and every file by its digest and size. The cut reads the registry before the
 receipts, so a session sealed while the export runs is in it with its seal and every receipt
