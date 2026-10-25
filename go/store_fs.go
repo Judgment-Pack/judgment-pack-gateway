@@ -59,9 +59,15 @@ func fsWriteFile(near string, data []byte, exclusive bool) error {
 	handle, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		// a directory that is not there -- a series never made -- took
-		// nothing: absent, not a write that may have been kept
+		// nothing: absent, not a write that may have been kept. Absent
+		// only where a look at the directory confirms it (absent(): on
+		// Windows a staging open under a file answers "not found" too,
+		// and a directory that cannot be reached is not one that is not
+		// there)
 		if errors.Is(err, fs.ErrNotExist) {
-			return storeFailure(faultAbsent, "write", err)
+			if _, lookErr := os.Lstat(filepath.Dir(near)); lookErr != nil && absent(lookErr) {
+				return storeFailure(faultAbsent, "write", err)
+			}
 		}
 		return storeFailure(faultDurability, "write", err)
 	}
@@ -394,10 +400,15 @@ func (l *fsLog) createLog() error {
 func (l *fsLog) appendRecord(data []byte) (int, error) {
 	handle, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		// a log that is not there took nothing
+		// a log that is not there took nothing: absent where a look at
+		// the log's own name confirms it (absent(), as the registry's
+		// reader confirms an absence); anything else may be a write the
+		// platform could not make, and stays durability
 		fault := faultDurability
 		if errors.Is(err, fs.ErrNotExist) {
-			fault = faultAbsent
+			if _, lookErr := os.Lstat(l.path); lookErr != nil && absent(lookErr) {
+				fault = faultAbsent
+			}
 		}
 		return 0, &storeError{fault: fault, op: "append", err: err}
 	}

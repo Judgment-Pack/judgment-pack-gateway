@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -524,5 +525,35 @@ func conformDurability(t *testing.T, kind storeKind, broken func()) {
 	requireFault(t, "a put the space did not keep", err, faultDurability)
 	if names, _ := kind.artifacts().listBlobs(); len(names) != 0 {
 		t.Fatalf("a refused put is listed: %v", names)
+	}
+}
+
+// The filesystem kind answers absent only for an absence a look confirms:
+// a series directory or a log that is a link to nothing is there, and a
+// write into or onto it is a durability fault, never absent.
+func TestTheFilesystemKindConfirmsAnAbsence(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a link takes a privilege to make on Windows")
+	}
+	root := t.TempDir()
+	kind := newFsKind(fsLayout{store: filepath.Join(root, "store"), registry: filepath.Join(root, "registry.jsonl")})
+	if err := kind.makeStore(); err != nil {
+		t.Fatal(err)
+	}
+	nowhere := filepath.Join(root, "nowhere")
+	if err := os.Symlink(nowhere, filepath.Join(root, "store", "receipts", "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	requireFault(t, "a create into a series that is a link to nothing", kind.receipts().createIndexed("dangling", 0, []byte("{}\n")), faultDurability)
+	if err := os.Symlink(nowhere, filepath.Join(root, "registry.jsonl")); err != nil {
+		t.Fatal(err)
+	}
+	n, err := kind.registry().appendRecord([]byte("line\n"))
+	requireFault(t, "an append onto a log that is a link to nothing", err, faultDurability)
+	if n != 0 {
+		t.Fatalf("the refused append wrote %d bytes", n)
+	}
+	if _, err := os.Lstat(nowhere); err == nil {
+		t.Fatal("a write followed a link to nothing and made its target")
 	}
 }
