@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,7 +17,23 @@ import (
 	"time"
 
 	"adapters/internal/canon"
+	"adapters/internal/storecontract"
 )
+
+// noFollow and nonBlock are the flags every custody open is given, and
+// private is why a custody file or directory is not the custody owner's
+// alone: the custody's filesystem kind's own (adapters/internal/storecontract).
+const (
+	noFollow = storecontract.NoFollow
+	nonBlock = storecontract.NonBlock
+)
+
+func private(info os.FileInfo, dir bool) error {
+	if storecontract.Private(info) != nil {
+		return ErrStorage
+	}
+	return nil
+}
 
 type Error string
 
@@ -110,7 +125,31 @@ type state struct {
 	// earlier release never opens.
 	AzureDevOps *azureDevOpsState `json:"azure-devops,omitempty"`
 }
-type Store struct{ root *os.Root }
+
+// Store is a principal's custody: its documents kept through the store
+// contract (adapters/internal/storecontract) by the custody's filesystem kind, in
+// the directory held as root, under the custody lock (locked).
+type Store struct {
+	root *os.Root
+	docs storecontract.Documents
+}
+
+// custodyDocument is how the custody keeps a document: at most 64 KiB, a
+// name the open reports missing taken as absent, replaced by a synced
+// rename whose directory is not synced -- as it always has.
+var custodyDocument = storecontract.Policy{Limit: 64 << 10, Staging: ".tmp-"}
+
+// custodyDocuments are the documents kept otherwise: the storage intent,
+// the operation journal of a file change, is bounded by its line, absent
+// only when its entry is not there, and synced with its directory.
+var custodyDocuments = map[string]storecontract.Policy{
+	"storage-intent.json": {Limit: StorageLineBytes, ConfirmAbsence: true, SyncDirectory: true, Staging: ".storage-"},
+}
+
+// heldStore is the custody held at root.
+func heldStore(root *os.Root) *Store {
+	return &Store{root: root, docs: storecontract.NewFiles(root, custodyDocument, custodyDocuments)}
+}
 
 // consent is the record of what a connection's consent was for. It is kept
 // beside the state and not in it: an earlier release reads the state, and
@@ -189,50 +228,43 @@ func OpenStore(dir, principal string) (*Store, error) {
 	if err != nil {
 		return nil, ErrStorage
 	}
-	return &Store{child}, nil
+	return heldStore(child), nil
 }
 func (s *Store) Close() error { return s.root.Close() }
+
+// read is a custody document's bytes; os.ErrNotExist when it is not there,
+// and ErrStorage when it is there and cannot be read as one.
 func (s *Store) read(name string) ([]byte, error) {
-	f, err := s.root.OpenFile(name, os.O_RDONLY|noFollow|nonBlock, 0)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, os.ErrNotExist
-		}
-		return nil, ErrStorage
+	b, _, err := s.docs.Get(name)
+	switch storecontract.FaultOf(err) {
+	case "":
+		return b, nil
+	case storecontract.Absent:
+		return nil, os.ErrNotExist
 	}
-	defer f.Close()
-	st, err := f.Stat()
-	if err != nil || !st.Mode().IsRegular() || private(st, false) != nil || st.Size() > 64<<10 {
-		return nil, ErrStorage
-	}
-	b, err := io.ReadAll(io.LimitReader(f, 64<<10+1))
-	if err != nil || len(b) > 64<<10 {
-		return nil, ErrStorage
-	}
-	return b, nil
+	return nil, ErrStorage
 }
+
+// write replaces a custody document with v's JSON, under the custody lock.
 func (s *Store) write(name string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil || len(b) > 64<<10 {
 		return ErrStorage
 	}
-	tmp := ".tmp-" + randomID()
-	f, err := s.root.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|noFollow, 0600)
-	if err != nil {
-		return ErrStorage
-	}
-	defer s.root.Remove(tmp)
-	if _, err = f.Write(b); err == nil {
-		err = f.Sync()
-	}
-	ce := f.Close()
-	if err != nil || ce != nil {
-		return ErrStorage
-	}
-	if err = s.root.Rename(tmp, name); err != nil {
+	return s.put(name, b)
+}
+
+// put replaces a custody document with b, under the custody lock.
+func (s *Store) put(name string, b []byte) error {
+	if _, err := s.docs.Put(name, b, storecontract.AnyRevision); err != nil {
 		return ErrStorage
 	}
 	return nil
+}
+
+// remove removes a custody document, under the custody lock.
+func (s *Store) remove(name string) error {
+	return s.docs.Delete(name, storecontract.AnyRevision)
 }
 func (s *Store) locked(fn func(*state) error) error {
 	f, err := s.root.OpenFile("state.lock", os.O_CREATE|os.O_RDWR|noFollow|nonBlock, 0600)
@@ -274,13 +306,8 @@ type grant struct {
 func (s *Store) makeGrants(c string, ids []string) ([]Selection, error) {
 	// Keep abandoned picker selections bounded; only our fixed-name grant files
 	// are eligible. Credentials and unrelated files are never cleanup candidates.
-	directory, err := s.root.Open(".")
+	names, err := s.docs.List(129)
 	if err != nil {
-		return nil, ErrStorage
-	}
-	defer directory.Close()
-	names, err := directory.Readdirnames(129)
-	if err != nil && err != io.EOF {
 		return nil, ErrStorage
 	}
 	live := 0
@@ -292,7 +319,7 @@ func (s *Store) makeGrants(c string, ids []string) ([]Selection, error) {
 				return nil, ErrStorage
 			}
 			if g.Expires <= time.Now().Unix() || g.Connection != c {
-				if s.root.Remove(name) != nil {
+				if s.remove(name) != nil {
 					return nil, ErrStorage
 				}
 			} else {

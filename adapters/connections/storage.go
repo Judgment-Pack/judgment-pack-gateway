@@ -11,7 +11,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"regexp"
 	"strconv"
@@ -271,25 +270,17 @@ func (b *Broker) closeStorageBrowse() {
 		b.storageBrowse = nil
 	}
 }
+
+// readStorageIntent reads the operation journal of a file change, a
+// custody document kept by its own policy (custodyDocuments): only an
+// absent entry is proof that no prior record exists -- os.Root may report
+// ENOENT for a dangling link -- and it is held to its line's bound.
 func (s *Store) readStorageIntent() (storageIntent, error) {
 	var out storageIntent
-	f, e := s.root.OpenFile("storage-intent.json", os.O_RDONLY|noFollow|nonBlock, 0)
-	if e != nil {
-		if errors.Is(e, os.ErrNotExist) {
-			// os.Root may report ENOENT for a dangling link. Only an absent
-			// directory entry is proof that no prior record exists.
-			if _, statErr := s.root.Lstat("storage-intent.json"); errors.Is(statErr, os.ErrNotExist) {
-				return out, ErrGrant
-			}
-		}
-		return out, ErrStorage
+	raw, e := s.read("storage-intent.json")
+	if errors.Is(e, os.ErrNotExist) {
+		return out, ErrGrant
 	}
-	defer f.Close()
-	st, e := f.Stat()
-	if e != nil || !st.Mode().IsRegular() || private(st, false) != nil || st.Size() > StorageLineBytes {
-		return out, ErrStorage
-	}
-	raw, e := io.ReadAll(io.LimitReader(f, StorageLineBytes+1))
 	if e != nil || decodeStorage(raw, &out) != nil || !opaque.MatchString(out.Plan.ID) || out.Connection == "" || out.Epoch == "" {
 		return out, ErrStorage
 	}
@@ -300,36 +291,15 @@ func (s *Store) readStorageIntent() (storageIntent, error) {
 	}
 	return out, nil
 }
+
+// writeStorageIntent replaces the operation journal, synced with its
+// directory before it is relied on (custodyDocuments).
 func (s *Store) writeStorageIntent(v storageIntent) error {
 	raw, e := json.Marshal(v)
 	if e != nil || len(raw) > StorageLineBytes {
 		return ErrLimit
 	}
-	name := ".storage-" + randomID()
-	f, e := s.root.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY|noFollow, 0600)
-	if e != nil {
-		return ErrStorage
-	}
-	defer s.root.Remove(name)
-	if _, e = f.Write(raw); e == nil {
-		e = f.Sync()
-	}
-	closeErr := f.Close()
-	if e != nil || closeErr != nil {
-		return ErrStorage
-	}
-	if e = s.root.Rename(name, "storage-intent.json"); e != nil {
-		return ErrStorage
-	}
-	dir, e := s.root.Open(".")
-	if e != nil {
-		return ErrStorage
-	}
-	defer dir.Close()
-	if e = dir.Sync(); e != nil {
-		return ErrStorage
-	}
-	return nil
+	return s.put("storage-intent.json", raw)
 }
 func currentStorage(v *state, c credential, epoch string) error {
 	if v.Disabled {

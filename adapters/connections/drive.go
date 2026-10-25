@@ -247,7 +247,7 @@ func (s *Store) consumeGrant(token, fileID string) (Client, credential, string, 
 		if decode(b, &g) != nil || g.File != fileID || g.Expires <= time.Now().Unix() || v.Connection == nil || v.Connection.ID != g.Connection {
 			return ErrGrant
 		}
-		if s.root.Remove("grant-"+token) != nil {
+		if s.remove("grant-"+token) != nil {
 			return ErrGrant
 		}
 		client, credentialSnapshot, epoch = v.Client, *v.Connection, v.Epoch

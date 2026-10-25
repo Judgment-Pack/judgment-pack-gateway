@@ -224,7 +224,7 @@ func (b *Broker) Handle(ctx context.Context, method string, raw json.RawMessage)
 			}
 			// The record is of a connection that is gone. One that stays
 			// behind says nothing of another: it names the consent it is of.
-			_ = b.store.root.Remove("consent.json")
+			_ = b.store.remove("consent.json")
 			return nil
 		})
 		if err != nil {

@@ -105,7 +105,7 @@ func peekStore(dir, principal string) (*Store, error) {
 	if err != nil {
 		return nil, ErrStorage
 	}
-	return &Store{child}, nil
+	return heldStore(child), nil
 }
 
 type OCRConnection struct {
