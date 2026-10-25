@@ -9,9 +9,21 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"adapters/internal/canon"
 )
+
+// evidenceModeAllowed interprets only the metadata the platform supplies.
+// Windows reports writable files as 0666 and readonly files as 0444; these
+// bits do not describe its ACLs. Windows filesystem ACL trust is not verified
+// here. All platforms still require a direct regular file and pinned bytes.
+func evidenceModeAllowed(mode os.FileMode, platform string) bool {
+	if !mode.IsRegular() || mode&os.ModeSymlink != 0 {
+		return false
+	}
+	return platform == "windows" || mode.Perm()&0o022 == 0
+}
 
 // Read once through a held directory/file. No later reopen can change accepted bytes.
 func readImmutableEvidence(path string, bound int) ([]byte, error) {
@@ -41,7 +53,7 @@ func readImmutableEvidence(path string, bound int) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !entry.Mode().IsRegular() || entry.Mode()&os.ModeSymlink != 0 || entry.Mode().Perm()&0o022 != 0 {
+	if !evidenceModeAllowed(entry.Mode(), runtime.GOOS) {
 		return nil, errors.New("evidence is not an immutable regular file")
 	}
 	file, err := root.Open(name)

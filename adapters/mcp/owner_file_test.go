@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -105,6 +106,83 @@ func TestV2OwnerFileMalformedOrChangedEvidenceRefusesBeforeCredentials(t *testin
 			}
 			if len(server.Requests()) != before {
 				t.Fatal("invalid owner file reached target")
+			}
+		})
+	}
+}
+
+// Go's Windows permission bits describe the readonly attribute, rather than
+// Unix group/other access. Those bits must not reject a pinned regular file.
+func TestImmutableEvidenceModesRespectPlatformSemantics(t *testing.T) {
+	for _, tc := range []struct {
+		name, platform string
+		mode           os.FileMode
+		allowed        bool
+	}{
+		{"windows writable", "windows", 0o666, true},
+		{"windows readonly", "windows", 0o444, true},
+		{"unix owner writable", "linux", 0o644, true},
+		{"unix readonly", "linux", 0o444, true},
+		{"unix group writable", "linux", 0o664, false},
+		{"unix other writable", "linux", 0o646, false},
+		{"unix world writable", "linux", 0o666, false},
+		{"macos group writable", "darwin", 0o664, false},
+		{"other platform group writable", "plan9", 0o664, false},
+		{"windows directory", "windows", os.ModeDir | 0o666, false},
+		{"unix directory", "linux", os.ModeDir | 0o644, false},
+		{"windows symlink", "windows", os.ModeSymlink | 0o666, false},
+		{"unix symlink", "linux", os.ModeSymlink | 0o444, false},
+		{"windows irregular", "windows", os.ModeIrregular | 0o666, false},
+		{"windows named pipe", "windows", os.ModeNamedPipe | 0o666, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := evidenceModeAllowed(tc.mode, tc.platform); got != tc.allowed {
+				t.Fatalf("%s evidence mode %v: allowed %v, want %v", tc.platform, tc.mode, got, tc.allowed)
+			}
+		})
+	}
+}
+
+// Exercise the held-file reader as well as its metadata predicate. Expected
+// bytes are handwritten, and writable-by-others metadata refuses on Unix.
+func TestImmutableEvidenceReaderKeepsPlatformModeAndBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    os.FileMode
+		allowed bool
+	}{
+		{"owner writable", 0o644, true},
+		{"readonly", 0o444, true},
+		{"group writable", 0o664, runtime.GOOS == "windows"},
+		{"other writable", 0o646, runtime.GOOS == "windows"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "evidence.json")
+			const expected = `{"approved":true}`
+			if err := os.WriteFile(path, []byte(expected), tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(path, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			// Permit temporary-file removal on Windows after the readonly case.
+			t.Cleanup(func() {
+				if err := os.Chmod(path, 0o600); err != nil {
+					t.Error(err)
+				}
+			})
+			raw, err := readImmutableEvidence(path, len(expected))
+			if !tc.allowed {
+				if err == nil || err.Error() != "evidence is not an immutable regular file" {
+					t.Fatalf("writable-by-others evidence admitted: %q %v", raw, err)
+				}
+				return
+			}
+			if err != nil || string(raw) != expected {
+				t.Fatalf("pinned regular evidence refused or changed: %q %v", raw, err)
+			}
+			if raw, err := readImmutableEvidence(path, len(expected)-1); err == nil || err.Error() != "evidence exceeds snapshot bound" || raw != nil {
+				t.Fatalf("oversized evidence admitted: %q %v", raw, err)
 			}
 		})
 	}
