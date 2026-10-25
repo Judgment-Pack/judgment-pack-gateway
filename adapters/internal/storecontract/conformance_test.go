@@ -13,17 +13,30 @@ import (
 // The conformance cases of the store contract's documents
 // (docs/design/store-contract.md, "What a kind must pass"), as the core's
 // suite states them (go/store_conformance_test.go), for the kinds this
-// module keeps documents in. A kind's compare-and-set may need its space's
-// lock to be atomic among writers -- the custody's filesystem kind does,
-// and every custody writer holds it -- and a kind says so by serialize.
+// module keeps documents in. Every custody writer holds the space's lock
+// (the custody lock), and the custody's filesystem kind's compare-and-set is
+// atomic only under it; so every kind's concurrent writers here run under a
+// lock of the space (spaceLock), and a compare-and-set taken under it must
+// observe the revision the previous holder wrote.
 type kindUnderTest struct {
 	name string
 	open func(t *testing.T) (Documents, func(func()))
 }
 
+// spaceLock is the space's lock, as the custody lock serializes its
+// writers: one holder at a time, each seeing what the last one wrote.
+func spaceLock() func(func()) {
+	var held sync.Mutex
+	return func(f func()) {
+		held.Lock()
+		defer held.Unlock()
+		f()
+	}
+}
+
 func kindsUnderTest(t *testing.T) []kindUnderTest {
 	kinds := []kindUnderTest{{"memory", func(t *testing.T) (Documents, func(func())) {
-		return newMemory(), func(f func()) { f() }
+		return newMemory(), spaceLock()
 	}}}
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		kinds = append(kinds, kindUnderTest{"filesystem", func(t *testing.T) (Documents, func(func())) {
@@ -32,12 +45,7 @@ func kindsUnderTest(t *testing.T) []kindUnderTest {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { root.Close() })
-			var custody sync.Mutex
-			return NewFiles(root, Policy{Limit: 64 << 10, Staging: ".tmp-"}, nil), func(f func()) {
-				custody.Lock()
-				defer custody.Unlock()
-				f()
-			}
+			return NewFiles(root, Policy{Limit: 64 << 10, Staging: ".tmp-"}, nil), spaceLock()
 		}})
 	}
 	return kinds

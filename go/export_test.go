@@ -243,10 +243,14 @@ func TestExportCommandWritesWhatVerifyReads(t *testing.T) {
 	if err := os.Chmod(snapshotFile, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	text := `{"engineVersion":"3","authority":"gateway:test","seed":"` + seedPath + `","store":"` + storeRoot + `",` +
-		`"registry":"` + registryPath + `","decisionRecords":"` + records + `","listen":"127.0.0.1:8787",` +
-		`"catalog":"` + filepath.Join(dir, "catalog") + `","platforms":{"tickets":{"binding":"` + servedBinding + `",` +
-		`"credentials":{"live":{"file":"` + filepath.Join(dir, "tickets.env") + `"}},"user":"tickets","descriptors":"` + pin + `"}}}`
+	// every path written as a JSON string by the gateway's own encoder, so
+	// a path reads as itself whatever its separators: a Windows path's
+	// backslashes are no escapes
+	str := func(s string) string { return string(canon(vString(s))) }
+	text := `{"engineVersion":"3","authority":"gateway:test","seed":` + str(seedPath) + `,"store":` + str(storeRoot) + `,` +
+		`"registry":` + str(registryPath) + `,"decisionRecords":` + str(records) + `,"listen":"127.0.0.1:8787",` +
+		`"catalog":` + str(filepath.Join(dir, "catalog")) + `,"platforms":{"tickets":{"binding":` + str(servedBinding) + `,` +
+		`"credentials":{"live":{"file":` + str(filepath.Join(dir, "tickets.env")) + `}},"user":"tickets","descriptors":` + str(pin) + `}}}`
 	if err := os.WriteFile(config, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
