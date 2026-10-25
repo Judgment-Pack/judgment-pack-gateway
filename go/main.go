@@ -198,7 +198,7 @@ func cmdKeygen(args []string) int {
 		fmt.Fprintln(os.Stderr, "generate seed:", err)
 		return 1
 	}
-	if err := writeNewSeed(path, []byte(hex.EncodeToString(seed)+"\n")); err != nil {
+	if err := seedSecret(path).putSecret("seed", []byte(hex.EncodeToString(seed)+"\n")); err != nil {
 		fmt.Fprintln(os.Stderr, "write seed:", err)
 		return 1
 	}
@@ -226,10 +226,11 @@ var closeInheritedDescriptors = markInheritedCloseOnExec
 // the rest.
 const maxSeedFileBytes = 4096
 
-// loadSeed opens, judges and reads the seed file through one descriptor
-// (openSeed), then accepts either the hex form keygen writes or 32 raw bytes.
+// loadSeed reads the seed as a secret value of the filesystem kind, which
+// opens, judges and reads the file through one descriptor (openSeed), then
+// accepts either the hex form keygen writes or 32 raw bytes.
 func loadSeed(path string) ([]byte, error) {
-	raw, err := openSeed(path)
+	raw, err := seedSecret(path).getSecret("seed")
 	if err != nil {
 		return nil, err
 	}

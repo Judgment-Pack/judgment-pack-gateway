@@ -33,6 +33,12 @@ package main
 // name, and is none of the others (witnessFiles.hold): one writer, whatever
 // names it is reached by.
 //
+// The log, the marks and the registrations are each an append log of the
+// store contract's filesystem kind over the held file (fsHeldLog): a line
+// is appended whole and the file synced, through the I/O seam below, in
+// one call. The set-aside file, the start-up checks and repair's cut are
+// the witness's own, on the held files.
+//
 // The rule every path obeys: nothing is relied on, served or built upon
 // until the bytes it rests on are durable. A start, a repair and an offline
 // registration sync what they read, files and directories, before anything
@@ -1541,12 +1547,12 @@ func (w *witnessLog) keepRegistration(r witnessRegistration) error {
 		w.stopped = witnessFailure{"register", err}
 		return w.stopped
 	}
-	if err := w.io.appendTo("registrations", file, line); err != nil {
-		w.stopped = witnessFailure{"register", err}
-		return w.stopped
-	}
-	if err := w.io.sync("registrations", file); err != nil {
-		w.stopped = witnessFailure{"register-sync", err}
+	if _, err := (fsHeldLog{"registrations", file, w.io}).appendRecord(line); err != nil {
+		step := "register"
+		if committed(err) {
+			step = "register-sync"
+		}
+		w.stopped = witnessFailure{step, err}
 		return w.stopped
 	}
 	// a trail that holds statements moves, in the counts, to the submitter
@@ -1601,22 +1607,24 @@ func (w *witnessLog) signAndKeep(kind, checkpoint string, t *witnessTrail) ([]by
 	}
 	// durable: the line appended to the log, and the log synced
 	offset := w.logSize
-	if err := w.io.appendTo("log", w.files.log, append(append([]byte(nil), line...), '\n')); err != nil {
-		w.stopped = witnessFailure{"append", err}
+	if _, err := (fsHeldLog{"log", w.files.log, w.io}).appendRecord(append(append([]byte(nil), line...), '\n')); err != nil {
+		step := "append"
+		if committed(err) {
+			// written whole, and not made durable
+			w.logSize += int64(len(line)) + 1
+			step = "sync"
+		}
+		w.stopped = witnessFailure{step, err}
 		return nil, w.stopped
 	}
 	w.logSize += int64(len(line)) + 1
-	if err := w.io.sync("log", w.files.log); err != nil {
-		w.stopped = witnessFailure{"sync", err}
-		return nil, w.stopped
-	}
 	// marked: its mark appended to the marks, and the marks synced
-	if err := w.io.appendTo("marks", w.files.marks, mark); err != nil {
-		w.stopped = witnessFailure{"mark", err}
-		return nil, w.stopped
-	}
-	if err := w.io.sync("marks", w.files.marks); err != nil {
-		w.stopped = witnessFailure{"mark-sync", err}
+	if _, err := (fsHeldLog{"marks", w.files.marks, w.io}).appendRecord(mark); err != nil {
+		step := "mark"
+		if committed(err) {
+			step = "mark-sync"
+		}
+		w.stopped = witnessFailure{step, err}
 		return nil, w.stopped
 	}
 	// published: only now may a read serve it or an answer give it
@@ -1782,10 +1790,7 @@ func repairWitnessLog(cfg witnessConfig) (*witnessJudgement, error) {
 			return j, err
 		}
 	case outcomeNewlineAndMark:
-		if err := wio.appendTo("log", files.log, []byte{'\n'}); err != nil {
-			return j, fmt.Errorf("witness repair: %w", err)
-		}
-		if err := wio.sync("log", files.log); err != nil {
+		if _, err := (fsHeldLog{"log", files.log, wio}).appendRecord([]byte{'\n'}); err != nil {
 			return j, fmt.Errorf("witness repair: %w", err)
 		}
 		fallthrough
@@ -1797,10 +1802,7 @@ func repairWitnessLog(cfg witnessConfig) (*witnessJudgement, error) {
 		if err := endsCleanly("marks", files.marks); err != nil {
 			return j, err
 		}
-		if err := wio.appendTo("marks", files.marks, mark); err != nil {
-			return j, fmt.Errorf("witness repair: %w", err)
-		}
-		if err := wio.sync("marks", files.marks); err != nil {
+		if _, err := (fsHeldLog{"marks", files.marks, wio}).appendRecord(mark); err != nil {
 			return j, fmt.Errorf("witness repair: %w", err)
 		}
 	}
@@ -2166,10 +2168,7 @@ func registerWitnessTrail(paths witnessPaths, r witnessRegistration, wio witness
 			return nil, err
 		}
 	}
-	if err := wio.appendTo("registrations", files.registrations, line); err != nil {
-		return nil, fmt.Errorf("witness registrations: %w", err)
-	}
-	if err := wio.sync("registrations", files.registrations); err != nil {
+	if _, err := (fsHeldLog{"registrations", files.registrations, wio}).appendRecord(line); err != nil {
 		return nil, fmt.Errorf("witness registrations: %w", err)
 	}
 	wio.note("registered", "")

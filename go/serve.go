@@ -1554,12 +1554,13 @@ func (g *gatewayService) handler() http.Handler {
 	})
 
 	mux.HandleFunc("/registry", func(w http.ResponseWriter, r *http.Request) {
-		// The same classifier the verifier uses. The engine made its
-		// registry at start, so an absent one is served as no registry at
-		// all, never as the empty body an external verifier reads as "no
-		// seals"; nor is a registry that is present and unreachable.
-		data, present, err := readRegistryBytes(g.regPath)
-		if err == nil && !present {
+		// The registry's log, read through the same classifier the
+		// verifier uses. The engine made its registry at start, so an
+		// absent one is served as no registry at all, never as the empty
+		// body an external verifier reads as "no seals"; nor is a registry
+		// that is present and unreachable.
+		data, err := g.registry.log.readLog(0)
+		if faultOf(err) == faultAbsent {
 			err = fmt.Errorf("the registry the engine made at its start is not there: %s", g.regPath)
 		}
 		if err != nil {

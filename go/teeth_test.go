@@ -971,7 +971,7 @@ func TestStoreAppendOnlyRefusesOverwrite(t *testing.T) {
 	}
 
 	// 5. Direct write with exclusive=true must also refuse to overwrite
-	err = s.write(receiptPath, []byte("tampered content"), true)
+	err = fsWriteFile(receiptPath, []byte("tampered content"), true)
 	if err == nil {
 		t.Fatal("expected write with exclusive=true on existing file to fail, but succeeded")
 	}
