@@ -28,8 +28,27 @@ func run() int {
 	localPlan := fs.Bool("local-plan", false, "")
 	sourceCapabilities := fs.Bool("source-capabilities", false, "")
 	disabled := fs.Bool("disabled", false, "")
+	exportObservations := fs.Bool("export-observations", false, "")
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
 		return 2
+	}
+	if *exportObservations {
+		// The observation journal, for an audit export: read under the
+		// custody lock, written to stdout as the custody holds it. Nothing
+		// is served, configured or consumed from stdin; Drive alone keeps
+		// recurring bindings, and every other mode is refused.
+		if *provider != "google-drive" || *catalog || *catalogV3 || *catalogV4 || *catalogV5 || *localPlan || *sourceCapabilities || *disabled {
+			return 2
+		}
+		journal, err := connections.ExportSourceObservations(*dir, *principal)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "export-observations:", err)
+			return 1
+		}
+		if _, err := os.Stdout.Write(journal); err != nil {
+			return 1
+		}
+		return 0
 	}
 	if *catalog || *catalogV3 || *catalogV4 || *catalogV5 || *localPlan || *sourceCapabilities {
 		// Discovery must never configure a publisher, consume stdin, or create,

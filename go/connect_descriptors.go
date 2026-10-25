@@ -300,10 +300,11 @@ func compareLines(previous *snapshot, allowedBefore map[string]bool, now liveCap
 }
 
 // readPinnedSnapshot reads the snapshot a pin names, in the snapshots'
-// directory held open as the entry it is, the file opened as the entry it
-// is and judged by what was opened -- a regular file of the snapshot's mode
-// and an owner the frontend accepts -- and digested before it is parsed.
-// It is how connect finds the previous snapshot to compare with.
+// directory held open as the entry it is, as a blob of the filesystem kind
+// (fsHeldPins.getBlob): the file opened as the entry it is and judged by
+// what was opened -- a regular file of the snapshot's mode and an owner the
+// frontend accepts -- and digested here before it is parsed. It is how
+// connect finds the previous snapshot to compare with.
 func (f *configFile) readPinnedSnapshot(pin string) (snapshot, error) {
 	hexSum, ok := strings.CutPrefix(pin, "sha256:")
 	if !ok || !isDigest(pin) {
@@ -315,15 +316,7 @@ func (f *configFile) readPinnedSnapshot(pin string) (snapshot, error) {
 	}
 	defer held.Close()
 	name := hexSum + ".json"
-	file, info, err := openEntry(held, name)
-	if err != nil {
-		return snapshot{}, fmt.Errorf("%s/%s %v", f.snapshotDir(), name, err)
-	}
-	defer file.Close()
-	if err := snapshotHeld(info, f.owner, false); err != nil {
-		return snapshot{}, fmt.Errorf("%s/%s %v", f.snapshotDir(), name, err)
-	}
-	data, err := readBoundedFrom(file, name, maxSnapshotBytes)
+	data, err := f.pins(held).getBlob(pin)
 	if err != nil {
 		return snapshot{}, err
 	}

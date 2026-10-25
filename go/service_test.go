@@ -1025,11 +1025,11 @@ func TestASealThatMayBeWrittenClosesTheSession(t *testing.T) {
 	if _, err := service.acquire("seal-unsynced", "screening", vString("x"), nil); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	service.registry.sync = func(*os.File) error { return errors.New("the disk would not sync") }
+	service.registry.log.(*fsLog).sync = func(*os.File) error { return errors.New("the disk would not sync") }
 	if _, err := service.sealSession("seal-unsynced"); err == nil || !strings.Contains(err.Error(), "would not sync") {
 		t.Fatalf("a seal whose sync failed: %v", err)
 	}
-	service.registry.sync = func(f *os.File) error { return f.Sync() }
+	service.registry.log.(*fsLog).sync = func(f *os.File) error { return f.Sync() }
 	seals, _, err := loadSeals(service.regPath, service.publicKey)
 	if err != nil {
 		t.Fatal(err)
@@ -1053,14 +1053,14 @@ func TestASealThatMayBeWrittenClosesTheSession(t *testing.T) {
 	if _, err := service.acquire("seal-unended", "screening", vString("x"), nil); err != nil {
 		t.Fatal(err)
 	}
-	service.registry.write = func(f *os.File, line []byte) (int, error) {
+	service.registry.log.(*fsLog).write = func(f *os.File, line []byte) (int, error) {
 		n, _ := f.Write(line[:len(line)-1])
 		return n, errors.New("the disk filled before the newline")
 	}
 	if _, err := service.sealSession("seal-unended"); err == nil || !strings.Contains(err.Error(), "before the newline") {
 		t.Fatalf("a seal whose newline was not written: %v", err)
 	}
-	service.registry.write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
+	service.registry.log.(*fsLog).write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
 	if seals, _, err := loadSeals(service.regPath, service.publicKey); err != nil {
 		t.Fatal(err)
 	} else if _, onDisk := seals["seal-unended"]; !onDisk {
@@ -1164,7 +1164,7 @@ func TestASealStartsOnALineOfItsOwn(t *testing.T) {
 		t.Fatal(err)
 	}
 	unterminated.Close()
-	service.registry.write = func(f *os.File, line []byte) (int, error) {
+	service.registry.log.(*fsLog).write = func(f *os.File, line []byte) (int, error) {
 		if line[0] != '\n' {
 			t.Fatal("no newline ended the unterminated line: the test tests nothing")
 		}
@@ -1174,7 +1174,7 @@ func TestASealStartsOnALineOfItsOwn(t *testing.T) {
 	if _, err := service.sealSession("ended"); err == nil || !strings.Contains(err.Error(), "after one byte") {
 		t.Fatalf("a seal whose record was never written: %v", err)
 	}
-	service.registry.write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
+	service.registry.log.(*fsLog).write = func(f *os.File, line []byte) (int, error) { return f.Write(line) }
 	if _, err := service.acquire("ended", "screening", vString("y"), nil); err != nil {
 		t.Fatalf("a session whose record was never written was closed: %v", err)
 	}

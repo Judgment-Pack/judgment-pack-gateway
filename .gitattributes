@@ -19,3 +19,6 @@ adapters/document/testdata/*.pdf -whitespace
 adapters/document/testdata/notes.txt -whitespace
 testdata/rendering/standin-renderer -whitespace
 verify-ts/src/citations.ts whitespace=-blank-at-eof
+
+# The hand-written export is held to its manifest byte for byte.
+go/testdata/export/** -text

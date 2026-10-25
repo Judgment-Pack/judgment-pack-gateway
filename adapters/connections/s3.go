@@ -435,7 +435,7 @@ func (b *Broker) s3Select(ctx context.Context, raw []byte, cfg s3Config, c crede
 		for i, g := range grants {
 			if e = b.store.write("grant-"+g.Grant, grant{Connection: c.ID, File: g.FileID, Expires: time.Now().Add(5 * time.Minute).Unix(), S3: &objects[i]}); e != nil {
 				for _, g := range grants {
-					_ = b.store.root.Remove("grant-" + g.Grant)
+					_ = b.store.remove("grant-" + g.Grant)
 				}
 				return e
 			}
@@ -472,7 +472,7 @@ func (p provider) readS3(ctx context.Context, s *Store, raw []byte) ([]byte, err
 		if g.Connection != c.ID || g.File != q.ResourceID || g.Expires <= time.Now().Unix() || g.S3 == nil || g.S3.Epoch != epoch || cfg.Bucket+"/"+g.S3.Key != q.ResourceID || !strings.HasPrefix(g.S3.Key, cfg.Prefix) {
 			return ErrGrant
 		}
-		if e = s.root.Remove("grant-" + q.Grant); e != nil {
+		if e = s.remove("grant-" + q.Grant); e != nil {
 			return ErrStorage
 		}
 		obj = *g.S3

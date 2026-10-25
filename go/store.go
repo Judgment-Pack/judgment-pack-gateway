@@ -2,17 +2,16 @@ package main
 
 // The write path: content-addressed artifacts, signed chained receipts, and the
 // signed seal registry. SPEC.md §1 is normative for every byte written here.
+// The bytes are kept through the store contract (store_contract.go): the
+// artifacts in a blob space, the receipts in an indexed space, the registry
+// in an append log, each of the filesystem kind (store_fs.go) as shipped.
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"regexp"
 	"time"
 )
@@ -49,7 +48,10 @@ func argumentsKey(seed []byte) []byte {
 }
 
 type store struct {
+	// root is where the filesystem kind keeps the store (SPEC.md §1.3)
 	root      string
+	artifacts blobSpace
+	receipts  indexedSpace
 	seed      []byte
 	private   ed25519.PrivateKey
 	publicKey ed25519.PublicKey
@@ -57,82 +59,34 @@ type store struct {
 	authority string
 }
 
+// newStore opens the store at root, of the filesystem kind: its artifacts
+// and receipts directories made where they are not there.
 func newStore(root string, seed []byte, authority string) (*store, error) {
 	if len(seed) != seedBytes {
 		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
 	}
+	kind := newFsKind(fsLayout{store: root})
+	if err := kind.makeStore(); err != nil {
+		return nil, err
+	}
+	return newStoreOn(root, kind.artifacts(), kind.receipts(), seed, authority), nil
+}
+
+// newStoreOn is a store kept in the spaces given.
+func newStoreOn(root string, artifacts blobSpace, receipts indexedSpace, seed []byte, authority string) *store {
 	private := ed25519.NewKeyFromSeed(seed)
 	public := private.Public().(ed25519.PublicKey)
-	for _, dir := range []string{"artifacts", "receipts"} {
-		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
-			return nil, err
-		}
-	}
 	return &store{
-		root: root, seed: seed, private: private, publicKey: public,
+		root: root, artifacts: artifacts, receipts: receipts,
+		seed: seed, private: private, publicKey: public,
 		keyID: keyIDFor(public), authority: authority,
-	}, nil
-}
-
-// write puts bytes at `near`. With exclusive set it refuses to replace an
-// existing file, which is what makes the receipt log append-only.
-func (s *store) write(near string, data []byte, exclusive bool) error {
-	var suffix [6]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.%s.tmp", near, os.Getpid(), hex.EncodeToString(suffix[:]))
-	handle, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	if _, err := handle.Write(data); err != nil {
-		handle.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := handle.Sync(); err != nil {
-		handle.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := handle.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	defer os.Remove(tmp)
-	if exclusive {
-		if err := os.Link(tmp, near); err != nil {
-			if errors.Is(err, os.ErrExist) {
-				return fmt.Errorf("receipt already exists (append-only): %s", near)
-			}
-			return err
-		}
-	} else if err := os.Rename(tmp, near); err != nil {
-		return err
-	}
-	syncDir(filepath.Dir(near))
-	return nil
-}
-
-func syncDir(path string) {
-	handle, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	defer handle.Close()
-	_ = handle.Sync()
 }
 
 // retain stores canonical result bytes under their own digest and returns the
 // resultDigest a receipt carries.
 func (s *store) retain(canonical []byte) (string, error) {
-	sum := sha256.Sum256(canonical)
-	hexSum := hex.EncodeToString(sum[:])
-	if err := s.write(filepath.Join(s.root, "artifacts", hexSum), canonical, false); err != nil {
-		return "", err
-	}
-	return "sha256:" + hexSum, nil
+	return s.artifacts.putBlob(canonical)
 }
 
 // stamp signs a receipt core and appends it to its session. The caller supplies
@@ -165,33 +119,12 @@ func (s *store) stampInto(core *vObject) (*vObject, string, bool, error) {
 	if err := requireSession(string(sessionID)); err != nil {
 		return nil, "", false, err
 	}
-	receiptsRoot := filepath.Join(s.root, "receipts")
-	sessionDir := filepath.Join(receiptsRoot, string(sessionID))
-	// Defence in depth: never write outside the enumerated root, even if the
-	// token rule above is ever loosened.
-	resolved, err := filepath.Abs(sessionDir)
+	// The session is made before anything is signed for it; one that is
+	// there already -- made by this process or another, or an entry of
+	// another kind, which the create below answers for -- is not this
+	// call's own either way.
+	made, err := s.receipts.makeSeries(string(sessionID))
 	if err != nil {
-		return nil, "", false, err
-	}
-	rootAbs, err := filepath.Abs(receiptsRoot)
-	if err != nil {
-		return nil, "", false, err
-	}
-	if filepath.Dir(resolved) != rootAbs {
-		return nil, "", false, errors.New("session directory escapes the receipt store")
-	}
-	if err := os.MkdirAll(receiptsRoot, 0o755); err != nil {
-		return nil, "", false, err
-	}
-	made := false
-	switch err := os.Mkdir(sessionDir, 0o755); {
-	case err == nil:
-		made = true
-	case errors.Is(err, fs.ErrExist):
-		// Something is there already: a session this process or another
-		// one made, or an entry of another kind, which the write below
-		// answers for. Not this call's own either way.
-	default:
 		return nil, "", false, err
 	}
 
@@ -229,8 +162,8 @@ func (s *store) stampInto(core *vObject) (*vObject, string, bool, error) {
 	stored.set("signature", vString(signatureHex))
 
 	body := append(canon(stored), '\n')
-	path := filepath.Join(sessionDir, fmt.Sprintf("%d.json", int64(index)))
-	if err := s.write(path, body, true); err != nil {
+	// created once at its index: a receipt is never replaced
+	if err := s.receipts.createIndexed(string(sessionID), int64(index), body); err != nil {
 		return nil, "", false, err
 	}
 	return stored, signatureHex, made, nil
@@ -239,14 +172,12 @@ func (s *store) stampInto(core *vObject) (*vObject, string, bool, error) {
 // --- the seal registry (write side) ---------------------------------------
 
 type registryWriter struct {
+	// path names the registry in messages
 	path  string
+	log   appendLog
 	seed  []byte
 	priv  ed25519.PrivateKey
 	keyID string
-	// write appends a seal's line and sync makes it durable; a test
-	// stands in a failure for either
-	write func(*os.File, []byte) (int, error)
-	sync  func(*os.File) error
 }
 
 // sealMayBeWritten is a failure to seal after the record may already be in
@@ -269,13 +200,18 @@ func newRegistryWriter(path string, seed []byte, history func() (bool, error)) (
 	// the registry is read by its spelling, so it is written by its
 	// spelling too: a spelling the platform could resolve otherwise is
 	// refused before a directory is made for it (SPEC.md §4.1)
-	if err := requirePlainSpelling(path, true); err != nil {
+	log, err := openFsLog(path)
+	if err != nil {
 		return nil, err
 	}
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, err
-		}
+	return newRegistryWriterOn(log, path, seed, history)
+}
+
+// newRegistryWriterOn opens the registry kept in log for sealing; name
+// names it in messages.
+func newRegistryWriterOn(log appendLog, name string, seed []byte, history func() (bool, error)) (*registryWriter, error) {
+	if len(seed) != seedBytes {
+		return nil, fmt.Errorf("an Ed25519 signing seed is %d bytes", seedBytes)
 	}
 	// The engine makes its registry, empty, when it starts without one, so
 	// that from then on the registry's absence is never an empty registry
@@ -291,30 +227,24 @@ func newRegistryWriter(path string, seed []byte, history func() (bool, error)) (
 	// and its registry may hold that session's seal -- an empty one made in
 	// its place would reopen it. An operator who knows no session was ever
 	// sealed makes the registry, empty, by hand.
-	if _, present, err := readRegistryBytes(path); err != nil {
-		return nil, err
-	} else if !present {
+	if _, err := log.readLog(0); faultOf(err) == faultAbsent {
 		held, err := history()
 		if err != nil {
 			return nil, err
 		}
 		if held {
-			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", path)
+			return nil, fmt.Errorf("the store holds sessions and the registry is not there: %s; restore the registry, or, knowing no session was ever sealed, make it empty by hand", name)
 		}
-		made, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-		if err != nil {
+		if err := log.createLog(); err != nil {
 			return nil, err
 		}
-		if err := made.Close(); err != nil {
-			return nil, err
-		}
+	} else if err != nil {
+		return nil, err
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
 	return &registryWriter{
-		path: path, seed: seed, priv: priv,
+		path: name, log: log, seed: seed, priv: priv,
 		keyID: keyIDFor(priv.Public().(ed25519.PublicKey)),
-		write: func(f *os.File, line []byte) (int, error) { return f.Write(line) },
-		sync:  func(f *os.File) error { return f.Sync() },
 	}, nil
 }
 
@@ -335,12 +265,12 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	// directory or a share that cannot be reached -- is not an empty one,
 	// and sealing into it could append a second seal for a session it
 	// already holds, or make the target of a link to nothing
-	existing, present, err := readRegistryBytes(w.path)
+	existing, err := w.log.readLog(0)
+	if faultOf(err) == faultAbsent {
+		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", w.path)
+	}
 	if err != nil {
 		return nil, err
-	}
-	if !present {
-		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", w.path)
 	}
 	// sealed as the verifier loads a seal, never as any parseable line
 	// naming the session: a reader of its own would let the writer refuse
@@ -369,25 +299,18 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	boundary := len(line)
 	line = append(append(line, canon(record)...), '\n')
 
-	// the registry is there (above); a create here could only follow a
-	// registry that went away between the read and the open
-	handle, err := os.OpenFile(w.path, os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	defer handle.Close()
-	if n, err := w.write(handle, line); err != nil {
+	// the registry is there (above); the log makes none where it went
+	// away between the read and the append
+	if n, err := w.log.appendRecord(line); err != nil {
 		// once a byte of the record is written the seal may be there --
 		// whole but for its newline, it loads -- and the session is taken
 		// as sealed until a retry settles it; a newline ending an earlier
-		// line is no part of the record
-		if n > boundary {
+		// line is no part of the record. Written whole and not made
+		// durable, it may be there too.
+		if n > boundary || committed(err) {
 			return nil, sealMayBeWritten{err}
 		}
 		return nil, err
-	}
-	if err := w.sync(handle); err != nil {
-		return nil, sealMayBeWritten{err}
 	}
 	return record, nil
 }

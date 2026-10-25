@@ -1141,13 +1141,13 @@ func (f *configFile) snapshotDir() string { return f.base + ".descriptors" }
 //     verifies, then held open as the entry it is, and the configuration's
 //     directory synced, so the entry survives a crash before anything
 //     names it;
-//  2. the snapshot, written in the held directory under a staging name no
-//     snapshot has, given its final mode and owner, and synced;
-//  3. the snapshot linked to <hex>.json in the held directory, which never
-//     replaces a name. A name already taken is reused only when it is a
-//     regular file, of that mode and owner, that digests to its name, and
-//     it is synced. The staging name is removed, and the held directory
-//     synced.
+//  2. the snapshot kept in the held directory as a blob of the filesystem
+//     kind (fsHeldPins.putBlob): written under a staging name no snapshot
+//     has, given its final mode and owner, and synced;
+//  3. linked to <hex>.json in the held directory, which never replaces a
+//     name. A name already taken is reused only when it is a regular file,
+//     of that mode and owner, that digests to its name, and it is synced.
+//     The staging name is removed, and the held directory synced.
 //
 // Every step is in the held directory, so a name swapped for a link to it
 // meanwhile changes nothing; the caller judges the name again before the
@@ -1158,66 +1158,22 @@ func (f *configFile) publishSnapshot(data []byte) (string, *os.Root, error) {
 	if frontendOwns(f.owner) {
 		return "", nil, fmt.Errorf("descriptors: the configuration belongs to the MCP server's own user or group (%d), and a snapshot given its owner would be refused at the server's start", frontendUID)
 	}
-	sum := sha256.Sum256(data)
-	pin := "sha256:" + hex.EncodeToString(sum[:])
-	name := hex.EncodeToString(sum[:]) + ".json"
 	held, err := f.holdSnapshotDirectory(true)
 	if err != nil {
 		return "", nil, err
 	}
-	fail := func(err error) (string, *os.Root, error) {
+	pin, err := f.pins(held).putBlob(data)
+	if err != nil {
 		held.Close()
 		return "", nil, err
 	}
-	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return fail(err)
-	}
-	staged := ".connect-" + hex.EncodeToString(suffix[:]) + ".staged"
-	file, err := held.OpenFile(staged, os.O_WRONLY|os.O_CREATE|os.O_EXCL, snapshotMode)
-	if err != nil {
-		return fail(fmt.Errorf("descriptors: %v", err))
-	}
-	// From here a failure removes the staging name, before the held
-	// directory is let go: once it is closed, nothing can be removed in it.
-	failStaged := func(err error) (string, *os.Root, error) {
-		held.Remove(staged)
-		return fail(err)
-	}
-	written := func() error {
-		defer file.Close()
-		if _, err := file.Write(data); err != nil {
-			return err
-		}
-		if err := file.Chmod(snapshotMode); err != nil {
-			return err
-		}
-		if err := keepOwner(file, f.owner); err != nil {
-			return err
-		}
-		if err := syncFile(file); err != nil {
-			return err
-		}
-		return file.Close()
-	}
-	if err := written(); err != nil {
-		return failStaged(fmt.Errorf("descriptors: %v", err))
-	}
-	if err := held.Link(staged, name); err != nil {
-		if !errors.Is(err, os.ErrExist) {
-			return failStaged(fmt.Errorf("descriptors: %v", err))
-		}
-		if err := f.snapshotTaken(held, name, pin); err != nil {
-			return failStaged(err)
-		}
-	}
-	if err := held.Remove(staged); err != nil {
-		return fail(fmt.Errorf("descriptors: %v", err))
-	}
-	if err := f.syncHeld(held); err != nil {
-		return fail(fmt.Errorf("descriptors: %s could not be synced: %v", f.snapshotDir(), err))
-	}
 	return pin, held, nil
+}
+
+// pins is the held snapshots' directory as a blob space of the filesystem
+// kind.
+func (f *configFile) pins(held *os.Root) fsHeldPins {
+	return fsHeldPins{dir: held, name: f.snapshotDir(), owner: f.owner, synced: func() error { return f.syncHeld(held) }}
 }
 
 // holdSnapshotDirectory holds the snapshots' directory open: made, when
@@ -1312,34 +1268,6 @@ func (f *configFile) syncHeld(held *os.Root) error {
 		}
 	}
 	return syncDirectory(held, ".")
-}
-
-// snapshotTaken judges a snapshot's name already taken in the held
-// directory: reused only when what holds it is a regular file, of the
-// snapshot's mode and an owner the frontend accepts, that digests to the
-// pin; opened as the entry it is (openEntry), judged by what was opened,
-// and synced, since a file found may never have reached the disk.
-func (f *configFile) snapshotTaken(held *os.Root, name, pin string) error {
-	file, info, err := openEntry(held, name)
-	if err != nil {
-		return fmt.Errorf("descriptors: %s/%s is taken, and is not a file this connect can reuse: %v", f.snapshotDir(), name, err)
-	}
-	defer file.Close()
-	if err := snapshotHeld(info, f.owner, false); err != nil {
-		return fmt.Errorf("descriptors: %s/%s is taken by a file that %v", f.snapshotDir(), name, err)
-	}
-	existing, err := readBoundedFrom(file, name, maxSnapshotBytes)
-	if err != nil {
-		return fmt.Errorf("descriptors: %v", err)
-	}
-	sum := sha256.Sum256(existing)
-	if "sha256:"+hex.EncodeToString(sum[:]) != pin {
-		return fmt.Errorf("descriptors: %s/%s is taken by a file that does not digest to its name", f.snapshotDir(), name)
-	}
-	if err := syncFound(file); err != nil {
-		return fmt.Errorf("descriptors: %s/%s could not be synced: %v", f.snapshotDir(), name, err)
-	}
-	return nil
 }
 
 func (f *configFile) close() {

@@ -7,6 +7,8 @@ package main
 //
 //	gateway canon                                    < value.json
 //	gateway verify <store-root> <registry> <auth> [<decision-records>]  < publickey.raw
+//	gateway export --config <engine.json> --out <dir> [--observations <file>]...
+//	gateway export --check <dir>
 //	gateway conform [--impl CMD] [--corpus DIR]
 //	gateway witness verify --log <file> --public-key <file> [--marks <file>]
 //	gateway witness register|retire|repair --config <engine.json> ...
@@ -37,7 +39,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | conform | witness | serve | connect | keygen | mcp | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | mcp | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -45,6 +47,8 @@ func main() {
 		os.Exit(cmdCanon())
 	case "verify":
 		os.Exit(cmdVerify(os.Args[2:]))
+	case "export":
+		os.Exit(cmdExport(os.Args[2:], os.Stdout, os.Stderr))
 	case "conform":
 		os.Exit(cmdConform(os.Args[2:]))
 	case "witness":
@@ -198,7 +202,7 @@ func cmdKeygen(args []string) int {
 		fmt.Fprintln(os.Stderr, "generate seed:", err)
 		return 1
 	}
-	if err := writeNewSeed(path, []byte(hex.EncodeToString(seed)+"\n")); err != nil {
+	if err := seedSecret(path).putSecret("seed", []byte(hex.EncodeToString(seed)+"\n")); err != nil {
 		fmt.Fprintln(os.Stderr, "write seed:", err)
 		return 1
 	}
@@ -226,10 +230,11 @@ var closeInheritedDescriptors = markInheritedCloseOnExec
 // the rest.
 const maxSeedFileBytes = 4096
 
-// loadSeed opens, judges and reads the seed file through one descriptor
-// (openSeed), then accepts either the hex form keygen writes or 32 raw bytes.
+// loadSeed reads the seed as a secret value of the filesystem kind, which
+// opens, judges and reads the file through one descriptor (openSeed), then
+// accepts either the hex form keygen writes or 32 raw bytes.
 func loadSeed(path string) ([]byte, error) {
-	raw, err := openSeed(path)
+	raw, err := seedSecret(path).getSecret("seed")
 	if err != nil {
 		return nil, err
 	}
