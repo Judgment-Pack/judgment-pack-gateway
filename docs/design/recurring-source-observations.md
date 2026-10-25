@@ -185,6 +185,19 @@ not a scheduler, cursor, observation delivery outbox or complete revision histor
 Desk owns retry/delivery deduplication and atomically retains its observation,
 tracking revision and any source-update gate.
 
+## The journal in an audit export
+
+`gateway-connections --state-dir <dir> --principal <name> --export-observations` writes the
+operation journal, `source-bindings.json`, to stdout as the custody holds it: read under the
+custody lock once it reads as a journal, or the empty journal `{"version":"1","operations":[]}`
+where the principal's namespace keeps none yet. It serves nothing and reads no stdin, it runs
+for the provider these bindings are of and beside no other mode, and a custody that is not there
+is refused with nothing made for it. The journal
+carries the operation, binding, connection and epoch identifiers, the account and the resource of
+each binding, revoked ones too, and no credential. `gateway export --observations <file>` takes
+the file so written into an audit export, named by its digest; the signer never reads the custody
+([store-contract.md](store-contract.md)).
+
 ## Bounds and failures
 
 Original bytes are nonempty and at most 4 MiB, including streaming reads with an

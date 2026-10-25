@@ -240,6 +240,32 @@ a store it holds, under the key it pinned from `keygen`'s output, then binds the
 receipt and re-digests the artifact before using a byte — the normative sequence
 is [SPEC.md §5a](SPEC.md), executable in `go/ceremony_test.go`.
 
+A store to hand to an auditor, or to back up, is exported as one consistent cut:
+
+```
+./gateway export --config engine.json --out /path/to/export [--observations journal.json]
+./gateway export --check /path/to/export        # every file against the manifest, byte for byte
+./gateway verify /path/to/export/store /path/to/export/registry <authority> \
+    /path/to/export/decision-records < pinned-public-key
+```
+
+The export holds the receipts and artifacts, the registry, the decision records, the
+descriptor snapshots the platforms pin and any observation journal given, in the store layout
+`gateway verify` reads (SPEC.md §1.3), with `manifest.json` naming the authority, the signing
+key by its id and every file by its digest and size. The cut reads the registry before the
+receipts, so a session sealed while the export runs is in it with its seal and every receipt
+the seal counts, or without the seal, never as a rollback. The seed is in no file of it, and the public key is not either: a
+verifier pins it out of band, as for a live store. `--out` must not be there yet, nor inside the
+store or the decision records. `--check` reports `{"findings":[...],"ok":...}` and exits 0 when it
+reaches a verdict, as `verify` does; a manifest it cannot read is no verdict. A restore is a copy
+of the export's files back into place, which `--check` and `verify` then read as they read the
+export. The journal comes from the connection custody, which the signer never reads:
+`gateway-connections --state-dir <dir> --principal <name> --export-observations` writes it, as
+the custody holds it, to stdout. The export carries the artifacts and decision records as they
+are, so keep it as private as the store. The store contract behind it, and what a storage kind
+other than the filesystem must satisfy, is
+[docs/design/store-contract.md](docs/design/store-contract.md).
+
 `gateway serve --config engine.json` is the engine's form of the same command: the file
 names platforms — a catalog binding pinned by digest, a credentials file, the OS user the
 platform's adapters run as — and `serve` derives every source from it, refusing to start

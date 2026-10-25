@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -146,6 +147,42 @@ func (s *Store) sourceBindings() (sourceBindingStore, error) {
 		ops[r.OperationID], bindings[r.BindingID] = true, true
 	}
 	return out, nil
+}
+
+// ExportSourceObservations is a custody's observation journal -- the
+// recurring bindings' operation records, which hold no credential
+// (ADR-0020) -- for an audit export (`gateway export --observations`): the
+// document as the custody holds it, read under the custody lock once it
+// reads as a journal, or the empty journal where the namespace holds none
+// yet. A custody that is not there is os.ErrNotExist, and nothing is made
+// for it; one that is there gains at most the lock file every custody
+// operation makes.
+func ExportSourceObservations(dir, principal string) ([]byte, error) {
+	if !filepath.IsAbs(dir) || !identifier.MatchString(principal) {
+		return nil, ErrRequest
+	}
+	s, err := peekStore(dir, principal)
+	if err != nil {
+		return nil, err
+	}
+	defer s.Close()
+	var journal []byte
+	err = s.locked(func(*state) error {
+		if _, err := s.sourceBindings(); err != nil {
+			return err
+		}
+		data, err := s.read("source-bindings.json")
+		if errors.Is(err, os.ErrNotExist) {
+			journal, err = json.Marshal(sourceBindingStore{"1", []sourceBindingRecord{}})
+			return err
+		}
+		journal = data
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return journal, nil
 }
 
 func validDigest(value string) bool {

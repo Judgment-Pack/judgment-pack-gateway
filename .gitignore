@@ -30,3 +30,5 @@ verify-ts/node_modules/
 /project/
 /result.json
 /out.txt
+# the hand-written export's store is a fixture, not a gateway's local store
+!go/testdata/export/store/
