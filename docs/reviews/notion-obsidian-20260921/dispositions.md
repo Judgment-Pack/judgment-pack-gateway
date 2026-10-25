@@ -1,12 +1,10 @@
 # Dispositions of the Notion/Obsidian review
 
-The maintainer supplied the [independent review](claude-review.md). Its stated
-reviewer is Claude Fable 5.1 (`claude-fable-5-1`, Anthropic); drafting was OpenAI.
+The maintainer supplied the [review summary](review-summary.md). It records an
+independent review and the resulting maintainer dispositions.
 Reviewed gateway: `5346eb6f158d035693c3205ad0f555d85d78d53f` (#143).
 Reviewed Desk: `06a7bcd75a78c564d8ad010f9016b09752c6eb5f` (#122).
-Codex prepared these dispositions and fixes in response. The reviewer identity is
-recorded as supplied; this is not a claim of a new independent review. The record
-covers these parents only, not catalog #144/#123 or public-web #148/#124.
+The record covers these parents only, not catalog #144/#123 or public-web #148/#124.
 
 ## Gateway
 
@@ -40,8 +38,8 @@ covers these parents only, not catalog #144/#123 or public-web #148/#124.
 ## Provenance and limitations
 
 Gateway `review_*_test.go` fixtures adapt the reviewer-supplied probes under these
-accepted findings; the recovery and deterministic race cases were written by Codex.
-The original probes, mutation drivers and report are preserved at
+accepted findings; the recovery and deterministic race cases were added during
+remediation. The original probes, mutation drivers and report are preserved at
 `<scratch>`.
 
 Primary sources checked directly during remediation:
