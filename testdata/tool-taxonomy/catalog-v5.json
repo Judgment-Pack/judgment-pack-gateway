@@ -1,0 +1,12 @@
+{
+  "discoveryTaxonomy": {"operation":"discover","effect":"pure"},
+  "status": {
+    "taxonomy":{"operation":"run","effect":"act"},
+    "profile":{"operations":["read","act"],"effect":"act"},
+    "components":{"operator-policy":{"operation":"act","effect":"act"},"operation":{"operation":"read","effect":"read"}}
+  },
+  "sourceDispatch": {
+    "databricks":{"catalog":{"operation":"discover","effect":"read-external"},"statement":{"operation":"act","effect":"act"},"mcp":{"operation":"run","effect":"act"}},
+    "drive":{"read":{"operation":"read","effect":"read-external"}}
+  }
+}

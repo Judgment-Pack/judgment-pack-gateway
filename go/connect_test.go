@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -15,11 +16,11 @@ import (
 
 // A binding whose live server takes its own arguments.
 const restrictedBinding = `{
-  "bindingVersion": "1",
+  "bindingVersion": "2",
   "platform": "postgres",
   "operations": {
-    "history": {"shape": "airbyte", "image": "airbyte/source-postgres:3.8.5@` + testImageDigest + `", "licence": "ELv2"},
-    "live": {"shape": "mcp", "server": {"image": "crystaldba/postgres-mcp:0.3.0@` + testImageDigest + `", "args": ["--access-mode=restricted"]}, "tools": ["query"], "probe": {"tool": "query", "failure": "Error:"}, "licence": "MIT"}
+    "history": {"shape": "airbyte", "image": "airbyte/source-postgres:3.8.5@` + testImageDigest + `", "licence": "ELv2", "taxonomy":{"operation":"read","effect":"read-external"}},
+    "live": {"shape": "mcp", "server": {"image": "crystaldba/postgres-mcp:0.3.0@` + testImageDigest + `", "args": ["--access-mode=restricted"]}, "tools": ["query"], "toolTaxonomies":{"query":{"operation":"read","effect":"read-external"}}, "probe": {"tool": "query", "failure": "Error:"}, "licence": "MIT"}
   }
 }`
 
@@ -71,6 +72,28 @@ func newConnectFixture(t *testing.T, bindingText string, platforms string) *conn
 	text := `{"engineVersion":"1","authority":"gateway:acme","seed":"` + escapePath(f.seed) + `","store":"` + abs(t, f.dir, "store") + `",` +
 		`"registry":"` + abs(t, f.dir, "registry.jsonl") + `","decisionRecords":"` + abs(t, f.dir, "decisions") + `","listen":"127.0.0.1:0",` +
 		`"catalog":"` + abs(t, f.catalog) + `","platforms":{` + platforms + `}}`
+	// Existing synthetic current platforms explicitly pin their live operation.
+	if platforms != "" {
+		parsed, err := parseJSON([]byte(text))
+		if err != nil {
+			t.Fatal(err)
+		}
+		top := parsed.(*vObject)
+		ps, _ := top.get("platforms")
+		for _, name := range ps.(*vObject).names {
+			raw, _ := ps.(*vObject).get(name)
+			p := raw.(*vObject)
+			if _, legacy := p.get("descriptors"); !legacy {
+				if _, current := p.get("operationDescriptors"); !current {
+					pins := newObject()
+					pins.set("live", vString("sha256:"+strings.Repeat("0", 64)))
+					p.set("operationDescriptors", pins)
+					top.set("engineVersion", vString("11"))
+				}
+			}
+		}
+		text = string(canon(top))
+	}
 	if err := os.WriteFile(f.config, []byte(text), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +154,7 @@ func (f *connectFixture) check(_ context.Context, spec sourceSpec) ([]byte, erro
 	}
 	report := f.reports[spec.shape]
 	// A check asked to capture reports a snapshot, as the adapter does.
-	var platform, binding string
+	var platform, binding, operation string
 	for _, arg := range spec.check {
 		if v, ok := strings.CutPrefix(arg, "--descriptors-platform="); ok {
 			platform = v
@@ -139,9 +162,47 @@ func (f *connectFixture) check(_ context.Context, spec sourceSpec) ([]byte, erro
 		if v, ok := strings.CutPrefix(arg, "--descriptors-binding="); ok {
 			binding = v
 		}
+		if v, ok := strings.CutPrefix(arg, "--descriptors-operation="); ok {
+			operation = v
+		}
 	}
 	if platform != "" {
 		snap := `{"binding":"` + binding + `","capturedAt":"2026-09-15T00:00:00Z","platform":"` + platform + `","policy":1,"server":{"name":"postgres-mcp","version":"0.3.0"},"tools":` + f.captured + `}`
+		if operation != "" {
+			// These synthetic fixture leaves are reads on live and acts on write;
+			// actual customer declaration/transport tests use disposable real servers.
+			tools := map[string]map[string]any{}
+			if err := json.Unmarshal([]byte(f.captured), &tools); err != nil {
+				return nil, err
+			}
+			var allowed []string
+			for _, arg := range spec.argv {
+				if names, ok := strings.CutPrefix(arg, "--tools="); ok {
+					allowed = strings.Split(names, ",")
+				}
+			}
+			family, effect := "read", "read-external"
+			if operation == "write" {
+				family, effect = "act", "act"
+			}
+			if operation == "write" {
+				for name := range tools {
+					if !contains(allowed, name) {
+						delete(tools, name)
+					}
+				}
+			}
+			for _, name := range allowed {
+				entry := tools[name]
+				if entry == nil {
+					entry = map[string]any{}
+				}
+				entry["taxonomy"] = map[string]string{"operation": family, "effect": effect}
+				tools[name] = entry
+			}
+			encoded, _ := json.Marshal(tools)
+			snap = `{"snapshotVersion":"2","operation":"` + operation + `","binding":"` + binding + `","capturedAt":"2026-09-15T00:00:00Z","platform":"` + platform + `","policy":1,"server":{"name":"postgres-mcp","version":"0.3.0"},"tools":` + string(encoded) + `}`
+		}
 		if f.snapshotAs != "" {
 			snap = f.snapshotAs
 		}
@@ -188,14 +249,13 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	}
 	// The live check, and only it, is asked to capture descriptors, for
 	// this platform and the binding pinned.
-	if strings.Join(f.asked[1].check, " ") != "--probe=query --probe-failure=Error: --descriptors-platform=warehouse --descriptors-binding=postgres@"+digestOf(restrictedBinding) || len(f.asked[0].check) != 0 {
+	if strings.Join(f.asked[1].check, " ") != "--probe=query --probe-failure=Error: --descriptors-platform=warehouse --descriptors-binding=postgres@"+digestOf(restrictedBinding)+" --descriptors-operation=live" || len(f.asked[0].check) != 0 {
 		t.Fatalf("the check carries the binding's probe: %q %q", f.asked[0].check, f.asked[1].check)
 	}
-	if len(out.answers) != 4 || out.answers[0] != "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: Connected" ||
-		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server postgres-mcp 0.3.0, protocol 2025-03-26, tools query, explain" ||
-		out.answers[2] != "warehouse/live: descriptors: server postgres-mcp 0.3.0" || out.answers[3] != "warehouse/live: descriptors: 1 allowed tool fell back with no reason the report lists" {
-		t.Fatalf("what the platform answered, one line per operation, then what was captured: %q", out.answers)
+	if len(out.answers) != 5 || !hasLine(out.answers, "warehouse/live: approved owner taxonomy and operation live") || !hasLine(out.answers, "warehouse/live: descriptors: query captured ()") {
+		t.Fatalf("current complete owner capture: %q", out.answers)
 	}
+
 	if out.written != f.config || len(out.statements) != 0 {
 		t.Fatalf("written %q, statements %v", out.written, out.statements)
 	}
@@ -229,9 +289,9 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	want := "engine.json,engine.json.lock"
+	want := "engine.json,engine.json.descriptors,engine.json.lock"
 	if runtime.GOOS == "windows" {
-		want = "engine.json"
+		want = "engine.json,engine.json.descriptors"
 	}
 	if strings.Join(names, ",") != want {
 		t.Fatalf("beside the file: %v, want %s", names, want)
@@ -240,7 +300,7 @@ func TestConnectWritesTheEntryAfterThePlatformAnswered(t *testing.T) {
 		t.Fatalf("the file keeps its mode: %v", info.Mode())
 	}
 	// The other members survive as written, in canonical order.
-	if !strings.Contains(after, "\n  \"catalog\": ") || !strings.Contains(after, "\n  \"engineVersion\": \"1\",\n") || !strings.Contains(after, "\n  \"platforms\": {\n    \"warehouse\": {\n      \"binding\": \"postgres@") || !strings.Contains(after, "\n      \"credentials\": {\n        \"history\": {\n          \"file\": ") {
+	if !strings.Contains(after, "\n  \"catalog\": ") || !strings.Contains(after, "\n  \"engineVersion\": \"11\",\n") || !strings.Contains(after, "\n  \"platforms\": {\n    \"warehouse\": {\n      \"binding\": \"postgres@") || !strings.Contains(after, "\n      \"credentials\": {\n        \"history\": {\n          \"file\": ") {
 		t.Fatalf("members in canonical order: %s", after)
 	}
 }
@@ -516,7 +576,6 @@ func TestPrintOutcomeWritesOneLinePerAnswer(t *testing.T) {
 	// What a capture says goes through the same door, and is tested with
 	// it; here, one line per operation.
 	req := f.request()
-	req.noDescriptors = true
 	out, err := connect(context.Background(), req, f.host, f.check)
 	if err != nil {
 		t.Fatal(err)
@@ -526,9 +585,12 @@ func TestPrintOutcomeWritesOneLinePerAnswer(t *testing.T) {
 		t.Fatalf("exit %d", code)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
-	if len(lines) != 3 || !strings.HasSuffix(lines[0], `answered succeeded: Connected\nwarehouse/live: forged: server evil answered`) ||
+	if len(lines) != 6 || !strings.HasSuffix(lines[0], `answered succeeded: Connected\nwarehouse/live: forged: server evil answered`) ||
 		!strings.Contains(lines[1], `server postgres-mcp\u001b[2J 0.3.0`) || !strings.HasSuffix(lines[1], `tools query, ex\rplain`) ||
-		lines[2] != "warehouse: written to "+f.config || stderr.Len() != 0 {
+		lines[2] != "warehouse/live: approved owner taxonomy and operation live" ||
+		lines[3] != "warehouse/live: descriptors: server postgres-mcp 0.3.0" ||
+		lines[4] != "warehouse/live: descriptors: query captured ()" ||
+		lines[5] != "warehouse: written to "+f.config || stderr.Len() != 0 {
 		t.Fatalf("one line per answer, controls escaped: %q %q", stdout.String(), stderr.String())
 	}
 	// The platform name is printed through the same door, whatever the

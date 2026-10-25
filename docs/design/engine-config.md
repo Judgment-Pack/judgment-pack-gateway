@@ -873,3 +873,10 @@ and the rule; the flag is never silently ignored.
   by anything here: the receipt says who asked.
 - **Not portable across engines.** It names local paths and local secrets; the receipts are
   what travel.
+
+## Current owner taxonomy contract
+
+[ADR0021](../adr/0021-owner-taxonomy-binds-current-tool-approval.md) specifies current
+bindingVersion2, per-operation snapshotV2/engine11 approval, and opt-in CatalogV5.
+Historical readers do not admit unclassified current tools. Metadata grants no authority;
+existing acquisition, sealing and action checks remain required.

@@ -45,7 +45,7 @@ func TestExportObservationsRunsAlone(t *testing.T) {
 	if out, code := run("--export-observations", "--state-dir", dir, "--principal", "owner"); code != 0 || string(out) != `{"version":"1","operations":[]}` {
 		t.Fatalf("the journal of a custody that keeps none: exit %d, %q", code, out)
 	}
-	for _, extra := range [][]string{{"--provider", "gmail"}, {"--catalog"}, {"--disabled"}, {"--local-plan"}} {
+	for _, extra := range [][]string{{"--provider", "gmail"}, {"--catalog"}, {"--catalog-v5"}, {"--disabled"}, {"--local-plan"}} {
 		flags := append([]string{"--export-observations", "--state-dir", dir, "--principal", "owner"}, extra...)
 		if out, code := run(flags...); code != 2 || len(out) != 0 {
 			t.Fatalf("%v: exit %d, %q", extra, code, out)

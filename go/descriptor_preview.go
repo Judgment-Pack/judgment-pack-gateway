@@ -15,7 +15,7 @@ import (
 // line the server would serve is written after "  | ", with every
 // character outside printable ASCII escaped, so nothing it holds moves the
 // terminal or passes for a line of the preview's own.
-func previewDescriptors(configPath string, cfg engineConfig, bindings map[string]binding, platform string) (string, error) {
+func previewDescriptors(configPath string, cfg engineConfig, bindings map[string]binding, platform string, operations ...string) (string, error) {
 	var entry *platformConfig
 	for i := range cfg.platforms {
 		if cfg.platforms[i].name == platform {
@@ -26,6 +26,47 @@ func previewDescriptors(configPath string, cfg engineConfig, bindings map[string
 		return "", fmt.Errorf("platform %s is not configured", platform)
 	}
 	b := bindings[platform]
+	if b.version == "2" {
+		operation := ""
+		if len(operations) > 0 {
+			operation = operations[0]
+		}
+		ops := enabledMCPOperations(*entry, b)
+		if operation == "" {
+			if len(ops) != 1 {
+				return "", fmt.Errorf("preview requires --operation live or write")
+			}
+			for name := range ops {
+				operation = name
+			}
+		}
+		op := ops[operation]
+		if op == nil {
+			return "", fmt.Errorf("preview operation is not enabled")
+		}
+		dir, err := openServedDirectory(configPath, cfg)
+		if err != nil {
+			return "", err
+		}
+		defer dir.Close()
+		served, err := dir.readOperation(*entry, b, operation)
+		if err != nil {
+			return "", err
+		}
+		var text strings.Builder
+		fmt.Fprintf(&text, "preview: platform %s operation %s; %s approval; write tools remain /act only\n", previewEscape(platform), operation, entry.operationDescriptors[operation])
+		names := append([]string(nil), op.tools...)
+		sort.Strings(names)
+		for _, name := range names {
+			t := mcpTool{name: platform + "." + name, platform: platform, tool: name, binding: entry.binding, taxonomy: op.taxonomies[name]}
+			schema, _ := json.Marshal(servedSchema(t, served))
+			fmt.Fprintf(&text, "tool %s %s/%s\n  inputSchema: %s\n", previewEscape(name), t.taxonomy.Operation, t.taxonomy.Effect, previewEscape(string(schema)))
+			for _, line := range strings.Split(describePlatformTool(t, served), "\n") {
+				fmt.Fprintf(&text, "  | %s\n", previewEscape(line))
+			}
+		}
+		return text.String(), nil
+	}
 	described := describedOperation(b, entry.write)
 	if described == nil {
 		return "", fmt.Errorf("platform %s has no live operation, so the MCP server lists no tool of it", platform)

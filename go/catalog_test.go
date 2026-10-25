@@ -146,7 +146,13 @@ func TestTheWriteBackBindingsResolveAsShipped(t *testing.T) {
 			cfg := engineConfig{runtime: "docker", platforms: []platformConfig{{name: "p", credentials: map[string]string{"write": "/run/secrets/p-write"}, user: "engine-p", home: "/home/engine-p", write: true}}}
 			write := deriveSources(cfg, map[string]binding{"p": b})["p/write"]
 			want := "adapter-mcp --url=" + tc.url + " --credentials=/run/secrets/p-write --bearer=token --tools=" + tc.tools + " --error-results"
-			if strings.Join(write.argv, " ") != want || write.endpoint != tc.url || strings.Join(write.tools, ",") != tc.tools {
+			withoutOwners := []string{}
+			for _, arg := range write.argv {
+				if !strings.HasPrefix(arg, "--owner-declaration-") {
+					withoutOwners = append(withoutOwners, arg)
+				}
+			}
+			if strings.Join(withoutOwners, " ") != want || len(write.argv) != len(withoutOwners)+2 || write.endpoint != tc.url || strings.Join(write.tools, ",") != tc.tools {
 				t.Fatalf("%s: derived %q (endpoint %q), want %q", ref, write.argv, write.endpoint, want)
 			}
 			t.Logf("%s resolves to %s", ref, write.endpoint)
@@ -188,7 +194,7 @@ func TestStatementWriteToolIsRefused(t *testing.T) {
 			t.Fatalf("%v refused: %s", tools, reason)
 		}
 	}
-	data, err := os.ReadFile(filepath.Join("..", "catalog", "postgres.json"))
+	data, err := os.ReadFile(filepath.Join("..", "testdata", "catalog-v1", "postgres.json"))
 	if err != nil {
 		t.Fatal(err)
 	}

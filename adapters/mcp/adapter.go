@@ -29,6 +29,15 @@ import (
 // Config is the operator's configuration of one adapter invocation, from
 // the command line the gateway spawned it with.
 type Config struct {
+	OwnerDeclarationFile   string
+	OwnerDeclarationPin    string
+	ownerDeclarationLoaded bool
+
+	ToolTaxonomies                    map[string]ToolTaxonomy
+	DescriptorSnapshot, DescriptorPin string
+	ApprovedPlatform, ApprovedBinding string
+	ApprovedOperation                 string
+
 	// Runtime is the container runtime command, for Image.
 	Runtime string
 	// Image is the pinned server image reference, name[:tag]@sha256:hex.
@@ -206,6 +215,10 @@ func credentialsEnv(path string) (env []string, secrets []string, err error) {
 // form takes. It reads nothing -- not the request, not the credentials --
 // so a configuration refused is refused before anything is read.
 func (cfg Config) Refusal() error {
+	if err := cfg.ownerRefusal(); err != nil {
+		return err
+	}
+
 	if cfg.URL != "" {
 		return cfg.remoteRefusal()
 	}
@@ -242,6 +255,11 @@ type conversation interface {
 
 // Acquire calls the requested tool once and returns the envelope.
 func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
+	var preparationErr error
+	cfg, preparationErr = cfg.withOwnerDeclaration()
+	if preparationErr != nil {
+		return nil, preparationErr
+	}
 	if err := cfg.Refusal(); err != nil {
 		return nil, err
 	}
@@ -250,6 +268,10 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	}
 	if len(cfg.Tools) > 0 && !contains(cfg.Tools, req.Tool) {
 		return nil, fmt.Errorf("tool %q is not one this source may call: %v", req.Tool, cfg.Tools)
+	}
+	approved, original, err := approvedSnapshot(cfg)
+	if err != nil {
+		return nil, err
 	}
 	srv, secrets, err := start(ctx, cfg)
 	if err != nil {
@@ -321,7 +343,13 @@ func Acquire(ctx context.Context, cfg Config, req Request) ([]byte, error) {
 	}
 	// The tool, as the server describes it: its declared output schema is
 	// the schema the receipt names, and null when it declares none.
-	descriptor, names, err := findTool(ctx, rpc, req.Tool)
+	var descriptor json.RawMessage
+	var names []string
+	if approved != nil {
+		descriptor, err = observedApprovedTool(ctx, cfg, rpc, initialized, secrets, approved, original, req.Tool)
+	} else {
+		descriptor, names, err = findTool(ctx, rpc, req.Tool)
+	}
 	if err != nil {
 		if names != nil {
 			return finish(nil, fmt.Errorf("tool %q is not one the server offers: %v", req.Tool, names))
@@ -435,6 +463,11 @@ type serverIdentity struct {
 // binding that names a tool the pinned server lacks is found out when the
 // platform is connected, not at the first acquisition.
 func Check(ctx context.Context, cfg Config) ([]byte, error) {
+	var preparationErr error
+	cfg, preparationErr = cfg.withOwnerDeclaration()
+	if preparationErr != nil {
+		return nil, preparationErr
+	}
 	if err := cfg.Refusal(); err != nil {
 		return nil, err
 	}
@@ -451,6 +484,16 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	// sends nothing, the credential included.
 	if cfg.Probe != "" && len(cfg.Tools) > 0 && !contains(cfg.Tools, cfg.Probe) {
 		return nil, fmt.Errorf("probe %q is not one this source may call: %v", cfg.Probe, cfg.Tools)
+	}
+	var approved *snapshot
+	var original []byte
+	if cfg.ToolTaxonomies != nil && cfg.Descriptors == nil {
+		var err error
+		approved, original, err = approvedSnapshot(cfg)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Descriptors = &DescriptorTarget{Platform: approved.Platform, Binding: approved.Binding, Operation: approved.Operation}
 	}
 	srv, secrets, err := start(ctx, cfg)
 	if err != nil {
@@ -508,14 +551,32 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	// not captured is not kept.
 	var capture *capturer
 	var visit func(listedTool) error
+	owned := map[string]listedTool{}
 	if cfg.Descriptors != nil {
 		capturedAt := now().UTC().Truncate(time.Second).Format(stampLayout)
+		if approved != nil {
+			capturedAt = approved.CapturedAt
+		}
 		// A remote server's snapshot names the URL it was reached at; a
 		// server this adapter runs names none (cfg.URL is "").
 		if capture, err = newCapturer(*cfg.Descriptors, initialized, secrets, capturedAt, cfg.URL); err != nil {
 			return finish(nil, err)
 		}
+		if cfg.ToolTaxonomies != nil {
+			if err := capture.beginOwned(cfg.Descriptors.Operation); err != nil {
+				return finish(nil, err)
+			}
+			if capture.snap.Server == nil {
+				return finish(nil, errors.New("V2 capture requires server identity"))
+			}
+		}
 		visit = func(tool listedTool) error {
+			if cfg.ToolTaxonomies != nil {
+				if _, ok := cfg.ToolTaxonomies[tool.name]; ok {
+					owned[tool.name] = tool
+				}
+				return nil
+			}
 			if len(cfg.Tools) == 0 {
 				return capture.add(tool, nil)
 			}
@@ -534,6 +595,23 @@ func Check(ctx context.Context, cfg Config) ([]byte, error) {
 	for _, allowed := range cfg.Tools {
 		if !contains(names, allowed) {
 			return finish(nil, fmt.Errorf("tool %q is allowed by the configuration but not offered by the server: %v", allowed, names))
+		}
+	}
+	if cfg.ToolTaxonomies != nil {
+		for _, name := range ownerNames(cfg.ToolTaxonomies) {
+			tool, present := owned[name]
+			if !present {
+				return finish(nil, errors.New("approved tool missing from current server"))
+			}
+			if err := capture.addOwned(tool, cfg.ToolTaxonomies[name]); err != nil {
+				return finish(nil, err)
+			}
+		}
+		if original != nil {
+			projection, err := canonicalJSON(capture.snap)
+			if err != nil || !bytes.Equal(projection, original) {
+				return finish(nil, errors.New("current descriptor projection differs from approved snapshot"))
+			}
 		}
 	}
 	var probe *probeReport
@@ -620,6 +698,9 @@ func encodeCheckReport(report checkReport) ([]byte, error) {
 	out, err := canon.EncodeJSON(map[string]any{"check": report})
 	if err != nil {
 		return nil, err
+	}
+	if len(out) > reportBound && bytes.Contains(report.Descriptors, []byte(`"snapshotVersion":"2"`)) {
+		return nil, errors.New("V2 classification cannot be dropped from report")
 	}
 	if len(out) > reportBound && report.Descriptors != nil {
 		report.Descriptors = nil

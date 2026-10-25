@@ -423,9 +423,9 @@ func TestARecordIsReadWithNumbersOfAnyForm(t *testing.T) {
 // anything is asked, and a file at version 4 is never written back as 3.
 func TestConnectKeepsADecisionPolicyAndTheVersion(t *testing.T) {
 	policy := `{"execute":{"outcomes":["approve"],"reviewed":true}}`
-	f := newConnectFixture(t, postgresBinding, ``)
-	entry := `"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + escapePath(f.credentials) + `"},"live":{"file":"` + escapePath(f.credentials) + `"},"write":{"file":"` + escapePath(f.credentials) + `"}},"user":"engine-warehouse","write":true,"decisionPolicy":` + policy + `}`
-	text := strings.Replace(strings.Replace(f.fileText(t), `"engineVersion":"1"`, `"engineVersion":"4"`, 1), `"platforms":{}`, `"platforms":{`+entry+`}`, 1)
+	f := newConnectFixture(t, currentPolicyBinding, ``)
+	entry := `"warehouse":{"binding":"postgres@` + digestOf(currentPolicyBinding) + `","credentials":{"history":{"file":"` + escapePath(f.credentials) + `"},"live":{"file":"` + escapePath(f.credentials) + `"},"write":{"file":"` + escapePath(f.credentials) + `"}},"user":"engine-warehouse","write":true,"operationDescriptors":{"live":"sha256:0000000000000000000000000000000000000000000000000000000000000000","write":"sha256:1111111111111111111111111111111111111111111111111111111111111111"},"decisionPolicy":` + policy + `}`
+	text := strings.Replace(strings.Replace(f.fileText(t), `"engineVersion":"1"`, `"engineVersion":"11"`, 1), `"platforms":{}`, `"platforms":{`+entry+`}`, 1)
 	if err := os.WriteFile(f.config, []byte(text), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -457,12 +457,12 @@ func TestConnectKeepsADecisionPolicyAndTheVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.version != "4" || after.platforms[0].descriptors == "" || after.platforms[0].policies["execute"] == nil || after.platforms[0].policies["execute"].digest != digest {
-		t.Fatalf("version %s, pin %q, policies %+v: the policy kept as written, the version not lowered", after.version, after.platforms[0].descriptors, after.platforms[0].policies)
+	if after.version != "11" || after.platforms[0].operationDescriptors["live"] == "" || after.platforms[0].policies["execute"] == nil || after.platforms[0].policies["execute"].digest != digest {
+		t.Fatalf("version %s, pin %q, policies %+v: the policy kept as written, the version not lowered", after.version, after.platforms[0].operationDescriptors["live"], after.platforms[0].policies)
 	}
 	// A binding whose write operation does not name the policy's tool is
 	// refused before anything is asked.
-	renamed := strings.Replace(postgresBinding, `"tools": ["execute", "drop"]`, `"tools": ["run"]`, 1)
+	renamed := strings.Replace(strings.Replace(currentPolicyBinding, `"tools":["execute","drop"]`, `"tools":["run"]`, 1), `"toolTaxonomies":{"execute":{"operation":"act","effect":"act"},"drop":{"operation":"act","effect":"act"}}`, `"toolTaxonomies":{"run":{"operation":"act","effect":"act"}}`, 1)
 	if err := os.WriteFile(filepath.Join(f.catalog, "postgres.json"), []byte(renamed), 0o600); err != nil {
 		t.Fatal(err)
 	}

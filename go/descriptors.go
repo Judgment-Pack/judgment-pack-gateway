@@ -26,6 +26,9 @@ const (
 )
 
 type snapshot struct {
+	version   string
+	operation string
+
 	platform string
 	binding  string
 	// endpoint is the URL a remote server's check reached, as the platform's
@@ -42,6 +45,9 @@ type snapshotServer struct{ name, version string }
 
 // snapshotTool is a tool's captured candidates; at least one is present.
 type snapshotTool struct {
+	taxonomy          ToolTaxonomy
+	serverAnnotations map[string]bool
+
 	description     *string
 	inputSchemaText *string
 }
@@ -94,10 +100,29 @@ func parseSnapshot(data []byte) (snapshot, error) {
 	if !ok {
 		return snapshot{}, errors.New("snapshot: not an object")
 	}
-	if err := exactlyMembers(obj, snapshotMembers, "snapshot"); err != nil {
+	members := snapshotMembers
+	version, hasVersion := memberString(obj, "snapshotVersion")
+	if _, present := obj.get("snapshotVersion"); present {
+		if !hasVersion || version != "2" {
+			return snapshot{}, errors.New("snapshot: unsupported snapshotVersion")
+		}
+		members = map[string]bool{}
+		for k, v := range snapshotMembers {
+			members[k] = v
+		}
+		members["snapshotVersion"] = true
+		members["operation"] = true
+	}
+	if err := exactlyMembers(obj, members, "snapshot"); err != nil {
 		return snapshot{}, err
 	}
-	var s snapshot
+	s := snapshot{version: version}
+	if version == "2" {
+		s.operation, err = requireString(obj, "operation")
+		if err != nil || (s.operation != "live" && s.operation != "write") {
+			return snapshot{}, errors.New("snapshot: invalid operation identity")
+		}
+	}
 	if s.platform, err = requireString(obj, "platform"); err != nil || validPlatformName(s.platform) != nil {
 		return snapshot{}, errors.New("snapshot: platform is not a platform's name")
 	}
@@ -149,7 +174,35 @@ func parseSnapshot(data []byte) (snapshot, error) {
 			return snapshot{}, errors.New("snapshot: a tool is not an object holding a description, an input schema's text, or both")
 		}
 		var t snapshotTool
+		if version == "2" {
+			raw, _ := entry.get("taxonomy")
+			t.taxonomy, err = taxonomyValue(raw)
+			if err != nil || !t.taxonomy.External() {
+				return snapshot{}, errors.New("snapshot: missing or invalid owner taxonomy")
+			}
+			if raw, present := entry.get("serverAnnotations"); present {
+				hints, ok := raw.(*vObject)
+				if !ok {
+					return snapshot{}, errors.New("snapshot: malformed serverAnnotations")
+				}
+				t.serverAnnotations = map[string]bool{}
+				for _, key := range hints.names {
+					v, _ := hints.get(key)
+					b, ok := v.(vBool)
+					if !ok || !annotationKey(key) {
+						return snapshot{}, errors.New("snapshot: unsupported server constraint")
+					}
+					t.serverAnnotations[key] = bool(b)
+				}
+				if t.taxonomy.Contradiction(t.serverAnnotations) {
+					return snapshot{}, errors.New("snapshot: server constraints contradict owner taxonomy")
+				}
+			}
+		}
 		for _, member := range entry.names {
+			if version == "2" && (member == "taxonomy" || member == "serverAnnotations") {
+				continue
+			}
 			text, ok := memberString(entry, member)
 			switch {
 			case !ok:

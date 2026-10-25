@@ -132,10 +132,10 @@ func (s *writeStandIn) forget() {
 	s.seen = nil
 }
 
-// shippedCatalogFile is a catalog file as it ships.
-func shippedCatalogFile(t *testing.T, name string) string {
+// historicalCatalogFile preserves exact V1 bytes for historical engine/policy fixtures.
+func historicalCatalogFile(t *testing.T, name string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "catalog", name+".json"))
+	data, err := os.ReadFile(filepath.Join("..", "testdata", "catalog-v1", name+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func shippedCatalogFile(t *testing.T, name string) string {
 // of its template are the shipped file's.
 func atStandIn(t *testing.T, name, from, to string) string {
 	t.Helper()
-	text := shippedCatalogFile(t, name)
+	text := historicalCatalogFile(t, name)
 	if !strings.Contains(text, `"url": "`+from) {
 		t.Fatalf("catalog/%s.json holds no URL beginning %s", name, from)
 	}
@@ -346,13 +346,31 @@ func writeConfigAt(t *testing.T, version, dir, bin, catalogName, text, platform,
 // store, the registry and the records verify together.
 func TestTheWriteBackPlatformsWriteUnderTheirPolicies(t *testing.T) {
 	bin, _ := buildMCPStandIns(t, t.TempDir())
+	cases := append([]writePlatformCase(nil), writePlatformCases...)
 	for _, wp := range writePlatformCases {
+		wp.variant += " V2"
+		wp.version = "11"
+		cases = append(cases, wp)
+	}
+	for _, wp := range cases {
 		t.Run(wp.catalog+wp.variant, func(t *testing.T) {
 			stand := newWriteStandIn(t, wp.tools)
 			key := keyFromSeed(t, vectorSeed1)
 			policy := `{"outcomes":["approve"],"packs":["` + packA + `"],"reviewed":true,"requireSignedRecord":["` + key.public + `"],` + wp.hold + `}`
 			text := atStandIn(t, wp.catalog, wp.from, stand.URL)
+			current := strings.HasSuffix(wp.variant, " V2")
+			if current {
+				raw, err := os.ReadFile(filepath.Join("..", "catalog", wp.catalog+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				text = strings.Replace(string(raw), `"url": "`+wp.from, `"url": "`+stand.URL, 1)
+			}
 			config := writeConfigAt(t, wp.version, t.TempDir(), bin, wp.catalog, text, wp.platform, wp.parameters, `{"`+wp.tool+`":`+policy+`}`)
+			if current {
+				approveV2WriteFixture(t, config)
+				stand.forget()
+			}
 			cfg, bindings, err := loadEngineConfig(config, stubAccounts(map[string]int{"engine-" + wp.platform: 1001}))
 			if err != nil {
 				t.Fatal(err)
@@ -743,7 +761,11 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 		t.Run(wp.catalog, func(t *testing.T) {
 			stand := newWriteStandIn(t, wp.tools)
 			f := newConnectFixture(t, restrictedBinding, ``)
-			text := atStandIn(t, wp.catalog, wp.from, stand.URL)
+			raw, err := os.ReadFile(filepath.Join("..", "catalog", wp.catalog+".json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			text := strings.Replace(string(raw), `"url": "`+wp.from, `"url": "`+stand.URL, 1)
 			if err := os.WriteFile(filepath.Join(f.catalog, wp.catalog+".json"), []byte(text), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -793,10 +815,10 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 				t.Fatal(err)
 			}
 			entry := cfg.platforms[0]
-			if cfg.version != "8" || entry.descriptors == "" || len(entry.parameters) != len(parameters) {
-				t.Fatalf("version %s, pin %q, parameters %v; answers %q", cfg.version, entry.descriptors, entry.parameters, out.answers)
+			if cfg.version != "11" || entry.operationDescriptors["write"] == "" || len(entry.parameters) != len(parameters) {
+				t.Fatalf("version %s, pin %q, parameters %v; answers %q", cfg.version, entry.operationDescriptors["write"], entry.parameters, out.answers)
 			}
-			kept, err := os.ReadFile(filepath.Join(f.config+".descriptors", strings.TrimPrefix(entry.descriptors, "sha256:")+".json"))
+			kept, err := os.ReadFile(filepath.Join(f.config+".descriptors", strings.TrimPrefix(entry.operationDescriptors["write"], "sha256:")+".json"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -814,7 +836,7 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 				t.Fatalf("the frontend reads the pinned snapshot: %v", err)
 			}
 			preview, err := previewDescriptors(f.config, cfg, bindings, wp.platform)
-			if err != nil || !strings.Contains(preview, "write tool "+wp.tool) || !strings.Contains(preview, "lists no tool of it") {
+			if err != nil || !strings.Contains(preview, "tool "+wp.tool) || !strings.Contains(preview, "write tools remain /act only") {
 				t.Fatalf("the preview renders the write tools: %v\n%s", err, preview)
 			}
 			// --replace with no parameter keeps the entry's own.
@@ -824,7 +846,7 @@ func TestConnectCapturesTheWriteBackPlatformsDescriptorsAndKeepsTheParameters(t 
 				t.Fatal(err)
 			}
 			again, _, err := loadEngineConfig(f.config, stubAccounts(stubUsers))
-			if err != nil || len(again.platforms[0].parameters) != len(parameters) || again.version != "8" {
+			if err != nil || len(again.platforms[0].parameters) != len(parameters) || again.version != "11" {
 				t.Fatalf("connect keeps the parameters: %v %+v", err, again.platforms)
 			}
 			// A parameter the binding does not name is refused before
@@ -868,7 +890,7 @@ func TestTheWriteBackPlatformsLiveCheck(t *testing.T) {
 				t.Skipf("not run: %s names no credentials file of {\"token\": …}; this live check contacts the real service, and only when asked", live.env)
 			}
 			bin, _ := buildMCPStandIns(t, t.TempDir())
-			text := shippedCatalogFile(t, live.catalog)
+			text := historicalCatalogFile(t, live.catalog)
 			b, err := parseBinding([]byte(text))
 			if err != nil {
 				t.Fatal(err)
@@ -915,7 +937,7 @@ func TestADescriptorPinIsOfTheResolvedEndpoint(t *testing.T) {
 			map[string]string{"workspace": "dbc-example.cloud.databricks.com", "catalog": "main", "schema": "decisions", "function": "record_approval"}},
 	} {
 		t.Run(tc.catalog, func(t *testing.T) {
-			text := shippedCatalogFile(t, tc.catalog)
+			text := historicalCatalogFile(t, tc.catalog)
 			ref := tc.catalog + "@" + digestOf(text)
 			template, err := parseBinding([]byte(text))
 			if err != nil {
@@ -969,7 +991,7 @@ func TestADescriptorPinIsOfTheResolvedEndpoint(t *testing.T) {
 // fragment, an escape or the tools list is a value, and a value of the
 // form resolves into the organization's segment and nowhere else.
 func TestAParameterValueStaysInItsSegment(t *testing.T) {
-	b, err := parseBinding([]byte(shippedCatalogFile(t, "azure-devops")))
+	b, err := parseBinding([]byte(historicalCatalogFile(t, "azure-devops")))
 	if err != nil {
 		t.Fatal(err)
 	}

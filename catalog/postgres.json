@@ -1,20 +1,40 @@
 {
-  "bindingVersion": "1",
+  "bindingVersion": "2",
   "platform": "postgres",
   "operations": {
     "history": {
       "shape": "airbyte",
       "image": "airbyte/source-postgres:3.8.5@sha256:a36f15281df299b18b905e86f7d8514eed1de66c89c25ed730d4426f89ded125",
-      "licence": "ELv2"
+      "licence": "ELv2",
+      "taxonomy": {
+        "operation": "read",
+        "effect": "read-external"
+      }
     },
     "live": {
       "shape": "mcp",
       "server": {
         "image": "bytebase/dbhub:1.2.3@sha256:8fbdf3f579b7eb2701c32d895447e35f61b24e6c2505b0fcfd34e314bdf9f5db",
-        "args": ["--transport", "stdio"]
+        "args": [
+          "--transport",
+          "stdio"
+        ]
       },
-      "tools": ["execute_sql", "search_objects"],
-      "licence": "MIT"
+      "tools": [
+        "execute_sql",
+        "search_objects"
+      ],
+      "licence": "MIT",
+      "toolTaxonomies": {
+        "execute_sql": {
+          "operation": "act",
+          "effect": "act"
+        },
+        "search_objects": {
+          "operation": "discover",
+          "effect": "read-external"
+        }
+      }
     }
   }
 }

@@ -47,6 +47,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	check := fs.Bool("check", false, "start the server, complete the handshake and list its tools, then report on stdout instead of reading a request and calling; nothing is minted from the report")
 	probe := fs.String("probe", "", "with --check, a tool to call once with no arguments, so a server that lists its tools without reaching its platform is found out; its result is read for an error and discarded")
 	probeFailure := fs.String("probe-failure", "", "with --probe, text the probe's answer begins with when the platform was not reached, for a server that answers its own failure as ordinary text")
+	var ownerChunks headerList
+	fs.Var(&ownerChunks, "tool-taxonomies", "versioned canonical base64url owner declaration chunks, at most16KiB each")
+	ownerFile := fs.String("owner-declaration-file", "", "immutable canonical version1 owner declaration file; exclusive with --tool-taxonomies")
+	ownerPin := fs.String("owner-declaration-pin", "", "exact digest of the owner declaration bytes")
+	snapshotFile := fs.String("descriptor-snapshot", "", "immutable approved V2 snapshot file")
+	snapshotPin := fs.String("descriptor-pin", "", "exact approved snapshot digest")
+	approvedOperation := fs.String("approved-operation", "", "exact approved source operation")
+	descriptorsOperation := fs.String("descriptors-operation", "", "exact captured source operation")
+	approvedPlatform := fs.String("approved-platform", "", "approved platform identity")
+	approvedBinding := fs.String("approved-binding", "", "approved pinned binding identity")
 	descriptorsPlatform := fs.String("descriptors-platform", "", "with --check and --descriptors-binding, capture the allowed tools' descriptions and input schemas, and the server's identity, into the report's snapshot for this platform (docs/design/tool-descriptors.md)")
 	descriptorsBinding := fs.String("descriptors-binding", "", "with --descriptors-platform, the pinned binding the snapshot is captured for, name@sha256:<64 hex>")
 	// The gateway splits a source command on whitespace and parses no
@@ -76,6 +86,16 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		cfg.Command = positional
 	}
 	cfg.ErrorResults = *errorResults
+	var ownerErr error
+	cfg.ToolTaxonomies, ownerErr = mcp.DecodeOwnerTaxonomies(ownerChunks)
+	if ownerErr != nil {
+		fmt.Fprintln(stderr, "adapter-mcp:", ownerErr)
+		return 2
+	}
+	cfg.OwnerDeclarationFile, cfg.OwnerDeclarationPin = *ownerFile, *ownerPin
+	cfg.DescriptorSnapshot, cfg.DescriptorPin = *snapshotFile, *snapshotPin
+	cfg.ApprovedPlatform, cfg.ApprovedBinding = *approvedPlatform, *approvedBinding
+	cfg.ApprovedOperation = *approvedOperation
 	if *tools != "" {
 		cfg.Tools = strings.Split(*tools, ",")
 	}
@@ -88,8 +108,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "adapter-mcp: --descriptors-platform and --descriptors-binding go together, and with --check")
 		return 2
 	}
+	if *descriptorsOperation != "" && *descriptorsPlatform == "" {
+		fmt.Fprintln(stderr, "adapter-mcp: --descriptors-operation requires a capture target")
+		return 2
+	}
 	if *descriptorsPlatform != "" {
-		cfg.Descriptors = &mcp.DescriptorTarget{Platform: *descriptorsPlatform, Binding: *descriptorsBinding}
+		cfg.Descriptors = &mcp.DescriptorTarget{Platform: *descriptorsPlatform, Binding: *descriptorsBinding, Operation: *descriptorsOperation}
 	}
 	// The form is held before anything is read -- the request, the
 	// credentials -- so a configuration naming two servers, or a remote

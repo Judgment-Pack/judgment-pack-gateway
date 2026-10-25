@@ -81,11 +81,17 @@ func readCapture(report []byte, platform, ref string, live *operation) (liveCapt
 		if c.dropped == "" {
 			return c, errors.New("descriptors: the report carries no snapshot, and says of none why")
 		}
+		if live.taxonomies != nil {
+			return c, errors.New("V2 registration cannot drop owner metadata")
+		}
 		return c, nil
 	}
 	c.data = canon(value)
 	if c.snap, err = parseSnapshot(c.data); err != nil {
 		return c, fmt.Errorf("descriptors: %v", err)
+	}
+	if err := snapshotOwners(c.snap, live); err != nil {
+		return c, err
 	}
 	if c.snap.platform != platform || c.snap.binding != ref {
 		return c, errors.New("descriptors: the snapshot is not of this platform and binding")
@@ -360,6 +366,9 @@ func restartLines(previous, next platformConfig) []string {
 	}
 	if !reflect.DeepEqual(previous.parameters, next.parameters) {
 		signer = append(signer, "the parameters")
+	}
+	if !reflect.DeepEqual(previous.operationDescriptors, next.operationDescriptors) {
+		signer = append(signer, "operation descriptor approvals")
 	}
 	switch {
 	case len(signer) > 0:

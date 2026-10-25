@@ -293,6 +293,9 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 // come the seed and whether the switching the configuration needs is
 // available. Nothing is made or started here.
 func engineStart(cfg *engineConfig, bindings map[string]binding, host engineHost) ([]string, map[string]sourceSpec, error) {
+	if err := currentBindingOwners(*cfg, bindings); err != nil {
+		return nil, nil, err
+	}
 	statements, err := engineRefusals(cfg, host)
 	if err != nil {
 		return nil, nil, err
