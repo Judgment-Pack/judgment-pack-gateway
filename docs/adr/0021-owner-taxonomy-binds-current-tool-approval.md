@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-10-25
 deciders: maintainer
 ---
@@ -18,7 +18,7 @@ placing a complete declaration on argv exceeds supported process command-line ca
 This distribution adds bindingVersion `2`, snapshotVersion `2`, engineVersion `11`,
 and opt-in connection catalog `5`. Receipt formats and frozen historical records do
 not change. Source implementation leads these distribution contracts; SPEC.md and
-corpus remain unchanged. This ADR is proposed pending the required independent review.
+corpus remain unchanged. This ADR is accepted following the authorized independent review.
 
 Every current MCP binding operation declares `toolTaxonomies` covering the exact
 allowed raw names after parameter substitution. History declares `taxonomy`.
