@@ -24,13 +24,14 @@ func run() int {
 	catalog := fs.Bool("catalog", false, "")
 	catalogV3 := fs.Bool("catalog-v3", false, "")
 	catalogV4 := fs.Bool("catalog-v4", false, "")
+	catalogV5 := fs.Bool("catalog-v5", false, "")
 	localPlan := fs.Bool("local-plan", false, "")
 	sourceCapabilities := fs.Bool("source-capabilities", false, "")
 	disabled := fs.Bool("disabled", false, "")
 	if fs.Parse(os.Args[1:]) != nil || fs.NArg() != 0 {
 		return 2
 	}
-	if *catalog || *catalogV3 || *catalogV4 || *localPlan || *sourceCapabilities {
+	if *catalog || *catalogV3 || *catalogV4 || *catalogV5 || *localPlan || *sourceCapabilities {
 		// Discovery must never configure a publisher, consume stdin, or create,
 		// lock or write anything. The local plan alone reads custody: whether
 		// the document-processing settings under JPACK_CONNECTIONS_DIR name a
@@ -46,6 +47,9 @@ func run() int {
 		}
 		if *catalogV4 {
 			output = connections.ConnectionCatalogV4()
+		}
+		if *catalogV5 {
+			output = connections.ConnectionCatalogV5()
 		}
 		if *localPlan || *sourceCapabilities {
 			// The plan and the report read the operator's web redirect

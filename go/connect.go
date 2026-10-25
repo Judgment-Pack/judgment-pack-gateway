@@ -44,7 +44,8 @@ type connectRequest struct {
 	noDescriptors bool
 	// preview names a platform whose served descriptors are rendered and
 	// nothing written (--preview-descriptors).
-	preview string
+	preview          string
+	previewOperation string
 }
 
 // connectOutcome is what connect has to say: the statements the
@@ -93,7 +94,7 @@ func cmdConnect(args []string) int {
 			fmt.Fprintln(os.Stderr, "connect:", printable(err.Error()))
 			return 1
 		}
-		preview, err := previewDescriptors(req.config, cfg, bindings, req.preview)
+		preview, err := previewDescriptors(req.config, cfg, bindings, req.preview, req.previewOperation)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "connect:", printable(err.Error()))
 			return 1
@@ -191,6 +192,7 @@ func parseConnectArgs(args []string) (connectRequest, string, bool) {
 	fs.BoolVar(&req.replace, "replace", false, "")
 	fs.BoolVar(&req.noDescriptors, "no-descriptors", false, "")
 	fs.StringVar(&req.preview, "preview-descriptors", "", "")
+	fs.StringVar(&req.previewOperation, "operation", "", "")
 	// Go's flag parsing stops at the first word that is not a flag; the
 	// platform may stand there, and parsing resumes after it.
 	for {
@@ -216,6 +218,9 @@ func parseConnectArgs(args []string) (connectRequest, string, bool) {
 			return req, connectUsage, false
 		}
 		return req, "", true
+	}
+	if req.previewOperation != "" {
+		return req, connectUsage, false
 	}
 	if req.platform == "" || req.config == "" || req.binding == "" || len(req.credentials) == 0 || req.user == "" {
 		return req, connectUsage, false
@@ -246,6 +251,7 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 		return out, err
 	}
 	cfg, err := parseEngineConfig(data)
+	cfg.configPath, _ = filepath.Abs(req.config)
 	if err != nil {
 		return out, err
 	}
@@ -275,6 +281,11 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	ref, b, err := pinBinding(cfg.catalog, req.binding)
 	if err != nil {
 		return out, err
+	}
+	for _, op := range enabledMCPOperations(platformConfig{write: req.write}, b) {
+		if err := currentToolOwners(op); err != nil {
+			return out, err
+		}
 	}
 	entry, err := newPlatformEntry(req, ref, b, host.account)
 	if err != nil {
@@ -327,6 +338,9 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	// entry, which is what it holds if anything is captured.
 	described := describedOperation(b, entry.write)
 	capturing := described != nil && !req.noDescriptors
+	if described != nil && described.taxonomies != nil && req.noDescriptors {
+		return out, errors.New("V2 registration requires complete approved descriptors")
+	}
 	captureSource := req.platform + "/live"
 	if b.live == nil {
 		captureSource = req.platform + "/write"
@@ -374,6 +388,9 @@ func connect(ctx context.Context, req connectRequest, host engineHost, check fun
 	// changed since they were written -- before any adapter is run.
 	if err := host.switching(sources); err != nil {
 		return out, err
+	}
+	if b.version == "2" {
+		return connectTaxonomyOperations(ctx, req, file, data, candidate, bindings, b, entry, written, previous, sources, check, out)
 	}
 	// The platform's own sources, each asked once; the first that cannot
 	// answer ends the connect, and nothing is written.

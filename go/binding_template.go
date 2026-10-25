@@ -231,15 +231,26 @@ func resolveParameters(b binding, parameters map[string]string, ref string) (bin
 			return b, fmt.Errorf("binding %s: the %s operation's URL, filled with the platform's parameters, is not of the endpoint form: %s", ref, slot.name, remoteEndpointForm)
 		}
 		resolved.tools = make([]string, 0, len(op.tools))
+		if op.taxonomies != nil {
+			resolved.taxonomies = map[string]ToolTaxonomy{}
+		}
 		for _, tool := range op.tools {
 			name := fillTemplate(tool, value)
 			if contains(resolved.tools, name) {
 				return b, fmt.Errorf("binding %s: two of the %s operation's tools resolve to %q", ref, slot.name, requestText(name))
 			}
 			resolved.tools = append(resolved.tools, name)
+			if op.taxonomies != nil {
+				resolved.taxonomies[name] = op.taxonomies[tool]
+			}
 		}
 		if op.probe != "" {
 			resolved.probe = fillTemplate(op.probe, value)
+		}
+		if resolved.taxonomies != nil {
+			if _, err := ownerDeclaration(resolved); err != nil {
+				return b, fmt.Errorf("binding %s: resolved %s: %w", ref, slot.name, err)
+			}
 		}
 		*slot.op = &resolved
 	}

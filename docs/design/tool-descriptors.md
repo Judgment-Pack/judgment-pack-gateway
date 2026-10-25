@@ -526,3 +526,10 @@ time. A tool that fell back, and `engine.seal`, name none.
    policy.
 5. `format`: refused, like `pattern`, since a host may evaluate it with expressions of its own.
 6. References: refused in version 1, and the compatibility cost is stated in the scope.
+
+## Current owner taxonomy contract
+
+[ADR0021](../adr/0021-owner-taxonomy-binds-current-tool-approval.md) specifies current
+bindingVersion2, per-operation snapshotV2/engine11 approval, and opt-in CatalogV5.
+Historical readers do not admit unclassified current tools. Metadata grants no authority;
+existing acquisition, sealing and action checks remain required.

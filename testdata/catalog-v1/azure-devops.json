@@ -1,0 +1,15 @@
+{
+  "bindingVersion": "1",
+  "platform": "azure-devops",
+  "operations": {
+    "write": {
+      "shape": "mcp",
+      "server": {
+        "url": "https://mcp.dev.azure.com/{organization}",
+        "bearer": "token"
+      },
+      "tools": ["wit_work_item_write", "wit_work_item_comment_write", "wit_work_item_link_write"],
+      "licence": "hosted service: the operator's own service terms"
+    }
+  }
+}

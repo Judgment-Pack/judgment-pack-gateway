@@ -1064,6 +1064,9 @@ func (q DatabricksRequest) carries(secrets []string) bool {
 const databricksInRequest = Error("credential-in-request: a request may not carry the connection's credential, which is sent only as its authorization; the request was not sent")
 
 func (q DatabricksRequest) check(c DatabricksConnection) (DatabricksRequest, error) {
+	if _, declared := sourceOwner("databricks", q.Read); !declared {
+		return q, ErrRequest
+	}
 	if q.Read == "mcp" {
 		return q.checkMCP(c)
 	}

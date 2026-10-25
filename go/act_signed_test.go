@@ -692,9 +692,9 @@ func TestRequireSignedRecordConfiguration(t *testing.T) {
 // connect keeps a version-5 policy, its keys among it, and the version.
 func TestConnectKeepsASignedRecordPolicyAndTheVersion(t *testing.T) {
 	policy := `{"execute":{"outcomes":["approve"],"requireSignedRecord":["` + keyFromSeed(t, vectorSeed1).public + `"]}}`
-	f := newConnectFixture(t, postgresBinding, ``)
-	entry := `"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + escapePath(f.credentials) + `"},"live":{"file":"` + escapePath(f.credentials) + `"},"write":{"file":"` + escapePath(f.credentials) + `"}},"user":"engine-warehouse","write":true,"decisionPolicy":` + policy + `}`
-	text := strings.Replace(strings.Replace(f.fileText(t), `"engineVersion":"1"`, `"engineVersion":"5"`, 1), `"platforms":{}`, `"platforms":{`+entry+`}`, 1)
+	f := newConnectFixture(t, currentPolicyBinding, ``)
+	entry := `"warehouse":{"binding":"postgres@` + digestOf(currentPolicyBinding) + `","credentials":{"history":{"file":"` + escapePath(f.credentials) + `"},"live":{"file":"` + escapePath(f.credentials) + `"},"write":{"file":"` + escapePath(f.credentials) + `"}},"user":"engine-warehouse","write":true,"operationDescriptors":{"live":"sha256:0000000000000000000000000000000000000000000000000000000000000000","write":"sha256:1111111111111111111111111111111111111111111111111111111111111111"},"decisionPolicy":` + policy + `}`
+	text := strings.Replace(strings.Replace(f.fileText(t), `"engineVersion":"1"`, `"engineVersion":"11"`, 1), `"platforms":{}`, `"platforms":{`+entry+`}`, 1)
 	if err := os.WriteFile(f.config, []byte(text), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +715,7 @@ func TestConnectKeepsASignedRecordPolicyAndTheVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := after.platforms[0].policies["execute"]
-	if after.version != "5" || kept == nil || kept.digest != before.platforms[0].policies["execute"].digest || len(kept.signers) != 1 {
+	if after.version != "11" || kept == nil || kept.digest != before.platforms[0].policies["execute"].digest || len(kept.signers) != 1 {
 		t.Fatalf("version %s, policy %+v: the policy kept as written, the version not lowered", after.version, kept)
 	}
 }

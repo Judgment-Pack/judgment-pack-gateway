@@ -44,9 +44,9 @@ import (
 // version 3 exactly when the entry it writes carries a pin, and to version 8
 // exactly when it carries parameters, and otherwise leaves the version as it
 // found it; it never lowers one.
-const engineVersion = "10"
+const engineVersion = "11"
 
-var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true}
+var engineVersions = map[string]bool{"1": true, "2": true, "3": true, "4": true, "5": true, "6": true, "7": true, "8": true, "9": true, "10": true, "11": true}
 
 // versionAtLeast reports whether a version this engine reads is the given
 // one or later.
@@ -67,6 +67,8 @@ const (
 const maxEngineConfigBytes = 1 << 20
 
 type engineConfig struct {
+	configPath string // internal path for approval-bound adapter snapshot arguments
+
 	authority       string
 	seed            string
 	store           string
@@ -134,7 +136,8 @@ type platformConfig struct {
 	// descriptors pins the snapshot of the live operation's tool
 	// descriptors that connect captured, sha256:<64 hex>; "" when none. The
 	// signer never reads it; the frontend does (tool-descriptors.md).
-	descriptors string
+	descriptors          string
+	operationDescriptors map[string]string
 	// policies are the decision policies the operator holds write tools
 	// to (ADR-0011), by tool; nil when the platform carries none.
 	policies map[string]*decisionPolicy
@@ -156,6 +159,8 @@ type identitySpec struct {
 // binding is a catalog entry: which pinned artifact serves which operation
 // of a platform, with the licence of each stated.
 type binding struct {
+	version string
+
 	platform string
 	history  *operation
 	live     *operation
@@ -167,6 +172,12 @@ type binding struct {
 }
 
 type operation struct {
+	name string
+
+	taxonomy   ToolTaxonomy
+	taxonomies map[string]ToolTaxonomy
+	profile    CapabilityProfile
+
 	shape string
 	image string
 	args  []string // the server's own arguments inside its container (mcp)
@@ -247,7 +258,7 @@ var engineMembers = map[string]bool{
 
 var platformMembers = map[string]bool{
 	"binding": true, "credentials": true, "user": true,
-	"endpoint": false, "environment": false, "write": false, "descriptors": false,
+	"endpoint": false, "environment": false, "write": false, "descriptors": false, "operationDescriptors": false,
 	"decisionPolicy": false, "parameters": false,
 }
 
@@ -482,6 +493,23 @@ func parseEngineConfig(data []byte) (engineConfig, error) {
 				return engineConfig{}, fmt.Errorf("engine configuration: platform %s: descriptors must be sha256:<64 lowercase hex>, the digest of a snapshot", name)
 			}
 			pc.descriptors = pin
+		}
+		if pins, present := p.get("operationDescriptors"); present {
+			if !versionAtLeast(version, "11") || pc.descriptors != "" {
+				return engineConfig{}, errors.New("operationDescriptors requires engineVersion11 and no legacy descriptors")
+			}
+			obj, ok := pins.(*vObject)
+			if !ok {
+				return engineConfig{}, errors.New("operationDescriptors must be an object")
+			}
+			pc.operationDescriptors = map[string]string{}
+			for _, name := range obj.names {
+				pin, ok := memberString(obj, name)
+				if (name != "live" && name != "write") || !ok || !isDigest(pin) {
+					return engineConfig{}, errors.New("invalid operation descriptor pin")
+				}
+				pc.operationDescriptors[name] = pin
+			}
 		}
 		if policiesValue, present := p.get("decisionPolicy"); present {
 			if !versionAtLeast(version, "4") {
@@ -767,10 +795,11 @@ func parseBinding(data []byte) (binding, error) {
 	if err := exactlyMembers(obj, bindingMembers, "binding"); err != nil {
 		return binding{}, err
 	}
-	if version, _ := memberString(obj, "bindingVersion"); version != "1" {
-		return binding{}, fmt.Errorf("bindingVersion %q is not \"1\"", version)
+	version, _ := memberString(obj, "bindingVersion")
+	if version != "1" && version != "2" {
+		return binding{}, fmt.Errorf("unsupported bindingVersion %q", version)
 	}
-	var b binding
+	b := binding{version: version}
 	if b.platform, err = requireString(obj, "platform"); err != nil || b.platform == "" {
 		return binding{}, errors.New("platform must be a non-empty string")
 	}
@@ -786,6 +815,9 @@ func parseBinding(data []byte) (binding, error) {
 			return binding{}, err
 		}
 		parsed, err := parseOperation(op, name)
+		if version == "2" {
+			parsed, err = parseTaxonomyOperation(op, name)
+		}
 		if err != nil {
 			return binding{}, err
 		}
@@ -1041,7 +1073,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 			sources[p.name+"/history"] = sourceSpec{argv: argv, env: env, user: p.user, shape: "airbyte"}
 		}
 		if b.live != nil {
-			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint)
+			argv := mcpServerArgv(adapter("adapter-mcp"), *b.live, p.credentials["live"], cfg.runtime, p.endpoint, append(ownerFileArguments(cfg, p, b.live), approvedArguments(cfg, p, b.live)...)...)
 			// Each as one word, flag=value: a value of "--" as its own word
 			// would be the delimiter the adapter splits its line at.
 			var check []string
@@ -1064,7 +1096,7 @@ func deriveSources(cfg engineConfig, bindings map[string]binding) map[string]sou
 		if b.write != nil && p.write {
 			// --error-results: a target's refusal of a write is a response
 			// to receipt, not a read that did not happen (executor.md).
-			argv := mcpServerArgv(adapter("adapter-mcp"), *b.write, p.credentials["write"], cfg.runtime, p.endpoint, "--error-results")
+			argv := mcpServerArgv(adapter("adapter-mcp"), *b.write, p.credentials["write"], cfg.runtime, p.endpoint, append(append([]string{"--error-results"}, ownerFileArguments(cfg, p, b.write)...), approvedArguments(cfg, p, b.write)...)...)
 			if len(b.write.args) > 0 {
 				argv = append(append(argv, "--"), b.write.args...)
 			}
@@ -1880,6 +1912,7 @@ func loadEngineConfig(path string, account func(name string) (int, string, error
 	if err != nil {
 		return engineConfig{}, nil, err
 	}
+	cfg.configPath, _ = filepath.Abs(path)
 	bindings, err := resolveEngineConfig(&cfg, account)
 	if err != nil {
 		return engineConfig{}, nil, err
@@ -1928,6 +1961,16 @@ func resolveEngineConfig(cfg *engineConfig, account func(name string) (int, stri
 		}
 		if err := policiesMatch(*p, b); err != nil {
 			return nil, fmt.Errorf("platform %s: %v", p.name, err)
+		}
+		if err := operationPinsMatch(*p, b); err != nil {
+			return nil, err
+		}
+		if b.version == "2" {
+			for _, op := range enabledMCPOperations(*p, b) {
+				if _, err := ownerFileDeclaration(*p, op); err != nil {
+					return nil, err
+				}
+			}
 		}
 		bindings[p.name] = b
 	}

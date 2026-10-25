@@ -216,9 +216,9 @@ func main() {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if len(out.answers) != 4 || !strings.HasPrefix(out.answers[0], "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: checked with ") || strings.Contains(out.answers[0], "hunter2") ||
+	if len(out.answers) != 5 || !strings.HasPrefix(out.answers[0], "warehouse/history: airbyte/source-postgres:3.8.5 ("+testImageDigest+") answered succeeded: checked with ") || strings.Contains(out.answers[0], "hunter2") ||
 		out.answers[1] != "warehouse/live: crystaldba/postgres-mcp:0.3.0 ("+testImageDigest+"): server standin 0.1, protocol 2025-06-18, tools query, explain; query answered" ||
-		out.answers[2] != "warehouse/live: descriptors: server standin 0.1" || out.answers[3] != "warehouse/live: descriptors: query captured (input schema 17 bytes)" {
+		out.answers[2] != "warehouse/live: approved owner taxonomy and operation live" || out.answers[3] != "warehouse/live: descriptors: server standin 0.1" || out.answers[4] != "warehouse/live: descriptors: query captured (input schema 17 bytes)" {
 		t.Fatalf("both adapters reported, the connector's message redacted, and the live one captured: %q", out.answers)
 	}
 	traced, _ := os.ReadFile(trace)
@@ -238,9 +238,9 @@ func main() {
 	// The live check captured the stand-in's tool, and the entry pins the
 	// snapshot connect kept beside the configuration, in a file version 3
 	// names and whose name is its digest.
-	pin := cfg.platforms[0].descriptors
+	pin := cfg.platforms[0].operationDescriptors["live"]
 	kept, err := os.ReadFile(filepath.Join(config+".descriptors", strings.TrimPrefix(pin, "sha256:")+".json"))
-	if err != nil || cfg.version != "3" || pin == "" || pin != digestOf(string(kept)) {
+	if err != nil || cfg.version != "11" || pin == "" || pin != digestOf(string(kept)) {
 		t.Fatalf("the snapshot is kept and pinned: %v version %s pin %s", err, cfg.version, pin)
 	}
 	if s, err := parseSnapshot(kept); err != nil || s.platform != "warehouse" || strings.Join(s.names, ",") != "query" || s.tools["query"].inputSchemaText == nil {

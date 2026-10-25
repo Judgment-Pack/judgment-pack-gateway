@@ -21,7 +21,10 @@ func pinnedSnapshot(t *testing.T, f *connectFixture) (engineConfig, string, []by
 	if err != nil {
 		t.Fatal(err)
 	}
-	pin := cfg.platforms[0].descriptors
+	pin := cfg.platforms[0].operationDescriptors["live"]
+	if pin == "" {
+		pin = cfg.platforms[0].descriptors
+	}
 	if pin == "" {
 		return cfg, "", nil
 	}
@@ -49,7 +52,7 @@ func TestConnectPinsTheSnapshotItCaptured(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg, pin, data := pinnedSnapshot(t, f)
-	if cfg.version != "3" || pin == "" || digestOf(string(data)) != pin {
+	if cfg.version != "11" || pin == "" || digestOf(string(data)) != pin {
 		t.Fatalf("version %s, pin %q: the file names the snapshot kept, by its digest", cfg.version, pin)
 	}
 	s, err := parseSnapshot(data)
@@ -68,35 +71,21 @@ func TestConnectPinsTheSnapshotItCaptured(t *testing.T) {
 	}
 }
 
-func TestConnectPinsNothingWhenNothingIsCapturedOrAsked(t *testing.T) {
-	// A capture of no tool pins nothing: the version stays, and no
-	// directory is made.
-	f := newConnectFixture(t, restrictedBinding, ``)
+func TestConnectRequiresCompleteMetadataEvenWhenDisplayCandidatesAreAbsent(t *testing.T) {
+	f := newConnectFixture(t, restrictedBinding, "")
 	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
 		t.Fatal(err)
 	}
-	if cfg, pin, _ := pinnedSnapshot(t, f); cfg.version != "1" || pin != "" {
-		t.Fatalf("version %s, pin %q", cfg.version, pin)
+	cfg, pin, raw := pinnedSnapshot(t, f)
+	if cfg.version != "11" || pin == "" || !bytes.Contains(raw, []byte(`"taxonomy"`)) {
+		t.Fatal("owner metadata dropped with absent candidates")
 	}
-	if _, err := os.Lstat(f.config + ".descriptors"); !os.IsNotExist(err) {
-		t.Fatalf("no snapshots' directory is made for nothing: %v", err)
-	}
-	// --no-descriptors asks nothing of the check and pins nothing.
-	f = newConnectFixture(t, restrictedBinding, ``)
-	f.captured = capturedQuery
+	f = newConnectFixture(t, restrictedBinding, "")
 	req := f.request()
 	req.noDescriptors = true
-	if _, err := connect(context.Background(), req, f.host, f.check); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(strings.Join(f.asked[1].check, " "), "descriptors") {
-		t.Fatalf("the check is not asked to capture: %q", f.asked[1].check)
-	}
-	if cfg, pin, _ := pinnedSnapshot(t, f); cfg.version != "1" || pin != "" {
-		t.Fatalf("version %s, pin %q", cfg.version, pin)
-	}
-	if got, _, ok := parseConnectArgs([]string{"--config", "c", "p", "--binding", "b", "--credentials-file", "live=/x", "--user", "u", "--no-descriptors"}); !ok || !got.noDescriptors {
-		t.Fatalf("the flag parses: %+v", got)
+	before := f.fileText(t)
+	if _, err := connect(context.Background(), req, f.host, f.check); err == nil || len(f.asked) != 0 || f.fileText(t) != before {
+		t.Fatal("current registration bypassed owner capture")
 	}
 }
 
@@ -107,10 +96,12 @@ func TestConnectRefusesACaptureItCannotHoldTo(t *testing.T) {
 		want  string
 	}{
 		{"a member twice in the report", func(f *connectFixture) { f.captured, f.capturedExtra = capturedQuery, `"descriptors":{},` }, "not strict JSON"},
-		{"a tool the live operation does not allow", func(f *connectFixture) { f.captured = `{"explain":{"description":"x"}}` }, "does not allow"},
+		{"a tool the live operation does not allow", func(f *connectFixture) {
+			f.captured = `{"explain":{"description":"x","taxonomy":{"operation":"read","effect":"read-external"}}}`
+		}, "complete V2 snapshot evidence"},
 		{"another platform's snapshot", func(f *connectFixture) {
 			f.snapshotAs = `{"binding":"postgres@` + digestOf(restrictedBinding) + `","capturedAt":"2026-09-15T00:00:00Z","platform":"other","policy":1,"tools":` + capturedQuery + `}`
-		}, "not of this platform and binding"},
+		}, "complete V2 snapshot evidence"},
 		{"a schema that is not a string", func(f *connectFixture) { f.captured = `{"query":{"inputSchemaText":{"type":"object"}}}` }, "not a string"},
 		{"another policy", func(f *connectFixture) {
 			f.snapshotAs = `{"binding":"postgres@` + digestOf(restrictedBinding) + `","capturedAt":"2026-09-15T00:00:00Z","platform":"warehouse","policy":2,"tools":` + capturedQuery + `}`
@@ -127,24 +118,17 @@ func TestConnectRefusesACaptureItCannotHoldTo(t *testing.T) {
 			if f.fileText(t) != before {
 				t.Fatal("the configuration is left as it was")
 			}
-			if _, err := os.Lstat(f.config + ".descriptors"); !os.IsNotExist(err) {
-				t.Fatalf("nothing is kept for a capture refused: %v", err)
+			entries, err := os.ReadDir(f.config + ".descriptors")
+			if err != nil || len(entries) != 1 {
+				t.Fatalf("only unused immutable declaration remains: %v %v", entries, err)
 			}
 		})
 	}
-	// A snapshot the adapter dropped, and said why, is no refusal: the
-	// platform is connected, pinning nothing.
-	f := newConnectFixture(t, restrictedBinding, ``)
-	f.noSnapshot, f.capturedExtra = true, `"descriptorsDropped":"the report with the snapshot would pass 1048576 bytes",`
-	out, err := connect(context.Background(), f.request(), f.host, f.check)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasLine(out.answers, "warehouse/live: descriptors: none captured: the report with the snapshot would pass 1048576 bytes") {
-		t.Fatalf("%q", out.answers)
-	}
-	if _, pin, _ := pinnedSnapshot(t, f); pin != "" {
-		t.Fatalf("pin %q", pin)
+	f := newConnectFixture(t, restrictedBinding, "")
+	f.noSnapshot, f.capturedExtra = true, `"descriptorsDropped":"report too large",`
+	before := f.fileText(t)
+	if _, err := connect(context.Background(), f.request(), f.host, f.check); err == nil || f.fileText(t) != before {
+		t.Fatal("dropped classification was accepted")
 	}
 }
 
@@ -217,8 +201,8 @@ func TestConnectFailingBeforeTheCommitPointLeavesTheOldConfiguration(t *testing.
 	}
 	// The snapshot kept is there, unpinned, immutable and harmless.
 	entries, err := os.ReadDir(f.config + ".descriptors")
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("the snapshot kept before the failure stays: %v %v", err, entries)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("the snapshot and declaration kept before the failure stay: %v %v", err, entries)
 	}
 }
 
@@ -229,7 +213,7 @@ func TestConnectFailingAfterTheCommitPointSaysSo(t *testing.T) {
 	directorySynced = func(name string) error {
 		synced = append(synced, name)
 		// The configuration's directory, synced after the rename.
-		if name == "." && len(synced) == 3 {
+		if name == "." && len(synced) == 5 {
 			return os.ErrPermission
 		}
 		return nil
@@ -239,7 +223,7 @@ func TestConnectFailingAfterTheCommitPointSaysSo(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "replaced, but its directory could not be synced, so the replacement may not survive a crash") {
 		t.Fatalf("%v", err)
 	}
-	if out.written != f.config || !strings.Contains(f.fileText(t), `"descriptors": "sha256:`) {
+	if out.written != f.config || !strings.Contains(f.fileText(t), `"operationDescriptors":`) {
 		t.Fatalf("the configuration was replaced, and connect says where: %q", out.written)
 	}
 	var stdout, stderr bytes.Buffer
@@ -260,7 +244,7 @@ func TestConnectSyncsInTheDesignsOrder(t *testing.T) {
 	// The configuration's directory for the snapshots' directory made,
 	// the snapshots' directory for the snapshot linked, then the
 	// configuration's directory for the rename.
-	if got := strings.Join(synced, " "); got != ". engine.json.descriptors ." {
+	if got := strings.Join(synced, " "); got != ". engine.json.descriptors . engine.json.descriptors ." {
 		t.Fatalf("syncs %q", got)
 	}
 	synced = nil
@@ -272,14 +256,14 @@ func TestConnectSyncsInTheDesignsOrder(t *testing.T) {
 	}
 	// Found, the directory's parent is synced all the same: a connect
 	// that made it may have stopped before its own sync.
-	if got := strings.Join(synced, " "); got != ". engine.json.descriptors ." {
+	if got := strings.Join(synced, " "); got != ". engine.json.descriptors . engine.json.descriptors ." {
 		t.Fatalf("with the directory there, syncs %q", got)
 	}
 }
 
 // twoToolBinding is the restricted binding with a live operation that
 // allows two tools.
-var twoToolBinding = strings.Replace(restrictedBinding, `"tools": ["query"]`, `"tools": ["query", "explain"]`, 1)
+var twoToolBinding = strings.Replace(strings.Replace(restrictedBinding, `"tools": ["query"]`, `"tools": ["query", "explain"]`, 1), `"toolTaxonomies":{"query":{"operation":"read","effect":"read-external"}}`, `"toolTaxonomies":{"query":{"operation":"read","effect":"read-external"},"explain":{"operation":"read","effect":"read-external"}}`, 1)
 
 func TestConnectComparesWithThePreviousSnapshot(t *testing.T) {
 	f := newConnectFixture(t, twoToolBinding, ``)
@@ -300,10 +284,10 @@ func TestConnectComparesWithThePreviousSnapshot(t *testing.T) {
 			t.Fatalf("want %q and %q: %q %q", want, restart, out.answers, out.after)
 		}
 	}
-	const frontend = "restart: only the descriptors' pin changed; restarting the frontend alone serves it"
-	step(`{"explain":{"description":"Explain"},"query":{"description":"Run a query"}}`, "against the previous snapshot: explain no longer fallen back", frontend)
+	const frontend = "restart: what the signer reads changed (operation descriptor approvals); restart both processes"
+	step(`{"explain":{"description":"Explain"},"query":{"description":"Run a query"}}`, "against the previous snapshot: explain changed", frontend)
 	step(`{"explain":{"description":"Explain it"},"query":{"description":"Run a query"}}`, "against the previous snapshot: explain changed", frontend)
-	step(`{"query":{"description":"Run a query"}}`, "against the previous snapshot: explain now fallen back", frontend)
+	step(`{"query":{"description":"Run a query"}}`, "against the previous snapshot: explain changed", frontend)
 	// The previous snapshot altered where it lies: it does not verify
 	// against its pin, and nothing is compared.
 	_, pin, data := pinnedSnapshot(t, f)
@@ -352,7 +336,7 @@ func TestConnectComparesWithThePreviousSnapshot(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !hasLine(out.answers, "warehouse/live: descriptors: against the previous snapshot (the previous binding cannot be read, so which tools it allowed is not known): explain removed") ||
-		!hasLine(out.after, "restart: what the signer reads changed (the binding); restart both processes") {
+		!hasLine(out.after, "restart: what the signer reads changed (the binding, operation descriptor approvals); restart both processes") {
 		t.Fatalf("%q %q", out.answers, out.after)
 	}
 }
@@ -383,12 +367,16 @@ func TestRestartLinesNameWhatTheSignerReads(t *testing.T) {
 }
 
 func TestADescriptorsPinIsAVersion3MemberOfALiveBinding(t *testing.T) {
-	f := newConnectFixture(t, restrictedBinding, ``)
-	f.captured = capturedQuery
-	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
+	f := newConnectFixture(t, historicalRestrictedBinding, "")
+	data, err := os.ReadFile(f.config)
+	if err != nil {
 		t.Fatal(err)
 	}
-	text := f.fileText(t)
+	textBytes, err := renderPlatformEntry(data, f.request(), "postgres@"+digestOf(historicalRestrictedBinding), "sha256:"+strings.Repeat("0", 64), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(textBytes)
 	for _, tc := range []struct{ name, text, want string }{
 		{"version 2", strings.Replace(text, `"engineVersion": "3"`, `"engineVersion": "2"`, 1), "descriptors is a version-3 member"},
 		{"not a digest", strings.Replace(text, `"descriptors": "sha256:`, `"descriptors": "sha512:`, 1), "descriptors must be sha256:"},
@@ -402,7 +390,7 @@ func TestADescriptorsPinIsAVersion3MemberOfALiveBinding(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.catalog, "postgres.json"), []byte(historyOnly), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := parseEngineConfig([]byte(strings.Replace(text, digestOf(restrictedBinding), digestOf(historyOnly), 1)))
+	cfg, err := parseEngineConfig([]byte(strings.Replace(text, digestOf(historicalRestrictedBinding), digestOf(historyOnly), 1)))
 	if err != nil {
 		t.Fatal(err)
 	}

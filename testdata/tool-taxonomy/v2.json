@@ -1,0 +1,137 @@
+{
+  "about": "Handwritten canonical Gateway V2 source identities. Digests are fixture-byte identities, not signatures or live approval evidence. Current imports require exact operation/platform/raw key mapping and owner-bound whole-byte approval.",
+  "binding": "tickets@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "platform": "tickets",
+  "operation": "live",
+  "endpoint": "https://mcp.example.test/mcp",
+  "tools": {
+    "search": {
+      "operation": "discover",
+      "effect": "read-external"
+    },
+    "write": {
+      "operation": "act",
+      "effect": "act"
+    }
+  },
+  "frontendNames": {
+    "search": "tickets.search",
+    "write": "tickets.write"
+  },
+  "snapshotText": "{\"binding\":\"tickets@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"capturedAt\":\"2026-10-25T00:00:00Z\",\"endpoint\":\"https://mcp.example.test/mcp\",\"operation\":\"live\",\"platform\":\"tickets\",\"policy\":1,\"server\":{\"name\":\"example\",\"version\":\"1\"},\"snapshotVersion\":\"2\",\"tools\":{\"search\":{\"serverAnnotations\":{\"readOnlyHint\":true},\"taxonomy\":{\"effect\":\"read-external\",\"operation\":\"discover\"}},\"write\":{\"taxonomy\":{\"effect\":\"act\",\"operation\":\"act\"}}}}",
+  "snapshotDigest": "sha256:8cc5d6c02b2ff6cbea24e6ada37957189aaee899a2a41a0cb417b8e0b969aada",
+  "ownerDeclarationText": "{\"binding\":\"tickets@sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"declarationVersion\":\"1\",\"operation\":\"live\",\"platform\":\"tickets\",\"tools\":{\"search\":{\"effect\":\"read-external\",\"operation\":\"discover\"},\"write\":{\"effect\":\"act\",\"operation\":\"act\"}}}",
+  "ownerDeclarationDigest": "sha256:b34e97c1dc7abe7d8b3cad3e66439f95e99f93ba8642c3f935b32843a1a91da0",
+  "refusals": [
+    {
+      "name": "unknown-version",
+      "find": "\"snapshotVersion\":\"2\"",
+      "replace": "\"snapshotVersion\":\"3\""
+    },
+    {
+      "name": "missing-operation",
+      "find": "\"operation\":\"live\",",
+      "replace": ""
+    },
+    {
+      "name": "swapped-operation",
+      "find": "\"operation\":\"live\"",
+      "replace": "\"operation\":\"write\""
+    },
+    {
+      "name": "wrong-platform",
+      "find": "\"platform\":\"tickets\"",
+      "replace": "\"platform\":\"other\""
+    },
+    {
+      "name": "missing-owner",
+      "find": "\"taxonomy\":{\"effect\":\"act\",\"operation\":\"act\"}",
+      "replace": "\"description\":\"unclassified\""
+    },
+    {
+      "name": "changed-owner",
+      "find": "\"effect\":\"read-external\",\"operation\":\"discover\"",
+      "replace": "\"effect\":\"act\",\"operation\":\"act\""
+    },
+    {
+      "name": "server-contradiction",
+      "find": "\"readOnlyHint\":true",
+      "replace": "\"destructiveHint\":true"
+    },
+    {
+      "name": "unknown-server-constraint",
+      "find": "\"readOnlyHint\":true",
+      "replace": "\"unknownHint\":true"
+    },
+    {
+      "name": "duplicate-metadata",
+      "find": "\"snapshotVersion\":\"2\"",
+      "replace": "\"snapshotVersion\":\"2\",\"snapshotVersion\":\"2\""
+    }
+  ],
+  "groups": [
+    {
+      "name": "homogeneous-strongest",
+      "tools": {
+        "a": {
+          "operation": "run",
+          "effect": "read-external"
+        },
+        "b": {
+          "operation": "run",
+          "effect": "act"
+        }
+      },
+      "taxonomy": {
+        "operation": "run",
+        "effect": "act"
+      },
+      "operations": [
+        "run"
+      ]
+    },
+    {
+      "name": "proposal-and-read",
+      "tools": {
+        "a": {
+          "operation": "propose",
+          "effect": "propose"
+        },
+        "b": {
+          "operation": "read",
+          "effect": "read-external"
+        }
+      },
+      "taxonomy": {
+        "operation": "run",
+        "effect": "propose"
+      },
+      "operations": [
+        "read",
+        "propose"
+      ]
+    },
+    {
+      "name": "different-check-kinds",
+      "tools": {
+        "a": {
+          "operation": "check",
+          "effect": "read-external",
+          "checkKind": "validate"
+        },
+        "b": {
+          "operation": "check",
+          "effect": "read-external",
+          "checkKind": "verify"
+        }
+      },
+      "taxonomy": {
+        "operation": "run",
+        "effect": "read-external"
+      },
+      "operations": [
+        "check"
+      ]
+    }
+  ]
+}

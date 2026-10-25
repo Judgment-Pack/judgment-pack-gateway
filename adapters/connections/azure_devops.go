@@ -830,6 +830,9 @@ func azureDevOpsOutward(err error, secrets []string) error {
 // of its form, and none of another read's. The ids bound is held here, before
 // anything is sent.
 func (q AzureDevOpsRequest) check() (AzureDevOpsRequest, error) {
+	if _, declared := sourceOwner("azure-devops", q.Read); !declared {
+		return q, ErrRequest
+	}
 	given := map[string]bool{
 		"query": q.Query != "", "id": q.ID != 0, "ids": q.IDs != nil, "fields": q.Fields != nil, "top": q.Top != 0, "skip": q.Skip != 0, "cursor": q.Cursor != "",
 		"repository": q.Repository != "", "path": q.Path != "", "recursion": q.Recursion != "", "version": q.Version != "", "versionType": q.VersionType != "",

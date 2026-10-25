@@ -55,8 +55,12 @@ statement the requester wrote: raw SQL is no write tool (see the write-back plat
 and `postgres` holds to that rule now. The server (`bytebase/dbhub` 1.2.3) offers no narrower
 tool, so none is named; a function or procedure write returns when a server offers one. A
 platform that pins this binding and sets `write: true` is refused at start, naming the
-platform and the rule, and its credentials name no `write` file. The `history` and `live`
-entries and their digests are unchanged.
+platform and the rule, and its credentials name no `write` file. That historical change retained the then-current `history` and `live` entries.
+
+Current shipped catalogs now use bindingVersion2 owner declarations, so their complete
+digests change. Pin them explicitly and recapture per-operation snapshotV2 approval;
+no old approval is silently reused. Exact historical V1 copies remain in
+`testdata/catalog-v1` for readers. See [taxonomy migration](../docs/releases/taxonomy-v2-migration.md).
 
 **The golden records.** The both-paths agreement test (`adapters/agreement`) fetches one row
 of the World sample database (`ghusta/postgres-world-db:2.15.1`, `city` where `id = 1`), and

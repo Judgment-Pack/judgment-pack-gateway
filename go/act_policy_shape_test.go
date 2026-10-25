@@ -117,9 +117,9 @@ func TestShapeConfiguration(t *testing.T) {
 // captured beside it raises nothing and lowers nothing.
 func TestConnectKeepsAShapedPolicyAndTheVersion(t *testing.T) {
 	policy := `{"execute":{"outcomes":["approve"],"fix":[{"argument":"/updates/0","value":"x"}],"shape":[{"pointer":"/updates","type":"array","maxLength":1}],"closed":true}}`
-	f := newConnectFixture(t, postgresBinding, ``)
-	entry := `"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + escapePath(f.credentials) + `"},"live":{"file":"` + escapePath(f.credentials) + `"},"write":{"file":"` + escapePath(f.credentials) + `"}},"user":"engine-warehouse","write":true,"decisionPolicy":` + policy + `}`
-	text := strings.Replace(strings.Replace(f.fileText(t), `"engineVersion":"1"`, `"engineVersion":"10"`, 1), `"platforms":{}`, `"platforms":{`+entry+`}`, 1)
+	f := newConnectFixture(t, currentPolicyBinding, ``)
+	entry := `"warehouse":{"binding":"postgres@` + digestOf(currentPolicyBinding) + `","credentials":{"history":{"file":"` + escapePath(f.credentials) + `"},"live":{"file":"` + escapePath(f.credentials) + `"},"write":{"file":"` + escapePath(f.credentials) + `"}},"user":"engine-warehouse","write":true,"operationDescriptors":{"live":"sha256:0000000000000000000000000000000000000000000000000000000000000000","write":"sha256:1111111111111111111111111111111111111111111111111111111111111111"},"decisionPolicy":` + policy + `}`
+	text := strings.Replace(strings.Replace(f.fileText(t), `"engineVersion":"1"`, `"engineVersion":"11"`, 1), `"platforms":{}`, `"platforms":{`+entry+`}`, 1)
 	if err := os.WriteFile(f.config, []byte(text), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -141,8 +141,8 @@ func TestConnectKeepsAShapedPolicyAndTheVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	kept := after.platforms[0].policies["execute"]
-	if after.version != "10" || after.platforms[0].descriptors == "" || kept == nil || kept.digest != digest || len(kept.shape) != 1 {
-		t.Fatalf("version %s, pin %q, policy %+v: the policy kept as written, the version neither raised nor lowered", after.version, after.platforms[0].descriptors, kept)
+	if after.version != "11" || after.platforms[0].operationDescriptors["live"] == "" || kept == nil || kept.digest != digest || len(kept.shape) != 1 {
+		t.Fatalf("version %s, pin %q, policy %+v: the policy kept as written, the version neither raised nor lowered", after.version, after.platforms[0].operationDescriptors["live"], kept)
 	}
 }
 

@@ -670,16 +670,16 @@ func TestHostRuntimeSocketsByBaseName(t *testing.T) {
 func TestServeConfigRefusesBeforeWriting(t *testing.T) {
 	dir := tempDirAt(t, 0o755)
 	store := filepath.Join(dir, "store")
-	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
+	catalog := catalogWith(t, map[string]string{"postgres": currentPolicyBinding})
 	self, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
 	}
 	credentials := filepath.Join(dir, "warehouse.json")
 	os.WriteFile(credentials, []byte(`{}`), 0o600)
-	text := `{"engineVersion":"1","authority":"gateway:test","seed":"` + abs(t, dir, "gateway.seed") + `","store":"` + abs(t, store) + `",` +
+	text := `{"engineVersion":"11","authority":"gateway:test","seed":"` + abs(t, dir, "gateway.seed") + `","store":"` + abs(t, store) + `",` +
 		`"registry":"` + abs(t, dir, "registry.jsonl") + `","decisionRecords":"` + abs(t, dir, "decisions") + `","listen":"127.0.0.1:0",` +
-		`"catalog":"` + abs(t, catalog) + `","platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + abs(t, credentials) + `"},"live":{"file":"` + abs(t, credentials) + `"}},"user":"` + self.Username + `"}}}`
+		`"catalog":"` + abs(t, catalog) + `","platforms":{"warehouse":{"binding":"postgres@` + digestOf(currentPolicyBinding) + `","credentials":{"history":{"file":"` + abs(t, credentials) + `"},"live":{"file":"` + abs(t, credentials) + `"}},"operationDescriptors":{"live":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"user":"` + self.Username + `"}}}`
 	path := filepath.Join(dir, "engine.json")
 	os.WriteFile(path, []byte(text), 0o600)
 	stderr := captureStderr(t)

@@ -1,5 +1,5 @@
 {
-  "bindingVersion": "1",
+  "bindingVersion": "2",
   "platform": "azure-devops",
   "operations": {
     "write": {
@@ -8,8 +8,26 @@
         "url": "https://mcp.dev.azure.com/{organization}",
         "bearer": "token"
       },
-      "tools": ["wit_work_item_write", "wit_work_item_comment_write", "wit_work_item_link_write"],
-      "licence": "hosted service: the operator's own service terms"
+      "tools": [
+        "wit_work_item_write",
+        "wit_work_item_comment_write",
+        "wit_work_item_link_write"
+      ],
+      "licence": "hosted service: the operator's own service terms",
+      "toolTaxonomies": {
+        "wit_work_item_write": {
+          "operation": "act",
+          "effect": "act"
+        },
+        "wit_work_item_comment_write": {
+          "operation": "act",
+          "effect": "act"
+        },
+        "wit_work_item_link_write": {
+          "operation": "act",
+          "effect": "act"
+        }
+      }
     }
   }
 }

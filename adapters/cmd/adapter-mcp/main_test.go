@@ -11,6 +11,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("GATEWAY_TEST_OWNER_PROCESS") == "1" {
+		os.Exit(run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr))
+	}
 	if os.Getenv(fakemcp.EnvActivate) == "1" {
 		os.Exit(fakemcp.Run(os.Args[1:]))
 	}

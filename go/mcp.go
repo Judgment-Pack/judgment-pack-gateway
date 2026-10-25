@@ -72,6 +72,8 @@ const (
 // mcpTool is one entry of the tool table: a platform's live tool, or the
 // seal tool.
 type mcpTool struct {
+	taxonomy ToolTaxonomy
+
 	name     string
 	platform string
 	tool     string
@@ -202,6 +204,14 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 	if err != nil {
 		return nil, err
 	}
+	if err := currentBindingOwners(cfg, bindings); err != nil {
+		return nil, err
+	}
+	for _, p := range cfg.platforms {
+		if err := operationPinsMatch(p, bindings[p.name]); err != nil {
+			return nil, err
+		}
+	}
 	add := func(t mcpTool) error {
 		if other, taken := s.tools[t.name]; taken {
 			return fmt.Errorf("tool name %q would name both %s and %s; rename a platform", t.name, describeTool(other), describeTool(t))
@@ -213,7 +223,7 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 		s.order = append(s.order, t.name)
 		return nil
 	}
-	if err := add(mcpTool{name: mcpSealTool, seal: true}); err != nil {
+	if err := add(mcpTool{name: mcpSealTool, seal: true, taxonomy: ToolTaxonomy{Operation: "act", Effect: "act"}}); err != nil {
 		return nil, err
 	}
 	for _, p := range cfg.platforms { // in name order
@@ -222,7 +232,7 @@ func newMCPServer(cfg engineConfig, bindings map[string]binding, identity *ident
 			continue
 		}
 		for _, tool := range b.live.tools {
-			if err := add(mcpTool{name: p.name + "." + tool, platform: p.name, tool: tool, binding: p.binding}); err != nil {
+			if err := add(mcpTool{name: p.name + "." + tool, platform: p.name, tool: tool, binding: p.binding, taxonomy: b.live.taxonomies[tool]}); err != nil {
 				return nil, err
 			}
 		}
