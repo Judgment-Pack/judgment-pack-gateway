@@ -1,0 +1,15 @@
+{
+  "bindingVersion": "1",
+  "platform": "databricks",
+  "operations": {
+    "write": {
+      "shape": "mcp",
+      "server": {
+        "url": "https://{workspace}/api/2.0/mcp/functions/{catalog}/{schema}/{function}",
+        "bearer": "token"
+      },
+      "tools": ["{catalog}__{schema}__{function}"],
+      "licence": "hosted service: the operator's own service terms"
+    }
+  }
+}

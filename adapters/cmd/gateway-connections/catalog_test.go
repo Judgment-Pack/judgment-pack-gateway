@@ -44,7 +44,7 @@ func TestCatalogCLIHasNoAccountOrFilesystemPrerequisite(t *testing.T) {
 }
 
 func TestExtendedDiscoveryModesHaveNoAccountPrerequisite(t *testing.T) {
-	for _, mode := range []string{"--catalog-v3", "--catalog-v4", "--local-plan", "--source-capabilities"} {
+	for _, mode := range []string{"--catalog-v3", "--catalog-v4", "--catalog-v5", "--local-plan", "--source-capabilities"} {
 		for _, extra := range [][]string{nil, {"--catalog"}, {"--catalog-v3"}, {"--provider", "gmail"}, {"--state-dir", "private"}, {"--disabled"}, {"extra"}} {
 			if mode == "--catalog-v3" && len(extra) == 1 && extra[0] == "--catalog-v3" {
 				continue
@@ -64,6 +64,9 @@ func TestExtendedDiscoveryModesHaveNoAccountPrerequisite(t *testing.T) {
 				}
 				if mode == "--catalog-v4" {
 					want = 4
+				}
+				if mode == "--catalog-v5" {
+					want = 5
 				}
 				if err != nil || json.Unmarshal(raw, &result) != nil || result.Version != want {
 					t.Fatalf("%s: %s %v", mode, raw, err)
@@ -256,7 +259,7 @@ func TestTheOperatorsRedirectPoliciesReachThePlanAndTheReport(t *testing.T) {
 		}
 	}
 	// The catalogs do not read it.
-	for _, mode := range []string{"--catalog-v3", "--catalog-v4"} {
+	for _, mode := range []string{"--catalog-v3", "--catalog-v4", "--catalog-v5"} {
 		if raw, _, err := ask(mode, "JPACK_WEB_REDIRECT_POLICIES=any-origin"); err != nil || len(raw) == 0 {
 			t.Error("the catalog read the redirect policies", mode, err)
 		}
@@ -269,7 +272,7 @@ func TestTheCatalogFlagsWriteTheirVersions(t *testing.T) {
 	for _, c := range []struct {
 		flag string
 		want any
-	}{{"--catalog", connections.ConnectionCatalog()}, {"--catalog-v3", connections.ConnectionCatalogV3()}, {"--catalog-v4", connections.ConnectionCatalogV4()}} {
+	}{{"--catalog", connections.ConnectionCatalog()}, {"--catalog-v3", connections.ConnectionCatalogV3()}, {"--catalog-v4", connections.ConnectionCatalogV4()}, {"--catalog-v5", connections.ConnectionCatalogV5()}} {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestCatalogCLIHelper$", "--", c.flag)
 		cmd.Env = append(os.Environ(), "GATEWAY_CATALOG_HELPER=1")
 		cmd.Dir = t.TempDir()
@@ -278,13 +281,13 @@ func TestTheCatalogFlagsWriteTheirVersions(t *testing.T) {
 		if err != nil || string(raw) != string(want)+"\n" {
 			t.Errorf("%s: %v", c.flag, err)
 		}
-		if has := strings.Contains(string(raw), `"capabilities"`); has != (c.flag == "--catalog-v4") {
+		if has := strings.Contains(string(raw), `"capabilities"`); has != (c.flag == "--catalog-v4" || c.flag == "--catalog-v5") {
 			t.Errorf("%s: capabilities written: %v", c.flag, has)
 		}
-		if has := strings.Contains(string(raw), `"adapter":`); has != (c.flag == "--catalog-v4") {
+		if has := strings.Contains(string(raw), `"adapter":`); has != (c.flag == "--catalog-v4" || c.flag == "--catalog-v5") {
 			t.Errorf("%s: adapter written: %v", c.flag, has)
 		}
-		if c.flag == "--catalog-v4" {
+		if c.flag == "--catalog-v4" || c.flag == "--catalog-v5" {
 			var got struct {
 				Providers []struct{ Source struct{ ID, Adapter string } }
 				Sources   []struct{ ID, Adapter string }

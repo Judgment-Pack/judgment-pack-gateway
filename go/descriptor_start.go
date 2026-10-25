@@ -39,7 +39,7 @@ func readServedPlatforms(configPath string, cfg engineConfig, bindings map[strin
 	defer dir.Close()
 	served := map[string]*servedPlatform{}
 	for _, p := range cfg.platforms {
-		if p.descriptors == "" {
+		if p.descriptors == "" && len(p.operationDescriptors) == 0 {
 			continue
 		}
 		platform, err := dir.read(p, bindings[p.name])
@@ -64,7 +64,7 @@ type servedDirectory struct {
 func openServedDirectory(configPath string, cfg engineConfig) (*servedDirectory, error) {
 	pinned := false
 	for _, p := range cfg.platforms {
-		pinned = pinned || p.descriptors != ""
+		pinned = pinned || p.descriptors != "" || len(p.operationDescriptors) > 0
 	}
 	if !pinned {
 		return nil, nil
@@ -122,6 +122,19 @@ func openServedDirectory(configPath string, cfg engineConfig) (*servedDirectory,
 // read reads the snapshot p pins from the directory, by the remaining
 // checks.
 func (d *servedDirectory) read(p platformConfig, b binding) (*servedPlatform, error) {
+	if b.version == "2" {
+		var selected *servedPlatform
+		for _, name := range []string{"write", "live"} {
+			if enabledMCPOperations(p, b)[name] != nil {
+				value, err := d.readOperation(p, b, name)
+				if err != nil {
+					return nil, err
+				}
+				selected = value
+			}
+		}
+		return selected, nil
+	}
 	platform, err := readServedPlatform(d.dir, d.name, d.owner, p, b)
 	if err != nil {
 		return nil, fmt.Errorf("platform %s: descriptors: %w", p.name, err)
@@ -192,6 +205,9 @@ func readServedPlatform(dir *os.Root, dirName string, owner fileOwnerIDs, p plat
 	// a binding with no live one (describedOperation).
 	snap, err := parseSnapshot(data)
 	if err != nil {
+		return nil, err
+	}
+	if err := snapshotOwners(snap, described); err != nil {
 		return nil, err
 	}
 	if snap.platform != p.name || snap.binding != p.binding {
@@ -320,7 +336,7 @@ func buildListing(order []string, tools map[string]mcpTool, count *listingCount,
 	var dropped []string
 	full := false
 	for _, p := range platforms {
-		if p.descriptors == "" {
+		if p.descriptors == "" && len(p.operationDescriptors) == 0 {
 			continue
 		}
 		sp, err := dir.read(p, bindings[p.name])
@@ -376,6 +392,17 @@ func listingEntry(t mcpTool, p *servedPlatform, limit int) (json.RawMessage, err
 			return nil, nil
 		}
 		entry = map[string]any{"name": t.name, "description": description, "inputSchema": servedSchema(t, p)}
+	}
+	if t.taxonomy.Valid() {
+		entry["annotations"] = t.taxonomy.Annotations()
+		meta := map[string]any{"operation": t.taxonomy.Operation, "effect": t.taxonomy.Effect}
+		if t.taxonomy.CheckKind != "" {
+			meta["checkKind"] = t.taxonomy.CheckKind
+		}
+		if t.taxonomy.Experimental {
+			meta["experimental"] = true
+		}
+		entry["_meta"] = meta
 	}
 	out, err := json.Marshal(entry)
 	if err != nil || (limit >= 0 && len(out) > limit) {

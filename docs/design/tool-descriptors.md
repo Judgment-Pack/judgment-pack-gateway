@@ -401,6 +401,15 @@ snapshot. Removing unpinned snapshots is a separate operation that this note doe
 - neither is writable by group or others;
 - neither belongs to the frontend's user or group.
 
+These owner and permission-bit invariants describe the Unix deployment. The adapter's
+owner-declaration and approved-snapshot reader still requires direct regular files on
+Windows, checks the held directory and file identities, bounds the read, and verifies the
+canonical bytes against their approved digests. Windows reports writable files as `0666`
+and readonly files as `0444`; these bits do not describe group or other access. The reader
+therefore applies its group/other-write refusal only outside Windows. On Windows, filesystem
+access protection relies on the deployment's ACLs; the reader does not verify those ACLs or
+POSIX owner/mode trust. A successful read is not evidence of a verified Windows ACL policy.
+
 **The configuration.** Compatibility across versions:
 
 | `engineVersion` | `mcp` | `descriptors` member |
@@ -526,3 +535,10 @@ time. A tool that fell back, and `engine.seal`, name none.
    policy.
 5. `format`: refused, like `pattern`, since a host may evaluate it with expressions of its own.
 6. References: refused in version 1, and the compatibility cost is stated in the scope.
+
+## Current owner taxonomy contract
+
+[ADR0021](../adr/0021-owner-taxonomy-binds-current-tool-approval.md) specifies current
+bindingVersion2, per-operation snapshotV2/engine11 approval, and opt-in CatalogV5.
+Historical readers do not admit unclassified current tools. Metadata grants no authority;
+existing acquisition, sealing and action checks remain required.

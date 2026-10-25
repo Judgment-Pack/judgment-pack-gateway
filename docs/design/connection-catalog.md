@@ -367,3 +367,10 @@ account to establish it. The gateway checks no binding: an installation writes i
 profiles, their class among the rest, and a Runner holds a research source's binding to them
 (RFC 0018 §4.4). A declaration grants no acquisition and does not establish that an answer is
 true, that a model ran, or which one.
+
+## Current owner taxonomy contract
+
+[ADR0021](../adr/0021-owner-taxonomy-binds-current-tool-approval.md) specifies current
+bindingVersion2, per-operation snapshotV2/engine11 approval, and opt-in CatalogV5.
+Historical readers do not admit unclassified current tools. Metadata grants no authority;
+existing acquisition, sealing and action checks remain required.

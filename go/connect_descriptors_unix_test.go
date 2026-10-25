@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"syscall"
 	"testing"
@@ -35,7 +36,7 @@ func TestConnectSetsModesBeforeItSyncs(t *testing.T) {
 	if _, err := connect(context.Background(), f.request(), f.host, f.check); err != nil {
 		t.Fatal(err)
 	}
-	if len(modes) != 2 || modes[0] != snapshotMode || modes[1] != 0o664 {
+	if len(modes) != 3 || modes[0] != snapshotMode || modes[1] != snapshotMode || modes[2] != 0o664 {
 		t.Fatalf("the snapshot, then the configuration, each synced at its final mode: %v", modes)
 	}
 	info, err := os.Stat(f.config + ".descriptors")
@@ -93,7 +94,7 @@ func TestConnectUsesWhatIsThereOnlyWhenItHolds(t *testing.T) {
 				}
 			}
 			t.Cleanup(func() { entryJudged = nil })
-		}, "is not the file its name held a moment ago"},
+		}, "is a symbolic link"},
 		{"a link to the same file, put in its place once its name is judged", func(t *testing.T, f *connectFixture, path string) {
 			entryJudged = func(name string) {
 				if !strings.HasSuffix(name, ".json") {
@@ -111,7 +112,7 @@ func TestConnectUsesWhatIsThereOnlyWhenItHolds(t *testing.T) {
 				}
 			}
 			t.Cleanup(func() { entryJudged = nil })
-		}, "is not the file its name held a moment ago"},
+		}, "is a symbolic link"},
 		{"a directory the MCP server cannot pass through", func(t *testing.T, f *connectFixture, path string) {
 			if err := os.Chmod(filepath.Dir(path), 0o750); err != nil {
 				t.Fatal(err)
@@ -226,7 +227,7 @@ func TestConnectSyncsASnapshotItReuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := strings.TrimPrefix(pin, "sha256:") + ".json"
-	if len(synced) != 3 || !strings.HasSuffix(synced[0], ".staged") || synced[1] != name || synced[2] != "new" {
+	if len(synced) != 5 || !strings.HasSuffix(synced[0], ".staged") || !strings.HasSuffix(synced[1], ".json") || !strings.HasSuffix(synced[2], ".staged") || synced[3] != name || synced[4] != "new" {
 		t.Fatalf("the staged snapshot, the one reused, then the configuration: %q", synced)
 	}
 }
@@ -244,7 +245,29 @@ func TestTheSnapshotsDirectoryIsHeld(t *testing.T) {
 				t.Fatal(err)
 			}
 			dir := f.config + ".descriptors"
+			inventory := func(path string) map[string]string {
+				t.Helper()
+				entries, err := os.ReadDir(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				files := map[string]string{}
+				for _, entry := range entries {
+					if !entry.Type().IsRegular() {
+						t.Fatalf("unexpected evidence entry: %s", entry.Name())
+					}
+					data, err := os.ReadFile(filepath.Join(path, entry.Name()))
+					if err != nil {
+						t.Fatal(err)
+					}
+					files[entry.Name()] = digestOf(string(data))
+				}
+				return files
+			}
+			beforeInventory := inventory(dir)
+			var swapInventory map[string]string
 			swap := func() {
+				swapInventory = inventory(dir)
 				if err := os.Rename(dir, dir+".moved"); err != nil {
 					t.Fatal(err)
 				}
@@ -273,10 +296,17 @@ func TestTheSnapshotsDirectoryIsHeld(t *testing.T) {
 			if f.fileText(t) != before {
 				t.Fatal("the configuration is left as it was")
 			}
-			// Found when it is judged, nothing is written in the directory
-			// the link leads to.
-			if entries, _ := os.ReadDir(dir + ".moved"); when == "judged" && len(entries) != 1 {
-				t.Fatalf("a snapshot was kept in a directory swapped in: %v", entries)
+			// Every previously retained declaration and snapshot stays byte-for-byte.
+			// A swap at judgment permits no publication; a later swap can retain
+			// the new unused immutable snapshot, but permits no writes after it.
+			afterInventory := inventory(dir + ".moved")
+			for name, digest := range beforeInventory {
+				if afterInventory[name] != digest {
+					t.Fatalf("retained evidence changed: %s", name)
+				}
+			}
+			if !reflect.DeepEqual(afterInventory, swapInventory) || (when == "judged" && !reflect.DeepEqual(afterInventory, beforeInventory)) {
+				t.Fatalf("evidence changed after directory swap: before %v, at swap %v, after %v", beforeInventory, swapInventory, afterInventory)
 			}
 		})
 	}

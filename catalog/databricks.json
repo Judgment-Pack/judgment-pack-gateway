@@ -1,5 +1,5 @@
 {
-  "bindingVersion": "1",
+  "bindingVersion": "2",
   "platform": "databricks",
   "operations": {
     "write": {
@@ -8,8 +8,16 @@
         "url": "https://{workspace}/api/2.0/mcp/functions/{catalog}/{schema}/{function}",
         "bearer": "token"
       },
-      "tools": ["{catalog}__{schema}__{function}"],
-      "licence": "hosted service: the operator's own service terms"
+      "tools": [
+        "{catalog}__{schema}__{function}"
+      ],
+      "licence": "hosted service: the operator's own service terms",
+      "toolTaxonomies": {
+        "{catalog}__{schema}__{function}": {
+          "operation": "act",
+          "effect": "act"
+        }
+      }
     }
   }
 }

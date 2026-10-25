@@ -490,7 +490,7 @@ func TestAnMCPAnswerBoundsTheSignersReason(t *testing.T) {
 				_, _ = io.WriteString(w, tc.refusal)
 			}))
 			defer signer.Close()
-			server, err := newMCPServer(mcpTestConfig(t, signer, nil), mcpBindings(), nil, "")
+			server, err := newDeclaredMCPTestServer(t, mcpTestConfig(t, signer, nil), mcpBindings(), nil, "")
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -42,6 +42,8 @@ var now = time.Now
 // the platform as the engine's configuration names it, and the binding it
 // pins, name@sha256:<64 hex>.
 type DescriptorTarget struct {
+	Operation string
+
 	Platform string
 	Binding  string
 }
@@ -62,6 +64,10 @@ func (t DescriptorTarget) refusal() error {
 // pin is of one tenant's server; a server the adapter runs has none, and
 // its snapshot is the bytes it was before the member existed.
 type snapshot struct {
+	Operation string `json:"operation,omitempty"`
+
+	SnapshotVersion string `json:"snapshotVersion,omitempty"`
+
 	Binding    string                  `json:"binding"`
 	Endpoint   string                  `json:"endpoint,omitempty"`
 	CapturedAt string                  `json:"capturedAt"`
@@ -75,6 +81,9 @@ type snapshot struct {
 // its input schema's original text, as a string, so no encoder along the
 // way compacts, reorders or respells it.
 type capturedTool struct {
+	Taxonomy          *ToolTaxonomy   `json:"taxonomy,omitempty"`
+	ServerAnnotations map[string]bool `json:"serverAnnotations,omitempty"`
+
 	Description     *string `json:"description,omitempty"`
 	InputSchemaText *string `json:"inputSchemaText,omitempty"`
 }

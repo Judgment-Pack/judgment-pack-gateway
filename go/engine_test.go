@@ -243,7 +243,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 		{"unknown member", engineJSON(t, catalog, `,"port":8787`, good), `unknown member "port"`},
 		{"duplicate member", `{"engineVersion":"1","engineVersion":"1"}`, "duplicate"},
 		{"missing member", replace(`"registry":"`, `"registryx":"`), `unknown member "registryx"`},
-		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"11"`), `engineVersion "11" is not "1", "2", "3", "4", "5", "6", "7", "8", "9" or "10"`},
+		{"wrong version", replace(`"engineVersion":"1"`, `"engineVersion":"12"`), `engineVersion "12" is not "1", "2", "3", "4", "5", "6", "7", "8", "9" or "11"`},
 		{"identity without an audience", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), `missing member "audience"`},
 		{"identity with an unknown member", engineJSON(t, catalog, `,"identity":{"issuer":"https://login.example","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`","jwksUrl":"https://x"}`, good), `unknown member "jwksUrl"`},
 		{"identity with an empty issuer", engineJSON(t, catalog, `,"identity":{"issuer":"","audience":"gateway:acme","keys":"`+abs(t, t.TempDir(), "keys.json")+`"}`, good), "identity.issuer must be the token issuer"},
@@ -295,7 +295,7 @@ func TestEngineConfigRefusals(t *testing.T) {
 // no restriction the acquisition does not yet apply.
 func TestBindingRefusals(t *testing.T) {
 	cases := map[string]string{
-		`{"bindingVersion":"2","platform":"p","operations":{}}`: `bindingVersion "2"`,
+		`{"bindingVersion":"3","platform":"p","operations":{}}`: `bindingVersion "3"`,
 		`{"bindingVersion":"1","platform":"p","operations":{}}`: "no operation",
 		`{"bindingVersion":"1","platform":"p","operations":{"history":{"shape":"airbyte","image":"airbyte/source-postgres:3.6.1","licence":"ELv2"}}}`:                                                           "image must be pinned",
 		`{"bindingVersion":"1","platform":"p","operations":{"history":{"shape":"airbyte","image":"--label=probe@` + testImageDigest + `","licence":"ELv2"}}}`:                                                   "image must be pinned",
@@ -670,16 +670,16 @@ func TestHostRuntimeSocketsByBaseName(t *testing.T) {
 func TestServeConfigRefusesBeforeWriting(t *testing.T) {
 	dir := tempDirAt(t, 0o755)
 	store := filepath.Join(dir, "store")
-	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
+	catalog := catalogWith(t, map[string]string{"postgres": currentPolicyBinding})
 	self, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
 	}
 	credentials := filepath.Join(dir, "warehouse.json")
 	os.WriteFile(credentials, []byte(`{}`), 0o600)
-	text := `{"engineVersion":"1","authority":"gateway:test","seed":"` + abs(t, dir, "gateway.seed") + `","store":"` + abs(t, store) + `",` +
+	text := `{"engineVersion":"11","authority":"gateway:test","seed":"` + abs(t, dir, "gateway.seed") + `","store":"` + abs(t, store) + `",` +
 		`"registry":"` + abs(t, dir, "registry.jsonl") + `","decisionRecords":"` + abs(t, dir, "decisions") + `","listen":"127.0.0.1:0",` +
-		`"catalog":"` + abs(t, catalog) + `","platforms":{"warehouse":{"binding":"postgres@` + digestOf(postgresBinding) + `","credentials":{"history":{"file":"` + abs(t, credentials) + `"},"live":{"file":"` + abs(t, credentials) + `"}},"user":"` + self.Username + `"}}}`
+		`"catalog":"` + abs(t, catalog) + `","platforms":{"warehouse":{"binding":"postgres@` + digestOf(currentPolicyBinding) + `","credentials":{"history":{"file":"` + abs(t, credentials) + `"},"live":{"file":"` + abs(t, credentials) + `"}},"operationDescriptors":{"live":"sha256:0000000000000000000000000000000000000000000000000000000000000000"},"user":"` + self.Username + `"}}}`
 	path := filepath.Join(dir, "engine.json")
 	os.WriteFile(path, []byte(text), 0o600)
 	stderr := captureStderr(t)
