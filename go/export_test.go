@@ -720,3 +720,64 @@ func TestExportCarriesEveryOperationsPinnedSnapshot(t *testing.T) {
 		t.Fatalf("the exported snapshots: %v %v", snapshots, err)
 	}
 }
+
+// A link in the store's receipts or artifacts refuses the export: no file
+// is copied through a link, the seed's included, wherever the link leads.
+// A link that leads nowhere is the absence verification finds there.
+func TestExportRefusesALinkInTheStore(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a link takes a privilege to make on Windows")
+	}
+	seedPath := filepath.Join(t.TempDir(), "gateway.seed")
+	seedText := []byte(hex.EncodeToString(testSeed) + "\n")
+	if err := os.WriteFile(seedPath, seedText, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(seedText)
+	holdsSeed := func(t *testing.T, dir string) {
+		t.Helper()
+		filepath.WalkDir(dir, func(at string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			if data, _ := os.ReadFile(at); bytes.Contains(data, testSeed) || bytes.Contains(data, seedText[:64]) {
+				t.Errorf("%s holds the seed", at)
+			}
+			return nil
+		})
+	}
+	for _, c := range []struct{ name, link string }{
+		{"a receipt", filepath.Join("receipts", "sealed", "7.json")},
+		{"an artifact", filepath.Join("artifacts", hex.EncodeToString(sum[:]))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			st, _, storeRoot, registryPath := testStore(t)
+			stampSession(t, st, "sealed", 1)
+			if err := os.Symlink(seedPath, filepath.Join(storeRoot, c.link)); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "export")
+			_, err := writeExport(exportInputs{authority: "gateway:test", keyID: st.keyID, kind: newFsKind(fsLayout{store: storeRoot, registry: registryPath})}, out)
+			if err == nil || !strings.Contains(err.Error(), "is a link") {
+				t.Fatalf("an export through a link to the seed: %v", err)
+			}
+			holdsSeed(t, out)
+		})
+	}
+	t.Run("a link that leads nowhere", func(t *testing.T) {
+		st, _, storeRoot, registryPath := testStore(t)
+		stampSession(t, st, "sealed", 1)
+		nowhere := filepath.Join(storeRoot, "artifacts", strings.Repeat("ab", 32))
+		if err := os.Symlink(filepath.Join(t.TempDir(), "nothing"), nowhere); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(t.TempDir(), "export")
+		if _, err := writeExport(exportInputs{authority: "gateway:test", keyID: st.keyID, kind: newFsKind(fsLayout{store: storeRoot, registry: registryPath})}, out); err != nil {
+			t.Fatal(err)
+		}
+		requireExportChecks(t, out)
+		if _, err := os.Lstat(filepath.Join(out, "store", "artifacts", strings.Repeat("ab", 32))); err == nil {
+			t.Fatal("a link that leads nowhere was exported as a file")
+		}
+	})
+}

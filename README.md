@@ -255,7 +255,8 @@ descriptor snapshots the platforms pin (a platform's own, or each of its operati
 key by its id and every file by its digest and size. The cut reads the registry before the
 receipts, so a session sealed while the export runs is in it with its seal and every receipt
 the seal counts, or without the seal, never as a rollback. The seed is in no file of it, and the public key is not either: a
-verifier pins it out of band, as for a live store. `--out` must not be there yet, nor inside the
+verifier pins it out of band, as for a live store. A link among the store's receipts or artifacts
+refuses the export, and no file is read through one. `--out` must not be there yet, nor inside the
 store or the decision records. `--check` reports `{"findings":[...],"ok":...}` and exits 0 when it
 reaches a verdict, as `verify` does; a manifest it cannot read is no verdict. A restore is a copy
 of the export's files back into place, which `--check` and `verify` then read as they read the

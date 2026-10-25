@@ -718,7 +718,23 @@ func checkExport(dir string) (*vObject, error) {
 				findings = append(findings, finding{rel, "unlisted"})
 				return nil
 			}
-			data, err := os.ReadFile(at)
+			// the size first, from the entry: a file of another size is
+			// never read, and one that is read is read to its listed size
+			// and a byte, so a file grown meanwhile is not read whole
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			if info.Size() != want.size {
+				findings = append(findings, finding{rel, "size-mismatch"})
+				return nil
+			}
+			file, err := os.Open(at)
+			if err != nil {
+				return err
+			}
+			data, err := io.ReadAll(io.LimitReader(file, want.size+1))
+			file.Close()
 			if err != nil {
 				return err
 			}

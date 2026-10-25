@@ -186,6 +186,10 @@ func conformCreateOnce(t *testing.T, receipts indexedSpace) {
 	}
 	_, err = receipts.getEntry("session-a", "7")
 	requireFault(t, "an entry never made", err, faultAbsent)
+	requireFault(t, "a create into a series never made", receipts.createIndexed("never-made", 0, first), faultAbsent)
+	if series, err := receipts.listSeries(); err != nil || strings.Join(series, ",") != "session-a" {
+		t.Fatalf("a create into a series never made made one: %v %v", series, err)
+	}
 }
 
 func conformCompareAndSet(t *testing.T, docs documentSpace) {
@@ -275,8 +279,10 @@ func conformConcurrentCompareAndSet(t *testing.T, docs documentSpace) {
 func conformAppendLog(t *testing.T, log appendLog) {
 	_, err := log.readLog(0)
 	requireFault(t, "a log never made", err, faultAbsent)
-	if n, err := log.appendRecord([]byte("lost\n")); err == nil || n != 0 {
-		t.Fatalf("an append to a log never made: %d %v", n, err)
+	n, err := log.appendRecord([]byte("lost\n"))
+	requireFault(t, "an append to a log never made", err, faultAbsent)
+	if n != 0 {
+		t.Fatalf("an append to a log never made wrote %d bytes", n)
 	}
 	if _, err := log.readLog(0); faultOf(err) != faultAbsent {
 		t.Fatalf("a refused append made the log: %v", err)
@@ -356,6 +362,37 @@ func conformLeases(t *testing.T, leases leaseSpace, clock *handClock) {
 	third, err := leases.acquireLease("writer", "three", 10*time.Second)
 	if err != nil || third.token <= second.token {
 		t.Fatalf("a grant after a release: %+v %v", third, err)
+	}
+
+	// a lease that expired and that nobody took over is not its holder's
+	// any more: its renewal, its release and its token are refused
+	idle, err := leases.acquireLease("idle", "one", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.advance(10 * time.Second)
+	_, err = leases.renewLease(idle, 10*time.Second)
+	requireFault(t, "a renewal of a lease expired and not granted again", err, faultStaleFence)
+	requireFault(t, "a release of a lease expired and not granted again", leases.releaseLease(idle), faultStaleFence)
+	requireFault(t, "the token of a lease expired and not granted again", leases.checkFence("idle", idle.token), faultStaleFence)
+
+	// another holder presenting the current lease's token renews and
+	// releases nothing; the lease stays its holder's. The fence is the
+	// token's alone (checkFence takes no holder).
+	held, err := leases.acquireLease("shared", "one", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged := held
+	forged.holder = "two"
+	_, err = leases.renewLease(forged, 10*time.Second)
+	requireFault(t, "a renewal by another holder", err, faultStaleFence)
+	requireFault(t, "a release by another holder", leases.releaseLease(forged), faultStaleFence)
+	if err := leases.checkFence("shared", held.token); err != nil {
+		t.Fatalf("the holder's lease after another's refused release: %v", err)
+	}
+	if _, err := leases.renewLease(held, 10*time.Second); err != nil {
+		t.Fatalf("the holder's renewal after another's refused one: %v", err)
 	}
 }
 

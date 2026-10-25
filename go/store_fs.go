@@ -58,6 +58,11 @@ func fsWriteFile(near string, data []byte, exclusive bool) error {
 	tmp := fmt.Sprintf("%s.%d.%s.tmp", near, os.Getpid(), hex.EncodeToString(suffix[:]))
 	handle, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
+		// a directory that is not there -- a series never made -- took
+		// nothing: absent, not a write that may have been kept
+		if errors.Is(err, fs.ErrNotExist) {
+			return storeFailure(faultAbsent, "write", err)
+		}
 		return storeFailure(faultDurability, "write", err)
 	}
 	if _, err := handle.Write(data); err != nil {
@@ -119,21 +124,58 @@ func (b fsBlobs) putBlob(data []byte) (string, error) {
 	return "sha256:" + hexSum, nil
 }
 
-// getBlob reads the blob as verification reads an artifact: by its name,
-// whatever the name leads to.
+// readOwnFile reads the regular file a name holds, never through a link:
+// a link in its place is refused, unless it leads nowhere, which is the
+// absence verification finds there; anything else that is no regular
+// file is refused before it is opened. The entry is judged before the open
+// and again after it, each time as the file opened, so a link put in its
+// place meanwhile is found.
+func readOwnFile(op, path string) ([]byte, error) {
+	entry, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, storeFailure(faultAbsent, op, err)
+		}
+		return nil, storeFailure(faultUnreadable, op, err)
+	}
+	if entry.Mode()&os.ModeSymlink != 0 {
+		if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+			return nil, storeFailure(faultAbsent, op, err)
+		}
+		return nil, storeFailure(faultRefused, op, fmt.Errorf("store: %s is a link, and no file is read through one", path))
+	}
+	if !entry.Mode().IsRegular() {
+		return nil, storeFailure(faultRefused, op, fmt.Errorf("store: %s is not a regular file", path))
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, storeFailure(faultUnreadable, op, err)
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, storeFailure(faultUnreadable, op, err)
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !os.SameFile(entry, opened) || !os.SameFile(after, opened) {
+		return nil, storeFailure(faultRefused, op, fmt.Errorf("store: %s is not the file its name held a moment ago", path))
+	}
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, storeFailure(faultUnreadable, op, err)
+	}
+	return data, nil
+}
+
+// getBlob reads the blob's own file (readOwnFile): a link in its place is
+// refused, and one that leads nowhere is absent, as verification finds
+// such an artifact missing.
 func (b fsBlobs) getBlob(name string) ([]byte, error) {
 	hexSum, ok := blobHex(name)
 	if !ok {
 		return nil, storeFailure(faultRefused, "get-blob", fmt.Errorf("store: %q is not a blob's name", name))
 	}
-	data, err := os.ReadFile(filepath.Join(b.dir, hexSum))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, storeFailure(faultAbsent, "get-blob", err)
-		}
-		return nil, storeFailure(faultUnreadable, "get-blob", err)
-	}
-	return data, nil
+	return readOwnFile("get-blob", filepath.Join(b.dir, hexSum))
 }
 
 // listBlobs names every entry of the directory that is no directory and is
@@ -273,14 +315,8 @@ func (x fsIndexed) getEntry(series, entry string) ([]byte, error) {
 	if entry == "" || strings.ContainsAny(entry, `/\`) {
 		return nil, storeFailure(faultRefused, "get-entry", fmt.Errorf("store: %q is not an entry's name", entry))
 	}
-	data, err := os.ReadFile(filepath.Join(dir, entry+".json"))
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil, storeFailure(faultAbsent, "get-entry", err)
-		}
-		return nil, storeFailure(faultUnreadable, "get-entry", err)
-	}
-	return data, nil
+	// the entry's own file, as for a blob (readOwnFile)
+	return readOwnFile("get-entry", filepath.Join(dir, entry+".json"))
 }
 
 // fsLog is the filesystem kind's log in a file of its own: the seal
@@ -358,7 +394,12 @@ func (l *fsLog) createLog() error {
 func (l *fsLog) appendRecord(data []byte) (int, error) {
 	handle, err := os.OpenFile(l.path, os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		return 0, &storeError{fault: faultDurability, op: "append", err: err}
+		// a log that is not there took nothing
+		fault := faultDurability
+		if errors.Is(err, fs.ErrNotExist) {
+			fault = faultAbsent
+		}
+		return 0, &storeError{fault: fault, op: "append", err: err}
 	}
 	defer handle.Close()
 	n, err := l.write(handle, data)

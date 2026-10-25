@@ -107,15 +107,20 @@ snapshots; the seed's owner and mode.
 
 The adapters module never imports the core (ADR-0001), so the primitives the custody uses are
 stated again in `adapters/internal/storecontract`: versioned documents with the same faults, held to the
-same conformance cases. Its filesystem kind (`Files`) keeps each document as the custody always
+document cases (below). Its filesystem kind (`Files`) keeps each document as the custody always
 has -- a private file in the principal's held directory, read through one descriptor that
 follows no link and blocks on nothing, replaced by renaming a synced staging file over it -- with a
 document's policy where it was kept otherwise: the operation journal of a file change
 (`storage-intent.json`) is bounded by its line, taken as absent only when its entry is not there,
 and synced with its directory; every other document is bounded by 64 KiB and its directory is not
-synced, as before. A revision is the digest of a document's bytes. A compare-and-set compares and
-then renames, so it is atomic among writers that hold the custody lock, as every custody writer
-does; the custody's own writes replace a document under that lock (`AnyRevision`), as they did.
+synced, as before. A revision is the digest of a document's bytes, so a document written again
+with bytes it held before is at that earlier revision again, unlike a core kind's, where one made
+again takes a revision of its own; nothing compares a custody revision today, since every custody
+write replaces under the lock. A compare-and-set compares and then renames, so it is atomic among
+writers that hold the custody lock, as every custody writer does; the custody's own writes replace
+a document under that lock (`AnyRevision`), as they did. The custody's reads and writes, its
+grants' listing and removal, the operation journal, and the consent record's removal at a
+disconnect go through it.
 
 The observation journal leaves the custody through `gateway-connections --state-dir <dir>
 --principal <name> --export-observations`: the journal as the custody holds it, read under the
@@ -149,7 +154,10 @@ The decision records are the runtime's files, in no space of a kind; they are re
 so a record written before an action receipt the cut holds is in the export. The export copies
 what is there, damage included: a receipt that is misfiled, an artifact that does not digest, a
 session with no receipt are exported as they are, so verification of the export says what it says
-of the store. A name an export could not write as one clean, slash-separated path -- a backslash
+of the store. A receipt or an artifact that is a link refuses the export: no file of the store is
+read through a link, wherever it leads, as no decision record is; a link that leads nowhere is the
+absence verification finds there, and the export holds none for it. A name an export could not
+write as one clean, slash-separated path -- a backslash
 in a name on Linux -- refuses the export, as a store that cannot be read does; nothing is skipped
 silently. `--out` must not be there yet, nor be inside the store or the decision records, where it
 would add a session or a record. The manifest is written last: an export without one is an export
@@ -179,22 +187,29 @@ filesystem kind and the in-memory kind (`go/store_memory_test.go`). A kind is ad
 there and passing:
 
 - a blob is named by its digest, kept once, and a name it never held is absent;
-- an entry is created once, a second create at its index is refused and leaves it as it was, and a
-  series made already is never this call's;
+- an entry is created once, a second create at its index is refused and leaves it as it was, a
+  series made already is never this call's, and a create into a series never made is absent and
+  makes none;
 - a document is replaced only at the revision read, a create of one that is there and a write or a
   delete at a stale revision are conflicts, and concurrent compare-and-set loops lose no write;
-- a log is absent until made, an append to it before is refused, appends read back in order from
-  any cursor, and a cursor past the end is refused;
+- a log is absent until made, an append to it before is absent with nothing written, appends read
+  back in order from any cursor, and a cursor past the end is refused;
 - a secret is made once;
 - a lease is held until it expires, its expired holder's token is refused for the check, the
-  renewal and the release once the name is granted again, every grant's token exceeds the last,
-  and a released lease's token is refused;
+  renewal and the release once the name is granted again -- and so are they for a lease that
+  expired and was not granted again -- every grant's token exceeds the last, a released lease's
+  token is refused, and another holder presenting the current token renews and releases nothing
+  (the fence is the token's alone);
 - a snapshot taken while a writer writes in the contract's order is a consistent cut;
 - a write the kind does not keep is a durability fault, never a success, and nothing is listed for
   it.
 
-The custody's documents answer to the document cases in `adapters/internal/storecontract`, with the
-custody's filesystem kind's compare-and-set run under the lock its writers hold.
+The custody's documents answer to the document cases in `adapters/internal/storecontract`. The
+in-memory kind, whose compare-and-set is atomic on its own, is held to the core's concurrent case:
+writers that share no lock, each retrying a refused write, lose no write. The custody's filesystem
+kind, whose compare-and-set is atomic only under the custody lock, is held to a lock-discipline
+case instead: under the lock each holder sees the last holder's revision, and a put at the
+revision it read before its own put is refused.
 
 ## Not changed
 

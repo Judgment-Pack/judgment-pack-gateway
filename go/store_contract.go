@@ -102,7 +102,8 @@ type indexedSpace interface {
 	// before, is never this call's.
 	makeSeries(series string) (made bool, err error)
 	// createIndexed makes the entry at index, or refuses with faultTaken
-	// when one is there: an entry is never replaced.
+	// when one is there: an entry is never replaced. Into a series never
+	// made it writes nothing and answers faultAbsent.
 	createIndexed(series string, index int64, data []byte) error
 	// listSeries names every series, sorted.
 	listSeries() ([]string, error)
@@ -120,7 +121,8 @@ type appendLog interface {
 	// appendRecord appends data whole and makes it durable. On a failure
 	// the *storeError says how many of its bytes may be in the log
 	// (written) and whether they were written whole and making them
-	// durable failed (committing).
+	// durable failed (committing). Onto a log never made it writes
+	// nothing and answers faultAbsent, written 0.
 	appendRecord(data []byte) (int, error)
 	// readLog returns the log's bytes from the cursor from to its end; the
 	// next cursor is from plus their length. faultAbsent when there is no
