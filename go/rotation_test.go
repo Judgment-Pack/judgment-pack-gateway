@@ -102,6 +102,7 @@ func TestTheRegistryWalk(t *testing.T) {
 		{"a continuation alone", reverseLine(k1, 1, at, publicOf(k0)) + "\n" + sealLine(t, k1, "b", 1), statusRotationForged, 1, 1, ""},
 		{"a rotation the key rotated from signs after it was rotated from", rot01 + forwardLine(k0, 2, at2, publicOf(k2)) + "\n" + reverseLine(k2, 2, at2, publicOf(k1)) + "\n", statusRotationForged, 2, 2, ""},
 		{"a rotation naming the current key and signed by another", rotationLineBy(other, keyIDFor(publicOf(k0)), rotationKindForward, 1, at, publicOf(k1)) + "\n" + reverseLine(k1, 1, at, publicOf(k0)) + "\n", statusRotationForged, 1, 1, ""},
+		{"a rotation the current key signed naming another keyId", rotationLineBy(k0, keyIDFor(publicOf(other)), rotationKindForward, 1, at, publicOf(k1)) + "\n" + reverseLine(k1, 1, at, publicOf(k0)) + "\n", statusRotationForged, 1, 1, ""},
 		{"a member beside the statement's", tamper(forwardLine(k0, 1, at, publicOf(k1)), `{"keyId"`, `{"extra":1,"keyId"`) + "\n", statusRotationBreak, 1, 1, ""},
 		{"a nextKeyId not the next key's", tamper(forwardLine(k0, 1, at, publicOf(k1)), keyIDFor(publicOf(k1)), keyIDFor(publicOf(k2))) + "\n", statusRotationBreak, 1, 1, ""},
 		{"a rotatedAt not of its form", rotationLines(k0, k1, 1, "2026-10-25 00:00:00Z"), statusRotationBreak, 1, 1, ""},
@@ -224,8 +225,10 @@ func TestRotateKeyThenTheGatewayGoesOnUnderTheNextKey(t *testing.T) {
 	if kept, err := loadSeed(r.kept); err != nil || !bytes.Equal(kept, testSeed) {
 		t.Fatalf("the seed rotated from is not kept where the rotation says: %v", err)
 	}
-	if _, err := os.Lstat(seedPath + ".next"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the next seed is still beside the seed: %v", err)
+	for _, left := range []string{seedPath + ".next", seedPath + ".rotation"} {
+		if _, err := os.Lstat(left); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s is still beside the seed: %v", left, err)
+		}
 	}
 	next, err := loadSeed(seedPath)
 	if err != nil {
@@ -404,5 +407,356 @@ func TestRotateKeyCommandLine(t *testing.T) {
 	}
 	if !strings.HasPrefix(stdout.String(), "rotation 1: key "+keyIDFor(publicOf(ed25519.NewKeyFromSeed(testSeed)))) {
 		t.Fatalf("report: %s", stdout.String())
+	}
+}
+
+// tornLog stands in the registry's log for rotate-key with one whose append
+// writes the first cut bytes of a record and fails; with whole, it writes
+// the record whole and fails to make it durable.
+func tornLog(t *testing.T, cut int, whole bool) {
+	t.Helper()
+	saved := openRotationLog
+	t.Cleanup(func() { openRotationLog = saved })
+	openRotationLog = func(path string) (*fsLog, error) {
+		log, err := openFsLog(path)
+		if err != nil {
+			return nil, err
+		}
+		log.write = func(f *os.File, data []byte) (int, error) {
+			if whole {
+				return f.Write(data)
+			}
+			n, _ := f.Write(data[:cut])
+			return n, errors.New("the write was torn")
+		}
+		if whole {
+			log.sync = func(*os.File) error { return errors.New("the disk would not sync") }
+		}
+		return log, nil
+	}
+}
+
+// rotationFixture is a seed under the test key and a registry holding one
+// seal, unterminated or not.
+func rotationFixture(t *testing.T, unterminated bool) (seedPath, registry string, k0 ed25519.PrivateKey, before []byte) {
+	t.Helper()
+	root := t.TempDir()
+	seedPath, registry = filepath.Join(root, "gateway.seed"), filepath.Join(root, "registry.jsonl")
+	k0 = writeTestSeed(t, seedPath, testSeed)
+	before = []byte(sealLine(t, k0, "a", 0))
+	if unterminated {
+		before = before[:len(before)-1]
+	}
+	if err := os.WriteFile(registry, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return seedPath, registry, k0, before
+}
+
+// A rotation whose append is torn -- in the key-rotation, after it whole, in
+// the key-continuation, or whole and not made durable -- is pending: the
+// gateway starts under neither key, and rotate-key --resume cuts the part of
+// the record, appends it whole and makes the switch, after which a verifier
+// pinned at the first key follows it.
+func TestRotateKeyResumesATornAppend(t *testing.T) {
+	forwardLength := len(forwardLine(rotationKey("zero"), 1, "2026-10-25T00:00:00Z", publicOf(rotationKey("one"))))
+	for _, c := range []struct {
+		name         string
+		cut          int
+		whole        bool
+		unterminated bool
+	}{
+		{"torn in the key-rotation", 200, false, false},
+		{"torn in the key-rotation after an unterminated line", 200, false, true},
+		{"the key-rotation alone", forwardLength + 1, false, false},
+		{"torn in the key-continuation", forwardLength + 1 + 60, false, false},
+		{"whole and not made durable", 0, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			seedPath, registry, k0, before := rotationFixture(t, c.unterminated)
+			tornLog(t, c.cut, c.whole)
+			_, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader)
+			if !errors.Is(err, errRotationPending) || !strings.Contains(err.Error(), "--resume") {
+				t.Fatalf("a torn append: %v", err)
+			}
+			if kept, err := loadSeed(seedPath); err != nil || !bytes.Equal(kept, testSeed) {
+				t.Fatal("the seed was switched over a torn append")
+			}
+			if err := rotationPendingBeside(seedPath, registry); !errors.Is(err, errRotationPending) || !strings.Contains(err.Error(), "--resume") {
+				t.Fatalf("a gateway would start beside a pending rotation: %v", err)
+			}
+			next, err := loadSeed(seedPath + ".next")
+			if err != nil {
+				t.Fatal(err)
+			}
+			k1 := ed25519.NewKeyFromSeed(next)
+			// With the key-rotation whole, the registry itself refuses the
+			// gateway under either key; torn inside it, the registry holds no
+			// rotation statement, and the record kept beside the seed is what
+			// refuses it (above).
+			data, _ := os.ReadFile(registry)
+			if c.cut > forwardLength {
+				for _, key := range []ed25519.PrivateKey{k0, k1} {
+					if _, err := engineWalk(data, publicOf(key)); err == nil || !strings.Contains(err.Error(), "--resume") {
+						t.Fatalf("the gateway's own reading of a rotation without its continuation, under %x: %v", publicOf(key)[:4], err)
+					}
+				}
+			}
+
+			openRotationLog = func(path string) (*fsLog, error) { return openFsLog(path) }
+			r, err := resumeRotation(seedPath, registry, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.ordinal != 1 || !bytes.Equal(r.from, publicOf(k0)) || !bytes.Equal(r.to, publicOf(k1)) {
+				t.Fatalf("resumed: %+v", r)
+			}
+			data, _ = os.ReadFile(registry)
+			at := "2026-10-25T00:00:00Z"
+			want := string(before)
+			if c.unterminated {
+				want += "\n"
+			}
+			want += rotationLines(k0, k1, 1, at)
+			if string(data) != want {
+				t.Fatalf("the registry after --resume:\n%q\nwant:\n%q", data, want)
+			}
+			if switched, err := loadSeed(seedPath); err != nil || !bytes.Equal(switched, next) {
+				t.Fatal("the switch was not made")
+			}
+			if err := rotationPendingBeside(seedPath, registry); err != nil {
+				t.Fatalf("a rotation finished is still pending: %v", err)
+			}
+			w := walkRegistry(data, publicOf(k0))
+			if w.finding != nil || w.followed() != 1 || len(w.seals) != 1 {
+				t.Fatalf("walked from the first key: finding %v, %d followed, %d seals", w.finding, w.followed(), len(w.seals))
+			}
+			if _, err := engineWalk(data, publicOf(k1)); err != nil {
+				t.Fatalf("the gateway's own reading under the next key: %v", err)
+			}
+		})
+	}
+}
+
+// --resume cuts nothing but a part of the record it kept: other bytes after
+// the rotation's place, or a kept record that is not the one the keys sign,
+// are refused, and nothing is changed.
+func TestResumeCutsNothingButTheRotationsOwnBytes(t *testing.T) {
+	seedPath, registry, _, _ := rotationFixture(t, false)
+	tornLog(t, 200, false)
+	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); !errors.Is(err, errRotationPending) {
+		t.Fatal(err)
+	}
+	openRotationLog = func(path string) (*fsLog, error) { return openFsLog(path) }
+	torn, _ := os.ReadFile(registry)
+	other := append(append([]byte(nil), torn...), 'x')
+	if err := os.WriteFile(registry, other, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumeRotation(seedPath, registry, nil, nil); err == nil || !strings.Contains(err.Error(), "not the rotation's") {
+		t.Fatalf("other bytes after the rotation's place: %v", err)
+	}
+	requireUnchanged(t, registry, string(other))
+	if err := os.WriteFile(registry, torn, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// the kept record's last signature changed: a record no key of the
+	// rotation signs, whose first bytes are still those the registry holds
+	k, err := readKeptRecord(seedPath + ".rotation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := len(k.record) - 4 // inside the key-continuation's signature
+	k.record[last] ^= 0x01
+	if err := os.WriteFile(seedPath+".rotation", k.bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumeRotation(seedPath, registry, nil, nil); err == nil {
+		t.Fatal("a kept record not the one this rotation writes was resumed")
+	}
+	requireUnchanged(t, registry, string(torn))
+}
+
+// The switch stopped after the seed was moved aside: --resume moves the next
+// seed into its place, and removes the kept record.
+func TestResumeFinishesASwitchThatStopped(t *testing.T) {
+	seedPath, registry, k0, _ := rotationFixture(t, false)
+	tornLog(t, 0, true)
+	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); !errors.Is(err, errRotationPending) {
+		t.Fatal(err)
+	}
+	openRotationLog = func(path string) (*fsLog, error) { return openFsLog(path) }
+	if err := os.Rename(seedPath, seedPath+".rotated-1"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := resumeRotation(seedPath, registry, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(r.from, publicOf(k0)) {
+		t.Fatalf("resumed from %x", r.from)
+	}
+	if _, err := loadSeed(seedPath); err != nil {
+		t.Fatalf("no seed after the switch: %v", err)
+	}
+	if err := rotationPendingBeside(seedPath, registry); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Stopped before its record was kept, a rotation appended nothing: --resume
+// removes the next seed it left, and says to rotate again.
+func TestResumeWithoutAKeptRecord(t *testing.T) {
+	seedPath, registry, _, before := rotationFixture(t, false)
+	writeTestSeed(t, seedPath+".next", bytes.Repeat([]byte{9}, 32))
+	if _, err := resumeRotation(seedPath, registry, nil, nil); err == nil || !strings.Contains(err.Error(), "run gateway rotate-key again") {
+		t.Fatalf("no kept record: %v", err)
+	}
+	if _, err := os.Lstat(seedPath + ".next"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the next seed of a rotation that appended nothing is still there")
+	}
+	requireUnchanged(t, registry, string(before))
+	if _, err := resumeRotation(seedPath, registry, nil, nil); err == nil || !strings.Contains(err.Error(), "no rotation is under way") {
+		t.Fatalf("nothing under way: %v", err)
+	}
+}
+
+// A registry written to between rotate-key's walk and its append is refused,
+// and nothing of the rotation is written or kept.
+func TestRotateKeyRefusesARegistryWrittenWhileItWorks(t *testing.T) {
+	seedPath, registry, k0, before := rotationFixture(t, false)
+	beside := sealLine(t, k0, "b", 0)
+	saved := openRotationLog
+	t.Cleanup(func() { openRotationLog = saved })
+	openRotationLog = func(path string) (*fsLog, error) {
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+		if err != nil {
+			return nil, err
+		}
+		f.WriteString(beside)
+		f.Close()
+		return openFsLog(path)
+	}
+	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); err == nil || !strings.Contains(err.Error(), "changed while the rotation was made") {
+		t.Fatalf("a registry written while rotate-key worked: %v", err)
+	}
+	requireUnchanged(t, registry, string(before)+beside)
+	for _, left := range []string{seedPath + ".next", seedPath + ".rotation"} {
+		if _, err := os.Lstat(left); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s left after a refusal", left)
+		}
+	}
+}
+
+// /act resolves a citation under every key the engine's own reading
+// reached: a receipt minted before a rotation is cited after it, and a
+// receipt under a key the walk never reached is not.
+func TestAnActionCitesAReceiptMintedBeforeTheRotation(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	root := t.TempDir()
+	seedPath, registry, store := filepath.Join(root, "gateway.seed"), filepath.Join(root, "registry.jsonl"), filepath.Join(root, "store")
+	sources := map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}}
+	writeTestSeed(t, seedPath, testSeed)
+	first, err := newGatewayService(store, testSeed, "gateway:test", registry, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAcquire(t, first, "cited")
+	mustSeal(t, first, "cited")
+	if err := os.WriteFile(filepath.Join(root, "other-registry.jsonl"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := newGatewayService(store, bytes.Repeat([]byte{5}, 32), "gateway:test", filepath.Join(root, "other-registry.jsonl"), sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAcquire(t, foreign, "foreign")
+	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); err != nil {
+		t.Fatal(err)
+	}
+	next, err := loadSeed(seedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := newGatewayService(store, next, "gateway:test", registry, sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := second.reachedKeys()
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("the engine's keys: %d %v", len(keys), err)
+	}
+	signatureOf := func(session string) string {
+		data, err := os.ReadFile(filepath.Join(store, "receipts", session, "0.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, _ := topLevelSignature(data)
+		return s
+	}
+	if reason := second.resolveCitation(citation{sessionID: "cited", callIndex: 0, signature: signatureOf("cited")}, keys); reason != "" {
+		t.Fatalf("a receipt minted before the rotation does not resolve after it: %s", reason)
+	}
+	if reason := second.resolveCitation(citation{sessionID: "foreign", callIndex: 0, signature: signatureOf("foreign")}, keys); !strings.Contains(reason, "key-mismatch") {
+		t.Fatalf("a receipt under a key the walk never reached: %q", reason)
+	}
+}
+
+// An acquisition refused for a walk that does not hold says so, not that
+// the registry could not be read.
+func TestAnAcquisitionRefusedForTheWalkSaysSo(t *testing.T) {
+	t.Setenv(envSourceHelper, "1")
+	root := t.TempDir()
+	registry := filepath.Join(root, "registry.jsonl")
+	g, err := newGatewayService(filepath.Join(root, "store"), testSeed, "gateway:test", registry, map[string]sourceSpec{"screening": {argv: []string{os.Args[0]}, env: helperEnv}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k0 := ed25519.NewKeyFromSeed(testSeed)
+	if err := os.WriteFile(registry, []byte(forwardLine(k0, 1, "2026-10-25T00:00:00Z", publicOf(rotationKey("one")))+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if reason := g.sealedElsewhere("unheld"); !strings.Contains(reason, "--resume") || !strings.Contains(reason, statusRotationBreak) {
+		t.Fatalf("the refusal: %q", reason)
+	}
+}
+
+// After a rotation the export's manifest names, beside the signer's key,
+// the registry's first key, the one a verifier pins; and an export check
+// takes it.
+func TestTheExportNamesTheFirstKeyAfterARotation(t *testing.T) {
+	root := t.TempDir()
+	seedPath, registry, store := filepath.Join(root, "gateway.seed"), filepath.Join(root, "registry.jsonl"), filepath.Join(root, "store")
+	k0 := writeTestSeed(t, seedPath, testSeed)
+	if err := os.WriteFile(registry, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, rotated := range []bool{false, true} {
+		key := k0
+		if rotated {
+			if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); err != nil {
+				t.Fatal(err)
+			}
+			next, err := loadSeed(seedPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			key = ed25519.NewKeyFromSeed(next)
+		}
+		out := filepath.Join(t.TempDir(), "export")
+		if _, err := writeExport(exportInputs{authority: "gateway:test", keyID: keyIDFor(publicOf(key)), publicKey: publicOf(key), kind: newFsKind(fsLayout{store: store, registry: registry})}, out); err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := os.ReadFile(filepath.Join(out, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		named := strings.Contains(string(manifest), `"firstKeyId":"`+keyIDFor(publicOf(k0))+`"`)
+		if named != rotated || !strings.Contains(string(manifest), `"keyId":"`+keyIDFor(publicOf(key))+`"`) {
+			t.Fatalf("rotated=%v, manifest: %s", rotated, manifest)
+		}
+		if _, err := checkExport(out); err != nil {
+			t.Fatalf("the export check: %v", err)
+		}
 	}
 }

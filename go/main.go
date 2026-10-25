@@ -340,6 +340,11 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "seed:", err)
 		return 1
 	}
+	// a rotation under way beside the seed is finished first (SPEC.md §3b)
+	if err := rotationPendingBeside(cfg.seed, cfg.registry); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	if err := requireUserSwitching(sources); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -371,6 +376,13 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	// held while the engine runs, so gateway rotate-key refuses (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry(cfg.registry, seed)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer registryHold.Close()
 	service.witness = witness
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -757,6 +769,11 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "seed:", err)
 		return 1
 	}
+	// a rotation under way beside the seed is finished first (SPEC.md §3b)
+	if err := rotationPendingBeside(seedPath, registryPath); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	if err := requireUserSwitching(opts.sources); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -767,6 +784,13 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	// held while the gateway runs, so gateway rotate-key refuses (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry(registryPath, seed)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer registryHold.Close()
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every
 	// source in flight through the service's context.

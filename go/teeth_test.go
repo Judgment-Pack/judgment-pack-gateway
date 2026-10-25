@@ -420,6 +420,8 @@ func TestCorpusCatchesAVerifierThatFollowsNoRotation(t *testing.T) {
 	for _, missed := range []string{
 		"rotation-followed-twice", "rotation-forged", "rotation-missing-continuation", "rotation-ordinal-replay",
 		"rotation-next-key-small-order", "rotation-old-key-seal-dropped", "rotation-key-goes-back",
+		"rotation-continuation-signed-by-another-key", "rotation-registry-ends-in-a-rotation",
+		"rotation-back-to-a-key-reached", "rotation-seal-before-its-key", "rotation-hop-names-another-key",
 	} {
 		if !strings.Contains(joined, "store "+missed+":") {
 			t.Fatalf("corpus did not catch a verifier that follows no rotation (%s):\n%s", missed, joined)

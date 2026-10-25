@@ -100,7 +100,7 @@ func TestActRefusesBeforeAnyExecutorRuns(t *testing.T) {
 		{"a citation of a session that is not there", good("act-2", "0", signature, record), "cites", "no such session"},
 		{"a citation of a receipt that is not there", good("act-1", "7", signature, record), "cites", "no such receipt"},
 		{"a citation with another signature", good("act-1", "0", strings.Repeat("a", 128), record), "cites", "not the receipt's"},
-		{"a cited receipt that does not verify", "artifact-missing", "cites", "does not verify under this engine's key (artifact-missing)"},
+		{"a cited receipt that does not verify", "artifact-missing", "cites", "does not verify under this engine's keys (artifact-missing)"},
 		{"a record that is not under the directory", good("act-1", "0", signature, noRecord), "decision", "no candidate"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

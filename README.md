@@ -113,12 +113,18 @@ band** — see Honest bounds.
 
 The key can be rotated, with the gateway stopped:
 `./gateway rotate-key --seed gateway.seed --registry ./registry.jsonl` makes the next
-seed, appends to the registry a statement the current key signs naming the next key and
-one the next key signs naming the current one (SPEC.md §3b), and only then switches
-`gateway.seed` to the next seed, keeping the one rotated from beside it for you to
-destroy. Nothing new is pinned: a verifier follows the rotations from the key it pinned
-from `keygen`, and the report names how many it followed and the key it ended at. The
-gateway refuses to start under a key it rotated from.
+seed, keeps the record it is about to append beside the seed, appends to the registry a
+statement the current key signs naming the next key and one the next key signs naming
+the current one (SPEC.md §3b), and only then switches `gateway.seed` to the next seed,
+keeping the one rotated from beside it for you to destroy. On Unix a running gateway
+holds a lock on its registry, and `rotate-key` refuses while it is held; elsewhere,
+stop the gateway first. A rotation that stopped part way — the append torn, or the
+switch not made — leaves the gateway refusing to start under either key until
+`./gateway rotate-key --resume --seed gateway.seed --registry ./registry.jsonl`
+finishes it; do not move the seeds by hand. Nothing new is pinned: a verifier follows
+the rotations from the key it pinned from `keygen`, and the report names how many it
+followed and the key it ended at. The gateway refuses to start under a key it rotated
+from.
 
 ```
 curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","arguments":{"subject":"acme"}}'

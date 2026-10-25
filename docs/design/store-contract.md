@@ -164,7 +164,11 @@ would add a session or a record. The manifest is written last: an export without
 that stopped.
 
 The seed is in no file of the export, and neither is the public key: the manifest names the key by
-its id, and a verifier pins the key out of band (SECURITY.md), as it does for a live store. The
+its id, and a verifier pins the key out of band (SECURITY.md), as it does for a live store. After a
+key rotation (SPEC.md §3b) `keyId` is the key the gateway signs with now, which is not the key a
+verifier pins: the manifest then names, as `firstKeyId`, the key the registry's first rotation rotated
+from, the one to pin, and a verifier follows the rotations from it. A registry with no rotation gives
+no `firstKeyId`, and the manifest is the one it was before the member existed. The
 manifest is not signed; receipts and seals carry their own signatures, and the manifest is the
 transport's check.
 

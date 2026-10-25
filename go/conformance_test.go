@@ -459,7 +459,7 @@ func TestREADMEVectorCounts(t *testing.T) {
 	}
 	for _, edit := range []struct{ what, from, to string }{
 		{"the canon count", "**`canon.json`** — 30 vectors", "**`canon.json`** — 31 vectors"},
-		{"the store count", "**`stores/*.json`** — 28 vectors", "**`stores/*.json`** — 27 vectors"},
+		{"the store count", "**`stores/*.json`** — 33 vectors", "**`stores/*.json`** — 32 vectors"},
 		{"the version 3 count", "**`v3/stores/*.json`** — 64 vectors", "**`v3/stores/*.json`** — 65 vectors"},
 		{"the witness count", "**`witness/*.json`** — 54 vectors", "**`witness/*.json`** — 55 vectors"},
 		{"a family's row", "| `chain` | 10 |", "| `chain` | 11 |"},

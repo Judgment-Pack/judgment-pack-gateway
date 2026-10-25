@@ -122,7 +122,8 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	if err != nil {
 		return nil, fmt.Errorf("seed: %v", err)
 	}
-	keyID := keyIDFor(ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+	publicKey := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
+	keyID := keyIDFor(publicKey)
 	if err := exportOutside(out, cfg.store, cfg.decisionRecords); err != nil {
 		return nil, err
 	}
@@ -141,7 +142,7 @@ func exportEngine(configPath, out string, observations []string) (*vObject, erro
 	}
 	kind := newFsKind(fsLayout{store: cfg.store, registry: cfg.registry})
 	return writeExport(exportInputs{
-		authority: cfg.authority, keyID: keyID, kind: kind,
+		authority: cfg.authority, keyID: keyID, publicKey: publicKey, kind: kind,
 		decisionRecords: cfg.decisionRecords, pins: pins, observations: journals,
 	}, out)
 }
@@ -261,8 +262,11 @@ func readObservationJournal(p string) ([]byte, error) {
 // exportInputs is what an export writes: the kind it cuts, and what lies
 // beside the kind.
 type exportInputs struct {
-	authority       string
-	keyID           string
+	authority string
+	keyID     string
+	// publicKey is the signer's key, by which the registry's first key is
+	// found when the registry holds a rotation (SPEC.md §3b); nil names none.
+	publicKey       ed25519.PublicKey
 	kind            storeKind
 	decisionRecords string
 	pins            []exportPin
@@ -429,6 +433,13 @@ func writeExport(in exportInputs, out string) (*vObject, error) {
 	manifest.set("descriptors", descriptors)
 	manifest.set("exportVersion", vString(exportVersion))
 	manifest.set("files", w.files)
+	// After a rotation (SPEC.md §3b) the signer's key is not the key a
+	// verifier pins: the manifest names the registry's first key beside it.
+	if cut.logPresent && in.publicKey != nil {
+		if first := keyIDFor(registryFirstKey(cut.log, in.publicKey)); first != in.keyID {
+			manifest.set("firstKeyId", vString(first))
+		}
+	}
 	manifest.set("keyId", vString(in.keyID))
 	manifest.set("registry", vBool(cut.logPresent))
 	manifest.set("sessions", sessions)
@@ -528,7 +539,7 @@ func readExportManifest(dir string) (*exportManifest, error) {
 	}
 	if err := exactlyMembers(obj, map[string]bool{
 		"authority": true, "decisionRecords": true, "descriptors": true, "exportVersion": true,
-		"files": true, "keyId": true, "registry": true, "sessions": true,
+		"files": true, "keyId": true, "registry": true, "sessions": true, "firstKeyId": false,
 	}, "manifest"); err != nil {
 		return nil, err
 	}
@@ -540,6 +551,11 @@ func readExportManifest(dir string) (*exportManifest, error) {
 	}
 	if keyID, _ := memberString(obj, "keyId"); !isLowerHexOfLen(keyID, len(keyIDFor(make([]byte, ed25519.PublicKeySize)))) {
 		return nil, errors.New("manifest: keyId is not a key id")
+	}
+	if first, given := obj.get("firstKeyId"); given {
+		if s, ok := first.(vString); !ok || !isLowerHexOfLen(string(s), 32) {
+			return nil, errors.New("manifest: firstKeyId is not a key id")
+		}
 	}
 	m := &exportManifest{files: map[string]exportFile{}, sessions: map[string]bool{}}
 	flag := func(name string) (bool, error) {

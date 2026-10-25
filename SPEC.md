@@ -328,8 +328,8 @@ response.
 **What `decision` establishes.** Without `policy`, an action receipt
 establishes no more than this: the gateway that minted it found a decision
 record with the digest `decision.recordDigest` under its decision-record
-directory, and the cited receipts in its store under its key, before the action
-was sent (§6); §4 establishes both again against the store and the records it
+directory, and the cited receipts in its store under its key, or a key its
+registry says it rotated from (§3b), before the action was sent (§6); §4 establishes both again against the store and the records it
 is given, and step 8 that a runtime evaluation record states the pack and the
 citations the receipt claims. It does not establish that the record permitted
 the action, that the record's outcome is the one the action assumes, that the
@@ -737,31 +737,63 @@ key of the receipt before it (§1.4, `chain-broken`), so a session runs forward 
 a rotation and never back.
 
 **Rotating.** `gateway rotate-key --seed <file> --registry <file>` rotates a gateway's
-key, the gateway stopped: it reads the seed, refusing a seed that is not there or not a
-seed, since a key that cannot sign cannot name its successor; it refuses a next seed
-already made beside the seed (`<seed>.next`), a rotation **pending**; it reads the
+key, the gateway stopped. On Unix a gateway holds an exclusive lock on its registry
+file (`flock`) for as long as it runs, taken once its registry is there and followed by
+its own reading again under the lock; `rotate-key` takes the same lock for as long as it
+writes, so it refuses while a gateway runs, and a gateway refuses to start while a
+rotation is under way. Elsewhere no lock is held, and that the gateway is stopped is its
+operator's to see to. `rotate-key` reads the seed, refusing a seed that is not there or
+not a seed, since a key that cannot sign cannot name its successor; it refuses a rotation
+already under way beside the seed — a next seed (`<seed>.next`) or a kept record
+(`<seed>.rotation`) there — which only `--resume` (below) finishes; it reads the
 registry, refusing one that is not there, and walks it as the gateway does (below),
-refusing a walk that finds anything or ends at another key than the seed's — a rotation
-already written and not yet switched to, pending too; and it refuses a seed already kept
-at the name the seed rotated from would take. Each refusal writes nothing. It then makes
-the next seed, `<seed>.next`, made once and never replaced;
-appends the two statements as one record, the `key-rotation` first, each on a line of
-its own, ending an unterminated last line first as a seal's writer does (§3), and made
-durable before anything after it — refusing, the next seed removed, when the registry is
-no longer the bytes it walked, since then something else writes to it; and only then
-switches the signer: the seed is moved
-to `<seed>.rotated-<rotation>`, kept for its operator to destroy, and the next seed is
-moved to the seed's name, which the gateway signs with when it starts. A rotation
-interrupted after the append is pending: the gateway refuses to start under the seed
-it rotated from, and its operator completes the switch by those two moves.
+refusing a walk that finds anything or ends at another key than the seed's; and it
+refuses a seed already kept at the name the seed rotated from would take. Each refusal
+writes nothing. It then makes the next seed, `<seed>.next`, made once and never
+replaced; builds the record it will append — the two statements, the `key-rotation`
+first, each on a line of its own, after a newline ending an unterminated last line as a
+seal's writer ends it (§3) — and keeps it, durably, in `<seed>.rotation`, with the
+registry's length and SHA-256 at the place the record goes; appends the record to the
+registry in one append made durable, refusing, everything it made removed, when the
+registry is no longer the bytes it walked; and only then switches the signer: the seed
+is moved to `<seed>.rotated-<rotation>`, kept for its operator to destroy, the next seed
+is moved to the seed's name, which the gateway signs with when it starts, and the kept
+record is removed.
+
+**A rotation that stops.** An append can stop part way, and a write can be torn: the
+registry may then end in a part of the record from its first byte — a `key-rotation`
+cut short, a `key-rotation` whole with no `key-continuation` after it, or a
+`key-continuation` cut short. Until the kept record is removed the rotation is
+**pending**: a gateway refuses to start while a next seed or a kept record lies beside
+its seed, under either key, and `gateway rotate-key --resume --seed <file> --registry
+<file>` finishes it, and nothing else does. `--resume` finds the two keys among the
+seed, the next seed and the seed kept aside by the key ids the kept record names;
+rebuilds the record from them and holds the kept one to it byte for byte; holds the
+registry up to the kept length to the kept digest, and its walk to the key rotated
+from; and then takes the registry from there as it finds it: the record whole is left
+as it is; a part of the record from its first byte, and nothing more, is cut — the one
+cut of a registry this reference makes, and only of bytes the record names — and the
+record appended whole, durably; anything else is refused, nothing changed. It then makes
+whatever of the switch is not made. Stopped before the record was kept, a rotation left
+at most a next seed, which `--resume` removes when the registry's walk ends at the
+seed's key: nothing of the rotation was appended. A `key-rotation` torn before its end
+leaves no rotation statement in the registry, which then reads to a gateway under
+either key as a registry with no rotation: only the next seed and the kept record
+beside the seed refuse that start. A seed switched by hand, with them removed, starts a
+gateway under a key no verifier pinning the first key reaches; the switch is never made
+by hand.
 
 **The gateway's own reading.** A gateway pins no key out of band for itself. It walks
 its registry from the key its first rotation rotated from — the `previous` of the
 registry's first `key-continuation` statement — or from its own key when the registry
-holds no rotation statement; it refuses to start, and refuses to seal, to acquire into a
-session it does not hold and to answer `/verify`, when that walk finds anything or ends
-at another key than its own. What it loads so is what a verifier pinning that first key
-loads, so a session sealed under a key it rotated from stays sealed (§3).
+holds no `key-continuation` statement, a `key-rotation` alone included, so that such a
+registry is refused under the key rotated from (`rotation-break`) and under the key
+rotated to (`rotation-forged`) alike. It refuses to start, and refuses to seal, to
+acquire into a session it does not hold and to answer `/verify`, when that walk finds
+anything or ends at another key than its own, and names `--resume` as what finishes a
+rotation that stopped. What it loads so is what a verifier pinning that first key loads, so a
+session sealed under a key it rotated from stays sealed (§3), and the receipts an action
+cites are resolved under every key the walk reached (§6, `/act`).
 
 **What a rotation establishes.** That the holder of the key rotated from named the key
 rotated to, and the holder of that key accepted the succession, at the place in the
@@ -1157,7 +1189,8 @@ names", below). `POST /act` mints one of kind `"action"` (the engine of
 `docs/design/executor.md`): from an authenticated request naming a platform's
 write tool, the decision record the write relies on and the receipts that
 record relied on, after the engine has found the cited receipts in its own
-store under its own key and the record under its decision-record directory —
+store under a key its own reading of its registry reached (§3b) — its own, or
+one it rotated from — and the record under its decision-record directory —
 the standard §4 applies — and, for a tool its operator holds to a decision
 policy, after it has held the record and the request to that policy (§1.2a
 `policy`). For a write through a binding that names a remote server's URL, the

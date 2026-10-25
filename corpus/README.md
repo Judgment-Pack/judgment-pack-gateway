@@ -63,7 +63,7 @@ surrogate, and neither survives being written into a document each language
 re-parses with its own defaults. Accepting vectors carry `expectedHex`; refusing
 vectors carry `reject: true`.
 
-**`stores/*.json`** — 28 vectors, each a complete store (a `path → text` map plus
+**`stores/*.json`** — 33 vectors, each a complete store (a `path → text` map plus
 the registry text) and its expected `(ok, findings)`. There is one per status an
 implementation can emit. Two of them, `key-mismatch` and `unsupported-version`,
 exist because a second implementation pointed out that those statuses were
@@ -102,7 +102,15 @@ point, a key of small order under which a signature needs no private key,
 `rotation-key-refused` (`rotation-next-key-small-order`); a seal the key rotated
 from made after the rotation, which loads nothing (`rotation-old-key-seal-dropped`);
 and a session whose second receipt goes back to the key rotated from,
-`chain-broken` (`rotation-key-goes-back`). Each walk that stops leaves the keys
+`chain-broken` (`rotation-key-goes-back`). Five more hold a check each that a
+verifier could drop with the seven still passing: a continuation another key
+signed, `rotation-break` (`rotation-continuation-signed-by-another-key`); a
+`key-rotation` as the registry's last line, `rotation-break` after one rotation
+followed (`rotation-registry-ends-in-a-rotation`); a rotation back to a key
+reached, `rotation-key-refused` (`rotation-back-to-a-key-reached`); a seal the
+next key made before the rotation, which loads nothing
+(`rotation-seal-before-its-key`); and a hop the current key signed whose `keyId`
+names another key, `rotation-forged` (`rotation-hop-names-another-key`). Each walk that stops leaves the keys
 after it reached by nothing, so the sessions under them are `key-mismatch` and
 `unregistered-session` beside the walk's finding, which a verifier that follows
 the broken rotation would grade `ok`. The keys rotated to are made from published

@@ -311,7 +311,9 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   takes today, named. `gateway rotate-key --seed <seed> --registry <registry>`, with the
   engine stopped, rotates the key the seed holds (SPEC.md §3b): the next seed takes the
   seed's path, so the configuration is unchanged, and the engine refuses to start under a
-  key its registry says it rotated from. A witness under the configuration goes on under the
+  key its registry says it rotated from, or while a rotation under way leaves a next seed or
+  a kept record beside the seed, which `rotate-key --resume` finishes. The engine holds a lock
+  on its registry while it runs, and `rotate-key` refuses while it is held. A witness under the configuration goes on under the
   next key, its log held to the keys the registry's rotations reached.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an
   action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)). The engine refuses

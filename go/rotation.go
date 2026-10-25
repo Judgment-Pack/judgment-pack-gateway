@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -334,17 +335,37 @@ func registryFirstKey(data []byte, own ed25519.PublicKey) ed25519.PublicKey {
 	return own
 }
 
+// rotationWalkError is the gateway's own reading of its registry refused: a
+// walk that found something, or that ends at another key than the gateway's.
+type rotationWalkError struct{ msg string }
+
+func (e rotationWalkError) Error() string { return e.msg }
+
+// registryRefusal is why a registry that did not load seals refuses: the
+// walk's own words when its rotations do not hold, and otherwise that it
+// could not be read, never taken for the absence of a seal.
+func registryRefusal(err error) string {
+	var walk rotationWalkError
+	if errors.As(err, &walk) {
+		return walk.msg
+	}
+	return "the registry could not be read"
+}
+
 // engineWalk is the gateway's own reading of its registry: the walk from
 // its first key, which must find nothing and end at the gateway's own key.
 // Anything else is a refusal -- to start, to seal, to admit into a session
-// it does not hold, to answer /verify -- never a reading.
+// it does not hold, to answer /verify -- never a reading. A registry holding
+// a key-rotation and no key-continuation is walked from the gateway's own
+// key, so it is refused under the key rotated from (rotation-break) and
+// under the key rotated to (rotation-forged) alike.
 func engineWalk(data []byte, own ed25519.PublicKey) (*registryWalk, error) {
 	w := walkRegistry(data, registryFirstKey(data, own))
 	if w.finding != nil {
-		return nil, fmt.Errorf("the registry's rotations do not hold: %s at rotation %d", w.finding["status"], w.finding["rotation"])
+		return nil, rotationWalkError{fmt.Sprintf("the registry's rotations do not hold: %s at rotation %d; a rotation whose append was interrupted is finished by gateway rotate-key --resume, and nothing else", w.finding["status"], w.finding["rotation"])}
 	}
 	if !bytes.Equal(w.current().key, own) {
-		return nil, fmt.Errorf("the registry's rotations end at key %s, not this gateway's key %s: a rotation is pending, and the gateway signs with the seed of the key it rotated to", w.current().keyID, keyIDFor(own))
+		return nil, rotationWalkError{fmt.Sprintf("the registry's rotations end at key %s, not this gateway's key %s: a gateway does not start under a key its registry rotated from, and a rotation pending its switch is finished by gateway rotate-key --resume", w.current().keyID, keyIDFor(own))}
 	}
 	return w, nil
 }
