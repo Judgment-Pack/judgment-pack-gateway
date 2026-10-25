@@ -12,7 +12,8 @@ Runtime: d891b056133fea952ceb2c39e38a2ee16fee24ee.
 - Unchanged-Desk browser smoke: pass. Discovery, explicit credential form,
   scope display, pagination, signed text/PDF attachments, verified preview,
   retained draft/focus, no premature chat creation, truthful disconnect.
-  No browser errors. Evidence is in `desk-findings.json` and the PNGs beside it.
+  No browser errors. Evidence is summarized in `review-summary.md` and the PNGs
+  beside it.
 - Desk executable SHA256 before/after the smoke:
   da5d53877ede64eae12174b586267cfe6d768e5f082ba9af20e22f88ea5f75f6.
 - Reproduction: `testdata/s3-desk/README.md`; only the test transport routes to
@@ -37,5 +38,5 @@ and one by a runtime panic after removing the disconnect state guard. This is
 focused regression evidence, not a claim of exhaustive mutation coverage.
 
 The final independent review approves that implementation SHA; see
-`final-review.md`. Subsequent commit changes only review/validation records.
+`review-summary.md`. Subsequent commit changes only review/validation records.
 A production (non-overlay) gateway bundle was also built successfully.

@@ -1,6 +1,6 @@
 # Gateway specification
 
-The gateway is the **hosted deployment shape** of the trustworthy-input-acquisition
+The gateway is the **open-source implementation** of the trustworthy-input-acquisition
 line ([judgment-pack-evaluator-experiments](https://github.com/Judgment-Pack/judgment-pack-evaluator-experiments),
 ADR-0002). It reuses the inline attestation format unchanged and adds exactly one
 mechanism on top: a **sealed session registry** that closes the two residuals the

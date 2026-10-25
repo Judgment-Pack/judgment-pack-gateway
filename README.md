@@ -1,10 +1,10 @@
 # judgment-pack-gateway
 
-The **open reference gateway** for judgment-pack: a small hosted service that
+The **open-source gateway** for judgment-pack: a small service that
 attests the inputs a pack is judged on, under one protected signing identity, and
 seals each session so a verifier can catch replay and rollback.
 
-It is the *hosted deployment shape* of trustworthy input acquisition
+It implements trustworthy input acquisition
 line ([judgment-pack-evaluator-experiments](https://github.com/Judgment-Pack/judgment-pack-evaluator-experiments),
 ADR-0002). That line asked a narrow question — **where do a pack's inputs come from,
 and what makes them trustworthy?** — and answered it with a ceiling stated up front:
@@ -388,13 +388,10 @@ check a receipt or a seal without trusting the operator — the receipt format,
 canonicalization, the seal contract, and `verify_with_registry` — are open and stay
 open. That is the mandatory-open core.
 
-A *managed* operation of this same mechanism — a credentialed, multi-tenant, highly
-available, multi-source hosted service with a durable trust root — is a separate
-concern and a reasonable commercial one. The open/commercial line is drawn at
-verifiability, not at operation: anyone may verify; running the trust root at scale
-for others is the hosted product. Nothing in a paid deployment may make a receipt
-verifiable *only* through that operator; if it did, it would not be a judgment-pack
-attestation.
+This repository contains the gateway, its receipt and seal formats, the registry,
+and the verifier needed to inspect and validate those records. The shipped
+implementation acquires configured sources, signs the resulting records, and
+supports independent verification of their byte lineage.
 
 ## Checks and agent instructions
 
