@@ -24,7 +24,7 @@ import (
 )
 
 const witnessUsage = `usage:
-  gateway witness verify --log <file> --public-key <file> [--marks <file>]
+  gateway witness verify --log <file> --public-key <file> [--marks <file>] [--registry <file>]
   gateway witness register --config <engine.json> --trail <id> --issuer <issuer> --subject <subject>
   gateway witness retire --config <engine.json> --trail <id>
   gateway witness repair --config <engine.json>
@@ -37,7 +37,7 @@ the witness a decision record's receipts name (gateway witness fetch, alone, say
 // witnessCommands are the flags each subcommand takes, and whether each is
 // required.
 var witnessCommands = map[string]map[string]bool{
-	"verify":   {"--log": true, "--public-key": true, "--marks": false},
+	"verify":   {"--log": true, "--public-key": true, "--marks": false, "--registry": false},
 	"register": {"--config": true, "--trail": true, "--issuer": true, "--subject": true},
 	"retire":   {"--config": true, "--trail": true},
 	"repair":   {"--config": true},
@@ -83,7 +83,7 @@ func cmdWitness(args []string, stdout, stderr io.Writer) int {
 	case "repair":
 		return witnessRepair(flags, stdout, stderr)
 	}
-	out, err := witnessVerify(flags["--log"], flags["--public-key"], flags["--marks"])
+	out, err := witnessVerifyFrom(flags["--log"], flags["--public-key"], flags["--marks"], flags["--registry"])
 	if err != nil {
 		// no verdict could be reached
 		fmt.Fprintln(stderr, "witness verify:", err)
@@ -117,12 +117,36 @@ type witnessVerifyReport struct {
 // registrations, show that every trail or statement was kept, or show that
 // the copy is the log the witness serves now.
 func witnessVerify(logPath, keyPath, marksPath string) ([]byte, error) {
+	return witnessVerifyFrom(logPath, keyPath, marksPath, "")
+}
+
+// witnessVerifyFrom is witnessVerify given, optionally, the registry of the
+// witness's gateway: its rotations are followed from the key given (SPEC.md
+// §3b, §8.5), and the log is held to the keys the walk reached, in the
+// order it reached them. A walk that finds anything is answered as a
+// refused key is, {"refused": <its status>}, before the log is read.
+func witnessVerifyFrom(logPath, keyPath, marksPath, registryPath string) ([]byte, error) {
 	key, err := readWitnessKeyFile(keyPath)
 	if err != nil {
 		return nil, err
 	}
 	if refusal := witnessKeyRefusal(key); refusal != "" {
 		return json.Marshal(map[string]string{"refused": refusal})
+	}
+	keys := []reachedKey{{key: key, keyID: keyIDFor(key)}}
+	if registryPath != "" {
+		data, present, err := readRegistryBytes(registryPath)
+		if err != nil {
+			return nil, fmt.Errorf("registry: %w", err)
+		}
+		if !present {
+			return nil, fmt.Errorf("registry: not there: %s", registryPath)
+		}
+		walk := walkRegistry(data, key)
+		if walk.finding != nil {
+			return json.Marshal(map[string]any{"refused": walk.finding["status"]})
+		}
+		keys = walk.keys
 	}
 	log, err := openRegular(logPath)
 	if err != nil {
@@ -138,7 +162,7 @@ func witnessVerify(logPath, keyPath, marksPath string) ([]byte, error) {
 		defer marks.Close()
 		in.marks, in.marksChecked = marks, true
 	}
-	j, err := judgeWitness(in, key)
+	j, err := judgeWitnessUnder(in, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -170,16 +194,33 @@ func witnessEngineConfig(path string) (engineConfig, error) {
 }
 
 // witnessConfigOf is how a witness under a configuration's member is opened,
-// under the gateway's own seed (ADR-0013, question 6).
-func witnessConfigOf(spec *witnessSpec, seed []byte) witnessConfig {
+// under the gateway's own seed (ADR-0013, question 6), its log held to the
+// keys the gateway's own reading of its registry reached (SPEC.md §3b,
+// §8.5): a registry that is not there yet holds no rotation, and one whose
+// walk does not hold, or ends at another key than the seed's, opens no
+// witness.
+func witnessConfigOf(spec *witnessSpec, seed []byte, registryPath string) (witnessConfig, error) {
 	public, sign := witnessSeedSigner(seed)
-	return witnessConfig{paths: spec.paths, firstSubmission: spec.firstSubmission, publicKey: public, sign: sign, trailsPerSubmitter: spec.trailsPerSubmitter}
+	data, _, err := readRegistryBytes(registryPath)
+	if err != nil {
+		return witnessConfig{}, fmt.Errorf("registry: %w", err)
+	}
+	walk, err := engineWalk(data, public)
+	if err != nil {
+		return witnessConfig{}, err
+	}
+	earlier := walk.keys[:len(walk.keys)-1]
+	return witnessConfig{paths: spec.paths, firstSubmission: spec.firstSubmission, publicKey: public, earlier: earlier, sign: sign, trailsPerSubmitter: spec.trailsPerSubmitter}, nil
 }
 
 // openEngineWitness opens the witness a configuration's member names, as
 // serve opens it: its start-up checks applied, nothing repaired.
-func openEngineWitness(spec *witnessSpec, seed []byte) (*witnessLog, error) {
-	return openWitnessLog(witnessConfigOf(spec, seed))
+func openEngineWitness(spec *witnessSpec, seed []byte, registryPath string) (*witnessLog, error) {
+	cfg, err := witnessConfigOf(spec, seed, registryPath)
+	if err != nil {
+		return nil, err
+	}
+	return openWitnessLog(cfg)
 }
 
 // witnessStartLine is what a witness says, once, when it starts.
@@ -274,7 +315,7 @@ func witnessRetire(flags map[string]string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return witnessActFailed(stderr, "retire", fmt.Errorf("seed: %v", err))
 	}
-	log, err := openEngineWitness(cfg.witness, seed)
+	log, err := openEngineWitness(cfg.witness, seed, cfg.registry)
 	if err != nil {
 		return witnessActFailed(stderr, "retire", err)
 	}
@@ -314,7 +355,11 @@ func witnessRepair(flags map[string]string, stdout, stderr io.Writer) int {
 	if err != nil {
 		return witnessActFailed(stderr, "repair", fmt.Errorf("seed: %v", err))
 	}
-	j, err := repairWitnessLog(witnessConfigOf(cfg.witness, seed))
+	wcfg, err := witnessConfigOf(cfg.witness, seed, cfg.registry)
+	if err != nil {
+		return witnessActFailed(stderr, "repair", err)
+	}
+	j, err := repairWitnessLog(wcfg)
 	if err != nil {
 		return witnessActFailed(stderr, "repair", err)
 	}

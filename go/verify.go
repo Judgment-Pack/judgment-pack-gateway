@@ -49,9 +49,20 @@ type report struct {
 	// status is ok (ADR-0014; SPEC.md §4): absent when none is, and never a
 	// part of ok. A reader takes them only from a verdict it acts on.
 	Witnesses []witnessTriple `json:"witnesses,omitempty"`
+	// Rotations are the rotations the walk of the registry followed from the
+	// key pinned (SPEC.md §3b, §4): absent when it followed none, and never
+	// a part of ok.
+	Rotations *rotationsFollowed `json:"rotations,omitempty"`
 	// namedAt is, for each of them, when the receipts naming it were
 	// minted, earliest first; the reader's report says so (witness fetch).
 	namedAt map[witnessTriple][]string
+}
+
+// rotationsFollowed is a report's rotations: how many the walk followed, and
+// the key id of the last key it reached.
+type rotationsFollowed struct {
+	Count int    `json:"count"`
+	KeyID string `json:"keyId"`
 }
 
 func (r *report) marshal() ([]byte, error) {
@@ -94,6 +105,9 @@ type receipt struct {
 	// names none; servedAt is when it was minted, the time it names it at.
 	witness  *witnessNaming
 	servedAt string
+	// keyPos is the place of the receipt's key among the keys the walk of
+	// the registry reached (SPEC.md §3b), 0 for the key pinned.
+	keyPos int
 }
 
 func receiptFrom(obj *vObject) (*receipt, error) {
@@ -446,31 +460,38 @@ func readRegistryBytes(path string) ([]byte, bool, error) {
 }
 
 // loadSeals reads the append-only registry and drops any seal whose keyId is not
-// the verifier's own or whose signature does not verify under the public key. A malformed line is
-// likewise not a seal, so it is dropped too. A finalCount below zero is not, of
-// itself, malformed: §3 asks of it only that it be an integer, which §1.1
-// holds to ±(2^53-1), and a count outside that range never parses.
+// the current key's at its line or whose signature does not verify under it --
+// the key pinned, in a registry holding no rotation statement (SPEC.md §3b,
+// §4 step 2). A malformed line is likewise not a seal, so it is dropped too. A
+// finalCount below zero is not, of itself, malformed: §3 asks of it only that
+// it be an integer, which §1.1 holds to ±(2^53-1), and a count outside that
+// range never parses.
 //
 // An absent registry loads no seals, which grades every session in the store
 // `unregistered-session`. A registry that is present and unreachable is not
 // absent: readRegistryBytes tells the two apart, and this refuses on the second.
 func loadSeals(path string, publicKey []byte) (map[string]seal, []string, error) {
-	return loadSealsOf(path, publicKey, false)
-}
-
-// loadSealsOf is the one read of the registry behind loadSeals and
-// loadEngineSeals: with required, an absent registry is a refusal, decided
-// on the same read the seals come from, never on a look before it.
-func loadSealsOf(path string, publicKey []byte, required bool) (map[string]seal, []string, error) {
-	data, present, err := readRegistryBytes(path)
+	data, err := readRegistryOf(path, false)
 	if err != nil {
 		return nil, nil, err
 	}
-	if required && !present {
-		return nil, nil, fmt.Errorf("the registry the engine made at its start is not there: %s", path)
+	w := walkRegistry(data, publicKey)
+	return w.seals, w.order, nil
+}
+
+// readRegistryOf is the one read of the registry behind loadSeals,
+// loadEngineSeals and verification: with required, an absent registry is a
+// refusal, decided on the same read the seals come from, never on a look
+// before it.
+func readRegistryOf(path string, required bool) ([]byte, error) {
+	data, present, err := readRegistryBytes(path)
+	if err != nil {
+		return nil, err
 	}
-	seals, order := parseSeals(data, publicKey)
-	return seals, order, nil
+	if required && !present {
+		return nil, fmt.Errorf("the registry the engine made at its start is not there: %s", path)
+	}
+	return data, nil
 }
 
 // loadEngineSeals is the engine's own read of the registry it made when it
@@ -479,75 +500,28 @@ func loadSealsOf(path string, publicKey []byte, required bool) (map[string]seal,
 // device or a share that has gone away can answer as a missing file does,
 // and so can a filesystem that shows an empty directory where the registry
 // was -- so the engine, which knows its registry is there, takes any
-// absence for a registry it cannot read.
+// absence for a registry it cannot read. The registry is walked from its
+// first key (SPEC.md §3b, "The gateway's own reading"), so a session sealed
+// under a key the gateway rotated from stays sealed; a walk that finds
+// anything, or ends at another key than the engine's, is a refusal.
 func loadEngineSeals(path string, publicKey []byte) (map[string]seal, error) {
-	seals, _, err := loadSealsOf(path, publicKey, true)
-	return seals, err
+	data, err := readRegistryOf(path, true)
+	if err != nil {
+		return nil, err
+	}
+	w, err := engineWalk(data, publicKey)
+	if err != nil {
+		return nil, err
+	}
+	return w.seals, nil
 }
 
-// parseSeals keeps each line of the registry that is a seal under the public
-// key, first seal of a session first, and drops every other line.
+// parseSeals keeps each line of the registry that is a seal under the key
+// pinned, as the walk of SPEC.md §3b loads it, first seal of a session first,
+// and drops every other line.
 func parseSeals(data []byte, publicKey []byte) (map[string]seal, []string) {
-	seals := map[string]seal{}
-	var order []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		v, err := parseJSON([]byte(line))
-		if err != nil {
-			continue
-		}
-		obj, ok := v.(*vObject)
-		if !ok {
-			continue
-		}
-		sessionID, ok1 := memberString(obj, "sessionId")
-		sealedAt, ok2 := memberString(obj, "sealedAt")
-		keyID, ok3 := memberString(obj, "keyId")
-		sigHex, ok4 := memberString(obj, "signature")
-		countV, ok5 := obj.get("finalCount")
-		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 {
-			continue
-		}
-		// Any integer the canonical parser admits: SPEC.md §3 makes
-		// finalCount an integer (§1.1) and nothing more, and parseJSON has
-		// already refused a line holding one outside §1.1's range. So a seal
-		// counting below zero that passes the checks below loads like any
-		// other -- and, as the first for its session, is the one the
-		// session's count is compared with
-		// (corpus/stores/negative-seal-count-loads.json).
-		count, ok := countV.(vInt)
-		if !ok {
-			continue
-		}
-		sig, err := hex.DecodeString(sigHex)
-		if err != nil || len(sig) != ed25519.SignatureSize {
-			continue
-		}
-		// The keyId must name the verifier's own key. It sits INSIDE the signed
-		// payload, so the signature alone cannot establish it -- a seal signed by
-		// this key while naming a foreign keyId verifies happily. SPEC.md §4 step 2
-		// originally said "signature" and nothing else, and following that literally
-		// is what surfaced the gap; the rule is now explicit and matches the
-		// receipt-level key-id check.
-		if keyID != keyIDFor(publicKey) {
-			continue
-		}
-		if !ed25519.Verify(publicKey, sealSigningInput(sessionID, int64(count), sealedAt, keyID), sig) {
-			continue
-		}
-		if _, seen := seals[sessionID]; seen {
-			// SPEC.md §3 refuses re-sealing a session, so a conforming
-			// gateway writes no second seal for one; where a registry holds
-			// one anyway, §4 step 2 lets the first loadable seal win, first
-			// in the registry's lines. See AMBIGUITIES.md, section 9.
-			continue
-		}
-		seals[sessionID] = seal{sessionID: sessionID, finalCount: int64(count)}
-		order = append(order, sessionID)
-	}
-	return seals, order
+	w := walkRegistry(data, publicKey)
+	return w.seals, w.order
 }
 
 // topLevelSignature reads a receipt file's own signature member as written:
@@ -665,11 +639,33 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 	if err != nil {
 		return nil, err
 	}
+	// The registry is walked from the key pinned before a receipt is
+	// judged: the keys a receipt may be under are the keys the walk reached
+	// (SPEC.md §3b, §1.4 order 3). The engine pins no key for itself and
+	// walks from its registry's first key, refusing a walk that does not
+	// hold.
+	registryData, err := readRegistryOf(registryPath, registryRequired)
+	if err != nil {
+		return nil, err
+	}
+	var walk *registryWalk
+	if registryRequired {
+		if walk, err = engineWalk(registryData, publicKey); err != nil {
+			return nil, err
+		}
+	} else {
+		walk = walkRegistry(registryData, publicKey)
+	}
+	seals, sealOrder := walk.seals, walk.order
+	if walk.followed() > 0 {
+		rep.Rotations = &rotationsFollowed{Count: walk.followed(), KeyID: walk.current().keyID}
+	}
+
 	counts := map[string]int64{}
 	signatures := map[string]map[string]string{}
 	var actions, naming []*receipt
 	for _, sessionID := range sessions {
-		result, err := verifySession(storeRoot, sessionID, authority, publicKey)
+		result, err := verifySessionUnder(storeRoot, sessionID, authority, walk.keys)
 		if err != nil {
 			return nil, err
 		}
@@ -680,10 +676,10 @@ func verifyAgainst(storeRoot, registryPath, authority, decisionRecords string, p
 		rep.Findings = append(rep.Findings, result.findings...)
 	}
 	rep.witnessesNamed(naming)
-
-	seals, sealOrder, err := loadSealsOf(registryPath, publicKey, registryRequired)
-	if err != nil {
-		return nil, err
+	// SPEC.md §3b: the walk's finding, at most one, names the rotation it
+	// could not take and no session.
+	if walk.finding != nil {
+		rep.Findings = append(rep.Findings, walk.finding)
 	}
 
 	// SPEC.md §4 step 3: every session in the store must be anchored.
@@ -911,6 +907,12 @@ type sessionResult struct {
 }
 
 func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*sessionResult, error) {
+	return verifySessionUnder(storeRoot, sessionID, authority, []reachedKey{{key: publicKey, keyID: keyIDFor(publicKey)}})
+}
+
+// verifySessionUnder is verifySession under the keys the walk of the
+// registry reached (SPEC.md §3b), the key pinned first.
+func verifySessionUnder(storeRoot, sessionID, authority string, keys []reachedKey) (*sessionResult, error) {
 	dir := filepath.Join(storeRoot, "receipts", sessionID)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -929,7 +931,6 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 
 	var findings []finding
 	var valid []*receipt
-	expectedKeyID := keyIDFor(publicKey)
 
 	for _, name := range names {
 		data, err := os.ReadFile(filepath.Join(dir, name))
@@ -945,7 +946,7 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 		if signature, ok := topLevelSignature(data); ok {
 			result.signatures[strings.TrimSuffix(name, ".json")] = signature
 		}
-		r, status := checkReceipt(data, storeRoot, sessionID, name, authority, publicKey, expectedKeyID)
+		r, status := checkReceiptUnder(data, storeRoot, sessionID, name, authority, keys)
 		if r == nil {
 			findings = append(findings, finding{
 				"sessionId": sessionID, "file": name, "status": status,
@@ -983,8 +984,11 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 	} else {
 		// A session is of one version (SPEC.md §1.3): a receipt whose version
 		// differs from the head's breaks the chain exactly as a prevSignature
-		// that names the wrong signature does, and the first break of either
-		// kind reports the one chain-broken.
+		// that names the wrong signature does; so does a receipt under a key
+		// the walk of the registry reached before the key of the receipt
+		// before it (§3b), since a session runs forward through a rotation
+		// and never back; and the first break of any kind reports the one
+		// chain-broken.
 		for i, r := range valid {
 			var want string
 			var wantSet bool
@@ -992,7 +996,8 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 				want, wantSet = valid[i-1].signature, true
 			}
 			versionDiffers := i > 0 && r.version != valid[0].version
-			if r.hasPrev != wantSet || (wantSet && r.prevSignature != want) || versionDiffers {
+			keyGoesBack := i > 0 && r.keyPos < valid[i-1].keyPos
+			if r.hasPrev != wantSet || (wantSet && r.prevSignature != want) || versionDiffers || keyGoesBack {
 				findings = append(findings, finding{
 					"sessionId": sessionID, "callIndex": nil, "status": "chain-broken",
 				})
@@ -1012,6 +1017,13 @@ func verifySession(storeRoot, sessionID, authority string, publicKey []byte) (*s
 // means the file never became a receipt at all, which includes a receipt that
 // parsed but failed order 1.
 func checkReceipt(data []byte, storeRoot, sessionID, fileName, authority string, publicKey []byte, expectedKeyID string) (*receipt, string) {
+	return checkReceiptUnder(data, storeRoot, sessionID, fileName, authority, []reachedKey{{key: publicKey, keyID: expectedKeyID}})
+}
+
+// checkReceiptUnder is checkReceipt under the keys the walk of the registry
+// reached (SPEC.md §3b): a receipt is taken under any of them, its keyId
+// naming the one its signature is verified under.
+func checkReceiptUnder(data []byte, storeRoot, sessionID, fileName, authority string, keys []reachedKey) (*receipt, string) {
 	v, err := parseJSON(data)
 	if err != nil {
 		return nil, "malformed"
@@ -1045,9 +1057,17 @@ func checkReceipt(data []byte, storeRoot, sessionID, fileName, authority string,
 	// key-mismatch precedes signature-mismatch (SPEC 1.4 orders 3 then 4), so a
 	// receipt carrying both defects reports the earlier one. Verifying first
 	// reported the later one and made the diagnostic depend on our own order.
-	if subtle.ConstantTimeCompare([]byte(r.keyID), []byte(expectedKeyID)) != 1 {
+	r.keyPos = -1
+	for i, k := range keys {
+		if subtle.ConstantTimeCompare([]byte(r.keyID), []byte(k.keyID)) == 1 {
+			r.keyPos = i
+			break
+		}
+	}
+	if r.keyPos < 0 {
 		return r, "key-mismatch"
 	}
+	publicKey := keys[r.keyPos].key
 	// Well-formed hex of the wrong length is NOT malformed: it is a signature
 	// that cannot verify, which is order 4.
 	sig, err := hex.DecodeString(r.signature)

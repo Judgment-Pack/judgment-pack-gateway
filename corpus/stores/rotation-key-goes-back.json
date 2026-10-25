@@ -1,0 +1,36 @@
+{
+  "name": "rotation-key-goes-back",
+  "note": "A rotation from the test key to a second key, followed, and a session whose head the second key signed and whose next receipt, its prevSignature naming the head's signature, the test key signed. Each receipt is under a key the walk reached and is ok, and the seal, under the second key after the rotation, loads; but a session runs forward through a rotation and never back (SPEC.md §1.4, §3b), so the receipt under the earlier key after one under the later key is chain-broken.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:844597ab5513a2f4d24ea1f08782a798a46e5623ee54e8fb528733822adf1aa4\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"720e4ddf6cbb7c96bce56edcc0982dc49e207cb14ea394a4474483957f48ddc3ec5d573bea23a3032e8acdeecd9fddc5e90f8b9622d3169d3478ab084e503f01\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"argumentsDigest\":\"hmac-sha256:a8f4f0e0fe451f6872d42acb34661fbc26b19120b93c044df8193f501fec9269\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":\"720e4ddf6cbb7c96bce56edcc0982dc49e207cb14ea394a4474483957f48ddc3ec5d573bea23a3032e8acdeecd9fddc5e90f8b9622d3169d3478ab084e503f01\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"55e5b97cafaf82c2166df2b4586e6bcf7b1e98a98c91fd7ed1c440555ad7f57022f90f044b66dbed1332545cae802675b184df05bfcbc0f911961454f4dddc04\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"5adc7f0b58c7fd53d226650e7db2e618f9ed937844e441d44fe91f9dd283f5bf\",\"nextKeyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"90d06ebfbb019c1c6179385df11394284a75ac90ce629c08618e98f01f0658b7067d340af4e91632b9bbd4fa20ea08edd42fb44a137ed2b85c2c85fdec20040a\"}\n{\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"ccb16240d6b98b9254abdc7d99caced38eb04ecafdcd1d6a92f60a35f528d6269e41e07fe0c3e39be0f7c6397b837e5e6d68b8cdde5c3796bc0c4de8aa571b0f\"}\n{\"finalCount\":2,\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"sealedAt\":\"2026-08-01T00:00:02Z\",\"sessionId\":\"s1\",\"signature\":\"2eccaf882ecd270a3b74898c4bc5ca0d851ba5ad8f717128ea21ee8e8f851ac1c323e4128fe1bff7091b6d8003873b4b7435fe72e0f9b8ec2a68de077f34e503\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": 1,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": null,
+        "status": "chain-broken"
+      }
+    ],
+    "rotations": {
+      "count": 1,
+      "keyId": "33719bd9925ba0b0ef0ddb302e5a3ef4"
+    }
+  }
+}

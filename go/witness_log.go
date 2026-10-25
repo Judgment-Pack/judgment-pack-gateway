@@ -425,30 +425,48 @@ func trailIn(trails map[string]*witnessTrail, trail string) *witnessTrail {
 
 // statementFault is the first check a log's statement fails, as a finding,
 // or "": its form, in the canonical bytes the witness writes; its signature,
-// under the witness's key.
-func statementFault(line []byte, over bool, key ed25519.PublicKey, keyID string) (*witnessStatement, string) {
+// under a key the walk of the gateway's registry reached (SPEC.md §3b,
+// §8.5), the witness's own when it never rotated, and never under a key the
+// walk reached before from, the key of a statement above it in the log --
+// after a rotation the witness signs under the key rotated to alone. It
+// answers the place of the statement's key among keys.
+func statementFault(line []byte, over bool, keys []reachedKey, from int) (*witnessStatement, string, int) {
 	if over {
-		return nil, findingWitnessMalformed
+		return nil, findingWitnessMalformed, from
 	}
 	st, ok := parseWitnessStatement(line)
 	if !ok || st.whole != string(line) {
-		return nil, findingWitnessMalformed
+		return nil, findingWitnessMalformed, from
 	}
-	if st.keyID != keyID || !witnessSignatureValid(key, st) {
-		return st, findingWitnessSignatureInvalid
+	for i := from; i < len(keys); i++ {
+		if st.keyID == keys[i].keyID {
+			if !witnessSignatureValid(keys[i].key, st) {
+				break
+			}
+			return st, "", i
+		}
 	}
-	return st, ""
+	return st, findingWitnessSignatureInvalid, from
 }
 
 // judgeWitness applies the start-up checks (§4, "Start-up, and repair") and
-// the three rules of recovery to the files, in one pass over each.
+// the three rules of recovery to the files, in one pass over each, under
+// the witness's one key.
 func judgeWitness(in witnessInput, key ed25519.PublicKey) (*witnessJudgement, error) {
+	return judgeWitnessUnder(in, []reachedKey{{key: key, keyID: keyIDFor(key)}})
+}
+
+// judgeWitnessUnder is judgeWitness under the keys the walk of the
+// gateway's registry reached (SPEC.md §3b), the witness's own last.
+func judgeWitnessUnder(in witnessInput, keys []reachedKey) (*witnessJudgement, error) {
 	j := &witnessJudgement{
 		findings:      findingTally{},
 		trails:        map[string]*witnessTrail{},
 		registrations: map[string]witnessRegistration{},
 	}
-	keyID := keyIDFor(key)
+	// keyAt is the place among keys of the key of the last statement that
+	// passed: no statement below it in the log is under an earlier key.
+	keyAt := 0
 
 	if in.registrationsChecked && in.registrations != nil {
 		err := scanLines(in.registrations, witnessLineLimit, func(line []byte, number, start, end int64, ended, over bool) error {
@@ -530,7 +548,10 @@ func judgeWitness(in witnessInput, key ed25519.PublicKey) (*witnessJudgement, er
 	if in.log != nil {
 		err := scanLines(in.log, witnessLineLimit, func(line []byte, number, start, end int64, ended, over bool) error {
 			logBytes = end
-			st, fault := statementFault(line, over, key, keyID)
+			st, fault, at := statementFault(line, over, keys, keyAt)
+			if fault == "" {
+				keyAt = at
+			}
 			if !ended {
 				// The log's last bytes: torn, or a whole statement missing
 				// only its newline, held to the checks as the next of its
@@ -882,6 +903,12 @@ func whole(file *os.File) (io.Reader, error) {
 // is known to have been lengthened or shortened while it was read
 // (sameLength).
 func (f *witnessFiles) judge(key ed25519.PublicKey) (*witnessJudgement, error) {
+	return f.judgeUnder([]reachedKey{{key: key, keyID: keyIDFor(key)}})
+}
+
+// judgeUnder is judge under the keys the walk of the gateway's registry
+// reached (SPEC.md §3b), the witness's own last.
+func (f *witnessFiles) judgeUnder(keys []reachedKey) (*witnessJudgement, error) {
 	in := witnessInput{marksChecked: true, registrationsChecked: true}
 	f.judged = map[string]int64{}
 	readers := map[string]*io.Reader{"log": &in.log, "marks": &in.marks, "registrations": &in.registrations}
@@ -895,7 +922,7 @@ func (f *witnessFiles) judge(key ed25519.PublicKey) (*witnessJudgement, error) {
 			*readers[c.label] = countedReader{r, c.label, f.judged}
 		}
 	}
-	return judgeWitness(in, key)
+	return judgeWitnessUnder(in, keys)
 }
 
 // countedReader counts, by its file's label, the bytes read through it.
@@ -1144,6 +1171,10 @@ type witnessConfig struct {
 	// operator has not registered is refused.
 	firstSubmission bool
 	publicKey       ed25519.PublicKey
+	// earlier are the keys the walk of the gateway's registry reached before
+	// publicKey (SPEC.md §3b), in order: the witness's log holds statements
+	// under them from before a rotation, and its chains go on across it.
+	earlier []reachedKey
 	// sign signs a statement's bytes (SPEC.md §8.3) under the key publicKey
 	// verifies: the gateway's own seed (witnessSeedSigner).
 	sign  func(message []byte) []byte
@@ -1156,6 +1187,12 @@ type witnessConfig struct {
 	// trails registered to its submitter that hold one and are not retired
 	// are this many. Zero bounds nothing.
 	trailsPerSubmitter int
+}
+
+// keys are the keys a witness's checks hold its log to: the keys its
+// gateway's registry reached before its own, and its own last.
+func (cfg witnessConfig) keys() []reachedKey {
+	return append(append([]reachedKey(nil), cfg.earlier...), reachedKey{key: cfg.publicKey, keyID: keyIDFor(cfg.publicKey)})
 }
 
 // submitterKey is a submitter, as a token names it and a registration
@@ -1296,7 +1333,7 @@ func openWitnessLog(cfg witnessConfig) (*witnessLog, error) {
 	if err != nil {
 		return nil, err
 	}
-	j, err := files.judge(cfg.publicKey)
+	j, err := files.judgeUnder(cfg.keys())
 	if err != nil {
 		files.close()
 		return nil, err
@@ -1766,7 +1803,7 @@ func repairWitnessLog(cfg witnessConfig) (*witnessJudgement, error) {
 	}
 	defer files.close()
 	wio := files.io
-	j, err := files.judge(cfg.publicKey)
+	j, err := files.judgeUnder(cfg.keys())
 	if err != nil {
 		return nil, err
 	}
@@ -1812,7 +1849,7 @@ func repairWitnessLog(cfg witnessConfig) (*witnessJudgement, error) {
 		}
 	}
 	wio.note("repaired", "")
-	after, err := files.judge(cfg.publicKey)
+	after, err := files.judgeUnder(cfg.keys())
 	if err != nil {
 		return j, err
 	}

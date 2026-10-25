@@ -63,7 +63,7 @@ surrogate, and neither survives being written into a document each language
 re-parses with its own defaults. Accepting vectors carry `expectedHex`; refusing
 vectors carry `reject: true`.
 
-**`stores/*.json`** — 21 vectors, each a complete store (a `path → text` map plus
+**`stores/*.json`** — 28 vectors, each a complete store (a `path → text` map plus
 the registry text) and its expected `(ok, findings)`. There is one per status an
 implementation can emit. Two of them, `key-mismatch` and `unsupported-version`,
 exist because a second implementation pointed out that those statuses were
@@ -88,6 +88,30 @@ seal counting below zero does, and one letting the smallest count or the
 earliest `sealedAt` win compares the session with a seal of -2. When it was
 written no other store vector, of either receipt version, held two loadable
 seals for one session, so an edit to it can take that rule's coverage with it.
+
+Seven, each named `rotation-*`, hold the walk of a registry's key rotations
+(`SPEC.md` §3b; issue #317), each verified from `TEST-PUBLIC-KEY` alone, as a
+verifier verifies a rotated store from the one key it pinned: two rotations
+followed, with a session sealed before the first, one running across it and one
+after the second, `ok`, the report naming both (`rotation-followed-twice`); a
+continuation with no rotation the current key signed, `rotation-forged`; a
+rotation with no continuation on the line after it, `rotation-break`
+(`rotation-missing-continuation`); a second rotation carrying the first one's
+ordinal, `rotation-order` (`rotation-ordinal-replay`); a rotation to the identity
+point, a key of small order under which a signature needs no private key,
+`rotation-key-refused` (`rotation-next-key-small-order`); a seal the key rotated
+from made after the rotation, which loads nothing (`rotation-old-key-seal-dropped`);
+and a session whose second receipt goes back to the key rotated from,
+`chain-broken` (`rotation-key-goes-back`). Each walk that stops leaves the keys
+after it reached by nothing, so the sessions under them are `key-mismatch` and
+`unregistered-session` beside the walk's finding, which a verifier that follows
+the broken rotation would grade `ok`. The keys rotated to are made from published
+seeds, as `TEST-SEED` is: the SHA-256 of the ASCII text `judgment-pack-gateway
+corpus rotation key 1`, and of the same text ending in `2`. Like `TEST-SEED` they
+sign nothing real and must never be used by a deployment. A vector whose walk
+followed a rotation gives `rotations` in `expected`, `{"count", "keyId"}`, and a
+runner compares it whole with the implementation's; a vector without the member
+expects none, and an implementation that followed none leaves the member out.
 
 **`witness/*.json`** — the checkpoint witness's vectors, below.
 
@@ -402,8 +426,9 @@ this one:
 - `CMD verify <store-root> <registry-path> <authority> [<decision-records-dir>]`
   — stdin: the 32-byte Ed25519 **public** key, raw bytes, never a secret.
   stdout: `{"ok": bool, "findings": [...]}`, and optionally the
-  `observations` member of `SPEC.md` §4, which the runner does not read, and the
-  `witnesses` member, which it compares as a set (above). Exit 0
+  `observations` member of `SPEC.md` §4, which the runner does not read, the
+  `witnesses` member, which it compares as a set (above), and the `rotations`
+  member, which it compares whole (above). Exit 0
   whenever a verdict was produced; a *failing* verdict is still exit 0. The fourth argument is the
   decision-record directory of `SPEC.md` §4 step 6; the runner passes it
   exactly when the vector carries a `decisionRecords` map, materialized with
@@ -418,7 +443,7 @@ this one:
   runner reports as an implementation that could not answer, never as a refusal.
 
 Findings are compared as a **multiset**: order is not normative. Witnesses are
-compared as a set.
+compared as a set, and rotations whole.
 
 ## Two implementations again
 

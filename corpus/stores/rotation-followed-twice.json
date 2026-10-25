@@ -1,0 +1,52 @@
+{
+  "name": "rotation-followed-twice",
+  "note": "Two rotations, from the test key to a second key and from that to a third, each a key-rotation the key before signed and a key-continuation the next key signed, on adjacent lines. Verified from TEST-PUBLIC-KEY alone, the walk follows both (SPEC.md §3b): s1 is sealed under the first key before the first rotation, s2 runs across it -- its head under the first key, its next receipt under the second -- and is sealed under the second, and s3 is under the third and sealed after the second rotation. Every receipt and seal is under the key current where it stands, so the store verifies, and the report names two rotations followed and the third key's id.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/23ccecd99b45ceecb08a93ddd630c4bb43f6f32faa29443a4c690831bec92a1d": "{\"n\":0,\"session\":\"s3\"}",
+    "artifacts/4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa": "{\"n\":1,\"session\":\"s1\"}",
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "artifacts/d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5": "{\"n\":1,\"session\":\"s2\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:844597ab5513a2f4d24ea1f08782a798a46e5623ee54e8fb528733822adf1aa4\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"198e0dca2da1220d4f7d9591955ae2c32f07885c6a61dc52c6e33e73fee41f0f09d7c3cfd330eca27c8bebf0869979df6d81ddc6de86085643151001646e4a07\",\"source\":\"corpus\"}\n",
+    "receipts/s1/1.json": "{\"argumentsDigest\":\"hmac-sha256:a8f4f0e0fe451f6872d42acb34661fbc26b19120b93c044df8193f501fec9269\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":\"198e0dca2da1220d4f7d9591955ae2c32f07885c6a61dc52c6e33e73fee41f0f09d7c3cfd330eca27c8bebf0869979df6d81ddc6de86085643151001646e4a07\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:4c84ce4d98be9a5ec720bc85ed113f28bd4314a2f4678ab6606b61cda07b52aa\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"8982863931f1001f17992e751daaf0b48f38ba0b0f1adaf1166564a321e484a253b0343d664183d5888bf71ce4d11e3fbde587ff8a5fd168ae7332c91063b20c\",\"source\":\"corpus\"}\n",
+    "receipts/s2/0.json": "{\"argumentsDigest\":\"hmac-sha256:2e4e9d0ea1900a803b5f532164642fc46bccc2e38b508e24ee3bab02ffab02e0\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"9f526ededa4655389ae709ed04d8ef235634681e2dc8b6dac63e4993a476e1b7dca0cb95991fbbbd28a4b6e77c9c94f9c2736875235a6f08fbd767063c614009\",\"source\":\"corpus\"}\n",
+    "receipts/s2/1.json": "{\"argumentsDigest\":\"hmac-sha256:07fded4a8d5724c61a290004157fe72a1f0ccdd196b3b445e6c1b584963bfca3\",\"authority\":\"gateway:corpus\",\"callIndex\":1,\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"prevSignature\":\"9f526ededa4655389ae709ed04d8ef235634681e2dc8b6dac63e4993a476e1b7dca0cb95991fbbbd28a4b6e77c9c94f9c2736875235a6f08fbd767063c614009\",\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:d435409bf95c33fc1e4cb219f934157553e0bd108b757ec7d6296067bf3cb8b5\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"52aa88af9091bd1a336b684920b25e1bbd3a6e8327591201462125516bebfac4aa55c834a0b3fcdf64c8b92cc76502d14e5f88fef8d408618375897114320a0a\",\"source\":\"corpus\"}\n",
+    "receipts/s3/0.json": "{\"argumentsDigest\":\"hmac-sha256:adf1170692ceac81474e1e595d6bb16c43de0c6a7e7c4c4393aa2cd2268217b6\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"782ee5b0438aab40877be759d75974ae\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:23ccecd99b45ceecb08a93ddd630c4bb43f6f32faa29443a4c690831bec92a1d\",\"servedAt\":\"2026-08-02T00:00:00Z\",\"sessionId\":\"s3\",\"signature\":\"6cc915fb496c0c63dc2319a733f3c8a92b072dbc36662152627437ce591a4e107631fa0dfcbf7f5bcc8c95630934de34e77aff9b86b2e5fd2f28af8723e7c408\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":2,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-08-01T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"d6e2855079a77e7710db5cf244a7d5cf4bc16e811e09828afec8b1965008bd4e99aa9bc76e1d004ccfc4840b72cf6a836a7ffa5cfe03e4d5b8755627c0058b06\"}\n{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"5adc7f0b58c7fd53d226650e7db2e618f9ed937844e441d44fe91f9dd283f5bf\",\"nextKeyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"90d06ebfbb019c1c6179385df11394284a75ac90ce629c08618e98f01f0658b7067d340af4e91632b9bbd4fa20ea08edd42fb44a137ed2b85c2c85fdec20040a\"}\n{\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"ccb16240d6b98b9254abdc7d99caced38eb04ecafdcd1d6a92f60a35f528d6269e41e07fe0c3e39be0f7c6397b837e5e6d68b8cdde5c3796bc0c4de8aa571b0f\"}\n{\"finalCount\":2,\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"sealedAt\":\"2026-08-01T00:00:02Z\",\"sessionId\":\"s2\",\"signature\":\"70271d622b66f73c35acef40a38e3f5415ac757367e1039f3c26f2e4a6d20818195d81c79bd323e985acca2d6a2dc0e997c62cff685c48ed5592887c3680d10b\"}\n{\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"kind\":\"key-rotation\",\"next\":\"2ef2369ef445e2e262b91cf1bc2c0d407a796b7c9a6722f058657efb4b0fe64f\",\"nextKeyId\":\"782ee5b0438aab40877be759d75974ae\",\"rotatedAt\":\"2026-08-02T00:00:00Z\",\"rotation\":2,\"rotationVersion\":\"1\",\"signature\":\"ec5f1e27080fd373671f62305f0c45c3ec4a50373bcac724baf1c7541d95c9e4a8ac1803f5b5106b9c1c6d64f5e4de7651a87f47c93eb4dd18296a308d794807\"}\n{\"keyId\":\"782ee5b0438aab40877be759d75974ae\",\"kind\":\"key-continuation\",\"previous\":\"5adc7f0b58c7fd53d226650e7db2e618f9ed937844e441d44fe91f9dd283f5bf\",\"previousKeyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"rotatedAt\":\"2026-08-02T00:00:00Z\",\"rotation\":2,\"rotationVersion\":\"1\",\"signature\":\"ea08e5152e94a36c1fcb195662c3286ad5b1f9a77a81355b091e9c18d16b2782dc82036b11f32db1b0718cca1537b6fbe4917885739df2a3da2b7eea622ff301\"}\n{\"finalCount\":1,\"keyId\":\"782ee5b0438aab40877be759d75974ae\",\"sealedAt\":\"2026-08-02T00:00:01Z\",\"sessionId\":\"s3\",\"signature\":\"102a027f03a560bb500327574eea5059ec4f1cbe1a05e6148b3f126ab72734450693976119fe2751f1aac359212943e7840cb1dfc20454934a673122acd7c606\"}\n",
+  "expected": {
+    "ok": true,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s1",
+        "callIndex": 1,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s2",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s2",
+        "callIndex": 1,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s3",
+        "callIndex": 0,
+        "status": "ok"
+      }
+    ],
+    "rotations": {
+      "count": 2,
+      "keyId": "782ee5b0438aab40877be759d75974ae"
+    }
+  }
+}

@@ -738,14 +738,18 @@ a rotation and never back.
 
 **Rotating.** `gateway rotate-key --seed <file> --registry <file>` rotates a gateway's
 key, the gateway stopped: it reads the seed, refusing a seed that is not there or not a
-seed, since a key that cannot sign cannot name its successor; it walks the registry as
-the gateway does (below), refusing a walk that finds anything or ends at another key
-than the seed's — a rotation already written and not yet switched to, which is
-**pending** — and a next seed already made beside the seed (`<seed>.next`), a rotation
-pending too. It then makes the next seed, `<seed>.next`, made once and never replaced;
+seed, since a key that cannot sign cannot name its successor; it refuses a next seed
+already made beside the seed (`<seed>.next`), a rotation **pending**; it reads the
+registry, refusing one that is not there, and walks it as the gateway does (below),
+refusing a walk that finds anything or ends at another key than the seed's — a rotation
+already written and not yet switched to, pending too; and it refuses a seed already kept
+at the name the seed rotated from would take. Each refusal writes nothing. It then makes
+the next seed, `<seed>.next`, made once and never replaced;
 appends the two statements as one record, the `key-rotation` first, each on a line of
 its own, ending an unterminated last line first as a seal's writer does (§3), and made
-durable before anything after it; and only then switches the signer: the seed is moved
+durable before anything after it — refusing, the next seed removed, when the registry is
+no longer the bytes it walked, since then something else writes to it; and only then
+switches the signer: the seed is moved
 to `<seed>.rotated-<rotation>`, kept for its operator to destroy, and the next seed is
 moved to the seed's name, which the gateway signs with when it starts. A rotation
 interrupted after the append is pending: the gateway refuses to start under the seed

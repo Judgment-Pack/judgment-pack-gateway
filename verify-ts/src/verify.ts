@@ -31,6 +31,8 @@ import {
 } from "./inputs.ts";
 import { TooLarge, count, hasDuplicate, integerDigits, maxValues, member, parse } from "./json.ts";
 import type { NumberValue, ObjectValue, Value } from "./json.ts";
+import { RegistryWalk } from "./rotation.ts";
+import type { ReachedKey, RotationStatus } from "./rotation.ts";
 import { structureV2, structureV3 } from "./structure.ts";
 
 export type Status =
@@ -53,11 +55,14 @@ export type Finding = ReadonlyArray<readonly [string, string | number | bigint |
 // its observations (§4 step 8), which are no part of ok.
 // Its witnesses are the distinct witnesses named by the receipts that
 // passed the ladder (§4, ADR-0014), no part of ok either.
+// Its rotations are those the walk of the registry followed from the key
+// pinned (§3b), null when it followed none, no part of ok either.
 export type Verdict = {
   readonly ok: boolean;
   readonly findings: Iterable<Finding>;
   readonly observations: Iterable<Finding>;
   readonly witnesses: Iterable<Witness>;
+  readonly rotations: { readonly count: number; readonly keyId: string } | null;
 };
 
 // A witness a receipt names: the trail it is named for, where it serves,
@@ -72,8 +77,9 @@ type Judged = {
   readonly status: Status;
   // Past order 1: the receipt's index, for its finding.
   readonly callIndex?: bigint;
-  // For a receipt that passed: what the chain walk reads of it.
-  readonly chain?: { readonly version: string; readonly signature: string; readonly prev: Prev };
+  // For a receipt that passed: what the chain walk reads of it, its key's
+  // place among the keys the registry's walk reached among it (§3b).
+  readonly chain?: { readonly version: string; readonly signature: string; readonly prev: Prev; readonly keyPos: number };
   // For a version 3 action that passed: the record it names, and its
   // bytes' SHA-256, by which its citations are read again once the
   // enumeration is whole; and what §4 step 8 compares with the record, the
@@ -159,13 +165,6 @@ const sealPrefix = "judgment-pack-gateway/seal/2:";
 // first 32 characters.
 export function keyIdOf(publicKey: Uint8Array): string {
   return crypto.createHash("sha256").update(publicKey).digest("hex").slice(0, 32);
-}
-
-function publicKeyObject(publicKey: Uint8Array): crypto.KeyObject {
-  return crypto.createPublicKey({
-    key: { kty: "OKP", crv: "Ed25519", x: Buffer.from(publicKey).toString("base64url") },
-    format: "jwk",
-  });
 }
 
 // signed is whether the signature, in hex of either case, verifies over
@@ -276,7 +275,7 @@ function citedSignature(v: Value | null): string | undefined {
 
 // judge is the ladder of §1.4 for one receipt: at most one status, the
 // first failure in order.
-function judge(parsed: Value | null, bytesDigest: string, root: string, session: string, file: string, key: crypto.KeyObject, keyId: string, authority: string): Judged {
+function judge(parsed: Value | null, bytesDigest: string, root: string, session: string, file: string, keys: readonly ReachedKey[], authority: string): Judged {
   // 1. malformed: unparseable, a name twice, or a structural violation of
   // the receipt's version.
   if (parsed === null || parsed.type !== "object" || hasDuplicate(parsed)) {
@@ -301,14 +300,18 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
   if (version !== "2" && version !== "3") {
     return judged("unsupported-version");
   }
-  // 3. key-mismatch
-  if (str(member(receipt, "keyId")) !== keyId) {
+  // 3. key-mismatch: the key id of no key the registry's walk reached
+  // (§3b), the key pinned first.
+  const receiptKeyId = str(member(receipt, "keyId"));
+  const keyPos = keys.findIndex((k) => k.keyId === receiptKeyId);
+  if (keyPos < 0) {
     return judged("key-mismatch");
   }
   // 4. signature-mismatch: over everything but the receipt's own
-  // top-level signature, under its version's prefix.
+  // top-level signature, under its version's prefix, under the key its
+  // key id names.
   const unsigned: ObjectValue = { type: "object", members: receipt.members.filter((m) => m.name !== "signature") };
-  if (!signed(key, receiptPrefix[version]!, unsigned, signature)) {
+  if (!signed(keys[keyPos]!.key, receiptPrefix[version]!, unsigned, signature)) {
     return judged("signature-mismatch");
   }
   // 5. misfiled: the file's stem is its callIndex, and the directory its
@@ -359,7 +362,7 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
     file,
     status: "ok",
     callIndex,
-    chain: { version: own(version), signature: own(signature), prev },
+    chain: { version: own(version), signature: own(signature), prev, keyPos },
     ...(action && { action }),
     ...(witness && { witness }),
   };
@@ -367,19 +370,10 @@ function judge(parsed: Value | null, bytesDigest: string, root: string, session:
 
 type Seal = { readonly sessionId: string; readonly finalCount: bigint };
 
-// sealOf is a registry line as a seal, when it is one whose key id is the
-// verifier's own and whose signature verifies under its key; any other
-// line is no seal and is dropped.
-function sealOf(line: Uint8Array | null, key: crypto.KeyObject, keyId: string): Seal | null {
-  const seal =
-    line === null
-      ? null
-      : parseOr(line, () => {
-          if (opensObject(line)) {
-            throw new NoVerdict(`a registry line of more than ${maxValues} values cannot be read for a seal`);
-          }
-          return null;
-        });
+// sealOf is a registry line, read, as a seal, when it is one whose key id
+// is the current key's at its line (§3b, §4 step 2) and whose signature
+// verifies under that key; any other line is no seal and is dropped.
+function sealOf(seal: Value | null, key: crypto.KeyObject, keyId: string): Seal | null {
   if (seal === null || seal.type !== "object" || hasDuplicate(seal)) {
     return null;
   }
@@ -434,8 +428,6 @@ export function verifyStore(
   checkSpellings(registryPath, decisionRecordsPath);
   const registry = locateRegistry(registryPath);
   const records = locateDecisionRecords(decisionRecordsPath);
-  const key = publicKeyObject(publicKey);
-  const keyId = keyIdOf(publicKey);
 
   // What verification keeps, charged as it is kept.
   const budget = new Budget(limits.retainedBytes);
@@ -446,6 +438,44 @@ export function verifyStore(
   const sessions = new Map<string, Judged[]>();
   const signatures = new Map<string, Map<string, string | undefined>>();
   const store = sessionFiles(root, budget);
+
+  // §4 step 2, walked from the key pinned (§3b) before any receipt is
+  // judged, since a receipt may be under any key the walk reached: each
+  // rotation followed, and the first loadable seal of each session under
+  // the key current at its line. A line past the bound that opens an
+  // object could be a seal or a rotation statement, so it is no verdict;
+  // any other line past it is not one JSON object, and neither.
+  const seals = new Map<string, Seal>();
+  const walk = new RegistryWalk(publicKey, (k) => budget.charge(entryCost + size(k.keyId) + 64, "the keys the registry's rotations reached"));
+  eachRegistryLine(registry, (line) => {
+    if (line.bytes === null) {
+      if (line.opensObject) {
+        throw new NoVerdict(`a registry line of more than ${documentBound} bytes cannot be read for a seal`);
+      }
+      walk.take(null);
+      return;
+    }
+    const bytes = line.bytes;
+    const read = parseOr(bytes, () => {
+      if (opensObject(bytes)) {
+        throw new NoVerdict(`a registry line of more than ${maxValues} values cannot be read for a seal`);
+      }
+      return null;
+    });
+    if (walk.take(read)) {
+      return;
+    }
+    const current = walk.current();
+    const seal = sealOf(read, current.key, current.keyId);
+    if (seal !== null && !seals.has(seal.sessionId)) {
+      budget.charge(entryCost + size(seal.sessionId), "the registry's seals");
+      seals.set(seal.sessionId, seal);
+    }
+  });
+  walk.end();
+  testHooks.sample?.("registry");
+  const keys = walk.keys;
+
   for (const [session, files] of store) {
     const judged: Judged[] = [];
     const stems = new Map<string, string | undefined>();
@@ -455,7 +485,7 @@ export function verifyStore(
         throw new NoVerdict(`receipt ${session}/${file} holds more than ${maxValues} values`);
       });
       stems.set(file.slice(0, -".json".length), citedSignature(parsed));
-      const j = judge(parsed, sha256Hex(bytes), root, session, file, key, keyId, authority);
+      const j = judge(parsed, sha256Hex(bytes), root, session, file, keys, authority);
       // A witness named is kept beside the bound receiptCost covers: its
       // origin may be 2048 characters.
       if (j.witness !== undefined) {
@@ -487,25 +517,6 @@ export function verifyStore(
       }
     }
   }
-
-  // §4 step 2: the first loadable seal of each session. A line past the
-  // bound that opens an object could be one, and the first, so it is no
-  // verdict; any other line past it is not one JSON object, and no seal.
-  const seals = new Map<string, Seal>();
-  eachRegistryLine(registry, (line) => {
-    if (line.bytes === null) {
-      if (line.opensObject) {
-        throw new NoVerdict(`a registry line of more than ${documentBound} bytes cannot be read for a seal`);
-      }
-      return;
-    }
-    const seal = sealOf(line.bytes, key, keyId);
-    if (seal !== null && !seals.has(seal.sessionId)) {
-      budget.charge(entryCost + size(seal.sessionId), "the registry's seals");
-      seals.set(seal.sessionId, seal);
-    }
-  });
-  testHooks.sample?.("registry");
 
   // §4 step 6's candidates, matched against the records the actions that
   // passed name, and step 7's findings, from one walk: each record named
@@ -612,10 +623,12 @@ export function verifyStore(
       } else {
         const head = passing[0]?.chain!.version;
         for (let i = 0; i < passing.length; i++) {
-          const { version, prev } = passing[i]!.chain!;
+          const { version, prev, keyPos } = passing[i]!.chain!;
           const expected = i === 0 ? null : passing[i - 1]!.chain!.signature;
           const linked = expected === null ? prev.kind === "null" : prev.kind === "string" && prev.value === expected;
-          if (!linked || version !== head) {
+          // A session runs forward through a rotation and never back (§3b).
+          const back = i > 0 && keyPos < passing[i - 1]!.chain!.keyPos;
+          if (!linked || version !== head || back) {
             yield [
               ["sessionId", session],
               ["callIndex", null],
@@ -704,6 +717,14 @@ export function verifyStore(
       }
     }
     yield* recordFindings.findings();
+    // §3b: the walk's finding, naming the rotation it could not take.
+    if (walk.finding !== null) {
+      const status: RotationStatus = walk.finding.status;
+      yield [
+        ["status", status],
+        ["rotation", walk.finding.rotation],
+      ];
+    }
   }
   // §4 step 8's observation: each action whose record was found and is
   // not a runtime evaluation record, which is not compared.
@@ -751,6 +772,7 @@ export function verifyStore(
     findings: { [Symbol.iterator]: findings },
     observations: { [Symbol.iterator]: observations },
     witnesses: { [Symbol.iterator]: witnesses },
+    rotations: walk.followed() > 0 ? { count: walk.followed(), keyId: walk.current().keyId } : null,
   };
 }
 
@@ -884,5 +906,7 @@ export function writeVerdict(v: Verdict, write: (text: string) => void): void {
     write((named ? "," : `],"witnesses":[`) + JSON.stringify({ trail: w.trail, origin: w.origin, keyId: w.keyId }));
     named = true;
   }
-  write("]}\n");
+  // The rotations followed close the verdict, with the last array.
+  const rotations = v.rotations === null ? "" : `,"rotations":${JSON.stringify({ count: v.rotations.count, keyId: v.rotations.keyId })}`;
+  write(`]${rotations}}\n`);
 }

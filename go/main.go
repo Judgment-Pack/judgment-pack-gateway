@@ -15,6 +15,7 @@ package main
 //	gateway witness fetch --store <dir> --registry <file> ... --record <file> --trail <file> --runtime <path> --out <dir>
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
+//	gateway rotate-key --seed <file> --registry <file>
 //	gateway version
 
 import (
@@ -39,7 +40,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | mcp | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | rotate-key | mcp | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -59,6 +60,8 @@ func main() {
 		os.Exit(cmdConnect(os.Args[2:]))
 	case "keygen":
 		os.Exit(cmdKeygen(os.Args[2:]))
+	case "rotate-key":
+		os.Exit(cmdRotateKey(os.Args[2:], os.Stdout, os.Stderr))
 	case "mcp":
 		os.Exit(cmdMCP(os.Args[2:]))
 	case "version":
@@ -354,7 +357,7 @@ func cmdServeEngine(args []string) int {
 	// must answer first, and such a start leaves nothing made.
 	var witness *witnessService
 	if cfg.witness != nil {
-		log, err := openEngineWitness(cfg.witness, seed)
+		log, err := openEngineWitness(cfg.witness, seed, cfg.registry)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "start:", err)
 			return 1

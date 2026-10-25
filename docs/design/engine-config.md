@@ -308,7 +308,11 @@ platform, `binding`, `credentials` and `user` are required, `endpoint`, `environ
   configuration takes the same as `--witnessed-by TRAIL=ORIGIN,PUBLICKEY`, repeatable, for
   version 3 receipts only. `connect` keeps the member, its values unchanged.
 - `authority`, `seed`, `store`, `registry` are the four positional arguments `gateway serve`
-  takes today, named.
+  takes today, named. `gateway rotate-key --seed <seed> --registry <registry>`, with the
+  engine stopped, rotates the key the seed holds (SPEC.md §3b): the next seed takes the
+  seed's path, so the configuration is unchanged, and the engine refuses to start under a
+  key its registry says it rotated from. A witness under the configuration goes on under the
+  next key, its log held to the keys the registry's rotations reached.
 - `decisionRecords` is where the runtime's audit trail is expected, so `verify` can resolve an
   action receipt's `decision.recordDigest` ([receipt-v3.md](receipt-v3.md)). The engine refuses
   one that anyone but root, the signer and its owner could write a record into (below).

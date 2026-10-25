@@ -111,6 +111,15 @@ result object to stdout.
 `keygen` prints the public key precisely because it has to be pinned **out of
 band** — see Honest bounds.
 
+The key can be rotated, with the gateway stopped:
+`./gateway rotate-key --seed gateway.seed --registry ./registry.jsonl` makes the next
+seed, appends to the registry a statement the current key signs naming the next key and
+one the next key signs naming the current one (SPEC.md §3b), and only then switches
+`gateway.seed` to the next seed, keeping the one rotated from beside it for you to
+destroy. Nothing new is pinned: a verifier follows the rotations from the key it pinned
+from `keygen`, and the report names how many it followed and the key it ended at. The
+gateway refuses to start under a key it rotated from.
+
 ```
 curl -s localhost:8787/acquire -d '{"session":"s1","source":"screening","arguments":{"subject":"acme"}}'
 curl -s localhost:8787/seal    -d '{"session":"s1"}'

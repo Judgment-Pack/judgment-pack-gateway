@@ -1,0 +1,35 @@
+{
+  "name": "rotation-next-key-small-order",
+  "note": "A key-rotation the test key signed naming the identity point 0100...00 as the next key, a key of small order (SPEC.md §8.4), and a key-continuation, a seal and a receipt under it, each with the signature R = the identity, S = 0, which the equation of §8.4 accepts under that key for every message without any private key. The key rule refuses the next key: rotation-key-refused at rotation 1 (§3b, check 4). The walk stops at the test key, and s2 is key-mismatch and unregistered. A verifier without the key rule follows the rotation and verifies s2.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196": "{\"n\":0,\"session\":\"s2\"}",
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:844597ab5513a2f4d24ea1f08782a798a46e5623ee54e8fb528733822adf1aa4\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"198e0dca2da1220d4f7d9591955ae2c32f07885c6a61dc52c6e33e73fee41f0f09d7c3cfd330eca27c8bebf0869979df6d81ddc6de86085643151001646e4a07\",\"source\":\"corpus\"}\n",
+    "receipts/s2/0.json": "{\"argumentsDigest\":\"hmac-sha256:2e4e9d0ea1900a803b5f532164642fc46bccc2e38b508e24ee3bab02ffab02e0\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"01d0fabd251fcbbe2b93b4b927b26ad2\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:67131cf8d80c016eb4d9aa23e846b7b0d991b5d11bcc5a977450b76c4bc7a196\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s2\",\"signature\":\"01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"finalCount\":1,\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"sealedAt\":\"2026-08-01T00:00:01Z\",\"sessionId\":\"s1\",\"signature\":\"ff0fc5fa51eb21d9d4496f09f22f805f6c58a0cb94597f96e3bdceb64ac4505257578242b837e534e13b707d91eb08056bc1a8a29c2414761da006877da1a90b\"}\n{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"0100000000000000000000000000000000000000000000000000000000000000\",\"nextKeyId\":\"01d0fabd251fcbbe2b93b4b927b26ad2\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"998efd85e22f6364b420d0098a9f15e4111d20d9704a074a7ecd707855f4eae96311363eeded7fa45f22fc403c92fd8af81c360757dc5009274a11203f2be20d\"}\n{\"keyId\":\"01d0fabd251fcbbe2b93b4b927b26ad2\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}\n{\"finalCount\":1,\"keyId\":\"01d0fabd251fcbbe2b93b4b927b26ad2\",\"sealedAt\":\"2026-08-01T00:00:02Z\",\"sessionId\":\"s2\",\"signature\":\"01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "sessionId": "s2",
+        "callIndex": 0,
+        "status": "key-mismatch"
+      },
+      {
+        "sessionId": "s2",
+        "status": "unregistered-session"
+      },
+      {
+        "status": "rotation-key-refused",
+        "rotation": 1
+      }
+    ]
+  }
+}
