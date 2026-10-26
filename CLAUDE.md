@@ -67,6 +67,13 @@ summary block, and anything you stopped on or chose not to do.
   requires; its legs run the core's Go steps natively and are the one place the list is repeated in
   the workflow. A core step added to `dev.json` is added to the matrix as well. The longer steps
   are scripts under `scripts/checks/`.
+- A pull request's `check` job runs `scripts/dev/check.sh --all --changed origin/<base>`: only the
+  steps that `jpdev.json` maps its changed paths to, and the whole list when a changed path matches
+  no rule (the workflows, `.gitattributes`, `.gitignore`) or when `jpdev.json`, `dev.json` or the
+  runner changed. A push to `main` and the release's call run the whole list, and only that run is
+  what a release is held to. Run the same selection locally with
+  `scripts/dev/check.sh --changed origin/main` (or `jpdev check --changed`). A new step or a new
+  input of a step is mapped in `jpdev.json`; when unsure, map it broader.
 - `SPEC.md` is normative: when the binary and the specification disagree, the binary has the bug.
   `corpus/` is frozen and is the arbiter: a change that makes `gateway conform` pass differently
   has changed the format. Do not edit `SPEC.md` and the implementation in one commit without

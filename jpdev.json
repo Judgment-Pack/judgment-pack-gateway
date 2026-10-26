@@ -1,0 +1,123 @@
+{
+  "version": 1,
+  "changed": [
+    {
+      "paths": ["go/**", "corpus/**", "SPEC.md", "catalog/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "go-fmt", "go-vet", "go-test", "go-build", "conform", "smoke-stand-in",
+                 "no-third-party-modules", "core-resolves-into-stdlib",
+                 "adapters-not-into-core", "third-party-notices",
+                 "verify-ts-test", "verify-ts-conform", "verify-ts-witness-chain", "witness-scenario",
+                 "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
+                 "image-runs", "image-evaluates", "image-launch-overrides"]
+    },
+    {
+      "paths": ["corpus/**", "catalog/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "adapters-test", "both-paths-agree"]
+    },
+    {
+      "paths": ["adapters/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "go-test",
+                 "adapters-fmt", "adapters-vet", "adapters-vet-windows", "adapters-test", "adapters-build",
+                 "acquisition-fixture", "attachment-schemas", "rendering-schemas", "search-schema",
+                 "adapter-conform", "adapters-not-into-core", "third-party-notices", "release-programs",
+                 "no-publisher-registration", "both-paths-agree",
+                 "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
+                 "image-runs", "image-evaluates", "image-launch-overrides"]
+    },
+    {
+      "paths": ["schema/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "go-test", "adapter-envelope-schema", "adapter-conform"]
+    },
+    {
+      "paths": ["testdata/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "go-test", "adapters-test", "acquisition-fixture", "attachment-schemas",
+                 "rendering-schemas", "search-schema", "adapter-conform",
+                 "descriptor-vectors", "descriptor-metaschema", "descriptor-commonmark"]
+    },
+    {
+      "paths": ["**/go.work"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "core-resolves-into-stdlib", "adapters-not-into-core"]
+    },
+    {
+      "paths": ["verify-ts/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "verify-ts-typecheck", "verify-ts-test", "verify-ts-conform", "verify-ts-witness-chain"]
+    },
+    {
+      "paths": ["plugins/n8n-nodes-judgment-pack/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "n8n-build", "n8n-lint", "n8n-test", "n8n-smoke-checkers"]
+    },
+    {
+      "paths": ["plugins/activepieces/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "activepieces-build", "activepieces-lint", "activepieces-test", "activepieces-smoke-checkers"]
+    },
+    {
+      "paths": ["plugins/smoke/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "go-build", "smoke-stand-in", "n8n-smoke-checkers",
+                 "activepieces-build", "activepieces-smoke-checkers"]
+    },
+    {
+      "paths": ["Dockerfile", ".dockerignore", ".github/image_checks.py", ".github/test_image_checks.py",
+                ".github/fixtures/**", "build/setcap.go", "build/mkhomes.go", "build/probe.go"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "image-checks-test",
+                 "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
+                 "image-runs", "image-evaluates", "image-launch-overrides"]
+    },
+    {
+      "paths": [".github/fixtures/**"],
+      "checks": ["local-paths", "agent-docs", "diff-check", "go-test"]
+    },
+    {
+      "paths": ["build/**", ".goreleaser.yml", "THIRD_PARTY_NOTICES"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "third-party-notices", "release-programs", "release-archives"]
+    },
+    {
+      "paths": ["scripts/sync-agent-docs.sh", "scripts/dev/handover_check.sh", "scripts/checks/local-paths.sh"],
+      "checks": ["local-paths", "agent-docs", "diff-check"]
+    },
+    {
+      "paths": ["scripts/checks/no-third-party-modules.sh", "scripts/checks/core-resolves-into-stdlib.sh"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "no-third-party-modules", "core-resolves-into-stdlib"]
+    },
+    {
+      "paths": ["scripts/checks/acquisition-fixture.sh", "scripts/checks/attachment-schemas.sh",
+                "scripts/checks/rendering-schemas.sh", "scripts/checks/search-schema.sh",
+                "scripts/checks/adapter-conform.sh", "scripts/checks/adapters-not-into-core.sh"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "acquisition-fixture", "attachment-schemas", "rendering-schemas", "search-schema",
+                 "adapter-conform", "adapters-not-into-core"]
+    },
+    {
+      "paths": ["scripts/checks/release-toolchain.sh", "scripts/checks/release-programs.sh",
+                "scripts/checks/no-publisher-registration.sh"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "release-toolchain", "release-programs", "no-publisher-registration"]
+    },
+    {
+      "paths": ["scripts/checks/image-*.sh"],
+      "checks": ["local-paths", "agent-docs", "diff-check",
+                 "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
+                 "image-runs", "image-evaluates", "image-launch-overrides"]
+    },
+    {
+      "paths": ["scripts/checks/witness-scenario.sh"],
+      "checks": ["local-paths", "agent-docs", "diff-check", "witness-scenario"]
+    },
+    {
+      "paths": ["docs/**", "*.md", "LICENSE"],
+      "checks": ["local-paths", "agent-docs", "diff-check"]
+    }
+  ]
+}
