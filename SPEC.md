@@ -738,10 +738,13 @@ a rotation and never back.
 
 **Rotating.** `gateway rotate-key --seed <file> --registry <file>` rotates a gateway's
 key, the gateway stopped. On Unix a gateway holds an exclusive lock on its registry
-file (`flock`) for as long as it runs, taken once its registry is there and followed by
-its own reading again under the lock; `rotate-key` takes the same lock for as long as it
-writes, so it refuses while a gateway runs, and a gateway refuses to start while a
-rotation is under way. Elsewhere no lock is held, and that the gateway is stopped is its
+file (`flock`) for as long as it runs, taken once its registry is there; under the lock
+it looks again for a rotation under way beside its seed (below) and makes its own reading
+again, and it refuses to start, the lock let go, when either finds what it refuses, so a
+rotation begun or finished while the gateway started is refused as one found before.
+`rotate-key` takes the same lock for as long as it writes, so it refuses while a gateway
+runs, and a gateway refuses to start while a rotation is under way. Elsewhere no lock
+is held, and that the gateway is stopped is its
 operator's to see to. `rotate-key` reads the seed, refusing a seed that is not there or
 not a seed, since a key that cannot sign cannot name its successor; it refuses a rotation
 already under way beside the seed — a next seed (`<seed>.next`) or a kept record
