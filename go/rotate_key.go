@@ -114,14 +114,28 @@ func rotationPendingBeside(seedPath, registryPath string) error {
 	return nil
 }
 
+// rotationPendingBesideAny is rotationPendingBeside for each name a seed is
+// known by: serve --config's seed by the name configured, which rotate-key
+// --seed is given and keeps its files beside, and by the name it resolves
+// to, every link followed, so that neither hides a rotation under way.
+func rotationPendingBesideAny(seedPaths []string, registryPath string) error {
+	for _, seedPath := range seedPaths {
+		if err := rotationPendingBeside(seedPath, registryPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // holdEngineRegistry is the lock a gateway holds on its registry while it
 // runs, taken once the registry is there: refused when another holds it,
 // and, once held, the gateway's check for a rotation under way beside its
-// seed and its own reading of the registry are made again under it, so a
-// rotation begun or finished between the gateway's first look and the lock
-// is seen and refused, the lock let go. The file returned holds the lock
-// until it is closed; nil where the platform locks no registry.
-func holdEngineRegistry(seedPath, registryPath string, seed []byte) (io.Closer, error) {
+// seed, by each of seedPaths, and its own reading of the registry are made
+// again under it, so a rotation begun or finished between the gateway's
+// first look and the lock is seen and refused, the lock let go. The file
+// returned holds the lock until it is closed; nil where the platform locks
+// no registry.
+func holdEngineRegistry(seedPaths []string, registryPath string, seed []byte) (io.Closer, error) {
 	lock, err := lockRegistry(registryPath)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
@@ -129,7 +143,7 @@ func holdEngineRegistry(seedPath, registryPath string, seed []byte) (io.Closer, 
 		}
 		return nil, err
 	}
-	err = rotationPendingBeside(seedPath, registryPath)
+	err = rotationPendingBesideAny(seedPaths, registryPath)
 	if err == nil {
 		var data []byte
 		if data, _, err = readRegistryBytes(registryPath); err == nil {

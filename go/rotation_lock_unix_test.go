@@ -15,11 +15,11 @@ import (
 
 func TestRotateKeyRefusesWhileAGatewayHoldsTheRegistry(t *testing.T) {
 	seedPath, registry, _, before := rotationFixture(t, false)
-	hold, err := holdEngineRegistry(seedPath, registry, testSeed)
+	hold, err := holdEngineRegistry([]string{seedPath}, registry, testSeed)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := holdEngineRegistry(seedPath, registry, testSeed); !errors.Is(err, errRegistryHeld) {
+	if _, err := holdEngineRegistry([]string{seedPath}, registry, testSeed); !errors.Is(err, errRegistryHeld) {
 		t.Fatalf("a second gateway on a held registry: %v", err)
 	}
 	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); !errors.Is(err, errRegistryHeld) {
@@ -35,7 +35,7 @@ func TestRotateKeyRefusesWhileAGatewayHoldsTheRegistry(t *testing.T) {
 	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); err != nil {
 		t.Fatalf("rotate-key once the gateway let go: %v", err)
 	}
-	if _, err := holdEngineRegistry(seedPath, registry, testSeed); err == nil {
+	if _, err := holdEngineRegistry([]string{seedPath}, registry, testSeed); err == nil {
 		t.Fatal("a gateway under the key it rotated from held the registry")
 	}
 }

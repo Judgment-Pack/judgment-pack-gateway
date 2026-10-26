@@ -96,6 +96,7 @@ var serveCommands = []struct {
 }{
 	{"serve", servedFiles},
 	{"serve --config", engineFiles},
+	{"serve --config, its seed a link", linkedEngineFiles},
 }
 
 func gatewayFilesIn(t *testing.T, dir string) gatewayFiles {
@@ -121,6 +122,23 @@ func servedFiles(t *testing.T) ([]string, gatewayFiles) {
 // test skipped where there is none.
 func engineFiles(t *testing.T) ([]string, gatewayFiles) {
 	t.Helper()
+	args, f, _ := engineFilesWith(t, false)
+	return args, f
+}
+
+// linkedEngineFiles is engineFiles with the seed configured as a link, the
+// signer's own, to the seed in a directory of its own: the configured name
+// is the one gateway rotate-key --seed is given.
+func linkedEngineFiles(t *testing.T) ([]string, gatewayFiles) {
+	t.Helper()
+	args, f, _ := engineFilesWith(t, true)
+	return args, f
+}
+
+// engineFilesWith is engineFiles, the seed configured as a link when
+// linked, and the name the seed resolves to.
+func engineFilesWith(t *testing.T, linked bool) ([]string, gatewayFiles, string) {
+	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Skip("a root signer is refused first")
 	}
@@ -138,6 +156,24 @@ func engineFiles(t *testing.T) ([]string, gatewayFiles) {
 		t.Skip("/dev/shm is on the temporary directory's device here")
 	}
 	f := gatewayFilesIn(t, dir)
+	resolved := f.seed
+	if linked {
+		keys := filepath.Join(dir, "keys")
+		if err := os.Mkdir(keys, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		resolved = filepath.Join(keys, "gateway.seed")
+		if err := os.Rename(f.seed, resolved); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(resolved, f.seed); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		if resolved, err = filepath.EvalSymlinks(f.seed); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for _, sub := range []string{"log", "decisions", "catalog"} {
 		if err := os.Mkdir(filepath.Join(dir, sub), 0o700); err != nil {
 			t.Fatal(err)
@@ -156,7 +192,7 @@ func engineFiles(t *testing.T) ([]string, gatewayFiles) {
 	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return []string{"--config", path}, f
+	return []string{"--config", path}, f, resolved
 }
 
 // A gateway does not start beside a rotation under way, a kept record or a
@@ -274,14 +310,13 @@ func TestServeHoldsTheRegistryWhileItRuns(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			laid := resumeFiles(t, f.seed, f.registry)
 			code, _, stderr = rotateKeyCommand("--resume", "--seed", f.seed, "--registry", f.registry)
 			if code != 1 || !strings.Contains(stderr, "held by a running gateway") {
 				t.Fatalf("--resume while the gateway runs: %d %s", code, stderr)
 			}
+			requireResumeChangedNothing(t, f.seed, f.registry, 1, laid)
 			requireUnchanged(t, f.registry, "")
-			if seed, err := loadSeed(f.seed); err != nil || !bytes.Equal(seed, testSeed) {
-				t.Fatal("the seed was switched while the gateway runs")
-			}
 
 			if code := g.stop(); code != 0 {
 				t.Fatalf("the gateway stopped with exit %d: %s", code, g.stderr())
@@ -293,5 +328,53 @@ func TestServeHoldsTheRegistryWhileItRuns(t *testing.T) {
 			k0, k1 := ed25519.NewKeyFromSeed(testSeed), ed25519.NewKeyFromSeed(next)
 			requireUnchanged(t, f.registry, rotationLines(k0, k1, 1, "2026-10-25T00:00:00Z"))
 		})
+	}
+}
+
+// An engine whose seed is configured as a link looks for a rotation under way
+// beside both of the seed's names, the one configured, which gateway
+// rotate-key --seed is given, and the one the link resolves to: found beside
+// either before the start, it refuses before it makes its store; found beside
+// either as it starts, after its first look, it refuses under the lock.
+func TestServeConfigLooksBesideBothNamesOfALinkedSeed(t *testing.T) {
+	for _, when := range []string{"before the start", "as it starts"} {
+		for _, name := range []string{"the configured name", "the resolved name"} {
+			t.Run(when+", beside "+name, func(t *testing.T) {
+				args, f, resolved := engineFilesWith(t, true)
+				beside := f.seed
+				if name == "the resolved name" {
+					beside = resolved
+				}
+				plant := func() {
+					if err := os.WriteFile(beside+".rotation", []byte("left by a rotation that stopped\n"), 0o600); err != nil {
+						t.Error(err)
+					}
+				}
+				if when == "before the start" {
+					plant()
+				} else {
+					startHook = plant
+					t.Cleanup(func() { startHook = func() {} })
+				}
+				g := serveInProcess(t, args)
+				if !g.exited {
+					g.stop()
+					t.Fatalf("the engine started beside a rotation pending beside %s", name)
+				}
+				out := g.stderr()
+				if g.code != 1 || !strings.Contains(out, beside+".rotation is there") || !strings.Contains(out, "rotate-key --resume") {
+					t.Fatalf("exit %d: %s", g.code, out)
+				}
+				_, err := os.Lstat(f.store)
+				if made := err == nil; made != (when == "as it starts") {
+					t.Fatalf("the store made: %v, %s", made, when)
+				}
+				if lock, err := lockRegistry(f.registry); err != nil {
+					t.Fatalf("the lock was kept: %v", err)
+				} else {
+					lock.Close()
+				}
+			})
+		}
 	}
 }

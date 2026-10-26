@@ -578,9 +578,9 @@ func TestResumeCutsNothingButTheRotationsOwnBytes(t *testing.T) {
 }
 
 // pendingResume is a rotation of the fixture's key torn in its key-rotation,
-// left for --resume: the registry as the tear left it, the kept record's
-// bytes, and the key of the next seed.
-func pendingResume(t *testing.T, seedPath, registry string) (torn, kept []byte, k1 ed25519.PrivateKey) {
+// left for --resume: the registry as the tear left it, and the key of the
+// next seed.
+func pendingResume(t *testing.T, seedPath, registry string) (torn []byte, k1 ed25519.PrivateKey) {
 	t.Helper()
 	tornLog(t, 200, false)
 	if _, err := rotateKey(seedPath, registry, fixedStamp("2026-10-25T00:00:00Z"), rand.Reader); !errors.Is(err, errRotationPending) {
@@ -588,26 +588,37 @@ func pendingResume(t *testing.T, seedPath, registry string) (torn, kept []byte, 
 	}
 	openRotationLog = func(path string) (*fsLog, error) { return openFsLog(path) }
 	torn, _ = os.ReadFile(registry)
-	kept, _ = os.ReadFile(seedPath + ".rotation")
 	next, err := loadSeed(seedPath + ".next")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return torn, kept, ed25519.NewKeyFromSeed(next)
+	return torn, ed25519.NewKeyFromSeed(next)
+}
+
+// resumeFiles is what a --resume may change, read byte for byte: the
+// registry, the seed, the next seed and the kept record.
+func resumeFiles(t *testing.T, seedPath, registry string) map[string]string {
+	t.Helper()
+	files := map[string]string{}
+	for _, path := range []string{registry, seedPath, seedPath + ".next", seedPath + ".rotation"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[path] = string(data)
+	}
+	return files
 }
 
 // requireResumeChangedNothing holds a refused --resume to what it found:
-// the registry, the kept record, the seed and the next seed as they were,
-// and no seed kept aside.
-func requireResumeChangedNothing(t *testing.T, seedPath, registry string, ordinal int, wantRegistry, wantKept []byte) {
+// the registry, the seed, the next seed and the kept record byte for byte
+// as they were before it, and no seed kept aside.
+func requireResumeChangedNothing(t *testing.T, seedPath, registry string, ordinal int, before map[string]string) {
 	t.Helper()
-	requireUnchanged(t, registry, string(wantRegistry))
-	requireUnchanged(t, seedPath+".rotation", string(wantKept))
-	if seed, err := loadSeed(seedPath); err != nil || !bytes.Equal(seed, testSeed) {
-		t.Fatal("the seed was switched by a refused --resume")
-	}
-	if _, err := os.Lstat(seedPath + ".next"); err != nil {
-		t.Fatalf("the next seed is gone after a refused --resume: %v", err)
+	for path, data := range resumeFiles(t, seedPath, registry) {
+		if data != before[path] {
+			t.Fatalf("a refused --resume changed %s", path)
+		}
 	}
 	if _, err := os.Lstat(seedPath + ".rotated-" + fmt.Sprint(ordinal)); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("the seed was kept aside by a refused --resume")
@@ -624,7 +635,7 @@ func TestResumeHoldsTheRegistryBeforeTheRotationToTheKeptDigest(t *testing.T) {
 	for _, c := range []string{"another seal in the first one's place", "another digest kept", "the registry shorter than the kept length"} {
 		t.Run(c, func(t *testing.T) {
 			seedPath, registry, k0, before := rotationFixture(t, false)
-			torn, kept, _ := pendingResume(t, seedPath, registry)
+			torn, _ := pendingResume(t, seedPath, registry)
 			other := []byte(sealLine(t, k0, "b", 0))
 			if len(other) != len(before) || bytes.Equal(other, before) {
 				t.Fatal("the other seal is not another of the same length")
@@ -642,8 +653,7 @@ func TestResumeHoldsTheRegistryBeforeTheRotationToTheKeptDigest(t *testing.T) {
 				}
 				sum := sha256.Sum256(other)
 				k.digest = "sha256:" + hex.EncodeToString(sum[:])
-				kept = k.bytes()
-				if err := os.WriteFile(seedPath+".rotation", kept, 0o600); err != nil {
+				if err := os.WriteFile(seedPath+".rotation", k.bytes(), 0o600); err != nil {
 					t.Fatal(err)
 				}
 			case "the registry shorter than the kept length":
@@ -652,10 +662,11 @@ func TestResumeHoldsTheRegistryBeforeTheRotationToTheKeptDigest(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			found := resumeFiles(t, seedPath, registry)
 			if _, err := resumeRotation(seedPath, registry, nil, nil); err == nil || !strings.Contains(err.Error(), "is not the one the rotation walked") {
 				t.Fatalf("--resume over a registry the rotation did not walk: %v", err)
 			}
-			requireResumeChangedNothing(t, seedPath, registry, 1, torn, kept)
+			requireResumeChangedNothing(t, seedPath, registry, 1, found)
 		})
 	}
 }
@@ -667,7 +678,7 @@ func TestResumeHoldsTheRegistryBeforeTheRotationToTheKeptDigest(t *testing.T) {
 // nothing is changed.
 func TestResumeHoldsTheKeptOrdinalToTheWalk(t *testing.T) {
 	seedPath, registry, k0, before := rotationFixture(t, false)
-	_, _, k1 := pendingResume(t, seedPath, registry)
+	_, k1 := pendingResume(t, seedPath, registry)
 	// the rotation stopped after its record was kept and before a byte of it
 	// was appended
 	if err := os.WriteFile(registry, before, 0o600); err != nil {
@@ -679,14 +690,14 @@ func TestResumeHoldsTheKeptOrdinalToTheWalk(t *testing.T) {
 	}
 	k.rotation = 2
 	k.record = []byte(rotationLines(k0, k1, 2, "2026-10-25T00:00:00Z"))
-	kept := k.bytes()
-	if err := os.WriteFile(seedPath+".rotation", kept, 0o600); err != nil {
+	if err := os.WriteFile(seedPath+".rotation", k.bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	found := resumeFiles(t, seedPath, registry)
 	if _, err := resumeRotation(seedPath, registry, nil, nil); err == nil || !strings.Contains(err.Error(), "does not end at the key rotated from") {
 		t.Fatalf("--resume of a rotation whose ordinal is not the next: %v", err)
 	}
-	requireResumeChangedNothing(t, seedPath, registry, 2, before, kept)
+	requireResumeChangedNothing(t, seedPath, registry, 2, found)
 }
 
 // The switch stopped after the seed was moved aside: --resume moves the next
