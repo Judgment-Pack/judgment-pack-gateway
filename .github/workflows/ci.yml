@@ -5,8 +5,10 @@ name: CI
 # and its legs run the core's Go steps natively on each platform. `check` sets the toolchains up
 # from the manifest and runs every step of it: the core, the adapters, the release contents, the
 # plugins, the second implementation, the engine image, the witness scenario and the agreement of
-# the two paths. Each of the steps that were jobs of their own is a step of dev.json, and the
-# longer ones are scripts under scripts/checks/ with the comments they had here.
+# the two paths. On a pull request it runs the steps jpdev.json maps the changed paths to
+# (`check.sh --changed`); on a push to main and when the release calls it, the whole list. Each
+# of the steps that were jobs of their own is a step of dev.json, and the longer ones are scripts
+# under scripts/checks/ with the comments they had here.
 
 on:
   pull_request:
@@ -96,9 +98,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
+      # The whole history, so that --changed finds the merge base with the base branch.
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       # First, so that a manifest that does not parse fails before the long steps start.
       - name: Read the toolchains from dev.json and release.yml
@@ -133,5 +137,16 @@ jobs:
           python-version: ${{ steps.dev.outputs.python }}
       - name: Setup steps
         run: scripts/dev/check.sh --setup
+      # A pull request runs the checks jpdev.json maps its changed paths to, and the whole list
+      # when a path is unmapped or the mapping, dev.json or the runner changed. A push to main and
+      # the release's call run the whole list, and only that run is what a release is held to.
       - name: Checks
-        run: scripts/dev/check.sh --all
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT" = pull_request ]; then
+            scripts/dev/check.sh --all --changed "origin/$BASE_REF"
+          else
+            scripts/dev/check.sh --all
+          fi
