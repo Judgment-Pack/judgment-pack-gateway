@@ -70,17 +70,20 @@ CI. That it must, as the commit defines it, stands.
 - Good, because a newer runner image or toolchain since `main`'s run, or a leg that did not run,
   is a refusal by name rather than a different run passing.
 - Bad, because a release must follow its commit's CI within 48 hours, or take the fresh route.
-- Bad, because the kit's gate admits `vX.Y.Z` alone: a prerelease tag is refused (`tag-syntax`)
-  until the kit admits one. A prerelease is not released by this workflow meanwhile.
-- Bad, because what the gate cannot see stays unseen: the dependencies `pip` resolves for the setup
-  step's `jsonschema`, and the macOS and Windows image versions, which are recorded and not
-  compared.
-- Revisit when the kit's gate admits prereleases, or when a check of `ci.yml` comes to depend on
-  the tag (it then belongs in the release workflow, not in the evidence).
+- Bad, because the kit's gate accepts `vX.Y.Z` alone: a prerelease tag is refused (`tag-syntax`)
+  until the kit accepts one ([devkit #54](https://github.com/Judgment-Pack/judgment-pack-devkit/issues/54)). A prerelease is not
+  released by this workflow meanwhile, though its own admission still reads the prerelease grammar
+  of determination 1 of ADR-0008.
+- Bad, because what the gate cannot see stays unseen, a known bound: the dependencies `pip`
+  resolves for the setup step's `jsonschema` (test-only; a hash-locked requirements file would
+  close it), and the macOS and Windows image versions, which are recorded and not compared.
+- Revisit when the kit's gate accepts prereleases (devkit #54), or when a check of `ci.yml` comes
+  to depend on the tag (it then belongs in the release workflow, not in the evidence).
 
 ## More information
 
-- Issue #323; the development kit's issue #37 and its `docs/ci-evidence.md`.
+- Issue #323; the development kit's issues #37 (the gate) and #54 (prerelease tags), and its
+  `docs/ci-evidence.md`.
 - [`release.yml`](../../.github/workflows/release.yml), [`ci.yml`](../../.github/workflows/ci.yml),
   [`.github/ci-evidence.json`](../../.github/ci-evidence.json),
   [`.github/test_ci_evidence.py`](../../.github/test_ci_evidence.py).

@@ -7,6 +7,9 @@ describes, so that the three cannot drift apart unnoticed until a release refuse
   gives it, and uploads it under the artifact name the gate reads;
 - the Go each leg and the check job run is the one release.yml names, and each profile pins it;
 - every input path is a tracked file, and a change to it selects the step that runs this file;
+- every file of the tree that pins what a run fetches or resolves (an image by digest, a module or
+  package lock, a requirements file, the manifest, the packer's configuration, a file ci.yml reads)
+  is an input, so a new pin file fails here until it is recorded;
 - release.yml takes the evidence and calls no workflow: the gate runs on the tagged commit, with
   the check job's toolchains set up by the same actions, and keeps its decision record;
 - scripts/dev/release_evidence.py is the development kit's lib/release_evidence.py of the kit
@@ -34,6 +37,32 @@ KIT_DIGESTS = {
     'v0.10.0': 'd44af3df07f64036013ba9967a54cf799cec678068f0937395d6a2eef370e0e8',
 }
 CAPTURE_GUARD = "github.ref == 'refs/heads/main' && github.event_name == 'push'"
+# A reference by digest, as an image pull or run names one (the name may be assembled apart).
+IMAGE_PIN = re.compile(r'@sha256:[0-9a-f]{64}')
+# Lock, requirements and module files, by name, wherever they are.
+LOCK_FILE = re.compile(r'(^|/)(go\.(mod|sum|work)|package-lock\.json|npm-shrinkwrap\.json|yarn\.lock|'
+                       r'pnpm-lock\.yaml|[^/]*requirements[^/]*\.txt|Pipfile\.lock|poetry\.lock|uv\.lock|'
+                       r'Cargo\.lock)$')
+# Read by their tools under these names: the image definition, the runner's manifest and mapping, the
+# packer's configuration.
+NAMED = re.compile(r'(^|/)(Dockerfile[^/]*|Containerfile|\.dockerignore|dev\.json|jpdev\.json|'
+                   r'\.goreleaser\.ya?ml)$')
+# Files that name an image by digest and that no reused check pulls or starts: data, a placeholder,
+# or a script only an on-demand workflow runs. Each says why; any other such file is a pin.
+NOT_PULLED = {
+    'adapters/internal/containers/containers_test.go': 'a placeholder digest the reference parser is tested on',
+    'adapters/mcp/descriptors_test.go': 'a placeholder binding in a descriptor test',
+    'adapters/mcp/testdata/stdio-golden/check-descriptors.json': 'a recorded descriptor, compared as bytes',
+    'adapters/testdata/adapter-conform/conform_test.go': 'a placeholder image in a conformance fixture',
+    'go/catalog_test.go': 'the catalog read as data, never started',
+    'go/descriptors_test.go': 'a placeholder binding in a descriptor test',
+    'go/taxonomy_producer_test.go': 'a placeholder binding in a taxonomy fixture',
+    'plugins/smoke/n8n/run.sh': 'run by smoke.yml on demand, not by ci.yml',
+    'plugins/smoke/testing/make_flatted_fixtures.cjs': 'a comment naming the image the fixtures came from',
+    'testdata/catalog-v1/postgres.json': 'a catalog of an earlier version, read as data',
+    'testdata/tool-descriptors/rendered.json': 'a recorded rendering, compared as bytes',
+    'testdata/tool-taxonomy/v2.json': 'a taxonomy fixture, read as data',
+}
 UPLOAD = 'actions/upload-artifact@'
 LABEL_OS = {'ubuntu': 'Linux', 'macos': 'macOS', 'windows': 'Windows'}
 GOOS = {'Linux': 'linux', 'macOS': 'darwin', 'Windows': 'windows'}
@@ -216,6 +245,23 @@ def tracked():
     output = subprocess.run(['git', 'ls-files', '-z'], cwd=ROOT, check=True,
                             stdout=subprocess.PIPE).stdout.decode('utf-8')
     return set(output.split('\0')) - {''}
+
+
+def pin_files(files):
+    """The files of the tree that pin what a run of ci.yml fetches or resolves."""
+    found = {path for path in files if LOCK_FILE.search(path) or NAMED.search(path)}
+    for path in files:
+        if path.endswith('.md') or path in NOT_PULLED:
+            continue
+        with open(os.path.join(ROOT, path), 'rb') as handle:
+            if IMAGE_PIN.search(handle.read().decode('utf-8', 'replace')):
+                found.add(path)
+    # Every tracked file ci.yml's steps name (its comments aside), such as release.yml, whose Go
+    # the check job sets up.
+    workflow = '\n'.join(line for line in read('.github/workflows/ci.yml').splitlines()
+                         if not line.lstrip().startswith('#'))
+    found |= {token for token in re.findall(r'[A-Za-z0-9_./-]+', workflow) if token in files}
+    return found
 
 
 def vendored(name, path):
@@ -428,6 +474,19 @@ class ConfigurationTest(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIn(path, files)
                 self.assertTrue(selects(path, 'ci-evidence'), 'a change to %s does not run ci-evidence' % path)
+
+    def test_every_pin_file_of_the_tree_is_an_input(self):
+        files = tracked()
+        recorded = set(self.config['inputs']) | {CONFIG, HELPER, 'dev.json', self.spec['path']}
+        missing = sorted(pin_files(files) - recorded)
+        self.assertEqual(missing, [], 'pin files the evidence does not record: add them to inputs')
+        for path, why in NOT_PULLED.items():
+            with self.subTest(path=path):
+                self.assertTrue(why)
+                self.assertIn(path, files, 'a stale entry of NOT_PULLED')
+                with open(os.path.join(ROOT, path), 'rb') as handle:
+                    self.assertRegex(handle.read().decode('utf-8', 'replace'), IMAGE_PIN)
+                self.assertNotIn(path, recorded)
 
     def test_release_takes_the_evidence_and_calls_no_workflow(self):
         jobs = self.release['jobs']

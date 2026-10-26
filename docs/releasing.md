@@ -127,15 +127,13 @@ If no signing key is configured, stop and settle the signing policy; do not repl
 with an unsigned one. Signing is the maintainer's practice and the workflow does not check it: an
 unsigned tag is admitted like a signed one. A tag is never moved or reused. A fix is a new version.
 
-A tag is `vX.Y.Z` or `vX.Y.Z-<prerelease>`, as SemVer 2.0.0 writes them. Build metadata
-(`+...`) is refused. A tag with a hyphen (`v0.5.0-rc.1`) is a prerelease: it is published as one
-and is never marked latest. The first release made by this workflow should be a release candidate,
-since no run of the workflow precedes it.
-
-The release evidence gate the workflow runs ([below](#the-ci-evidence-the-release-takes)) is the
-development kit's, and it admits `vX.Y.Z` alone: a prerelease tag is refused there, with
-`tag-syntax`, after the tag is admitted and before anything is built. Until the kit's gate admits a
-prerelease, this workflow releases no prerelease.
+A tag is `vX.Y.Z`. Build metadata (`+...`) is refused. The workflow's own admission also reads
+`vX.Y.Z-<prerelease>`, as SemVer 2.0.0 writes it, and would publish a tag with a hyphen
+(`v0.5.0-rc.1`) as a prerelease, never marked latest; but the release evidence gate it runs next
+([below](#the-ci-evidence-the-release-takes)) is the development kit's, which accepts `vX.Y.Z`
+alone, and refuses a prerelease tag with `tag-syntax` before anything is built. Until the kit's gate
+accepts prerelease tags ([devkit #54](https://github.com/Judgment-Pack/judgment-pack-devkit/issues/54)), this workflow releases no
+prerelease.
 
 ## What the workflow does
 
@@ -218,11 +216,19 @@ What it reuses and what it still does at the release:
 No check of `ci.yml` depends on the tag, so nothing the gate takes is tag-sensitive. What a run
 depends on beyond the commit, and how the gate holds it:
 
-- the workflow files, `dev.json`, `jpdev.json`, the runner scripts, every `go.mod` and `go.sum`, the
-  lock files of the plugins and of the second implementation, the Python requirements of the setup
-  step, the Dockerfile with its digest-pinned images and the files it copies, the witness
-  scenario's pinned runtime and the agreement test's pinned image: the commit holds them, and the
-  evidence records each by its git object id;
+- the pin files: the workflow files, `dev.json`, `jpdev.json`, the runner scripts, every `go.mod`
+  and `go.sum`, the lock files of the plugins and of the second implementation, the Python
+  requirements of the setup step, `.goreleaser.yml`, the Dockerfile with its digest-pinned images,
+  `.dockerignore` and the two programs it copies one by one (`build/setcap.go`, `build/mkhomes.go`),
+  the image check's builder image (`scripts/checks/image-root-unwritable.sh`), the witness
+  scenario's pinned runtime (`scripts/checks/witness-scenario.sh`), and the images the agreement of
+  the two paths starts: its world database (`adapters/agreement/agreement_test.go`) and the
+  catalog's server images (`catalog/postgres.json`). The commit holds them, and the evidence
+  records each by its git object id. The trees the Dockerfile copies whole (`go/`, `adapters/`,
+  `catalog/`, `corpus/`) are the commit's too, and are not recorded file by file.
+  `.github/test_ci_evidence.py` finds the pin files in the tree (every reference by digest outside
+  the documents and the data it names, every module, lock and requirements file, the manifest, the
+  packer's configuration and every file `ci.yml` names) and fails until each is recorded;
 - the Go toolchain: named exactly in `release.yml`, set up by every leg and by `check`, and pinned
   per platform in the configuration (`.github/test_ci_evidence.py` holds the three equal);
 - Node `22` and Python `3.12` as `dev.json` names them, and Docker: whatever the hosted image
@@ -232,8 +238,15 @@ depends on beyond the commit, and how the gate holds it:
   versions of it, and the route may have to wait until they do not;
 - the macOS and Windows images: recorded in the evidence, and not compared; their platform and
   their Go are;
-- not pinned by anything: the dependencies of the setup step's `jsonschema`, which `pip` resolves
-  when the step runs. The gate cannot see them.
+- a known bound, pinned by nothing: the dependencies of the setup step's `jsonschema==4.23.0`,
+  which `pip` resolves when the step runs. The gate cannot see them, and the checks that use them
+  (the schema checks, which validate test fixtures; nothing released links them) are reused all
+  the same. A hash-locked requirements file installed with `--require-hashes` would close it.
+
+Capture runs on a push to `main` wherever the workflow runs: in a fork with Actions on, a push to
+the fork's own `main` fails each job's capture with `context-repository`, since the configuration
+names this repository. That says nothing of this repository's evidence, which the gate reads by this
+repository's ids alone.
 
 The decision, `reuse` or `refuse` with its code, is the last line of the step `Reuse main's
 exact-commit CI evidence, or refuse`, and the whole record (the run and attempt, the input
