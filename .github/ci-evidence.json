@@ -59,10 +59,22 @@
       },
       "compare": "release-runner",
       "tools": {
-        "go": ["go", "version"],
-        "node": ["node", "--version"],
-        "python": ["python3", "--version"],
-        "docker": ["docker", "--version"]
+        "go": [
+          "go",
+          "version"
+        ],
+        "node": [
+          "node",
+          "--version"
+        ],
+        "python": [
+          "python3",
+          "--version"
+        ],
+        "docker": [
+          "docker",
+          "--version"
+        ]
       },
       "pins": {
         "go": "go version go1.26.5 linux/amd64"
@@ -76,7 +88,10 @@
       },
       "compare": "release-runner",
       "tools": {
-        "go": ["go", "version"]
+        "go": [
+          "go",
+          "version"
+        ]
       },
       "pins": {
         "go": "go version go1.26.5 linux/amd64"
@@ -90,7 +105,10 @@
       },
       "compare": "pins",
       "tools": {
-        "go": ["go", "version"]
+        "go": [
+          "go",
+          "version"
+        ]
       },
       "pins": {
         "go": "go version go1.26.5 darwin/arm64"
@@ -104,7 +122,10 @@
       },
       "compare": "pins",
       "tools": {
-        "go": ["go", "version"]
+        "go": [
+          "go",
+          "version"
+        ]
       },
       "pins": {
         "go": "go version go1.26.5 windows/amd64"
@@ -121,39 +142,52 @@
       ],
       "path": ".github/workflows/ci.yml",
       "name": "CI",
-      "events": ["push"],
+      "events": [
+        "push"
+      ],
       "jobs": {
         "check": {
           "name": "check",
           "job_id": "check",
-          "labels": ["ubuntu-latest"],
+          "labels": [
+            "ubuntu-latest"
+          ],
           "profile": "check",
           "checks": "all",
           "optional_skips": [],
           "setup": true
         },
         "go-ubuntu-latest": {
-          "name": "ubuntu-latest · Go 1.26",
+          "name": "ubuntu-latest \u00b7 Go 1.26",
           "job_id": "go",
-          "labels": ["ubuntu-latest"],
+          "labels": [
+            "ubuntu-latest"
+          ],
           "profile": "go-linux",
           "checks": []
         },
         "go-macos-latest": {
-          "name": "macos-latest · Go 1.26",
+          "name": "macos-latest \u00b7 Go 1.26",
           "job_id": "go",
-          "labels": ["macos-latest"],
+          "labels": [
+            "macos-latest"
+          ],
           "profile": "go-macos",
           "checks": []
         },
         "go-windows-latest": {
-          "name": "windows-latest · Go 1.26",
+          "name": "windows-latest \u00b7 Go 1.26",
           "job_id": "go",
-          "labels": ["windows-latest"],
+          "labels": [
+            "windows-latest"
+          ],
           "profile": "go-windows",
           "checks": []
         }
       }
     }
+  },
+  "tag": {
+    "prerelease": true
   }
 }
