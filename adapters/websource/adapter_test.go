@@ -53,6 +53,7 @@ func TestWebSnapshotAndRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeEnvelope(t, "web", out)
 	var envelope struct {
 		Result      json.RawMessage
 		Acquisition struct{ Endpoint, Snapshot, PeerIdentity string }

@@ -1,0 +1,1 @@
+{"request": {"tool": "drop_table", "arguments": {}}, "expect": "refused"}

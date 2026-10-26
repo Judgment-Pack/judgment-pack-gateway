@@ -1,0 +1,23 @@
+{
+  "acquisition": {
+    "adapter": {
+      "name": "adapter-example",
+      "version": "1.0.0",
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "endpoint": "warehouse.internal:5432",
+    "statement": "select id, status from decisions where id = 101",
+    "snapshot": "{\"cursor\":\"2026-10-25T11:59:00Z\"}",
+    "peerIdentity": null,
+    "schema": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    "upstreamToken": null,
+    "observedAt": "2026-10-25T12:00:00Z"
+  },
+  "result": [
+    {
+      "id": 101
+    },
+    0.5
+  ],
+  "page": true
+}

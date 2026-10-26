@@ -108,6 +108,7 @@ func TestGmailSearchSelectAndVerifiedTextExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeEnvelope(t, "gmail", out)
 	if strings.Contains(string(out), "mail-private") {
 		t.Fatal("credential escaped into acquisition")
 	}

@@ -157,6 +157,7 @@ func TestAzureDevOpsMCPReadsTheRemoteServer(t *testing.T) {
 		if err != nil {
 			t.Fatal(k.organization, err)
 		}
+		writeEnvelope(t, "azure-devops.mcp-"+k.tool, out)
 		if got := adoMethods(f); got != "initialize,notifications/initialized,tools/list,tools/call,DELETE" {
 			t.Fatalf("%s: %s", k.organization, got)
 		}

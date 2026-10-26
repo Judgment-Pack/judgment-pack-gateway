@@ -1,0 +1,25 @@
+{
+  "acquisition": {
+    "adapter": {
+      "name": "adapter-mcp",
+      "version": "1.0.0",
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "endpoint": "https://mcp.example/mcp",
+    "statement": "{\"arguments\":{\"id\":101},\"tool\":\"lookup\"}",
+    "snapshot": null,
+    "peerIdentity": "tls:sha256:89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+    "schema": null,
+    "upstreamToken": null,
+    "observedAt": "2026-10-25T12:00:00Z",
+    "transport": "http",
+    "server": {
+      "name": 7,
+      "version": "2.0"
+    }
+  },
+  "result": {
+    "id": 101,
+    "status": "approved"
+  }
+}

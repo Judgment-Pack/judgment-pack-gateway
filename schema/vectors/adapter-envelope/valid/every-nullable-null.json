@@ -1,0 +1,17 @@
+{
+  "acquisition": {
+    "adapter": {
+      "name": "adapter-example",
+      "version": "1.0.0",
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "endpoint": null,
+    "statement": null,
+    "snapshot": null,
+    "peerIdentity": null,
+    "schema": null,
+    "upstreamToken": null,
+    "observedAt": "2026-10-25T12:00:00Z"
+  },
+  "result": null
+}

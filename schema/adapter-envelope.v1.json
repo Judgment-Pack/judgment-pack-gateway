@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Adapter envelope, version 1",
+  "description": "What an adapter source writes on stdout: the envelope of SPEC.md section 6, \"Adapter sources\", which is normative, as the gateway's signer reads it (parseEnvelope, go/serve.go). The schema is closed at every level, as the signer tolerates nothing it did not ask for; a verifier reading the receipt the envelope becomes tolerates members it does not know, and that reading is not this one. Every valid vector under schema/vectors/adapter-envelope/valid is accepted by this schema and by the signer, and every invalid vector is refused by both (go/adapter_envelope_test.go and schema/check_adapter_envelope.py hold them to it). Four things are the gateway's and not a schema's, and gateway adapter-conform, which runs an adapter as gateway serve does, applies them all. First, the envelope is one JSON text read in the canonical domain of SPEC.md section 1.1: a number is an integer written in digits, so 1.0 and 1e2 are refused although a schema reads them as the integers 1 and 100; a member named twice, text that is not UTF-8, a lone surrogate, and nesting deeper than 10000 levels are refused before any member is read. A schema sees parsed JSON, and of the domain holds only that every number is an integer of the safe range. Second, transport and server are what an mcp adapter that reached a remote server adds; the schema accepts them as the signer reads an envelope, and the gateway refuses them from a source the operator declared with another shape (--source-shape). Third, the bounds the operator sets on a source: its output (--source-max-output, one mebibyte by default) and its time (--source-timeout). Fourth, a result nested deeper than the acquire response can carry is refused before anything is retained. Version 1: a member added to the envelope, or a form changed, is a new version of this file.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "acquisition",
+    "result"
+  ],
+  "properties": {
+    "acquisition": {
+      "$ref": "#/$defs/acquisition"
+    },
+    "result": {
+      "description": "The value the gateway attests: resultDigest is over its canonical form, it is retained as the artifact, and the acquire response returns it.",
+      "$ref": "#/$defs/value"
+    },
+    "page": {
+      "description": "Present, true, and result is then an array of items: the receipt carries pageItems, the digest of each item's canonical form, in order.",
+      "const": true
+    }
+  },
+  "dependentSchemas": {
+    "page": {
+      "properties": {
+        "result": {
+          "type": "array"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "value": {
+      "description": "A JSON value as far as a schema sees the canonical domain: every number in it, at any depth, an integer of the safe range.",
+      "if": {
+        "type": "number"
+      },
+      "then": {
+        "type": "integer",
+        "minimum": -9007199254740991,
+        "maximum": 9007199254740991
+      },
+      "items": {
+        "$ref": "#/$defs/value"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/value"
+      }
+    },
+    "digest": {
+      "description": "\"sha256:\" and 64 lowercase hexadecimal characters. The length is stated beside the pattern for a validator whose \"$\" matches before a final line feed.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "maxLength": 71
+    },
+    "stamp": {
+      "description": "YYYY-MM-DDThh:mm:ssZ: UTC, whole seconds, a day the month has (the twenty-ninth of February in a leap year of the Gregorian calendar alone), an hour from 00 to 23 and a second from 00 to 59.",
+      "type": "string",
+      "pattern": "^(?:[0-9]{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12][0-9]|3[01])|(?:0[469]|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:[02468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$",
+      "maxLength": 20
+    },
+    "acquisition": {
+      "description": "The acquisition as the adapter recorded it. shape is the operator's and pageItems the gateway's, so an envelope naming either is refused; statement is the statement text itself, which the gateway commits to under a salt of its own.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "adapter",
+        "endpoint",
+        "statement",
+        "snapshot",
+        "peerIdentity",
+        "schema",
+        "upstreamToken",
+        "observedAt"
+      ],
+      "properties": {
+        "adapter": {
+          "description": "What fetched: a name, a version and the digest that identifies it.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version",
+            "digest"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        "endpoint": {
+          "description": "The system reached, as the adapter names it; held to the form of a remote server's endpoint where transport is present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "statement": {
+          "description": "The query, resource path or tool call, as text, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot": {
+          "description": "Which version of the data was read, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "peerIdentity": {
+          "description": "The identity of the peer that answered, or null; held to a form where transport is present.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "schema": {
+          "description": "The digest of the schema the result was read under, or null.",
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/digest"
+            }
+          ]
+        },
+        "upstreamToken": {
+          "description": "A token the upstream system issued for the read, or null.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "observedAt": {
+          "description": "When the adapter read the result.",
+          "$ref": "#/$defs/stamp"
+        },
+        "transport": {
+          "description": "Present only with server, from an mcp adapter that reached a remote server over Streamable HTTP (ADR-0015).",
+          "const": "http"
+        },
+        "server": {
+          "description": "Present only with transport: the name and version the remote server gave itself.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "dependentRequired": {
+        "transport": [
+          "server"
+        ],
+        "server": [
+          "transport"
+        ]
+      },
+      "dependentSchemas": {
+        "transport": {
+          "$ref": "#/$defs/remote"
+        }
+      }
+    },
+    "remote": {
+      "description": "A remote MCP server (SPEC.md section 1.2a): the endpoint is of the form below, and the peer identity is tls:sha256: and the digest of the server's certificate after https://, and null after http://, where no transport identity is established.",
+      "properties": {
+        "endpoint": {
+          "$ref": "#/$defs/remoteEndpoint"
+        }
+      },
+      "if": {
+        "properties": {
+          "endpoint": {
+            "type": "string",
+            "pattern": "^https://"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "peerIdentity": {
+            "type": "string",
+            "pattern": "^tls:sha256:[0-9a-f]{64}$",
+            "maxLength": 75
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "peerIdentity": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    "remoteEndpoint": {
+      "description": "A remote MCP server's endpoint (SPEC.md section 1.2a; testdata/remote-endpoints/cases.json): at most 2048 characters, each from U+0021 to U+007E, no '?' and no '#'; https:// or http://; a host of letters, digits, '-', '.' and '_', or an IPv6 address in brackets, and no user before it; a port, when given, from 1 to 65535 with no leading zero; then nothing, or '/' and a path in which every '%' is followed by two hexadecimal digits. After http://, the host is a loopback address written as one: 127.0.0.0/8 in dotted decimal, or [::1]. The line feed refused by not is refused by the pattern too, by a validator whose \"$\" matches only at the end of the text.",
+      "type": "string",
+      "maxLength": 2048,
+      "not": {
+        "type": "string",
+        "pattern": "\\n"
+      },
+      "pattern": "^https?://(?:[A-Za-z0-9._-]+|\\[[0-9A-Fa-f:.]+\\])(?::(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?(?:/(?:[!-\"$&->@-~]|%[0-9A-Fa-f]{2})*)?$",
+      "allOf": [
+        {
+          "description": "A host in brackets is an IPv6 address, in the form RFC 3986 names IPv6address, with no zone.",
+          "if": {
+            "pattern": "^https?://\\["
+          },
+          "then": {
+            "pattern": "^https?://\\[(?:(?:(?:[0-9A-Fa-f]{1,4}:){6}|::(?:[0-9A-Fa-f]{1,4}:){5}|(?:[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){4}|(?:(?:[0-9A-Fa-f]{1,4}:){0,1}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){3}|(?:(?:[0-9A-Fa-f]{1,4}:){0,2}[0-9A-Fa-f]{1,4})?::(?:[0-9A-Fa-f]{1,4}:){2}|(?:(?:[0-9A-Fa-f]{1,4}:){0,3}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}:|(?:(?:[0-9A-Fa-f]{1,4}:){0,4}[0-9A-Fa-f]{1,4})?::)(?:[0-9A-Fa-f]{1,4}:[0-9A-Fa-f]{1,4}|(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9]))|(?:(?:[0-9A-Fa-f]{1,4}:){0,5}[0-9A-Fa-f]{1,4})?::[0-9A-Fa-f]{1,4}|(?:(?:[0-9A-Fa-f]{1,4}:){0,6}[0-9A-Fa-f]{1,4})?::)\\]"
+          }
+        },
+        {
+          "description": "In the clear, the host is a loopback address written as one.",
+          "if": {
+            "pattern": "^http://"
+          },
+          "then": {
+            "pattern": "^http://(?:127\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])|\\[::1\\])(?::|/|$)"
+          }
+        }
+      ]
+    }
+  }
+}

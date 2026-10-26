@@ -16,6 +16,7 @@ func discoveryResult(t *testing.T, raw []byte, f fetcher) Discovery {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeEnvelope(t, "web-discovery", out)
 	var envelope struct{ Result Discovery }
 	if json.Unmarshal(out, &envelope) != nil {
 		t.Fatal("bad output")

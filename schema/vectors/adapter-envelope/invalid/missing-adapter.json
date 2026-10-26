@@ -1,0 +1,15 @@
+{
+  "acquisition": {
+    "endpoint": "api.example",
+    "statement": "select id, status from decisions where id = 101",
+    "snapshot": null,
+    "peerIdentity": null,
+    "schema": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    "upstreamToken": null,
+    "observedAt": "2026-10-25T12:00:00Z"
+  },
+  "result": {
+    "id": 101,
+    "status": "approved"
+  }
+}

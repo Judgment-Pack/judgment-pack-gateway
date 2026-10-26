@@ -28,6 +28,8 @@
     {"name": "attachment-schemas", "run": "../scripts/checks/attachment-schemas.sh", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "rendering-schemas", "run": "../scripts/checks/rendering-schemas.sh", "toolchain": "go", "cwd": "adapters", "summary": "^PASS", "timeout": 3000},
     {"name": "search-schema", "run": "../scripts/checks/search-schema.sh", "toolchain": "go", "cwd": "adapters", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
+    {"name": "adapter-envelope-schema", "run": "python3 schema/check_adapter_envelope.py", "toolchain": "python", "summary": "^PASS", "timeout": 600},
+    {"name": "adapter-conform", "run": "../scripts/checks/adapter-conform.sh", "toolchain": "go", "cwd": "adapters", "summary": "adapter-conform: [0-9]+ runs|^PASS|^FAIL|^--- FAIL", "timeout": 3000},
     {"name": "descriptor-vectors", "run": "export GOWORK=off; python3 make_vectors.py && git diff --exit-code -- vectors.json", "toolchain": "python", "cwd": "testdata/tool-descriptors", "timeout": 600},
     {"name": "descriptor-metaschema", "run": "export GOWORK=off; go vet ./... && go test ./...", "toolchain": "go", "cwd": "testdata/tool-descriptors/metaschema", "summary": "^(ok|FAIL|---) ", "timeout": 3000},
     {"name": "descriptor-commonmark", "run": "export GOWORK=off; go vet ./... && go test ./...", "toolchain": "go", "cwd": "testdata/tool-descriptors/commonmark", "summary": "^(ok|FAIL|---) ", "timeout": 3000},

@@ -313,6 +313,9 @@ func TestAzureDevOpsEachReadIsItsDocumentedRequest(t *testing.T) {
 			if err != nil {
 				t.Fatal(k.q.Read, err)
 			}
+			if form.prefix != "" {
+				writeEnvelope(t, "azure-devops."+k.q.Read, raw)
+			}
 			seen := f.since(before)
 			if len(seen) != len(k.lines) {
 				t.Fatalf("%s: %d requests", k.q.Read, len(seen))

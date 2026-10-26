@@ -180,6 +180,7 @@ func TestNotionOAuthSearchSelectedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeEnvelope(t, "notion", raw)
 	var env struct {
 		Result json.RawMessage `json:"result"`
 	}

@@ -211,6 +211,7 @@ func TestDatabricksStatementIsOneInlineRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeEnvelope(t, "databricks.statement", raw)
 	path, body := f.last()
 	if f.api.Load() != 1 || path != "POST /api/2.0/sql/statements" {
 		t.Fatalf("%d requests, last %s", f.api.Load(), path)
