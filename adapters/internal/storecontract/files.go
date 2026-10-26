@@ -34,6 +34,9 @@ type Files struct {
 	root     *os.Root
 	fallback Policy
 	policies map[string]Policy
+	// dirSync, when set, stands in for the sync of the held directory
+	// after a rename: a test's way of seeing that sync, and of failing it
+	dirSync func(*os.File) error
 }
 
 var _ Documents = (*Files)(nil)
@@ -139,11 +142,20 @@ func (f *Files) Put(name string, data []byte, expected string) (string, error) {
 			return NoRevision, failure(Durability, "put", err)
 		}
 		defer dir.Close()
-		if err = dir.Sync(); err != nil {
+		if err = f.syncDirectory(dir); err != nil {
 			return NoRevision, failure(Durability, "put", err)
 		}
 	}
 	return revisionOf(data), nil
+}
+
+// syncDirectory makes the held directory's entries durable: the rename a
+// put made survives a crash once it returns.
+func (f *Files) syncDirectory(dir *os.File) error {
+	if f.dirSync != nil {
+		return f.dirSync(dir)
+	}
+	return dir.Sync()
 }
 
 func (f *Files) Delete(name, expected string) error {

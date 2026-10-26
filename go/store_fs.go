@@ -76,7 +76,7 @@ func fsWriteFile(near string, data []byte, exclusive bool) error {
 		os.Remove(tmp)
 		return storeFailure(faultDurability, "write", err)
 	}
-	if err := handle.Sync(); err != nil {
+	if err := syncStaged(handle); err != nil {
 		handle.Close()
 		os.Remove(tmp)
 		return storeFailure(faultDurability, "write", err)
@@ -98,6 +98,19 @@ func fsWriteFile(near string, data []byte, exclusive bool) error {
 	}
 	syncDir(filepath.Dir(near))
 	return nil
+}
+
+// stagedSync, when set, stands in for the sync of fsWriteFile's staging
+// file: a test's way of seeing that sync, and of failing it.
+var stagedSync func(*os.File) error
+
+// syncStaged makes a staging file's bytes durable before its name is put
+// in place.
+func syncStaged(file *os.File) error {
+	if stagedSync != nil {
+		return stagedSync(file)
+	}
+	return file.Sync()
 }
 
 // syncDir syncs a directory as far as the platform can: a platform that
@@ -945,12 +958,16 @@ func (k *fsKind) receipts() indexedSpace {
 
 func (k *fsKind) registry() appendLog { return k.log }
 
-func (k *fsKind) documents() documentSpace { return fsDocuments{dir: k.layout.documents} }
+// documents is the kind's documents as every caller but its leases is
+// given them: a lease's document is the leases' own.
+func (k *fsKind) documents() documentSpace {
+	return leaseDocumentsReserved{fsDocuments{dir: k.layout.documents}}
+}
 
 func (k *fsKind) secrets() secretSpace { return fsSecrets{dir: k.layout.secrets} }
 
 func (k *fsKind) leases() leaseSpace {
-	return documentLeases{docs: k.documents(), clock: k.layout.clock}
+	return documentLeases{docs: fsDocuments{dir: k.layout.documents}, clock: k.layout.clock}
 }
 
 // snapshotRead, when set, runs after each space a snapshot reads, named

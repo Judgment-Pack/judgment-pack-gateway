@@ -8,6 +8,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -15,13 +16,47 @@ import (
 // holder, its fencing token and when it expires. A grant is a
 // compare-and-set against the revision the granter read, so two granters
 // cannot both take a name; the token is the last grant's plus one, so it
-// grows with every grant, whoever held the name before.
+// grows with every grant, whoever held the name before. Its documents are
+// its own: the kind's document space, as every other caller is given it
+// (leaseDocumentsReserved), refuses to write or delete one, so no record
+// a grant counts from is ever removed or rewound.
 type documentLeases struct {
 	docs  documentSpace
 	clock func() time.Time
 }
 
 const leaseDocumentPrefix = "lease-"
+
+// leaseDocumentsReserved is a kind's document space as every caller but
+// its leases is given it: a document named "lease-..." is read and listed
+// as any other, and a put or a delete of one is refused before anything
+// is touched. The prefix is compared without regard to case: on a
+// filesystem that folds case, "LEASE-job" is the lease's own document. A lease's record carries the last grant's token; were it
+// deleted, the next grant would count from nothing and give a token the
+// name had given before, which a holder from before the delete would
+// still carry.
+type leaseDocumentsReserved struct{ documentSpace }
+
+func leaseDocumentRefused(op, name string) error {
+	if len(name) >= len(leaseDocumentPrefix) && strings.EqualFold(name[:len(leaseDocumentPrefix)], leaseDocumentPrefix) {
+		return storeFailure(faultRefused, op, fmt.Errorf("store: %s is a lease's document, kept by the leases alone", name))
+	}
+	return nil
+}
+
+func (r leaseDocumentsReserved) putDocument(name string, data []byte, expected string) (string, error) {
+	if err := leaseDocumentRefused("put-document", name); err != nil {
+		return noRevision, err
+	}
+	return r.documentSpace.putDocument(name, data, expected)
+}
+
+func (r leaseDocumentsReserved) deleteDocument(name, expected string) error {
+	if err := leaseDocumentRefused("delete-document", name); err != nil {
+		return err
+	}
+	return r.documentSpace.deleteDocument(name, expected)
+}
 
 func (l documentLeases) key(op, name string) (string, error) {
 	key := leaseDocumentPrefix + name
