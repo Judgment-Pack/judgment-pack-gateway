@@ -538,6 +538,52 @@ signer's files admit; a decision record written, or a mode changed, after the en
 and a mount that shows the decision-record directory elsewhere. The engine holds the
 configuration to what the filesystem and the kernel report, and no further.
 
+## What the engine reports: `/posture`
+
+`GET /posture` answers what `gateway posture --json` prints, for the engine as it runs: which of
+the isolation protections in [SECURITY.md](../../SECURITY.md) this host enforces, judged against
+the seed and the sources the engine started with. It is the field a desk reads to show its
+managed gateway's posture beside the gateway's status. The answer is canonical JSON (SPEC.md
+§1.1), so two answers compare byte for byte:
+
+```json
+{"platform":"linux","protections":[{"name":"source-user-switch","reason":"every source runs as a user of its own that is not the signer's, and this process can switch to each","state":"enforced"},{"name":"descendant-reaping","reason":"…","state":"enforced"},{"name":"container-custody","reason":"…","state":"enforced"},{"name":"seed-file-protection","reason":"…","state":"enforced"},{"name":"operator-program-confinement","reason":"…","state":"not-enforced"}]}
+```
+
+- `platform` is the operating system as Go names it: `linux`, `darwin`, `windows`.
+- `protections` holds the five protections, always in this order, each with exactly `name`,
+  `state` — `enforced`, `not-enforced` or `not-applicable` — and `reason`, one sentence for a
+  reader, which a consumer shows and never parses. A reason `/posture` answers names no path and
+  no account; the command, run by the operator, may. `not-applicable` is a protection with nothing
+  to hold here: no source, no seed, an image this platform does not run.
+- `source-user-switch`: every source names a user, none is root, and this process passes the
+  check `serve` makes at start, that it can switch to each; `not-applicable` with no source.
+- `descendant-reaping`: on Linux, a probe run once per process, so a restart probes again: a
+  child started as a source is, in an anchor-led process group, starts a grandchild; the group is
+  killed, and both must be gone — the pipe they held closed — within three seconds. The probe
+  runs as the gateway's own user; killing a switched source's group crosses users, which takes
+  `CAP_KILL`, and `serve` refuses to start a switched source without it. Elsewhere the line is
+  stated, not checked, as `not-enforced`: Windows has no process group, and on macOS and the BSDs
+  `adapter-mcp` does not reach the descendants a command server left outside the group, which it
+  adopts and kills on Linux.
+- `container-custody`: on Linux, the engine image's markers ([engine-image.md](engine-image.md)):
+  the running binary is `/usr/local/bin/gateway`, the signer's own at mode `0700` and carrying
+  file capabilities, run by a user that is not root with `CAP_SETUID`, `CAP_SETGID` and
+  `CAP_KILL` in effect and nothing more — no capability that reads past permissions, nothing
+  ambient or inheritable, as `serve --config` holds a signer — beside
+  `/usr/share/engine/catalog` and `/usr/share/engine/corpus`, directories of root's that nobody
+  else may write. Elsewhere `not-applicable`.
+- `seed-file-protection`: on Unix, the seed as `serve` judges it at start, read through a link
+  as `serve` opens it — a regular file owned by the signer, readable by nobody else by its mode
+  bits; an access-control list is not seen.
+  On Windows it is stated as `not-enforced`.
+- `operator-program-confinement`: always `not-enforced`.
+
+The seed and the sources are judged at each request, so a mode changed after the start shows;
+the probe runs once. As `/verify` does, `/posture` takes a bearer token where `identity` is
+configured, and is open where it is not, as on a desk's local gateway. Nothing the engine does
+depends on the report.
+
 ## Credentials
 
 `credentials` is a path, never a value, and never an environment variable: a file the

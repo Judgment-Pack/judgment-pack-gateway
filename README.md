@@ -132,7 +132,18 @@ curl -s localhost:8787/seal    -d '{"session":"s1"}'
 curl -s localhost:8787/verify              # the gateway grading itself -- a diagnostic, not evidence (SPEC.md §5a.3)
 curl -s localhost:8787/registry            # the anchor a verifier fetches from the key holder
 curl -s localhost:8787/publickey           # consistency only: a real verifier uses the key pinned from keygen, never this
+curl -s localhost:8787/posture             # which isolation protections this host enforces, as gateway posture --json
 ```
+
+`./gateway posture` says which of the isolation protections in [`SECURITY.md`](SECURITY.md)
+this host enforces — the user switch for sources, the reaping of a source's descendants, the
+engine image's custody, the seed file's owner and mode, the confinement of the programs the
+gateway starts — one line each, `enforced`, `not-enforced` or `not-applicable`, with the reason.
+Give it serve's own command line, with or without the word `serve`, or `--config engine.json`,
+to judge that configuration's seed and sources as well; `--json` prints the report in canonical
+JSON. It exits 0 whatever it reports, and a `not-enforced` line's reason says what is missing: a
+user of its own for each source (`--source-user`), a seed at mode 0600 owned by the gateway's
+user, the engine image.
 
 The gateway mints version 3 receipts (SPEC.md §1.2a): `/acquire` answers
 `{result, receipt, salts}`, where `salts.args` is the 32-byte salt behind the receipt's
