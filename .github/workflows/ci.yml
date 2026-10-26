@@ -6,8 +6,9 @@ name: CI
 # from the manifest and runs every step of it: the core, the adapters, the release contents, the
 # plugins, the second implementation, the engine image, the witness scenario and the agreement of
 # the two paths. On a pull request it runs the steps jpdev.json maps the changed paths to
-# (`check.sh --changed`); on a push to main and when the release calls it, the whole list. Each of the steps that were jobs of their own is a step of dev.json, and the
-# longer ones are scripts under scripts/checks/ with the comments they had here.
+# (`check.sh --changed`); on a push to main and when the release calls it, the whole list. Each
+# of the steps that were jobs of their own is a step of dev.json, and the longer ones are scripts
+# under scripts/checks/ with the comments they had here.
 
 on:
   pull_request:

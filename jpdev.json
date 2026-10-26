@@ -6,7 +6,7 @@
       "checks": ["local-paths", "agent-docs", "diff-check",
                  "go-fmt", "go-vet", "go-test", "go-build", "conform", "smoke-stand-in",
                  "no-third-party-modules", "core-resolves-into-stdlib",
-                 "adapters-not-into-core", "third-party-notices",
+                 "adapters-not-into-core", "third-party-notices", "adapter-conform",
                  "verify-ts-test", "verify-ts-conform", "verify-ts-witness-chain", "witness-scenario",
                  "image-build", "image-corpus", "image-filesystem", "image-root-unwritable",
                  "image-runs", "image-evaluates", "image-launch-overrides"]
@@ -37,7 +37,8 @@
       "checks": ["local-paths", "agent-docs", "diff-check",
                  "go-test", "adapters-test", "acquisition-fixture", "attachment-schemas",
                  "rendering-schemas", "search-schema", "adapter-conform",
-                 "descriptor-vectors", "descriptor-metaschema", "descriptor-commonmark"]
+                 "descriptor-vectors", "descriptor-metaschema", "descriptor-commonmark",
+                 "verify-ts-test", "adapter-envelope-schema"]
     },
     {
       "paths": ["**/go.work"],
@@ -75,7 +76,7 @@
     },
     {
       "paths": [".github/fixtures/**"],
-      "checks": ["local-paths", "agent-docs", "diff-check", "go-test"]
+      "checks": ["local-paths", "agent-docs", "diff-check", "go-test", "witness-scenario"]
     },
     {
       "paths": ["build/**", ".goreleaser.yml", "THIRD_PARTY_NOTICES"],
