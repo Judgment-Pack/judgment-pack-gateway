@@ -15,6 +15,7 @@ package main
 //	gateway witness fetch --store <dir> --registry <file> ... --record <file> --trail <file> --runtime <path> --out <dir>
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
+//	gateway rotate-key --seed <file> --registry <file>
 //	gateway version
 
 import (
@@ -39,7 +40,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | mcp | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | rotate-key | mcp | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -59,6 +60,8 @@ func main() {
 		os.Exit(cmdConnect(os.Args[2:]))
 	case "keygen":
 		os.Exit(cmdKeygen(os.Args[2:]))
+	case "rotate-key":
+		os.Exit(cmdRotateKey(os.Args[2:], os.Stdout, os.Stderr))
 	case "mcp":
 		os.Exit(cmdMCP(os.Args[2:]))
 	case "version":
@@ -337,6 +340,11 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "seed:", err)
 		return 1
 	}
+	// a rotation under way beside the seed is finished first (SPEC.md §3b)
+	if err := rotationPendingBeside(cfg.seed, cfg.registry); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	if err := requireUserSwitching(sources); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -354,7 +362,7 @@ func cmdServeEngine(args []string) int {
 	// must answer first, and such a start leaves nothing made.
 	var witness *witnessService
 	if cfg.witness != nil {
-		log, err := openEngineWitness(cfg.witness, seed)
+		log, err := openEngineWitness(cfg.witness, seed, cfg.registry)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "start:", err)
 			return 1
@@ -368,6 +376,13 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	// held while the engine runs, so gateway rotate-key refuses (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry(cfg.registry, seed)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer registryHold.Close()
 	service.witness = witness
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -754,6 +769,11 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "seed:", err)
 		return 1
 	}
+	// a rotation under way beside the seed is finished first (SPEC.md §3b)
+	if err := rotationPendingBeside(seedPath, registryPath); err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
 	if err := requireUserSwitching(opts.sources); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -764,6 +784,13 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	// held while the gateway runs, so gateway rotate-key refuses (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry(registryPath, seed)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start:", err)
+		return 1
+	}
+	defer registryHold.Close()
 	// Sources run in their own process groups, so the terminal's interrupt
 	// no longer reaches them; the gateway's does, and it is carried to every
 	// source in flight through the service's context.

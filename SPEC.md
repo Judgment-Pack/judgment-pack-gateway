@@ -28,6 +28,10 @@ kind, which a gateway run by a party other than a decision trail's operator sign
 runtime's audit checkpoints. It is not a receipt, nothing in §1 to §7 changes for it, and
 no receipt verifier reads one.
 
+**It is normative too for the continuity statement (§3b), version 1:** the pair of
+registry lines by which a gateway rotates its signing key, which a verifier follows from
+the key it pinned. A registry that holds none is read exactly as before.
+
 ## 1. The format
 
 Everything a signature depends on is stated here. An earlier revision of this
@@ -324,8 +328,8 @@ response.
 **What `decision` establishes.** Without `policy`, an action receipt
 establishes no more than this: the gateway that minted it found a decision
 record with the digest `decision.recordDigest` under its decision-record
-directory, and the cited receipts in its store under its key, before the action
-was sent (§6); §4 establishes both again against the store and the records it
+directory, and the cited receipts in its store under its key, or a key its
+registry says it rotated from (§3b), before the action was sent (§6); §4 establishes both again against the store and the records it
 is given, and step 8 that a runtime evaluation record states the pack and the
 citations the receipt claims. It does not establish that the record permitted
 the action, that the record's outcome is the one the action assumes, that the
@@ -498,8 +502,8 @@ statuses of the ladder and do not replace it.)
 |---|---|---|
 | 1 | `malformed` | unparseable, duplicate member names, missing `signature`, `callIndex` not an integer, `resultDigest` not of the stated form, or `signature` not hex; for version 3, **any** violation of a structural constraint §1.2a states — a member required absent, a member of another type than stated, a nullable member neither `null` nor of its stated shape, `kind` or `shape` outside its enumeration, the object for the kind missing or its sibling present, a digest or a signature not of its stated form, `pageItems` present and not an array of digests, `requester` `null`, `cites` not an array of objects of the stated shape, `policy` present and not a digest, `decision.recordBytes` present and not `"exact"`, `witness` present and not an object whose `origin`, `keyId` and `trail` are each of their stated forms — and never a relational one |
 | 2 | `unsupported-version` | `receiptVersion` is neither `"2"` nor `"3"` |
-| 3 | `key-mismatch` | `keyId` is not the verifier's own key id |
-| 4 | `signature-mismatch` | the signature does not verify over the input §1.2 or §1.2a defines for the receipt's version |
+| 3 | `key-mismatch` | `keyId` is not the key id of a key the verifier reached (§3b): the key it pinned, or a key a rotation it followed rotated to |
+| 4 | `signature-mismatch` | the signature does not verify, under the key `keyId` names, over the input §1.2 or §1.2a defines for the receipt's version |
 | 5 | `misfiled` | the filename stem is not `callIndex`, **or** `sessionId` is not the directory name |
 | 6 | `authority-mismatch` | `authority` is not the expected authority |
 | 7 | `artifact-missing` | no artifact at `resultDigest`'s path |
@@ -527,11 +531,15 @@ Per session, over the receipts that passed:
   **`sequence-broken`** and **the chain is not checked** — a chain cannot be
   reconstructed over a sequence with a hole;
 - otherwise each `prevSignature` must name the previous receipt's `signature`,
-  and each receipt's `receiptVersion` must equal the session head's
-  (`callIndex` 0), and the **first** break of either kind, walking the passing
+  each receipt's `receiptVersion` must equal the session head's
+  (`callIndex` 0), and each receipt's key must be the key of the receipt before
+  it or a key the walk of §3b reached after that one, and the **first** break of
+  any of these kinds, walking the passing
   receipts in index order, reports one **`chain-broken`** for the session — the
   session-level finding, with `callIndex` `null`, exactly as a `prevSignature`
-  break does. A receipt that failed the ladder takes no part in this walk, and
+  break does. In a store whose registry holds no rotation statement every
+  receipt that passed is under the one key pinned, and the third kind cannot
+  arise. A receipt that failed the ladder takes no part in this walk, and
   a session whose sequence is broken is not walked at all.
 
 A receipt that fails is excluded from that reconstruction, so a failure at
@@ -595,7 +603,8 @@ record joined to it would make one line that is no seal (§4 drops it) and lose 
 `finalCount` can never be re-sealed to a smaller value, so a seal cannot be walked
 backward to excuse a rollback. A session is already sealed when the registry holds a seal for
 it that §4 step 2 loads — a JSON object whose `keyId` is the gateway's own and whose signature
-verifies under its public key — and a line that names the session and is no such seal (a
+verifies under its public key, or, in a registry holding rotation statements, the key current at
+its line in the gateway's own reading (§3b) — and a line that names the session and is no such seal (a
 signature that does not verify, a foreign `keyId`, a member missing) establishes no seal for
 `/seal` either, as it establishes none for `/acquire` (§6): the gateway appends the new seal
 beside that line, which stays where it is, and answers `200` with the seal record, and §4
@@ -632,13 +641,180 @@ for a store missing sessions the gateway had itself signed — silently voiding 
 coverage guarantee. The store enforces the same rule on write, so the guarantee does
 not rest on the HTTP layer alone.
 
+## 3b. Key rotation: the continuity statement
+
+A gateway's signing key can be replaced without leaving what it signed before
+unverifiable. A **rotation** is two registry lines, appended together: a
+`key-rotation` statement, signed by the key rotated **from**, naming the key rotated
+**to**; and a `key-continuation` statement, signed by the key rotated to, naming the key
+it continues. Together they are the **continuity statement**. They take the shape of
+the runtime's `key-rotation` line in its record-signature sidecar — a `kind`, the
+signing key's `keyId`, the next key's 32 bytes as `next` — under a prefix of this
+gateway's own; the runtime's line is still followed nowhere here (§1.2a, `policy`).
+A verifier given the key it pinned (§5) follows the rotations from that key, each
+under the key before it, and takes every later key from them (§4 step 2). A store
+whose registry holds no rotation statement verifies exactly as it did before this
+section existed.
+
+| Member | Form | Statement |
+|---|---|---|
+| `kind` | `"key-rotation"` or `"key-continuation"` | both |
+| `rotationVersion` | the string `"1"` | both |
+| `rotation` | an integer from 1 to 2⁵³−2 | both: this rotation's ordinal in the registry, 1 for the first |
+| `rotatedAt` | `YYYY-MM-DDThh:mm:ssZ`, the form of `witnessedAt` (§8.2) | both: the gateway's clock when it rotated, the same in the two |
+| `keyId` | 32 lowercase hexadecimal characters | both: the key id (§1.2) of the key that signs the statement |
+| `next` | 64 lowercase hexadecimal characters | `key-rotation`: the 32 bytes of the key rotated to |
+| `nextKeyId` | 32 lowercase hexadecimal characters | `key-rotation`: the key id of `next` |
+| `previous` | 64 lowercase hexadecimal characters | `key-continuation`: the 32 bytes of the key rotated from |
+| `previousKeyId` | 32 lowercase hexadecimal characters | `key-continuation`: the key id of `previous` |
+| `signature` | 128 lowercase hexadecimal characters, the 64 bytes of an Ed25519 signature | both |
+
+A registry line is a **rotation statement** when §1.1's parser reads it as one JSON
+object whose `kind` member is the string `"key-rotation"` or `"key-continuation"`. A
+rotation statement is never a seal, and every other line is read as a seal is (§4 step
+2), as before. A rotation statement **holds its form** when it has exactly the members
+the table lists for its `kind`, each once and of its form — a member it does not list
+is a new `rotationVersion`, as a new member of a witness statement is (§8.2) — and its
+`nextKeyId` or `previousKeyId` is the key id of its `next` or `previous`.
+
+**What the signature covers** — `"judgment-pack-gateway/rotation/1:"` followed by
+`canon` of the statement with its top-level `signature` member removed and every other
+member retained. Every value is an ASCII string or an integer below 2⁵³, so the signed
+bytes are exactly
+
+```
+judgment-pack-gateway/rotation/1:{"keyId":"<keyId>","kind":"key-rotation","next":"<next>","nextKeyId":"<nextKeyId>","rotatedAt":"<rotatedAt>","rotation":<rotation>,"rotationVersion":"1"}
+judgment-pack-gateway/rotation/1:{"keyId":"<keyId>","kind":"key-continuation","previous":"<previous>","previousKeyId":"<previousKeyId>","rotatedAt":"<rotatedAt>","rotation":<rotation>,"rotationVersion":"1"}
+```
+
+with `rotation` in decimal digits. The prefix is none of the receipt's, the seal's or
+the witness statement's, so no rotation signature can be replayed as one of theirs, or
+the reverse; `kind` is signed, so neither statement of a pair can be presented as the
+other.
+
+**Following the rotations.** The registry's **lines** are its bytes split at each
+`0x0A`, the piece after the last one included. A verifier walks them in order, holding
+a **current key** — the key it pinned, at the first line — and the number of
+rotations **followed**, 0 at the first line. The keys **reached** are the pinned key
+and every key a followed rotation rotated to. At each line:
+
+- A line that is not a rotation statement is read as a seal, under the current key
+  (§4 step 2).
+- A `key-continuation` statement is **`rotation-forged`**: a continuation the current
+  key did not name.
+- A `key-rotation` statement is held to these, in order, and takes the first it fails:
+  1. it holds its form — otherwise **`rotation-break`**;
+  2. its `keyId` is the current key's, and its signature verifies under the current
+     key by §8.4's equation — otherwise **`rotation-forged`**: a hop signed by a key
+     the walk had not reached, or had moved on from;
+  3. its `rotation` is one more than the rotations followed — otherwise
+     **`rotation-order`**: an ordinal skipped or given again;
+  4. `next` is a key §8.4's key rule accepts, and its key id is none of a key reached
+     — otherwise **`rotation-key-refused`**: a key not canonical, of small order or no
+     point, or a key the walk has held already, the current one included;
+  5. the line after it is a `key-continuation` statement that holds its form, whose
+     `rotation` and `rotatedAt` are the `key-rotation`'s, whose `previous` is the
+     current key's 32 bytes, whose `keyId` is the `key-rotation`'s `nextKeyId`, and
+     whose signature verifies under `next` by §8.4's equation — otherwise
+     **`rotation-break`**: the reverse statement missing, or not the one the
+     rotation names.
+
+  When it fails none, the rotation is followed: `next` is the current key, the
+  rotations followed are one more, and the walk goes on at the line after the
+  `key-continuation`.
+
+The first of these findings stops the walk: no later line is read as a rotation
+statement or followed, and every later line that is not a rotation statement is read as
+a seal under the current key, the last key reached. A registry reports at most one,
+`{status, rotation}`, where `rotation` is one more than the rotations followed — the
+ordinal of the rotation the walk could not take — and it names no session (§5a.1).
+
+A seal therefore loads only under the key current at its line: a seal the key rotated
+from signs after the rotation, and one a later key signs before it, loads nothing. A
+receipt is not ordered against the registry: it is taken under any key reached (§1.4
+order 3), and within a session a receipt's key is never one the walk reached before the
+key of the receipt before it (§1.4, `chain-broken`), so a session runs forward through
+a rotation and never back.
+
+**Rotating.** `gateway rotate-key --seed <file> --registry <file>` rotates a gateway's
+key, the gateway stopped. On Unix a gateway holds an exclusive lock on its registry
+file (`flock`) for as long as it runs, taken once its registry is there and followed by
+its own reading again under the lock; `rotate-key` takes the same lock for as long as it
+writes, so it refuses while a gateway runs, and a gateway refuses to start while a
+rotation is under way. Elsewhere no lock is held, and that the gateway is stopped is its
+operator's to see to. `rotate-key` reads the seed, refusing a seed that is not there or
+not a seed, since a key that cannot sign cannot name its successor; it refuses a rotation
+already under way beside the seed — a next seed (`<seed>.next`) or a kept record
+(`<seed>.rotation`) there — which only `--resume` (below) finishes; it reads the
+registry, refusing one that is not there, and walks it as the gateway does (below),
+refusing a walk that finds anything or ends at another key than the seed's; and it
+refuses a seed already kept at the name the seed rotated from would take. Each refusal
+writes nothing. It then makes the next seed, `<seed>.next`, made once and never
+replaced; builds the record it will append — the two statements, the `key-rotation`
+first, each on a line of its own, after a newline ending an unterminated last line as a
+seal's writer ends it (§3) — and keeps it, durably, in `<seed>.rotation`, with the
+registry's length and SHA-256 at the place the record goes; appends the record to the
+registry in one append made durable, refusing, everything it made removed, when the
+registry is no longer the bytes it walked; and only then switches the signer: the seed
+is moved to `<seed>.rotated-<rotation>`, kept for its operator to destroy, the next seed
+is moved to the seed's name, which the gateway signs with when it starts, and the kept
+record is removed.
+
+**A rotation that stops.** An append can stop part way, and a write can be torn: the
+registry may then end in a part of the record from its first byte — a `key-rotation`
+cut short, a `key-rotation` whole with no `key-continuation` after it, or a
+`key-continuation` cut short. Until the kept record is removed the rotation is
+**pending**: a gateway refuses to start while a next seed or a kept record lies beside
+its seed, under either key, and `gateway rotate-key --resume --seed <file> --registry
+<file>` finishes it, and nothing else does. `--resume` finds the two keys among the
+seed, the next seed and the seed kept aside by the key ids the kept record names;
+rebuilds the record from them and holds the kept one to it byte for byte; holds the
+registry up to the kept length to the kept digest, and its walk to the key rotated
+from; and then takes the registry from there as it finds it: the record whole is left
+as it is; a part of the record from its first byte, and nothing more, is cut — the one
+cut of a registry this reference makes, and only of bytes the record names — and the
+record appended whole, durably; anything else is refused, nothing changed. It then makes
+whatever of the switch is not made. Stopped before the record was kept, a rotation left
+at most a next seed, which `--resume` removes when the registry's walk ends at the
+seed's key: nothing of the rotation was appended. A `key-rotation` torn before its end
+leaves no rotation statement in the registry, which then reads to a gateway under
+either key as a registry with no rotation: only the next seed and the kept record
+beside the seed refuse that start. A seed switched by hand, with them removed, starts a
+gateway under a key no verifier pinning the first key reaches; the switch is never made
+by hand.
+
+**The gateway's own reading.** A gateway pins no key out of band for itself. It walks
+its registry from the key its first rotation rotated from — the `previous` of the
+registry's first `key-continuation` statement — or from its own key when the registry
+holds no `key-continuation` statement, a `key-rotation` alone included, so that such a
+registry is refused under the key rotated from (`rotation-break`) and under the key
+rotated to (`rotation-forged`) alike. It refuses to start, and refuses to seal, to
+acquire into a session it does not hold and to answer `/verify`, when that walk finds
+anything or ends at another key than its own, and names `--resume` as what finishes a
+rotation that stopped. What it loads so is what a verifier pinning that first key loads, so a
+session sealed under a key it rotated from stays sealed (§3), and the receipts an action
+cites are resolved under every key the walk reached (§6, `/act`).
+
+**What a rotation establishes.** That the holder of the key rotated from named the key
+rotated to, and the holder of that key accepted the succession, at the place in the
+registry where the pair stands. It does not withdraw what the key rotated from signed
+before: its receipts and its seals before the rotation verify as they did. It does not
+establish when a receipt was made: a holder of a key rotated from — the key stolen, which
+is a reason to rotate — can still sign receipts that read as signed before the rotation,
+into any session, and only the seal's count bounds them (§2, §5). It stops that holder
+from sealing, and from rotating, after the rotation. `rotatedAt` is the gateway's clock,
+as `sealedAt` is.
+
 ## 4. Registry-anchored verification
 
 `verify_with_registry(verify_store, store_root, key, registry_path, authority)`:
 
 1. Runs `verify_store` (all per-receipt findings carry through unchanged).
 2. Loads the seals, **dropping any seal whose `keyId` is not the verifier's own or
-   whose signature does not verify** under the public key. Both conditions are
+   whose signature does not verify** under the public key — the verifier's own
+   key being, at each line, the current key of §3b's walk of the registry: the key
+   it pinned, in a registry that holds no rotation statement. The walk's finding,
+   when it has one, is the registry's (§3b). Both conditions are
    required: `keyId` sits *inside* the signed payload, so a seal signed by this key
    while naming a foreign `keyId` verifies happily, and an earlier revision that
    said "signature" and nothing else was followed literally by a second
@@ -764,9 +940,15 @@ receipts' signer named, not a reading of any witness: a reader takes it only fro
 a verdict it acts on (§5a.1), and reads a chain from it as §6 says ("Reading the
 witness a receipt names").
 
+**Rotations.** A report carries, beside them, a member `rotations` when the walk
+of §3b followed at least one rotation: `{"count": n, "keyId": k}`, `n` the
+rotations followed and `k` the key id of the last key reached; absent when it
+followed none. It is never part of `ok`, and the corpus compares it whole (§7). A
+verifier reports the rotations it followed before a rotation finding too.
+
 `ok` is true only if the inline verify passed **and** no registry finding fired
-**and** no citation, decision-record, decision-pack, decision-cites,
-decision-trail or record-citation finding fired.
+**and** no rotation finding fired (§3b) **and** no citation, decision-record,
+decision-pack, decision-cites, decision-trail or record-citation finding fired.
 
 The verifier must obtain the registry from the gateway (the key holder), **not** from
 the untrusted store. That is the whole point: the anchor's authority comes from being
@@ -863,7 +1045,9 @@ not itself a finding.
   authenticity: an impostor serves its own key and its own store, and they agree.
   A receipt therefore carries a `keyId` and never a key, so an implementation
   cannot accidentally trust the key a store hands it. Establishing that channel is
-  out of scope here.
+  out of scope here. Only the first key arrives so: a key the gateway rotated to
+  (§3b) reaches a verifier in a continuity statement the key it pinned, or a key
+  that key named, signed — never from a receipt, a seal or the store.
 - A signature still proves only **byte-lineage under an operator-configured
   authority label**: not that a genuinely-named source returned the bytes (the
   recorded `source`/`authority` is a label, not an authenticated origin). The seal
@@ -918,13 +1102,18 @@ session it acts on:
   finding names a record by `recordDigest` and no session, since one record may
   cite receipts of several sessions and a malformed one names none; a consumer
   scoped to a session therefore refuses on any record finding, whichever session
-  it scopes to.
+  it scopes to;
+- the registry's rotations hold: no `rotation-break`, `rotation-forged`,
+  `rotation-order` or `rotation-key-refused` finding fired **at all** (§3b). A
+  rotation finding names the rotation the walk could not take and no session: the
+  walk stops there, and what it would have reached afterwards is reached for no
+  session.
 
 Session-scoping is a choice with a name, made deliberately in the consumer's code or
 configuration. Silence means store-wide. The list above leans on an invariant of
 this verifier's report: **every finding carries `status`; a receipt or session
-finding carries `sessionId`, and a record finding carries `recordDigest` and no
-`sessionId`.** A verifier extended with a finding that names no session must extend
+finding carries `sessionId`, a record finding carries `recordDigest` and no
+`sessionId`, and a rotation finding carries `rotation` and neither.** A verifier extended with a finding that names no session must extend
 this list with it, as step 7's is listed here, or the scoped check goes blind to it.
 
 **5a.2 The verdict is the JSON, never the exit code.** Per §4.1 a verifier that
@@ -1000,7 +1189,8 @@ names", below). `POST /act` mints one of kind `"action"` (the engine of
 `docs/design/executor.md`): from an authenticated request naming a platform's
 write tool, the decision record the write relies on and the receipts that
 record relied on, after the engine has found the cited receipts in its own
-store under its own key and the record under its decision-record directory —
+store under a key its own reading of its registry reached (§3b) — its own, or
+one it rotated from — and the record under its decision-record directory —
 the standard §4 applies — and, for a tool its operator holds to a decision
 policy, after it has held the record and the request to that policy (§1.2a
 `policy`). For a write through a binding that names a remote server's URL, the
@@ -1012,7 +1202,7 @@ gateway reads the found record's `trail` too, from the bytes whose digest matche
 whatever the tool, and names that trail's witness on the receipt. The format was specified before the surface so that a verifier
 written then verifies what is minted now. `gateway verify` takes
 `--decision-records <dir>` for §4 steps 5 to 8.
-| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 step 8 has any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. |
+| GET    | `/verify`   | → `{ok, findings}` from `verify_with_registry`, and `observations` when §4 step 8 has any and `rotations` when the walk of §3b followed any, against the registry the gateway made when it started (§3): a registry that is not there is no verdict here, never the absent registry of §4.1 that loads no seals. The key it verifies from is the one its own reading of §3b starts at, taken from its registry — a reason more that this answer is not evidence (§5a.3). |
 | GET    | `/registry` | → the raw registry bytes, for a verifier to fetch the anchor from the key holder. A registry that cannot be read (§4.1), or that is not there — the gateway made it when it started (§3) — is answered `500`, never as the empty body a verifier reads as no seals. |
 | GET    | `/publickey`| → `{algorithm, keyId, publicKey, authority}`. Convenience only — a verifier that obtains the key here and then audits this same gateway has checked consistency, not authenticity (§5). |
 
@@ -1336,7 +1526,12 @@ refusal and finding §8 names.
 
 `gateway conform` runs them, and `--impl CMD` drives any other implementation
 through a small process contract, so an implementation in any language can answer
-to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Observations (§4) are not compared; witnesses (§4) are, as a set.
+to the corpus without depending on this one. Findings are compared as a multiset: **order is not normative.** Observations (§4) are not compared; witnesses (§4) are, as a set; rotations (§4) are, whole.
+
+The store vectors of §3b's walk are signed under the test seed and under two further
+keys, the keys rotated to, whose seeds `corpus/README.md` states as it states the
+test seed's; they are verified from `corpus/TEST-PUBLIC-KEY` alone, as a verifier
+verifies a rotated store from the one key it pinned.
 
 One question this specification does not settle, surfaced by building the
 corpus and recorded in [`corpus/README.md`](corpus/README.md): the order of
@@ -1474,7 +1669,8 @@ its canonical form, ended by a newline.
 ### 8.3 What the signature covers
 
 `signature` = Ed25519, under the gateway's signing seed (§5) — the seed that signs its
-receipts and seals, so a statement's `keyId` is the gateway's own — over
+receipts and seals, so a statement's `keyId` is the gateway's own, and after a rotation
+(§3b) the key rotated to — over
 `"judgment-pack-gateway/witness/1:"` followed by `canon` of the statement with **its
 top-level `signature` member removed and every other member retained**, the nested
 `checkpoint` included. That is §1.2's rule: appending anything anywhere invalidates the
@@ -1495,8 +1691,9 @@ form, so a reader without this gateway's `canon`, such as the runtime, builds th
 ### 8.4 The key rule and the equation
 
 A reader never takes a witness key from a statement. It is given the keys it trusts, out
-of band (§5), and holds each to the runtime's public-key rule before it reads anything
-signed. 32 bytes are a key a reader may trust exactly when they are the canonical encoding
+of band (§5) — or, for a key the witness's gateway rotated to, from a continuity
+statement it followed from such a key (§3b, §8.5) — and holds each to the runtime's
+public-key rule before it reads anything signed. 32 bytes are a key a reader may trust exactly when they are the canonical encoding
 (RFC 8032 §5.1.2) of a point of the curve whose order does not divide 8. The encoding is
 read as written, before anything reduces it: `y` is its low 255 bits, little-endian, and
 its top bit is the sign of `x`. A key is refused when, taken in this order:
@@ -1565,6 +1762,27 @@ A witness keeps one chain of statements per trail. Along it:
   latest witnessed checkpoint, all four members, so it names the trail and pins where the
   chain ended; a chain with no `checkpoint` statement has nothing to retire.
 - The witness's **head** for a trail is the chain's last statement, of any kind.
+
+**A rotation.** When the witness's gateway rotates its key (§3b), the witness's chains go
+on. For each trail, the first statement it signs after the rotation is at the next index,
+names the last statement's `signature` as its `prevSignature`, and carries the key id of
+the key rotated to: one chain, across the hop. This is not the new key of
+`docs/adr/0013-checkpoint-witness.md` §4, rule 3, under which chains begin again at
+index 0: a rotation is a succession the key rotated from signed. A reader (§8.6)
+supplies the key rotated to beside the key it pinned, taking it only from continuity
+statements it holds to §3b's walk from that key — the registry the witness's gateway
+serves (§6) holds them — so that a key a walk refuses is never supplied; the reading is
+unchanged, each statement checked under the key its `keyId` names among those
+supplied. Such a reader holds no statement to the place of the hop: the holder of a
+key rotated from can sign a statement it accepts at any index, and two statements at
+one index that differ are still `witness-equivocation`. The witness's own checks — its
+start-up checks and `gateway witness verify --registry <file>` — hold its log to the
+walk: every statement under a key the walk reached, and none under a key it reached
+before the key of a statement above it in the log, since after a rotation the witness
+signs under the key rotated to alone; a statement that is not so is
+`witness-signature-invalid`. Given a registry whose walk finds anything, `gateway
+witness verify` refuses, `{"refused": <the walk's status>}`, before the log is read, and
+a witness does not start.
 
 A witness cannot check that a checkpoint extends the one before it: that needs the
 records, which it never sees. A rewrite of a trail from sequence k on is caught by holding

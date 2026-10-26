@@ -22,11 +22,13 @@ exiting 1 for a document outside the domain and 2 for one past what it reads;
 reads the 32-byte public key on stdin and writes `{"ok": …, "findings": […]}`,
 with `"observations": […]` after the findings when §4 step 8 has any, and
 `"witnesses": […]` after them when a receipt that passed names a witness (§1.2a,
-§4; ADR-0014), exiting 0 whenever it reached a verdict and 2 when it could not.
+§4; ADR-0014), and `"rotations": {…}` at the end when the walk of the registry's
+key rotations followed any (§3b), exiting 0 whenever it reached a verdict and 2 when
+it could not.
 The `witness` member was added to it by the author of the reference's change, as
 `action.policy` was, and so were the members a remote MCP server adds to an acquisition
-(ADR-0015) and `action.tool.transport` (#268): a second body of code, not a second reading of the
-text.
+(ADR-0015), `action.tool.transport` (#268) and the walk of a registry's key rotations
+(§3b, #317): a second body of code, not a second reading of the text.
 `impl witness --trail <hex> --witness-key <file>... [--witness <file>]...
 [--witness-head <file>]` reads a chain of witness statements (§8.6) and writes
 its answer — a refusal, findings, or what the chain says — exiting 0 whenever it

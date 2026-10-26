@@ -125,8 +125,15 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 	if len(cites) == 0 {
 		return nil, actRefusal{"cites", "an action cites at least one receipt; a judgment that relied on nothing is not one this engine stands behind"}
 	}
+	// A cited receipt is held to the keys the engine's own reading of its
+	// registry reached (SPEC.md §3b, §6): a receipt minted before a rotation
+	// is cited as it is verified.
+	keys, err := g.reachedKeys()
+	if err != nil {
+		return nil, actRefusal{"cites", "the cited receipts cannot be resolved: " + err.Error()}
+	}
 	for _, c := range cites {
-		if reason := g.resolveCitation(c); reason != "" {
+		if reason := g.resolveCitation(c, keys); reason != "" {
 			return nil, actRefusal{"cites", fmt.Sprintf("citation %s/%d does not resolve in this engine's store: %s", c.sessionID, c.callIndex, reason)}
 		}
 	}
@@ -336,7 +343,7 @@ func (g *gatewayService) act(sessionRaw, platformRaw, toolRaw, argumentsRaw, dec
 // refuse.
 func (g *gatewayService) sessionOpen(sessionID string) string {
 	if seals, err := loadEngineSeals(g.regPath, g.publicKey); err != nil {
-		return "the registry could not be read"
+		return registryRefusal(err)
 	} else if _, sealed := seals[sessionID]; sealed {
 		return "session is sealed in the registry: " + sessionID
 	}
@@ -510,9 +517,11 @@ func parseDecision(v value) (decision, error) {
 // store, or "" when it does: by §4 step 5's rule -- the session directory
 // named exactly, the file stem named exactly, the signature the same string
 // -- and, beyond what verify reads of a cited receipt, the receipt itself
-// passing the ladder under this engine's key, since an action that relied on
-// a receipt this engine would not stand behind relied on nothing.
-func (g *gatewayService) resolveCitation(c citation) string {
+// passing the ladder under a key this engine's own reading of its registry
+// reached (SPEC.md §3b) -- its own, or one it rotated from -- since an
+// action that relied on a receipt this engine would not stand behind relied
+// on nothing.
+func (g *gatewayService) resolveCitation(c citation, keys []reachedKey) string {
 	sessions, err := os.ReadDir(filepath.Join(g.storeRoot, "receipts"))
 	if err != nil {
 		return "the store's receipts cannot be listed"
@@ -532,14 +541,28 @@ func (g *gatewayService) resolveCitation(c citation) string {
 	if err != nil {
 		return "the receipt cannot be read"
 	}
-	r, status := checkReceipt(data, g.storeRoot, c.sessionID, fileName, g.authority, g.publicKey, g.keyID)
+	r, status := checkReceiptUnder(data, g.storeRoot, c.sessionID, fileName, g.authority, keys)
 	if status != "ok" {
-		return "the receipt does not verify under this engine's key (" + status + ")"
+		return "the receipt does not verify under this engine's keys (" + status + ")"
 	}
 	if r.signature != c.signature {
 		return "the signature is not the receipt's"
 	}
 	return ""
+}
+
+// reachedKeys are the keys the engine's own reading of its registry reached
+// (SPEC.md §3b): its own last, each key it rotated from before it.
+func (g *gatewayService) reachedKeys() ([]reachedKey, error) {
+	data, err := readRegistryOf(g.regPath, true)
+	if err != nil {
+		return nil, err
+	}
+	w, err := engineWalk(data, g.publicKey)
+	if err != nil {
+		return nil, err
+	}
+	return w.keys, nil
 }
 
 // dirEntryNamed reports whether an enumerated entry has exactly this name,

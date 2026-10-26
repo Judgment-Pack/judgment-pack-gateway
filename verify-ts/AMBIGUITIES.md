@@ -45,7 +45,12 @@ both parts is held by a test.
    giving no name twice, whose `sessionId`, `sealedAt` and `keyId` are strings,
    whose `finalCount` is an integer, and whose `signature` is hex — and then §4
    step 2's two conditions. A member beyond the four the signature covers is
-   neither signed nor read, and does not stop the seal loading.
+   neither signed nor read, and does not stop the seal loading — except a
+   `kind` whose value is `"key-rotation"` or `"key-continuation"`: since §3b
+   such a line is a rotation statement, never a seal, and one that does not
+   hold its form stops the walk (`rotation-break`). No conforming writer puts
+   a `kind` on a seal, so no seal it wrote reads otherwise; the reference
+   reads the line the same way.
 9. **A citation in a decision record carrying members beyond the three.** Read
    here: tolerated, as a receipt's unknown members are, and held to the
    canonical domain with the rest of `cites`.

@@ -1246,7 +1246,7 @@ func (g *gatewayService) sealedElsewhere(sessionID string) string {
 	}
 	seals, err := loadEngineSeals(g.regPath, g.publicKey)
 	if err != nil {
-		return "the registry could not be read"
+		return registryRefusal(err)
 	}
 	if _, sealed := seals[sessionID]; sealed {
 		return "session is sealed in the registry: " + sessionID

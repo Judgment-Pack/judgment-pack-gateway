@@ -1,0 +1,28 @@
+{
+  "name": "rotation-registry-ends-in-a-rotation",
+  "note": "A first rotation, followed, a session sealed under the second key, and as the registry's last line a key-rotation the second key signed naming a third key, with no line after it. The rotation has no continuation (SPEC.md §3b, check 5): rotation-break at rotation 2, beside the one rotation followed. A verifier that reports nothing for a key-rotation it reaches at the registry's end grades the store ok.",
+  "authority": "gateway:corpus",
+  "files": {
+    "artifacts/ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18": "{\"n\":0,\"session\":\"s1\"}",
+    "receipts/s1/0.json": "{\"argumentsDigest\":\"hmac-sha256:844597ab5513a2f4d24ea1f08782a798a46e5623ee54e8fb528733822adf1aa4\",\"authority\":\"gateway:corpus\",\"callIndex\":0,\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"prevSignature\":null,\"receiptVersion\":\"2\",\"resultDigest\":\"sha256:ff99396f6a112c3f0a51488f2780b5e215102cf420704aea2df3e2c0db207c18\",\"servedAt\":\"2026-08-01T00:00:00Z\",\"sessionId\":\"s1\",\"signature\":\"720e4ddf6cbb7c96bce56edcc0982dc49e207cb14ea394a4474483957f48ddc3ec5d573bea23a3032e8acdeecd9fddc5e90f8b9622d3169d3478ab084e503f01\",\"source\":\"corpus\"}\n"
+  },
+  "registry": "{\"keyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"kind\":\"key-rotation\",\"next\":\"5adc7f0b58c7fd53d226650e7db2e618f9ed937844e441d44fe91f9dd283f5bf\",\"nextKeyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"90d06ebfbb019c1c6179385df11394284a75ac90ce629c08618e98f01f0658b7067d340af4e91632b9bbd4fa20ea08edd42fb44a137ed2b85c2c85fdec20040a\"}\n{\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"kind\":\"key-continuation\",\"previous\":\"fc9fa9b25640778d85953a5e1b4618cb8223565b6f566f739c73035079d7681b\",\"previousKeyId\":\"ddb406e95cad582adc111a7d6fbff25d\",\"rotatedAt\":\"2026-08-01T00:00:00Z\",\"rotation\":1,\"rotationVersion\":\"1\",\"signature\":\"ccb16240d6b98b9254abdc7d99caced38eb04ecafdcd1d6a92f60a35f528d6269e41e07fe0c3e39be0f7c6397b837e5e6d68b8cdde5c3796bc0c4de8aa571b0f\"}\n{\"finalCount\":1,\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"sealedAt\":\"2026-08-01T00:00:02Z\",\"sessionId\":\"s1\",\"signature\":\"5c9786715f33e5f58a4549d7afd0dcc7219efd507a1ef0d6a02910f9159f599db8ea0b850c9245cf41d243856b8a360ab75b57e9fcf792685f44333a8b75da0a\"}\n{\"keyId\":\"33719bd9925ba0b0ef0ddb302e5a3ef4\",\"kind\":\"key-rotation\",\"next\":\"2ef2369ef445e2e262b91cf1bc2c0d407a796b7c9a6722f058657efb4b0fe64f\",\"nextKeyId\":\"782ee5b0438aab40877be759d75974ae\",\"rotatedAt\":\"2026-08-02T00:00:00Z\",\"rotation\":2,\"rotationVersion\":\"1\",\"signature\":\"ec5f1e27080fd373671f62305f0c45c3ec4a50373bcac724baf1c7541d95c9e4a8ac1803f5b5106b9c1c6d64f5e4de7651a87f47c93eb4dd18296a308d794807\"}\n",
+  "expected": {
+    "ok": false,
+    "findings": [
+      {
+        "sessionId": "s1",
+        "callIndex": 0,
+        "status": "ok"
+      },
+      {
+        "status": "rotation-break",
+        "rotation": 2
+      }
+    ],
+    "rotations": {
+      "count": 1,
+      "keyId": "33719bd9925ba0b0ef0ddb302e5a3ef4"
+    }
+  }
+}

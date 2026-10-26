@@ -80,6 +80,9 @@ type defective struct {
 	// ignoreWitness reads nothing of a receipt's witness member (ADR-0014):
 	// no form held, no trail compared, no witness reported.
 	ignoreWitness bool
+	// followNoRotation is a verifier written before SPEC.md §3b: it reads
+	// every rotation statement as a line that is no seal, and follows none.
+	followNoRotation bool
 }
 
 func (defective) label() string { return "defective" }
@@ -101,17 +104,33 @@ func (d defective) canon(source string) ([]byte, bool) {
 	return out, true
 }
 
-func (d defective) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, error) {
+func (d defective) verify(storeRoot, registryPath, authority, decisionRecords string, publicKey []byte) (bool, []map[string]any, []map[string]any, map[string]any, error) {
+	if d.followNoRotation {
+		// Read so, the registry is the registry without its rotation
+		// statements, and nothing else changes.
+		if data, err := os.ReadFile(registryPath); err == nil {
+			var kept []string
+			for _, line := range strings.Split(string(data), "\n") {
+				if kind, _ := rotationKindOf(line); kind == "" {
+					kept = append(kept, line)
+				}
+			}
+			if err := os.WriteFile(registryPath, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
+				return false, nil, nil, nil, err
+			}
+		}
+		return inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	}
 	if d.ignoreWitness {
 		ok, findings, err := d.verifyIgnoringWitness(storeRoot, registryPath, authority, decisionRecords, publicKey)
-		return ok, findings, nil, err
+		return ok, findings, nil, nil, err
 	}
 	ok, findings, err := d.verifyFindings(storeRoot, registryPath, authority, decisionRecords, publicKey)
 	if err != nil {
-		return false, nil, nil, err
+		return false, nil, nil, nil, err
 	}
-	_, _, witnesses, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
-	return ok, findings, witnesses, err
+	_, _, witnesses, rotations, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+	return ok, findings, witnesses, rotations, err
 }
 
 // verifyIgnoringWitness is the reference run over a copy of the store whose
@@ -241,7 +260,7 @@ func (d defective) verifyFindings(storeRoot, registryPath, authority, decisionRe
 		// Every ladder and registry check intact; SPEC.md §4 steps 5 and 6
 		// never run -- a verifier that treats an action receipt's citations
 		// and decision record as decoration.
-		ok, findings, _, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		ok, findings, _, _, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
 		if err != nil {
 			return false, nil, err
 		}
@@ -261,7 +280,7 @@ func (d defective) verifyFindings(storeRoot, registryPath, authority, decisionRe
 		return ok, kept, nil
 	}
 	if !d.ignoreAnchor {
-		ok, findings, _, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
+		ok, findings, _, _, err := inProcess{}.verify(storeRoot, registryPath, authority, decisionRecords, publicKey)
 		return ok, findings, err
 	}
 	// Every receipt checked, the registry anchor ignored -- the exact gap this
@@ -389,6 +408,23 @@ func TestCorpusCatchesAVerifierThatIgnoresTheWitnessMember(t *testing.T) {
 	} {
 		if !strings.Contains(joined, missed+":") {
 			t.Fatalf("corpus did not catch a verifier ignoring the witness member (%s):\n%s", missed, joined)
+		}
+	}
+}
+
+// A verifier written before SPEC.md §3b, which follows no rotation, must be
+// caught: it grades a rotated store by the first key alone, and it never
+// reports the walk's findings.
+func TestCorpusCatchesAVerifierThatFollowsNoRotation(t *testing.T) {
+	joined := failuresFor(t, defective{followNoRotation: true})
+	for _, missed := range []string{
+		"rotation-followed-twice", "rotation-forged", "rotation-missing-continuation", "rotation-ordinal-replay",
+		"rotation-next-key-small-order", "rotation-old-key-seal-dropped", "rotation-key-goes-back",
+		"rotation-continuation-signed-by-another-key", "rotation-registry-ends-in-a-rotation",
+		"rotation-back-to-a-key-reached", "rotation-seal-before-its-key", "rotation-hop-names-another-key",
+	} {
+		if !strings.Contains(joined, "store "+missed+":") {
+			t.Fatalf("corpus did not catch a verifier that follows no rotation (%s):\n%s", missed, joined)
 		}
 	}
 }

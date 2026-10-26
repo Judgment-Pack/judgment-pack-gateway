@@ -227,7 +227,8 @@ func newRegistryWriterOn(log appendLog, name string, seed []byte, history func()
 	// and its registry may hold that session's seal -- an empty one made in
 	// its place would reopen it. An operator who knows no session was ever
 	// sealed makes the registry, empty, by hand.
-	if _, err := log.readLog(0); faultOf(err) == faultAbsent {
+	existing, err := log.readLog(0)
+	if faultOf(err) == faultAbsent {
 		held, err := history()
 		if err != nil {
 			return nil, err
@@ -242,6 +243,13 @@ func newRegistryWriterOn(log appendLog, name string, seed []byte, history func()
 		return nil, err
 	}
 	priv := ed25519.NewKeyFromSeed(seed)
+	// The gateway's own reading of its registry (SPEC.md §3b): walked from
+	// its first key, it must find nothing and end at this seed's key, or the
+	// gateway does not start -- a rotation written and not switched to is
+	// pending, and the seed it names is the one to start with.
+	if _, err := engineWalk(existing, priv.Public().(ed25519.PublicKey)); err != nil {
+		return nil, fmt.Errorf("registry %s: %w", name, err)
+	}
 	return &registryWriter{
 		path: name, log: log, seed: seed, priv: priv,
 		keyID: keyIDFor(priv.Public().(ed25519.PublicKey)),
@@ -274,9 +282,15 @@ func (w *registryWriter) seal(sessionID string, finalCount int64, sealedAt strin
 	}
 	// sealed as the verifier loads a seal, never as any parseable line
 	// naming the session: a reader of its own would let the writer refuse
-	// a session the verifier reports unsealed, and it could never be sealed
-	seals, _ := parseSeals(existing, w.priv.Public().(ed25519.PublicKey))
-	if _, sealed := seals[sessionID]; sealed {
+	// a session the verifier reports unsealed, and it could never be sealed.
+	// The registry is walked from its first key (SPEC.md §3b), so a session
+	// sealed under a key this gateway rotated from stays sealed, and a walk
+	// that does not hold, or ends at another key, seals nothing.
+	walk, err := engineWalk(existing, w.priv.Public().(ed25519.PublicKey))
+	if err != nil {
+		return nil, err
+	}
+	if _, sealed := walk.seals[sessionID]; sealed {
 		return nil, fmt.Errorf("session already sealed: %s", sessionID)
 	}
 
