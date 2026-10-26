@@ -420,14 +420,20 @@ func conformLeaseTokensNeverRestart(t *testing.T, kind storeKind, clock *handClo
 	if listed, err := docs.listDocuments(); err != nil || !slices.Contains(listed, leaseDocumentPrefix+"job") {
 		t.Fatalf("a lease's document lists as any other: %v %v", listed, err)
 	}
-	if err := docs.deleteDocument(leaseDocumentPrefix+"job", revision); faultOf(err) != faultRefused {
-		t.Errorf("a delete of a lease's document: fault %q (%v), want %q", faultOf(err), err, faultRefused)
+	// the lease's name as given, and as a filesystem that folds case
+	// would take it
+	for _, name := range []string{"lease-job", "LEASE-job", "Lease-Job"} {
+		if err := docs.deleteDocument(name, revision); faultOf(err) != faultRefused {
+			t.Errorf("a delete of %s: fault %q (%v), want %q", name, faultOf(err), err, faultRefused)
+		}
+		if _, err := docs.putDocument(name, leaseRecord("two", 1, clock.read().Add(time.Hour)), revision); faultOf(err) != faultRefused {
+			t.Errorf("a rewrite of %s: fault %q (%v), want %q", name, faultOf(err), err, faultRefused)
+		}
 	}
-	if _, err := docs.putDocument(leaseDocumentPrefix+"job", leaseRecord("two", 1, clock.read().Add(time.Hour)), revision); faultOf(err) != faultRefused {
-		t.Errorf("a rewrite of a lease's document: fault %q (%v), want %q", faultOf(err), err, faultRefused)
-	}
-	if _, err := docs.putDocument(leaseDocumentPrefix+"other", []byte("{}"), noRevision); faultOf(err) != faultRefused {
-		t.Errorf("a create of a lease's document: fault %q (%v), want %q", faultOf(err), err, faultRefused)
+	for _, name := range []string{"lease-other", "LEASE-other"} {
+		if _, err := docs.putDocument(name, []byte("{}"), noRevision); faultOf(err) != faultRefused {
+			t.Errorf("a create of %s: fault %q (%v), want %q", name, faultOf(err), err, faultRefused)
+		}
 	}
 	clock.advance(11 * time.Second)
 	second, err := leases.acquireLease("job", "two", 10*time.Second)

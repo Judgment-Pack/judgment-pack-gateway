@@ -52,7 +52,8 @@ What each asks of a kind:
   there; any other revision is a conflict (`faultConflict`). A deleted document is absent, and one
   made again takes a revision of its own. A document named `lease-...` is a lease's (below): the
   kind's document space reads and lists it as any other, and refuses a put or a delete of it
-  (`faultRefused`).
+  (`faultRefused`). The prefix is compared without regard to case, since on a filesystem that
+  folds case (the macOS and Windows defaults) `LEASE-job` is the lease's own document.
 - **A secret** is made once and never replaced; it never leaves through a cut.
 - **A lease** grants a name to a holder until it expires. Its fencing token grows with every grant
   of the name, so a holder whose lease expired and was granted to another carries a token
@@ -66,7 +67,9 @@ What each asks of a kind:
   token the name gave before, which a holder from before the delete would still carry. The token
   is not derived from the document's revision instead: a revision is a kind's opaque string (the
   custody's is a digest of the bytes, which comes back when the bytes do), and a document that is
-  not there has no revision to count from.
+  not there has no revision to count from. What the reservation cannot stop is an older copy of the
+  store's documents directory put back by hand, outside the gateway, which would rewind a lease's
+  record; a restore of an export cannot, since an export carries no documents.
 - **A fault** is typed (`storeFault`): absent, taken, conflict, lease held, stale fence, durability,
   unreadable, refused. A write that was not made durable is a `faultDurability` error the caller
   sees, never a success and never a verdict. The error's text is its cause's own, so every message
@@ -214,8 +217,9 @@ there and passing:
   expired and was not granted again -- every grant's token exceeds the last, a released lease's
   token is refused, and another holder presenting the current token renews and releases nothing
   (the fence is the token's alone);
-- a lease's document cannot be deleted or rewritten through the kind's documents, so a grant after
-  the attempt still gives a token above the last and the token from before is refused;
+- a lease's document cannot be deleted or rewritten through the kind's documents, whatever the case
+  of its name, so a grant after the attempt still gives a token above the last and the token from
+  before is refused;
 - a snapshot taken while a writer writes in the contract's order is a consistent cut;
 - a write the kind does not keep is a durability fault, never a success, and nothing is listed for
   it.

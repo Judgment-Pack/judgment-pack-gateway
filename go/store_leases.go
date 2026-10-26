@@ -30,14 +30,15 @@ const leaseDocumentPrefix = "lease-"
 // leaseDocumentsReserved is a kind's document space as every caller but
 // its leases is given it: a document named "lease-..." is read and listed
 // as any other, and a put or a delete of one is refused before anything
-// is touched. A lease's record carries the last grant's token; were it
+// is touched. The prefix is compared without regard to case: on a
+// filesystem that folds case, "LEASE-job" is the lease's own document. A lease's record carries the last grant's token; were it
 // deleted, the next grant would count from nothing and give a token the
 // name had given before, which a holder from before the delete would
 // still carry.
 type leaseDocumentsReserved struct{ documentSpace }
 
 func leaseDocumentRefused(op, name string) error {
-	if strings.HasPrefix(name, leaseDocumentPrefix) {
+	if len(name) >= len(leaseDocumentPrefix) && strings.EqualFold(name[:len(leaseDocumentPrefix)], leaseDocumentPrefix) {
 		return storeFailure(faultRefused, op, fmt.Errorf("store: %s is a lease's document, kept by the leases alone", name))
 	}
 	return nil
