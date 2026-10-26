@@ -111,6 +111,13 @@ carries the admission gate the rotation contract closes ([mcp-server.md](mcp-ser
 admission and sealing goes on — `SIGUSR2` reopens it, and each closure's drain is reported on
 its stderr.
 
+The image's entrypoint is the gateway itself, with no init, so in a container run as built it is
+PID 1, and every orphan in the container is reparented to it. The gateway waits for the processes
+it starts — a source, its group's anchor — and for the grandchild of its own posture probe
+([engine-config.md](engine-config.md), `/posture`), but not for a descendant a source left behind:
+once the source's group is killed, such a descendant's zombie stays until the gateway exits. Run
+the image with an init (`docker run --init`, or the orchestrator's equivalent) to reap them.
+
 The MCP server ([mcp-server.md](mcp-server.md)) is a fifth process the operator starts
 beside it, as the runtime and the verifier are started: `/usr/local/bin/engine-mcp mcp
 --config /etc/engine/engine.json --http` as the user `engine-mcp` (uid 65533, its own group,

@@ -1603,8 +1603,8 @@ func (g *gatewayService) handler() http.Handler {
 	// (posture.go), in canonical JSON so a desk can compare two answers
 	// byte for byte, its reasons naming no path and no account; it is read
 	// as /verify is, with a token where an issuer is configured. The seed
-	// and the sources are judged at each request, the descendants' probe
-	// once per process.
+	// and the sources are judged at each request; the descendants' probe
+	// is kept for the process once it reaches a verdict.
 	mux.HandleFunc("/posture", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := authenticate(w, r); !ok {
 			return

@@ -69,19 +69,41 @@ const (
 	postureProbeLifetime = 30 * time.Second
 )
 
+// descendantCheck is the descendants' line for the life of the process:
+// what the probe finds is the kernel's and this binary's, which do not
+// change while it runs. The first probe that reaches a verdict is kept,
+// with when it ran; a call made while a probe runs waits for it, so
+// concurrent /posture calls start one probe between them. A probe that
+// could not run -- a fork refused under load, a start not seen within the
+// wait -- is not kept, and the next call probes again.
+type descendantCheck struct {
+	mu   sync.Mutex
+	kept bool
+	line postureLine
+}
+
+func (c *descendantCheck) get(probe func() (postureLine, bool), now func() time.Time) postureLine {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.kept {
+		return c.line
+	}
+	line, verdict := probe()
+	line.reason += "; checked at " + now().UTC().Format(time.RFC3339)
+	c.line, c.kept = line, verdict
+	return line
+}
+
 var (
-	descendantsOnce   sync.Once
-	descendantsResult postureLine
+	descendants = &descendantCheck{}
+	// descendantProbe is the probe the report runs: the source group's own
+	// kill, on the probe's own child.
+	descendantProbe = func() (postureLine, bool) {
+		return probeDescendants(postureChildArg, func(g *sourceGroup, _ *exec.Cmd) { g.kill() })
+	}
 )
 
-// descendantPosture runs the probe once per process: what it finds is the
-// kernel's and this binary's, which do not change while it runs.
-func descendantPosture() postureLine {
-	descendantsOnce.Do(func() {
-		descendantsResult = probeDescendants(func(g *sourceGroup, _ *exec.Cmd) { g.kill() })
-	})
-	return descendantsResult
-}
+func descendantPosture() postureLine { return descendants.get(descendantProbe, time.Now) }
 
 // probeDescendants starts a child as a source is started -- in an
 // anchor-led process group (prepareSourceProcess) -- which starts a
@@ -90,38 +112,42 @@ func descendantPosture() postureLine {
 // pipe they held must reach end of file within the wait. One still holding
 // it survived, and is ended afterwards by closing its input or, failing
 // that, by its pid; the child is waited for only then, so a kill that
-// missed it never holds the probe.
-func probeDescendants(kill func(*sourceGroup, *exec.Cmd)) postureLine {
-	line := func(state, reason string) postureLine { return postureLine{protectionDescendants, state, reason} }
+// missed it never holds the probe. The child runs the probe mode childArg
+// names, the probe's own outside a test. verdict is false where the probe
+// could not run, so no verdict was reached.
+func probeDescendants(childArg string, kill func(*sourceGroup, *exec.Cmd)) (_ postureLine, verdict bool) {
+	noVerdict := func(state, reason string) (postureLine, bool) {
+		return postureLine{protectionDescendants, state, reason}, false
+	}
 	inRead, inWrite, err := os.Pipe()
 	if err != nil {
-		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
+		return noVerdict(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	defer inWrite.Close()
 	outRead, outWrite, err := os.Pipe()
 	if err != nil {
 		inRead.Close()
-		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
+		return noVerdict(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	defer outRead.Close()
 	// The context is a backstop only: its Cancel is the group's kill.
 	ctx, cancel := context.WithTimeout(context.Background(), postureProbeLifetime)
 	defer cancel()
-	child := exec.CommandContext(ctx, "/proc/self/exe", postureChildArg)
+	child := exec.CommandContext(ctx, "/proc/self/exe", childArg)
 	child.Env = []string{envPostureProbe + "=1"}
 	child.Stdin, child.Stdout = inRead, outWrite
 	group, err := prepareSourceProcess(child, "")
 	if err != nil {
 		inRead.Close()
 		outWrite.Close()
-		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
+		return noVerdict(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	defer group.reap()
 	err = group.start(child)
 	inRead.Close()
 	outWrite.Close()
 	if err != nil {
-		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
+		return noVerdict(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	out := bufio.NewReader(outRead)
 	_ = outRead.SetReadDeadline(time.Now().Add(postureProbeWait))
@@ -130,7 +156,7 @@ func probeDescendants(kill func(*sourceGroup, *exec.Cmd)) postureLine {
 		text, err := out.ReadString('\n')
 		if err != nil {
 			endProbe(inWrite, out, outRead, child, grandchild)
-			return line(postureNotEnforced, "the probe's processes did not both start: "+probeReadError(err))
+			return noVerdict(postureNotEnforced, "the probe's processes did not both start: "+probeReadError(err))
 		}
 		if pid, ok := strings.CutPrefix(strings.TrimSpace(text), "grandchild "); ok {
 			grandchild, _ = strconv.Atoi(pid)
@@ -141,15 +167,18 @@ func probeDescendants(kill func(*sourceGroup, *exec.Cmd)) postureLine {
 	_, err = io.Copy(io.Discard, out)
 	endProbe(inWrite, out, outRead, child, grandchild)
 	if err == nil {
-		return line(postureEnforced, "a grandchild a probe started inside a source's process group did not survive the group's kill; a descendant that leaves the group is not reached by it")
+		return postureLine{protectionDescendants, postureEnforced, "a grandchild a probe started inside a source's process group did not survive the group's kill; a descendant that leaves the group is not reached by it"}, true
 	}
-	return line(postureNotEnforced, "a process a probe started inside a source's process group survived the group's kill, so a source or what it started can outlive being stopped")
+	return postureLine{protectionDescendants, postureNotEnforced, "a process a probe started inside a source's process group survived the group's kill, so a source or what it started can outlive being stopped"}, true
 }
 
 // endProbe ends whatever of the probe is left: closing its input ends both
 // of its processes, and one that still holds the pipe after the wait is
 // killed by its pid, which it holds while it holds the pipe. Only then is
-// the child waited for.
+// the child waited for. Where this process is PID 1 -- the gateway as the
+// container's first process, run without an init -- the grandchild,
+// orphaned when the child died, is this process's own, and it is waited
+// for here, or it would stay a zombie until the gateway exits.
 func endProbe(input *os.File, out *bufio.Reader, outRead *os.File, child *exec.Cmd, grandchild int) {
 	input.Close()
 	_ = outRead.SetReadDeadline(time.Now().Add(postureProbeWait))
@@ -160,6 +189,26 @@ func endProbe(input *os.File, out *bufio.Reader, outRead *os.File, child *exec.C
 		}
 	}
 	_ = child.Wait()
+	if grandchild > 0 && postureIsInit() {
+		go reapAdopted(grandchild)
+	}
+}
+
+// postureIsInit is whether the probe's orphans are this process's own.
+var postureIsInit = func() bool { return os.Getpid() == 1 }
+
+// reapAdopted waits for the one process pid names, which is this
+// process's own child once its parent has exited, so the pid stays held
+// until this wait and is never another's. It runs apart from the report:
+// the grandchild is dead or dying here, and one that is not ends at its
+// own bound.
+func reapAdopted(pid int) {
+	var status syscall.WaitStatus
+	for {
+		if _, err := syscall.Wait4(pid, &status, 0, nil); err != syscall.EINTR {
+			return
+		}
+	}
 }
 
 func probeReadError(err error) string {
