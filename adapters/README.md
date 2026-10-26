@@ -103,37 +103,45 @@ that value, as `--source-env` does, and nothing else reaches it but `PATH`; `--t
 {"request": {"path": "/read", "body": {"id": 101}}, "expect": "accepted"}
 ```
 
-`request` is the acquisition's `arguments`; `expect` is `accepted`, or `refused` for a request
-your adapter must turn down. Without `--vectors`, the request on stdin is the one case, expected
-to be accepted. A case file that cannot be read stops the run before the adapter is started.
+`request` is the acquisition's `arguments`. `expect` is `accepted`, or `refused: ` and the class of
+the refusal the case expects (below): `refused: source-failed` for a request your adapter must turn
+down itself. A refusal of another class than the one named is not the one expected, so an adapter
+that answers such a request with a broken envelope, or runs past its timeout, fails the case.
+Without `--vectors`, the request on stdin is the one case, expected to be accepted. A case file
+that cannot be read stops the run before the adapter is started.
 
-Each case is reported as `accepted` or as `refused:` and the reason, one line each, the ones
-that did not come out as expected marked `UNEXPECTED`, and then the count; `--json` writes the
+Each case is reported as `accepted`, or as `refused:`, its class and the reason, one line each, the
+ones that did not come out as expected marked `UNEXPECTED`, and then the count; `--json` writes the
 same report as one canonical JSON object, `{"shape", "cases": [{"case", "expect", "outcome",
-"reason"?, "unexpected"}], "unexpected"}`. The exit status is 0 when every case came out as
-expected, 1 when one did not, and 2 when the command line or a case could not be read.
+"refusal"?, "reason"?, "unexpected"}], "unexpected"}`, `refusal` being the class. The exit status
+is 0 when every case came out as expected, 1 when one did not, and 2 when the command line or a
+case could not be read.
 
 ### What a refusal means
 
 `refused` is the refusal `serve` makes: the acquisition fails, nothing is retained, nothing is
-minted, and the caller is told the reason. The reason says whose it was:
+minted, and the caller is told the reason. Its class says whose it was, and the reason begins with
+`serve`'s words for it:
 
-- `source failed: …` — the adapter exited with a status other than 0, and what follows is the
-  start of what it wrote on stderr. This is your adapter refusing; it is what a case expecting
-  `refused` is for.
-- `source did not finish within its N-second timeout`, `source output exceeds N bytes`, `source
-  could not be started: …` — the adapter did not finish within the source's bounds, or could not
-  be run.
-- `source did not return a canonical JSON value: …` — stdout is not one JSON value in the
-  canonical domain: a fraction, an exponent, an integer past the safe range, a member named twice,
-  text that is not UTF-8, or anything after the value.
-- `the adapter's result is not an envelope: …` — the value is not an envelope of the form above,
-  or carries `transport` and `server` from a source declared with another shape; what follows
-  names the member and the rule. An adapter that answers a request with this has a defect,
-  whatever the case expected, and the schema refuses the same envelope.
-- `the result cannot be returned: …` — the result is nested deeper than the response can carry.
+- `source-failed`, `source failed: …` — the adapter exited with a status other than 0, and what
+  follows is the start of what it wrote on stderr. This is your adapter refusing, the one class a
+  case for a request it must turn down expects.
+- `timeout`, `source did not finish within its N-second timeout` — the adapter ran past the
+  source's timeout, or left a descendant holding its output past it.
+- `output-bound`, `source output exceeds N bytes` — stdout ran past the source's output bound.
+- `not-started`, `source could not be started: …` — the adapter could not be run.
+- `not-json`, `source did not return a canonical JSON value: …` — stdout is not one JSON value in
+  the canonical domain: a fraction, an exponent, an integer past the safe range, a member named
+  twice, text that is not UTF-8, or anything after the value.
+- `not-an-envelope`, `the adapter's result is not an envelope: …` — the value is not an envelope of
+  the form above, or carries `transport` and `server` from a source declared with another shape;
+  what follows names the member and the rule. An adapter that answers a request with this has a
+  defect, and the schema refuses the same envelope.
+- `not-returnable`, `the result cannot be returned: …` — the result is nested deeper than the
+  response can carry.
 
-A case expecting `refused` passes whatever the reason, so read the reason in the report.
+Only `source-failed` is your adapter's own; a case may name another class, to hold the adapter to
+the source's bounds, for one.
 
 The shipped adapters are held to the same command by the `adapter-conform` check
 (`scripts/checks/adapter-conform.sh`, `testdata/adapter-conform`): `adapter-airbyte`,
@@ -141,9 +149,10 @@ The shipped adapters are held to the same command by the `adapter-conform` check
 runtime, an MCP server over stdio and a remote one over Streamable HTTP, and a provider. The
 connection programs reach providers that nothing can stand in for from outside their process, by
 design: each envelope source of the connection local plan is run as the plan runs it to a request
-it refuses before reaching a provider, and the envelope its own code writes in its package's
-tests, against a stand-in provider, is run through `adapter-conform` and the schema. That is the
-source's envelope as its code writes it, not one its released program wrote from a real provider.
+it refuses itself before reaching a provider, each such refusal held to the class `source-failed`,
+and the envelope its own code writes in its package's tests, against a stand-in provider, is run
+through `adapter-conform` and the schema. That is the source's envelope as its code writes it, not
+one its released program wrote from a real provider.
 
 ## adapter-airbyte
 

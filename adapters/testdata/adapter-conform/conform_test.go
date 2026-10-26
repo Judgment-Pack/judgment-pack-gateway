@@ -99,8 +99,9 @@ type conformRun struct {
 	args    []string // the program's own
 	timeout int      // seconds; 0 for the gateway's default
 	// accepts is whether the cases include one the program answers with an
-	// envelope the gateway accepts.
-	accepts bool
+	// envelope the gateway accepts; refusesOnly, whether every case is one
+	// the program refuses itself.
+	accepts, refusesOnly bool
 }
 
 type conformReport struct {
@@ -109,6 +110,7 @@ type conformReport struct {
 		Case       string `json:"case"`
 		Expect     string `json:"expect"`
 		Outcome    string `json:"outcome"`
+		Refusal    string `json:"refusal"`
 		Reason     string `json:"reason"`
 		Unexpected bool   `json:"unexpected"`
 	} `json:"cases"`
@@ -253,7 +255,7 @@ func TestEveryShippedAdapterConforms(t *testing.T) {
 			continue
 		}
 		run := conformRun{label: source.ID + ", as the connection local plan runs it, with no connection", program: source.Executable,
-			shape: source.Shape, cases: filepath.Join("sources", source.ID), args: source.Args, timeout: source.Timeout}
+			shape: source.Shape, cases: filepath.Join("sources", source.ID), args: source.Args, timeout: source.Timeout, refusesOnly: true}
 		if source.Connections {
 			state := filepath.Join(work, "connections-"+source.ID)
 			if err := os.Mkdir(state, 0o700); err != nil {
@@ -299,7 +301,7 @@ func TestEveryShippedAdapterConforms(t *testing.T) {
 		t.Logf("%s is not set: the envelopes the sources' code writes are not run here (scripts/checks/adapter-conform.sh sets it)", envEnvelopes)
 	}
 
-	cases, unexpected := 0, 0
+	cases, unexpected, refusals := 0, 0, 0
 	ran := map[string]bool{}
 	for _, run := range runs {
 		argv := []string{"adapter-conform", "--shape", run.shape, "--vectors", absolute(t, filepath.Join("cases", run.cases)), "--json"}
@@ -327,17 +329,29 @@ func TestEveryShippedAdapterConforms(t *testing.T) {
 		accepted := 0
 		for _, c := range report.Cases {
 			line := fmt.Sprintf("%s: %s: %s", run.label, c.Case, c.Outcome)
-			if c.Reason != "" {
-				line += ": " + c.Reason
+			if c.Refusal != "" {
+				line += ": " + c.Refusal + ": " + c.Reason
 			}
 			if c.Unexpected {
 				t.Errorf("UNEXPECTED %s (expected %s)", line, c.Expect)
 			} else {
 				t.Log(line)
 			}
-			if c.Outcome == "accepted" {
+			switch {
+			case c.Outcome == "accepted":
 				accepted++
+			case c.Refusal != "source-failed" || !strings.HasPrefix(c.Reason, "source failed: "):
+				// Every refusal a case here expects is the program's own;
+				// a timeout, a start that failed, or an answer the gateway
+				// would not take is a defect of the program, whatever the
+				// gateway's command compared it with.
+				t.Errorf("%s: %s: refused, and not by the program itself: %s: %s", run.label, c.Case, c.Refusal, c.Reason)
+			default:
+				refusals++
 			}
+		}
+		if run.refusesOnly && (accepted != 0 || len(report.Cases) == 0) {
+			t.Errorf("%s: %d of %d cases accepted, where each is one the program refuses before reaching a provider", run.label, accepted, len(report.Cases))
 		}
 		if err != nil && report.Unexpected == 0 {
 			t.Errorf("%s: %v: %s", run.label, err, stderr.String())
@@ -353,5 +367,5 @@ func TestEveryShippedAdapterConforms(t *testing.T) {
 			t.Errorf("%s was not run", name)
 		}
 	}
-	t.Logf("adapter-conform: %d runs over %d programs, %d cases, %d unexpected", len(runs), len(programs), cases, unexpected)
+	t.Logf("adapter-conform: %d runs over %d programs, %d cases, %d unexpected; %d refusals, each the program's own (source-failed)", len(runs), len(programs), cases, unexpected, refusals)
 }

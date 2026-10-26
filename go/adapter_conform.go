@@ -50,28 +50,67 @@ type conformOptions struct {
 	argv      []string
 }
 
+// The classes of refusal, by what refused. The first is the adapter's own:
+// it exited with a status other than 0, and serve's refusal carries the start
+// of what it wrote on stderr. The others are serve's, of an adapter that ran
+// out of its bounds or could not be run, or of an answer that is not one an
+// acquisition takes. A case that expects a refusal names its class, and a
+// refusal of another class is unexpected: an adapter that writes a broken
+// envelope where it should refuse fails its case.
+const (
+	refusalSourceFailed  = "source-failed"
+	refusalTimeout       = "timeout"
+	refusalOutputBound   = "output-bound"
+	refusalNotStarted    = "not-started"
+	refusalNotJSON       = "not-json"
+	refusalNotAnEnvelope = "not-an-envelope"
+	refusalNotReturnable = "not-returnable"
+)
+
+var refusalClasses = []string{refusalSourceFailed, refusalTimeout, refusalOutputBound, refusalNotStarted, refusalNotJSON, refusalNotAnEnvelope, refusalNotReturnable}
+
+// conformExpectations are what a case may expect: "accepted", or "refused: "
+// and the class of the refusal.
+var conformExpectations = func() map[string]bool {
+	out := map[string]bool{"accepted": true}
+	for _, class := range refusalClasses {
+		out["refused: "+class] = true
+	}
+	return out
+}()
+
 // conformCase is one request and what the adapter's answer to it is expected
-// to be: "accepted" or "refused".
+// to be (conformExpectations).
 type conformCase struct {
 	name    string
 	request []byte
 	expect  string
 }
 
-// conformOutcome is what serve would make of the adapter's answer to a case.
+// conformOutcome is what serve would make of the adapter's answer to a case:
+// accepted, or refused, of a class and for a reason.
 type conformOutcome struct {
 	conformCase
-	reason string // empty when accepted
+	refusal string // the class; empty when accepted
+	reason  string
 }
 
 func (o conformOutcome) outcome() string {
-	if o.reason == "" {
+	if o.refusal == "" {
 		return "accepted"
 	}
 	return "refused"
 }
 
-func (o conformOutcome) unexpected() bool { return o.outcome() != o.expect }
+// result is the outcome as a case states what it expects.
+func (o conformOutcome) result() string {
+	if o.refusal == "" {
+		return "accepted"
+	}
+	return "refused: " + o.refusal
+}
+
+func (o conformOutcome) unexpected() bool { return o.result() != o.expect }
 
 func cmdAdapterConform(args []string) int {
 	// Nothing a launcher left open reaches the adapter, as nothing reaches
@@ -189,7 +228,7 @@ func conformRequest(raw []byte) ([]byte, error) {
 
 // conformCases reads the cases of a directory: every *.json file in it, in
 // the order of their names, each exactly {"request": VALUE, "expect":
-// "accepted"|"refused"}. A file that is not is refused, and so is a
+// "accepted" | "refused: CLASS"}. A file that is not is refused, and so is a
 // directory with none: a case that cannot be read is not a case passed.
 func conformCases(dir string) ([]conformCase, error) {
 	info, err := os.Stat(dir)
@@ -226,8 +265,8 @@ func conformCases(dir string) ([]conformCase, error) {
 		if c.Request == nil {
 			return nil, fmt.Errorf(`%s: no member "request"`, name)
 		}
-		if c.Expect == nil || (*c.Expect != "accepted" && *c.Expect != "refused") {
-			return nil, fmt.Errorf(`%s: member "expect" is neither "accepted" nor "refused"`, name)
+		if c.Expect == nil || !conformExpectations[*c.Expect] {
+			return nil, fmt.Errorf(`%s: member "expect" is neither "accepted" nor "refused: " and a class of refusal (%s)`, name, strings.Join(refusalClasses, ", "))
 		}
 		request, err := conformRequest(c.Request)
 		if err != nil {
@@ -238,20 +277,42 @@ func conformCases(dir string) ([]conformCase, error) {
 	return cases, nil
 }
 
-// conformOne runs the adapter on one case and returns why serve would
-// refuse its answer, or "" when serve would accept it.
-func conformOne(g *gatewayService, spec sourceSpec, c conformCase) string {
+// conformOne runs the adapter on one case and returns the class of serve's
+// refusal of its answer and the refusal, or two empty strings when serve
+// would accept it.
+func conformOne(g *gatewayService, spec sourceSpec, c conformCase) (class, reason string) {
 	output, _, _, err := g.runSource("adapter", spec, c.request)
-	if err == nil {
-		var e *envelope
-		if e, err = readEnvelope(output, spec.shape); err == nil {
-			_, err = returnableResult(e.result)
-		}
-	}
 	if err != nil {
-		return err.Error()
+		return sourceRefusalClass(err.Error()), err.Error()
 	}
-	return ""
+	e, err := readEnvelope(output, spec.shape)
+	if err != nil {
+		return refusalNotAnEnvelope, err.Error()
+	}
+	if _, err := returnableResult(e.result); err != nil {
+		return refusalNotReturnable, err.Error()
+	}
+	return "", ""
+}
+
+// sourceRefusalClass is the class of a refusal runSource made, read from
+// the words it begins with there: the adapter's own failure, the timeout
+// (a descendant holding the output past it among it), the output bound,
+// output that is no canonical JSON value, and otherwise an adapter that
+// could not be started. TestAdapterConformClassesEachRefusal holds each
+// class to serve's words.
+func sourceRefusalClass(reason string) string {
+	switch {
+	case strings.HasPrefix(reason, "source failed: "):
+		return refusalSourceFailed
+	case strings.HasPrefix(reason, "source did not finish within "), strings.HasPrefix(reason, "source exited but left its output open"):
+		return refusalTimeout
+	case strings.HasPrefix(reason, "source output exceeds "):
+		return refusalOutputBound
+	case strings.HasPrefix(reason, "source did not return a canonical JSON value"):
+		return refusalNotJSON
+	}
+	return refusalNotStarted
 }
 
 func adapterConform(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -292,7 +353,8 @@ func adapterConform(ctx context.Context, args []string, stdin io.Reader, stdout,
 			fmt.Fprintf(stderr, "adapter-conform: interrupted after %d of %d case(s)\n", len(outcomes), len(cases))
 			return 2
 		}
-		outcomes = append(outcomes, conformOutcome{c, conformOne(g, spec, c)})
+		class, reason := conformOne(g, spec, c)
+		outcomes = append(outcomes, conformOutcome{c, class, reason})
 	}
 	unexpected := 0
 	for _, o := range outcomes {
@@ -316,7 +378,7 @@ func adapterConform(ctx context.Context, args []string, stdin io.Reader, stdout,
 func writeConformText(w io.Writer, shape string, outcomes []conformOutcome, unexpected int) {
 	fmt.Fprintf(w, "gateway adapter-conform: shape %s, %d case(s)\n", shape, len(outcomes))
 	for _, o := range outcomes {
-		line := printableText(o.name) + ": " + o.outcome()
+		line := printableText(o.name) + ": " + o.result()
 		if o.reason != "" {
 			line += ": " + printableText(o.reason)
 		}
@@ -329,9 +391,9 @@ func writeConformText(w io.Writer, shape string, outcomes []conformOutcome, unex
 }
 
 // writeConformJSON is the report for a program, in canonical JSON:
-// {"shape", "cases": [{"case", "expect", "outcome", "reason"?,
-// "unexpected"}], "unexpected"}, "reason" present when the outcome is
-// "refused".
+// {"shape", "cases": [{"case", "expect", "outcome", "refusal"?, "reason"?,
+// "unexpected"}], "unexpected"}, "refusal" (the class) and "reason" present
+// when the outcome is "refused".
 func writeConformJSON(w io.Writer, shape string, outcomes []conformOutcome, unexpected int) {
 	cases := vArray{}
 	for _, o := range outcomes {
@@ -339,7 +401,8 @@ func writeConformJSON(w io.Writer, shape string, outcomes []conformOutcome, unex
 		c.set("case", vString(printableText(o.name)))
 		c.set("expect", vString(o.expect))
 		c.set("outcome", vString(o.outcome()))
-		if o.reason != "" {
+		if o.refusal != "" {
+			c.set("refusal", vString(o.refusal))
 			c.set("reason", vString(printableText(o.reason)))
 		}
 		c.set("unexpected", vBool(o.unexpected()))

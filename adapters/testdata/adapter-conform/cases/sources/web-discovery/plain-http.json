@@ -1,1 +1,1 @@
-{"request": {"url": "http://example.com/"}, "expect": "refused"}
+{"request": {"url": "http://example.com/"}, "expect": "refused: source-failed"}

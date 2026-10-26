@@ -10,7 +10,7 @@ package main
 //	gateway export --config <engine.json> --out <dir> [--observations <file>]...
 //	gateway export --check <dir>
 //	gateway conform [--impl CMD] [--corpus DIR]
-//	gateway adapter-conform --shape airbyte|mcp|http [--vectors DIR] [--env KEY[=VALUE]]... [--json] ADAPTER-COMMAND
+//	gateway adapter-conform --shape airbyte|mcp|http [--vectors DIR] [--env KEY[=VALUE]]... [--timeout SECONDS] [--max-output BYTES] [--json] ADAPTER-COMMAND
 //	gateway witness verify --log <file> --public-key <file> [--marks <file>]
 //	gateway witness register|retire|repair --config <engine.json> ...
 //	gateway witness fetch --store <dir> --registry <file> ... --record <file> --trail <file> --runtime <path> --out <dir>

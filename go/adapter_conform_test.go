@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -57,6 +58,7 @@ type conformReport struct {
 		Case       string `json:"case"`
 		Expect     string `json:"expect"`
 		Outcome    string `json:"outcome"`
+		Refusal    string `json:"refusal"`
 		Reason     string `json:"reason"`
 		Unexpected bool   `json:"unexpected"`
 	} `json:"cases"`
@@ -77,11 +79,11 @@ func TestAdapterConformReadsTheVectorsAsServeDoes(t *testing.T) {
 			text := vectorText(t, kind, name)
 			if _, err := conformRequest(text); err != nil {
 				// Outside the canonical domain, so no request carries it;
-				// TestAdapterConformReportsTheSourcesOwnFailures sends one
-				// as the adapter's output.
+				// TestAdapterConformClassesEachRefusal sends one as the
+				// adapter's output.
 				continue
 			}
-			expect := map[string]string{"valid": "accepted", "invalid": "refused"}[kind]
+			expect := map[string]string{"valid": "accepted", "invalid": "refused: not-an-envelope"}[kind]
 			file := kind + "-" + name + ".json"
 			writeCase(t, dir, file, fmt.Sprintf(`{"request": %s, "expect": %q}`, text, expect))
 			want[file] = name
@@ -106,9 +108,9 @@ func TestAdapterConformReadsTheVectorsAsServeDoes(t *testing.T) {
 		switch {
 		case !known:
 			t.Errorf("a case not written: %s", c.Case)
-		case c.Outcome != c.Expect || c.Unexpected:
-			t.Errorf("%s: %s, expected %s: %s", c.Case, c.Outcome, c.Expect, c.Reason)
-		case c.Outcome == "refused" && (!strings.HasPrefix(c.Reason, "the adapter's result is not an envelope: ") || !strings.Contains(c.Reason, envelopeRefusals[name])):
+		case c.Unexpected || (c.Outcome == "accepted") != (c.Expect == "accepted"):
+			t.Errorf("%s: %s %s, expected %s: %s", c.Case, c.Outcome, c.Refusal, c.Expect, c.Reason)
+		case c.Outcome == "refused" && (c.Refusal != "not-an-envelope" || !strings.HasPrefix(c.Reason, "the adapter's result is not an envelope: ") || !strings.Contains(c.Reason, envelopeRefusals[name])):
 			t.Errorf("%s: refused for another reason: %s", c.Case, c.Reason)
 		case c.Outcome == "accepted" && c.Reason != "":
 			t.Errorf("%s: accepted with a reason: %s", c.Case, c.Reason)
@@ -127,34 +129,62 @@ func TestAdapterConformReadsTheVectorsAsServeDoes(t *testing.T) {
 	}
 }
 
-// What the source itself does wrong is a refusal as serve would make it:
-// a failure, with the start of what it said; output past the bound; output
-// that is no JSON, or outside the canonical domain; time past the timeout;
-// and JSON that is not an envelope. A request on stdin is one case,
-// expected to be accepted, so each is unexpected and the exit is 1.
-func TestAdapterConformReportsTheSourcesOwnFailures(t *testing.T) {
+// What the source itself does wrong is a refusal as serve would make it,
+// and of its class: a failure, with the start of what it said; output past
+// the bound; output that is no JSON, or outside the canonical domain; time
+// past the timeout; JSON that is not an envelope; and a program that cannot
+// be started. A case that expects the refusal of that class passes; one that
+// expects the adapter's own refusal, source-failed, where serve refused for
+// another reason does not, nor does the request on stdin, expected to be
+// accepted.
+func TestAdapterConformClassesEachRefusal(t *testing.T) {
 	never := filepath.Join(t.TempDir(), "never")
+	notAProgram := filepath.Join(t.TempDir(), "not-a-program")
+	if err := os.WriteFile(notAProgram, []byte("not a program\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
 		name    string
 		options []string
 		modes   []string
+		adapter string
+		class   string
 		reason  string
 	}{
-		{"a failure", nil, []string{envSourceFail + "=1"}, "source failed: source refused"},
-		{"output past the bound", []string{"--max-output", "1024"}, []string{envSourceBig + "=2048"}, "source output exceeds 1024 bytes"},
-		{"no JSON", nil, []string{envSourceEnvelope + "=not json"}, "source did not return a canonical JSON value: "},
-		{"a fraction", nil, []string{envSourceEnvelope + "=" + string(vectorText(t, "invalid", "result-fraction"))}, "source did not return a canonical JSON value: non-integer number is outside the canonical domain"},
-		{"past the timeout", []string{"--timeout", "1"}, []string{envSourceWait + "=" + never}, "source did not finish within its 1-second timeout"},
-		{"JSON that is no envelope", nil, nil, `the adapter's result is not an envelope: unknown member "checkedSuccessfully"`},
+		{"a failure", nil, []string{envSourceFail + "=1"}, "", "source-failed", "source failed: source refused"},
+		{"output past the bound", []string{"--max-output", "1024"}, []string{envSourceBig + "=2048"}, "", "output-bound", "source output exceeds 1024 bytes"},
+		{"no JSON", nil, []string{envSourceEnvelope + "=not json"}, "", "not-json", "source did not return a canonical JSON value: "},
+		{"a fraction", nil, []string{envSourceEnvelope + "=" + string(vectorText(t, "invalid", "result-fraction"))}, "", "not-json", "source did not return a canonical JSON value: non-integer number is outside the canonical domain"},
+		{"past the timeout", []string{"--timeout", "1"}, []string{envSourceWait + "=" + never}, "", "timeout", "source did not finish within its 1-second timeout"},
+		{"JSON that is no envelope", nil, nil, "", "not-an-envelope", `the adapter's result is not an envelope: unknown member "checkedSuccessfully"`},
+		{"a program that cannot be started", nil, nil, notAProgram, "not-started", "source could not be started: "},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			options := append([]string{"--shape", "airbyte"}, c.options...)
-			code, out, errOut := conformRun(t, `{"stream":"decisions"}`, helperArgs(options, c.modes...)...)
-			if code != 1 || errOut != "" {
-				t.Fatalf("exit %d: %s %s", code, out, errOut)
+			if c.adapter != "" && runtime.GOOS == "windows" {
+				t.Skip("a file of text with its executable bit is a Unix program that cannot be started")
 			}
-			if want := "  UNEXPECTED stdin: refused: " + c.reason; !strings.Contains(out, want) || !strings.HasSuffix(out, "\n1 case(s), 1 unexpected\n") {
-				t.Fatalf("want %q in:\n%s", want, out)
+			args := func(options ...string) []string {
+				options = append(append([]string{"--shape", "airbyte"}, c.options...), options...)
+				if c.adapter == "" {
+					return helperArgs(options, c.modes...)
+				}
+				return append(options, "--", c.adapter)
+			}
+			code, out, errOut := conformRun(t, `{"stream":"decisions"}`, args()...)
+			if want := "  UNEXPECTED stdin: refused: " + c.class + ": " + c.reason; code != 1 || errOut != "" || !strings.Contains(out, want) || !strings.HasSuffix(out, "\n1 case(s), 1 unexpected\n") {
+				t.Fatalf("exit %d, want %q in:\n%s%s", code, want, out, errOut)
+			}
+			dir := t.TempDir()
+			writeCase(t, dir, "a.json", `{"request": {"stream": "decisions"}, "expect": "refused: `+c.class+`"}`)
+			if code, out, errOut := conformRun(t, "", args("--vectors", dir)...); code != 0 || !strings.Contains(out, "  a.json: refused: "+c.class+": "+c.reason) {
+				t.Fatalf("expected as %s: exit %d:\n%s%s", c.class, code, out, errOut)
+			}
+			if c.class == "source-failed" {
+				return
+			}
+			writeCase(t, dir, "a.json", `{"request": {"stream": "decisions"}, "expect": "refused: source-failed"}`)
+			if code, out, errOut := conformRun(t, "", args("--vectors", dir)...); code != 1 || !strings.Contains(out, "  UNEXPECTED a.json: refused: "+c.class+": "+c.reason) || !strings.Contains(out, "(expected refused: source-failed)") {
+				t.Fatalf("expected as the adapter's own refusal: exit %d:\n%s%s", code, out, errOut)
 			}
 		})
 	}
@@ -167,29 +197,36 @@ func TestAdapterConformReports(t *testing.T) {
 	dir := t.TempDir()
 	writeCase(t, dir, "a.json", fmt.Sprintf(`{"request": %s, "expect": "accepted"}`, vectorText(t, "valid", "one-row")))
 	writeCase(t, dir, "b.json", `{"expect": "accepted", "request": {}}`)
-	writeCase(t, dir, "c.json", `{"request": [], "expect": "refused"}`)
+	writeCase(t, dir, "c.json", `{"request": [], "expect": "refused: not-an-envelope"}`)
+	// An envelope where the adapter should have refused: not the refusal
+	// the case expects.
+	writeCase(t, dir, "d.json", `{"request": [], "expect": "refused: source-failed"}`)
 	writeCase(t, dir, "notes.txt", `not a case`)
 	code, out, errOut := conformRun(t, "", helperArgs([]string{"--shape", "http", "--vectors", dir, "--json"}, envSourceEchoStdin+"=1")...)
 	want := `{"cases":[` +
 		`{"case":"a.json","expect":"accepted","outcome":"accepted","unexpected":false},` +
-		`{"case":"b.json","expect":"accepted","outcome":"refused","reason":"the adapter's result is not an envelope: missing member \"result\"","unexpected":true},` +
-		`{"case":"c.json","expect":"refused","outcome":"refused","reason":"the adapter's result is not an envelope: not an object","unexpected":false}` +
-		`],"shape":"http","unexpected":1}`
+		`{"case":"b.json","expect":"accepted","outcome":"refused","reason":"the adapter's result is not an envelope: missing member \"result\"","refusal":"not-an-envelope","unexpected":true},` +
+		`{"case":"c.json","expect":"refused: not-an-envelope","outcome":"refused","reason":"the adapter's result is not an envelope: not an object","refusal":"not-an-envelope","unexpected":false},` +
+		`{"case":"d.json","expect":"refused: source-failed","outcome":"refused","reason":"the adapter's result is not an envelope: not an object","refusal":"not-an-envelope","unexpected":true}` +
+		`],"shape":"http","unexpected":2}`
 	if code != 1 || out != want || errOut != "" {
 		t.Fatalf("exit %d:\n%s\nwant\n%s\n%s", code, out, want, errOut)
 	}
 	code, out, _ = conformRun(t, "", helperArgs([]string{"--vectors", dir, "--shape", "http"}, envSourceEchoStdin+"=1")...)
-	want = "gateway adapter-conform: shape http, 3 case(s)\n" +
+	want = "gateway adapter-conform: shape http, 4 case(s)\n" +
 		"  a.json: accepted\n" +
-		"  UNEXPECTED b.json: refused: the adapter's result is not an envelope: missing member \"result\" (expected accepted)\n" +
-		"  c.json: refused: the adapter's result is not an envelope: not an object\n" +
-		"3 case(s), 1 unexpected\n"
+		"  UNEXPECTED b.json: refused: not-an-envelope: the adapter's result is not an envelope: missing member \"result\" (expected accepted)\n" +
+		"  c.json: refused: not-an-envelope: the adapter's result is not an envelope: not an object\n" +
+		"  UNEXPECTED d.json: refused: not-an-envelope: the adapter's result is not an envelope: not an object (expected refused: source-failed)\n" +
+		"4 case(s), 2 unexpected\n"
 	if code != 1 || out != want {
 		t.Fatalf("exit %d:\n%s\nwant\n%s", code, out, want)
 	}
 	// Every case as expected, the expected refusal among them, is exit 0.
-	if err := os.Remove(filepath.Join(dir, "b.json")); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"b.json", "d.json"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if code, out, _ := conformRun(t, "", helperArgs([]string{"--vectors", dir, "--shape", "http"}, envSourceEchoStdin+"=1")...); code != 0 || !strings.HasSuffix(out, "\n2 case(s), 0 unexpected\n") {
 		t.Fatalf("exit %d: %s", code, out)
@@ -202,9 +239,9 @@ func TestAdapterConformReports(t *testing.T) {
 // names.
 func TestAdapterConformSendsTheRequestInItsCanonicalForm(t *testing.T) {
 	dir := t.TempDir()
-	writeCase(t, dir, "a.json", `{"request": {"zeta": [ 2 ], "alpha": 1}, "expect": "refused"}`)
+	writeCase(t, dir, "a.json", `{"request": {"zeta": [ 2 ], "alpha": 1}, "expect": "refused: not-an-envelope"}`)
 	code, out, errOut := conformRun(t, "", helperArgs([]string{"--shape", "http", "--vectors", dir}, envSourceEchoStdin+"=1")...)
-	if code != 0 || !strings.Contains(out, `a.json: refused: the adapter's result is not an envelope: unknown member "alpha"`) {
+	if code != 0 || !strings.Contains(out, `a.json: refused: not-an-envelope: the adapter's result is not an envelope: unknown member "alpha"`) {
 		t.Fatalf("exit %d: %s %s", code, out, errOut)
 	}
 }
@@ -284,13 +321,15 @@ func TestAdapterConformRefusesBeforeRunning(t *testing.T) {
 		{"no directory", nil, "", filepath.Join(empty, "absent"), "absent"},
 		{"a directory with no case", nil, "", empty, "holds no case"},
 		{"no request", map[string]string{"a.json": `{"expect":"accepted"}`}, "", "", `a.json: no member "request"`},
-		{"no expectation", map[string]string{"a.json": `{"request":{}}`}, "", "", `a.json: member "expect" is neither "accepted" nor "refused"`},
+		{"no expectation", map[string]string{"a.json": `{"request":{}}`}, "", "", `a.json: member "expect" is neither "accepted" nor "refused: " and a class of refusal (source-failed, timeout, output-bound, not-started, not-json, not-an-envelope, not-returnable)`},
 		{"another expectation", map[string]string{"a.json": `{"request":{},"expect":"ok"}`}, "", "", `member "expect" is neither`},
+		{"a refusal of no class", map[string]string{"a.json": `{"request":{},"expect":"refused"}`}, "", "", `a.json: member "expect" is neither`},
+		{"a refusal of a class there is not", map[string]string{"a.json": `{"request":{},"expect":"refused: crashed"}`}, "", "", `a.json: member "expect" is neither`},
 		{"an unknown member", map[string]string{"a.json": `{"request":{},"expect":"accepted","about":"x"}`}, "", "", `a.json: json: unknown field "about"`},
 		{"a member twice", map[string]string{"a.json": `{"request":{},"request":[],"expect":"accepted"}`}, "", "", `a.json: the member "request" is given twice in one object`},
 		{"two values", map[string]string{"a.json": `{"request":{},"expect":"accepted"} {}`}, "", "", "a.json: data follows"},
 		{"a request outside the domain", map[string]string{"a.json": `{"request":{"n":1e3},"expect":"accepted"}`}, "", "", "a.json: the request is not one an acquire request carries"},
-		{"one bad case among good ones", map[string]string{"a.json": `{"request":{},"expect":"refused"}`, "b.json": `{}`}, "", "", `b.json: no member "request"`},
+		{"one bad case among good ones", map[string]string{"a.json": `{"request":{},"expect":"refused: source-failed"}`, "b.json": `{}`}, "", "", `b.json: no member "request"`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			args := []string{"--shape", "http"}

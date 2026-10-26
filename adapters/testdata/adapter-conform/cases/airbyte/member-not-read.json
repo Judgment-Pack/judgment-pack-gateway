@@ -1,1 +1,1 @@
-{"request": {"stream": "decisions", "cursor": "updated_at"}, "expect": "refused"}
+{"request": {"stream": "decisions", "cursor": "updated_at"}, "expect": "refused: source-failed"}

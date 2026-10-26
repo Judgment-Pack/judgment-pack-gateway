@@ -1,1 +1,1 @@
-{"request": {"connection": "search-a", "revision": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", "query": "public policy guidance", "maxResults": 5}, "expect": "refused"}
+{"request": {"connection": "search-a", "revision": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", "query": "public policy guidance", "maxResults": 5}, "expect": "refused: source-failed"}
