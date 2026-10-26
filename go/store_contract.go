@@ -161,8 +161,9 @@ type secretSpace interface {
 }
 
 // lease is a holder's claim on a name until it expires. Its fencing token
-// grows with every grant of the name, so a holder whose lease expired and
-// was granted to another carries a token the name no longer has.
+// grows with every grant of the name, and never starts again, so a holder
+// whose lease expired and was granted to another carries a token the name
+// no longer has.
 type lease struct {
 	name    string
 	holder  string
@@ -215,6 +216,9 @@ type storeKind interface {
 	artifacts() blobSpace
 	receipts() indexedSpace
 	registry() appendLog
+	// documents is the kind's documents as every caller but its leases is
+	// given them: a put or a delete of a lease's document is refused
+	// (leaseDocumentsReserved), so a fencing token never restarts.
 	documents() documentSpace
 	secrets() secretSpace
 	leases() leaseSpace

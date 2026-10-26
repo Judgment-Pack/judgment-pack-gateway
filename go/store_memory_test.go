@@ -68,7 +68,7 @@ type memorySecrets struct{ k *memoryKind }
 func (k *memoryKind) artifacts() blobSpace     { return memoryBlobs{k} }
 func (k *memoryKind) receipts() indexedSpace   { return memoryIndexed{k} }
 func (k *memoryKind) registry() appendLog      { return memoryLog{k} }
-func (k *memoryKind) documents() documentSpace { return memoryDocuments{k} }
+func (k *memoryKind) documents() documentSpace { return leaseDocumentsReserved{memoryDocuments{k}} }
 func (k *memoryKind) secrets() secretSpace     { return memorySecrets{k} }
 func (k *memoryKind) leases() leaseSpace {
 	return documentLeases{docs: memoryDocuments{k}, clock: k.clock}

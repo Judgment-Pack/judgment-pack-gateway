@@ -50,13 +50,23 @@ What each asks of a kind:
   (`sealMayBeWritten`), exactly as before.
 - **A document** is replaced only at the revision its writer read: `noRevision` for one that is not
   there; any other revision is a conflict (`faultConflict`). A deleted document is absent, and one
-  made again takes a revision of its own.
+  made again takes a revision of its own. A document named `lease-...` is a lease's (below): the
+  kind's document space reads and lists it as any other, and refuses a put or a delete of it
+  (`faultRefused`).
 - **A secret** is made once and never replaced; it never leaves through a cut.
 - **A lease** grants a name to a holder until it expires. Its fencing token grows with every grant
   of the name, so a holder whose lease expired and was granted to another carries a token
   `checkFence` refuses (`faultStaleFence`), and its renewal and release are refused alike. Any
   kind with documents gives leases through them (`go/store_leases.go`): a grant is a
-  compare-and-set of the lease's document, so two granters cannot both take a name.
+  compare-and-set of the lease's document, so two granters cannot both take a name. A token never
+  starts again: the next grant counts from the token the lease's document holds, and that document
+  is the leases' own -- a kind's `documents()` is wrapped in `leaseDocumentsReserved`, which
+  refuses a put or a delete of a `lease-` document, and only the lease space writes through the
+  unwrapped one. Were the document deleted, the next grant would count from nothing and give a
+  token the name gave before, which a holder from before the delete would still carry. The token
+  is not derived from the document's revision instead: a revision is a kind's opaque string (the
+  custody's is a digest of the bytes, which comes back when the bytes do), and a document that is
+  not there has no revision to count from.
 - **A fault** is typed (`storeFault`): absent, taken, conflict, lease held, stale fence, durability,
   unreadable, refused. A write that was not made durable is a `faultDurability` error the caller
   sees, never a success and never a verdict. The error's text is its cause's own, so every message
@@ -204,9 +214,19 @@ there and passing:
   expired and was not granted again -- every grant's token exceeds the last, a released lease's
   token is refused, and another holder presenting the current token renews and releases nothing
   (the fence is the token's alone);
+- a lease's document cannot be deleted or rewritten through the kind's documents, so a grant after
+  the attempt still gives a token above the last and the token from before is refused;
 - a snapshot taken while a writer writes in the contract's order is a consistent cut;
 - a write the kind does not keep is a durability fault, never a success, and nothing is listed for
   it.
+
+The filesystem kind's own safeguards, which no case can see from outside a kind, have tests of
+their own: the staging file of a receipt or an artifact is synced, holding every byte, before its
+name is put in place, through the `stagedSync` seam (`go/store_fs_test.go`); a series that would
+not be a directory directly under the receipts root is refused by every operation before anything
+is made; a pinned snapshot is read only at the snapshot's mode and an owner the MCP server accepts
+(`go/store_fs_unix_test.go`); and the custody's storage intent has its directory synced after its
+rename, through the `Files` directory-sync seam, while no other custody document does.
 
 The custody's documents answer to the document cases in `adapters/internal/storecontract`. The
 in-memory kind, whose compare-and-set is atomic on its own, is held to the core's concurrent case:

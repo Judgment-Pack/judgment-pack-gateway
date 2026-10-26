@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,6 +123,11 @@ func TestStoreKindsConform(t *testing.T) {
 				clock := newHandClock()
 				kind, _ := k.open(t, clock.read)
 				conformLeases(t, kind.leases(), clock)
+			})
+			t.Run("a fencing token never restarts, its document deleted or not", func(t *testing.T) {
+				clock := newHandClock()
+				kind, _ := k.open(t, clock.read)
+				conformLeaseTokensNeverRestart(t, kind, clock)
 			})
 			t.Run("a snapshot is a consistent cut under concurrent writes", func(t *testing.T) {
 				kind, _ := k.open(t, nil)
@@ -394,6 +400,48 @@ func conformLeases(t *testing.T, leases leaseSpace, clock *handClock) {
 	}
 	if _, err := leases.renewLease(held, 10*time.Second); err != nil {
 		t.Fatalf("the holder's renewal after another's refused one: %v", err)
+	}
+}
+
+// conformLeaseTokensNeverRestart deletes a lease's document, and rewrites
+// it, through the kind's document space, as any caller but the leases
+// would: both are refused, so the next grant still counts from the last
+// one, and a token from before is stale once the name is granted again.
+func conformLeaseTokensNeverRestart(t *testing.T, kind storeKind, clock *handClock) {
+	leases, docs := kind.leases(), kind.documents()
+	first, err := leases.acquireLease("job", "one", 10*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, revision, err := docs.getDocument(leaseDocumentPrefix + "job")
+	if err != nil {
+		t.Fatalf("a lease's document reads as any other: %v", err)
+	}
+	if listed, err := docs.listDocuments(); err != nil || !slices.Contains(listed, leaseDocumentPrefix+"job") {
+		t.Fatalf("a lease's document lists as any other: %v %v", listed, err)
+	}
+	if err := docs.deleteDocument(leaseDocumentPrefix+"job", revision); faultOf(err) != faultRefused {
+		t.Errorf("a delete of a lease's document: fault %q (%v), want %q", faultOf(err), err, faultRefused)
+	}
+	if _, err := docs.putDocument(leaseDocumentPrefix+"job", leaseRecord("two", 1, clock.read().Add(time.Hour)), revision); faultOf(err) != faultRefused {
+		t.Errorf("a rewrite of a lease's document: fault %q (%v), want %q", faultOf(err), err, faultRefused)
+	}
+	if _, err := docs.putDocument(leaseDocumentPrefix+"other", []byte("{}"), noRevision); faultOf(err) != faultRefused {
+		t.Errorf("a create of a lease's document: fault %q (%v), want %q", faultOf(err), err, faultRefused)
+	}
+	clock.advance(11 * time.Second)
+	second, err := leases.acquireLease("job", "two", 10*time.Second)
+	if err != nil {
+		t.Fatalf("a grant after expiry: %v", err)
+	}
+	if second.token <= first.token {
+		t.Errorf("the grant after the delete gives token %d, which does not exceed the first grant's %d", second.token, first.token)
+	}
+	if err := leases.checkFence("job", first.token); faultOf(err) != faultStaleFence {
+		t.Errorf("the token from before the delete, the name granted again: fault %q (%v), want %q", faultOf(err), err, faultStaleFence)
+	}
+	if err := leases.checkFence("job", second.token); err != nil {
+		t.Errorf("the current grant's token: %v", err)
 	}
 }
 
