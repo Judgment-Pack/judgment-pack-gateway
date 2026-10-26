@@ -174,6 +174,9 @@ type gatewayService struct {
 	// decisionRecords is where an action's cited decision record is looked
 	// for (executor.md); empty refuses every action.
 	decisionRecords string
+	// seedPath is the seed file serve was started with, which /posture
+	// judges as gateway posture does; empty where none was named.
+	seedPath string
 	// ctx is the service's lifetime. Every source's context derives from it,
 	// so shutting the service down cancels every source in flight; a source
 	// in its own process group would otherwise outlive the gateway that
@@ -1573,6 +1576,20 @@ func (g *gatewayService) handler() http.Handler {
 
 	mux.HandleFunc("/publickey", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, g.publicKeyDocument())
+	})
+
+	// /posture is gateway posture's report for this gateway as it runs
+	// (posture.go), in canonical JSON so a desk can compare two answers
+	// byte for byte; it is read as /verify is, with a token where an
+	// issuer is configured. The seed and the sources are judged at each
+	// request, the descendants' probe once per process.
+	mux.HandleFunc("/posture", func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := authenticate(w, r); !ok {
+			return
+		}
+		report := hostPosture(postureInput{configured: true, seed: g.seedPath, sources: g.sources})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(report.canonical())
 	})
 
 	// A witness's endpoints (witness_serve.go), only where the engine's

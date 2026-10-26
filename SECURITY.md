@@ -335,7 +335,9 @@ overflow, or on the gateway's own shutdown — kills the
 source and every descendant still in the group, and the group is killed again after the source is
 waited for, since an overflow a descendant writes after the source has exited cancels nothing
 os/exec still watches. A descendant that has left the group is not reached: it gets a bounded wait
-for its pipe, not the acquisition. On Windows there is no process group; the direct child is
+for its pipe, not the acquisition; `adapter-mcp` reaches a command server's descendants that
+left it on Linux alone, and elsewhere only the server itself
+([adapters/README.md](adapters/README.md)). On Windows there is no process group; the direct child is
 killed and any descendant gets the same bounded wait. The gateway carries its own interrupt to
 every source in flight, because a source in its own group no longer receives the terminal's, and
 it answers every request in flight before it exits — or, if a request is still open when the
@@ -415,8 +417,10 @@ afterwards — a last resort on platforms this reference does not test. os/exec 
 child only the handles it is told to.
 
 What none of this gives: a source that runs as the gateway's own user, because no `--source-user`
-was given, can read what that user can read, including the seed; and a gateway that runs as root
-can read the files a source user holds. The separation is only as strong as the identities the
+was given, can read what that user can read, including the seed; a gateway that runs as root
+can read the files a source user holds; and the gateway does not confine the programs it starts —
+a source, or a program an adapter runs to recognise or render a document, reads what its
+operating-system user can read, reaches the network and writes files. The separation is only as strong as the identities the
 operator gives the two sides. **`serve --config`** holds a configuration to both sides at once
 ([docs/design/engine-config.md](docs/design/engine-config.md)): every platform's adapters run as
 a user of their own that is neither root nor the signer nor another platform's, each credentials
@@ -436,6 +440,16 @@ before it runs a platform's adapters once in check mode — as the platform's us
 environment `serve` would give them — and writes the entry only when they answered; the
 report an adapter writes crosses to the operator, redacted by the adapter as its diagnostics
 are, and nothing is signed from it.
+
+**See `gateway posture`** for which of these protections the host it runs on enforces: the user
+switch for sources, the reaping of a source's descendants, the engine image's custody, the seed
+file's owner and mode, and the confinement of the programs the gateway starts, which is never
+enforced — one line each, `enforced`, `not-enforced` or `not-applicable`, with the reason. Linux
+checks every line it can, the descendants' by a probe that kills a source group holding a
+grandchild; macOS and Windows state the descendants' and the image's lines from this section and
+check the seed where the platform has an owner and a mode. `serve` answers the same report at `/posture`
+([docs/design/engine-config.md](docs/design/engine-config.md)). The report is information, not a
+gate, and it judges as the user it runs as.
 
 **`identity` decides who may call, never from where.** A configured issuer's tokens are verified
 against a key file the operator holds, with the standard library and no fetch on the request path;

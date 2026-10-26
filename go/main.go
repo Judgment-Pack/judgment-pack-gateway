@@ -16,6 +16,7 @@ package main
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 //	gateway rotate-key --seed <file> --registry <file>
+//	gateway posture [--json] [--config <engine.json> | <store> <seedfile> <authority> <registry> [serve options]]
 //	gateway version
 
 import (
@@ -40,7 +41,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | rotate-key | mcp | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | rotate-key | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -64,6 +65,8 @@ func main() {
 		os.Exit(cmdRotateKey(os.Args[2:], os.Stdout, os.Stderr))
 	case "mcp":
 		os.Exit(cmdMCP(os.Args[2:]))
+	case "posture":
+		os.Exit(cmdPosture(os.Args[2:], os.Stdout, os.Stderr))
 	case "version":
 		os.Exit(cmdVersion(os.Stdout))
 	default:
@@ -72,18 +75,21 @@ func main() {
 	}
 }
 
-// refuseStrayAnchorMarker reports, and says why, when the internal anchor
-// marker is present in the environment of an ordinary invocation. The anchor
-// mode itself has already been taken by the init hook in spawn_unix.go, which
-// requires the marker and the argument together; reaching main with the
-// marker means the argument was absent, and refusing here keeps an inherited
-// variable from turning a verify or a conform into a silent success.
+// refuseStrayAnchorMarker reports, and says why, when an internal marker --
+// the anchor's or the posture probe's -- is present in the environment of an
+// ordinary invocation. The marked modes themselves have already been taken
+// by the init hooks in spawn_unix.go and posture_linux.go, which require the
+// marker and the argument together; reaching main with a marker means the
+// argument was absent, and refusing here keeps an inherited variable from
+// turning a verify or a conform into a silent success.
 func refuseStrayAnchorMarker() bool {
-	if os.Getenv(envGroupAnchor) != "1" {
-		return false
+	for _, marker := range []string{envGroupAnchor, envPostureProbe} {
+		if os.Getenv(marker) == "1" {
+			fmt.Fprintf(os.Stderr, "refusing to run: %s is set, and it is an internal marker this process sets only for its own anchor or posture probe\n", marker)
+			return true
+		}
 	}
-	fmt.Fprintf(os.Stderr, "refusing to run: %s is set, and it is an internal marker this process sets only for its own anchor\n", envGroupAnchor)
-	return true
+	return false
 }
 
 // cmdVersion prints what initialize names as the server's version, so a
@@ -376,6 +382,7 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	service.seedPath = cfg.seed
 	// held while the engine runs, so gateway rotate-key refuses (SPEC.md §3b)
 	registryHold, err := holdEngineRegistry(cfg.registry, seed)
 	if err != nil {
@@ -784,6 +791,7 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
+	service.seedPath = seedPath
 	// held while the gateway runs, so gateway rotate-key refuses (SPEC.md §3b)
 	registryHold, err := holdEngineRegistry(registryPath, seed)
 	if err != nil {
