@@ -386,8 +386,9 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	// held while the engine runs, so gateway rotate-key refuses (SPEC.md §3b)
-	registryHold, err := holdEngineRegistry(cfg.registry, seed)
+	// held while the engine runs, so gateway rotate-key refuses; a rotation
+	// begun since the check above is refused under it (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry(cfg.seed, cfg.registry, seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -798,8 +799,9 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	// held while the gateway runs, so gateway rotate-key refuses (SPEC.md §3b)
-	registryHold, err := holdEngineRegistry(registryPath, seed)
+	// held while the gateway runs, so gateway rotate-key refuses; a rotation
+	// begun since the check above is refused under it (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry(seedPath, registryPath, seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1

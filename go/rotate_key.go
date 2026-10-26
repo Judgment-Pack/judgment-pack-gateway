@@ -116,11 +116,12 @@ func rotationPendingBeside(seedPath, registryPath string) error {
 
 // holdEngineRegistry is the lock a gateway holds on its registry while it
 // runs, taken once the registry is there: refused when another holds it,
-// and, once held, the gateway's own reading of the registry is made again
-// under it, so a rotation finished between the gateway's first reading and
-// the lock is seen and refused. The file returned holds the lock until it
-// is closed; nil where the platform locks no registry.
-func holdEngineRegistry(registryPath string, seed []byte) (io.Closer, error) {
+// and, once held, the gateway's check for a rotation under way beside its
+// seed and its own reading of the registry are made again under it, so a
+// rotation begun or finished between the gateway's first look and the lock
+// is seen and refused, the lock let go. The file returned holds the lock
+// until it is closed; nil where the platform locks no registry.
+func holdEngineRegistry(seedPath, registryPath string, seed []byte) (io.Closer, error) {
 	lock, err := lockRegistry(registryPath)
 	if err != nil {
 		if errors.Is(err, errRegistryHeld) {
@@ -128,9 +129,12 @@ func holdEngineRegistry(registryPath string, seed []byte) (io.Closer, error) {
 		}
 		return nil, err
 	}
-	data, _, err := readRegistryBytes(registryPath)
+	err = rotationPendingBeside(seedPath, registryPath)
 	if err == nil {
-		_, err = engineWalk(data, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+		var data []byte
+		if data, _, err = readRegistryBytes(registryPath); err == nil {
+			_, err = engineWalk(data, ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey))
+		}
 	}
 	if err != nil {
 		if lock != nil {
