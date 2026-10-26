@@ -560,9 +560,14 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   to hold here: no source, no seed, an image this platform does not run.
 - `source-user-switch`: every source names a user, none is root, and this process passes the
   check `serve` makes at start, that it can switch to each; `not-applicable` with no source.
-- `descendant-reaping`: on Linux, a probe run once per process, so a restart probes again: a
-  child started as a source is, in an anchor-led process group, starts a grandchild; the group is
-  killed, and both must be gone — the pipe they held closed — within three seconds. The probe
+- `descendant-reaping`: on Linux, a probe: a child started as a source is, in an anchor-led
+  process group, starts a grandchild; the group is killed, and both must be gone — the pipe they
+  held closed — within three seconds. The first probe that reaches a verdict is kept for the life
+  of the process, so a restart probes again, and its reason ends `checked at` the time it ran, in
+  UTC; a call made while a probe runs waits for it, so concurrent calls start one probe between
+  them, and a probe that could not run (a fork refused, a start not seen within the wait) is not
+  kept: the next call probes again. Where the gateway is PID 1, the probe waits for its own
+  grandchild, which is reparented to it ([engine-image.md](engine-image.md), "The processes"). The probe
   runs as the gateway's own user; killing a switched source's group crosses users, which takes
   `CAP_KILL`, and `serve` refuses to start a switched source without it. Elsewhere the line is
   stated, not checked, as `not-enforced`: Windows has no process group, and on macOS and the BSDs
@@ -582,7 +587,7 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
 - `operator-program-confinement`: always `not-enforced`.
 
 The seed and the sources are judged at each request, so a mode changed after the start shows;
-the probe runs once. As `/verify` does, `/posture` takes a bearer token where `identity` is
+the probe's verdict is kept for the process. As `/verify` does, `/posture` takes a bearer token where `identity` is
 configured, and is open where it is not, as on a desk's local gateway. Nothing the engine does
 depends on the report.
 

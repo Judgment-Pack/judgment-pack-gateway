@@ -446,10 +446,14 @@ switch for sources, the reaping of a source's descendants, the engine image's cu
 file's owner and mode, and the confinement of the programs the gateway starts, which is never
 enforced — one line each, `enforced`, `not-enforced` or `not-applicable`, with the reason. Linux
 checks every line it can, the descendants' by a probe that kills a source group holding a
-grandchild; macOS and Windows state the descendants' and the image's lines from this section and
+grandchild, kept for the life of the process once it reaches a verdict and saying when it ran;
+macOS and Windows state the descendants' and the image's lines from this section and
 check the seed where the platform has an owner and a mode. `serve` answers the same report at `/posture`
 ([docs/design/engine-config.md](docs/design/engine-config.md)). The report is information, not a
-gate, and it judges as the user it runs as.
+gate, and it judges as the user it runs as. Where the gateway is the container's first process
+(PID 1) with no init, an orphaned descendant of a source is reparented to it and stays a zombie
+until the gateway exits; the probe waits for its own grandchild, and nothing else does, so run
+the image with an init (`docker run --init`, [docs/design/engine-image.md](docs/design/engine-image.md)).
 
 **`identity` decides who may call, never from where.** A configured issuer's tokens are verified
 against a key file the operator holds, with the standard library and no fetch on the request path;
