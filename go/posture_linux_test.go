@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +24,9 @@ func groupKill(g *sourceGroup, _ *exec.Cmd) { g.kill() }
 // The test's own probe modes, beside the probe's (posture_linux.go): a
 // child whose grandchild leaves the source's process group (setsid) and
 // does not end at the end of its input, so the group's kill misses it and
-// closing the input does not end it either. It ends at its own bound.
+// closing the input does not end it either. It ends at its own bound. The
+// child passes the grandchild its parent's pid -- the test run's -- as the
+// run's token, which the test looks for before it kills anything.
 const (
 	postureStrayChildArg      = "_posture-probe-stray-child"
 	postureStrayGrandchildArg = "_posture-probe-stray-grandchild"
@@ -35,7 +38,7 @@ func init() {
 	}
 	switch os.Args[1] {
 	case postureStrayChildArg:
-		grandchild := exec.Command("/proc/self/exe", postureStrayGrandchildArg)
+		grandchild := exec.Command("/proc/self/exe", postureStrayGrandchildArg, strconv.Itoa(os.Getppid()))
 		grandchild.Env = []string{envPostureProbe + "=1"}
 		grandchild.Stdin, grandchild.Stdout = os.Stdin, os.Stdout
 		grandchild.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -72,15 +75,23 @@ func TestPostureDescendantProbeFlips(t *testing.T) {
 	if elapsed := time.Since(start); elapsed > 3*postureProbeWait {
 		t.Fatalf("the probe took %s", elapsed)
 	}
-	if left := probeProcesses(t); len(left) > 0 {
+	if left := probeProcesses(t, ""); len(left) > 0 {
 		t.Fatalf("the probe left processes running: %v", left)
 	}
 }
 
-// probeProcesses lists this process's probe children still alive, by the
-// marker in their environment, after a bounded wait for them to go.
-func probeProcesses(t *testing.T) []string {
+// probeProcesses lists the probe processes this test run started that are
+// still alive, after a bounded wait for them to go: a process carrying the
+// probe's marker in its environment, running this run's own test binary --
+// the same file as /proc/self/exe, which every run links anew -- and, where
+// token is given, carrying it in its arguments. Another run's probes, or a
+// local gateway's, are never listed, so never killed.
+func probeProcesses(t *testing.T, token string) []string {
 	t.Helper()
+	self, err := os.Stat("/proc/self/exe")
+	if err != nil {
+		t.Fatal(err)
+	}
 	deadline := time.Now().Add(2 * postureProbeWait)
 	for {
 		var left []string
@@ -89,11 +100,20 @@ func probeProcesses(t *testing.T) []string {
 			t.Fatal(err)
 		}
 		for _, e := range entries {
-			environ, err := os.ReadFile("/proc/" + e.Name() + "/environ")
+			proc := "/proc/" + e.Name()
+			environ, err := os.ReadFile(proc + "/environ")
 			if err != nil || !strings.Contains(string(environ), envPostureProbe+"=1") {
 				continue
 			}
-			if stat, err := os.ReadFile("/proc/" + e.Name() + "/stat"); err == nil && !strings.Contains(string(stat), ") Z ") {
+			if exe, err := os.Stat(proc + "/exe"); err != nil || !os.SameFile(exe, self) {
+				continue
+			}
+			if token != "" {
+				if cmdline, err := os.ReadFile(proc + "/cmdline"); err != nil || !bytes.Contains(cmdline, []byte("\x00"+token+"\x00")) {
+					continue
+				}
+			}
+			if stat, err := os.ReadFile(proc + "/stat"); err == nil && !strings.Contains(string(stat), ") Z ") {
 				left = append(left, e.Name())
 			}
 		}
@@ -196,7 +216,7 @@ func TestPostureCustodyFlips(t *testing.T) {
 // ends it by its pid, leaving nothing behind.
 func TestPostureProbeEndsAGrandchildOutsideTheGroupByItsPid(t *testing.T) {
 	line, verdict := probeDescendants(postureStrayChildArg, groupKill)
-	left := probeProcesses(t)
+	left := probeProcesses(t, strconv.Itoa(os.Getpid()))
 	for _, pid := range left {
 		if n, err := strconv.Atoi(pid); err == nil {
 			_ = syscall.Kill(n, syscall.SIGKILL)
@@ -207,6 +227,65 @@ func TestPostureProbeEndsAGrandchildOutsideTheGroupByItsPid(t *testing.T) {
 	}
 	if len(left) > 0 {
 		t.Fatalf("the grandchild outside the group was not ended by its pid: %v", left)
+	}
+}
+
+// The test's search for leftover probe processes, whose results it kills,
+// lists only this run's own: a process carrying the marker, the stray
+// grandchild's argument and this run's token, but running another file --
+// a copy of this very binary -- is not listed; nor, where a token is
+// asked for, is this binary run with another token.
+func TestPostureProbeProcessesAreThisRunsOwn(t *testing.T) {
+	self, err := os.Open("/proc/self/exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer self.Close()
+	copied := filepath.Join(t.TempDir(), "other-binary")
+	dst, err := os.OpenFile(copied, os.O_CREATE|os.O_WRONLY, 0o700)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(dst, self); err != nil {
+		t.Fatal(err)
+	}
+	if err := dst.Close(); err != nil {
+		t.Fatal(err)
+	}
+	token := strconv.Itoa(os.Getpid())
+	start := func(path, tok string) {
+		t.Helper()
+		cmd := exec.Command(path, postureStrayGrandchildArg, tok)
+		cmd.Env = []string{envPostureProbe + "=1"}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		})
+		// running, with the marker in its environment, before the search
+		deadline := time.Now().Add(postureProbeWait)
+		for {
+			environ, _ := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/environ")
+			if strings.Contains(string(environ), envPostureProbe+"=1") {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s did not start", tok)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	start(copied, token)
+	for _, tok := range []string{token, ""} {
+		if left := probeProcesses(t, tok); len(left) > 0 {
+			t.Fatalf("another binary's process is listed as this run's probe (token %q): %v", tok, left)
+		}
+	}
+	start("/proc/self/exe", "another-run")
+	if left := probeProcesses(t, token); len(left) > 0 {
+		t.Fatalf("a process with another run's token is listed as this run's probe: %v", left)
 	}
 }
 
