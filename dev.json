@@ -39,6 +39,7 @@
     {"name": "release-programs", "run": "scripts/checks/release-programs.sh", "toolchain": "shell", "timeout": 600},
     {"name": "release-archives", "run": "export GOWORK=off; python3 build/test_release_archives.py", "toolchain": "go", "summary": "^(Ran |OK|FAILED)", "timeout": 3000},
     {"name": "no-publisher-registration", "run": "scripts/checks/no-publisher-registration.sh", "toolchain": "shell", "timeout": 600},
+    {"name": "ci-evidence", "run": "python3 .github/test_ci_evidence.py", "toolchain": "python", "summary": "^(Ran |OK|FAILED)", "timeout": 600},
     {"name": "n8n-build", "run": "npm run build", "toolchain": "node", "cwd": "plugins/n8n-nodes-judgment-pack", "timeout": 900},
     {"name": "n8n-lint", "run": "npm run lint", "toolchain": "node", "cwd": "plugins/n8n-nodes-judgment-pack", "timeout": 900},
     {"name": "n8n-test", "run": "npm test", "toolchain": "node", "cwd": "plugins/n8n-nodes-judgment-pack", "summary": "^# (tests|pass|fail)", "timeout": 900},

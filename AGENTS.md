@@ -70,8 +70,8 @@ summary block, and anything you stopped on or chose not to do.
 - A pull request's `check` job runs `scripts/dev/check.sh --all --changed origin/<base>`: only the
   steps that `jpdev.json` maps its changed paths to, and the whole list when a changed path matches
   no rule (the workflows, `.gitattributes`, `.gitignore`) or when `jpdev.json`, `dev.json` or the
-  runner changed. A push to `main` and the release's call run the whole list, and only that run is
-  what a release is held to. Run the same selection locally with
+  runner changed. A push to `main` runs the whole list, and only that run is what a release is
+  held to. Run the same selection locally with
   `scripts/dev/check.sh --changed origin/main` (or `jpdev check --changed`). A new step or a new
   input of a step is mapped in `jpdev.json`; when unsure, map it broader.
 - `SPEC.md` is normative: when the binary and the specification disagree, the binary has the bug.
@@ -84,3 +84,6 @@ summary block, and anything you stopped on or chose not to do.
 - The steps `image-*`, `witness-scenario` and `both-paths-agree` need Docker, and the `image-*`
   steps `sudo`. Where there is no Docker, run the rest with `--skip` naming them.
 - `go/AMBIGUITIES.md` is closed. Never commit a seed or a private key.
+- A release does not run CI again: it takes the evidence a push to `main` recorded at the tagged
+  commit (`.github/ci-evidence.json`, held to the workflows by `ci-evidence`), so a change to a CI
+  job, leg or toolchain changes that file in the same pull request (`docs/releasing.md`).

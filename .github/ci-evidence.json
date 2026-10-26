@@ -1,0 +1,193 @@
+{
+  "$comment": [
+    "The release evidence gate's configuration, read at the release commit by scripts/dev/release_evidence.py",
+    "(vendored from the development kit; its docs/ci-evidence.md is the contract, docs/releasing.md says how the",
+    "release uses it). .github/test_ci_evidence.py holds this file to ci.yml and release.yml."
+  ],
+  "schema": 2,
+  "repository": "Judgment-Pack/judgment-pack-gateway",
+  "branch": "main",
+  "max_age_hours": 48,
+  "inputs": [
+    ".dockerignore",
+    ".github/workflows/release.yml",
+    ".goreleaser.yml",
+    "Dockerfile",
+    "adapters/agreement/agreement_test.go",
+    "adapters/go.mod",
+    "adapters/go.sum",
+    "build/mkhomes.go",
+    "build/setcap.go",
+    "catalog/postgres.json",
+    "go/go.mod",
+    "jpdev.json",
+    "plugins/activepieces/judgment-pack/package-lock.json",
+    "plugins/n8n-nodes-judgment-pack/package-lock.json",
+    "scripts/checks/image-root-unwritable.sh",
+    "scripts/checks/witness-scenario.sh",
+    "scripts/dev/changed_checks.py",
+    "scripts/dev/check.sh",
+    "testdata/attachments/schema-requirements.txt",
+    "testdata/tool-descriptors/commonmark/go.mod",
+    "testdata/tool-descriptors/commonmark/go.sum",
+    "testdata/tool-descriptors/metaschema/go.mod",
+    "testdata/tool-descriptors/metaschema/go.sum",
+    "verify-ts/package-lock.json"
+  ],
+  "fresh_at_release": [
+    "tag grammar, tag names the commit, commit on main",
+    "release notes",
+    "production environment reviewer",
+    "third-party notices with the release toolchain",
+    "packaging, packaged checksums, archive contents",
+    "native archive runs: linux amd64 and arm64, macOS arm64, Windows amd64",
+    "tag still names the commit, no release under the tag",
+    "attestation",
+    "draft identity",
+    "production approval",
+    "published asset digests"
+  ],
+  "profiles": {
+    "check": {
+      "$comment": [
+        "The check job: the Go release.yml names, Node and Python as dev.json names them, Docker as the image has it.",
+        "The release job sets the same three up with the same actions and resolves them here (release-runner)."
+      ],
+      "platform": {
+        "RUNNER_OS": "Linux",
+        "RUNNER_ARCH": "X64"
+      },
+      "compare": "release-runner",
+      "tools": {
+        "go": [
+          "go",
+          "version"
+        ],
+        "node": [
+          "node",
+          "--version"
+        ],
+        "python": [
+          "python3",
+          "--version"
+        ],
+        "docker": [
+          "docker",
+          "--version"
+        ]
+      },
+      "pins": {
+        "go": "go version go1.26.5 linux/amd64"
+      }
+    },
+    "go-linux": {
+      "$comment": "The Linux leg of the go matrix, on the release job's platform: resolved there too (release-runner).",
+      "platform": {
+        "RUNNER_OS": "Linux",
+        "RUNNER_ARCH": "X64"
+      },
+      "compare": "release-runner",
+      "tools": {
+        "go": [
+          "go",
+          "version"
+        ]
+      },
+      "pins": {
+        "go": "go version go1.26.5 linux/amd64"
+      }
+    },
+    "go-macos": {
+      "$comment": "The macOS leg: another OS and architecture than the release job's, so held to its pin.",
+      "platform": {
+        "RUNNER_OS": "macOS",
+        "RUNNER_ARCH": "ARM64"
+      },
+      "compare": "pins",
+      "tools": {
+        "go": [
+          "go",
+          "version"
+        ]
+      },
+      "pins": {
+        "go": "go version go1.26.5 darwin/arm64"
+      }
+    },
+    "go-windows": {
+      "$comment": "The Windows leg: another OS than the release job's, so held to its pin.",
+      "platform": {
+        "RUNNER_OS": "Windows",
+        "RUNNER_ARCH": "X64"
+      },
+      "compare": "pins",
+      "tools": {
+        "go": [
+          "go",
+          "version"
+        ]
+      },
+      "pins": {
+        "go": "go version go1.26.5 windows/amd64"
+      }
+    }
+  },
+  "workflows": {
+    "ci": {
+      "$comment": [
+        "Only a push to main is evidence: ci.yml has no dispatch, so the fresh route is a re-run of all jobs of main's run.",
+        "Every job and every matrix leg is required; none is skipped on main. The go legs run the workflow's own steps,",
+        "not dev.json's, so their checks are none: the job's success is the API's, and the evidence adds the leg's",
+        "platform and toolchain. The check job runs every dev.json check and setup step."
+      ],
+      "path": ".github/workflows/ci.yml",
+      "name": "CI",
+      "events": [
+        "push"
+      ],
+      "jobs": {
+        "check": {
+          "name": "check",
+          "job_id": "check",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "profile": "check",
+          "checks": "all",
+          "optional_skips": [],
+          "setup": true
+        },
+        "go-ubuntu-latest": {
+          "name": "ubuntu-latest \u00b7 Go 1.26",
+          "job_id": "go",
+          "labels": [
+            "ubuntu-latest"
+          ],
+          "profile": "go-linux",
+          "checks": []
+        },
+        "go-macos-latest": {
+          "name": "macos-latest \u00b7 Go 1.26",
+          "job_id": "go",
+          "labels": [
+            "macos-latest"
+          ],
+          "profile": "go-macos",
+          "checks": []
+        },
+        "go-windows-latest": {
+          "name": "windows-latest \u00b7 Go 1.26",
+          "job_id": "go",
+          "labels": [
+            "windows-latest"
+          ],
+          "profile": "go-windows",
+          "checks": []
+        }
+      }
+    }
+  },
+  "tag": {
+    "prerelease": true
+  }
+}
