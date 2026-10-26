@@ -35,6 +35,7 @@ TEST = '.github/test_ci_evidence.py'
 # vendored. A re-vendor adds the new release's digest, taken from the kit's tag.
 KIT_DIGESTS = {
     'v0.10.0': 'd44af3df07f64036013ba9967a54cf799cec678068f0937395d6a2eef370e0e8',
+    'v0.11.0': 'f272b7a43272bac31bb9b0c37a583d9c40d376972b04c812e576bd82c1ef18e3',
 }
 CAPTURE_GUARD = "github.ref == 'refs/heads/main' && github.event_name == 'push'"
 # A reference by digest, as an image pull or run names one (the name may be assembled apart).
