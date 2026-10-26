@@ -62,8 +62,8 @@ check refuses. Such a refusal is looked into: it may be the check that has to fo
 The `darwin/amd64` and `windows/arm64` archives are built, read and checksummed and are not run
 by anything. Of the adapter executables in an archive, three are started by the archive smoke
 tests (`adapter-airbyte`, `adapter-http`, `adapter-mcp`) and the rest by none, on any platform.
-(CI, which the release calls, starts others, but built from source or in the image it builds, and
-not from an archive.) No check here reaches a platform account: an adapter that starts has not
+(CI, whose run at the tagged commit the release takes as evidence, starts others, but built from
+source or in the image it builds, and not from an archive.) No check here reaches a platform account: an adapter that starts has not
 been shown to connect.
 
 ## Once, before the first release
@@ -109,7 +109,9 @@ been shown to connect.
    release. A snapshot build calls itself a snapshot
    (`gateway version` prints `gateway v<last tag>-SNAPSHOT-<commit>`); unpack one archive and run
    `./gateway conform --corpus corpus` in it.
-3. Merge the pull request.
+3. Merge the pull request, and let main's CI run at the merge commit complete: that run is the
+   evidence the release takes ([below](#the-ci-evidence-the-release-takes)), for 48 hours from
+   its start.
 
 ## Tag
 
@@ -130,17 +132,24 @@ A tag is `vX.Y.Z` or `vX.Y.Z-<prerelease>`, as SemVer 2.0.0 writes them. Build m
 and is never marked latest. The first release made by this workflow should be a release candidate,
 since no run of the workflow precedes it.
 
+The release evidence gate the workflow runs ([below](#the-ci-evidence-the-release-takes)) is the
+development kit's, and it admits `vX.Y.Z` alone: a prerelease tag is refused there, with
+`tag-syntax`, after the tag is admitted and before anything is built. Until the kit's gate admits a
+prerelease, this workflow releases no prerelease.
+
 ## What the workflow does
 
 Every job works on the commit the run was started for, by its digest, and not on the tag's name.
 
 1. **Admits the tag.** It is a version as above; it names the commit the run was started for; that
    commit is on `main`; its notes exist; the `production` environment has a reviewer rule.
-2. **Runs CI at that commit.** The release calls the commit's own
-   [`ci.yml`](../.github/workflows/ci.yml), so the release carries no second copy of the checks.
-   They include the three that concern a release: the third-party notices are what the linked
-   modules say, every program under `adapters/cmd` is named in the release build, and the tree
-   carries no publisher registration. A check `main` has gained since that commit is not asked.
+2. **Takes the CI evidence `main` produced at that commit, or refuses** (`CI at the tag`). The
+   checks are the commit's own [`ci.yml`](../.github/workflows/ci.yml)'s, every job and leg of it,
+   so the release carries no second copy of them; they include the three that concern a release:
+   the third-party notices are what the linked modules say, every program under `adapters/cmd` is
+   named in the release build, and the tree carries no publisher registration. They are not run
+   again: the release reads what the push to `main` recorded at the tagged commit itself, as the
+   next section says. A check `main` has gained since that commit is not asked.
 3. **Packages without publishing.** One reviewed toolchain, named exactly in the workflow; no cgo,
    no workspace, no recorded paths; `amd64` at `v1` and `arm64` at `v8.0`. The tag is written into
    `gateway`. File timestamps are set to the commit's. All six archives are then opened and read
@@ -169,6 +178,79 @@ Every job works on the commit the run was started for, by its digest, and not on
 
 An approval given more than thirty days after the run finds the run's
 archives gone, and the job fails: release a new version.
+
+### The CI evidence the release takes
+
+`ci.yml` runs on every push to `main`, and there each job and each leg of the `go` matrix records
+its evidence as an artifact of the run: the commit, the identity of its inputs, the runner and the
+toolchain it ran with, and for `check` the result of every setup step and check of `dev.json`.
+The `CI at the tag` job reads it with the development kit's release evidence gate
+([`scripts/dev/release_evidence.py`](../scripts/dev/release_evidence.py), vendored from the kit
+whose `docs/ci-evidence.md` is its contract), configured by
+[`.github/ci-evidence.json`](../.github/ci-evidence.json), and runs no check of its own. It takes
+the evidence only when all of this holds, and refuses otherwise:
+
+- the run is `ci.yml` (by its path and its name), in this repository, at the tagged commit itself,
+  started by a push to `main`; a pull request's run, a merge commit GitHub made for one, another
+  branch, another workflow, a commit status or a commit with the same tree is not it;
+- it is the newest run at the commit: no newer attempt of a run on `main` at the commit failed,
+  was cancelled or is still running, and the gate never looks past one for an older green run;
+- it completed and succeeded, and started at most 48 hours before the gate reads it;
+- every job and leg succeeded on a GitHub-hosted runner with its labels: `check`,
+  `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26` and `windows-latest · Go 1.26`, the three
+  operating systems each by its own leg; none was skipped, and `check` passed every setup step and
+  every check, with no skip;
+- each job's evidence names the commit and the inputs the release's checkout holds; the Go of each
+  leg and of `check` is the one `release.yml` names (`1.26.5`); the Linux runner image and its
+  operating system release, and the Go, Node, Python and Docker of `check` and the Linux leg, are
+  what the release's own runner resolves now, setting the toolchains up as `ci.yml` does; the
+  macOS leg ran on macOS `ARM64` and the Windows leg on Windows `X64`;
+- the tag is an annotated tag that names the commit, before and after the evidence is read.
+
+What it reuses and what it still does at the release:
+
+| | On a push to `main` | At the release, before | At the release, now |
+| --- | --- | --- | --- |
+| `ubuntu-latest · Go 1.26`, `macos-latest · Go 1.26`, `windows-latest · Go 1.26`: the core's Go steps, natively | run, evidence recorded | run again | taken from each leg's evidence, never one leg for another |
+| `check`: the setup steps and every check of `dev.json`, the adapters, the release contents, the plugins, the second implementation, the image, the witness scenario, the agreement of the two paths | run, evidence recorded | run again | taken from its evidence |
+| The tag, `main`, the notes, the `production` reviewer rule; the notices with the release's toolchain, the packing, the checksums and the six archives read; the archives run on four platforms; the tag again and no release under it; the attestation; the draft; the approval; the draft and the published release held to the run's files | not run | run | run, unchanged and in the same order |
+
+No check of `ci.yml` depends on the tag, so nothing the gate takes is tag-sensitive. What a run
+depends on beyond the commit, and how the gate holds it:
+
+- the workflow files, `dev.json`, `jpdev.json`, the runner scripts, every `go.mod` and `go.sum`, the
+  lock files of the plugins and of the second implementation, the Python requirements of the setup
+  step, the Dockerfile with its digest-pinned images and the files it copies, the witness
+  scenario's pinned runtime and the agreement test's pinned image: the commit holds them, and the
+  evidence records each by its git object id;
+- the Go toolchain: named exactly in `release.yml`, set up by every leg and by `check`, and pinned
+  per platform in the configuration (`.github/test_ci_evidence.py` holds the three equal);
+- Node `22` and Python `3.12` as `dev.json` names them, and Docker: whatever the hosted image
+  resolves, so the Linux image and these tools must be what the release's runner resolves now. A
+  newer image or toolchain since `main`'s run is a refusal, and the fresh route below. While GitHub
+  rolls a new image out, the two Linux jobs and the release's runner can land on different
+  versions of it, and the route may have to wait until they do not;
+- the macOS and Windows images: recorded in the evidence, and not compared; their platform and
+  their Go are;
+- not pinned by anything: the dependencies of the setup step's `jsonschema`, which `pip` resolves
+  when the step runs. The gate cannot see them.
+
+The decision, `reuse` or `refuse` with its code, is the last line of the step `Reuse main's
+exact-commit CI evidence, or refuse`, and the whole record (the run and attempt, the input
+identities, each job's result, labels, runtime and checks) is in that step's log and kept as the
+run's `release-evidence-<attempt>` artifact.
+
+Measured from the API, job start to completion, before this:
+
+| Release | `CI at the tag` | From the end of admission to the start of packaging |
+| --- | --- | --- |
+| `v0.21.0` (run 39175719664) | the eleven jobs `ci.yml` had then, the longest 190 s, 1,037 s in all | 194 s |
+| `v0.22.0-alpha.1` (run 40343693612) | `check` 483 s, `windows-latest` 266 s, `macos-latest` 223 s, `ubuntu-latest` 128 s: 1,100 s in all | 488 s |
+
+The gate's own cost is measured at the next release, not promised here. The development kit's
+gate job, which sets up no toolchain, took 16 s at its `v0.10.0` (run 40390217399); this one also
+sets up Go (9 s in `main`'s `check` job), Node and Python. A refusal adds the fresh route: a full CI
+run and a re-run.
 
 ### The window that remains
 
@@ -203,7 +285,8 @@ What to do with a draft depends on which job failed:
 
 | The job that failed | The draft | What to do |
 | --- | --- | --- |
-| Any job before `Attest and draft release` | none was made | re-run the failed jobs |
+| `CI at the tag` | none was made | read the refusal: the step's last line, or the `release-evidence-<attempt>` artifact. Take the fresh route once: re-run **all** jobs of `main`'s CI run at the tagged commit (`gh run rerun <run id> --repo Judgment-Pack/judgment-pack-gateway`; a re-run of the failed jobs alone leaves the others' evidence in an earlier attempt and refuses), which also works after `main` has moved on and is the route for a run older than 48 hours or a newer runner image; when that run has completed, re-run the release run's failed jobs. `run-unfinished` means `main`'s run at the commit was still running: wait for it, then re-run the failed jobs. A second refusal, or evidence that cannot be made at that commit: fix the cause on `main` and release a new version. Nothing re-runs or dispatches CI by itself |
+| Any other job before `Attest and draft release` | none was made | re-run the failed jobs |
 | `Attest and draft release` | may exist, and may lack assets | read it, delete it by hand, then re-run the failed jobs. The job refuses to run while a release under the tag exists, draft or published, and refuses when it cannot find out |
 | `Publish release`, before publication | needs looking at: it may be as it was made, changed, incomplete or gone | read why the job failed, and look at the Releases page. **Keep** a draft that is as it was made, and re-run the failed jobs: that job only publishes the release id the run drafted. Do not publish a draft that was changed or is incomplete. Where the draft cannot be published, release a new version |
 | `Publish release`, at `The published release holds what this run packaged`, with the message "the published release does not hold what this run packaged" and two digest sets | published, holding files this run did not package, or not published after the call | someone who can write to the repository changed the release in the window above. Treat it as an incident: tell the maintainers, point no one at the release, and release a new version from a new tag. Do not re-run |

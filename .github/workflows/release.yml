@@ -6,9 +6,10 @@ name: Release
 # that there is to be a release, and nothing here writes its notes: both
 # are a person's, reviewed in the pull request that added
 # docs/releases/<tag>.md. What the workflow holds is that the tagged state
-# passes everything CI asks of a commit, that the archives are built from
-# it and run where they say they run, and that no release is published
-# until a maintainer has approved it at the `production` gate.
+# passed everything CI asks of a commit, by the evidence a push to main
+# recorded at that exact commit, that the archives are built from it and run
+# where they say they run, and that no release is published until a
+# maintainer has approved it at the `production` gate.
 #
 # What exists before that approval, and is not secret: the archives, as an
 # artifact of the run that anyone who can read the repository's runs can
@@ -111,16 +112,84 @@ jobs:
             || { echo "the production environment could not be read; create it, with a required reviewer (docs/releasing.md)" >&2; exit 1; }
           [ "${reviewers}" -ge 1 ] || { echo "the production environment requires no reviewer" >&2; exit 1; }
 
-  # Everything CI asks of a commit, asked of the tagged one, as CI stands at
-  # that commit: the workflow called is the tagged commit's own ci.yml, so
-  # release.yml carries no second copy of the checks to fall behind it. A
-  # check main has gained since that commit is not asked.
+  # Everything CI asks of a commit, as CI stands at that commit, taken from the
+  # evidence a push to main recorded at the tagged commit itself: every job
+  # and leg of the commit's own ci.yml, Linux, macOS and Windows, with the
+  # commit's inputs and each leg's toolchain (scripts/dev/release_evidence.py
+  # verify, vendored from the development kit, configured by
+  # .github/ci-evidence.json; docs/releasing.md). ci.yml is not run again.
+  # Evidence that is missing, partial, older than 48 hours, of a newer failed,
+  # cancelled or running attempt, of other inputs or another toolchain, or
+  # unreadable refuses, by name, and the release stops: nothing here re-runs
+  # or dispatches anything, and the fresh route is the maintainer's
+  # (docs/releasing.md, "If a run fails"). The decision, reuse or refusal, is
+  # in the log and kept as the run's release-evidence-<attempt> artifact.
   verify:
     name: CI at the tag
     needs: admit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
-    uses: ./.github/workflows/ci.yml
+      # Reading the runs, jobs and artifacts of ci.yml.
+      actions: read
+    steps:
+      - name: Check out the commit the run was started for
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+
+      # The check job's toolchains and the Linux leg's Go, set up here as ci.yml
+      # sets them up, by the same actions: the gate holds their evidence to what
+      # this runner resolves (compare release-runner), so a newer runner image
+      # or toolchain since main's run refuses.
+      - name: Read the toolchains from dev.json and release.yml
+        id: dev
+        run: |
+          set -eu
+          python3 - >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          m = json.load(open("dev.json", encoding="utf-8"))
+          tc = m.get("toolchains", {})
+          print("node=" + tc.get("node", {}).get("version", ""))
+          print("python=" + tc.get("python", {}).get("version", "3.12"))
+          PY
+          # The toolchain the release workflow names, exactly: the third-party notices carry the
+          # toolchain's own licence, so they are held with the toolchain that links a release
+          # (scripts/checks/release-toolchain.sh checks that this is it).
+          named="$(sed -n "s/^ *go-version: *['\"]\{0,1\}\([0-9][0-9.]*\)['\"]\{0,1\} *\$/\1/p" .github/workflows/release.yml)"
+          [ -n "${named}" ] || { echo 'release.yml names no Go version' >&2; exit 1; }
+          echo "go=${named}" >> "$GITHUB_OUTPUT"
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ steps.dev.outputs.go }}
+          # Resolving the toolchain is all this job asks of it: no module cache.
+          cache: false
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ steps.dev.outputs.node }}
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ steps.dev.outputs.python }}
+
+      - name: Reuse main's exact-commit CI evidence, or refuse
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/dev/release_evidence.py verify --output "${RUNNER_TEMP}/release-evidence.json"
+
+      # The decision record, reuse or refusal; it is also in the log of the
+      # step above.
+      - name: Keep the decision record
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-evidence.json
+          if-no-files-found: error
 
   package:
     name: Package

@@ -6,16 +6,21 @@ name: CI
 # from the manifest and runs every step of it: the core, the adapters, the release contents, the
 # plugins, the second implementation, the engine image, the witness scenario and the agreement of
 # the two paths. On a pull request it runs the steps jpdev.json maps the changed paths to
-# (`check.sh --changed`); on a push to main and when the release calls it, the whole list. Each
-# of the steps that were jobs of their own is a step of dev.json, and the longer ones are scripts
-# under scripts/checks/ with the comments they had here.
+# (`check.sh --changed`); on a push to main, the whole list. Each of the steps that were jobs of
+# their own is a step of dev.json, and the longer ones are scripts under scripts/checks/ with the
+# comments they had here.
+#
+# A push to main also records, in every job and every leg, the evidence a release takes instead
+# of running this workflow again (scripts/dev/release_evidence.py capture, configured by
+# .github/ci-evidence.json; docs/releasing.md): the commit, its input identities, the runner and
+# toolchain, and for `check` every step's result. A pull request records none.
 
 on:
   pull_request:
   push:
     branches: [main]
-  # The release workflow calls this one at a tag, so a release is held to
-  # what a commit is held to, as it stands at that tag (release.yml).
+  # Kept, but nothing calls it: the release takes the evidence a push to main
+  # recorded at the tagged commit, or refuses (release.yml, docs/releasing.md).
   workflow_call:
 
 permissions:
@@ -41,10 +46,14 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # matrix.go is the line the job's name carries, and the names are what
+      # branch protection requires. The toolchain is the one release.yml names,
+      # exactly: the release takes each leg's evidence only at that version
+      # (.github/ci-evidence.json; .github/test_ci_evidence.py holds the two equal).
       - name: Set up Go
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          go-version: ${{ matrix.go }}
+          go-version: "1.26.5"
       - name: Formatting is canonical
         if: matrix.os == 'ubuntu-latest'
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
@@ -92,6 +101,26 @@ jobs:
           go list -deps -f '{{.ImportPath}} {{.Standard}} {{.Dir}}' . \
             | awk '$1 != "gateway" && $2 != "true" { print "resolves outside the standard library: " $0; bad = 1 } END { exit bad }'
           go list -deps . | grep -qx plugin && { echo "the core imports plugin"; exit 1; } || true
+      # The leg's evidence, on a push to main only: its platform and toolchain,
+      # beside the job's result the API reports. From the checkout's root, with
+      # the interpreter each image carries.
+      - name: Record exact CI inputs and coverage
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        shell: bash
+        working-directory: .
+        env:
+          PYTHON: ${{ runner.os == 'Windows' && 'python' || 'python3' }}
+          JOB_KEY: go-${{ matrix.os }}
+        run: |
+          "${PYTHON}" scripts/dev/release_evidence.py capture --workflow ci --job "${JOB_KEY}" --output "${RUNNER_TEMP}/evidence.json"
+      - name: Upload immutable CI evidence
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-evidence-ci-go-${{ matrix.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence.json
+          if-no-files-found: error
+          retention-days: 7
 
   check:
     name: check
@@ -135,18 +164,35 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ steps.dev.outputs.python }}
+      # Each summary is kept for the evidence below.
       - name: Setup steps
-        run: scripts/dev/check.sh --setup
+        run: |
+          set -o pipefail
+          scripts/dev/check.sh --setup | tee "${RUNNER_TEMP}/setup.log"
       # A pull request runs the checks jpdev.json maps its changed paths to, and the whole list
-      # when a path is unmapped or the mapping, dev.json or the runner changed. A push to main and
-      # the release's call run the whole list, and only that run is what a release is held to.
+      # when a path is unmapped or the mapping, dev.json or the runner changed. A push to main runs
+      # the whole list, and only that run is what a release is held to.
       - name: Checks
         env:
           EVENT: ${{ github.event_name }}
           BASE_REF: ${{ github.base_ref }}
         run: |
+          set -o pipefail
           if [ "$EVENT" = pull_request ]; then
-            scripts/dev/check.sh --all --changed "origin/$BASE_REF"
+            scripts/dev/check.sh --all --changed "origin/$BASE_REF" | tee "${RUNNER_TEMP}/checks.log"
           else
-            scripts/dev/check.sh --all
+            scripts/dev/check.sh --all | tee "${RUNNER_TEMP}/checks.log"
           fi
+      # The job's evidence, on a push to main only: every setup step and check passed, read from
+      # the two summaries, with the commit's inputs, the runner and the toolchains.
+      - name: Record exact CI inputs and coverage
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: python3 scripts/dev/release_evidence.py capture --workflow ci --job check --setup-log "${RUNNER_TEMP}/setup.log" --check-log "${RUNNER_TEMP}/checks.log" --output "${RUNNER_TEMP}/evidence.json"
+      - name: Upload immutable CI evidence
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-evidence-ci-check-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/evidence.json
+          if-no-files-found: error
+          retention-days: 7

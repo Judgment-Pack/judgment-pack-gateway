@@ -22,3 +22,8 @@ verify-ts/src/citations.ts whitespace=-blank-at-eof
 
 # The hand-written export is held to its manifest byte for byte.
 go/testdata/export/** -text
+
+# The release evidence gate holds its configuration and itself to the bytes the commit holds, on
+# every runner of CI's matrix: a Windows checkout must not convert their line endings.
+.github/ci-evidence.json -text
+scripts/dev/release_evidence.py -text

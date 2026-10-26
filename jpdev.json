@@ -117,6 +117,18 @@
       "checks": ["local-paths", "agent-docs", "diff-check", "witness-scenario"]
     },
     {
+      "paths": [".github/ci-evidence.json", ".github/test_ci_evidence.py", "scripts/dev/release_evidence.py",
+                ".dockerignore", ".goreleaser.yml", "Dockerfile", "adapters/agreement/agreement_test.go",
+                "adapters/go.mod", "adapters/go.sum", "build/mkhomes.go", "build/setcap.go", "go/go.mod",
+                "plugins/activepieces/judgment-pack/package-lock.json",
+                "plugins/n8n-nodes-judgment-pack/package-lock.json", "scripts/checks/witness-scenario.sh",
+                "testdata/attachments/schema-requirements.txt",
+                "testdata/tool-descriptors/commonmark/go.mod", "testdata/tool-descriptors/commonmark/go.sum",
+                "testdata/tool-descriptors/metaschema/go.mod", "testdata/tool-descriptors/metaschema/go.sum",
+                "verify-ts/package-lock.json"],
+      "checks": ["local-paths", "agent-docs", "diff-check", "ci-evidence"]
+    },
+    {
       "paths": ["docs/**", "*.md", "LICENSE"],
       "checks": ["local-paths", "agent-docs", "diff-check"]
     }
