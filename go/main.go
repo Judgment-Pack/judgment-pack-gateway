@@ -340,10 +340,18 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	closeInheritedDescriptors()
+	// The seed's names: as configured, the name gateway rotate-key --seed is
+	// given and keeps a rotation's files beside, and as engineStart resolves
+	// it, every link followed. A rotation under way is looked for beside
+	// both, so that neither hides it.
+	seedNames := []string{cfg.seed}
 	statements, sources, err := engineStart(&cfg, bindings, host)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
+	}
+	if cfg.seed != seedNames[0] {
+		seedNames = append(seedNames, cfg.seed)
 	}
 	seed, err := loadSeed(cfg.seed)
 	if err != nil {
@@ -351,7 +359,7 @@ func cmdServeEngine(args []string) int {
 		return 1
 	}
 	// a rotation under way beside the seed is finished first (SPEC.md §3b)
-	if err := rotationPendingBeside(cfg.seed, cfg.registry); err != nil {
+	if err := rotationPendingBesideAny(seedNames, cfg.registry); err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
@@ -386,8 +394,9 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	// held while the engine runs, so gateway rotate-key refuses (SPEC.md §3b)
-	registryHold, err := holdEngineRegistry(cfg.registry, seed)
+	// held while the engine runs, so gateway rotate-key refuses; a rotation
+	// begun since the check above is refused under it (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry(seedNames, cfg.registry, seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
@@ -798,8 +807,9 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	// held while the gateway runs, so gateway rotate-key refuses (SPEC.md §3b)
-	registryHold, err := holdEngineRegistry(registryPath, seed)
+	// held while the gateway runs, so gateway rotate-key refuses; a rotation
+	// begun since the check above is refused under it (SPEC.md §3b)
+	registryHold, err := holdEngineRegistry([]string{seedPath}, registryPath, seed)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
