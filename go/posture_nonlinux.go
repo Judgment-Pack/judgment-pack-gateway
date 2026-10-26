@@ -12,6 +12,6 @@ func descendantPosture() postureLine {
 	return postureStatements[postureFamily][protectionDescendants]
 }
 
-func custodyPosture() postureLine {
+func custodyPosture(bool) postureLine {
 	return postureStatements[postureFamily][protectionContainerCustody]
 }

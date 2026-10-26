@@ -95,8 +95,10 @@ func TestPostureCustodyFlips(t *testing.T) {
 			},
 		}
 	}
-	if line := judgeCustody(image()); line.name != protectionContainerCustody || line.state != postureEnforced {
-		t.Fatalf("the image as built: %+v", line)
+	for _, public := range []bool{false, true} {
+		if line := judgeCustody(image(), public); line.name != protectionContainerCustody || line.state != postureEnforced {
+			t.Fatalf("the image as built: %+v", line)
+		}
 	}
 	for _, tc := range []struct {
 		name   string
@@ -108,14 +110,23 @@ func TestPostureCustodyFlips(t *testing.T) {
 			f.trees = map[string]treeFact{imageTrees[0]: {err: os.ErrNotExist}, imageTrees[1]: {err: os.ErrNotExist}}
 		}, "does not run from the engine image"},
 		{"another binary in the image", func(f *custodyFacts) { f.executable = "/usr/local/bin/engine-mcp" }, "not the engine image's"},
-		{"running binary unreadable", func(f *custodyFacts) { f.exeErr = errors.New("denied") }, "could not be examined"},
+		{"running binary unreadable", func(f *custodyFacts) {
+			f.exeErr = &os.PathError{Op: "open", Path: "/proc/self/exe", Err: os.ErrPermission}
+		}, "could not be examined"},
 		{"root signer", func(f *custodyFacts) { f.euid, f.exeOwner = 0, 0 }, "runs as root"},
 		{"binary another user's", func(f *custodyFacts) { f.exeOwner = 0 }, "not the signer's own at mode 0700"},
 		{"binary executable by others", func(f *custodyFacts) { f.exeMode = 0o755 }, "not the signer's own at mode 0700"},
 		{"no file capabilities", func(f *custodyFacts) { f.capabilities = false }, "carries no file capabilities"},
 		{"capabilities unknown", func(f *custodyFacts) { f.sets = capabilitySets{} }, "does not report"},
 		{"CAP_KILL dropped", func(f *custodyFacts) { f.sets.effective &^= 1 << 5 }, "lacks CAP_KILL"},
-		{"corpus missing", func(f *custodyFacts) { f.trees[imageTrees[1]] = treeFact{err: os.ErrNotExist} }, "could not be examined"},
+		// the three and nothing more (capabilityRefusal), one set at a time
+		{"CAP_DAC_OVERRIDE in effect", func(f *custodyFacts) { f.sets.effective |= 1 << capDacOverride }, "CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH"},
+		{"CAP_DAC_READ_SEARCH permitted", func(f *custodyFacts) { f.sets.permitted |= 1 << capDacReadSearch }, "CAP_DAC_OVERRIDE or CAP_DAC_READ_SEARCH"},
+		{"an ambient capability", func(f *custodyFacts) { f.sets.ambient = 1 << 5 }, "ambient capabilities"},
+		{"an inheritable capability", func(f *custodyFacts) { f.sets.inheritable = 1 << 7 }, "inheritable capabilities"},
+		{"corpus missing", func(f *custodyFacts) {
+			f.trees[imageTrees[1]] = treeFact{err: &os.PathError{Op: "lstat", Path: imageTrees[1], Err: os.ErrNotExist}}
+		}, "could not be examined"},
 		{"catalog writable by others", func(f *custodyFacts) { f.trees[imageTrees[0]] = treeFact{directory: true, owner: 0, mode: 0o757} }, "nobody else may write"},
 		{"catalog writable by group", func(f *custodyFacts) { f.trees[imageTrees[0]] = treeFact{directory: true, owner: 0, mode: 0o775} }, "nobody else may write"},
 		{"corpus not root's", func(f *custodyFacts) { f.trees[imageTrees[1]] = treeFact{directory: true, owner: 65532, mode: 0o755} }, "nobody else may write"},
@@ -123,13 +134,17 @@ func TestPostureCustodyFlips(t *testing.T) {
 	} {
 		facts := image()
 		tc.change(&facts)
-		if line := judgeCustody(facts); line.state != postureNotEnforced || !strings.Contains(line.reason, tc.reason) {
+		if line := judgeCustody(facts, false); line.state != postureNotEnforced || !strings.Contains(line.reason, tc.reason) {
 			t.Fatalf("%s: %+v", tc.name, line)
+		}
+		// /posture's form of the same line: as not enforced, naming no path
+		if line := judgeCustody(facts, true); line.state != postureNotEnforced || strings.Contains(line.reason, "/") {
+			t.Fatalf("%s, as /posture says it: %+v", tc.name, line)
 		}
 	}
 	// The test binary is not the image's gateway: gathered here, the line
 	// is not enforced.
-	if line := custodyPosture(); line.state != postureNotEnforced {
+	if line := custodyPosture(false); line.state != postureNotEnforced {
 		t.Fatalf("this host: %+v", line)
 	}
 }

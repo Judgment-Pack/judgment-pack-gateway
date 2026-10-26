@@ -16,7 +16,7 @@ package main
 //	gateway serve <store> <seedfile> <authority> <registry> [--source NAME=CMD] [--source-shape NAME=SHAPE] [--receipt-version 2|3] [--port N]
 //	gateway keygen [seedfile]
 //	gateway rotate-key --seed <file> --registry <file>
-//	gateway posture [--json] [--config <engine.json> | <store> <seedfile> <authority> <registry> [serve options]]
+//	gateway posture [--json] [--config <engine.json> | [serve] <store> <seedfile> <authority> <registry> [serve options]]
 //	gateway version
 
 import (
@@ -291,6 +291,7 @@ func buildService(storeRoot string, seed []byte, authority, registryPath string,
 	service.identity = opts.identity
 	service.decisionRecords = opts.decisionRecords
 	service.witnessedBy = opts.witnessedBy
+	service.seedPath = opts.seedPath
 	return service, nil
 }
 
@@ -382,7 +383,6 @@ func cmdServeEngine(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	service.seedPath = cfg.seed
 	// held while the engine runs, so gateway rotate-key refuses (SPEC.md §3b)
 	registryHold, err := holdEngineRegistry(cfg.registry, seed)
 	if err != nil {
@@ -478,6 +478,9 @@ type serveOptions struct {
 	// witnessedBy is the witness named for each trail (ADR-0014), from the
 	// configuration's witnessedBy or --witnessed-by.
 	witnessedBy map[string]namedWitness
+	// seedPath is the seed file the command line or the configuration
+	// names, which /posture judges.
+	seedPath string
 }
 
 // validateEnvKey accepts what an environment variable name can be on the
@@ -524,6 +527,7 @@ func parseServeOptions(args []string) (serveOptions, string, bool) {
 	}
 
 	opts := serveOptions{
+		seedPath:        args[1],
 		sources:         map[string]sourceSpec{},
 		port:            "8787",
 		maxSourceOutput: defaultMaxSourceOutput,
@@ -791,7 +795,6 @@ func cmdServe(args []string) int {
 		fmt.Fprintln(os.Stderr, "start:", err)
 		return 1
 	}
-	service.seedPath = seedPath
 	// held while the gateway runs, so gateway rotate-key refuses (SPEC.md §3b)
 	registryHold, err := holdEngineRegistry(registryPath, seed)
 	if err != nil {

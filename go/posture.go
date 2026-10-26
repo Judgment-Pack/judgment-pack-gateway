@@ -8,6 +8,7 @@ package main
 // serve answers the same report at /posture.
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -58,11 +59,14 @@ type postureReport struct {
 }
 
 // postureInput is the configuration a posture is judged under: the seed's
-// path and the sources, with configured false where none was named.
+// path and the sources, with configured false where none was named. public
+// is a report /posture answers: its reasons name no path and no account,
+// which the command, run by the operator, may.
 type postureInput struct {
 	configured bool
 	seed       string
 	sources    map[string]sourceSpec
+	public     bool
 }
 
 // operatorProgramsLine is the same everywhere: no backend confines what
@@ -78,7 +82,7 @@ var operatorProgramsLine = postureLine{protectionOperatorPrograms, postureNotEnf
 var postureStatements = map[string]map[string]postureLine{
 	"unix": {
 		protectionDescendants: {protectionDescendants, postureNotEnforced,
-			"elsewhere than Linux a descendant that left a source's process group is not reached when the source is stopped, and adapter-mcp reaches only the command server itself"},
+			"elsewhere than Linux adapter-mcp does not reach the descendants a command server left outside the source's process group, which it adopts and kills on Linux"},
 		protectionContainerCustody: {protectionContainerCustody, postureNotApplicable,
 			"the engine image is a Linux image, and a gateway on this platform runs outside it"},
 	},
@@ -97,7 +101,7 @@ func hostPosture(in postureInput) postureReport {
 	return postureReport{platform: runtime.GOOS, lines: []postureLine{
 		sourceUserPosture(in, requireUserSwitching, sourceUserIsRoot),
 		descendantPosture(),
-		custodyPosture(),
+		custodyPosture(in.public),
 		seedPosture(in),
 		operatorProgramsLine,
 	}}
@@ -129,6 +133,9 @@ func sourceUserPosture(in postureInput, switching func(map[string]sourceSpec) er
 		return line(postureNotEnforced, quotedSources(asSigner, "runs as the signer's own user and reads", "run as the signer's own user and read")+" what it reads, the seed included")
 	}
 	if err := switching(in.sources); err != nil {
+		if in.public {
+			return line(postureNotEnforced, "serve refuses this configuration here: this process cannot switch every source to its user, and gateway posture, given the configuration, says why")
+		}
 		return line(postureNotEnforced, "serve refuses this configuration here: "+err.Error())
 	}
 	if len(asRoot) > 0 {
@@ -148,6 +155,16 @@ func quotedSources(names []string, one, many string) string {
 		return "source " + quoted[0] + " " + one
 	}
 	return "sources " + strings.Join(quoted, ", ") + " " + many
+}
+
+// pathless is an error's text without the path an *os.PathError carries,
+// for a reason /posture answers.
+func pathless(err error) string {
+	var pathErr *os.PathError
+	if errors.As(err, &pathErr) {
+		return pathErr.Op + ": " + pathErr.Err.Error()
+	}
+	return err.Error()
 }
 
 // sourceUserIsRoot is whether a named source user is uid 0. A user that
@@ -183,7 +200,7 @@ func (r postureReport) text() string {
 	return sb.String()
 }
 
-const postureUsage = "usage: gateway posture [--json] [--config <engine.json> | <store> <seedfile> <authority> <registry> [serve options]]"
+const postureUsage = "usage: gateway posture [--json] [--config <engine.json> | [serve] <store> <seedfile> <authority> <registry> [serve options]]"
 
 // cmdPosture is `gateway posture`: the report for the gateway the
 // configuration given would start -- an engine configuration, or serve's
@@ -195,6 +212,10 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "--json" {
 		asJSON, args = true, args[1:]
 	}
+	// serve's own command line may be given as it is typed, its word too
+	if len(args) > 0 && args[0] == "serve" {
+		args = args[1:]
+	}
 	in := postureInput{}
 	switch {
 	case len(args) == 0:
@@ -203,12 +224,11 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, postureUsage)
 			return 2
 		}
-		cfg, bindings, err := loadEngineConfig(args[1], osEngineHost().account)
-		if err != nil {
+		var err error
+		if in, err = postureOfConfig(args[1], osEngineHost().account); err != nil {
 			fmt.Fprintln(stderr, "posture:", err)
 			return 1
 		}
-		in = postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings)}
 	case strings.HasPrefix(args[0], "--"):
 		fmt.Fprintln(stderr, postureUsage)
 		return 2
@@ -219,7 +239,7 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, postureUsage)
 			return 2
 		}
-		in = postureInput{configured: true, seed: args[1], sources: opts.sources}
+		in = postureInput{configured: true, seed: opts.seedPath, sources: opts.sources}
 	}
 	report := hostPosture(in)
 	if asJSON {
@@ -229,6 +249,17 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 	}
 	_, _ = io.WriteString(stdout, report.text())
 	return 0
+}
+
+// postureOfConfig is what an engine configuration gives the report: its
+// seed and the sources serve --config derives from it, each platform's
+// user theirs.
+func postureOfConfig(path string, account func(string) (int, string, error)) (postureInput, error) {
+	cfg, bindings, err := loadEngineConfig(path, account)
+	if err != nil {
+		return postureInput{}, err
+	}
+	return postureInput{configured: true, seed: cfg.seed, sources: deriveSources(cfg, bindings)}, nil
 }
 
 // seedNotNamed is the seed line where there is no seed to judge.

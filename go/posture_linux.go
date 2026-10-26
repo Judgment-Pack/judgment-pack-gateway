@@ -16,6 +16,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,13 +95,13 @@ func probeDescendants(kill func(*sourceGroup, *exec.Cmd)) postureLine {
 	line := func(state, reason string) postureLine { return postureLine{protectionDescendants, state, reason} }
 	inRead, inWrite, err := os.Pipe()
 	if err != nil {
-		return line(postureNotEnforced, "the probe could not run: "+err.Error())
+		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	defer inWrite.Close()
 	outRead, outWrite, err := os.Pipe()
 	if err != nil {
 		inRead.Close()
-		return line(postureNotEnforced, "the probe could not run: "+err.Error())
+		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	defer outRead.Close()
 	// The context is a backstop only: its Cancel is the group's kill.
@@ -113,14 +114,14 @@ func probeDescendants(kill func(*sourceGroup, *exec.Cmd)) postureLine {
 	if err != nil {
 		inRead.Close()
 		outWrite.Close()
-		return line(postureNotEnforced, "the probe could not run: "+err.Error())
+		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	defer group.reap()
 	err = group.start(child)
 	inRead.Close()
 	outWrite.Close()
 	if err != nil {
-		return line(postureNotEnforced, "the probe could not run: "+err.Error())
+		return line(postureNotEnforced, "the probe could not run: "+pathless(err))
 	}
 	out := bufio.NewReader(outRead)
 	_ = outRead.SetReadDeadline(time.Now().Add(postureProbeWait))
@@ -199,7 +200,7 @@ type treeFact struct {
 	mode      os.FileMode
 }
 
-func custodyPosture() postureLine { return judgeCustody(gatherCustody()) }
+func custodyPosture(public bool) postureLine { return judgeCustody(gatherCustody(), public) }
 
 func gatherCustody() custodyFacts {
 	facts := custodyFacts{euid: os.Geteuid(), sets: processCapabilities(), trees: map[string]treeFact{}}
@@ -230,10 +231,13 @@ func gatherCustody() custodyFacts {
 }
 
 // judgeCustody holds the facts to the image's markers, one at a time, and
-// names the first that does not hold.
-func judgeCustody(f custodyFacts) postureLine {
+// names the first that does not hold; a public reason names no path.
+func judgeCustody(f custodyFacts, public bool) postureLine {
 	line := func(state, reason string) postureLine { return postureLine{protectionContainerCustody, state, reason} }
 	if f.exeErr != nil {
+		if public {
+			return line(postureNotEnforced, "the gateway binary could not be examined")
+		}
 		return line(postureNotEnforced, "the running binary could not be examined: "+f.exeErr.Error())
 	}
 	inImage := f.executable == imageGateway
@@ -246,6 +250,9 @@ func judgeCustody(f custodyFacts) postureLine {
 		return line(postureNotEnforced, "this gateway does not run from the engine image, so the signer is held apart from its sources by their users and the host alone")
 	}
 	if f.executable != imageGateway {
+		if public {
+			return line(postureNotEnforced, "the running binary is not the engine image's gateway binary")
+		}
 		return line(postureNotEnforced, fmt.Sprintf("the running binary is %q, not the engine image's %s", f.executable, imageGateway))
 	}
 	if f.euid == 0 {
@@ -263,13 +270,20 @@ func judgeCustody(f custodyFacts) postureLine {
 	if missing := missingCapabilitiesInSets(f.sets); len(missing) > 0 {
 		return line(postureNotEnforced, "the signer lacks "+strings.Join(missing, ", ")+", so it cannot switch an adapter to its platform's user and stop it")
 	}
+	// the three and nothing more, as serve --config holds a signer to
+	if err := capabilityRefusal(f.sets); err != nil {
+		return line(postureNotEnforced, err.Error())
+	}
 	for _, tree := range imageTrees {
 		t := f.trees[tree]
+		name := "image's " + filepath.Base(tree)
 		switch {
+		case t.err != nil && public:
+			return line(postureNotEnforced, fmt.Sprintf("the %s could not be examined: %s", name, pathless(t.err)))
 		case t.err != nil:
-			return line(postureNotEnforced, fmt.Sprintf("the image's %s could not be examined: %v", tree, t.err))
+			return line(postureNotEnforced, fmt.Sprintf("the %s could not be examined: %v", name, t.err))
 		case !t.directory || t.owner != 0 || t.mode&0o022 != 0:
-			return line(postureNotEnforced, fmt.Sprintf("the image's %s is not a directory of root's that nobody else may write", tree))
+			return line(postureNotEnforced, fmt.Sprintf("the %s is not a directory of root's that nobody else may write", name))
 		}
 	}
 	return line(postureEnforced, "this gateway runs from the engine image: the signer's own binary at mode 0700 with its file capabilities, run by a user that is not root, beside the image's catalog and corpus")

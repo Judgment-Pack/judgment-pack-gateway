@@ -1580,14 +1580,15 @@ func (g *gatewayService) handler() http.Handler {
 
 	// /posture is gateway posture's report for this gateway as it runs
 	// (posture.go), in canonical JSON so a desk can compare two answers
-	// byte for byte; it is read as /verify is, with a token where an
-	// issuer is configured. The seed and the sources are judged at each
-	// request, the descendants' probe once per process.
+	// byte for byte, its reasons naming no path and no account; it is read
+	// as /verify is, with a token where an issuer is configured. The seed
+	// and the sources are judged at each request, the descendants' probe
+	// once per process.
 	mux.HandleFunc("/posture", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := authenticate(w, r); !ok {
 			return
 		}
-		report := hostPosture(postureInput{configured: true, seed: g.seedPath, sources: g.sources})
+		report := hostPosture(postureInput{configured: true, seed: g.seedPath, sources: g.sources, public: true})
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(report.canonical())
 	})

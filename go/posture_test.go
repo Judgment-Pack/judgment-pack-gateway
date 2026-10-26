@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -182,6 +183,9 @@ func TestPostureCommand(t *testing.T) {
 	if code != 0 || out != string(hostPosture(postureInput{}).canonical()) {
 		t.Fatalf("--json writes exactly the canonical bytes: %d %q", code, out)
 	}
+	if code, typed, _ := run("--json", "serve"); code != 0 || typed != out {
+		t.Fatalf("serve's own word, typed before nothing, is no configuration: %d %q", code, typed)
+	}
 	dir := t.TempDir()
 	seed := filepath.Join(dir, "absent.seed")
 	code, out, _ = run("--json", filepath.Join(dir, "store"), seed, "gateway:test", filepath.Join(dir, "registry.jsonl"), "--source", "a="+os.Args[0])
@@ -223,7 +227,7 @@ func TestPostureEndpoint(t *testing.T) {
 		return resp.StatusCode, body
 	}
 	code, body := get("")
-	want := hostPosture(postureInput{configured: true, sources: service.sources}).canonical()
+	want := hostPosture(postureInput{configured: true, sources: service.sources, public: true}).canonical()
 	if code != http.StatusOK || !bytes.Equal(body, want) {
 		t.Fatalf("/posture: %d\n got %s\nwant %s", code, body, want)
 	}
@@ -253,5 +257,162 @@ func TestStrayPostureProbeMarkerIsRefused(t *testing.T) {
 	}
 	if out := stderr(); !strings.Contains(out, envPostureProbe) {
 		t.Fatalf("the refusal must name the marker; stderr was %q", out)
+	}
+}
+
+// postureLineIn is the state and reason a canonical report gives a line.
+func postureLineIn(t *testing.T, report []byte, name string) (string, string) {
+	t.Helper()
+	parsed, err := parseJSON(report)
+	if err != nil {
+		t.Fatalf("%v: %s", err, report)
+	}
+	protections, _ := parsed.(*vObject).byName["protections"].(vArray)
+	for _, entry := range protections {
+		line := entry.(*vObject)
+		if line.byName["name"] == vString(name) {
+			return string(line.byName["state"].(vString)), string(line.byName["reason"].(vString))
+		}
+	}
+	t.Fatalf("no %s line: %s", name, report)
+	return "", ""
+}
+
+// writePostureSeed writes a seed serve accepts at path.
+func writePostureSeed(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Repeat("ab", 32)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// /posture judges the seed serve was started with, from its command line
+// and from an engine configuration alike: the path reaches the service
+// through the options both build it from.
+func TestPostureJudgesTheSeedServeStartedWith(t *testing.T) {
+	served := func(t *testing.T, service *gatewayService) []byte {
+		t.Helper()
+		server := httptest.NewServer(service.handler())
+		defer server.Close()
+		resp, err := http.Get(server.URL + "/posture")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		return body
+	}
+	judged := func(t *testing.T, body []byte) {
+		t.Helper()
+		state, reason := postureLineIn(t, body, protectionSeedFile)
+		want := postureEnforced
+		if stated, ok := postureStatements[postureFamily][protectionSeedFile]; ok && runtime.GOOS != "linux" {
+			want = stated.state
+		}
+		if state != want {
+			t.Fatalf("the seed serve started with is judged: %s %q", state, reason)
+		}
+	}
+	t.Run("command line", func(t *testing.T) {
+		dir := t.TempDir()
+		seed := filepath.Join(dir, "gateway.seed")
+		writePostureSeed(t, seed)
+		args := []string{filepath.Join(dir, "store"), seed, "gateway:test", filepath.Join(dir, "registry.jsonl")}
+		opts, msg, ok := parseServeOptions(args)
+		if !ok {
+			t.Fatal(msg)
+		}
+		service, err := buildService(args[0], testSeed, args[2], args[3], opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		judged(t, served(t, service))
+	})
+	t.Run("engine configuration", func(t *testing.T) {
+		catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
+		text := engineJSON(t, catalog, "", platformJSON(t, "warehouse", "postgres@"+digestOf(postgresBinding), "engine-warehouse", ""))
+		cfg, sources, err := load(t, text)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writePostureSeed(t, cfg.seed)
+		service, err := buildService(cfg.store, testSeed, cfg.authority, cfg.registry, engineServeOptions(cfg, sources, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		judged(t, served(t, service))
+	})
+}
+
+// gateway posture --config judges the configuration's seed and the
+// sources serve --config derives from it, each with its platform's user.
+func TestPostureOfConfig(t *testing.T) {
+	catalog := catalogWith(t, map[string]string{"postgres": postgresBinding})
+	text := engineJSON(t, catalog, "", platformJSON(t, "warehouse", "postgres@"+digestOf(postgresBinding), "engine-warehouse", ""))
+	path := filepath.Join(t.TempDir(), "engine.json")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := load(t, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := postureOfConfig(path, stubAccounts(stubUsers))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !in.configured || in.seed != cfg.seed || len(in.sources) != 2 {
+		t.Fatalf("the configuration's seed and sources: %+v", in)
+	}
+	for name, spec := range in.sources {
+		if spec.user != "engine-warehouse" {
+			t.Fatalf("%s runs as %q, its platform's user", name, spec.user)
+		}
+	}
+	if line := sourceUserPosture(in, func(map[string]sourceSpec) error { return nil }, func(string) bool { return false }); line.state != postureEnforced {
+		t.Fatalf("every derived source has a user of its own: %+v", line)
+	}
+	if _, err := postureOfConfig(filepath.Join(t.TempDir(), "absent.json"), stubAccounts(stubUsers)); err == nil {
+		t.Fatal("an absent configuration is an error")
+	}
+}
+
+// /posture names no path and no account in a reason, whatever has changed
+// since serve started: here the seed has gone and a source names a user
+// this process cannot switch to.
+func TestPostureEndpointNamesNoPathNorAccount(t *testing.T) {
+	const account = "posture-user-no-such"
+	service, server := testService(t)
+	seed := filepath.Join(t.TempDir(), "gateway.seed")
+	writePostureSeed(t, seed)
+	service.seedPath = seed
+	if err := os.Rename(seed, seed+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	spec := service.sources["screening"]
+	spec.user = account
+	service.sources = map[string]sourceSpec{"screening": spec}
+	resp, err := http.Get(server.URL + "/posture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || bytes.ContainsAny(body, "/") || bytes.Contains(body, []byte(`\\`)) || bytes.Contains(body, []byte(account)) {
+		t.Fatalf("/posture names a path or an account: %s", body)
+	}
+	if state, _ := postureLineIn(t, body, protectionSourceUser); state != postureNotEnforced {
+		t.Fatalf("a source user this process cannot switch to: %s", body)
+	}
+	if state, _ := postureLineIn(t, body, protectionSeedFile); state != postureNotEnforced {
+		t.Fatalf("a seed gone since the start: %s", body)
+	}
+	// The command, run by the operator, says which user and which file.
+	report := hostPosture(postureInput{configured: true, seed: seed, sources: service.sources})
+	if !strings.Contains(report.lines[0].reason, account) {
+		t.Fatalf("the command names the user: %+v", report.lines[0])
 	}
 }

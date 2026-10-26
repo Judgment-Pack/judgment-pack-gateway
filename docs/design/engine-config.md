@@ -553,22 +553,29 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
 - `platform` is the operating system as Go names it: `linux`, `darwin`, `windows`.
 - `protections` holds the five protections, always in this order, each with exactly `name`,
   `state` — `enforced`, `not-enforced` or `not-applicable` — and `reason`, one sentence for a
-  reader, which a consumer shows and never parses. `not-applicable` is a protection with nothing
+  reader, which a consumer shows and never parses. A reason `/posture` answers names no path and
+  no account; the command, run by the operator, may. `not-applicable` is a protection with nothing
   to hold here: no source, no seed, an image this platform does not run.
 - `source-user-switch`: every source names a user, none is root, and this process passes the
   check `serve` makes at start, that it can switch to each; `not-applicable` with no source.
-- `descendant-reaping`: on Linux, a probe run once per process: a child started as a source is,
-  in an anchor-led process group, starts a grandchild; the group is killed, and the grandchild
-  must be gone — the pipe it held closed — within three seconds. Elsewhere it is stated, not
-  checked, as `not-enforced`: Windows has no process group, and on macOS and the BSDs a
-  descendant that left the group is not reached.
+- `descendant-reaping`: on Linux, a probe run once per process, so a restart probes again: a
+  child started as a source is, in an anchor-led process group, starts a grandchild; the group is
+  killed, and both must be gone — the pipe they held closed — within three seconds. The probe
+  runs as the gateway's own user; killing a switched source's group crosses users, which takes
+  `CAP_KILL`, and `serve` refuses to start a switched source without it. Elsewhere the line is
+  stated, not checked, as `not-enforced`: Windows has no process group, and on macOS and the BSDs
+  `adapter-mcp` does not reach the descendants a command server left outside the group, which it
+  adopts and kills on Linux.
 - `container-custody`: on Linux, the engine image's markers ([engine-image.md](engine-image.md)):
   the running binary is `/usr/local/bin/gateway`, the signer's own at mode `0700` and carrying
   file capabilities, run by a user that is not root with `CAP_SETUID`, `CAP_SETGID` and
-  `CAP_KILL` in effect, beside `/usr/share/engine/catalog` and `/usr/share/engine/corpus`,
-  directories of root's that nobody else may write. Elsewhere `not-applicable`.
-- `seed-file-protection`: on Unix, the seed as `serve` judges it at start — a regular file owned
-  by the signer, readable by nobody else by its mode bits; an access-control list is not seen.
+  `CAP_KILL` in effect and nothing more — no capability that reads past permissions, nothing
+  ambient or inheritable, as `serve --config` holds a signer — beside
+  `/usr/share/engine/catalog` and `/usr/share/engine/corpus`, directories of root's that nobody
+  else may write. Elsewhere `not-applicable`.
+- `seed-file-protection`: on Unix, the seed as `serve` judges it at start, read through a link
+  as `serve` opens it — a regular file owned by the signer, readable by nobody else by its mode
+  bits; an access-control list is not seen.
   On Windows it is stated as `not-enforced`.
 - `operator-program-confinement`: always `not-enforced`.
 
