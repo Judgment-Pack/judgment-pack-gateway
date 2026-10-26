@@ -1,0 +1,1 @@
+{"request": {"connection": "workspace-a", "revision": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210", "read": "statement", "statement": "SELECT 1"}, "expect": "refused: source-failed"}

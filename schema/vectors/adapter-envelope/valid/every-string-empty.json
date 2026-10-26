@@ -1,0 +1,17 @@
+{
+  "acquisition": {
+    "adapter": {
+      "name": "",
+      "version": "",
+      "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "endpoint": "",
+    "statement": "",
+    "snapshot": "",
+    "peerIdentity": "",
+    "schema": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    "upstreamToken": "",
+    "observedAt": "2026-10-25T12:00:00Z"
+  },
+  "result": ""
+}

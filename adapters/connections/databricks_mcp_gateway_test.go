@@ -50,6 +50,7 @@ func TestDatabricksMCPUnityGatewayServiceIsReadAsTheOthers(t *testing.T) {
 		if err != nil {
 			t.Fatal(k.server, err)
 		}
+		writeEnvelope(t, "databricks.mcp-"+k.tool, out)
 		if got := dbMethods(f); got != "initialize,notifications/initialized,tools/list,tools/call,DELETE" {
 			t.Fatalf("%s: %s", k.server, got)
 		}

@@ -49,6 +49,7 @@ func TestSearchResultsForPublishedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("JPACK_TEST_SEARCH_RESULT", raw)
+	writeEnvelope(t, "web-search.search", raw)
 
 	grounded, _ := json.Marshal(map[string]any{
 		"candidates": []any{map[string]any{
@@ -78,4 +79,5 @@ func TestSearchResultsForPublishedSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	write("JPACK_TEST_GROUNDED_RESULT", raw)
+	writeEnvelope(t, "web-search.grounded", raw)
 }

@@ -259,7 +259,11 @@ adapter reported it — endpoint, snapshot, schema, the adapter that fetched —
 shape the operator declared, with the statement committed under its own salt
 (`salts.statement`) and, for a page, the digest of every item. A defective envelope
 fails the acquisition; nothing is minted. What that record is, exactly, is the
-adapter's testimony under the gateway's signature, and SECURITY.md says so.
+adapter's testimony under the gateway's signature, and SECURITY.md says so. The envelope is
+published as a JSON Schema with vectors, `schema/adapter-envelope.v1.json`, and
+`gateway adapter-conform --shape SHAPE --vectors DIR 'ADAPTER-COMMAND'` runs an adapter of your
+own as `serve` would and says, request by request, whether `serve` would accept its envelope,
+minting nothing ([write an adapter](adapters/README.md#write-an-adapter)).
 
 A consumer does not stop at those endpoints: it runs `gateway verify` itself, over
 a store it holds, under the key it pinned from `keygen`'s output, then binds the

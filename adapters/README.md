@@ -12,6 +12,148 @@ cd adapters && gofmt -l . && go vet ./... && go test ./...
 go build -o adapter-airbyte ./cmd/adapter-airbyte
 ```
 
+## Write an adapter
+
+An adapter of your own — a wrapper around a private API, or around a system of your own — is a
+source like the ones below: a program `gateway serve` starts for each acquisition of a source
+declared with `--source-shape NAME=airbyte|mcp|http`. It reads one request on stdin, the
+acquisition's `arguments` in their canonical form, and either writes one envelope on stdout and
+exits 0, or refuses: it writes nothing on stdout, says why on stderr, and exits with another
+status. The gateway starts it as it starts any source: the command resolved once, the environment
+the operator declares with `--source-env` and `PATH` and nothing else, a process group of its own,
+at most `--source-timeout` seconds (thirty by default) and at most `--source-max-output` bytes on
+stdout (one mebibyte by default). A refusal reaches the caller as the first 200 bytes of what the
+adapter wrote on stderr, each byte outside printable ASCII replaced by `?`, so say the reason in
+one short line and keep a credential out of it.
+
+### The envelope
+
+The envelope is the one object [SPEC.md §6](../SPEC.md) states under "Adapter sources". This is
+one, [`one-row.json`](../schema/vectors/adapter-envelope/valid/one-row.json) among the schema's
+vectors:
+
+```json
+{
+  "acquisition": {
+    "adapter": {"name": "adapter-example", "version": "1.0.0", "digest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+    "endpoint": "api.example",
+    "statement": "select id, status from decisions where id = 101",
+    "snapshot": null,
+    "peerIdentity": null,
+    "schema": "sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+    "upstreamToken": null,
+    "observedAt": "2026-10-25T12:00:00Z"
+  },
+  "result": {"id": 101, "status": "approved"}
+}
+```
+
+- `result` is what the gateway attests: the receipt's `resultDigest` is over its canonical form, it
+  is retained as the artifact, and the acquire response returns it. Any JSON value, in the canonical
+  domain of SPEC.md §1.1: a number is an integer of the safe range written in digits, never `1.0`
+  or `1e2`.
+- `page`, when present, is `true`, and `result` is then an array of items; the receipt carries the
+  digest of each.
+- `acquisition` has exactly eight members: `adapter`, an object of exactly `name`, `version` and
+  `digest` (`sha256:` and 64 lowercase hexadecimal characters) naming what fetched; `endpoint`,
+  `snapshot`, `peerIdentity` and `upstreamToken`, each a string or `null`; `statement`, the query,
+  path or tool call as text, or `null`, which the gateway commits to under a salt of its own and
+  does not keep in the clear; `schema`, `null` or the digest of the schema the result was read
+  under; and `observedAt`, when the result was read, as `YYYY-MM-DDThh:mm:ssZ` in UTC and whole
+  seconds. Every member is present, `null` where the adapter knows nothing.
+- An adapter of the `mcp` shape that reached a remote server over Streamable HTTP adds `transport`,
+  `"http"`, and `server`, the `name` and `version` the server gave itself, together; its `endpoint`
+  is then the server's URL and its `peerIdentity` the TLS peer's
+  ([ADR-0015](../docs/adr/0015-a-remote-mcp-server-as-a-source-and-executor.md)). No other shape
+  carries them.
+- Nothing else, at any level: not `shape`, which is the operator's, not `pageItems`, which the
+  gateway computes, and no member of your own.
+
+The envelope is published as a JSON Schema,
+[`schema/adapter-envelope.v1.json`](../schema/adapter-envelope.v1.json) (draft 2020-12), with
+valid and invalid vectors beside it under `schema/vectors/adapter-envelope/`. Every valid vector
+is accepted by the schema and by the gateway, and every invalid one refused by both: the `go-test`
+and `adapter-envelope-schema` checks hold the two to the same files. A schema reads parsed JSON,
+so four things are the gateway's alone, and its description names them: the reading of the text
+(a fraction or an exponent, a member named twice, text that is not UTF-8); `transport` and
+`server` from a source declared with another shape than `mcp`; the source's output bound and
+timeout; and a result nested deeper than the response can carry. A new member or a changed form
+is a new version of the file.
+
+### Check it: `gateway adapter-conform`
+
+`gateway adapter-conform` runs your adapter as `serve` would run it as a source, hands it each
+request of a directory of cases, and reports what `serve` would make of each answer, with nothing
+retained and nothing minted: no store, no seed, no session.
+
+```
+gateway adapter-conform --shape http --vectors ./cases 'my-adapter --endpoint https://api.example'
+gateway adapter-conform --shape mcp --vectors ./cases --env HOME -- my-adapter --config /etc/my-adapter.json
+gateway adapter-conform --shape http 'my-adapter --endpoint https://api.example' < request.json
+```
+
+The adapter's command is one argument, split on white space as `--source` splits it, or the words
+after `--` as given. `--shape` is required: it is the shape you will declare with `--source-shape`.
+`--env KEY` hands the adapter that variable from this process's environment and `--env KEY=VALUE`
+that value, as `--source-env` does, and nothing else reaches it but `PATH`; `--timeout SECONDS` and
+`--max-output BYTES` are the source's `--source-timeout` and `--source-max-output`. Each case is a
+`*.json` file of the directory, taken in the order of their names, of exactly two members:
+
+```json
+{"request": {"path": "/read", "body": {"id": 101}}, "expect": "accepted"}
+```
+
+`request` is the acquisition's `arguments`. `expect` is `accepted`, or `refused: ` and the class of
+the refusal the case expects (below): `refused: source-failed` for a request your adapter must turn
+down itself. A refusal of another class than the one named is not the one expected, so an adapter
+that answers such a request with a broken envelope, or runs past its timeout, fails the case.
+Without `--vectors`, the request on stdin is the one case, expected to be accepted. A case file
+that cannot be read stops the run before the adapter is started.
+
+Each case is reported as `accepted`, or as `refused:`, its class and the reason, one line each, the
+ones that did not come out as expected marked `UNEXPECTED`, and then the count; `--json` writes the
+same report as one canonical JSON object, `{"shape", "cases": [{"case", "expect", "outcome",
+"refusal"?, "reason"?, "unexpected"}], "unexpected"}`, `refusal` being the class. The exit status
+is 0 when every case came out as expected, 1 when one did not, and 2 when the command line or a
+case could not be read.
+
+### What a refusal means
+
+`refused` is the refusal `serve` makes: the acquisition fails, nothing is retained, nothing is
+minted, and the caller is told the reason. Its class says whose it was, and the reason begins with
+`serve`'s words for it:
+
+- `source-failed`, `source failed: …` — the adapter exited with a status other than 0, and what
+  follows is the start of what it wrote on stderr. This is your adapter refusing, the one class a
+  case for a request it must turn down expects.
+- `timeout`, `source did not finish within its N-second timeout` — the adapter ran past the
+  source's timeout, or left a descendant holding its output past it.
+- `output-bound`, `source output exceeds N bytes` — stdout ran past the source's output bound.
+- `not-started`, `source could not be started: …` — the adapter could not be run.
+- `not-json`, `source did not return a canonical JSON value: …` — stdout is not one JSON value in
+  the canonical domain: a fraction, an exponent, an integer past the safe range, a member named
+  twice, text that is not UTF-8, or anything after the value.
+- `not-an-envelope`, `the adapter's result is not an envelope: …` — the value is not an envelope of
+  the form above, or carries `transport` and `server` from a source declared with another shape;
+  what follows names the member and the rule. An adapter that answers a request with this has a
+  defect, and the schema refuses the same envelope.
+- `not-returnable`, `the result cannot be returned: …` — the result is nested deeper than the
+  response can carry.
+
+Only `source-failed` is your adapter's own; a case may name another class, to hold the adapter to
+the source's bounds, for one.
+
+The shipped adapters are held to the same command by the `adapter-conform` check
+(`scripts/checks/adapter-conform.sh`, `testdata/adapter-conform`): `adapter-airbyte`,
+`adapter-mcp` and `adapter-http` are run to accepted envelopes against stand-ins for a container
+runtime, an MCP server over stdio and a remote one over Streamable HTTP, and a provider. The
+connection programs reach providers that nothing can stand in for from outside their process, by
+design: each envelope source of the connection local plan is run as the plan runs it to a request
+it refuses itself before reaching a provider, each such refusal held to the class `source-failed`,
+and the envelope its own code writes in its package's tests, against a stand-in provider, is run
+through `adapter-conform` and the schema. That is the source's envelope as its code writes it, not
+one its released program wrote from a real provider.
+
 ## adapter-airbyte
 
 Runs a connector image that speaks the Airbyte protocol — the catalog of several

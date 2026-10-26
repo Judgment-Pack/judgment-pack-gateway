@@ -748,24 +748,15 @@ func (g *gatewayService) acquireForTrail(sessionID, source, trail string, argume
 	// fails the acquisition before anything is retained.
 	var adapterEnvelope *envelope
 	if spec.shape != "" {
-		adapterEnvelope, err = parseEnvelope(result)
-		if err == nil {
-			// Only an mcp adapter reaches a remote server (ADR-0015); the
-			// members' forms are parseEnvelope's.
-			err = remoteMembersOnShape(adapterEnvelope.acquisition, spec.shape)
-		}
+		adapterEnvelope, err = readEnvelope(result, spec.shape)
 		if err != nil {
-			return nil, fmt.Errorf("source %s: the adapter's result is not an envelope: %v", source, err)
+			return nil, fmt.Errorf("source %s: %w", source, err)
 		}
 		result = adapterEnvelope.result
 	}
-	// The response carries the result as ordinary JSON. A result the
-	// response cannot carry -- nested deeper than encoding/json will decode
-	// -- is refused here, before anything is retained or minted, so no
-	// receipt is ever stamped for an acquisition the caller cannot receive.
-	var resultOut any
-	if err := json.Unmarshal(canon(result), &resultOut); err != nil {
-		return nil, fmt.Errorf("source %s: the result cannot be returned: %v", source, err)
+	resultOut, err := returnableResult(result)
+	if err != nil {
+		return nil, fmt.Errorf("source %s: %w", source, err)
 	}
 	// An artifact is content-addressed and may be shared by receipts, so
 	// a failure after this point leaves it in place rather than removing
@@ -1158,6 +1149,36 @@ func parseEnvelope(v value) (*envelope, error) {
 		return nil, errors.New(`member "observedAt" is not a stamp`)
 	}
 	return e, nil
+}
+
+// readEnvelope is what an acquisition makes of an adapter source's output
+// (SPEC.md §6): the envelope as parseEnvelope reads it, held to the shape the
+// operator declared for the source, since only an mcp adapter reaches a
+// remote server (ADR-0015) and the members' forms are parseEnvelope's. A
+// refusal here fails the acquisition with nothing retained or minted;
+// gateway adapter-conform reports the same refusal for a case.
+func readEnvelope(output value, shape string) (*envelope, error) {
+	e, err := parseEnvelope(output)
+	if err == nil {
+		err = remoteMembersOnShape(e.acquisition, shape)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("the adapter's result is not an envelope: %v", err)
+	}
+	return e, nil
+}
+
+// returnableResult is the result as the acquire response carries it,
+// ordinary JSON. A result the response cannot carry -- nested deeper than
+// encoding/json will decode -- is refused before anything is retained or
+// minted, so no receipt is ever stamped for an acquisition the caller cannot
+// receive; gateway adapter-conform reports the same refusal for a case.
+func returnableResult(result value) (any, error) {
+	var out any
+	if err := json.Unmarshal(canon(result), &out); err != nil {
+		return nil, fmt.Errorf("the result cannot be returned: %v", err)
+	}
+	return out, nil
 }
 
 // isStamp is the form nowStamp produces: UTC, whole seconds, fixed width.

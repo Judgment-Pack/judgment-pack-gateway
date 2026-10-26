@@ -64,6 +64,7 @@ func TestDriveRecordForPublishedSchema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeEnvelope(t, "drive", raw)
 	var envelope struct {
 		Result json.RawMessage `json:"result"`
 	}

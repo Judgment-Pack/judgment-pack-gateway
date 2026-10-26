@@ -1,0 +1,1 @@
+{"request": {"tool": "query", "arguments": {"sql": "select id, amount from decisions"}}, "expect": "accepted"}

@@ -10,6 +10,7 @@ package main
 //	gateway export --config <engine.json> --out <dir> [--observations <file>]...
 //	gateway export --check <dir>
 //	gateway conform [--impl CMD] [--corpus DIR]
+//	gateway adapter-conform --shape airbyte|mcp|http [--vectors DIR] [--env KEY[=VALUE]]... [--timeout SECONDS] [--max-output BYTES] [--json] ADAPTER-COMMAND
 //	gateway witness verify --log <file> --public-key <file> [--marks <file>]
 //	gateway witness register|retire|repair --config <engine.json> ...
 //	gateway witness fetch --store <dir> --registry <file> ... --record <file> --trail <file> --runtime <path> --out <dir>
@@ -41,7 +42,7 @@ func main() {
 		os.Exit(2)
 	}
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | witness | serve | connect | keygen | rotate-key | mcp | posture | version")
+		fmt.Fprintln(os.Stderr, "usage: gateway canon | verify | export | conform | adapter-conform | witness | serve | connect | keygen | rotate-key | mcp | posture | version")
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -53,6 +54,8 @@ func main() {
 		os.Exit(cmdExport(os.Args[2:], os.Stdout, os.Stderr))
 	case "conform":
 		os.Exit(cmdConform(os.Args[2:]))
+	case "adapter-conform":
+		os.Exit(cmdAdapterConform(os.Args[2:]))
 	case "witness":
 		os.Exit(cmdWitness(os.Args[2:], os.Stdout, os.Stderr))
 	case "serve":
