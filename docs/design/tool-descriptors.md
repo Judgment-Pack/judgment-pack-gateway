@@ -62,7 +62,9 @@ These are not captured:
   time.
 - **`title` and `annotations`.** A title is one more untrusted surface a host shows a person, and
   annotations are the server's claims about side effects, booleans included. The tool's name,
-  `<platform>.<tool>`, is the label.
+  `<platform>.<tool>`, is the label. A version 2 snapshot keeps the four standard boolean hints
+  the server gave as `serverAnnotations`, to hold them against the owner's declaration; they are
+  never served ([below](#what-a-served-tool-carries-of-its-owner)).
 
 ## Three representations, and strict decoding at each boundary
 
@@ -542,3 +544,40 @@ time. A tool that fell back, and `engine.seal`, name none.
 bindingVersion2, per-operation snapshotV2/engine11 approval, and opt-in CatalogV5.
 Historical readers do not admit unclassified current tools. Metadata grants no authority;
 existing acquisition, sealing and action checks remain required.
+
+### What a served tool carries of its owner
+
+`gateway mcp` is the one place the gateway serves tools, and every entry of its `tools/list`
+carries its owner's declaration (#324): `_meta.operation` and `_meta.effect`, `_meta.checkKind`
+for a check and `_meta.experimental` when true, and the standard `annotations` derived from the
+effect. The entry is made in one place, and no entry writes annotations of its own:
+
+| Owner effect | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
+|---|---|---|---|---|
+| `act` | false | true | false | true |
+| `read-external` | true | false | true | true |
+| `pure`, `read`, `propose` | true | false | true | false |
+
+A platform's live tools take their owner from the binding's `toolTaxonomies`; the seal tool is
+`act`/`act`. A tool without a valid operation and effect is not served: the frontend refuses to
+start when a live tool has none (the current admission above), and the listing refuses to make an
+entry for one. A server's annotations that contradict its owner -- `destructiveHint` true, or
+`readOnlyHint` false, for an owner whose effect is not `act` -- refuse the capture, and refuse the
+frontend's start when a pinned snapshot holds them; a server's claim that an `act` tool is
+read-only refuses nothing and changes nothing served. A hint is a convenience for a host and
+grants nothing: an `act` live tool is still acquired through `/acquire`, and a write through
+`/act` with its decision.
+
+A binding's `write` operation is the executor's write-back: each of its tools declares
+`act`/`act`, and a weaker declaration refuses the binding. A live tool may be an act too: the
+shipped Postgres binding's `execute_sql` is.
+
+`adapter-mcp` serves no tools. Its check report lists the server's tools by name, and its
+snapshot holds each allowed tool's owner declaration and the server's hints, a contradiction
+refused there as at the frontend; the annotations are derived only where tools are served.
+
+The handwritten vector `testdata/tool-taxonomy/served-listing.json` is what the listing serves of
+each tool for a fixture platform whose live tools are a discover, a read, an experimental check and
+an act, and for the seal tool: a change to what is served is a change to that file. A test walks
+every operation of every shipped binding and every tool of the frontend's table, and names the
+first without both fields.

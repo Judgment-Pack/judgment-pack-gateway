@@ -127,13 +127,13 @@ If no signing key is configured, stop and settle the signing policy; do not repl
 with an unsigned one. Signing is the maintainer's practice and the workflow does not check it: an
 unsigned tag is admitted like a signed one. A tag is never moved or reused. A fix is a new version.
 
-A tag is `vX.Y.Z`. Build metadata (`+...`) is refused. The workflow's own admission also reads
-`vX.Y.Z-<prerelease>`, as SemVer 2.0.0 writes it, and would publish a tag with a hyphen
-(`v0.5.0-rc.1`) as a prerelease, never marked latest; but the release evidence gate it runs next
-([below](#the-ci-evidence-the-release-takes)) is the development kit's, which accepts `vX.Y.Z`
-alone, and refuses a prerelease tag with `tag-syntax` before anything is built. Until the kit's gate
-accepts prerelease tags ([devkit #54](https://github.com/Judgment-Pack/judgment-pack-devkit/issues/54)), this workflow releases no
-prerelease.
+A tag is `vX.Y.Z`, or `vX.Y.Z-<prerelease>` as SemVer 2.0.0 writes it. Build metadata (`+...`) is
+refused. The workflow publishes a tag with a hyphen as a prerelease, never marked latest, and the
+release evidence gate it runs next ([below](#the-ci-evidence-the-release-takes)) admits one because
+`.github/ci-evidence.json` sets `tag.prerelease` to `true`. This repository uses the two pre-release
+forms the development kit's policy defines: `vX.Y.Z-rc.N` is a candidate of the complete milestone,
+graduated to `vX.Y.Z` with no code change when nothing is found, and `vX.Y.Z-alpha.N` is a scoped cut
+for a named consumer that never graduates.
 
 ## What the workflow does
 

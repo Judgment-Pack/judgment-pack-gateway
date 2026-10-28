@@ -192,6 +192,11 @@ func parseTaxonomyOperation(raw *vObject, name string) (operation, error) {
 		if !present || e != nil || !t.External() {
 			return op, fmt.Errorf("missing or invalid owner taxonomy for allowed tool")
 		}
+		// A write operation is the executor's write-back through /act: each of
+		// its tools is an act, whatever weaker family an owner might write.
+		if name == "write" && (t.Operation != "act" || t.Effect != "act") {
+			return op, fmt.Errorf("operation write: every allowed tool is a write-back and declares operation act and effect act")
+		}
 		op.taxonomies[tool] = t
 	}
 	if _, err := ownerDeclaration(op); err != nil {

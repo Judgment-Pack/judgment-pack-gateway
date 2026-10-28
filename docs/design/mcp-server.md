@@ -136,7 +136,9 @@ platform's tool from elsewhere — unless the platform pins a snapshot of descri
 `connect` captured. The MCP server then reads and verifies that snapshot once, at start, and
 serves the server's own descriptions, framed and fenced, with the captured schema's projection
 ([tool-descriptors.md](tool-descriptors.md)); a tool the snapshot does not hold is described as
-above.
+above. Every entry, the seal tool's among them, also carries its owner's operation and effect in
+`_meta` and the standard `annotations` derived from that effect, and a tool without both is not
+served ([tool-descriptors.md](tool-descriptors.md#what-a-served-tool-carries-of-its-owner)).
 
 **Arguments, byte for byte.** The call's `arguments` member is carried to `/acquire` as the
 bytes the client sent, inside the wrapping object, never decoded and re-encoded on the way:

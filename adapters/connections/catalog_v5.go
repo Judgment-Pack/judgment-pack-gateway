@@ -46,17 +46,30 @@ func externalOwner(operation string) mcp.ToolTaxonomy {
 	return mcp.ToolTaxonomy{Operation: operation, Effect: "read-external"}
 }
 
+// capabilityOwners is each research capability's owner declaration: a
+// search is a discover, a page a read and an answer an answer, each
+// read-external, since each is acquired and answered with a signed receipt.
+// It is the one table: CheckCapabilities refuses a capability it does not
+// declare, so neither a catalog nor a connection's research declaration
+// names one, and the dispatch selectors that serve a capability under its
+// name take their declaration from it.
 var capabilityOwners = map[string]mcp.ToolTaxonomy{
 	CapabilityAnswer: externalOwner("answer"), CapabilitySearch: externalOwner("discover"), CapabilityPage: externalOwner("read"),
+}
+
+// capabilityOwner is a capability's declaration, when it has a valid one.
+func capabilityOwner(name string) (mcp.ToolTaxonomy, bool) {
+	t, ok := capabilityOwners[name]
+	return t, ok && t.Valid()
 }
 
 // These are owner declarations for the actual closed dispatch selectors, never
 // classifications guessed from names or from arbitrary customer MCP descriptors.
 // Generic MCP dispatch can act; its container declaration grants no per-tool import.
 var sourceOwners = map[string]map[string]mcp.ToolTaxonomy{
-	"web":           {"page": externalOwner("read")},
+	"web":           {CapabilityPage: capabilityOwners[CapabilityPage]},
 	"web-discovery": {"discover": externalOwner("discover")},
-	"web-search":    {"answer": externalOwner("answer"), "search": externalOwner("discover")},
+	"web-search":    {CapabilityAnswer: capabilityOwners[CapabilityAnswer], CapabilitySearch: capabilityOwners[CapabilitySearch]},
 	"drive":         {"read": externalOwner("read")}, "gmail": {"read": externalOwner("read")}, "notion": {"read": externalOwner("read")}, "obsidian": {"read": externalOwner("read")}, "aws-s3": {"read": externalOwner("read")},
 	"databricks": {"statement": {Operation: "act", Effect: "act"}, "catalog": externalOwner("discover"), "mcp": {Operation: "run", Effect: "act"}},
 	"azure-devops": {

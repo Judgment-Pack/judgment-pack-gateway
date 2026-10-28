@@ -2,6 +2,7 @@ package connections
 
 import (
 	"fmt"
+	"slices"
 	"unicode/utf8"
 )
 
@@ -20,27 +21,28 @@ const (
 // bytes (spec/dialect.md §4.3).
 const researchModelBytes = 256
 
+// researchCapabilities is the closed set, in its order. Each one's
+// operation and effect is its owner declaration in capabilityOwners
+// (catalog_v5.go), the one table every declaration of a capability reads.
+var researchCapabilities = []string{CapabilityAnswer, CapabilitySearch, CapabilityPage}
+
 func capabilityRank(name string) int {
-	switch name {
-	case CapabilityAnswer:
-		return 0
-	case CapabilitySearch:
-		return 1
-	case CapabilityPage:
-		return 2
-	}
-	return -1
+	return slices.Index(researchCapabilities, name)
 }
 
 // CheckCapabilities holds a declaration to the closed set: each name one of
-// answer, search and page, none twice, in that order. An empty declaration
-// is an adapter that serves none of them.
+// answer, search and page, none twice, in that order, and each with its
+// operation and effect declared. An empty declaration is an adapter that
+// serves none of them.
 func CheckCapabilities(names []string) error {
 	last := -1
 	for _, name := range names {
 		rank := capabilityRank(name)
 		if rank < 0 {
 			return fmt.Errorf("capability %q is not one of answer, search and page", name)
+		}
+		if _, declared := capabilityOwner(name); !declared {
+			return fmt.Errorf("capability %q has no operation and effect declared, and is not served", name)
 		}
 		if rank == last {
 			return fmt.Errorf("capability %q is declared twice", name)
