@@ -600,7 +600,7 @@ func TestAListingPastItsBoundIsCountedNoFurther(t *testing.T) {
 		bindings[name] = binding{version: "2", platform: name, live: &operation{name: "live", shape: "mcp", tools: names, taxonomies: owners}}
 	}
 	bound := 16 * uint64(listingBound)
-	entry, _ := listingEntry(mcpTool{name: "p00.t000000", platform: "p00", tool: "t000000", binding: cfg.platforms[0].binding}, nil, -1)
+	entry, _ := listingEntry(mcpTool{name: "p00.t000000", platform: "p00", tool: "t000000", binding: cfg.platforms[0].binding, taxonomy: owners["t000000"]}, nil, -1)
 	if uint64(len(entry)*platforms*each) <= bound {
 		t.Fatalf("the entries are %d bytes, within %d", len(entry)*platforms*each, bound)
 	}

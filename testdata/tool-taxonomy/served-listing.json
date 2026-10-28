@@ -1,0 +1,30 @@
+{
+  "about": "Handwritten. What gateway mcp's tools/list serves of each tool for a consumer to classify it: name, the standard annotations derived from the owner's effect, and the owner's operation and effect in _meta. The fixture is one platform, tickets, whose live operation allows four tools, and the engine's seal tool. Descriptions and input schemas are left out: they are tool-descriptors.md's. Annotations: act is readOnlyHint false, destructiveHint true, idempotentHint false, openWorldHint true; every other effect is readOnlyHint true, destructiveHint false, idempotentHint true, with openWorldHint true for read-external. A server's own annotations never change what is served.",
+  "tools": [
+    {
+      "name": "engine.seal",
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+      "_meta": {"operation": "act", "effect": "act"}
+    },
+    {
+      "name": "tickets.read",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+      "_meta": {"operation": "read", "effect": "read-external"}
+    },
+    {
+      "name": "tickets.search",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+      "_meta": {"operation": "discover", "effect": "read-external"}
+    },
+    {
+      "name": "tickets.update",
+      "annotations": {"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": true},
+      "_meta": {"operation": "act", "effect": "act"}
+    },
+    {
+      "name": "tickets.verify",
+      "annotations": {"readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+      "_meta": {"operation": "check", "effect": "read-external", "checkKind": "test", "experimental": true}
+    }
+  ]
+}

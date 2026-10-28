@@ -374,3 +374,57 @@ true, that a model ran, or which one.
 bindingVersion2, per-operation snapshotV2/engine11 approval, and opt-in CatalogV5.
 Historical readers do not admit unclassified current tools. Metadata grants no authority;
 existing acquisition, sealing and action checks remain required.
+
+### Operation and effect of every capability and connection operation
+
+Each capability and each connection operation declares an `operation` and an `effect` from the
+taxonomy of judgment-pack-agent ADR-0027 (#324). `--catalog-v5` writes them, and where a program
+checks a capability or an operation before serving it -- a capability's declaration, the broker's
+methods, the Databricks and Azure DevOps selectors -- it reads the same declaration: there is no
+second table.
+
+**Research capabilities**, each source's `capabilityTaxonomies`. Each is acquired and answered
+with a signed receipt, so each is `read-external`:
+
+| Capability | `operation` | `effect` |
+|---|---|---|
+| `answer` | `answer` | `read-external` |
+| `search` | `discover` | `read-external` |
+| `page` | `read` | `read-external` |
+
+The declaration is part of the closed set: a capability without a valid one is refused wherever a
+capability is declared, so neither the catalog's `capabilities` for an adapter nor a connection's
+`research` member names it, and no research source binds it. A source's dispatch selector that
+serves a capability under its name (`web`'s `page`, `web-search`'s `answer` and `search`) takes the
+capability's declaration.
+
+**Reads and listings**, each source's `dispatchTaxonomies`: a selected read (`drive`, `gmail`,
+`notion`, `obsidian`, `aws-s3`) and an Azure DevOps work item, item or pipeline run read are
+`read`; a listing, a query or a catalog walk is `discover`; all `read-external`. A Databricks
+`statement` is `act`, since SQL can write, and a connection's generic MCP dispatch is `run`/`act`,
+since it can reach any tool its server enables. Databricks and Azure DevOps refuse a request whose
+selector has no declaration.
+
+**The broker's methods**, each provider's `operationTaxonomies` and `operationDeclarations`. The
+method's own operation is one component; the operator-policy preamble every method enters, an
+`act`, is the other, so every method's summary is an `act`. A method that changes a resource or a
+configuration is an act on its own: `files-commit`, `configure`, `disconnect`, `select`,
+`source-bind` and `source-revoke`; `connect`, `poll` and `cancel` are `run`/`act`; `files-prepare`
+and `files-prepare-google-document` are `propose`; `search` and `files-list` are `discover` and
+`files-read` and `source-observe` are `read`, all `read-external`; `test` is a `check` of kind
+`test`, `read-external`; `status`, `files-status` and `source-bindings` are `read`/`read`. The
+broker refuses a method without a declaration before it dispatches it. Document processing, a
+provider the broker is opened as and the catalog does not list, answers `status`, `configure` and
+`test` under the same declarations.
+
+A test walks what these programs serve, not the catalog that describes them -- every capability,
+every method of every provider the broker opens, every dispatch selector of every source -- and
+names the first without both fields.
+
+**Posture and presets.** The families are exposed here, as each provider's and source's
+`profile` (the strongest effect and the operations it holds), and in the `_meta` of every tool
+`gateway mcp` serves ([tool-descriptors.md](tool-descriptors.md#what-a-served-tool-carries-of-its-owner)).
+`gateway posture` reports the host's isolation protections and reads no family. The permission
+presets of #314, which give `review` the families `discover`, `read` and `check` and `work` those
+and `propose` and `act`, are not built; when they are, they read the families from these two
+places and no other.
