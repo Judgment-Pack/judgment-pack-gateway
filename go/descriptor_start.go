@@ -379,6 +379,11 @@ func buildListing(order []string, tools map[string]mcpTool, count *listingCount,
 // or nil should it pass limit bytes (a negative limit is none): its
 // description is built no further than limit.
 func listingEntry(t mcpTool, p *servedPlatform, limit int) (json.RawMessage, error) {
+	// A tool is served with its owner's operation and effect or not at all:
+	// one without both is refused before any of its entry is built.
+	if !t.taxonomy.Valid() {
+		return nil, fmt.Errorf("%s declares no valid operation and effect; a tool without both is not served", describeTool(t))
+	}
 	var entry map[string]any
 	if t.seal {
 		entry = map[string]any{
@@ -393,12 +398,8 @@ func listingEntry(t mcpTool, p *servedPlatform, limit int) (json.RawMessage, err
 		}
 		entry = map[string]any{"name": t.name, "description": description, "inputSchema": servedSchema(t, p)}
 	}
-	// A tool is served with its owner's operation and effect or not at all,
-	// and its standard annotations are derived from that effect here, the
-	// one place an entry is made: no entry writes its own.
-	if !t.taxonomy.Valid() {
-		return nil, fmt.Errorf("%s declares no valid operation and effect; a tool without both is not served", describeTool(t))
-	}
+	// Its standard annotations are derived from its owner's effect here,
+	// the one place an entry is made: no entry writes its own.
 	entry["annotations"] = t.taxonomy.Annotations()
 	meta := map[string]any{"operation": t.taxonomy.Operation, "effect": t.taxonomy.Effect}
 	if t.taxonomy.CheckKind != "" {
