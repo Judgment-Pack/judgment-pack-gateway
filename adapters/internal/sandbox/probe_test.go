@@ -3,15 +3,22 @@ package sandbox
 import (
 	"context"
 	"runtime"
+	"strings"
 	"testing"
 )
 
-func TestPostureProbeExecutesRestrictedChild(t *testing.T) {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
-		t.Skip("no native backend")
-	}
+func TestPostureProbeReportsActualBackend(t *testing.T) {
 	for _, mode := range []string{ReadOnly, WorkspaceWrite} {
 		r := Probe(context.Background(), mode, t.TempDir())
+		if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+			if r.Mode != mode || r.State != "not-enforced" || r.Backend != "none" || r.Reason == "" {
+				t.Fatalf("unavailable backend claims protection: %+v", r)
+			}
+			if runtime.GOOS == "windows" && !strings.Contains(r.Reason, "Windows") {
+				t.Fatalf("missing platform-specific refusal reason: %+v", r)
+			}
+			continue
+		}
 		if r.Mode != mode || (r.State != "enforced" && r.State != "partial") || r.Backend == "none" {
 			t.Fatalf("native probe: %+v", r)
 		}

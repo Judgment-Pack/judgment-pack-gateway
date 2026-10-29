@@ -600,6 +600,12 @@ managed gateway's posture beside the gateway's status. The answer is canonical J
   per-program entries below: `enforced` only when every entry is enforced, otherwise
   `partial` when any entry is enforced or partial.
 
+Windows has no shipped restricted-command backend. Its selected read-only and
+workspace-write wrappers refuse source execution and report `backend: none`,
+`state: not-enforced`, with the Windows unavailability reason. An explicit
+full-access policy remains unrestricted. Remote-server and container-daemon
+availability does not establish their confinement by this local wrapper.
+
 The seed and the sources are judged at each request, so a mode changed after the start shows;
 the descendant probe's verdict is kept for the process. Source sandbox probes are
 cached per resolved source after the first completed check; restart the engine to

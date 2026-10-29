@@ -44,6 +44,7 @@ func TestSandboxProbeRejectsFalseClaims(t *testing.T) {
 		{`"state":"partial"`, `"state":"enforced"`},
 		{`"backend":"landlock"`, `"backend":"none"`},
 		{`"backend":"landlock"`, `"backend":"unknown"`},
+		{`"backend":"landlock"`, `"backend":"windows-restricted-token"`},
 		{`"state":"partial"`, `"state":"not-applicable"`},
 		{`"reason":"metadata remains writable"`, `"reason":""`},
 		{`"settings":`, `"Settings":`},
